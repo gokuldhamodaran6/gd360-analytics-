@@ -49,6 +49,9 @@ class DataSource(Base):
     encrypted_secret = Column(Text, nullable=True)
     file_path = Column(String, nullable=True)  # legacy, no longer written to
     file_data = Column(LargeBinary, nullable=True)  # uploaded csv/excel bytes, stored here so they survive redeploys
+    cleaned_data = Column(LargeBinary, nullable=True)  # latest AI-prepared/cleaned snapshot, stored as CSV bytes
+    cleaning_log = Column(JSON, nullable=True)  # list of {prompt, summary, rows_before, rows_after, nulls_before, nulls_after, created_at}
+    cleaned_updated_at = Column(DateTime, nullable=True)
     read_only = Column(Boolean, default=True)
     schema_cache = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
