@@ -97,6 +97,28 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
     return json.loads(fig.to_json())
 
 
+def build_cleaning_summary_chart(
+    rows_before: int, rows_after: int, nulls_before: int, nulls_after: int, title: str = "Data preparation summary"
+) -> dict:
+    """A small before/after chart shown whenever GD360 cleans or prepares
+    data, so the effect of a cleaning step is visible at a glance rather
+    than just described in text."""
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name="Before", x=["Rows", "Missing values"], y=[rows_before, nulls_before], marker_color=PALETTE[2]))
+    fig.add_trace(go.Bar(name="After", x=["Rows", "Missing values"], y=[rows_after, nulls_after], marker_color=PALETTE[1]))
+    fig.update_layout(
+        barmode="group",
+        template=DARK_TEMPLATE,
+        title=title,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter, system-ui, sans-serif", size=13, color="#E8E8F0"),
+        margin=dict(l=40, r=20, t=50, b=40),
+        legend=dict(bgcolor="rgba(0,0,0,0)"),
+    )
+    return json.loads(fig.to_json())
+
+
 def result_to_summary(result: Any, max_rows: int = 15) -> dict:
     """Compact, LLM-friendly summary of an analysis result, used for insight generation."""
     if isinstance(result, pd.Series):
