@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     FRONTEND_ORIGIN: str = "http://localhost:5173"
 
+    # --- Admin ---
+    # Comma-separated list of email addresses allowed to view the /admin
+    # dashboard (user count, prompt usage, etc). Change or extend this via
+    # the ADMIN_EMAILS environment variable, no code change needed.
+    ADMIN_EMAILS: str = "gokuldhamodaran6@gmail.com"
+
     # --- App database (stores users, datasource metadata, chat history) ---
     # Example (Supabase/Postgres): postgresql+psycopg2://user:pass@host:5432/postgres
     DATABASE_URL: str = "sqlite:///./gd360.db"
@@ -34,7 +40,7 @@ class Settings(BaseSettings):
     # Free-tier default: Groq (https://console.groq.com) - generous free rate limits.
     AI_PROVIDER: str = "groq"  # "groq" | "openai" | "anthropic"
     GROQ_API_KEY: str = ""
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_MODEL: str = "openai/gpt-oss-20b"
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o-mini"
     ANTHROPIC_API_KEY: str = ""
