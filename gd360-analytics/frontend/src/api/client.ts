@@ -24,3 +24,33 @@ api.interceptors.response.use(
     return Promise.reject(err);
   }
 );
+
+export type AdminStats = {
+  total_users: number;
+  new_users_today: number;
+  new_users_7d: number;
+  total_prompts: number;
+  prompts_today: number;
+  prompts_7d: number;
+  total_datasources: number;
+  total_dashboards: number;
+};
+
+export type AdminUserRow = {
+  id: string;
+  email: string;
+  full_name: string | null;
+  company: string | null;
+  created_at: string;
+  prompt_count: number;
+  last_prompt_at: string | null;
+};
+
+export type AdminUsagePoint = { day: string; count: number };
+
+export const adminApi = {
+  getStats: () => api.get<AdminStats>("/admin/stats").then((r) => r.data),
+  getUsers: () => api.get<AdminUserRow[]>("/admin/users").then((r) => r.data),
+  getUsageTimeseries: (days = 14) =>
+    api.get<AdminUsagePoint[]>(`/admin/usage-timeseries?days=${days}`).then((r) => r.data),
+};
