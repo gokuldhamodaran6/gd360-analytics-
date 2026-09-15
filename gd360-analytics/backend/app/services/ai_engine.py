@@ -80,11 +80,14 @@ def _call_llm(messages: list[dict], max_tokens: int = 1200) -> str:
             raise RuntimeError("GROQ_API_KEY is not set. Get a free key at https://console.groq.com/keys")
         resp = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {settings.GROQ_API_KEY}"},
+            headers={
+                "Authorization": f"Bearer {settings.GROQ_API_KEY.strip()}",
+                "Content-Type": "application/json",
+            },
             json={"model": settings.GROQ_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": max_tokens},
             timeout=60,
         )
-        resp.raise_for_status()
+        _raise_with_body(resp, "Groq")
         return resp.json()["choices"][0]["message"]["content"]
 
     if provider == "openai":
@@ -92,11 +95,14 @@ def _call_llm(messages: list[dict], max_tokens: int = 1200) -> str:
             raise RuntimeError("OPENAI_API_KEY is not set.")
         resp = requests.post(
             "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {settings.OPENAI_API_KEY}"},
+            headers={
+                "Authorization": f"Bearer {settings.OPENAI_API_KEY.strip()}",
+                "Content-Type": "application/json",
+            },
             json={"model": settings.OPENAI_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": max_tokens},
             timeout=60,
         )
-        resp.raise_for_status()
+        _raise_with_body(resp, "OpenAI")
         return resp.json()["choices"][0]["message"]["content"]
 
     if provider == "anthropic":
@@ -107,17 +113,31 @@ def _call_llm(messages: list[dict], max_tokens: int = 1200) -> str:
         resp = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
-                "x-api-key": settings.ANTHROPIC_API_KEY,
+                "x-api-key": settings.ANTHROPIC_API_KEY.strip(),
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             },
             json={"model": settings.ANTHROPIC_MODEL, "system": system, "messages": user_msgs, "max_tokens": max_tokens},
             timeout=60,
         )
-        resp.raise_for_status()
+        _raise_with_body(resp, "Anthropic")
         return resp.json()["content"][0]["text"]
 
     raise RuntimeError(f"Unknown AI_PROVIDER: {provider}")
+
+
+def _raise_with_body(resp: requests.Response, provider_label: str) -> None:
+    """Like resp.raise_for_status(), but includes the response body so the
+    real reason (invalid key, decommissioned model, quota, etc.) reaches the
+    UI instead of just the bare HTTP status code."""
+    if resp.status_code < 400:
+        return
+    body = (resp.text or "").strip()
+    if len(body) > 500:
+        body = body[:500] + "...(truncated)"
+    raise RuntimeError(
+        f"{provider_label} API error {resp.status_code} for {resp.request.method} {resp.url}: {body or '(empty response body)'}"
+    )
 
 
 def _dataset_schema_text(df: pd.DataFrame) -> str:
@@ -153,64 +173,4 @@ def analyze(prompt: str, df: pd.DataFrame, history: list[dict] | None = None, ch
     if plan.get("action") == "clarify":
         return {
             "needs_clarification": True,
-            "clarifying_question": plan.get("clarifying_question") or "Could you clarify what you'd like to analyze?",
-            "narrative": "",
-            "chart_spec": None,
-            "insight": None,
-            "suggested_charts": suggest_charts(profile),
-            "suggested_stats": suggest_stats(profile),
-        }
-
-    code = plan.get("code") or ""
-    result, error = run_sandboxed(code, df, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
-
-    if error:
-        return {
-            "needs_clarification": False,
-            "clarifying_question": None,
-            "narrative": f"I ran into an issue while analyzing this: {error.splitlines()[-1] if error else 'unknown error'}. "
-                         f"Could you rephrase or simplify the request?",
-            "chart_spec": None,
-            "insight": None,
-            "suggested_charts": suggest_charts(profile),
-            "suggested_stats": suggest_stats(profile),
-        }
-
-    chart_type = (chart_override or {}).get("chart_type") or plan.get("chart_type") or "bar"
-    title = (chart_override or {}).get("title") or plan.get("title") or prompt[:80]
-    try:
-        chart_spec = build_figure(result, chart_type, title, plan.get("x_label"), plan.get("y_label"))
-    except Exception as e:
-        return {
-            "needs_clarification": False,
-            "clarifying_question": None,
-            "narrative": f"The analysis ran, but I couldn't render that as a {chart_type} chart ({e}). Try asking for a different chart type.",
-            "chart_spec": None,
-            "insight": None,
-            "suggested_charts": suggest_charts(profile),
-            "suggested_stats": suggest_stats(profile),
-        }
-
-    summary = result_to_summary(result)
-    insight = _generate_insight(prompt, summary)
-
-    return {
-        "needs_clarification": False,
-        "clarifying_question": None,
-        "narrative": plan.get("narrative") or "Here's your analysis.",
-        "chart_spec": chart_spec,
-        "insight": insight,
-        "suggested_charts": suggest_charts(profile),
-        "suggested_stats": suggest_stats(profile),
-    }
-
-
-def _generate_insight(prompt: str, summary: dict) -> str:
-    try:
-        messages = [
-            {"role": "system", "content": INSIGHT_SYSTEM_PROMPT},
-            {"role": "user", "content": f"User's question: {prompt}\n\nResult data summary (JSON): {json.dumps(summary)[:4000]}"},
-        ]
-        return _call_llm(messages, max_tokens=300).strip()
-    except Exception:
-        return "Insight generation is temporarily unavailable, but your chart above reflects the requested analysis."
+            "clarifying_question": plan.get("clarifying_question") or "Could you clarify what you'd like to
