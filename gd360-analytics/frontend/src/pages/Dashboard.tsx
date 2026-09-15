@@ -17,6 +17,7 @@ export default function Dashboard() {
   const [dashboards, setDashboards] = useState<DashboardSummary[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [removeError, setRemoveError] = useState("");
 
   const load = async () => {
     setLoading(true);
@@ -30,8 +31,13 @@ export default function Dashboard() {
 
   const removeDatasource = async (id: string) => {
     if (!confirm("Remove this datasource? This does not affect your original database or files.")) return;
-    await api.delete(`/datasources/${id}`);
-    load();
+    setRemoveError("");
+    try {
+      await api.delete(`/datasources/${id}`);
+      load();
+    } catch (err: any) {
+      setRemoveError(err?.response?.data?.detail || "Could not remove this data source. Please try again.");
+    }
   };
 
   return (
@@ -47,6 +53,10 @@ export default function Dashboard() {
             {showForm ? "Close" : "+ Add data source"}
           </button>
         </div>
+
+        {removeError && (
+          <div className="mb-6 text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{removeError}</div>
+        )}
 
         {showForm && (
           <div className="mb-8">
