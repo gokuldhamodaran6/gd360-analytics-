@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    Column, String, DateTime, ForeignKey, Text, JSON, Boolean, Integer
+    Column, String, DateTime, ForeignKey, Text, JSON, Boolean, Integer, LargeBinary
 )
 from sqlalchemy.orm import relationship
 
@@ -34,7 +34,7 @@ class User(Base):
 class DataSource(Base):
     """
     Metadata + encrypted credentials for a connection a user has added.
-    kind: 'postgres' | 'mysql' | 'mongodb' | 'csv' | 'excel'
+    kind: "postgres" | "mysql" | "mongodb" | "csv" | "excel"
     connection_info: non-secret fields (host, port, db name, table allowlist...) as JSON
     encrypted_secret: encrypted connection string / password (never plaintext)
     file_path: for uploaded csv/excel files, path on server storage
@@ -47,7 +47,8 @@ class DataSource(Base):
     kind = Column(String, nullable=False)
     connection_info = Column(JSON, default=dict)
     encrypted_secret = Column(Text, nullable=True)
-    file_path = Column(String, nullable=True)
+    file_path = Column(String, nullable=True)  # legacy, no longer written to
+    file_data = Column(LargeBinary, nullable=True)  # uploaded csv/excel bytes, stored here so they survive redeploys
     read_only = Column(Boolean, default=True)
     schema_cache = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
