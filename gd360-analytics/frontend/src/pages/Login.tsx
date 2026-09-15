@@ -49,6 +49,9 @@ export default function Login() {
             New here? <Link to="/register" className="text-primary hover:underline">Create a free account</Link>
           </p>
         </form>
+        <div className="text-center mt-4">
+          <Link to="/admin-login" className="btn-secondary inline-block text-sm">Admin Login</Link>
+        </div>
       </div>
     </div>
   );
