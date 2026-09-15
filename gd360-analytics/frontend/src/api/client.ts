@@ -60,3 +60,55 @@ export const adminApi = {
   getUsageTimeseries: (days = 14) =>
     api.get<AdminUsagePoint[]>(`/admin/usage-timeseries?days=${days}`).then((r) => r.data),
 };
+
+export type DataVersion = "auto" | "original" | "cleaned";
+
+export type CleaningLogEntry = {
+  prompt: string;
+  summary: string | null;
+  rows_before: number | null;
+  rows_after: number | null;
+  nulls_before: number | null;
+  nulls_after: number | null;
+  created_at: string;
+};
+
+export type DataPreview = {
+  columns: string[];
+  dtypes: Record<string, string>;
+  rows: Record<string, any>[];
+  total_rows: number;
+  offset: number;
+  limit: number;
+  has_cleaned_version: boolean;
+  cleaned_updated_at: string | null;
+  cleaning_log: CleaningLogEntry[];
+};
+
+export const datasourceApi = {
+  preview: (id: string, version: DataVersion = "auto", limit = 25, offset = 0) =>
+    api
+      .get<DataPreview>(`/datasources/${id}/preview`, { params: { version, limit, offset } })
+      .then((r) => r.data),
+
+  resetCleaning: (id: string) => api.post(`/datasources/${id}/reset-cleaning`),
+
+  downloadExport: async (id: string, version: DataVersion, format: "csv" | "xlsx") => {
+    const res = await api.get(`/datasources/${id}/export`, {
+      params: { version, export_format: format },
+      responseType: "blob",
+    });
+    const disposition: string = res.headers["content-disposition"] || "";
+    const match = disposition.match(/filename="?([^"]+)"?/);
+    const filename = match ? match[1] : `data.${format}`;
+    const blob = new Blob([res.data]);
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  },
+};
