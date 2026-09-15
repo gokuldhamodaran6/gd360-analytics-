@@ -19,7 +19,14 @@ class NeedsTableSelection(Exception):
 
 def load_dataframe(ds: models.DataSource, table: str | None = None) -> pd.DataFrame:
     if ds.kind in ("csv", "excel"):
-        return FileConnector(ds.file_path).load_dataframe()
+        if not ds.file_data:
+            raise ValueError(
+                "The data for this file is missing - it was uploaded before a storage fix and its "
+                "content did not survive a server restart. Please remove this data source and "
+                "upload the file again; new uploads are stored permanently and will not be lost."
+            )
+        ext_hint = ".xlsx" if ds.kind == "excel" else ".csv"
+        return FileConnector(ds.file_data, ext_hint).load_dataframe()
 
     if ds.kind in ("postgres", "mysql"):
         username, password = security.decrypt_secret(ds.encrypted_secret).split("␟")
