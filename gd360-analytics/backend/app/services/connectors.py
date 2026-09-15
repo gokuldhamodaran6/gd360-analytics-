@@ -1,7 +1,7 @@
 """
 Data connectors.
 
-Design principle: GD360 NEVER writes to a customer's source system. Every
+Design principle: GD360 NEVER writes to a customer source system. Every
 connector here only ever reads data, and every raw query path is validated
 to be read-only before it touches a real connection. Recommend (in the UI
 and README) that users supply a read-only database role/user as
@@ -15,7 +15,6 @@ touching the rest of the app.
 """
 from __future__ import annotations
 
-import os
 import re
 from typing import Any
 
@@ -52,7 +51,7 @@ def assert_read_only_sql(raw_sql: str) -> None:
     lowered = raw_sql.lower()
     for kw in FORBIDDEN_SQL_KEYWORDS:
         if re.search(rf"\b{re.escape(kw)}\b", lowered):
-            raise ReadOnlyViolation(f"Query contains a forbidden keyword: '{kw}'.")
+            raise ReadOnlyViolation(f"Query contains a forbidden keyword: {kw}.")
 
 
 def _sql_engine_url(kind: str, host: str, port: int, database: str, username: str, password: str, ssl: bool) -> str:
@@ -101,7 +100,8 @@ class SQLConnector:
                 assert_read_only_sql(query_or_table)
                 sql = query_or_table
                 if "limit" not in sql.lower():
-                    sql = f"SELECT * FROM ({sql.rstrip(';')}) AS gd360_sub LIMIT {row_limit}"
+                    trimmed_sql = sql.rstrip(";")
+                    sql = f"SELECT * FROM ({trimmed_sql}) AS gd360_sub LIMIT {row_limit}"
             else:
                 # table name only -> safe parameterized identifier quoting via SQLAlchemy inspect
                 insp = inspect(engine)
@@ -157,20 +157,26 @@ class MongoConnector:
 
 
 class FileConnector:
-    """CSV / Excel uploads, stored under UPLOAD_DIR and always read-only."""
+    """CSV / Excel uploads. The file bytes are always passed in from the
+    database (DataSource.file_data) rather than read from local disk - the
+    application server local disk is wiped on every redeploy, so anything
+    saved only there would be lost. Keeping this in-memory-only also means
+    the data never touches disk at all, which is a nice extra safety property."""
 
-    def __init__(self, file_path: str):
-        self.file_path = file_path
+    def __init__(self, file_bytes: bytes, ext_hint: str = ""):
+        self.file_bytes = file_bytes
+        self.ext_hint = ext_hint.lower()
+
+    def _is_excel(self) -> bool:
+        return self.ext_hint.endswith((".xlsx", ".xls"))
 
     def load_dataframe(self, sheet_name: str | int | None = 0) -> pd.DataFrame:
-        if self.file_path.lower().endswith((".xlsx", ".xls")):
-            return pd.read_excel(self.file_path, sheet_name=sheet_name)
-        return pd.read_csv(self.file_path)
+        import io
+        buf = io.BytesIO(self.file_bytes)
+        if self._is_excel():
+            return pd.read_excel(buf, sheet_name=sheet_name)
+        return pd.read_csv(buf)
 
     def introspect_schema(self) -> dict:
         df = self.load_dataframe()
         return {"columns": [{"name": c, "type": str(df[c].dtype)} for c in df.columns]}
-
-
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
