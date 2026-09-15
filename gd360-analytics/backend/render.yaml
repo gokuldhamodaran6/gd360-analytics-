@@ -1,0 +1,28 @@
+# Render "Blueprint" - lets you deploy the backend with one click from
+# a connected GitHub repo (Dashboard -> New -> Blueprint -> pick this repo).
+# Free web services on Render sleep after inactivity and wake on the next
+# request (a few seconds' delay) - fine for a free MVP.
+services:
+  - type: web
+    name: gd360-analytics-api
+    env: docker
+    plan: free
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        sync: false        # paste your Supabase Postgres connection string in the Render dashboard
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CREDENTIAL_ENCRYPTION_KEY
+        sync: false        # generate with the command in .env.example and paste it in
+      - key: AI_PROVIDER
+        value: groq
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: FRONTEND_ORIGIN
+        sync: false        # your Vercel URL, e.g. https://gd360-analytics.vercel.app
