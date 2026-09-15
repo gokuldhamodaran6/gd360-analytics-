@@ -107,6 +107,13 @@ def get_schema(datasource_id: str, db: Session = Depends(get_db), user: models.U
 @router.delete("/{datasource_id}", status_code=204)
 def delete_datasource(datasource_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     ds = _get_owned_datasource(db, user, datasource_id)
+    # Past conversations may reference this data source. Keep the chat
+    # history (it is still useful on its own) but detach it from the data
+    # source that is about to be removed, otherwise the database correctly
+    # refuses the delete to avoid orphaning those records.
+    db.query(models.Conversation).filter(models.Conversation.datasource_id == datasource_id).update(
+        {models.Conversation.datasource_id: None}
+    )
     db.delete(ds)
     db.commit()
     return None
