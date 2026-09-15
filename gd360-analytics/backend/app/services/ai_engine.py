@@ -27,14 +27,14 @@ from .sandbox import run_sandboxed
 settings = get_settings()
 
 SYSTEM_PROMPT = """You are GD360, an expert data analyst copilot embedded in a no-code analytics product.
-You are given a pandas DataFrame called `df` (already loaded - never re-load or fabricate data) and a user's
+You are given a pandas DataFrame called `df` (already loaded - never re-load or fabricate data) and the user
 natural-language request. You must respond with ONLY a single JSON object (no markdown fences, no prose
 outside the JSON) matching exactly this schema:
 
 {
   "action": "clarify" | "analyze",
   "clarifying_question": string | null,   // required if action == "clarify", else null
-  "narrative": string,                     // 1-2 plain-English sentences describing what you're about to do (empty if clarifying)
+  "narrative": string,                     // 1-2 plain-English sentences describing what you are about to do (empty if clarifying)
   "chart_type": "bar"|"line"|"area"|"pie"|"scatter"|"histogram"|"box"|"heatmap"|"waterfall"|"funnel"|"treemap"|null,
   "title": string | null,
   "x_label": string | null,
@@ -56,8 +56,8 @@ Rules:
 - Respond with raw JSON only.
 """
 
-INSIGHT_SYSTEM_PROMPT = """You are GD360's insight-writing module. Given a summary of a chart's underlying
-data and the user's original question, write a crisp business insight: 2-4 sentences, plain English, no
+INSIGHT_SYSTEM_PROMPT = """You are the GD360 insight-writing module. Given a summary of a chart underlying
+data and the user original question, write a crisp business insight: 2-4 sentences, plain English, no
 fluff, lead with the single most important takeaway, include a concrete number where possible, and end with
 one practical suggestion or thing to investigate next. Do not describe the chart mechanics ("this bar chart
 shows..."); talk about what the data means."""
@@ -135,8 +135,10 @@ def _raise_with_body(resp: requests.Response, provider_label: str) -> None:
     body = (resp.text or "").strip()
     if len(body) > 500:
         body = body[:500] + "...(truncated)"
+    if not body:
+        body = "(empty response body)"
     raise RuntimeError(
-        f"{provider_label} API error {resp.status_code} for {resp.request.method} {resp.url}: {body or '(empty response body)'}"
+        f"{provider_label} API error {resp.status_code} for {resp.request.method} {resp.url}: {body}"
     )
 
 
@@ -173,4 +175,65 @@ def analyze(prompt: str, df: pd.DataFrame, history: list[dict] | None = None, ch
     if plan.get("action") == "clarify":
         return {
             "needs_clarification": True,
-            "clarifying_question": plan.get("clarifying_question") or "Could you clarify what you'd like to
+            "clarifying_question": plan.get("clarifying_question") or "Could you clarify what you would like to analyze?",
+            "narrative": "",
+            "chart_spec": None,
+            "insight": None,
+            "suggested_charts": suggest_charts(profile),
+            "suggested_stats": suggest_stats(profile),
+        }
+
+    code = plan.get("code") or ""
+    result, error = run_sandboxed(code, df, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
+
+    if error:
+        error_line = error.splitlines()[-1] if error else "unknown error"
+        return {
+            "needs_clarification": False,
+            "clarifying_question": None,
+            "narrative": f"I ran into an issue while analyzing this: {error_line}. "
+                         f"Could you rephrase or simplify the request?",
+            "chart_spec": None,
+            "insight": None,
+            "suggested_charts": suggest_charts(profile),
+            "suggested_stats": suggest_stats(profile),
+        }
+
+    chart_type = (chart_override or {}).get("chart_type") or plan.get("chart_type") or "bar"
+    title = (chart_override or {}).get("title") or plan.get("title") or prompt[:80]
+    try:
+        chart_spec = build_figure(result, chart_type, title, plan.get("x_label"), plan.get("y_label"))
+    except Exception as e:
+        return {
+            "needs_clarification": False,
+            "clarifying_question": None,
+            "narrative": f"The analysis ran, but I could not render that as a {chart_type} chart ({e}). Try asking for a different chart type.",
+            "chart_spec": None,
+            "insight": None,
+            "suggested_charts": suggest_charts(profile),
+            "suggested_stats": suggest_stats(profile),
+        }
+
+    summary = result_to_summary(result)
+    insight = _generate_insight(prompt, summary)
+
+    return {
+        "needs_clarification": False,
+        "clarifying_question": None,
+        "narrative": plan.get("narrative") or "Here is your analysis.",
+        "chart_spec": chart_spec,
+        "insight": insight,
+        "suggested_charts": suggest_charts(profile),
+        "suggested_stats": suggest_stats(profile),
+    }
+
+
+def _generate_insight(prompt: str, summary: dict) -> str:
+    try:
+        messages = [
+            {"role": "system", "content": INSIGHT_SYSTEM_PROMPT},
+            {"role": "user", "content": f"The user asked: {prompt}\n\nResult data summary (JSON): {json.dumps(summary)[:4000]}"},
+        ]
+        return _call_llm(messages, max_tokens=300).strip()
+    except Exception:
+        return "Insight generation is temporarily unavailable, but your chart above reflects the requested analysis."
