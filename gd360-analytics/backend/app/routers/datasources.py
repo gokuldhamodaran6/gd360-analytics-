@@ -5,7 +5,6 @@ never returned to the client after creation. Every connection is tested
 and introspected (read-only) before being saved.
 """
 import os
-import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
@@ -14,7 +13,7 @@ from .. import models, schemas, security
 from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
-from ..services.connectors import SQLConnector, MongoConnector, FileConnector, UPLOAD_DIR
+from ..services.connectors import SQLConnector, MongoConnector, FileConnector
 
 router = APIRouter(prefix="/datasources", tags=["datasources"])
 settings = get_settings()
@@ -78,18 +77,10 @@ async def upload_file(
     if len(contents) > settings.MAX_UPLOAD_MB * 1024 * 1024:
         raise HTTPException(400, f"File too large. Max {settings.MAX_UPLOAD_MB}MB.")
 
-    user_dir = os.path.join(UPLOAD_DIR, user.id)
-    os.makedirs(user_dir, exist_ok=True)
-    stored_name = f"{uuid.uuid4()}{ext}"
-    path = os.path.join(user_dir, stored_name)
-    with open(path, "wb") as f:
-        f.write(contents)
-
     kind = "excel" if ext in (".xlsx", ".xls") else "csv"
     try:
-        schema = FileConnector(path).introspect_schema()
+        schema = FileConnector(contents, ext).introspect_schema()
     except Exception as e:
-        os.remove(path)
         raise HTTPException(400, f"Could not read file: {e}")
 
     ds = models.DataSource(
@@ -97,7 +88,7 @@ async def upload_file(
         name=name,
         kind=kind,
         connection_info={"original_filename": file.filename},
-        file_path=path,
+        file_data=contents,
         read_only=True,
         schema_cache=schema,
     )
@@ -116,8 +107,6 @@ def get_schema(datasource_id: str, db: Session = Depends(get_db), user: models.U
 @router.delete("/{datasource_id}", status_code=204)
 def delete_datasource(datasource_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     ds = _get_owned_datasource(db, user, datasource_id)
-    if ds.file_path and os.path.exists(ds.file_path):
-        os.remove(ds.file_path)
     db.delete(ds)
     db.commit()
     return None
