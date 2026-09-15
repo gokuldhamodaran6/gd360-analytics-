@@ -76,11 +76,16 @@ class ChatResponse(BaseModel):
     message_id: str
     role: str = "assistant"
     reply_text: str
+    action: str = "analyze"
     chart_spec: Optional[dict] = None
     insight: Optional[str] = None
     suggested_charts: Optional[list] = None
     suggested_stats: Optional[list] = None
     needs_clarification: bool = False
+    rows_before: Optional[int] = None
+    rows_after: Optional[int] = None
+    nulls_before: Optional[int] = None
+    nulls_after: Optional[int] = None
 
 
 # ---------- Dashboards ----------
