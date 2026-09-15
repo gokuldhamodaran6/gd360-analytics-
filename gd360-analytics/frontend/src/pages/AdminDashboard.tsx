@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import Plot from "react-plotly.js";
+import Plot from "../lib/plotly";
 import TopNav from "../components/TopNav";
 import { adminApi, AdminStats, AdminUserRow, AdminUsagePoint } from "../api/client";
 
