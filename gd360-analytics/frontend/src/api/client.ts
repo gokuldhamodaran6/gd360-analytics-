@@ -16,7 +16,13 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err?.response?.status === 401) {
+    // A 401 on the login call itself just means wrong email/password -
+    // that should show an error on the login form, not bounce the page
+    // away before the person can read it. Only treat a 401 on some other,
+    // already-authenticated call as an expired session.
+    const requestUrl: string = err?.config?.url || "";
+    const isLoginAttempt = requestUrl.includes("/auth/login") || requestUrl.includes("/auth/register");
+    if (err?.response?.status === 401 && !isLoginAttempt) {
       localStorage.removeItem("gd360_token");
       localStorage.removeItem("gd360_user");
       window.location.href = "/login";
