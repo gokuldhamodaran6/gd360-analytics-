@@ -9,3 +9,9 @@ class ChatRequestFull(BaseModel):
     table: Optional[str] = None
     prompt: str
     chart_override: Optional[dict] = None
+    # Which step of the guided workflow this prompt came from, if any:
+    # "clean" | "explore" | "visualize" | None (freeform / pro mode).
+    intent: Optional[str] = None
+    # Which snapshot of the data to run against: "auto" (prefer the cleaned
+    # version if one exists), "original", or "cleaned".
+    data_version: Optional[str] = "auto"
