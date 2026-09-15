@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { useAuth } from "./api/AuthContext";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
+import AdminLogin from "./pages/AdminLogin";
 import Dashboard from "./pages/Dashboard";
 import Workspace from "./pages/Workspace";
 import DashboardView from "./pages/DashboardView";
@@ -19,6 +20,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/admin-login" element={<AdminLogin />} />
       <Route path="/" element={<Protected><Dashboard /></Protected>} />
       <Route path="/workspace/:datasourceId" element={<Protected><Workspace /></Protected>} />
       <Route path="/dashboards/:dashboardId" element={<Protected><DashboardView /></Protected>} />
