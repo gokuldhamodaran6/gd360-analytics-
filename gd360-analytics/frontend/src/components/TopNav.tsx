@@ -4,7 +4,7 @@ import { useAuth } from "../api/AuthContext";
 // Display-only check for showing the Admin link in the nav. The real
 // access control happens on the backend (see ADMIN_EMAILS in config.py) -
 // this just avoids showing the link to people it would 403 for anyway.
-const ADMIN_EMAILS = ["gokuldhamodaran6@gmail.com"];
+const ADMIN_EMAILS = ["gokuldhamodaranb@gmail.com", "gokuldhamodaran6@gmail.com"];
 
 export default function TopNav() {
   const { user, logout } = useAuth();
