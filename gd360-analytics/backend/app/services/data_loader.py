@@ -2,6 +2,15 @@
 Resolves a DataSource ORM row (+ optional table/collection hint) into an
 in-memory pandas DataFrame, decrypting credentials only for the duration
 of the request. Nothing here ever writes to the source system.
+
+Every datasource can also carry an AI-prepared "cleaned" snapshot
+(DataSource.cleaned_data), stored as CSV bytes regardless of the source
+kind - it is a point-in-time copy the user asked GD360 to clean/prepare,
+never a write-back to their real database or file. `version` picks which
+copy to load: "original" always loads fresh from the real source,
+"cleaned" loads the prepared snapshot (and fails clearly if none exists
+yet), and "auto" (the default) prefers the cleaned snapshot when one
+exists, otherwise falls back to the original.
 """
 from __future__ import annotations
 
@@ -17,7 +26,24 @@ class NeedsTableSelection(Exception):
         super().__init__("Multiple tables/collections available; please specify one.")
 
 
-def load_dataframe(ds: models.DataSource, table: str | None = None) -> pd.DataFrame:
+def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8")
+
+
+def load_dataframe(ds: models.DataSource, table: str | None = None, version: str = "auto") -> pd.DataFrame:
+    use_cleaned = version == "cleaned" or (version == "auto" and ds.cleaned_data is not None)
+    if version == "original":
+        use_cleaned = False
+
+    if use_cleaned:
+        if not ds.cleaned_data:
+            raise ValueError("This data source does not have a cleaned/prepared version yet.")
+        return FileConnector(ds.cleaned_data, ".csv").load_dataframe()
+
+    return _load_original(ds, table)
+
+
+def _load_original(ds: models.DataSource, table: str | None = None) -> pd.DataFrame:
     if ds.kind in ("csv", "excel"):
         if not ds.file_data:
             raise ValueError(
