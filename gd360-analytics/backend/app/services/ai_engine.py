@@ -99,7 +99,17 @@ schema:
 
 Rules:
 - If the request is ambiguous or you genuinely need more info to proceed (e.g. which column, which time range,
-  which metric, what to do with missing values), set action="clarify" and ask ONE short, specific question.
+  which metric, what to do with missing values), set action="clarify" and ask ONE short, specific question -
+  and that question must be about what the person just asked, using the columns/topic actually named in their
+  MOST RECENT message. Never re-ask, or keep circling back to, a clarifying question about an earlier, different
+  topic from earlier in the conversation just because it is still nearby in the history - if the newest message
+  does not clearly continue that earlier topic, treat it as its own, separate request.
+- For a well-defined, common computation (a correlation, an average, a sum, a count, and so on) on the same
+  named columns, always write the same, simplest, most standard pandas for it - e.g. a correlation between two
+  named columns is always their .corr() against each other. Never vary the approach, the columns used, or the
+  chart type between one run and the next for what is genuinely the same request - a person asking the same
+  thing twice must get the same answer both times, since an analytics tool that changes its answer for an
+  unchanged question and unchanged data cannot be trusted.
 - Do exactly what was asked - never silently substitute a different analysis than the one requested. If the
   request names a specific method (e.g. "Pearson correlation", "median", "year-over-year"), use exactly that
   method; only pick the method yourself when the request is generic (e.g. "correlation", "average").
@@ -209,13 +219,22 @@ def _extract_json(text: str) -> dict:
 def _call_llm(messages: list[dict], max_tokens: int = 3000) -> str:
     provider = settings.AI_PROVIDER
 
+    # Kept low and the SAME across every provider so the same question,
+    # asked the same way, keeps landing on the same method and the same
+    # code run after run - a data analyst tool loses trust fast if asking
+    # for "the correlation" twice gives two different answers. Not 0.0:
+    # a hard-zero temperature can make some models degenerate into
+    # repetitive or truncated output on structured JSON tasks like this
+    # one, so a small amount of headroom is kept instead.
+    _TEMPERATURE = 0.1
+
     if provider == "groq":
         if not settings.GROQ_API_KEY:
             raise RuntimeError("GROQ_API_KEY is not set. Get a free key at https://console.groq.com/keys")
         payload = {
             "model": settings.GROQ_MODEL,
             "messages": messages,
-            "temperature": 0.2,
+            "temperature": _TEMPERATURE,
             # Groq (like current OpenAI-compatible APIs) treats max_tokens as
             # deprecated in favor of max_completion_tokens for reasoning
             # models, but keeps accepting max_tokens too - we send both so
@@ -260,7 +279,7 @@ def _call_llm(messages: list[dict], max_tokens: int = 3000) -> str:
                 "Authorization": f"Bearer {settings.OPENAI_API_KEY.strip()}",
                 "Content-Type": "application/json",
             },
-            json={"model": settings.OPENAI_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": max_tokens},
+            json={"model": settings.OPENAI_MODEL, "messages": messages, "temperature": _TEMPERATURE, "max_tokens": max_tokens},
             timeout=60,
         )
         _raise_with_body(resp, "OpenAI")
@@ -278,7 +297,10 @@ def _call_llm(messages: list[dict], max_tokens: int = 3000) -> str:
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             },
-            json={"model": settings.ANTHROPIC_MODEL, "system": system, "messages": user_msgs, "max_tokens": max_tokens},
+            json={
+                "model": settings.ANTHROPIC_MODEL, "system": system, "messages": user_msgs,
+                "max_tokens": max_tokens, "temperature": _TEMPERATURE,
+            },
             timeout=60,
         )
         _raise_with_body(resp, "Anthropic")
@@ -408,6 +430,36 @@ def _looks_like_code_request(prompt: str) -> bool:
     return bool(_CODE_REQUEST_RE.search(prompt or ""))
 
 
+# Another deterministic safety net, for the exact opposite situation: the
+# person is not asking a new question at all, they are waving off whatever
+# is currently on the table (a stuck clarifying question, a failed attempt,
+# an old thread they no longer care about). A small/free model, given a
+# short reply like "no leave it" plus several turns of unrelated history,
+# can easily latch onto some earlier topic still sitting in that history and
+# keep asking about IT instead of just dropping the subject - which is
+# exactly the loop this exists to short-circuit. Deliberately narrow (whole
+# phrase match, or substring only inside an otherwise very short message) so
+# it never swallows a real request that happens to contain one of these
+# words as part of a longer sentence.
+_RESET_PHRASES = (
+    "no leave it", "leave it", "never mind", "nevermind", "forget it", "forget that",
+    "cancel", "cancel that", "scrap that", "drop it", "nvm", "start fresh", "start over",
+    "reset", "never mind that", "ignore that", "skip it", "skip that", "not now", "no thanks",
+)
+
+
+def _looks_like_reset_request(prompt: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9\s]", "", (prompt or "").lower()).strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    if not normalized:
+        return False
+    if normalized in _RESET_PHRASES:
+        return True
+    if len(normalized.split()) <= 5:
+        return any(phrase in normalized for phrase in _RESET_PHRASES)
+    return False
+
+
 def _extract_last_code_from_history(history: list[dict] | None) -> str | None:
     """Looks back through recent conversation history (as built by
     chat._recent_history, which embeds a "(The exact python code used for
@@ -494,6 +546,32 @@ def analyze(
     """
     df = next(iter(tables.values()))  # the primary table - profiling/suggestions are based on this one
     profile = profile_dataframe(df)
+
+    # A deterministic shortcut for when the person is simply waving off
+    # whatever is currently pending (a stuck clarifying question, a failed
+    # attempt, an old thread) - "no leave it", "start fresh", "never mind",
+    # and the like. Answered with a plain, on-topic acknowledgment and
+    # nothing else, without ever calling the model - so it can never drift
+    # into re-asking about some unrelated leftover topic still sitting in
+    # the conversation history, which is what a smaller/free model would
+    # otherwise sometimes do with a short, low-content reply like this.
+    if _looks_like_reset_request(prompt):
+        return {
+            "needs_clarification": False,
+            "clarifying_question": None,
+            "action": "explain",
+            "narrative": "No problem, that is dropped. Let me know what you would like to look at next.",
+            "chart_spec": None,
+            "insight": None,
+            "rows_before": None,
+            "rows_after": None,
+            "nulls_before": None,
+            "nulls_after": None,
+            "suggested_charts": suggest_charts(profile),
+            "suggested_stats": suggest_stats(profile),
+            "follow_up_suggestions": [],
+            "code": None,
+        }
 
     # A deterministic shortcut for the clearest, most common case this
     # covers: the person just got a result and is now asking to see the
