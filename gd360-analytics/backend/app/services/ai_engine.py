@@ -11,6 +11,15 @@ The AI copilot. Responsible for:
 
 Provider-agnostic: works with Groq (default free tier), OpenAI, or
 Anthropic - controlled by AI_PROVIDER + the matching API key in .env.
+
+Self-healing on failure: if the generated code errors out, produces the
+wrong shape of result, or cannot be rendered as the requested chart, the
+model is shown exactly what went wrong and given ONE chance to either fix
+its own code or admit it needs more information (falling back to a
+clarifying question) - so a shaky first attempt quietly recovers instead of
+handing the person a technical error message. Only after that second
+attempt also fails does a plain-English "could not do this, tell me more"
+narrative reach the UI - it never shows a raw exception name or traceback.
 """
 from __future__ import annotations
 
@@ -106,6 +115,18 @@ INTENT_HINTS = {
         "pick the clearest chart type for the request."
     ),
 }
+
+
+_TRANSFORM_FAILURE_NARRATIVE = (
+    "I was not able to prepare this data the way you described, even after trying a second approach. "
+    "Could you say a bit more about what you would like changed - for example, which columns, or what "
+    "\"clean\" should mean here?"
+)
+_ANALYZE_FAILURE_NARRATIVE = (
+    "I was not able to turn this into a chart the way you described, even after trying a second approach. "
+    "Could you say a bit more about what you would like to see - for example, which columns, or what kind "
+    "of chart?"
+)
 
 
 class _EmptyModelResponse(RuntimeError):
@@ -296,6 +317,10 @@ def analyze(
     with: needs_clarification, clarifying_question, action, narrative,
     chart_spec, insight, cleaned_df (only for transform), rows_before/after,
     nulls_before/after, suggested_charts, suggested_stats.
+
+    If the first attempt fails (sandbox error, wrong result shape, or an
+    unrenderable chart), the model is given one retry with the exact error
+    attached before any of that reaches the caller - see module docstring.
     """
     df = next(iter(tables.values()))  # the primary table - profiling/suggestions are based on this one
     profile = profile_dataframe(df)
@@ -324,16 +349,51 @@ def analyze(
     messages.append({"role": "user", "content": user_content})
 
     plan = _plan_with_retry(messages)
+    result = _execute_plan(prompt, tables, profile, plan, chart_override)
+
+    if result.pop("_retry_needed", False):
+        # Give the model one chance to see exactly what went wrong with its
+        # own plan/code and either fix it or recognize it genuinely needs
+        # more information from the person - so a shaky first attempt (a
+        # coding slip, or a request that turns out to be ambiguous once it
+        # is actually run) quietly recovers instead of surfacing a
+        # technical failure right away.
+        retry_detail = result.pop("_retry_detail", "unknown error")
+        retry_messages = messages + [
+            {"role": "assistant", "content": json.dumps(plan)},
+            {
+                "role": "user",
+                "content": (
+                    "Running that did not work. The error was:\n"
+                    f"{retry_detail}\n\n"
+                    "Please reconsider the request. If your approach had a mistake, fix it and respond "
+                    "with corrected JSON (same schema as before). If you genuinely cannot tell what the "
+                    "person wants without more information, respond with action=\"clarify\" and ask ONE "
+                    "short, specific question instead."
+                ),
+            },
+        ]
+        try:
+            fixed_plan = _plan_with_retry(retry_messages)
+            result = _execute_plan(prompt, tables, profile, fixed_plan, chart_override)
+        except Exception:
+            pass  # keep the first attempt friendly failure message already in `result`
+        result.pop("_retry_needed", None)
+        result.pop("_retry_detail", None)
+
+    return result
+
+
+def _execute_plan(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, plan: dict, chart_override: dict | None) -> dict:
     action = plan.get("action") or "analyze"
 
     if action == "clarify":
-        result = _no_result(
+        return _no_result(
             profile,
             "",
             needs_clarification=True,
             clarifying_question=plan.get("clarifying_question") or "Could you clarify what you would like to do?",
         )
-        return result
 
     code = plan.get("code") or ""
 
@@ -347,14 +407,17 @@ def _run_transform(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, 
     cleaned, error = run_sandboxed(code, tables, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
 
     if error:
-        error_line = error.splitlines()[-1] if error else "unknown error"
-        result = _no_result(profile, f"I ran into an issue while preparing this data: {error_line}. Could you rephrase or simplify the request?")
+        result = _no_result(profile, _TRANSFORM_FAILURE_NARRATIVE)
         result["action"] = "transform"
+        result["_retry_needed"] = True
+        result["_retry_detail"] = error.splitlines()[-1] if error else "unknown error"
         return result
 
     if not isinstance(cleaned, pd.DataFrame):
-        result = _no_result(profile, "That did not produce a full table, so I could not save it as a cleaned version. Could you rephrase the request?")
+        result = _no_result(profile, _TRANSFORM_FAILURE_NARRATIVE)
         result["action"] = "transform"
+        result["_retry_needed"] = True
+        result["_retry_detail"] = "The code ran but did not assign a full table to `result`."
         return result
 
     # With a single table selected this is exactly the old before/after
@@ -396,9 +459,10 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
     result, error = run_sandboxed(code, tables, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
 
     if error:
-        error_line = error.splitlines()[-1] if error else "unknown error"
-        out = _no_result(profile, f"I ran into an issue while analyzing this: {error_line}. Could you rephrase or simplify the request?")
+        out = _no_result(profile, _ANALYZE_FAILURE_NARRATIVE)
         out["action"] = "analyze"
+        out["_retry_needed"] = True
+        out["_retry_detail"] = error.splitlines()[-1] if error else "unknown error"
         return out
 
     chart_type = (chart_override or {}).get("chart_type") or plan.get("chart_type") or "bar"
@@ -406,8 +470,10 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
     try:
         chart_spec = build_figure(result, chart_type, title, plan.get("x_label"), plan.get("y_label"))
     except Exception as e:
-        out = _no_result(profile, f"The analysis ran, but I could not render that as a {chart_type} chart ({e}). Try asking for a different chart type.")
+        out = _no_result(profile, _ANALYZE_FAILURE_NARRATIVE)
         out["action"] = "analyze"
+        out["_retry_needed"] = True
+        out["_retry_detail"] = f"Could not render the result as a {chart_type} chart: {e}"
         return out
 
     summary = result_to_summary(result)
