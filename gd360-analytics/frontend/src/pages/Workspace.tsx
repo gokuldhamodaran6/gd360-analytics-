@@ -105,6 +105,7 @@ export default function Workspace() {
           content: m.content,
           insight: m.insight,
           needsClarification: m.needs_clarification,
+          followUp: m.suggestions?.follow_up || null,
         }));
         setTurns(restored);
 
@@ -161,6 +162,7 @@ export default function Workspace() {
         sourceIds: requestSourceIds,
         priorActiveVersionId,
         newVersionId: data.new_version_id || null,
+        followUp: data.follow_up_suggestions || null,
       }]);
 
       if (data.action === "transform") {
