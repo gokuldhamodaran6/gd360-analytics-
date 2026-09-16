@@ -1,13 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { api, conversationApi } from "../api/client";
 import TopNav from "../components/TopNav";
 import ChatPanel, { ChatTurn } from "../components/ChatPanel";
 import ChartCanvas from "../components/ChartCanvas";
-import ChartCustomizer from "../components/ChartCustomizer";
 import SuggestionsPanel from "../components/SuggestionsPanel";
+import ChartStylePanel from "../components/ChartStylePanel";
 import DataTable from "../components/DataTable";
 import StepFlow, { WorkflowStep } from "../components/StepFlow";
+import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
 
 export default function Workspace() {
   const { datasourceId } = useParams();
@@ -31,6 +32,15 @@ export default function Workspace() {
   const [guidedMode, setGuidedMode] = useState(true);
   const [activeStep, setActiveStep] = useState<WorkflowStep>("clean");
   const [resuming, setResuming] = useState(!!resumeConversationId);
+  const [rightTab, setRightTab] = useState<"ideas" | "style">("ideas");
+  const [chartStyle, setChartStyle] = useState<ChartStyle>(defaultChartStyle());
+
+  const displaySpec = useMemo(
+    () => (chartSpec ? applyChartStyle(chartSpec, chartStyle) : null),
+    [chartSpec, chartStyle]
+  );
+
+  const updateStyle = (next: Partial<ChartStyle>) => setChartStyle((s) => ({ ...s, ...next }));
 
   useEffect(() => {
     api.get("/datasources").then(({ data }) => {
@@ -66,6 +76,7 @@ export default function Workspace() {
           const m = data.messages[i];
           if (m.chart_spec) {
             setChartSpec(m.chart_spec);
+            setChartStyle(defaultChartStyle());
             const lastUserPrompt = [...data.messages].reverse().find((mm) => mm.role === "user")?.content;
             setChartTitle(lastUserPrompt || "");
             setCenterTab("chart");
@@ -115,6 +126,10 @@ export default function Workspace() {
         setCenterTab("data");
       } else if (data.chart_spec) {
         setChartSpec(data.chart_spec);
+        // A chart-type change from the Style panel keeps the current user
+        // styling (colors, title, labels) intact - only a brand new prompt
+        // starts from a clean style, since it is effectively a new chart.
+        if (!chartOverride) setChartStyle(defaultChartStyle());
         setChartTitle(prompt);
         setCenterTab("chart");
       }
@@ -135,16 +150,16 @@ export default function Workspace() {
   };
 
   const saveChart = async () => {
-    if (!chartSpec) return;
+    if (!displaySpec) return;
     setSaveMsg("");
     try {
       await api.post("/dashboards/save-chart", {
-        title: chartTitle || "Untitled chart",
-        chart_spec: chartSpec,
+        title: chartStyle.title || chartTitle || "Untitled chart",
+        chart_spec: displaySpec,
         insight: lastInsight,
         dashboard_name: `${dsName || "My"} dashboard`,
       });
-      setSaveMsg("Saved to dashboard");
+      setSaveMsg("Saved to dashboard, styling included");
     } catch {
       setSaveMsg("Could not save chart.");
     }
@@ -179,7 +194,7 @@ export default function Workspace() {
         />
       </div>
 
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[380px_1fr_300px] gap-4 px-4 pb-4 overflow-hidden">
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[380px_1fr_340px] gap-4 px-4 pb-4 overflow-hidden">
         <div className="min-h-[400px] lg:min-h-0">
           <ChatPanel turns={turns} onSend={(p) => runPrompt(p)} busy={busy} />
         </div>
@@ -202,13 +217,39 @@ export default function Workspace() {
             {centerTab === "data" && datasourceId ? (
               <DataTable datasourceId={datasourceId} refreshKey={dataRefreshKey} onDataChanged={() => setDataRefreshKey((k) => k + 1)} />
             ) : (
-              <ChartCanvas chartSpec={chartSpec} title={chartTitle} />
+              <ChartCanvas chartSpec={displaySpec} title={chartStyle.title || chartTitle} />
             )}
           </div>
-          {centerTab === "chart" && <ChartCustomizer onApply={applyChartOverride} disabled={busy || !chartSpec} />}
         </div>
-        <div className="min-h-[200px] overflow-y-auto">
-          <SuggestionsPanel charts={suggestedCharts} stats={suggestedStats} onPick={(p) => runPrompt(p)} />
+        <div className="min-h-[200px] flex flex-col gap-3 overflow-hidden">
+          <div className="flex gap-1.5 shrink-0">
+            <button
+              className={`text-sm px-4 py-2 rounded-lg font-medium transition ${rightTab === "ideas" ? "bg-primary text-white" : "btn-secondary"}`}
+              onClick={() => setRightTab("ideas")}
+            >
+              Ideas
+            </button>
+            <button
+              className={`text-sm px-4 py-2 rounded-lg font-medium transition ${rightTab === "style" ? "bg-primary text-white" : "btn-secondary"}`}
+              onClick={() => setRightTab("style")}
+            >
+              Style
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {rightTab === "ideas" ? (
+              <SuggestionsPanel charts={suggestedCharts} stats={suggestedStats} onPick={(p) => runPrompt(p)} />
+            ) : (
+              <ChartStylePanel
+                chartSpec={chartSpec}
+                style={chartStyle}
+                onStyleChange={updateStyle}
+                onChartTypeChange={(type) => applyChartOverride({ chart_type: type })}
+                onReset={() => setChartStyle(defaultChartStyle())}
+                disabled={busy || !chartSpec}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>
