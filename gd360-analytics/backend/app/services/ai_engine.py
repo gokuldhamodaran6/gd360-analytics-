@@ -46,9 +46,13 @@ respond with ONLY a single JSON object (no markdown fences, no prose outside the
 schema:
 
 {
-  "action": "clarify" | "transform" | "analyze",
+  "action": "clarify" | "transform" | "analyze" | "explain",
   "clarifying_question": string | null,   // required if action == "clarify", else null
-  "narrative": string,                     // 1-2 plain-English sentences describing what you are about to do (empty if clarifying)
+  "narrative": string,                     // 1-2 plain-English sentences describing what you are about to do
+                            // (empty if clarifying). If action == "explain", this is instead the FULL,
+                            // complete answer shown to the person as-is - it can be several sentences, and
+                            // can include a fenced code block (```python ... ```) when the question is about
+                            // code.
   "chart_type": "bar"|"line"|"area"|"pie"|"scatter"|"histogram"|"box"|"heatmap"|"waterfall"|"funnel"|"treemap"
                             // |"horizontal_bar"|"grouped_bar"|"stacked_bar"|"radar"|"polar_bar"|"stacked_area"
                             // |"step_line"|"candlestick"|"ohlc"|"violin"|"dot_plot"|"density_heatmap"|"bubble"
@@ -74,6 +78,13 @@ schema:
                             // The code MUST assign the final chart-ready data to `result` (a pandas Series or
                             // a 2-column-or-fewer DataFrame, or a square numeric DataFrame for chart_type
                             // "heatmap").
+                            //
+                            // If action == "explain": leave this null. The request is a QUESTION about the
+                            // data/result/method/code itself (e.g. "give me the python code", "can I get this
+                            // as a script", "what does this chart mean", "why did you use Pearson", "explain
+                            // this result", "how would I do this in Excel/SQL") rather than a new thing to
+                            // compute. Do not touch `df`/`tables` or run anything - put the whole answer in
+                            // narrative instead.
   "follow_up_suggestions": [ { "label": string, "prompt": string } ]  // 2-4 concrete next steps a senior
                             // data analyst would naturally suggest right after THIS SPECIFIC result - never
                             // generic or unrelated dataset suggestions. Example: right after a Pearson
@@ -92,6 +103,26 @@ Rules:
 - Do exactly what was asked - never silently substitute a different analysis than the one requested. If the
   request names a specific method (e.g. "Pearson correlation", "median", "year-over-year"), use exactly that
   method; only pick the method yourself when the request is generic (e.g. "correlation", "average").
+- When the request does NOT name a specific method (e.g. "correlation", "regular correlation", "normal
+  correlation", "average"), your narrative must not introduce a specific statistical name the person did not
+  use, even though you do pick a specific one to actually compute. If they said "regular"/"normal"/generic
+  "correlation", write the narrative as "Computing the correlation..." (optionally adding, e.g., "using the
+  standard Pearson method" as a clarifying aside) - never open with "Computing the Pearson correlation..." on
+  its own, since to someone who asked for "regular correlation" that reads as if you changed what they asked
+  for, even though Pearson genuinely is the standard/default kind of correlation. The same applies to any other
+  generic request: mirror their own wording first, and only add the specific method name as extra detail, never
+  as a replacement for their wording.
+- Use action="explain" (never "analyze" or "transform") whenever the request is actually a question ABOUT the
+  data, a previous result, a method, or code itself, rather than a new thing to compute - for example "give me
+  the python code", "can I get this as a script/code", "what does this mean", "why did you use that method",
+  "explain this result", "how would I do this in Excel/SQL". Never reinterpret a question like this as a new,
+  unrelated analyze/transform request - that breaks trust even when the chart you produce is technically valid,
+  because it does not answer what was actually asked. If earlier in this conversation an assistant turn
+  includes a note like "(The exact python code used for this: ```python ... ```)" and the person is asking for
+  that code, reuse it verbatim inside a fenced python code block in your narrative rather than writing new code
+  from scratch. If there is nothing relevant to reference, say so plainly in the narrative and, only if
+  genuinely useful, offer a short example - never fabricate a new chart or run new code against the data just
+  because nothing to reference was found.
 - Never invent columns that are not in the schema you were given.
 - Prefer simple, correct pandas over clever one-liners.
 - For transform requests with no further detail (e.g. "clean this data" / "prepare this for analysis"), use
@@ -332,6 +363,7 @@ def _no_result(profile: dict, narrative: str, needs_clarification: bool = False,
         "suggested_charts": suggest_charts(profile),
         "suggested_stats": suggest_stats(profile),
         "follow_up_suggestions": [],
+        "code": None,
     }
 
 
@@ -352,6 +384,47 @@ def _sanitize_follow_ups(raw: Any) -> list[dict]:
         if len(out) >= 4:
             break
     return out
+
+
+# A deterministic safety net for the single clearest, most common version of
+# a "give me the code" style question - the same layered philosophy as
+# _infer_chart_type below (the model is trusted for judgement generally, but
+# a plain, unambiguous case gets a guaranteed-correct answer instead of
+# depending on a free-tier model classifying it correctly every time). This
+# only ever fires for requests that are clearly ABOUT code/a script; it is
+# intentionally narrow so it never mistakes a real analysis request for a
+# code request.
+_CODE_REQUEST_RE = re.compile(
+    r"\b(give|show|share|send|get|provide|export|see)\b[^.?!\n]{0,40}\b(python\s+)?(code|script)\b"
+    r"|^\s*(what|which)\s+code\b"
+    r"|\bcode\s+(you|it)\s+(used|ran|wrote|used to)\b"
+    r"|\bas\s+(a\s+)?(python\s+)?script\b",
+    re.IGNORECASE,
+)
+_CODE_BLOCK_RE = re.compile(r"```(?:python)?\n?(.*?)```", re.DOTALL)
+
+
+def _looks_like_code_request(prompt: str) -> bool:
+    return bool(_CODE_REQUEST_RE.search(prompt or ""))
+
+
+def _extract_last_code_from_history(history: list[dict] | None) -> str | None:
+    """Looks back through recent conversation history (as built by
+    chat._recent_history, which embeds a "(The exact python code used for
+    this: ```python ... ```)" note on any assistant turn that had one) for
+    the most recent snippet - so a follow-up like "give me the python code"
+    can be answered with exactly what was actually run, instead of the
+    model having nothing concrete to go on and inventing a brand-new,
+    unrelated analysis (which is what it was doing before this existed)."""
+    for turn in reversed(history or []):
+        if turn.get("role") != "assistant":
+            continue
+        match = _CODE_BLOCK_RE.search(turn.get("content") or "")
+        if match:
+            code = match.group(1).strip()
+            if code:
+                return code
+    return None
 
 
 def _infer_chart_type(prompt: str, result: Any, chart_type: str | None) -> str:
@@ -421,6 +494,44 @@ def analyze(
     """
     df = next(iter(tables.values()))  # the primary table - profiling/suggestions are based on this one
     profile = profile_dataframe(df)
+
+    # A deterministic shortcut for the clearest, most common case this
+    # covers: the person just got a result and is now asking to see the
+    # code behind it (e.g. "can you give python code", "show me the
+    # code"). Answered directly from what was actually run last time,
+    # without even calling the model - both faster, and immune to a
+    # smaller/free model misreading the question as a request for a new,
+    # unrelated analysis. If there is nothing to hand back (e.g. this is
+    # the very first message in the conversation), this falls through to
+    # the normal model-driven flow below, which still has an
+    # action="explain" rule to fall back on.
+    if _looks_like_code_request(prompt):
+        prior_code = _extract_last_code_from_history(history)
+        if prior_code:
+            narrative = (
+                "Here is the exact Python code used for that result:\n\n"
+                f"```python\n{prior_code}\n```"
+            )
+            return {
+                "needs_clarification": False,
+                "clarifying_question": None,
+                "action": "explain",
+                "narrative": narrative,
+                "chart_spec": None,
+                "insight": None,
+                "rows_before": None,
+                "rows_after": None,
+                "nulls_before": None,
+                "nulls_after": None,
+                "suggested_charts": suggest_charts(profile),
+                "suggested_stats": suggest_stats(profile),
+                "follow_up_suggestions": [
+                    {"label": "Explain this code", "prompt": "Explain what this code does, step by step, in plain English."},
+                    {"label": "Show that result again", "prompt": "Show me that last result again."},
+                ],
+                "code": None,
+            }
+
     schema_text = _dataset_schema_text(tables)
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -492,12 +603,42 @@ def _execute_plan(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, p
             clarifying_question=plan.get("clarifying_question") or "Could you clarify what you would like to do?",
         )
 
+    if action == "explain":
+        return _run_explain(profile, plan)
+
     code = plan.get("code") or ""
 
     if action == "transform":
         return _run_transform(prompt, tables, profile, plan, code)
 
     return _run_analyze(prompt, tables, profile, plan, code, chart_override)
+
+
+def _run_explain(profile: dict, plan: dict) -> dict:
+    """Handles action="explain": a question ABOUT the data/a prior
+    result/a method/code, not a new thing to compute. No sandbox, no
+    chart - its narrative IS the complete answer, exactly the way a
+    knowledgeable analyst would just answer a question in words instead
+    of running a fresh, unrelated analysis for it."""
+    narrative = (plan.get("narrative") or "").strip()
+    if not narrative:
+        narrative = "I do not have anything specific to reference for that yet - could you tell me a bit more about what you would like to know?"
+    return {
+        "needs_clarification": False,
+        "clarifying_question": None,
+        "action": "explain",
+        "narrative": narrative,
+        "chart_spec": None,
+        "insight": None,
+        "rows_before": None,
+        "rows_after": None,
+        "nulls_before": None,
+        "nulls_after": None,
+        "suggested_charts": suggest_charts(profile),
+        "suggested_stats": suggest_stats(profile),
+        "follow_up_suggestions": _sanitize_follow_ups(plan.get("follow_up_suggestions")),
+        "code": None,
+    }
 
 
 def _run_transform(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, plan: dict, code: str) -> dict:
@@ -550,6 +691,7 @@ def _run_transform(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, 
         "suggested_charts": suggest_charts(new_profile),
         "suggested_stats": suggest_stats(new_profile),
         "follow_up_suggestions": _sanitize_follow_ups(plan.get("follow_up_suggestions")),
+        "code": code,
     }
 
 
@@ -597,6 +739,7 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
         "suggested_charts": suggest_charts(profile),
         "suggested_stats": suggest_stats(profile),
         "follow_up_suggestions": _sanitize_follow_ups(plan.get("follow_up_suggestions")),
+        "code": code,
     }
 
 
