@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { DatasetVersion } from "../api/client";
 
 export type ChatTurn = {
   role: "user" | "assistant";
@@ -11,12 +12,18 @@ export type ChatTurn = {
   nullsBefore?: number | null;
   nullsAfter?: number | null;
   resolved?: boolean;
+  // Which table this prompt ran against, and - for a cleaning/prep prompt -
+  // the new table it created, so "Reject, undo this" can delete exactly
+  // that one and switch back to exactly what was active before it ran.
+  sourceVersionId?: string | null;
+  newVersionId?: string | null;
 };
 
 export type CustomizeSeed = { text: string; nonce: number };
 
 export default function ChatPanel({
   turns, onSend, busy, onApproveTransform, onRejectTransform, onCustomizeTransform, customizeSeed,
+  versions, activeVersionId, onActiveVersionChange,
 }: {
   turns: ChatTurn[];
   onSend: (prompt: string) => void;
@@ -25,6 +32,9 @@ export default function ChatPanel({
   onRejectTransform?: (index: number) => void;
   onCustomizeTransform?: (index: number) => void;
   customizeSeed?: CustomizeSeed | null;
+  versions: DatasetVersion[];
+  activeVersionId: string | null;
+  onActiveVersionChange: (versionId: string | null) => void;
 }) {
   const [text, setText] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -140,19 +150,42 @@ export default function ChatPanel({
         <div ref={bottomRef} />
       </div>
 
-      <div className="p-4 border-t border-border flex gap-2">
-        <input
-          ref={inputRef}
-          className="input"
-          placeholder="Ask a question, or describe how to clean/prepare your data..."
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") send(); }}
-          disabled={busy}
-        />
-        <button className="btn-primary shrink-0" onClick={send} disabled={busy || !text.trim()}>
-          Send
-        </button>
+      <div className="border-t border-border">
+        {versions.length > 0 && (
+          <div className="px-4 pt-3">
+            <label className="text-[11px] font-semibold tracking-wide text-muted block mb-1">
+              WORKING ON
+            </label>
+            <select
+              className="input text-sm py-1.5"
+              value={activeVersionId || ""}
+              disabled={busy}
+              onChange={(e) => onActiveVersionChange(e.target.value || null)}
+            >
+              <option value="">Original data</option>
+              {versions.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        <div className="p-4 pt-3 flex gap-2">
+          <input
+            ref={inputRef}
+            className="input"
+            placeholder="Ask a question, or describe how to clean/prepare your data..."
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") send(); }}
+            disabled={busy}
+          />
+          <button className="btn-primary shrink-0" onClick={send} disabled={busy || !text.trim()}>
+            Send
+          </button>
+        </div>
       </div>
     </div>
   );
