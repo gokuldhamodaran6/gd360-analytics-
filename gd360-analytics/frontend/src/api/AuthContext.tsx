@@ -3,11 +3,23 @@ import { api } from "./client";
 
 type User = { id: string; email: string; full_name?: string; company?: string };
 
+type CaptchaChallenge = { captcha_id: string; question: string };
+
 type AuthContextType = {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, full_name?: string, company?: string) => Promise<void>;
+  register: (
+    email: string,
+    password: string,
+    captchaId: string,
+    captchaAnswer: string,
+    full_name?: string,
+    company?: string
+  ) => Promise<void>;
+  getCaptcha: () => Promise<CaptchaChallenge>;
+  updateProfile: (full_name: string, company: string) => Promise<void>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   logout: () => void;
 };
 
@@ -34,9 +46,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     persist(data.access_token, data.user);
   };
 
-  const register = async (email: string, password: string, full_name?: string, company?: string) => {
-    const { data } = await api.post("/auth/register", { email, password, full_name, company });
+  const getCaptcha = async (): Promise<CaptchaChallenge> => {
+    const { data } = await api.get("/auth/captcha");
+    return data;
+  };
+
+  const register = async (
+    email: string,
+    password: string,
+    captchaId: string,
+    captchaAnswer: string,
+    full_name?: string,
+    company?: string
+  ) => {
+    const { data } = await api.post("/auth/register", {
+      email,
+      password,
+      full_name,
+      company,
+      captcha_id: captchaId,
+      captcha_answer: captchaAnswer,
+    });
     persist(data.access_token, data.user);
+  };
+
+  const updateProfile = async (full_name: string, company: string) => {
+    const { data } = await api.patch("/auth/profile", { full_name, company });
+    const merged = { ...(user || {}), ...data };
+    localStorage.setItem("gd360_user", JSON.stringify(merged));
+    setUser(merged);
+  };
+
+  const changePassword = async (currentPassword: string, newPassword: string) => {
+    await api.post("/auth/change-password", {
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
   };
 
   const logout = () => {
@@ -46,7 +91,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
+    <AuthContext.Provider
+      value={{ user, loading, login, register, getCaptcha, updateProfile, changePassword, logout }}
+    >
       {children}
     </AuthContext.Provider>
   );
