@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { DatasetVersion } from "../api/client";
 
+// The literal id used, on both the client and the server, to mean "the
+// original, untouched data" inside a WORKING ON selection - every other
+// entry is a real DatasetVersion.id.
+export const ORIGINAL_SOURCE_ID = "original";
+
 export type ChatTurn = {
   role: "user" | "assistant";
   content: string;
@@ -12,18 +17,24 @@ export type ChatTurn = {
   nullsBefore?: number | null;
   nullsAfter?: number | null;
   resolved?: boolean;
-  // Which table this prompt ran against, and - for a cleaning/prep prompt -
-  // the new table it created, so "Reject, undo this" can delete exactly
-  // that one and switch back to exactly what was active before it ran.
-  sourceVersionId?: string | null;
+  // Which table(s) this prompt ran against, and - for a cleaning/prep
+  // prompt - the new table it created, so "Reject, undo this" can delete
+  // exactly that one and restore exactly what was selected before it ran.
+  sourceIds?: string[];
+  priorActiveVersionId?: string | null;
   newVersionId?: string | null;
 };
 
 export type CustomizeSeed = { text: string; nonce: number };
 
+function labelForSource(id: string, versions: DatasetVersion[]): string {
+  if (id === ORIGINAL_SOURCE_ID) return "Original data";
+  return versions.find((v) => v.id === id)?.name || "Removed table";
+}
+
 export default function ChatPanel({
   turns, onSend, busy, onApproveTransform, onRejectTransform, onCustomizeTransform, customizeSeed,
-  versions, activeVersionId, onActiveVersionChange,
+  versions, sourceIds, onSourceIdsChange,
 }: {
   turns: ChatTurn[];
   onSend: (prompt: string) => void;
@@ -33,16 +44,47 @@ export default function ChatPanel({
   onCustomizeTransform?: (index: number) => void;
   customizeSeed?: CustomizeSeed | null;
   versions: DatasetVersion[];
-  activeVersionId: string | null;
-  onActiveVersionChange: (versionId: string | null) => void;
+  sourceIds: string[];
+  onSourceIdsChange: (ids: string[]) => void;
 }) {
   const [text, setText] = useState("");
+  const [workingOnOpen, setWorkingOnOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const workingOnRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [turns, busy]);
+
+  // Closes the WORKING ON panel on a click anywhere else on the page.
+  useEffect(() => {
+    if (!workingOnOpen) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (workingOnRef.current && !workingOnRef.current.contains(e.target as Node)) {
+        setWorkingOnOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [workingOnOpen]);
+
+  const toggleSource = (id: string) => {
+    if (sourceIds.includes(id)) {
+      if (sourceIds.length === 1) return; // always keep at least one table selected
+      onSourceIdsChange(sourceIds.filter((x) => x !== id));
+    } else {
+      onSourceIdsChange([...sourceIds, id]);
+    }
+  };
+
+  const workingOnSummary = () => {
+    const labels = sourceIds.map((id) => labelForSource(id, versions));
+    if (labels.length === 0) return "Original data";
+    if (labels.length === 1) return labels[0];
+    if (labels.length === 2) return labels.join(" + ");
+    return `${labels[0]} + ${labels.length - 1} more`;
+  };
 
   // A "Refine further" click on a data-cleaning result seeds the chat box
   // with a starting phrase and focuses it, so the person can finish typing
@@ -152,23 +194,41 @@ export default function ChatPanel({
 
       <div className="border-t border-border">
         {versions.length > 0 && (
-          <div className="px-4 pt-3">
+          <div className="px-4 pt-3 relative" ref={workingOnRef}>
             <label className="text-[11px] font-semibold tracking-wide text-muted block mb-1">
               WORKING ON
             </label>
-            <select
-              className="input text-sm py-1.5"
-              value={activeVersionId || ""}
+            <button
+              type="button"
+              className="input text-sm py-1.5 w-full flex items-center justify-between gap-2 text-left"
               disabled={busy}
-              onChange={(e) => onActiveVersionChange(e.target.value || null)}
+              onClick={() => setWorkingOnOpen((o) => !o)}
             >
-              <option value="">Original data</option>
-              {versions.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.name}
-                </option>
-              ))}
-            </select>
+              <span className="truncate">{workingOnSummary()}</span>
+              <span className="text-muted shrink-0 text-xs">{workingOnOpen ? "▲" : "▼"}</span>
+            </button>
+
+            {workingOnOpen && (
+              <div className="absolute z-20 left-4 right-4 mt-1 card p-2 space-y-0.5 shadow-xl max-h-52 overflow-y-auto">
+                <div className="text-[10px] uppercase tracking-wide text-muted px-2 pb-1">
+                  Select one or more tables to analyze together
+                </div>
+                <label className="flex items-center gap-2 text-sm px-2 py-1.5 rounded-lg hover:bg-surface2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={sourceIds.includes(ORIGINAL_SOURCE_ID)}
+                    onChange={() => toggleSource(ORIGINAL_SOURCE_ID)}
+                  />
+                  Original data
+                </label>
+                {versions.map((v) => (
+                  <label key={v.id} className="flex items-center gap-2 text-sm px-2 py-1.5 rounded-lg hover:bg-surface2 cursor-pointer">
+                    <input type="checkbox" checked={sourceIds.includes(v.id)} onChange={() => toggleSource(v.id)} />
+                    {v.name}
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
