@@ -61,8 +61,6 @@ export const adminApi = {
     api.get<AdminUsagePoint[]>(`/admin/usage-timeseries?days=${days}`).then((r) => r.data),
 };
 
-export type DataVersion = "auto" | "original" | "cleaned";
-
 export type CleaningLogEntry = {
   prompt: string;
   summary: string | null;
@@ -73,6 +71,17 @@ export type CleaningLogEntry = {
   created_at: string;
 };
 
+// A named, saved table created by a cleaning/prep prompt. "Original data"
+// is not one of these - it is always available and is represented on the
+// client as versionId === null.
+export type DatasetVersion = {
+  id: string;
+  name: string;
+  parent_version_id: string | null;
+  step_count: number;
+  created_at: string;
+};
+
 export type DataPreview = {
   columns: string[];
   dtypes: Record<string, string>;
@@ -80,8 +89,8 @@ export type DataPreview = {
   total_rows: number;
   offset: number;
   limit: number;
-  has_cleaned_version: boolean;
-  cleaned_updated_at: string | null;
+  version_id: string | null;
+  version_name: string;
   cleaning_log: CleaningLogEntry[];
 };
 
@@ -92,11 +101,11 @@ export type PreviewOptions = {
 };
 
 export const datasourceApi = {
-  preview: (id: string, version: DataVersion = "auto", limit = 25, offset = 0, opts: PreviewOptions = {}) =>
+  preview: (id: string, versionId: string | null, limit = 50, offset = 0, opts: PreviewOptions = {}) =>
     api
       .get<DataPreview>(`/datasources/${id}/preview`, {
         params: {
-          version,
+          version_id: versionId || undefined,
           limit,
           offset,
           sort_by: opts.sortBy || undefined,
@@ -109,11 +118,16 @@ export const datasourceApi = {
       })
       .then((r) => r.data),
 
-  resetCleaning: (id: string) => api.post(`/datasources/${id}/reset-cleaning`),
+  listVersions: (id: string) => api.get<DatasetVersion[]>(`/datasources/${id}/versions`).then((r) => r.data),
 
-  downloadExport: async (id: string, version: DataVersion, format: "csv" | "xlsx") => {
+  renameVersion: (id: string, versionId: string, name: string) =>
+    api.patch<{ id: string; name: string }>(`/datasources/${id}/versions/${versionId}`, { name }).then((r) => r.data),
+
+  deleteVersion: (id: string, versionId: string) => api.delete(`/datasources/${id}/versions/${versionId}`),
+
+  downloadExport: async (id: string, versionId: string | null, format: "csv" | "xlsx") => {
     const res = await api.get(`/datasources/${id}/export`, {
-      params: { version, export_format: format },
+      params: { version_id: versionId || undefined, export_format: format },
       responseType: "blob",
     });
     const disposition: string = res.headers["content-disposition"] || "";
