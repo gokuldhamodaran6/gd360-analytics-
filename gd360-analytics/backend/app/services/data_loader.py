@@ -14,7 +14,10 @@ exists, otherwise falls back to the original.
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 import pandas as pd
+from sqlalchemy.orm import Session
 
 from .. import models, security
 from .connectors import SQLConnector, MongoConnector, FileConnector
@@ -76,3 +79,36 @@ def _pick_single(schema_cache: dict | None) -> str:
     if len(keys) == 1:
         return keys[0]
     raise NeedsTableSelection(keys)
+
+
+def load_version_dataframe(version: models.DatasetVersion) -> pd.DataFrame:
+    """Loads a specific saved/named snapshot (one of the person tables),
+    as opposed to the always-live original data."""
+    return FileConnector(version.data, ".csv").load_dataframe()
+
+
+def ensure_legacy_migrated(db: Session, ds: models.DataSource) -> None:
+    """One-time upgrade path: a datasource that was cleaned/prepared before
+    named, multi-table history existed has its single old snapshot turned
+    into this datasource first named table (Version 1), so nothing already
+    prepared is lost when this ships. Safe to call on every request - it
+    only does anything the first time, for a datasource that still has the
+    old-style snapshot and no saved tables yet."""
+    if not ds.cleaned_data:
+        return
+    already_migrated = (
+        db.query(models.DatasetVersion).filter(models.DatasetVersion.datasource_id == ds.id).first()
+    )
+    if already_migrated:
+        return
+    version = models.DatasetVersion(
+        datasource_id=ds.id,
+        name="Version 1",
+        parent_version_id=None,
+        data=ds.cleaned_data,
+        cleaning_log=ds.cleaning_log or [],
+        position=1,
+        created_at=ds.cleaned_updated_at or datetime.utcnow(),
+    )
+    db.add(version)
+    db.commit()
