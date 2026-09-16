@@ -32,7 +32,7 @@ export default function Workspace() {
   const [guidedMode, setGuidedMode] = useState(true);
   const [activeStep, setActiveStep] = useState<WorkflowStep>("clean");
   const [resuming, setResuming] = useState(!!resumeConversationId);
-  const [rightTab, setRightTab] = useState<"ideas" | "style">("ideas");
+  const [styleOpen, setStyleOpen] = useState(false);
   const [chartStyle, setChartStyle] = useState<ChartStyle>(defaultChartStyle());
   const [customizeSeed, setCustomizeSeed] = useState<CustomizeSeed | null>(null);
 
@@ -55,6 +55,15 @@ export default function Workspace() {
   );
 
   const updateStyle = (next: Partial<ChartStyle>) => setChartStyle((s) => ({ ...s, ...next }));
+
+  useEffect(() => {
+    if (!styleOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setStyleOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [styleOpen]);
 
   useEffect(() => {
     api.get("/datasources").then(({ data }) => {
@@ -306,18 +315,26 @@ export default function Workspace() {
           />
         </div>
         <div className="min-h-[400px] flex flex-col gap-4 overflow-hidden">
-          <div className="flex gap-1.5 shrink-0">
+          <div className="flex items-center justify-between gap-1.5 shrink-0">
+            <div className="flex gap-1.5">
+              <button
+                className={`text-sm px-4 py-2 rounded-lg font-medium transition ${centerTab === "data" ? "bg-primary text-white" : "btn-secondary"}`}
+                onClick={() => setCenterTab("data")}
+              >
+                Data
+              </button>
+              <button
+                className={`text-sm px-4 py-2 rounded-lg font-medium transition ${centerTab === "chart" ? "bg-primary text-white" : "btn-secondary"}`}
+                onClick={() => setCenterTab("chart")}
+              >
+                Chart
+              </button>
+            </div>
             <button
-              className={`text-sm px-4 py-2 rounded-lg font-medium transition ${centerTab === "data" ? "bg-primary text-white" : "btn-secondary"}`}
-              onClick={() => setCenterTab("data")}
+              className="text-sm px-4 py-2 rounded-lg font-medium btn-secondary flex items-center gap-1.5"
+              onClick={() => setStyleOpen(true)}
             >
-              Data
-            </button>
-            <button
-              className={`text-sm px-4 py-2 rounded-lg font-medium transition ${centerTab === "chart" ? "bg-primary text-white" : "btn-secondary"}`}
-              onClick={() => setCenterTab("chart")}
-            >
-              Chart
+              <span aria-hidden>🎨</span> Style
             </button>
           </div>
           <div className="flex-1 min-h-[350px] overflow-hidden">
@@ -342,24 +359,30 @@ export default function Workspace() {
           </div>
         </div>
         <div className="min-h-[200px] flex flex-col gap-3 overflow-hidden">
-          <div className="flex gap-1.5 shrink-0">
-            <button
-              className={`text-sm px-4 py-2 rounded-lg font-medium transition ${rightTab === "ideas" ? "bg-primary text-white" : "btn-secondary"}`}
-              onClick={() => setRightTab("ideas")}
-            >
-              Ideas
-            </button>
-            <button
-              className={`text-sm px-4 py-2 rounded-lg font-medium transition ${rightTab === "style" ? "bg-primary text-white" : "btn-secondary"}`}
-              onClick={() => setRightTab("style")}
-            >
-              Style
-            </button>
-          </div>
+          <div className="text-sm font-semibold px-1 shrink-0">Ideas</div>
           <div className="flex-1 overflow-y-auto">
-            {rightTab === "ideas" ? (
-              <SuggestionsPanel charts={suggestedCharts} stats={suggestedStats} onPick={(p) => runPrompt(p)} />
-            ) : (
+            <SuggestionsPanel charts={suggestedCharts} stats={suggestedStats} onPick={(p) => runPrompt(p)} />
+          </div>
+        </div>
+      </div>
+
+      {styleOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60"
+          onClick={() => setStyleOpen(false)}
+        >
+          <div
+            className="relative w-full sm:w-[420px] max-h-[90vh] sm:max-h-[85vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="absolute top-3 right-3 z-10 text-muted hover:text-text text-xl leading-none w-8 h-8 flex items-center justify-center rounded-full bg-surface2 border border-border"
+              onClick={() => setStyleOpen(false)}
+            >
+              &times;
+            </button>
+            <div className="flex-1 overflow-y-auto rounded-b-none sm:rounded-2xl">
               <ChartStylePanel
                 chartSpec={chartSpec}
                 style={chartStyle}
@@ -368,10 +391,10 @@ export default function Workspace() {
                 onReset={() => setChartStyle(defaultChartStyle(chartSpec))}
                 disabled={busy || !chartSpec}
               />
-            )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
