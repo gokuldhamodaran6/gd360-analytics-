@@ -53,7 +53,7 @@ schema:
   "title": string | null,
   "x_label": string | null,
   "y_label": string | null,
-  "code": string | null   // python using pandas (pd), numpy (np), scipy.stats (stats), `df` (the primary
+  "code": string | null,  // python using pandas (pd), numpy (np), scipy.stats (stats), `df` (the primary
                             // table), and `tables` (dict of every selected table, when more than one is
                             // available - see above). No imports, no file/network access, no printing needed.
                             // Keep it simple and robust to NaNs.
@@ -70,11 +70,24 @@ schema:
                             // The code MUST assign the final chart-ready data to `result` (a pandas Series or
                             // a 2-column-or-fewer DataFrame, or a square numeric DataFrame for chart_type
                             // "heatmap").
+  "follow_up_suggestions": [ { "label": string, "prompt": string } ]  // 2-4 concrete next steps a senior
+                            // data analyst would naturally suggest right after THIS SPECIFIC result - never
+                            // generic or unrelated dataset suggestions. Example: right after a Pearson
+                            // correlation between two columns, good entries are an alternative method
+                            // ("Run a Spearman correlation instead, in case the relationship is not linear"),
+                            // a related view ("Show a correlation heatmap across all numeric columns"), or a
+                            // deeper cut ("Break this correlation down by <a relevant category column>").
+                            // "label" is a short button caption (under 8 words) and "prompt" is the exact
+                            // follow-up request to run if the person clicks it, written as if the person
+                            // typed it themselves. Use [] only when action == "clarify".
 }
 
 Rules:
 - If the request is ambiguous or you genuinely need more info to proceed (e.g. which column, which time range,
   which metric, what to do with missing values), set action="clarify" and ask ONE short, specific question.
+- Do exactly what was asked - never silently substitute a different analysis than the one requested. If the
+  request names a specific method (e.g. "Pearson correlation", "median", "year-over-year"), use exactly that
+  method; only pick the method yourself when the request is generic (e.g. "correlation", "average").
 - Never invent columns that are not in the schema you were given.
 - Prefer simple, correct pandas over clever one-liners.
 - For transform requests with no further detail (e.g. "clean this data" / "prepare this for analysis"), use
@@ -85,8 +98,16 @@ Rules:
   data"), prefer action="analyze" using groupby/value_counts/qcut/cut/correlation as appropriate, unless the
   user explicitly wants the category label written back into the data, in which case use action="transform"
   and add a new column with the category/segment/cluster label.
-- Choose the chart type that best fits the data and the statistical intent (e.g. use "waterfall" for
-  sequential contributions to a total, "heatmap" for correlation matrices, "histogram" for distributions).
+- Never default chart_type to "bar" out of habit - actively match it to the data and the intent behind the
+  request: "scatter" for the relationship between two numeric variables (including a correlation between
+  exactly two named columns), "heatmap" for a correlation matrix across several/all numeric columns or any
+  "across all columns"/"matrix" request, "histogram" for a distribution/spread request, "line" for a trend
+  over time, "box" for comparing distributions across groups, "pie" only for a small number of categories
+  showing share of a whole, "waterfall" for cumulative contributions to a total, "funnel" for sequential
+  conversion stages. Only choose "bar" when comparing a measure across categories is genuinely the best fit
+  for the request - not as a fallback.
+- Always populate follow_up_suggestions (see schema above) with specific, non-generic next steps tied to what
+  you just did, the way a senior data analyst would proactively suggest the next useful angle.
 - When more than one table is selected, actually use all of them if the request implies it (e.g. "compare",
   "combine", "merge", "what changed between", "join") - use pd.merge/pd.concat/explicit comparisons on the
   named tables rather than only looking at `df`. If the request does not need more than one table, it is fine
@@ -300,7 +321,73 @@ def _no_result(profile: dict, narrative: str, needs_clarification: bool = False,
         "nulls_after": None,
         "suggested_charts": suggest_charts(profile),
         "suggested_stats": suggest_stats(profile),
+        "follow_up_suggestions": [],
     }
+
+
+def _sanitize_follow_ups(raw: Any) -> list[dict]:
+    """The model is asked for 2-4 {label, prompt} follow-up suggestions with
+    every plan; this keeps a malformed or missing entry from ever reaching
+    the UI as broken buttons instead of just being dropped."""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip()
+        prompt = str(item.get("prompt") or "").strip()
+        if label and prompt:
+            out.append({"label": label[:80], "prompt": prompt[:300]})
+        if len(out) >= 4:
+            break
+    return out
+
+
+def _infer_chart_type(prompt: str, result: Any, chart_type: str | None) -> str:
+    """A deterministic safety net on top of the model own chart_type choice.
+    Smaller/free models sometimes write a narrative describing one chart
+    (e.g. "visualizing it with a scatter plot") while leaving the actual
+    chart_type field at the generic "bar" default. This only steps in for
+    that ambiguous case - chart_type missing or still "bar" - and only when
+    the prompt itself gives a clear, specific signal for a better fit; it
+    never overrides an explicit, deliberate choice the model already made,
+    and never overrides an explicit chart_override the person picked
+    themselves (that is applied by the caller before this is ever reached)."""
+    if chart_type not in (None, "", "bar"):
+        return chart_type
+    fallback = chart_type or "bar"
+    p = (prompt or "").lower()
+
+    is_matrix = (
+        isinstance(result, pd.DataFrame)
+        and result.shape[0] > 1
+        and result.shape[0] == result.shape[1]
+        and list(result.columns) == list(result.index)
+        and all(pd.api.types.is_numeric_dtype(result[c]) for c in result.columns)
+    )
+    two_numeric_cols = (
+        isinstance(result, pd.DataFrame)
+        and result.shape[1] == 2
+        and all(pd.api.types.is_numeric_dtype(result[c]) for c in result.columns)
+    )
+    relationship_language = any(k in p for k in ("correlation", "relationship between", " vs ", " versus "))
+
+    if relationship_language and is_matrix:
+        return "heatmap"
+    if relationship_language and two_numeric_cols:
+        return "scatter"
+    if any(k in p for k in ("distribution", "spread of", "histogram")):
+        return "histogram"
+    if any(k in p for k in ("trend", "over time", "time series", "month by month", "monthly", "year over year")):
+        return "line"
+    if any(k in p for k in ("share of", "proportion", "percentage breakdown", "% breakdown")):
+        return "pie"
+    if any(k in p for k in ("funnel", "conversion stage", "conversion rate by stage")):
+        return "funnel"
+    if any(k in p for k in ("cumulative", "waterfall", "build-up", "build up", "contribution to total")):
+        return "waterfall"
+    return fallback
 
 
 def analyze(
@@ -452,6 +539,7 @@ def _run_transform(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, 
         "nulls_after": nulls_after,
         "suggested_charts": suggest_charts(new_profile),
         "suggested_stats": suggest_stats(new_profile),
+        "follow_up_suggestions": _sanitize_follow_ups(plan.get("follow_up_suggestions")),
     }
 
 
@@ -466,6 +554,12 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
         return out
 
     chart_type = (chart_override or {}).get("chart_type") or plan.get("chart_type") or "bar"
+    if not (chart_override or {}).get("chart_type"):
+        # Only ever corrects the model own ambiguous "bar" default toward a
+        # better fit for this specific request - never overrides a chart
+        # type the person explicitly picked, and never fights a deliberate,
+        # specific choice the model already made.
+        chart_type = _infer_chart_type(prompt, result, chart_type)
     title = (chart_override or {}).get("title") or plan.get("title") or prompt[:80]
     try:
         chart_spec = build_figure(result, chart_type, title, plan.get("x_label"), plan.get("y_label"))
@@ -492,6 +586,7 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
         "nulls_after": None,
         "suggested_charts": suggest_charts(profile),
         "suggested_stats": suggest_stats(profile),
+        "follow_up_suggestions": _sanitize_follow_ups(plan.get("follow_up_suggestions")),
     }
 
 
