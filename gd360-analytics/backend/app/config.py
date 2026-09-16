@@ -23,6 +23,18 @@ class Settings(BaseSettings):
     # the ADMIN_EMAILS environment variable, no code change needed.
     ADMIN_EMAILS: str = "gokuldhamodaran6@gmail.com,gokuldhamodaranb@gmail.com"
 
+    # --- Signup protection ---
+    # A short one-digit addition question shown once at signup blocks
+    # scripted/bot registrations, at no cost and with no third-party
+    # service required.
+    CAPTCHA_EXPIRE_MINUTES: int = 5
+
+    # --- Auth security ---
+    # A failed-login lockout slows down password-guessing bots without
+    # permanently locking anyone out.
+    LOGIN_LOCKOUT_ATTEMPTS: int = 6
+    LOGIN_LOCKOUT_MINUTES: int = 15
+
     # --- App database (stores users, datasource metadata, chat history) ---
     # Example (Supabase/Postgres): postgresql+psycopg2://user:pass@host:5432/postgres
     DATABASE_URL: str = "sqlite:///./gd360.db"
