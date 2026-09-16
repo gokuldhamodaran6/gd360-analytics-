@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
-import { api, conversationApi, datasourceApi } from "../api/client";
+import { api, conversationApi, datasourceApi, DatasetVersion } from "../api/client";
 import TopNav from "../components/TopNav";
 import ChatPanel, { ChatTurn, CustomizeSeed } from "../components/ChatPanel";
 import ChartCanvas from "../components/ChartCanvas";
@@ -36,6 +36,15 @@ export default function Workspace() {
   const [chartStyle, setChartStyle] = useState<ChartStyle>(defaultChartStyle());
   const [customizeSeed, setCustomizeSeed] = useState<CustomizeSeed | null>(null);
 
+  // The saved/named tables for this data source (created by cleaning/prep
+  // prompts), plus which one - or the original data (null) - is currently
+  // selected. This is shared between the chat panel (which prompt to run
+  // next) and the data table (which tab is showing), so they never disagree
+  // about which table is "current".
+  const [versions, setVersions] = useState<DatasetVersion[]>([]);
+  const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
+  const versionsInitRef = useRef<string | null>(null);
+
   const displaySpec = useMemo(
     () => (chartSpec ? applyChartStyle(chartSpec, chartStyle, chartTitle) : null),
     [chartSpec, chartStyle, chartTitle]
@@ -49,6 +58,26 @@ export default function Workspace() {
       if (ds) setDsName(ds.name);
     });
   }, [datasourceId]);
+
+  // Loads the list of saved tables for this data source. The very first
+  // time this runs for a given data source, it also picks a starting tab -
+  // the most recently created table if one exists, otherwise the original
+  // data - the same way the app used to default to showing cleaned data
+  // when it existed. After that first pick, only an explicit tab click or
+  // a new cleaning result changes which one is active.
+  useEffect(() => {
+    if (!datasourceId) return;
+    datasourceApi
+      .listVersions(datasourceId)
+      .then((vs) => {
+        setVersions(vs);
+        if (versionsInitRef.current !== datasourceId) {
+          versionsInitRef.current = datasourceId;
+          setActiveVersionId(vs.length ? vs[vs.length - 1].id : null);
+        }
+      })
+      .catch(() => {});
+  }, [datasourceId, dataRefreshKey]);
 
   // Restore a prior chat session in full - messages, last chart, last
   // insight and suggestions - so clicking a "Recent conversation" from the
@@ -100,6 +129,7 @@ export default function Workspace() {
   const runPrompt = async (prompt: string, chartOverride?: any) => {
     setError("");
     setBusy(true);
+    const sourceVersionId = activeVersionId;
     setTurns((t) => [...t, { role: "user", content: prompt }]);
     try {
       const { data } = await api.post("/chat", {
@@ -108,6 +138,7 @@ export default function Workspace() {
         prompt,
         chart_override: chartOverride,
         intent: guidedMode ? activeStep : null,
+        source_version_id: sourceVersionId,
       });
       setConversationId(data.conversation_id);
       setTurns((t) => [...t, {
@@ -120,10 +151,15 @@ export default function Workspace() {
         rowsAfter: data.rows_after,
         nullsBefore: data.nulls_before,
         nullsAfter: data.nulls_after,
+        sourceVersionId,
+        newVersionId: data.new_version_id || null,
       }]);
 
       if (data.action === "transform") {
         setDataRefreshKey((k) => k + 1);
+        // A cleaning/prep prompt creates its own new table - switch to it
+        // so the person immediately sees the result it just built.
+        if (data.new_version_id) setActiveVersionId(data.new_version_id);
         setCenterTab("data");
       } else if (data.chart_spec) {
         setChartSpec(data.chart_spec);
@@ -161,17 +197,22 @@ export default function Workspace() {
     markTurnResolved(index);
   };
 
-  // "Reject" undoes it by restoring the original, unprepared data - the
-  // same mechanism as the existing "Reset to original" button in the data
-  // table, just reachable straight from the chat where the result appeared.
+  // "Reject" deletes the table that prompt just created and switches back
+  // to exactly whichever table was active before it ran - original data or
+  // another saved table - so undoing a step never touches anything else.
   const rejectTransform = async (index: number) => {
-    if (!datasourceId) return;
+    const t = turns[index];
+    if (!datasourceId || !t?.newVersionId) {
+      markTurnResolved(index);
+      return;
+    }
     setBusy(true);
     setError("");
     try {
-      await datasourceApi.resetCleaning(datasourceId);
+      await datasourceApi.deleteVersion(datasourceId, t.newVersionId);
       markTurnResolved(index);
-      setTurns((t) => [...t, { role: "assistant", content: "Done, reverted to your original data." }]);
+      setActiveVersionId(t.sourceVersionId ?? null);
+      setTurns((ts) => [...ts, { role: "assistant", content: "Done, that table has been removed." }]);
       setDataRefreshKey((k) => k + 1);
       setCenterTab("data");
     } catch {
@@ -243,6 +284,9 @@ export default function Workspace() {
             onRejectTransform={rejectTransform}
             onCustomizeTransform={customizeTransform}
             customizeSeed={customizeSeed}
+            versions={versions}
+            activeVersionId={activeVersionId}
+            onActiveVersionChange={setActiveVersionId}
           />
         </div>
         <div className="min-h-[400px] flex flex-col gap-4 overflow-hidden">
@@ -262,7 +306,14 @@ export default function Workspace() {
           </div>
           <div className="flex-1 min-h-[350px] overflow-hidden">
             {centerTab === "data" && datasourceId ? (
-              <DataTable datasourceId={datasourceId} refreshKey={dataRefreshKey} onDataChanged={() => setDataRefreshKey((k) => k + 1)} />
+              <DataTable
+                datasourceId={datasourceId}
+                refreshKey={dataRefreshKey}
+                versions={versions}
+                activeVersionId={activeVersionId}
+                onActiveVersionChange={setActiveVersionId}
+                onVersionsChanged={() => setDataRefreshKey((k) => k + 1)}
+              />
             ) : (
               <ChartCanvas chartSpec={displaySpec} title={chartStyle.title || chartTitle} />
             )}
