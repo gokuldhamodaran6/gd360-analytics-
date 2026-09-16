@@ -51,3 +51,8 @@ class Settings(BaseSettings):
     SANDBOX_TIMEOUT_SECONDS: int = 20
     MAX_UPLOAD_MB: int = 50
     RATE_LIMIT_PER_MINUTE: int = 30  # per-user AI calls/minute, protects the free AI tier
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
