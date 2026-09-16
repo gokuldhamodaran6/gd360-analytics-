@@ -149,6 +149,7 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         nulls_after=result.get("nulls_after"),
         new_version_id=new_version.id if new_version else None,
         new_version_name=new_version.name if new_version else None,
+        code=result.get("code"),
     )
 
 
@@ -224,14 +225,25 @@ def _recent_history(db: Session, conversation_id: str, limit: int = 8) -> list[d
         .limit(limit)
         .all()
     )
-    return [{"role": m.role, "content": m.content} for m in reversed(msgs)]
+    history = []
+    for m in reversed(msgs):
+        content = m.content
+        # For an assistant turn that actually ran code, fold the exact code
+        # into what the model sees for this turn (not into what the person
+        # sees - that stays in the plain reply above). This is what lets a
+        # later "give me the python code" / "show me the code" be answered
+        # with the real code instead of the model having nothing to go on.
+        if m.role == "assistant" and m.code:
+            content = f"{content}\n\n(The exact python code used for this: ```python\n{m.code}\n```)"
+        history.append({"role": m.role, "content": content})
+    return history
 
 
 def _persist_and_respond(
     db: Session, conversation_id: str, reply_text: str, action: str = "analyze",
     chart_spec=None, insight=None, suggestions=None, needs_clarification=False,
     rows_before=None, rows_after=None, nulls_before=None, nulls_after=None,
-    new_version_id=None, new_version_name=None,
+    new_version_id=None, new_version_name=None, code=None,
 ) -> schemas.ChatResponse:
     msg = models.Message(
         conversation_id=conversation_id,
@@ -241,6 +253,7 @@ def _persist_and_respond(
         insight=insight,
         suggestions=suggestions,
         needs_clarification=needs_clarification,
+        code=code,
     )
     db.add(msg)
     db.commit()
