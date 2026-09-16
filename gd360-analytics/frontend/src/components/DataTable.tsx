@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { datasourceApi, DataPreview, DataVersion } from "../api/client";
+import { datasourceApi, DataPreview, DatasetVersion } from "../api/client";
 
 const PAGE_SIZE_OPTIONS: { value: number | "all"; label: string }[] = [
   { value: 50, label: "50" },
@@ -25,13 +25,18 @@ function FilterIcon({ active }: { active: boolean }) {
 export default function DataTable({
   datasourceId,
   refreshKey,
-  onDataChanged,
+  versions,
+  activeVersionId,
+  onActiveVersionChange,
+  onVersionsChanged,
 }: {
   datasourceId: string;
   refreshKey: number;
-  onDataChanged?: () => void;
+  versions: DatasetVersion[];
+  activeVersionId: string | null;
+  onActiveVersionChange: (versionId: string | null) => void;
+  onVersionsChanged: () => void;
 }) {
-  const [version, setVersion] = useState<"cleaned" | "original">("original");
   const [preview, setPreview] = useState<DataPreview | null>(null);
   const [offset, setOffset] = useState(0);
   const [pageSize, setPageSize] = useState<number | "all">(50);
@@ -44,8 +49,9 @@ export default function DataTable({
   const [busyAction, setBusyAction] = useState("");
   const [showLog, setShowLog] = useState(false);
   const [openFilterCol, setOpenFilterCol] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
 
-  const initializedKeyRef = useRef<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const effectiveLimit = pageSize === "all" ? 100000 : pageSize;
   const hasActiveFilters = Object.values(debouncedFilters).some((v) => !!v);
@@ -57,31 +63,20 @@ export default function DataTable({
     return () => clearTimeout(t);
   }, [filters]);
 
-  // Any change to version, page, page size, sort or a (debounced) filter
-  // re-fetches from the server immediately - sorting and filtering always
-  // run over the whole dataset, not just the rows currently on screen, so
-  // the result is correct no matter how many rows are loaded.
+  // Fetches whichever table (the original data, or one of the saved/named
+  // ones) is currently selected. Which one that is lives one level up, in
+  // Workspace, so the chat panel and this table always agree on it.
   useEffect(() => {
-    const currentKey = `${datasourceId}:${refreshKey}`;
-    const isFreshLoad = initializedKeyRef.current !== currentKey;
     (async () => {
       setLoading(true);
       setError("");
       try {
-        const requestVersion: DataVersion = isFreshLoad ? "auto" : version;
-        const requestOffset = isFreshLoad ? 0 : offset;
-        const data = await datasourceApi.preview(datasourceId, requestVersion, effectiveLimit, requestOffset, {
+        const data = await datasourceApi.preview(datasourceId, activeVersionId, effectiveLimit, offset, {
           sortBy,
           sortDir,
           filters: debouncedFilters,
         });
         setPreview(data);
-        if (isFreshLoad) {
-          initializedKeyRef.current = currentKey;
-          const resolvedVersion = data.has_cleaned_version ? "cleaned" : "original";
-          if (resolvedVersion !== version) setVersion(resolvedVersion);
-          if (offset !== 0) setOffset(0);
-        }
       } catch (err: any) {
         setError(err?.response?.data?.detail || "Could not load data preview.");
       } finally {
@@ -89,10 +84,11 @@ export default function DataTable({
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [datasourceId, refreshKey, version, offset, pageSize, sortBy, sortDir, debouncedFilters]);
+  }, [datasourceId, activeVersionId, refreshKey, offset, pageSize, sortBy, sortDir, debouncedFilters]);
 
-  // Switching data sources starts every view control fresh, since a sort
-  // column or filter from a previous dataset would not make sense here.
+  // Switching tables (a different tab, or a different data source
+  // entirely) starts every view control fresh - a sort column or filter
+  // from a previous table would not make sense here.
   useEffect(() => {
     setSortBy(null);
     setSortDir("asc");
@@ -102,7 +98,7 @@ export default function DataTable({
     setOffset(0);
     setOpenFilterCol(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [datasourceId]);
+  }, [datasourceId, activeVersionId]);
 
   // Closes the open column menu on a click anywhere else on the page. A
   // click inside the menu itself never reaches here, because the header
@@ -117,11 +113,6 @@ export default function DataTable({
     document.addEventListener("mousedown", onClickOutside);
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, [openFilterCol]);
-
-  const switchTab = (v: "cleaned" | "original") => {
-    setVersion(v);
-    setOffset(0);
-  };
 
   const toggleColumnMenu = (col: string) => {
     setOpenFilterCol((c) => (c === col ? null : col));
@@ -179,16 +170,32 @@ export default function DataTable({
     setOffset(newOffset);
   };
 
-  const doReset = async () => {
-    if (!confirm("Discard the cleaned/prepared version and go back to the original data? This cannot be undone.")) return;
-    setBusyAction("reset");
+  const startRename = (v: DatasetVersion) => {
+    setRenamingId(v.id);
+    setRenameDraft(v.name);
+  };
+
+  const commitRename = async (v: DatasetVersion) => {
+    const name = renameDraft.trim();
+    setRenamingId(null);
+    if (!name || name === v.name) return;
     try {
-      await datasourceApi.resetCleaning(datasourceId);
-      setVersion("original");
-      setOffset(0);
-      onDataChanged?.();
+      await datasourceApi.renameVersion(datasourceId, v.id, name);
+      onVersionsChanged();
     } catch {
-      setError("Could not reset. Please try again.");
+      setError("Could not rename that table. Please try again.");
+    }
+  };
+
+  const doDeleteVersion = async (v: DatasetVersion) => {
+    if (!confirm(`Delete the table "${v.name}"? This cannot be undone.`)) return;
+    setBusyAction(`delete-${v.id}`);
+    try {
+      await datasourceApi.deleteVersion(datasourceId, v.id);
+      if (activeVersionId === v.id) onActiveVersionChange(null);
+      onVersionsChanged();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Could not delete that table.");
     } finally {
       setBusyAction("");
     }
@@ -197,7 +204,7 @@ export default function DataTable({
   const doExport = async (format: "csv" | "xlsx") => {
     setBusyAction(format);
     try {
-      await datasourceApi.downloadExport(datasourceId, version, format);
+      await datasourceApi.downloadExport(datasourceId, activeVersionId, format);
     } catch {
       setError("Could not export the data. Please try again.");
     } finally {
@@ -220,41 +227,61 @@ export default function DataTable({
 
   return (
     <div className="card h-full flex flex-col overflow-hidden">
-      <div className="p-3 border-b border-border flex items-center justify-between gap-3 flex-wrap shrink-0">
-        <div className="flex items-center gap-2">
-          <div className="flex gap-1.5">
-            <button
-              className={`text-xs px-3 py-1.5 rounded-lg font-medium transition ${
-                version === "original" ? "bg-primary text-white" : "btn-secondary"
-              }`}
-              onClick={() => switchTab("original")}
-            >
-              Original data
+      <div className="p-3 border-b border-border flex items-center gap-3 overflow-x-auto shrink-0">
+        <button
+          className={`text-xs px-3 py-1.5 rounded-lg font-medium transition shrink-0 ${
+            activeVersionId === null ? "bg-primary text-white" : "btn-secondary"
+          }`}
+          onClick={() => onActiveVersionChange(null)}
+        >
+          Original data
+        </button>
+        {versions.map((v) => (
+          <div
+            key={v.id}
+            className={`flex items-center gap-1 rounded-lg pl-3 pr-1.5 py-1.5 text-xs font-medium shrink-0 transition ${
+              activeVersionId === v.id ? "bg-primary text-white" : "btn-secondary"
+            }`}
+          >
+            {renamingId === v.id ? (
+              <input
+                autoFocus
+                className="bg-transparent border-b border-current outline-none w-24 text-xs"
+                value={renameDraft}
+                onChange={(e) => setRenameDraft(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitRename(v);
+                  if (e.key === "Escape") setRenamingId(null);
+                }}
+                onBlur={() => commitRename(v)}
+              />
+            ) : (
+              <span className="cursor-pointer whitespace-nowrap" onClick={() => onActiveVersionChange(v.id)}>
+                {v.name}
+              </span>
+            )}
+            <button className="opacity-70 hover:opacity-100 px-0.5" title="Rename this table" onClick={() => startRename(v)}>
+              &#9998;
             </button>
             <button
-              className={`text-xs px-3 py-1.5 rounded-lg font-medium transition ${
-                version === "cleaned" ? "bg-primary text-white" : "btn-secondary"
-              } ${!preview.has_cleaned_version ? "opacity-40 cursor-not-allowed" : ""}`}
-              onClick={() => preview.has_cleaned_version && switchTab("cleaned")}
-              disabled={!preview.has_cleaned_version}
+              className="opacity-70 hover:opacity-100 px-0.5"
+              title="Delete this table"
+              disabled={busyAction === `delete-${v.id}`}
+              onClick={() => doDeleteVersion(v)}
             >
-              Cleaned / prepared data
+              &times;
             </button>
           </div>
+        ))}
+        <div className="ml-auto flex items-center gap-2 shrink-0">
           {loading && <span className="text-[11px] text-accent animate-pulse">Updating...</span>}
-        </div>
-        <div className="flex items-center gap-2">
           <button className="btn-secondary text-xs px-2.5 py-1.5" disabled={!!busyAction} onClick={() => doExport("csv")}>
             {busyAction === "csv" ? "Exporting..." : "Export CSV"}
           </button>
           <button className="btn-secondary text-xs px-2.5 py-1.5" disabled={!!busyAction} onClick={() => doExport("xlsx")}>
             {busyAction === "xlsx" ? "Exporting..." : "Export Excel"}
           </button>
-          {version === "cleaned" && (
-            <button className="text-xs text-red-400 hover:text-red-300 underline" disabled={!!busyAction} onClick={doReset}>
-              {busyAction === "reset" ? "Resetting..." : "Reset to original"}
-            </button>
-          )}
         </div>
       </div>
 
@@ -284,7 +311,7 @@ export default function DataTable({
 
       {error && <div className="mx-3 mt-2 text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
 
-      {version === "cleaned" && preview.cleaning_log.length > 0 && (
+      {preview.cleaning_log.length > 0 && (
         <div className="px-3 pt-2 shrink-0">
           <button className="text-xs text-accent underline" onClick={() => setShowLog((v) => !v)}>
             {showLog ? "Hide" : "Show"} what changed ({preview.cleaning_log.length} step{preview.cleaning_log.length === 1 ? "" : "s"})
