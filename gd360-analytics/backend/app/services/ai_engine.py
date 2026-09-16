@@ -389,3 +389,24 @@ def _run_analyze(prompt: str, df: pd.DataFrame, profile: dict, plan: dict, code:
         "needs_clarification": False,
         "clarifying_question": None,
         "action": "analyze",
+        "narrative": plan.get("narrative") or "Here is your analysis.",
+        "chart_spec": chart_spec,
+        "insight": insight,
+        "rows_before": None,
+        "rows_after": None,
+        "nulls_before": None,
+        "nulls_after": None,
+        "suggested_charts": suggest_charts(profile),
+        "suggested_stats": suggest_stats(profile),
+    }
+
+
+def _generate_insight(prompt: str, summary: dict) -> str:
+    try:
+        messages = [
+            {"role": "system", "content": INSIGHT_SYSTEM_PROMPT},
+            {"role": "user", "content": f"The user asked: {prompt}\n\nResult data summary (JSON): {json.dumps(summary)[:4000]}"},
+        ]
+        return _call_llm(messages, max_tokens=600).strip()
+    except Exception:
+        return "Insight generation is temporarily unavailable, but the result above reflects the requested analysis."
