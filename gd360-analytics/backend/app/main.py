@@ -1,7 +1,7 @@
 """
 GD360 Analytics API entrypoint.
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
@@ -23,6 +23,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Baseline hardening headers on every response. These do not replace proper
+# auth/authorization checks (which every route already has) - they reduce
+# the blast radius of common browser-side attacks like clickjacking and
+# content-type sniffing.
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if settings.ENVIRONMENT != "development":
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    return response
 
 app.include_router(auth.router)
 app.include_router(datasources.router)
