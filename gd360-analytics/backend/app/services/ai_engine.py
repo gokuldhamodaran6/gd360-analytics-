@@ -29,9 +29,12 @@ from .sandbox import run_sandboxed
 settings = get_settings()
 
 SYSTEM_PROMPT = """You are GD360, an expert data analyst copilot embedded in a no-code analytics product.
-You are given a pandas DataFrame called `df` (already loaded - never re-load or fabricate data) and the user
-natural-language request. You must respond with ONLY a single JSON object (no markdown fences, no prose
-outside the JSON) matching exactly this schema:
+You are given one or more pandas DataFrames, already loaded (never re-load or fabricate data), and the user
+natural-language request. When exactly one table was selected it is called `df`. When more than one table was
+selected, they are all provided in a dict variable `tables` (exact table name -> DataFrame), and `df` is also
+bound to the first of them for convenience - reference any other one as tables["<exact name>"]. You must
+respond with ONLY a single JSON object (no markdown fences, no prose outside the JSON) matching exactly this
+schema:
 
 {
   "action": "clarify" | "transform" | "analyze",
@@ -41,16 +44,17 @@ outside the JSON) matching exactly this schema:
   "title": string | null,
   "x_label": string | null,
   "y_label": string | null,
-  "code": string | null   // python using pandas (pd), numpy (np), scipy.stats (stats), and `df`.
-                            // No imports, no file/network access, no printing needed. Keep it simple and
-                            // robust to NaNs.
+  "code": string | null   // python using pandas (pd), numpy (np), scipy.stats (stats), `df` (the primary
+                            // table), and `tables` (dict of every selected table, when more than one is
+                            // available - see above). No imports, no file/network access, no printing needed.
+                            // Keep it simple and robust to NaNs.
                             //
                             // If action == "transform": the request is about cleaning, preparing, fixing,
-                            // filtering, deduplicating, standardizing types, handling missing values, or
-                            // removing outliers from the data ITSELF. The code MUST assign the FULL
-                            // cleaned/prepared table to `result` as a pandas DataFrame with the same general
-                            // row/column meaning as `df` (not reduced to a chart-ready summary). Never drop
-                            // columns the user did not ask you to drop.
+                            // filtering, deduplicating, standardizing types, handling missing values, removing
+                            // outliers from the data ITSELF, or - when more than one table is selected -
+                            // merging/joining/reconciling them into one table. The code MUST assign the FULL
+                            // resulting table to `result` as a pandas DataFrame (not reduced to a chart-ready
+                            // summary). Never drop columns the user did not ask you to drop.
                             //
                             // If action == "analyze": the request is about exploring, summarizing,
                             // visualizing, finding patterns in, or categorizing the data for a chart/insight.
@@ -74,6 +78,10 @@ Rules:
   and add a new column with the category/segment/cluster label.
 - Choose the chart type that best fits the data and the statistical intent (e.g. use "waterfall" for
   sequential contributions to a total, "heatmap" for correlation matrices, "histogram" for distributions).
+- When more than one table is selected, actually use all of them if the request implies it (e.g. "compare",
+  "combine", "merge", "what changed between", "join") - use pd.merge/pd.concat/explicit comparisons on the
+  named tables rather than only looking at `df`. If the request does not need more than one table, it is fine
+  to only use `df`.
 - Respond with raw JSON only.
 """
 
@@ -247,11 +255,14 @@ def _plan_with_retry(messages: list[dict]) -> dict:
         )
 
 
-def _dataset_schema_text(df: pd.DataFrame) -> str:
-    lines = []
-    for col in df.columns:
-        lines.append(f"- {col} ({df[col].dtype})")
-    return "\n".join(lines)
+def _dataset_schema_text(tables: dict[str, pd.DataFrame]) -> str:
+    blocks = []
+    for name, table_df in tables.items():
+        lines = [f"Table \"{name}\" ({len(table_df)} rows):"]
+        for col in table_df.columns:
+            lines.append(f"  - {col} ({table_df[col].dtype})")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
 
 
 def _no_result(profile: dict, narrative: str, needs_clarification: bool = False, clarifying_question: str | None = None) -> dict:
@@ -273,27 +284,38 @@ def _no_result(profile: dict, narrative: str, needs_clarification: bool = False,
 
 def analyze(
     prompt: str,
-    df: pd.DataFrame,
+    tables: dict[str, pd.DataFrame],
     history: list[dict] | None = None,
     chart_override: dict | None = None,
     intent: str | None = None,
 ) -> dict:
     """
-    Main entrypoint. Returns a dict with: needs_clarification, clarifying_question,
-    action, narrative, chart_spec, insight, cleaned_df (only for transform),
-    rows_before/after, nulls_before/after, suggested_charts, suggested_stats.
+    Main entrypoint. `tables` maps display name -> DataFrame for every table
+    the person selected (almost always just one; more than one when they
+    picked several to compare/combine in a single prompt). Returns a dict
+    with: needs_clarification, clarifying_question, action, narrative,
+    chart_spec, insight, cleaned_df (only for transform), rows_before/after,
+    nulls_before/after, suggested_charts, suggested_stats.
     """
+    df = next(iter(tables.values()))  # the primary table - profiling/suggestions are based on this one
     profile = profile_dataframe(df)
-    schema_text = _dataset_schema_text(df)
+    schema_text = _dataset_schema_text(tables)
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for turn in (history or [])[-6:]:
         messages.append({"role": turn["role"], "content": turn["content"]})
 
-    user_content = (
-        f"Dataset schema ({len(df)} rows):\n{schema_text}\n\n"
-        f"User request: {prompt}"
-    )
+    user_content = f"Dataset schema:\n{schema_text}\n\nUser request: {prompt}"
+    if len(tables) > 1:
+        names = list(tables.keys())
+        all_names = ", ".join(repr(n) for n in names)
+        other_names = ", ".join(repr(n) for n in names[1:])
+        user_content += (
+            f"\n\nMore than one table was selected for this request: {all_names}. "
+            f"They are all available in the `tables` dict by exact name (e.g. tables[{names[1]!r}]); "
+            f"\"{names[0]}\" is also available as `df`. If the request implies comparing, combining, merging, "
+            f"or reconciling tables, actually use {other_names} together with `df`, not just `df` alone."
+        )
     hint = INTENT_HINTS.get(intent or "")
     if hint:
         user_content += f"\n\n(Context: {hint})"
@@ -316,13 +338,13 @@ def analyze(
     code = plan.get("code") or ""
 
     if action == "transform":
-        return _run_transform(prompt, df, profile, plan, code)
+        return _run_transform(prompt, tables, profile, plan, code)
 
-    return _run_analyze(prompt, df, profile, plan, code, chart_override)
+    return _run_analyze(prompt, tables, profile, plan, code, chart_override)
 
 
-def _run_transform(prompt: str, df: pd.DataFrame, profile: dict, plan: dict, code: str) -> dict:
-    cleaned, error = run_sandboxed(code, df, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
+def _run_transform(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, plan: dict, code: str) -> dict:
+    cleaned, error = run_sandboxed(code, tables, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
 
     if error:
         error_line = error.splitlines()[-1] if error else "unknown error"
@@ -335,8 +357,14 @@ def _run_transform(prompt: str, df: pd.DataFrame, profile: dict, plan: dict, cod
         result["action"] = "transform"
         return result
 
-    rows_before, rows_after = int(len(df)), int(len(cleaned))
-    nulls_before, nulls_after = int(df.isna().sum().sum()), int(cleaned.isna().sum().sum())
+    # With a single table selected this is exactly the old before/after
+    # comparison; with several selected, "before" reflects everything that
+    # went in, since e.g. a merge or a comparison legitimately starts from
+    # the combined rows across every selected table.
+    rows_before = sum(len(t) for t in tables.values())
+    rows_after = int(len(cleaned))
+    nulls_before = sum(int(t.isna().sum().sum()) for t in tables.values())
+    nulls_after = int(cleaned.isna().sum().sum())
 
     try:
         chart_spec = build_cleaning_summary_chart(rows_before, rows_after, nulls_before, nulls_after, title=plan.get("title") or "Before vs after")
@@ -364,8 +392,8 @@ def _run_transform(prompt: str, df: pd.DataFrame, profile: dict, plan: dict, cod
     }
 
 
-def _run_analyze(prompt: str, df: pd.DataFrame, profile: dict, plan: dict, code: str, chart_override: dict | None) -> dict:
-    result, error = run_sandboxed(code, df, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
+def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, plan: dict, code: str, chart_override: dict | None) -> dict:
+    result, error = run_sandboxed(code, tables, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
 
     if error:
         error_line = error.splitlines()[-1] if error else "unknown error"
