@@ -36,6 +36,17 @@ SAFE_BUILTINS = {
     "bool": bool, "abs": abs, "round": round, "zip": zip, "map": map,
     "filter": filter, "True": True, "False": False, "None": None,
     "isinstance": isinstance, "any": any, "all": all,
+    # Exception TYPES only (not any I/O-capable builtin) - generated code
+    # very commonly wraps a risky step in try/except as a defensive habit,
+    # and without these names even in scope that raises NameError the
+    # moment it is actually hit. Exposing the class objects themselves adds
+    # no capability beyond catching/raising them - no new access to files,
+    # network, or the interpreter is granted by this list.
+    "Exception": Exception, "ValueError": ValueError, "TypeError": TypeError,
+    "KeyError": KeyError, "IndexError": IndexError, "AttributeError": AttributeError,
+    "ZeroDivisionError": ZeroDivisionError, "StopIteration": StopIteration,
+    "RuntimeError": RuntimeError, "ArithmeticError": ArithmeticError,
+    "NotImplementedError": NotImplementedError, "OverflowError": OverflowError,
 }
 
 
