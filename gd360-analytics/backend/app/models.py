@@ -128,6 +128,13 @@ class Message(Base):
     insight = Column(Text, nullable=True)
     suggestions = Column(JSON, nullable=True)
     needs_clarification = Column(Boolean, default=False)
+    # The exact python/pandas code actually run for this message (only set
+    # on a successful transform/analyze assistant turn) - kept so a later
+    # follow-up like "give me the python code" or "show me the code you
+    # used" can be answered with the real code, instead of the AI having
+    # nothing to go on and guessing at a brand-new, unrelated analysis.
+    # Internal only - never returned directly by the API.
+    code = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     conversation = relationship("Conversation", back_populates="messages")
