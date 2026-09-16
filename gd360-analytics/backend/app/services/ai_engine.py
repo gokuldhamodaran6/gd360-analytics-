@@ -100,6 +100,12 @@ INTENT_HINTS = {
 }
 
 
+class _EmptyModelResponse(RuntimeError):
+    """Raised only when the model call succeeded (HTTP 2xx) but came back
+    with no content - never for auth/quota/network failures, so callers can
+    retry this specific case without masking a real API error."""
+
+
 def _extract_json(text: str) -> dict:
     text = text.strip()
     text = re.sub(r"^```(json)?|```$", "", text, flags=re.MULTILINE).strip()
@@ -109,23 +115,50 @@ def _extract_json(text: str) -> dict:
     return json.loads(match.group(0))
 
 
-def _call_llm(messages: list[dict], max_tokens: int = 1200) -> str:
+def _call_llm(messages: list[dict], max_tokens: int = 3000) -> str:
     provider = settings.AI_PROVIDER
 
     if provider == "groq":
         if not settings.GROQ_API_KEY:
             raise RuntimeError("GROQ_API_KEY is not set. Get a free key at https://console.groq.com/keys")
+        payload = {
+            "model": settings.GROQ_MODEL,
+            "messages": messages,
+            "temperature": 0.2,
+            # Groq (like current OpenAI-compatible APIs) treats max_tokens as
+            # deprecated in favor of max_completion_tokens for reasoning
+            # models, but keeps accepting max_tokens too - we send both so
+            # this works regardless of which GROQ_MODEL is configured.
+            "max_tokens": max_tokens,
+            "max_completion_tokens": max_tokens,
+        }
+        # Reasoning models (gpt-oss, qwen) spend part of their token budget
+        # on hidden chain-of-thought before writing the actual answer. Left
+        # unset, a request that makes the model think longer can burn the
+        # whole budget reasoning and return an empty response. This task is
+        # simple classification + short code generation, not something
+        # that benefits from deep reasoning, so we keep reasoning effort
+        # low and leave the budget for the real answer.
+        model_lower = settings.GROQ_MODEL.lower()
+        if "gpt-oss" in model_lower or "qwen" in model_lower:
+            payload["reasoning_effort"] = "low"
         resp = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {settings.GROQ_API_KEY.strip()}",
                 "Content-Type": "application/json",
             },
-            json={"model": settings.GROQ_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": max_tokens},
+            json=payload,
             timeout=60,
         )
         _raise_with_body(resp, "Groq")
-        return resp.json()["choices"][0]["message"]["content"]
+        content = resp.json()["choices"][0]["message"]["content"]
+        if not content or not content.strip():
+            raise _EmptyModelResponse(
+                "The AI model returned an empty response, most likely because it used its "
+                "whole token budget on internal reasoning instead of answering."
+            )
+        return content
 
     if provider == "openai":
         if not settings.OPENAI_API_KEY:
@@ -177,6 +210,41 @@ def _raise_with_body(resp: requests.Response, provider_label: str) -> None:
     raise RuntimeError(
         f"{provider_label} API error {resp.status_code} for {resp.request.method} {resp.url}: {body}"
     )
+
+
+def _plan_with_retry(messages: list[dict]) -> dict:
+    """Calls the model and parses its JSON plan, retrying once with a
+    plain-language nudge if the first reply came back empty or was not
+    valid JSON (this happens occasionally with reasoning models that use
+    up their budget thinking rather than answering). Only after a second
+    failed attempt do we surface a friendly error to the user."""
+    raw = ""
+    try:
+        raw = _call_llm(messages)
+        return _extract_json(raw)
+    except (ValueError, _EmptyModelResponse):
+        pass
+
+    retry_messages = messages + [
+        {"role": "assistant", "content": raw or "(empty response)"},
+        {
+            "role": "user",
+            "content": (
+                "Your previous reply was empty or was not a single valid JSON object. "
+                "Respond again with ONLY the JSON object described in the system "
+                "instructions - no reasoning, no commentary, no markdown fences."
+            ),
+        },
+    ]
+    try:
+        raw = _call_llm(retry_messages)
+        return _extract_json(raw)
+    except (ValueError, _EmptyModelResponse):
+        raise RuntimeError(
+            "The AI could not produce a usable response for this request. This can "
+            "happen on complex or unusual requests - please try again, or rephrase "
+            "your request more simply."
+        )
 
 
 def _dataset_schema_text(df: pd.DataFrame) -> str:
@@ -233,8 +301,7 @@ def analyze(
         user_content += f"\n\nThe user also explicitly wants these chart customizations applied: {json.dumps(chart_override)}"
     messages.append({"role": "user", "content": user_content})
 
-    raw = _call_llm(messages)
-    plan = _extract_json(raw)
+    plan = _plan_with_retry(messages)
     action = plan.get("action") or "analyze"
 
     if action == "clarify":
@@ -322,24 +389,3 @@ def _run_analyze(prompt: str, df: pd.DataFrame, profile: dict, plan: dict, code:
         "needs_clarification": False,
         "clarifying_question": None,
         "action": "analyze",
-        "narrative": plan.get("narrative") or "Here is your analysis.",
-        "chart_spec": chart_spec,
-        "insight": insight,
-        "rows_before": None,
-        "rows_after": None,
-        "nulls_before": None,
-        "nulls_after": None,
-        "suggested_charts": suggest_charts(profile),
-        "suggested_stats": suggest_stats(profile),
-    }
-
-
-def _generate_insight(prompt: str, summary: dict) -> str:
-    try:
-        messages = [
-            {"role": "system", "content": INSIGHT_SYSTEM_PROMPT},
-            {"role": "user", "content": f"The user asked: {prompt}\n\nResult data summary (JSON): {json.dumps(summary)[:4000]}"},
-        ]
-        return _call_llm(messages, max_tokens=300).strip()
-    except Exception:
-        return "Insight generation is temporarily unavailable, but the result above reflects the requested analysis."
