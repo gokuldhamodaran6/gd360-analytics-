@@ -840,12 +840,56 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
     }
 
 
+def _fallback_insight(summary: dict) -> str:
+    """Used only if the model genuinely could not write an insight after
+    every retry below (e.g. a transient provider error) - builds a plain,
+    still-structured insight straight from the computed summary instead of
+    a message with no real content in it. Every number here is read
+    directly out of the summary produced by result_to_summary, never
+    invented, so it stays accurate even though it is simpler than what the
+    model would normally write."""
+    scalar = summary.get("scalar_result")
+    if isinstance(scalar, (int, float)):
+        value = round(scalar, 3)
+        return (
+            f"**Key insight:** The computed result for this request is {value}.\n"
+            f"**Implication:** Compare this figure against what you would expect for these columns to judge "
+            f"whether it is strong, weak, or typical.\n"
+            f"**Next step:** Break this down further - for example by a category or over time - to see what is "
+            f"driving this number."
+        )
+    preview = summary.get("preview") or []
+    if preview:
+        first = preview[0]
+        pairs = ", ".join(f"{k}: {v}" for k, v in list(first.items())[:4])
+        return (
+            f"**Key insight:** The leading result shown above is {pairs}.\n"
+            f"**Implication:** This is the top figure in the breakdown you asked for.\n"
+            f"**Next step:** Compare it against the rest of the results in the chart above to see how much it "
+            f"stands out."
+        )
+    return "Insight generation is temporarily unavailable, but the result above reflects the requested analysis."
+
+
 def _generate_insight(prompt: str, summary: dict) -> str:
-    try:
-        messages = [
-            {"role": "system", "content": INSIGHT_SYSTEM_PROMPT},
-            {"role": "user", "content": f"The user asked: {prompt}\n\nResult data summary (JSON): {json.dumps(summary)[:4000]}"},
-        ]
-        return _call_llm(messages, max_tokens=600).strip()
-    except Exception:
-        return "Insight generation is temporarily unavailable, but the result above reflects the requested analysis."
+    messages = [
+        {"role": "system", "content": INSIGHT_SYSTEM_PROMPT},
+        {"role": "user", "content": f"The user asked: {prompt}\n\nResult data summary (JSON): {json.dumps(summary)[:4000]}"},
+    ]
+    # Two attempts, with a generous token budget on each - the default free
+    # model reasons before it answers, and the earlier 600-token budget
+    # could be used up entirely by that hidden reasoning on a request with
+    # a longer/more detailed prompt like this one, coming back empty and
+    # silently falling back with no real numbers in it. A higher budget
+    # plus a second try recovers almost every one of those cases; every
+    # failure is also logged so a genuine, repeated provider problem is
+    # visible in the service logs instead of only ever showing up as a
+    # generic message to the person.
+    for attempt in (1, 2):
+        try:
+            text = _call_llm(messages, max_tokens=1200).strip()
+            if text:
+                return text
+        except Exception as e:
+            print(f"[ai_engine] insight generation attempt {attempt} failed: {e}")
+    return _fallback_insight(summary)
