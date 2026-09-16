@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { api, conversationApi, datasourceApi, DatasetVersion } from "../api/client";
 import TopNav from "../components/TopNav";
-import ChatPanel, { ChatTurn, CustomizeSeed } from "../components/ChatPanel";
+import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID } from "../components/ChatPanel";
 import ChartCanvas from "../components/ChartCanvas";
 import SuggestionsPanel from "../components/SuggestionsPanel";
 import ChartStylePanel from "../components/ChartStylePanel";
@@ -37,12 +37,16 @@ export default function Workspace() {
   const [customizeSeed, setCustomizeSeed] = useState<CustomizeSeed | null>(null);
 
   // The saved/named tables for this data source (created by cleaning/prep
-  // prompts), plus which one - or the original data (null) - is currently
-  // selected. This is shared between the chat panel (which prompt to run
-  // next) and the data table (which tab is showing), so they never disagree
-  // about which table is "current".
+  // prompts). `activeVersionId` is which single one - or the original data
+  // (null) - the Data tab is currently showing. `sourceIds` is what the
+  // NEXT chat prompt will run against, which can be one or several tables
+  // at once (each id is either ORIGINAL_SOURCE_ID or a DatasetVersion.id).
+  // Clicking a data tab points both at that one table by default; the
+  // WORKING ON picker in the chat panel can then widen the selection for a
+  // single prompt without changing which tab is on screen.
   const [versions, setVersions] = useState<DatasetVersion[]>([]);
   const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
+  const [sourceIds, setSourceIds] = useState<string[]>([ORIGINAL_SOURCE_ID]);
   const versionsInitRef = useRef<string | null>(null);
 
   const displaySpec = useMemo(
@@ -73,7 +77,9 @@ export default function Workspace() {
         setVersions(vs);
         if (versionsInitRef.current !== datasourceId) {
           versionsInitRef.current = datasourceId;
-          setActiveVersionId(vs.length ? vs[vs.length - 1].id : null);
+          const startId = vs.length ? vs[vs.length - 1].id : null;
+          setActiveVersionId(startId);
+          setSourceIds([startId ?? ORIGINAL_SOURCE_ID]);
         }
       })
       .catch(() => {});
@@ -129,7 +135,8 @@ export default function Workspace() {
   const runPrompt = async (prompt: string, chartOverride?: any) => {
     setError("");
     setBusy(true);
-    const sourceVersionId = activeVersionId;
+    const requestSourceIds = sourceIds.length ? sourceIds : [ORIGINAL_SOURCE_ID];
+    const priorActiveVersionId = activeVersionId;
     setTurns((t) => [...t, { role: "user", content: prompt }]);
     try {
       const { data } = await api.post("/chat", {
@@ -138,7 +145,7 @@ export default function Workspace() {
         prompt,
         chart_override: chartOverride,
         intent: guidedMode ? activeStep : null,
-        source_version_id: sourceVersionId,
+        source_version_ids: requestSourceIds,
       });
       setConversationId(data.conversation_id);
       setTurns((t) => [...t, {
@@ -151,15 +158,20 @@ export default function Workspace() {
         rowsAfter: data.rows_after,
         nullsBefore: data.nulls_before,
         nullsAfter: data.nulls_after,
-        sourceVersionId,
+        sourceIds: requestSourceIds,
+        priorActiveVersionId,
         newVersionId: data.new_version_id || null,
       }]);
 
       if (data.action === "transform") {
         setDataRefreshKey((k) => k + 1);
-        // A cleaning/prep prompt creates its own new table - switch to it
-        // so the person immediately sees the result it just built.
-        if (data.new_version_id) setActiveVersionId(data.new_version_id);
+        // A cleaning/prep prompt creates its own new table - switch to it,
+        // and to it alone, so the person immediately sees the result it
+        // just built and the next prompt starts fresh from that table.
+        if (data.new_version_id) {
+          setActiveVersionId(data.new_version_id);
+          setSourceIds([data.new_version_id]);
+        }
         setCenterTab("data");
       } else if (data.chart_spec) {
         setChartSpec(data.chart_spec);
@@ -197,9 +209,10 @@ export default function Workspace() {
     markTurnResolved(index);
   };
 
-  // "Reject" deletes the table that prompt just created and switches back
-  // to exactly whichever table was active before it ran - original data or
-  // another saved table - so undoing a step never touches anything else.
+  // "Reject" deletes the table that prompt just created and restores
+  // exactly what was active/selected before it ran - whichever tab was
+  // showing, and whichever table(s) were chosen in WORKING ON - so undoing
+  // a step never touches anything else.
   const rejectTransform = async (index: number) => {
     const t = turns[index];
     if (!datasourceId || !t?.newVersionId) {
@@ -211,7 +224,8 @@ export default function Workspace() {
     try {
       await datasourceApi.deleteVersion(datasourceId, t.newVersionId);
       markTurnResolved(index);
-      setActiveVersionId(t.sourceVersionId ?? null);
+      setActiveVersionId(t.priorActiveVersionId ?? null);
+      setSourceIds(t.sourceIds && t.sourceIds.length ? t.sourceIds : [ORIGINAL_SOURCE_ID]);
       setTurns((ts) => [...ts, { role: "assistant", content: "Done, that table has been removed." }]);
       setDataRefreshKey((k) => k + 1);
       setCenterTab("data");
@@ -285,8 +299,8 @@ export default function Workspace() {
             onCustomizeTransform={customizeTransform}
             customizeSeed={customizeSeed}
             versions={versions}
-            activeVersionId={activeVersionId}
-            onActiveVersionChange={setActiveVersionId}
+            sourceIds={sourceIds}
+            onSourceIdsChange={setSourceIds}
           />
         </div>
         <div className="min-h-[400px] flex flex-col gap-4 overflow-hidden">
@@ -311,7 +325,13 @@ export default function Workspace() {
                 refreshKey={dataRefreshKey}
                 versions={versions}
                 activeVersionId={activeVersionId}
-                onActiveVersionChange={setActiveVersionId}
+                onActiveVersionChange={(id) => {
+                  // Clicking a tab points the next chat prompt at that one
+                  // table by default; WORKING ON can still widen the
+                  // selection afterward without changing which tab shows.
+                  setActiveVersionId(id);
+                  setSourceIds([id ?? ORIGINAL_SOURCE_ID]);
+                }}
                 onVersionsChanged={() => setDataRefreshKey((k) => k + 1)}
               />
             ) : (
