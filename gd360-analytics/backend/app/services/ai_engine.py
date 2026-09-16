@@ -49,7 +49,11 @@ schema:
   "action": "clarify" | "transform" | "analyze",
   "clarifying_question": string | null,   // required if action == "clarify", else null
   "narrative": string,                     // 1-2 plain-English sentences describing what you are about to do (empty if clarifying)
-  "chart_type": "bar"|"line"|"area"|"pie"|"scatter"|"histogram"|"box"|"heatmap"|"waterfall"|"funnel"|"treemap"|null,
+  "chart_type": "bar"|"line"|"area"|"pie"|"scatter"|"histogram"|"box"|"heatmap"|"waterfall"|"funnel"|"treemap"
+                            // |"horizontal_bar"|"grouped_bar"|"stacked_bar"|"radar"|"polar_bar"|"stacked_area"
+                            // |"step_line"|"candlestick"|"ohlc"|"violin"|"dot_plot"|"density_heatmap"|"bubble"
+                            // |"contour"|"scatter_3d"|"error_bar"|"donut"|"sunburst"|"icicle"|"funnel_area"
+                            // |"sankey"|"gauge"|"parallel_coordinates"|"choropleth"|null,
   "title": string | null,
   "x_label": string | null,
   "y_label": string | null,
@@ -105,7 +109,13 @@ Rules:
   over time, "box" for comparing distributions across groups, "pie" only for a small number of categories
   showing share of a whole, "waterfall" for cumulative contributions to a total, "funnel" for sequential
   conversion stages. Only choose "bar" when comparing a measure across categories is genuinely the best fit
-  for the request - not as a fallback.
+  for the request - not as a fallback. Beyond these core types, a much larger chart vocabulary is also
+  available (see the chart_type list above) for when the data and request genuinely call for it, e.g.
+  "grouped_bar"/"stacked_bar" for several numeric columns compared per category, "radar" for comparing several
+  metrics across 3+ categories, "violin"/"bubble" for richer distribution/relationship views, "sankey" for
+  flows between stages, "gauge" for a single KPI. Only reach for one of these when the result genuinely has the
+  shape it needs (e.g. sankey needs source/target/value columns) - never force data into a chart type it does
+  not fit.
 - Always populate follow_up_suggestions (see schema above) with specific, non-generic next steps tied to what
   you just did, the way a senior data analyst would proactively suggest the next useful angle.
 - When more than one table is selected, actually use all of them if the request implies it (e.g. "compare",
