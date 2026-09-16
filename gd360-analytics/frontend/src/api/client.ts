@@ -162,7 +162,7 @@ export type ConversationMessage = {
   content: string;
   chart_spec: any;
   insight: string | null;
-  suggestions: { charts?: any[]; stats?: any[] } | null;
+  suggestions: { charts?: any[]; stats?: any[]; follow_up?: { label: string; prompt: string }[] } | null;
   needs_clarification: boolean;
   created_at: string;
 };
