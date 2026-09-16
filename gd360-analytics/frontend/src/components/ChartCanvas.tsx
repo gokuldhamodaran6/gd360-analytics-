@@ -41,6 +41,15 @@ export default function ChartCanvas({ chartSpec, title }: { chartSpec: any; titl
     }
   };
 
+  // The chart style panel (see lib/chartStyle.ts) already bakes a fully
+  // resolved, font-sized title into chartSpec.layout.title for anything
+  // shown in the Workspace. The title prop below only fills in for older
+  // saved dashboard charts from before that existed, so we never clobber
+  // a title that is already there.
+  const existingTitleText =
+    typeof chartSpec.layout?.title === "string" ? chartSpec.layout.title : chartSpec.layout?.title?.text;
+  const resolvedTitle = existingTitleText ? chartSpec.layout?.title : title ? { text: title } : undefined;
+
   // Server-built chart specs always use the Plotly dark template. When the
   // person is in light mode we layer light-friendly colors on top on the
   // client, rather than teaching the backend about the viewer theme.
@@ -78,7 +87,7 @@ export default function ChartCanvas({ chartSpec, title }: { chartSpec: any; titl
       <div className="flex-1 min-h-0">
         <Plot
           data={chartSpec.data}
-          layout={{ ...themedLayout, autosize: true, title: title || chartSpec.layout?.title }}
+          layout={{ ...themedLayout, autosize: true, title: resolvedTitle }}
           style={{ width: "100%", height: "100%", minHeight: 380 }}
           useResizeHandler
           config={{ displaylogo: false, responsive: true }}
