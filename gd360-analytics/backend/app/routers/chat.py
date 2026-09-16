@@ -55,7 +55,7 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     if not ds:
         raise HTTPException(404, "Datasource not found.")
 
-    conversation = _get_or_create_conversation(db, user, payload.conversation_id, ds.id)
+    conversation = _get_or_create_conversation(db, user, payload.conversation_id, ds.id, payload.prompt)
 
     user_msg = models.Message(conversation_id=conversation.id, role="user", content=payload.prompt)
     db.add(user_msg)
@@ -122,14 +122,19 @@ def _save_cleaning_result(db: Session, ds: models.DataSource, prompt: str, resul
     db.commit()
 
 
-def _get_or_create_conversation(db: Session, user: models.User, conversation_id: str | None, datasource_id: str) -> models.Conversation:
+def _get_or_create_conversation(
+    db: Session, user: models.User, conversation_id: str | None, datasource_id: str, first_prompt: str
+) -> models.Conversation:
     if conversation_id:
         conv = db.query(models.Conversation).filter(
             models.Conversation.id == conversation_id, models.Conversation.owner_id == user.id
         ).first()
         if conv:
             return conv
-    conv = models.Conversation(owner_id=user.id, datasource_id=datasource_id, title="New analysis")
+    title = (first_prompt or "").strip()
+    if len(title) > 60:
+        title = title[:57] + "..."
+    conv = models.Conversation(owner_id=user.id, datasource_id=datasource_id, title=title or "New analysis")
     db.add(conv)
     db.commit()
     db.refresh(conv)
