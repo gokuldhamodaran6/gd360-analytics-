@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
-import { api } from "../api/client";
+import { useParams, useSearchParams } from "react-router-dom";
+import { api, conversationApi } from "../api/client";
 import TopNav from "../components/TopNav";
 import ChatPanel, { ChatTurn } from "../components/ChatPanel";
 import ChartCanvas from "../components/ChartCanvas";
@@ -11,6 +11,9 @@ import StepFlow, { WorkflowStep } from "../components/StepFlow";
 
 export default function Workspace() {
   const { datasourceId } = useParams();
+  const [searchParams] = useSearchParams();
+  const resumeConversationId = searchParams.get("conversation");
+
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [chartSpec, setChartSpec] = useState<any>(null);
@@ -27,6 +30,7 @@ export default function Workspace() {
   const [dataRefreshKey, setDataRefreshKey] = useState(0);
   const [guidedMode, setGuidedMode] = useState(true);
   const [activeStep, setActiveStep] = useState<WorkflowStep>("clean");
+  const [resuming, setResuming] = useState(!!resumeConversationId);
 
   useEffect(() => {
     api.get("/datasources").then(({ data }) => {
@@ -34,6 +38,52 @@ export default function Workspace() {
       if (ds) setDsName(ds.name);
     });
   }, [datasourceId]);
+
+  // Restore a prior chat session in full - messages, last chart, last
+  // insight and suggestions - so clicking a "Recent conversation" from the
+  // home page drops the person back exactly where they left off.
+  useEffect(() => {
+    if (!resumeConversationId) {
+      setResuming(false);
+      return;
+    }
+    setResuming(true);
+    conversationApi
+      .getMessages(resumeConversationId)
+      .then((data) => {
+        setConversationId(data.id);
+        setGuidedMode(false);
+
+        const restored: ChatTurn[] = data.messages.map((m) => ({
+          role: m.role === "user" ? "user" : "assistant",
+          content: m.content,
+          insight: m.insight,
+          needsClarification: m.needs_clarification,
+        }));
+        setTurns(restored);
+
+        for (let i = data.messages.length - 1; i >= 0; i--) {
+          const m = data.messages[i];
+          if (m.chart_spec) {
+            setChartSpec(m.chart_spec);
+            const lastUserPrompt = [...data.messages].reverse().find((mm) => mm.role === "user")?.content;
+            setChartTitle(lastUserPrompt || "");
+            setCenterTab("chart");
+            break;
+          }
+        }
+        const lastWithInsight = [...data.messages].reverse().find((m) => m.insight);
+        if (lastWithInsight?.insight) setLastInsight(lastWithInsight.insight);
+        const lastWithSuggestions = [...data.messages].reverse().find((m) => m.suggestions);
+        if (lastWithSuggestions?.suggestions) {
+          setSuggestedCharts(lastWithSuggestions.suggestions.charts || null);
+          setSuggestedStats(lastWithSuggestions.suggestions.stats || null);
+        }
+      })
+      .catch(() => setError("Could not load that conversation. Starting a new one instead."))
+      .finally(() => setResuming(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumeConversationId]);
 
   const runPrompt = async (prompt: string, chartOverride?: any) => {
     setError("");
@@ -94,7 +144,7 @@ export default function Workspace() {
         insight: lastInsight,
         dashboard_name: `${dsName || "My"} dashboard`,
       });
-      setSaveMsg("Saved to dashboard ✓");
+      setSaveMsg("Saved to dashboard");
     } catch {
       setSaveMsg("Could not save chart.");
     }
@@ -104,7 +154,10 @@ export default function Workspace() {
     <div className="h-screen flex flex-col">
       <TopNav />
       <div className="px-6 py-3 border-b border-border flex items-center justify-between">
-        <div className="text-sm text-muted">Analyzing: <span className="text-text font-medium">{dsName}</span></div>
+        <div className="text-sm text-muted">
+          Analyzing: <span className="text-text font-medium">{dsName}</span>
+          {resuming && <span className="ml-2 text-xs text-accent">Loading conversation...</span>}
+        </div>
         {chartSpec && centerTab === "chart" && (
           <div className="flex items-center gap-3">
             {saveMsg && <span className="text-xs text-accent">{saveMsg}</span>}
