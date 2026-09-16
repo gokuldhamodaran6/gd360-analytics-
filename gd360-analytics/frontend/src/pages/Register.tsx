@@ -1,27 +1,47 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
 import ThemeToggle from "../components/ThemeToggle";
 
 export default function Register() {
-  const { register } = useAuth();
+  const { register, getCaptcha } = useAuth();
   const navigate = useNavigate();
   const [fullName, setFullName] = useState("");
   const [company, setCompany] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [captchaId, setCaptchaId] = useState("");
+  const [captchaQuestion, setCaptchaQuestion] = useState("");
+  const [captchaAnswer, setCaptchaAnswer] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  const loadCaptcha = async () => {
+    try {
+      const challenge = await getCaptcha();
+      setCaptchaId(challenge.captcha_id);
+      setCaptchaQuestion(challenge.question);
+      setCaptchaAnswer("");
+    } catch {
+      setCaptchaQuestion("");
+    }
+  };
+
+  useEffect(() => {
+    loadCaptcha();
+  }, []);
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError("");
     setBusy(true);
     try {
-      await register(email, password, fullName, company);
+      await register(email, password, captchaId, captchaAnswer, fullName, company);
       navigate("/");
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Registration failed.");
+      // The question is single-use either way, so line up a fresh one.
+      loadCaptcha();
     } finally {
       setBusy(false);
     }
@@ -56,7 +76,20 @@ export default function Register() {
             <label className="text-sm text-muted mb-1 block">Password</label>
             <input className="input" type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 8 characters" />
           </div>
-          <button className="btn-primary w-full" type="submit" disabled={busy}>
+          <div>
+            <label className="text-sm text-muted mb-1 block">
+              {captchaQuestion ? `Quick check: ${captchaQuestion}` : "Quick check"}
+            </label>
+            <input
+              className="input"
+              required
+              inputMode="numeric"
+              value={captchaAnswer}
+              onChange={(e) => setCaptchaAnswer(e.target.value.replace(/[^0-9-]/g, ""))}
+              placeholder="Your answer"
+            />
+          </div>
+          <button className="btn-primary w-full" type="submit" disabled={busy || !captchaId}>
             {busy ? "Creating account..." : "Create free account"}
           </button>
           <p className="text-sm text-muted text-center">
