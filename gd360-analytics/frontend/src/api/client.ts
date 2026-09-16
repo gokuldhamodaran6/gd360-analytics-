@@ -85,10 +85,28 @@ export type DataPreview = {
   cleaning_log: CleaningLogEntry[];
 };
 
+export type PreviewOptions = {
+  sortBy?: string | null;
+  sortDir?: "asc" | "desc";
+  filters?: Record<string, string>;
+};
+
 export const datasourceApi = {
-  preview: (id: string, version: DataVersion = "auto", limit = 25, offset = 0) =>
+  preview: (id: string, version: DataVersion = "auto", limit = 25, offset = 0, opts: PreviewOptions = {}) =>
     api
-      .get<DataPreview>(`/datasources/${id}/preview`, { params: { version, limit, offset } })
+      .get<DataPreview>(`/datasources/${id}/preview`, {
+        params: {
+          version,
+          limit,
+          offset,
+          sort_by: opts.sortBy || undefined,
+          sort_dir: opts.sortDir || undefined,
+          filters:
+            opts.filters && Object.keys(opts.filters).some((k) => opts.filters![k])
+              ? JSON.stringify(opts.filters)
+              : undefined,
+        },
+      })
       .then((r) => r.data),
 
   resetCleaning: (id: string) => api.post(`/datasources/${id}/reset-cleaning`),
