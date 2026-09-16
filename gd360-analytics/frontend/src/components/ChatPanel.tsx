@@ -61,22 +61,24 @@ export default function ChatPanel({
   const [dismissedFollowUps, setDismissedFollowUps] = useState<Set<number>>(new Set());
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const workingOnRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [turns, busy]);
 
-  // Closes the WORKING ON panel on a click anywhere else on the page.
+  // The WORKING ON picker below renders as a full-viewport overlay (not a
+  // small panel anchored to the button), so it always has room for every
+  // table and its own scroll area, on any screen size and with the mobile
+  // keyboard open or not - nothing about it depends on where the button
+  // happens to sit on screen. Escape is an extra, keyboard-friendly way to
+  // close it, in addition to tapping the backdrop or the Done button.
   useEffect(() => {
     if (!workingOnOpen) return;
-    const onClickOutside = (e: MouseEvent) => {
-      if (workingOnRef.current && !workingOnRef.current.contains(e.target as Node)) {
-        setWorkingOnOpen(false);
-      }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setWorkingOnOpen(false);
     };
-    document.addEventListener("mousedown", onClickOutside);
-    return () => document.removeEventListener("mousedown", onClickOutside);
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
   }, [workingOnOpen]);
 
   const toggleSource = (id: string) => {
@@ -116,6 +118,7 @@ export default function ChatPanel({
   const lastTransformIndex = turns.reduce((last, t, i) => (t.action === "transform" ? i : last), -1);
 
   return (
+    <>
     <div className="card flex flex-col h-full">
       <div className="p-4 border-b border-border">
         <div className="font-semibold">Ask GD360</div>
@@ -233,7 +236,7 @@ export default function ChatPanel({
 
       <div className="border-t border-border">
         {versions.length > 0 && (
-          <div className="px-4 pt-3 relative" ref={workingOnRef}>
+          <div className="px-4 pt-3">
             <label className="text-[11px] font-semibold tracking-wide text-muted block mb-1">
               WORKING ON
             </label>
@@ -241,33 +244,11 @@ export default function ChatPanel({
               type="button"
               className="input text-sm py-1.5 w-full flex items-center justify-between gap-2 text-left"
               disabled={busy}
-              onClick={() => setWorkingOnOpen((o) => !o)}
+              onClick={() => setWorkingOnOpen(true)}
             >
               <span className="truncate">{workingOnSummary()}</span>
-              <span className="text-muted shrink-0 text-xs">{workingOnOpen ? "▲" : "▼"}</span>
+              <span className="text-muted shrink-0 text-xs">▼</span>
             </button>
-
-            {workingOnOpen && (
-              <div className="absolute z-20 left-4 right-4 mt-1 card p-2 space-y-0.5 shadow-xl max-h-52 overflow-y-auto">
-                <div className="text-[10px] uppercase tracking-wide text-muted px-2 pb-1">
-                  Select one or more tables to analyze together
-                </div>
-                <label className="flex items-center gap-2 text-sm px-2 py-1.5 rounded-lg hover:bg-surface2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={sourceIds.includes(ORIGINAL_SOURCE_ID)}
-                    onChange={() => toggleSource(ORIGINAL_SOURCE_ID)}
-                  />
-                  Original data
-                </label>
-                {versions.map((v) => (
-                  <label key={v.id} className="flex items-center gap-2 text-sm px-2 py-1.5 rounded-lg hover:bg-surface2 cursor-pointer">
-                    <input type="checkbox" checked={sourceIds.includes(v.id)} onChange={() => toggleSource(v.id)} />
-                    {v.name}
-                  </label>
-                ))}
-              </div>
-            )}
           </div>
         )}
 
@@ -287,5 +268,59 @@ export default function ChatPanel({
         </div>
       </div>
     </div>
+
+    {/* Full-viewport picker (not a panel pinned to the button) so every
+        table is always reachable and scrollable, regardless of screen
+        size, how far down the button sits, or whether the on-screen
+        keyboard is covering half the screen - the exact conditions that
+        clipped the old dropdown. Bottom sheet on narrow screens (easiest
+        to reach with a thumb), centered modal from "sm" up. */}
+    {versions.length > 0 && workingOnOpen && (
+      <div
+        className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60"
+        onClick={() => setWorkingOnOpen(false)}
+      >
+        <div
+          className="card w-full sm:w-96 max-h-[85vh] sm:max-h-[70vh] flex flex-col rounded-b-none sm:rounded-b-2xl"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="p-4 border-b border-border flex items-center justify-between shrink-0">
+            <div>
+              <div className="font-semibold text-sm">Working on</div>
+              <div className="text-xs text-muted mt-0.5">Select one or more tables to analyze together</div>
+            </div>
+            <button
+              type="button"
+              className="text-muted hover:text-text text-xl leading-none px-1"
+              onClick={() => setWorkingOnOpen(false)}
+            >
+              &times;
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
+            <label className="flex items-center gap-2 text-sm px-2 py-2.5 rounded-lg hover:bg-surface2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={sourceIds.includes(ORIGINAL_SOURCE_ID)}
+                onChange={() => toggleSource(ORIGINAL_SOURCE_ID)}
+              />
+              Original data
+            </label>
+            {versions.map((v) => (
+              <label key={v.id} className="flex items-center gap-2 text-sm px-2 py-2.5 rounded-lg hover:bg-surface2 cursor-pointer">
+                <input type="checkbox" checked={sourceIds.includes(v.id)} onChange={() => toggleSource(v.id)} />
+                {v.name}
+              </label>
+            ))}
+          </div>
+          <div className="p-3 border-t border-border shrink-0">
+            <button type="button" className="btn-primary w-full text-sm" onClick={() => setWorkingOnOpen(false)}>
+              Done
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
