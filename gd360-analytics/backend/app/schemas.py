@@ -98,6 +98,10 @@ class ChatResponse(BaseModel):
     insight: Optional[str] = None
     suggested_charts: Optional[list] = None
     suggested_stats: Optional[list] = None
+    # Specific, contextual "what to try next" buttons tied to this exact
+    # result (e.g. an alternative correlation method) - distinct from the
+    # generic, dataset-level suggested_charts/suggested_stats above.
+    follow_up_suggestions: Optional[list] = None
     needs_clarification: bool = False
     rows_before: Optional[int] = None
     rows_after: Optional[int] = None
