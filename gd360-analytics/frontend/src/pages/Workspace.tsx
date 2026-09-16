@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
-import { api, conversationApi } from "../api/client";
+import { api, conversationApi, datasourceApi } from "../api/client";
 import TopNav from "../components/TopNav";
-import ChatPanel, { ChatTurn } from "../components/ChatPanel";
+import ChatPanel, { ChatTurn, CustomizeSeed } from "../components/ChatPanel";
 import ChartCanvas from "../components/ChartCanvas";
 import SuggestionsPanel from "../components/SuggestionsPanel";
 import ChartStylePanel from "../components/ChartStylePanel";
@@ -34,6 +34,7 @@ export default function Workspace() {
   const [resuming, setResuming] = useState(!!resumeConversationId);
   const [rightTab, setRightTab] = useState<"ideas" | "style">("ideas");
   const [chartStyle, setChartStyle] = useState<ChartStyle>(defaultChartStyle());
+  const [customizeSeed, setCustomizeSeed] = useState<CustomizeSeed | null>(null);
 
   const displaySpec = useMemo(
     () => (chartSpec ? applyChartStyle(chartSpec, chartStyle, chartTitle) : null),
@@ -149,6 +150,44 @@ export default function Workspace() {
     runPrompt(lastUserPrompt, override);
   };
 
+  const markTurnResolved = (index: number) => {
+    setTurns((ts) => ts.map((t, i) => (i === index ? { ...t, resolved: true } : t)));
+  };
+
+  // Data-cleaning prompts already run and save immediately, so "Approve"
+  // is simply the person confirming they are happy with it - no extra
+  // backend call needed, it just dismisses the action row.
+  const approveTransform = (index: number) => {
+    markTurnResolved(index);
+  };
+
+  // "Reject" undoes it by restoring the original, unprepared data - the
+  // same mechanism as the existing "Reset to original" button in the data
+  // table, just reachable straight from the chat where the result appeared.
+  const rejectTransform = async (index: number) => {
+    if (!datasourceId) return;
+    setBusy(true);
+    setError("");
+    try {
+      await datasourceApi.resetCleaning(datasourceId);
+      markTurnResolved(index);
+      setTurns((t) => [...t, { role: "assistant", content: "Done, reverted to your original data." }]);
+      setDataRefreshKey((k) => k + 1);
+      setCenterTab("data");
+    } catch {
+      setError("Could not undo that. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // "Customize further" leaves the current result in place and lets the
+  // person type additional instructions, which run as a normal follow-up
+  // prompt and build on top of the data as it stands right now.
+  const customizeTransform = () => {
+    setCustomizeSeed({ text: "Also, ", nonce: Date.now() });
+  };
+
   const saveChart = async () => {
     if (!displaySpec) return;
     setSaveMsg("");
@@ -196,7 +235,15 @@ export default function Workspace() {
 
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-[380px_1fr_340px] gap-4 px-4 pb-4 overflow-hidden">
         <div className="min-h-[400px] lg:min-h-0">
-          <ChatPanel turns={turns} onSend={(p) => runPrompt(p)} busy={busy} />
+          <ChatPanel
+            turns={turns}
+            onSend={(p) => runPrompt(p)}
+            busy={busy}
+            onApproveTransform={approveTransform}
+            onRejectTransform={rejectTransform}
+            onCustomizeTransform={customizeTransform}
+            customizeSeed={customizeSeed}
+          />
         </div>
         <div className="min-h-[400px] flex flex-col gap-4 overflow-hidden">
           <div className="flex gap-1.5 shrink-0">
