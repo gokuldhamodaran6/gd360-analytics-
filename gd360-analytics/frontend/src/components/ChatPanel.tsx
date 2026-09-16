@@ -73,6 +73,21 @@ function CodeBlock({ code }: { code: string }) {
   );
 }
 
+// Turns "**bold**" markers into real bold text instead of showing the
+// literal asterisks - used for both the narrative/answer bubble and the
+// Insight box, since a structured answer (e.g. "**Key insight:** ...
+// **Implication:** ... **Next step:** ...") reads as a data analyst would
+// actually format it only once those markers render as real emphasis.
+function renderInlineBold(text: string, keyPrefix: string) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) => {
+    if (part.length > 4 && part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={`${keyPrefix}-${i}`}>{part.slice(2, -2)}</strong>;
+    }
+    return part ? <span key={`${keyPrefix}-${i}`}>{part}</span> : null;
+  });
+}
+
 function renderMessageContent(content: string) {
   const fenceRe = /```(?:python)?\n?([\s\S]*?)```/g;
   const segments: { type: "text" | "code"; value: string }[] = [];
@@ -84,14 +99,13 @@ function renderMessageContent(content: string) {
     lastIndex = fenceRe.lastIndex;
   }
   if (lastIndex < content.length) segments.push({ type: "text", value: content.slice(lastIndex) });
-  if (segments.length <= 1) return content;
 
   return segments.map((seg, i) => {
     if (seg.type === "code") return <CodeBlock key={i} code={seg.value} />;
     const trimmed = seg.value.trim();
     return trimmed ? (
       <p key={i} className="whitespace-pre-wrap m-0">
-        {trimmed}
+        {renderInlineBold(trimmed, `t${i}`)}
       </p>
     ) : null;
   });
@@ -215,8 +229,9 @@ export default function ChatPanel({
               </div>
             )}
             {t.insight && (
-              <div className="mt-2 text-sm bg-accent/10 border border-accent/30 rounded-xl px-4 py-2.5">
-                <span className="font-semibold text-accent">Insight: </span>{t.insight}
+              <div className="mt-2 text-sm bg-accent/10 border border-accent/30 rounded-xl px-4 py-2.5 whitespace-pre-wrap">
+                <span className="font-semibold text-accent">Insight: </span>
+                {renderInlineBold(t.insight, "insight")}
               </div>
             )}
             {t.role === "assistant" && t.followUp && t.followUp.length > 0 && !dismissedFollowUps.has(i) && (
