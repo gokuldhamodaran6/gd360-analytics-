@@ -13,7 +13,7 @@ export type ChatTurn = {
   content: string;
   insight?: string | null;
   needsClarification?: boolean;
-  action?: "analyze" | "transform" | "clarify";
+  action?: "analyze" | "transform" | "clarify" | "explain";
   rowsBefore?: number | null;
   rowsAfter?: number | null;
   nullsBefore?: number | null;
@@ -39,6 +39,62 @@ export type CustomizeSeed = { text: string; nonce: number };
 function labelForSource(id: string, versions: DatasetVersion[]): string {
   if (id === ORIGINAL_SOURCE_ID) return "Original data";
   return versions.find((v) => v.id === id)?.name || "Removed table";
+}
+
+// A chat reply is usually just plain text, but an "explain"-style answer
+// (e.g. "give me the python code") can include a fenced ```python code```
+// block. This splits a message on those fences and renders the code part
+// in its own readable, copyable, monospace block instead of squished into
+// one line like plain text would be.
+function CodeBlock({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard access can be blocked by the browser - the code stays
+      // fully visible and selectable either way, so this is a soft failure.
+    }
+  };
+  return (
+    <div className="my-1.5 rounded-lg bg-black/85 border border-border overflow-hidden">
+      <div className="flex items-center justify-between px-2.5 py-1 bg-black/30 border-b border-white/10">
+        <span className="text-[10px] uppercase tracking-wide text-white/50 font-semibold">Python</span>
+        <button type="button" className="text-[10px] text-white/70 hover:text-white transition font-medium" onClick={copy}>
+          {copied ? "Copied" : "Copy code"}
+        </button>
+      </div>
+      <pre className="text-[12px] leading-relaxed text-white/90 whitespace-pre-wrap break-words px-2.5 py-2 overflow-x-auto font-mono m-0">
+        {code}
+      </pre>
+    </div>
+  );
+}
+
+function renderMessageContent(content: string) {
+  const fenceRe = /```(?:python)?\n?([\s\S]*?)```/g;
+  const segments: { type: "text" | "code"; value: string }[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = fenceRe.exec(content)) !== null) {
+    if (match.index > lastIndex) segments.push({ type: "text", value: content.slice(lastIndex, match.index) });
+    segments.push({ type: "code", value: match[1].trim() });
+    lastIndex = fenceRe.lastIndex;
+  }
+  if (lastIndex < content.length) segments.push({ type: "text", value: content.slice(lastIndex) });
+  if (segments.length <= 1) return content;
+
+  return segments.map((seg, i) => {
+    if (seg.type === "code") return <CodeBlock key={i} code={seg.value} />;
+    const trimmed = seg.value.trim();
+    return trimmed ? (
+      <p key={i} className="whitespace-pre-wrap m-0">
+        {trimmed}
+      </p>
+    ) : null;
+  });
 }
 
 export default function ChatPanel({
@@ -143,7 +199,10 @@ export default function ChatPanel({
               {t.action === "transform" && (
                 <div className="text-[10px] uppercase tracking-wide text-accent font-semibold mb-1">Data cleaned</div>
               )}
-              {t.content}
+              {t.action === "explain" && (
+                <div className="text-[10px] uppercase tracking-wide text-accent font-semibold mb-1">Answer</div>
+              )}
+              {renderMessageContent(t.content)}
             </div>
             {t.action === "transform" && t.rowsBefore != null && (
               <div className="mt-1.5 flex flex-wrap gap-2 text-[11px]">
