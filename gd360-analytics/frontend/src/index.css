@@ -2,27 +2,64 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+  Color tokens live as CSS variables so the whole app - every card, button,
+  input and border - can switch between dark and light instantly by
+  flipping one attribute on <html>, with no per-component logic. See
+  src/api/ThemeContext.tsx for the toggle, and tailwind.config.js for how
+  these feed the bg, text and border utility classes.
+*/
+:root {
+  --color-base: 11 11 20;
+  --color-surface: 19 19 31;
+  --color-surface2: 26 26 44;
+  --color-border: 38 38 60;
+  --color-primary: 108 92 231;
+  --color-accent: 0 209 178;
+  --color-text: 232 232 240;
+  --color-muted: 148 148 184;
+  --glow-1: rgba(108, 92, 231, 0.18);
+  --glow-2: rgba(0, 209, 178, 0.1);
+  --card-alpha: 0.75;
+}
+
+:root[data-theme="light"] {
+  --color-base: 246 247 251;
+  --color-surface: 255 255 255;
+  --color-surface2: 241 242 248;
+  --color-border: 223 226 237;
+  --color-primary: 91 74 219;
+  --color-accent: 0 141 121;
+  --color-text: 23 23 37;
+  --color-muted: 96 99 125;
+  --glow-1: rgba(91, 74, 219, 0.1);
+  --glow-2: rgba(0, 141, 121, 0.08);
+  --card-alpha: 0.92;
+}
+
 html, body, #root {
   height: 100%;
 }
 
 body {
   background:
-    radial-gradient(1200px 600px at 10% -10%, rgba(108,92,231,0.18), transparent),
-    radial-gradient(1000px 600px at 100% 0%, rgba(0,209,178,0.10), transparent),
-    #0B0B14;
+    radial-gradient(1200px 600px at 10% -10%, var(--glow-1), transparent),
+    radial-gradient(1000px 600px at 100% 0%, var(--glow-2), transparent),
+    rgb(var(--color-base));
   min-height: 100vh;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: #26263C; border-radius: 8px; }
+::-webkit-scrollbar-thumb { background: rgb(var(--color-border)); border-radius: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 .card {
-  background: rgba(19, 19, 31, 0.75);
-  border: 1px solid #26263C;
+  background: rgb(var(--color-surface) / var(--card-alpha));
+  border: 1px solid rgb(var(--color-border));
   border-radius: 16px;
   backdrop-filter: blur(6px);
+  transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
 .btn-primary {
@@ -32,36 +69,48 @@ body {
   border-radius: 10px;
   padding: 0.6rem 1.1rem;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
-  box-shadow: 0 6px 20px rgba(108,92,231,0.35);
+  box-shadow: 0 6px 20px rgba(108, 92, 231, 0.35);
 }
-.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 10px 28px rgba(108,92,231,0.45); }
+.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 10px 28px rgba(108, 92, 231, 0.45); }
 .btn-primary:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
 
 .btn-secondary {
-  background: #1A1A2C;
-  border: 1px solid #26263C;
-  color: #E8E8F0;
+  background: rgb(var(--color-surface2));
+  border: 1px solid rgb(var(--color-border));
+  color: rgb(var(--color-text));
   font-weight: 500;
   border-radius: 10px;
   padding: 0.6rem 1.1rem;
   transition: background 0.15s ease;
 }
-.btn-secondary:hover { background: #21213A; }
+.btn-secondary:hover { background: rgb(var(--color-border) / 0.55); }
 
 .input {
-  background: #13131F;
-  border: 1px solid #26263C;
+  background: rgb(var(--color-base));
+  border: 1px solid rgb(var(--color-border));
   border-radius: 10px;
   padding: 0.6rem 0.85rem;
-  color: #E8E8F0;
+  color: rgb(var(--color-text));
   width: 100%;
   outline: none;
 }
-.input:focus { border-color: #6C5CE7; box-shadow: 0 0 0 3px rgba(108,92,231,0.15); }
+.input:focus { border-color: #6C5CE7; box-shadow: 0 0 0 3px rgba(108, 92, 231, 0.15); }
 
 .gradient-text {
   background: linear-gradient(135deg, #8B7CFF, #00D1B2);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid rgb(var(--color-border));
+  background: rgb(var(--color-surface2) / 0.7);
+  border-radius: 999px;
+  padding: 0.4rem 0.9rem;
+  font-size: 0.8rem;
+  color: rgb(var(--color-muted));
 }
