@@ -12,6 +12,8 @@ class ChatRequestFull(BaseModel):
     # Which step of the guided workflow this prompt came from, if any:
     # "clean" | "explore" | "visualize" | None (freeform / pro mode).
     intent: Optional[str] = None
-    # Which snapshot of the data to run against: "auto" (prefer the cleaned
-    # version if one exists), "original", or "cleaned".
-    data_version: Optional[str] = "auto"
+    # Which saved table (DatasetVersion.id) to run this prompt against.
+    # None means the original, untouched data. The person picks this
+    # explicitly whenever more than one table exists, so a prompt never
+    # silently runs against the wrong one.
+    source_version_id: Optional[str] = None
