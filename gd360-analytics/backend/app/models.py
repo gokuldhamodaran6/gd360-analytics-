@@ -61,6 +61,39 @@ class DataSource(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     owner = relationship("User", back_populates="datasources")
+    versions = relationship(
+        "DatasetVersion", back_populates="datasource", cascade="all, delete-orphan",
+        order_by="DatasetVersion.position",
+    )
+
+
+class DatasetVersion(Base):
+    """
+    A named, saved snapshot of a datasource cleaned/prepared data.
+
+    Every AI cleaning/preparation prompt used to silently overwrite the one
+    "cleaned" snapshot a datasource could have. Instead, each prompt now
+    creates a new row here - its own reusable, renameable table, like a new
+    sheet - so earlier results are never lost and the person can pick any
+    of them (or the untouched original data) as the starting point for the
+    next prompt. parent_version_id records what it was built from (null
+    means the original data) purely for reference; it does not need to be
+    walked to read this version, since cleaning_log already carries the
+    full step-by-step history up to this point.
+    """
+    __tablename__ = "dataset_versions"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    datasource_id = Column(String, ForeignKey("datasources.id"), nullable=False)
+    name = Column(String, nullable=False)
+    parent_version_id = Column(String, nullable=True)
+    data = Column(LargeBinary, nullable=False)  # CSV bytes for this snapshot
+    cleaning_log = Column(JSON, nullable=True)
+    position = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    datasource = relationship("DataSource", back_populates="versions")
 
 
 class Conversation(Base):
