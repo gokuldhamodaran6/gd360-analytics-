@@ -36,8 +36,8 @@ export default function Workspace() {
   const [chartStyle, setChartStyle] = useState<ChartStyle>(defaultChartStyle());
 
   const displaySpec = useMemo(
-    () => (chartSpec ? applyChartStyle(chartSpec, chartStyle) : null),
-    [chartSpec, chartStyle]
+    () => (chartSpec ? applyChartStyle(chartSpec, chartStyle, chartTitle) : null),
+    [chartSpec, chartStyle, chartTitle]
   );
 
   const updateStyle = (next: Partial<ChartStyle>) => setChartStyle((s) => ({ ...s, ...next }));
@@ -76,7 +76,7 @@ export default function Workspace() {
           const m = data.messages[i];
           if (m.chart_spec) {
             setChartSpec(m.chart_spec);
-            setChartStyle(defaultChartStyle());
+            setChartStyle(defaultChartStyle(m.chart_spec));
             const lastUserPrompt = [...data.messages].reverse().find((mm) => mm.role === "user")?.content;
             setChartTitle(lastUserPrompt || "");
             setCenterTab("chart");
@@ -129,7 +129,7 @@ export default function Workspace() {
         // A chart-type change from the Style panel keeps the current user
         // styling (colors, title, labels) intact - only a brand new prompt
         // starts from a clean style, since it is effectively a new chart.
-        if (!chartOverride) setChartStyle(defaultChartStyle());
+        if (!chartOverride) setChartStyle(defaultChartStyle(data.chart_spec));
         setChartTitle(prompt);
         setCenterTab("chart");
       }
@@ -245,7 +245,7 @@ export default function Workspace() {
                 style={chartStyle}
                 onStyleChange={updateStyle}
                 onChartTypeChange={(type) => applyChartOverride({ chart_type: type })}
-                onReset={() => setChartStyle(defaultChartStyle())}
+                onReset={() => setChartStyle(defaultChartStyle(chartSpec))}
                 disabled={busy || !chartSpec}
               />
             )}
