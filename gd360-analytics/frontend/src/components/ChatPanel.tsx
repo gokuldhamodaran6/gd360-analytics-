@@ -6,6 +6,8 @@ import { DatasetVersion } from "../api/client";
 // entry is a real DatasetVersion.id.
 export const ORIGINAL_SOURCE_ID = "original";
 
+export type FollowUpSuggestion = { label: string; prompt: string };
+
 export type ChatTurn = {
   role: "user" | "assistant";
   content: string;
@@ -17,6 +19,13 @@ export type ChatTurn = {
   nullsBefore?: number | null;
   nullsAfter?: number | null;
   resolved?: boolean;
+  // Specific, contextual "what to try next" options tied to this exact
+  // result (e.g. an alternative correlation method, or the same
+  // relationship shown a different way) - offered as optional buttons
+  // right under the answer, the way a senior analyst would proactively
+  // suggest the next useful angle. Purely optional: ignoring them (or
+  // dismissing the row) is a completely normal way to use the app.
+  followUp?: FollowUpSuggestion[] | null;
   // Which table(s) this prompt ran against, and - for a cleaning/prep
   // prompt - the new table it created, so "Reject, undo this" can delete
   // exactly that one and restore exactly what was selected before it ran.
@@ -49,6 +58,7 @@ export default function ChatPanel({
 }) {
   const [text, setText] = useState("");
   const [workingOnOpen, setWorkingOnOpen] = useState(false);
+  const [dismissedFollowUps, setDismissedFollowUps] = useState<Set<number>>(new Set());
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const workingOnRef = useRef<HTMLDivElement | null>(null);
@@ -145,6 +155,35 @@ export default function ChatPanel({
             {t.insight && (
               <div className="mt-2 text-sm bg-accent/10 border border-accent/30 rounded-xl px-4 py-2.5">
                 <span className="font-semibold text-accent">Insight: </span>{t.insight}
+              </div>
+            )}
+            {t.role === "assistant" && t.followUp && t.followUp.length > 0 && !dismissedFollowUps.has(i) && (
+              <div className="mt-2">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[11px] text-muted">Worth trying next</span>
+                  <button
+                    className="text-[11px] text-muted hover:text-text transition"
+                    disabled={busy}
+                    onClick={() => setDismissedFollowUps((s) => new Set(s).add(i))}
+                  >
+                    Skip
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {t.followUp.map((f, fi) => (
+                    <button
+                      key={fi}
+                      className="text-xs px-2.5 py-1.5 rounded-lg btn-secondary font-medium text-left"
+                      disabled={busy}
+                      onClick={() => {
+                        setDismissedFollowUps((s) => new Set(s).add(i));
+                        onSend(f.prompt);
+                      }}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
             {t.action === "transform" && i === lastTransformIndex && (
