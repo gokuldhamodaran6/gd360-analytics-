@@ -93,18 +93,39 @@ def ensure_legacy_migrated(db: Session, ds: models.DataSource) -> None:
     into this datasource first named table (Version 1), so nothing already
     prepared is lost when this ships. Safe to call on every request - it
     only does anything the first time, for a datasource that still has the
-    old-style snapshot and no saved tables yet."""
-    if not ds.cleaned_data:
+    old-style snapshot and has not been migrated yet.
+
+    The data table and the tab list both load on first page view, as two
+    separate requests that can arrive at the database at almost the same
+    moment. To make sure that never creates two duplicate "Version 1"
+    tables, the migration is claimed atomically first: `legacy_migrated_at`
+    is only ever flipped from NULL by exactly one of those two requests
+    (the database serializes the conflicting UPDATEs), and only the request
+    that wins the claim goes on to create the version."""
+    if not ds.cleaned_data or ds.legacy_migrated_at:
         return
+
+    claimed = (
+        db.query(models.DataSource)
+        .filter(models.DataSource.id == ds.id, models.DataSource.legacy_migrated_at.is_(None))
+        .update({models.DataSource.legacy_migrated_at: datetime.utcnow()})
+    )
+    if not claimed:
+        db.rollback()
+        return
+
     already_migrated = (
         db.query(models.DatasetVersion).filter(models.DatasetVersion.datasource_id == ds.id).first()
     )
     if already_migrated:
+        db.commit()
         return
+
     version = models.DatasetVersion(
         datasource_id=ds.id,
         name="Version 1",
         parent_version_id=None,
+        parent_version_ids=None,
         data=ds.cleaned_data,
         cleaning_log=ds.cleaning_log or [],
         position=1,
