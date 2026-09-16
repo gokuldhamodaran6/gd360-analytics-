@@ -59,6 +59,12 @@ class DataSource(Base):
     read_only = Column(Boolean, default=True)
     schema_cache = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Set the first time the old single-snapshot "cleaned_data" on this row
+    # is turned into a proper "Version 1" saved table. Guards that one-time
+    # move so two requests arriving at once (e.g. the data table and the
+    # tab list both loading on first page view) can never both win the
+    # race and create two duplicate "Version 1" tables.
+    legacy_migrated_at = Column(DateTime, nullable=True)
 
     owner = relationship("User", back_populates="datasources")
     versions = relationship(
@@ -75,9 +81,10 @@ class DatasetVersion(Base):
     "cleaned" snapshot a datasource could have. Instead, each prompt now
     creates a new row here - its own reusable, renameable table, like a new
     sheet - so earlier results are never lost and the person can pick any
-    of them (or the untouched original data) as the starting point for the
-    next prompt. parent_version_id records what it was built from (null
-    means the original data) purely for reference; it does not need to be
+    of them (or the untouched original data), or several of them together,
+    as the starting point for the next prompt. parent_version_ids records
+    every table it was built from (empty/null means the original data, or
+    only the original data) purely for reference; it does not need to be
     walked to read this version, since cleaning_log already carries the
     full step-by-step history up to this point.
     """
@@ -86,7 +93,8 @@ class DatasetVersion(Base):
     id = Column(String, primary_key=True, default=gen_uuid)
     datasource_id = Column(String, ForeignKey("datasources.id"), nullable=False)
     name = Column(String, nullable=False)
-    parent_version_id = Column(String, nullable=True)
+    parent_version_id = Column(String, nullable=True)  # first/primary source, kept for simple display
+    parent_version_ids = Column(JSON, nullable=True)  # every source table this was built from (can be several)
     data = Column(LargeBinary, nullable=False)  # CSV bytes for this snapshot
     cleaning_log = Column(JSON, nullable=True)
     position = Column(Integer, default=0)
