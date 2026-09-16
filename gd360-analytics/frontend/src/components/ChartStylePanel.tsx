@@ -1,8 +1,98 @@
+import { useMemo, useState } from "react";
 import { ChartStyle, FontSize, PALETTES, hasCartesianAxes, isHeatmapSpec, seriesLabels, detectChartType } from "../lib/chartStyle";
 
-const CHART_TYPES = [
-  "bar", "line", "area", "pie", "scatter", "histogram", "box", "heatmap", "waterfall", "funnel", "treemap",
+type ChartTypeDef = { id: string; label: string };
+
+// The handful of chart types shown up front - the ones almost every prompt
+// ends up using. Everything else lives behind "More chart types" below, so
+// the panel stays quick to scan without leaving any analyst chart out.
+const MAIN_CHART_TYPES: ChartTypeDef[] = [
+  { id: "bar", label: "Bar" },
+  { id: "line", label: "Line" },
+  { id: "area", label: "Area" },
+  { id: "pie", label: "Pie" },
+  { id: "scatter", label: "Scatter" },
+  { id: "histogram", label: "Histogram" },
+  { id: "box", label: "Box plot" },
+  { id: "heatmap", label: "Heatmap" },
 ];
+
+// The full catalog a working data analyst reaches for, grouped the way a
+// chart-picker in a proper BI tool would group them. Searchable below.
+const CHART_CATALOG: { category: string; types: ChartTypeDef[] }[] = [
+  {
+    category: "Comparison",
+    types: [
+      { id: "bar", label: "Bar" },
+      { id: "horizontal_bar", label: "Horizontal bar" },
+      { id: "grouped_bar", label: "Grouped bar" },
+      { id: "stacked_bar", label: "Stacked bar" },
+      { id: "radar", label: "Radar" },
+      { id: "polar_bar", label: "Polar bar" },
+    ],
+  },
+  {
+    category: "Trend over time",
+    types: [
+      { id: "line", label: "Line" },
+      { id: "area", label: "Area" },
+      { id: "stacked_area", label: "Stacked area" },
+      { id: "step_line", label: "Step line" },
+      { id: "candlestick", label: "Candlestick" },
+      { id: "ohlc", label: "OHLC" },
+    ],
+  },
+  {
+    category: "Distribution",
+    types: [
+      { id: "histogram", label: "Histogram" },
+      { id: "box", label: "Box plot" },
+      { id: "violin", label: "Violin" },
+      { id: "dot_plot", label: "Dot plot" },
+      { id: "density_heatmap", label: "Density heatmap" },
+    ],
+  },
+  {
+    category: "Relationship",
+    types: [
+      { id: "scatter", label: "Scatter" },
+      { id: "bubble", label: "Bubble" },
+      { id: "heatmap", label: "Heatmap" },
+      { id: "contour", label: "Contour" },
+      { id: "scatter_3d", label: "3D scatter" },
+      { id: "error_bar", label: "Error bar" },
+    ],
+  },
+  {
+    category: "Part-to-whole",
+    types: [
+      { id: "pie", label: "Pie" },
+      { id: "donut", label: "Donut" },
+      { id: "treemap", label: "Treemap" },
+      { id: "sunburst", label: "Sunburst" },
+      { id: "icicle", label: "Icicle" },
+      { id: "funnel_area", label: "Funnel area" },
+    ],
+  },
+  {
+    category: "Flow & process",
+    types: [
+      { id: "funnel", label: "Funnel" },
+      { id: "waterfall", label: "Waterfall" },
+      { id: "sankey", label: "Sankey" },
+    ],
+  },
+  {
+    category: "Specialized",
+    types: [
+      { id: "gauge", label: "Gauge" },
+      { id: "parallel_coordinates", label: "Parallel coordinates" },
+      { id: "choropleth", label: "Choropleth map" },
+    ],
+  },
+];
+
+const TOTAL_CHART_COUNT = new Set(CHART_CATALOG.flatMap((g) => g.types.map((t) => t.id))).size;
 
 const TILT_OPTIONS: { value: ChartStyle["xAxisTilt"]; label: string }[] = [
   { value: "none", label: "None" },
@@ -27,6 +117,18 @@ export default function ChartStylePanel({
   onReset: () => void;
   disabled?: boolean;
 }) {
+  const [showAllCharts, setShowAllCharts] = useState(false);
+  const [chartSearch, setChartSearch] = useState("");
+
+  const filteredCatalog = useMemo(() => {
+    const q = chartSearch.trim().toLowerCase();
+    if (!q) return CHART_CATALOG;
+    return CHART_CATALOG.map((group) => ({
+      category: group.category,
+      types: group.types.filter((t) => t.label.toLowerCase().includes(q) || group.category.toLowerCase().includes(q)),
+    })).filter((group) => group.types.length > 0);
+  }, [chartSearch]);
+
   if (!chartSpec) {
     return (
       <div className="card p-6 text-sm text-muted text-center">
@@ -55,8 +157,12 @@ export default function ChartStylePanel({
     onStyleChange({ paletteId: "custom", customColors: base });
   };
 
+  const pickType = (id: string) => {
+    onChartTypeChange(id);
+  };
+
   return (
-    <div className="card p-4 space-y-5 overflow-y-auto">
+    <div className="card p-4 space-y-5">
       <div className="flex items-center justify-between">
         <div className="text-sm font-semibold">Chart style</div>
         <button className="text-xs text-primary hover:underline" onClick={onReset} disabled={disabled}>
@@ -68,19 +174,70 @@ export default function ChartStylePanel({
       <div>
         <div className="text-xs font-semibold tracking-wide text-muted mb-2">CHART TYPE</div>
         <div className="grid grid-cols-3 gap-1.5">
-          {CHART_TYPES.map((t) => (
+          {MAIN_CHART_TYPES.map((t) => (
             <button
-              key={t}
+              key={t.id}
               disabled={disabled}
-              className={`text-xs px-2 py-1.5 rounded-lg capitalize transition ${
-                activeType === t ? "bg-primary text-white" : "btn-secondary"
+              className={`text-xs px-2 py-1.5 rounded-lg transition ${
+                activeType === t.id ? "bg-primary text-white" : "btn-secondary"
               }`}
-              onClick={() => onChartTypeChange(t)}
+              onClick={() => pickType(t.id)}
             >
-              {t}
+              {t.label}
             </button>
           ))}
         </div>
+
+        <button
+          type="button"
+          className="mt-2 w-full text-xs text-muted hover:text-text flex items-center justify-center gap-1 py-1.5 transition"
+          onClick={() => setShowAllCharts((s) => !s)}
+        >
+          {showAllCharts ? "Hide other chart types" : `More chart types (${TOTAL_CHART_COUNT} total)`}
+          <span className={`transition-transform ${showAllCharts ? "rotate-180" : ""}`}>▾</span>
+        </button>
+
+        {showAllCharts && (
+          <div className="mt-2 border border-border rounded-xl p-2.5 bg-surface2/50 space-y-3">
+            <input
+              className="input text-sm py-1.5"
+              placeholder="Search chart types, e.g. sankey, radar, candlestick"
+              value={chartSearch}
+              disabled={disabled}
+              onChange={(e) => setChartSearch(e.target.value)}
+              autoFocus
+            />
+            <div className="max-h-64 overflow-y-auto space-y-3 pr-1">
+              {filteredCatalog.length === 0 && (
+                <p className="text-xs text-muted text-center py-3">No chart type matches "{chartSearch}".</p>
+              )}
+              {filteredCatalog.map((group) => (
+                <div key={group.category}>
+                  <div className="text-[10px] font-semibold tracking-wide text-muted mb-1.5 uppercase">{group.category}</div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {group.types.map((t) => (
+                      <button
+                        key={`${group.category}-${t.id}`}
+                        disabled={disabled}
+                        className={`text-xs px-2 py-1.5 rounded-lg transition ${
+                          activeType === t.id ? "bg-primary text-white" : "btn-secondary"
+                        }`}
+                        onClick={() => pickType(t.id)}
+                        title={t.label}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="text-[11px] text-muted leading-relaxed">
+              A few of these (sankey, candlestick, gauge, choropleth, 3D scatter and similar) only work when the
+              underlying data has the right shape for them - GD360 will say so and try again if it does not fit.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* ---- Color palette ---- */}
