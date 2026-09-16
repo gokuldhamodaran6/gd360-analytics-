@@ -8,6 +8,20 @@ const PAGE_SIZE_OPTIONS: { value: number | "all"; label: string }[] = [
   { value: "all", label: "All" },
 ];
 
+function FilterIcon({ active }: { active: boolean }) {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 16 16"
+      className={active ? "text-primary shrink-0" : "text-muted shrink-0"}
+      fill="currentColor"
+    >
+      <path d="M1 2.2h14L9.6 9v4.6l-3.2 1.6V9L1 2.2z" />
+    </svg>
+  );
+}
+
 export default function DataTable({
   datasourceId,
   refreshKey,
@@ -29,8 +43,10 @@ export default function DataTable({
   const [error, setError] = useState("");
   const [busyAction, setBusyAction] = useState("");
   const [showLog, setShowLog] = useState(false);
+  const [openFilterCol, setOpenFilterCol] = useState<string | null>(null);
 
   const initializedKeyRef = useRef<string | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const effectiveLimit = pageSize === "all" ? 100000 : pageSize;
   const hasActiveFilters = Object.values(debouncedFilters).some((v) => !!v);
 
@@ -84,33 +100,61 @@ export default function DataTable({
     setDebouncedFilters({});
     setPageSize(50);
     setOffset(0);
+    setOpenFilterCol(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [datasourceId]);
+
+  // Closes the open column menu on a click anywhere else on the page. A
+  // click inside the menu itself never reaches here, because the header
+  // trigger that opens/closes it stops its own mousedown from bubbling.
+  useEffect(() => {
+    if (!openFilterCol) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setOpenFilterCol(null);
+      }
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [openFilterCol]);
 
   const switchTab = (v: "cleaned" | "original") => {
     setVersion(v);
     setOffset(0);
   };
 
-  const handleSort = (col: string) => {
-    setOffset(0);
-    if (sortBy !== col) {
-      setSortBy(col);
-      setSortDir("asc");
-    } else if (sortDir === "asc") {
-      setSortDir("desc");
-    } else {
-      setSortBy(null);
-      setSortDir("asc");
-    }
+  const toggleColumnMenu = (col: string) => {
+    setOpenFilterCol((c) => (c === col ? null : col));
   };
 
-  const handleFilterChange = (col: string, value: string) => {
+  const applySort = (col: string, dir: "asc" | "desc") => {
+    setOffset(0);
+    setSortBy(col);
+    setSortDir(dir);
+    setOpenFilterCol(null);
+  };
+
+  const clearSort = () => {
+    setOffset(0);
+    setSortBy(null);
+    setSortDir("asc");
+  };
+
+  const setColumnFilter = (col: string, value: string) => {
     setOffset(0);
     setFilters((f) => ({ ...f, [col]: value }));
   };
 
-  const clearFilters = () => {
+  const clearColumnFilter = (col: string) => {
+    setOffset(0);
+    setFilters((f) => {
+      const next = { ...f };
+      delete next[col];
+      return next;
+    });
+  };
+
+  const clearAllFilters = () => {
     setOffset(0);
     setFilters({});
     setDebouncedFilters({});
@@ -232,8 +276,8 @@ export default function DataTable({
           </div>
         </div>
         {hasActiveFilters && (
-          <button className="text-xs text-accent underline" onClick={clearFilters}>
-            Clear column filters
+          <button className="text-xs text-accent underline" onClick={clearAllFilters}>
+            Clear all filters
           </button>
         )}
       </div>
@@ -268,28 +312,64 @@ export default function DataTable({
             <thead className="sticky top-0 bg-surface2 z-10">
               <tr>
                 {preview.columns.map((col) => (
-                  <th
-                    key={col}
-                    className="text-left px-3 py-2 font-semibold border-b border-border whitespace-nowrap cursor-pointer select-none hover:text-primary transition"
-                    onClick={() => handleSort(col)}
-                    title="Click to sort"
-                  >
-                    {col}
-                    {sortBy === col && <span className="ml-1">{sortDir === "asc" ? "&#9650;" : "&#9660;"}</span>}
-                    <span className="text-muted font-normal ml-1.5">{preview.dtypes[col]}</span>
-                  </th>
-                ))}
-              </tr>
-              <tr>
-                {preview.columns.map((col) => (
-                  <th key={col} className="px-2 py-1.5 border-b border-border bg-surface2">
-                    <input
-                      className="input text-xs py-1 px-2"
-                      placeholder="Filter..."
-                      value={filters[col] || ""}
-                      onChange={(e) => handleFilterChange(col, e.target.value)}
-                      onClick={(e) => e.stopPropagation()}
-                    />
+                  <th key={col} className="relative text-left px-3 py-2 font-semibold border-b border-border whitespace-nowrap">
+                    <div
+                      className="flex items-center gap-1.5 cursor-pointer select-none hover:text-primary transition"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={() => toggleColumnMenu(col)}
+                      title="Sort or filter this column"
+                    >
+                      <span>
+                        {col}
+                        {sortBy === col && <span className="ml-1 text-primary">{sortDir === "asc" ? "▲" : "▼"}</span>}
+                      </span>
+                      <span className="text-muted font-normal">{preview.dtypes[col]}</span>
+                      <FilterIcon active={sortBy === col || !!filters[col]} />
+                    </div>
+
+                    {openFilterCol === col && (
+                      <div
+                        ref={menuRef}
+                        className="absolute z-20 top-full left-0 mt-1 w-56 card p-2 space-y-1 shadow-xl font-normal normal-case"
+                      >
+                        <button
+                          className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2 flex items-center gap-1.5"
+                          onClick={() => applySort(col, "asc")}
+                        >
+                          <span>{"▲"}</span> Sort ascending
+                        </button>
+                        <button
+                          className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2 flex items-center gap-1.5"
+                          onClick={() => applySort(col, "desc")}
+                        >
+                          <span>{"▼"}</span> Sort descending
+                        </button>
+                        {sortBy === col && (
+                          <button
+                            className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2 text-muted"
+                            onClick={clearSort}
+                          >
+                            Clear sort
+                          </button>
+                        )}
+                        <div className="border-t border-border my-1" />
+                        <div className="px-2 pb-1">
+                          <label className="text-[10px] uppercase tracking-wide text-muted block mb-1">Filter</label>
+                          <input
+                            autoFocus
+                            className="input text-xs py-1 px-2"
+                            placeholder={`Search ${col}...`}
+                            value={filters[col] || ""}
+                            onChange={(e) => setColumnFilter(col, e.target.value)}
+                          />
+                          {filters[col] && (
+                            <button className="text-[11px] text-accent underline mt-1" onClick={() => clearColumnFilter(col)}>
+                              Clear filter
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </th>
                 ))}
               </tr>
