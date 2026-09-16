@@ -100,9 +100,20 @@ export function seriesLabels(spec: any): string[] {
   return [];
 }
 
+// Chart types with no 2D x/y cartesian axes at all - a polar chart (radar,
+// polar bar), a flow diagram (sankey), a single-number indicator (gauge), a
+// parallel-coordinates plot, a geo map (choropleth) or a 3D scatter. The
+// Style panel skips axis labels/gridlines/tilt for these, the same way it
+// already skips them for pie-like charts.
+const NON_CARTESIAN_TYPES = new Set(["scatterpolar", "barpolar", "sankey", "indicator", "parcoords", "choropleth", "scatter3d"]);
+
+function isNonCartesianSpec(data: any[]): boolean {
+  return data.some((t) => NON_CARTESIAN_TYPES.has(t?.type));
+}
+
 export function hasCartesianAxes(spec: any): boolean {
   const data = Array.isArray(spec?.data) ? spec.data : [];
-  return data.length > 0 && !isPieLikeSpec(data);
+  return data.length > 0 && !isPieLikeSpec(data) && !isNonCartesianSpec(data);
 }
 
 export function isHeatmapSpec(spec: any): boolean {
@@ -110,18 +121,55 @@ export function isHeatmapSpec(spec: any): boolean {
   return data.some((t) => t?.type === "heatmap");
 }
 
-/** Best-effort guess at which of our 11 supported chart types the current
- * spec represents, purely so the Style panel can highlight the matching
- * "Chart type" button. Never affects rendering. */
+// Chart types that render as one continuous color gradient rather than
+// discrete per-item colors - a palette here becomes a colorscale, same idea
+// as a heatmap, instead of per-series marker colors.
+export function isGradientSpec(spec: any): boolean {
+  const data = Array.isArray(spec?.data) ? spec.data : [];
+  return data.some((t) => ["heatmap", "contour", "histogram2d", "choropleth"].includes(t?.type));
+}
+
+/** Best-effort guess at which of our supported chart types the current spec
+ * represents, purely so the Style panel can highlight the matching "Chart
+ * type" button. Never affects rendering. */
 export function detectChartType(spec: any): string {
-  const t = Array.isArray(spec?.data) ? spec.data[0] : null;
+  const data = Array.isArray(spec?.data) ? spec.data : [];
+  const t = data[0];
   if (!t) return "";
-  if (t.type === "scatter") {
-    if (t.fill && t.fill !== "none") return "area";
-    if ((t.mode || "").includes("lines")) return "line";
-    return "scatter";
+  const layout = spec?.layout || {};
+
+  switch (t.type) {
+    case "scatter": {
+      if (Array.isArray(t.marker?.size)) return "bubble";
+      if (t.error_y) return "error_bar";
+      if (t.stackgroup) return "stacked_area";
+      if (t.fill && t.fill !== "none") return "area";
+      if ((t.mode || "").includes("lines")) return t.line?.shape === "hv" ? "step_line" : "line";
+      return "scatter";
+    }
+    case "bar":
+      if (t.orientation === "h") return "horizontal_bar";
+      if (data.length > 1) return layout.barmode === "stack" ? "stacked_bar" : "grouped_bar";
+      return "bar";
+    case "pie":
+      return (t.hole || 0) >= 0.55 ? "donut" : "pie";
+    case "scatterpolar":
+      return "radar";
+    case "barpolar":
+      return "polar_bar";
+    case "histogram2d":
+      return "density_heatmap";
+    case "scatter3d":
+      return "scatter_3d";
+    case "parcoords":
+      return "parallel_coordinates";
+    case "funnelarea":
+      return "funnel_area";
+    case "indicator":
+      return "gauge";
+    default:
+      return t.type || "";
   }
-  return t.type || "";
 }
 
 function paletteColors(style: ChartStyle, count: number): string[] {
@@ -159,21 +207,23 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
 
   const pieLike = isPieLikeSpec(data);
   const singleCategorical = isSingleCategoricalSpec(data);
-  const hasHeatmap = data.some((t) => t.type === "heatmap");
+  const isGradient = isGradientSpec(spec);
+  const isCartesian = hasCartesianAxes(spec);
   const baseSize = FONT_SIZES[style.fontSize];
 
   layout.font = { ...(layout.font || {}), size: baseSize };
 
   // ---- Colors ----
-  if (hasHeatmap) {
-    // A heatmap has no discrete series to color - it is one continuous
-    // gradient - so a palette here becomes a multi-stop colorscale built
-    // from that palette colors, instead of per-item colors.
+  if (isGradient) {
+    // A heatmap, contour, density heatmap or choropleth has no discrete
+    // series to color - it is one continuous gradient - so a palette here
+    // becomes a multi-stop colorscale built from that palette colors,
+    // instead of per-item colors.
     if (style.paletteId !== "original") {
       const stops = paletteColors(style, 6);
       const colorscale = stops.map((c, i): [number, string] => [i / (stops.length - 1), c]);
       data.forEach((t) => {
-        if (t.type === "heatmap") t.colorscale = colorscale;
+        if (["heatmap", "contour", "histogram2d", "choropleth"].includes(t.type)) t.colorscale = colorscale;
       });
     }
   } else if (pieLike) {
@@ -211,7 +261,7 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
   // ---- Axes (labels, grid, tilt, font, and auto margin so long or many
   // category labels - like a wide correlation heatmap - never get clipped
   // or overlap each other) ----
-  if (!pieLike) {
+  if (isCartesian) {
     layout.xaxis = { ...(layout.xaxis || {}) };
     layout.yaxis = { ...(layout.yaxis || {}) };
 
@@ -240,7 +290,7 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
       t.textinfo = style.dataLabels ? "label+percent" : "label";
     } else if (type === "funnel") {
       t.textinfo = style.dataLabels ? "value+percent initial" : "none";
-    } else if (type === "treemap" || type === "sunburst") {
+    } else if (type === "treemap" || type === "sunburst" || type === "icicle" || type === "funnelarea") {
       t.textinfo = style.dataLabels ? "label+value" : "label";
     } else if (type === "heatmap") {
       t.texttemplate = style.dataLabels ? "%{z}" : undefined;
