@@ -20,10 +20,10 @@ export default function TopNav({ onConnectData }: { onConnectData?: () => void }
         <span className="text-lg font-extrabold gradient-text">GD360 Analytics</span>
       </Link>
       <div className="flex items-center gap-3">
-        <span className="text-sm text-muted hidden md:inline">
+        <Link to="/profile" className="text-sm text-muted hidden md:inline hover:text-primary transition-colors">
           {user?.full_name || user?.email} <span className="text-border mx-1">&middot;</span>{" "}
           <span className="text-accent">Unlimited free plan</span>
-        </span>
+        </Link>
         <ThemeToggle />
         {onConnectData && (
           <button className="btn-primary text-sm" onClick={onConnectData}>
