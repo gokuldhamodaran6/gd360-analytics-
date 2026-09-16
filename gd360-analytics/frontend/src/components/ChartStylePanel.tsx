@@ -1,4 +1,4 @@
-import { ChartStyle, PALETTES, hasCartesianAxes, seriesLabels, detectChartType } from "../lib/chartStyle";
+import { ChartStyle, FontSize, PALETTES, hasCartesianAxes, isHeatmapSpec, seriesLabels, detectChartType } from "../lib/chartStyle";
 
 const CHART_TYPES = [
   "bar", "line", "area", "pie", "scatter", "histogram", "box", "heatmap", "waterfall", "funnel", "treemap",
@@ -9,6 +9,12 @@ const TILT_OPTIONS: { value: ChartStyle["xAxisTilt"]; label: string }[] = [
   { value: "slight", label: "Slight" },
   { value: "diagonal", label: "Diagonal" },
   { value: "vertical", label: "Vertical" },
+];
+
+const FONT_SIZE_OPTIONS: { value: FontSize; label: string }[] = [
+  { value: "small", label: "Small" },
+  { value: "medium", label: "Medium" },
+  { value: "large", label: "Large" },
 ];
 
 export default function ChartStylePanel({
@@ -32,6 +38,7 @@ export default function ChartStylePanel({
   const activeType = detectChartType(chartSpec);
   const names = seriesLabels(chartSpec);
   const showAxes = hasCartesianAxes(chartSpec);
+  const isHeatmap = isHeatmapSpec(chartSpec);
   const cappedNames = names.slice(0, 20);
   const customCount = Math.max(cappedNames.length || 6, 6);
 
@@ -79,6 +86,11 @@ export default function ChartStylePanel({
       {/* ---- Color palette ---- */}
       <div>
         <div className="text-xs font-semibold tracking-wide text-muted mb-2">COLOR PALETTE</div>
+        {isHeatmap && (
+          <p className="text-[11px] text-muted mb-2 leading-relaxed">
+            This is a heatmap, so a palette here blends into a smooth gradient instead of separate colors.
+          </p>
+        )}
         <div className="space-y-1.5">
           <button
             disabled={disabled}
@@ -241,6 +253,23 @@ export default function ChartStylePanel({
               />
               <span className="switch-track" />
             </label>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-sm">Font size</span>
+            <div className="flex gap-1">
+              {FONT_SIZE_OPTIONS.map((o) => (
+                <button
+                  key={o.value}
+                  disabled={disabled}
+                  className={`text-xs px-2.5 py-1 rounded-lg transition ${
+                    style.fontSize === o.value ? "bg-primary text-white" : "btn-secondary"
+                  }`}
+                  onClick={() => onStyleChange({ fontSize: o.value })}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
           </div>
           {showAxes && (
             <div className="flex items-center justify-between">
