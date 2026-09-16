@@ -103,6 +103,15 @@ class ChatResponse(BaseModel):
     rows_after: Optional[int] = None
     nulls_before: Optional[int] = None
     nulls_after: Optional[int] = None
+    # Set only when this prompt created a new saved table (a cleaning/prep
+    # transform), so the client can add it as a new tab and switch to it.
+    new_version_id: Optional[str] = None
+    new_version_name: Optional[str] = None
+
+
+# ---------- Dataset versions (saved/named tables) ----------
+class RenameVersionRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
 
 
 # ---------- Dashboards ----------
