@@ -155,7 +155,15 @@ def delete_version(
 ):
     ds = _get_owned_datasource(db, user, datasource_id)
     v = _get_owned_version(db, ds, version_id)
-    has_children = db.query(models.DatasetVersion).filter(models.DatasetVersion.parent_version_id == v.id).first()
+    # A table can now be built from more than one source table at once, so
+    # checking "does anything depend on this?" means scanning the full
+    # source list on every other table, not just a single parent field.
+    other_versions = (
+        db.query(models.DatasetVersion)
+        .filter(models.DatasetVersion.datasource_id == ds.id, models.DatasetVersion.id != v.id)
+        .all()
+    )
+    has_children = any(v.id in (child.parent_version_ids or []) for child in other_versions)
     if has_children:
         raise HTTPException(400, "Delete the newer tables built from this one first.")
     db.delete(v)
