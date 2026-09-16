@@ -26,6 +26,10 @@ class User(Base):
     company = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # --- Login lockout (slows down password-guessing bots) ---
+    failed_login_attempts = Column(Integer, default=0)
+    locked_until = Column(DateTime, nullable=True)
+
     datasources = relationship("DataSource", back_populates="owner", cascade="all, delete-orphan")
     conversations = relationship("Conversation", back_populates="owner", cascade="all, delete-orphan")
     dashboards = relationship("Dashboard", back_populates="owner", cascade="all, delete-orphan")
