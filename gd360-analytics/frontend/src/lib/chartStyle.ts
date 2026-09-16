@@ -2,11 +2,13 @@
 // spec (data + layout) as JSON. Rather than teaching the backend/LLM about
 // user styling preferences, we treat that spec as the raw source and apply
 // a styling layer entirely in the browser: colors, titles, axis labels,
-// series names, and display options. This means every style change is
-// instant (no round trip to the AI) and the final, styled spec can simply
-// be saved as-is onto a dashboard chart with no backend changes needed.
+// series names, font size and display options. This means every style
+// change is instant (no round trip to the AI, no separate "Apply" step)
+// and the final, styled spec can simply be saved as-is onto a dashboard
+// chart with no backend changes needed.
 
 export type PaletteId = "original" | "aurora" | "sunset" | "forest" | "mono" | "vibrant" | "custom";
+export type FontSize = "small" | "medium" | "large";
 
 export type ChartStyle = {
   paletteId: PaletteId;
@@ -19,22 +21,8 @@ export type ChartStyle = {
   showLegend: boolean;
   dataLabels: boolean;
   xAxisTilt: "none" | "slight" | "diagonal" | "vertical";
+  fontSize: FontSize;
 };
-
-export function defaultChartStyle(): ChartStyle {
-  return {
-    paletteId: "original",
-    customColors: [],
-    title: "",
-    xAxisLabel: "",
-    yAxisLabel: "",
-    seriesNames: [],
-    showGrid: true,
-    showLegend: true,
-    dataLabels: false,
-    xAxisTilt: "none",
-  };
-}
 
 export const PALETTES: { id: Exclude<PaletteId, "original" | "custom">; name: string; colors: string[] }[] = [
   { id: "aurora", name: "Aurora", colors: ["#6366F1", "#06B6D4", "#EC4899", "#F59E0B", "#10B981", "#F97316"] },
@@ -49,6 +37,12 @@ const TILT_ANGLES: Record<ChartStyle["xAxisTilt"], number> = {
   slight: -30,
   diagonal: -45,
   vertical: -90,
+};
+
+const FONT_SIZES: Record<FontSize, number> = {
+  small: 11,
+  medium: 13,
+  large: 16,
 };
 
 function isPieLikeSpec(data: any[]): boolean {
@@ -66,10 +60,38 @@ function categoryCount(t: any): number {
   return arr ? arr.length : 1;
 }
 
+/** Picks a sensible starting X-axis tilt for a brand new chart, so long or
+ * numerous category labels (a wide correlation heatmap, a bar chart with
+ * many long names) do not overlap by default. The person can still change
+ * it in the Style panel afterwards. */
+function smartDefaultTilt(spec: any): ChartStyle["xAxisTilt"] {
+  const data = Array.isArray(spec?.data) ? spec.data : [];
+  const t = data[0];
+  const cats: any[] = Array.isArray(t?.x) ? t.x : [];
+  if (cats.length > 6 && cats.some((c) => String(c).length > 6)) return "diagonal";
+  return "none";
+}
+
+export function defaultChartStyle(spec?: any): ChartStyle {
+  return {
+    paletteId: "original",
+    customColors: [],
+    title: "",
+    xAxisLabel: "",
+    yAxisLabel: "",
+    seriesNames: [],
+    showGrid: true,
+    showLegend: true,
+    dataLabels: false,
+    xAxisTilt: smartDefaultTilt(spec),
+    fontSize: "medium",
+  };
+}
+
 /** Returns the labels shown in the "rename" UI: per-slice labels for a
  * pie-like chart, or per-trace (legend) names for a multi-series chart.
- * Returns an empty list for a single-series cartesian chart, where there
- * is nothing meaningful to rename beyond the axis labels/title. */
+ * Returns an empty list for a single-series cartesian chart or a heatmap,
+ * where there is nothing meaningful to rename beyond the axis labels/title. */
 export function seriesLabels(spec: any): string[] {
   const data = Array.isArray(spec?.data) ? spec.data : [];
   if (data.length === 0) return [];
@@ -81,6 +103,11 @@ export function seriesLabels(spec: any): string[] {
 export function hasCartesianAxes(spec: any): boolean {
   const data = Array.isArray(spec?.data) ? spec.data : [];
   return data.length > 0 && !isPieLikeSpec(data);
+}
+
+export function isHeatmapSpec(spec: any): boolean {
+  const data = Array.isArray(spec?.data) ? spec.data : [];
+  return data.some((t) => t?.type === "heatmap");
 }
 
 /** Best-effort guess at which of our 11 supported chart types the current
@@ -97,8 +124,7 @@ export function detectChartType(spec: any): string {
   return t.type || "";
 }
 
-function colorsForStyle(style: ChartStyle, count: number): string[] | null {
-  if (style.paletteId === "original") return null;
+function paletteColors(style: ChartStyle, count: number): string[] {
   const base =
     style.paletteId === "custom"
       ? style.customColors.length
@@ -110,11 +136,22 @@ function colorsForStyle(style: ChartStyle, count: number): string[] | null {
   return out;
 }
 
+function colorsForStyle(style: ChartStyle, count: number): string[] | null {
+  if (style.paletteId === "original") return null;
+  return paletteColors(style, count);
+}
+
+function titleTextOf(value: any): string {
+  return typeof value === "string" ? value : value?.text || "";
+}
+
 /** Applies the given style on top of the AI-generated Plotly spec, without
  * mutating the original. Safe to call repeatedly (e.g. on every render) -
- * always starts fresh from the raw spec so switching palettes or resetting
- * never compounds. */
-export function applyChartStyle(rawSpec: any, style: ChartStyle): any {
+ * always starts fresh from the raw spec so switching palettes, font size or
+ * resetting never compounds. `fallbackTitle` (e.g. the chat prompt that
+ * produced this chart) is only used when neither the person nor the AI
+ * spec itself already supplied title text. */
+export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?: string): any {
   if (!rawSpec) return rawSpec;
   const spec = JSON.parse(JSON.stringify(rawSpec));
   const data: any[] = Array.isArray(spec.data) ? spec.data : [];
@@ -123,26 +160,38 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle): any {
   const pieLike = isPieLikeSpec(data);
   const singleCategorical = isSingleCategoricalSpec(data);
   const hasHeatmap = data.some((t) => t.type === "heatmap");
+  const baseSize = FONT_SIZES[style.fontSize];
+
+  layout.font = { ...(layout.font || {}), size: baseSize };
 
   // ---- Colors ----
-  if (!hasHeatmap) {
-    if (pieLike) {
-      const count = data[0]?.labels?.length || 0;
-      const colors = colorsForStyle(style, count);
-      if (colors) data[0].marker = { ...(data[0].marker || {}), colors };
-    } else if (singleCategorical) {
-      const count = categoryCount(data[0]);
-      const colors = colorsForStyle(style, count);
-      if (colors) data[0].marker = { ...(data[0].marker || {}), color: colors };
-    } else {
-      const colors = colorsForStyle(style, data.length);
-      if (colors) {
-        data.forEach((t, i) => {
-          const c = colors[i];
-          t.marker = { ...(t.marker || {}), color: c };
-          if (t.line || t.type === "scatter") t.line = { ...(t.line || {}), color: c };
-        });
-      }
+  if (hasHeatmap) {
+    // A heatmap has no discrete series to color - it is one continuous
+    // gradient - so a palette here becomes a multi-stop colorscale built
+    // from that palette colors, instead of per-item colors.
+    if (style.paletteId !== "original") {
+      const stops = paletteColors(style, 6);
+      const colorscale = stops.map((c, i): [number, string] => [i / (stops.length - 1), c]);
+      data.forEach((t) => {
+        if (t.type === "heatmap") t.colorscale = colorscale;
+      });
+    }
+  } else if (pieLike) {
+    const count = data[0]?.labels?.length || 0;
+    const colors = colorsForStyle(style, count);
+    if (colors) data[0].marker = { ...(data[0].marker || {}), colors };
+  } else if (singleCategorical) {
+    const count = categoryCount(data[0]);
+    const colors = colorsForStyle(style, count);
+    if (colors) data[0].marker = { ...(data[0].marker || {}), color: colors };
+  } else {
+    const colors = colorsForStyle(style, data.length);
+    if (colors) {
+      data.forEach((t, i) => {
+        const c = colors[i];
+        t.marker = { ...(t.marker || {}), color: c };
+        if (t.line || t.type === "scatter") t.line = { ...(t.line || {}), color: c };
+      });
     }
   }
 
@@ -155,22 +204,34 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle): any {
     });
   }
 
-  // ---- Title ----
-  if (style.title) layout.title = { text: style.title };
+  // ---- Title (always resolved + sized, even if the person never opens Style) ----
+  const titleText = style.title || titleTextOf(layout.title) || fallbackTitle || "";
+  layout.title = { text: titleText, font: { size: Math.round(baseSize * 1.45) } };
 
-  // ---- Axes (grid, labels, tilt) ----
+  // ---- Axes (labels, grid, tilt, font, and auto margin so long or many
+  // category labels - like a wide correlation heatmap - never get clipped
+  // or overlap each other) ----
   if (!pieLike) {
     layout.xaxis = { ...(layout.xaxis || {}) };
     layout.yaxis = { ...(layout.yaxis || {}) };
-    if (style.xAxisLabel) layout.xaxis.title = { text: style.xAxisLabel };
-    if (style.yAxisLabel) layout.yaxis.title = { text: style.yAxisLabel };
+
+    const xText = style.xAxisLabel || titleTextOf(layout.xaxis.title);
+    if (xText) layout.xaxis.title = { text: xText, font: { size: Math.round(baseSize * 1.1) } };
+    const yText = style.yAxisLabel || titleTextOf(layout.yaxis.title);
+    if (yText) layout.yaxis.title = { text: yText, font: { size: Math.round(baseSize * 1.1) } };
+
     layout.xaxis.showgrid = style.showGrid;
     layout.yaxis.showgrid = style.showGrid;
     layout.xaxis.tickangle = TILT_ANGLES[style.xAxisTilt];
+    layout.xaxis.automargin = true;
+    layout.yaxis.automargin = true;
+    layout.xaxis.tickfont = { size: baseSize };
+    layout.yaxis.tickfont = { size: baseSize };
   }
 
   // ---- Legend ----
   layout.showlegend = style.showLegend;
+  layout.legend = { ...(layout.legend || {}), font: { ...(layout.legend?.font || {}), size: baseSize } };
 
   // ---- Data labels ----
   data.forEach((t) => {
