@@ -13,6 +13,8 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=8)
     full_name: Optional[str] = None
     company: Optional[str] = None
+    captcha_id: str
+    captcha_answer: str
 
 
 class UserLogin(BaseModel):
@@ -35,6 +37,21 @@ class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserOut
+
+
+class CaptchaOut(BaseModel):
+    captcha_id: str
+    question: str
+
+
+class UpdateProfileRequest(BaseModel):
+    full_name: Optional[str] = Field(default=None, max_length=120)
+    company: Optional[str] = Field(default=None, max_length=120)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
 
 
 # ---------- DataSources ----------
