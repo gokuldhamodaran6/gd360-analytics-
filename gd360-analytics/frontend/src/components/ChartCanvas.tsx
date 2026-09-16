@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import Plot, { Plotly } from "../lib/plotly";
+import { useTheme } from "../api/ThemeContext";
 
 const EXPORT_FORMATS: { value: "png" | "jpeg" | "svg" | "webp"; label: string }[] = [
   { value: "png", label: "PNG" },
@@ -11,6 +12,7 @@ const EXPORT_FORMATS: { value: "png" | "jpeg" | "svg" | "webp"; label: string }[
 export default function ChartCanvas({ chartSpec, title }: { chartSpec: any; title?: string }) {
   const graphDivRef = useRef<any>(null);
   const [downloading, setDownloading] = useState("");
+  const { theme } = useTheme();
 
   if (!chartSpec) {
     return (
@@ -39,6 +41,23 @@ export default function ChartCanvas({ chartSpec, title }: { chartSpec: any; titl
     }
   };
 
+  // Server-built chart specs always use the Plotly dark template. When the
+  // person is in light mode we layer light-friendly colors on top on the
+  // client, rather than teaching the backend about the viewer theme.
+  const themedLayout =
+    theme === "light"
+      ? {
+          ...chartSpec.layout,
+          template: undefined,
+          paper_bgcolor: "#FFFFFF",
+          plot_bgcolor: "#FFFFFF",
+          font: { ...(chartSpec.layout?.font || {}), color: "#171725" },
+          xaxis: { ...(chartSpec.layout?.xaxis || {}), gridcolor: "#E7E9F2", zerolinecolor: "#DDE0EC", linecolor: "#DDE0EC" },
+          yaxis: { ...(chartSpec.layout?.yaxis || {}), gridcolor: "#E7E9F2", zerolinecolor: "#DDE0EC", linecolor: "#DDE0EC" },
+          legend: { ...(chartSpec.layout?.legend || {}), font: { color: "#171725" } },
+        }
+      : chartSpec.layout;
+
   return (
     <div className="card p-4 h-full flex flex-col overflow-hidden">
       <div className="flex items-center justify-between mb-2 shrink-0">
@@ -59,7 +78,7 @@ export default function ChartCanvas({ chartSpec, title }: { chartSpec: any; titl
       <div className="flex-1 min-h-0">
         <Plot
           data={chartSpec.data}
-          layout={{ ...chartSpec.layout, autosize: true, title: title || chartSpec.layout?.title }}
+          layout={{ ...themedLayout, autosize: true, title: title || chartSpec.layout?.title }}
           style={{ width: "100%", height: "100%", minHeight: 380 }}
           useResizeHandler
           config={{ displaylogo: false, responsive: true }}
