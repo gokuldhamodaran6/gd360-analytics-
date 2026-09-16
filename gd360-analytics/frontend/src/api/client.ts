@@ -112,3 +112,37 @@ export const datasourceApi = {
     window.URL.revokeObjectURL(url);
   },
 };
+
+export type ConversationSummary = {
+  id: string;
+  title: string;
+  datasource_id: string | null;
+  datasource_name: string | null;
+  message_count: number;
+  last_message: string;
+  last_chart_type: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ConversationMessage = {
+  role: "user" | "assistant" | "system";
+  content: string;
+  chart_spec: any;
+  insight: string | null;
+  suggestions: { charts?: any[]; stats?: any[] } | null;
+  needs_clarification: boolean;
+  created_at: string;
+};
+
+export type ConversationDetail = {
+  id: string;
+  title: string;
+  datasource_id: string | null;
+  messages: ConversationMessage[];
+};
+
+export const conversationApi = {
+  list: () => api.get<ConversationSummary[]>("/conversations").then((r) => r.data),
+  getMessages: (id: string) => api.get<ConversationDetail>(`/conversations/${id}/messages`).then((r) => r.data),
+};
