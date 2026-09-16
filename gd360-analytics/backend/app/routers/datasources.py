@@ -118,6 +118,9 @@ def preview_datasource(
     version: str = "auto",
     limit: int = 50,
     offset: int = 0,
+    sort_by: str | None = None,
+    sort_dir: str = "asc",
+    filters: str | None = None,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
@@ -127,7 +130,26 @@ def preview_datasource(
     except Exception as e:
         raise HTTPException(400, f"Could not load data: {e}")
 
-    limit = max(1, min(limit, 500))
+    # Per-column text filter, applied before pagination so it always
+    # searches the full dataset, not just whatever page happens to be
+    # showing. A simple case-insensitive "contains" match reads naturally
+    # for both text and numbers (typing "39" finds 39 and 39.5 alike).
+    if filters:
+        try:
+            filter_map = json.loads(filters)
+        except Exception:
+            filter_map = {}
+        for col, needle in (filter_map or {}).items():
+            if col in df.columns and needle not in (None, ""):
+                df = df[df[col].astype(str).str.contains(str(needle), case=False, na=False, regex=False)]
+
+    # Column sort, also applied before pagination for the same reason -
+    # sorting only the current page would look broken to the person using it.
+    if sort_by and sort_by in df.columns:
+        df = df.sort_values(by=sort_by, ascending=(sort_dir != "desc"), na_position="last", kind="mergesort")
+
+    total_rows = int(len(df))
+    limit = max(1, min(limit, 5000))
     offset = max(0, offset)
     page = df.iloc[offset: offset + limit]
     rows = json.loads(page.to_json(orient="records"))
@@ -136,7 +158,7 @@ def preview_datasource(
         "columns": [str(c) for c in df.columns],
         "dtypes": {str(c): str(df[c].dtype) for c in df.columns},
         "rows": rows,
-        "total_rows": int(len(df)),
+        "total_rows": total_rows,
         "offset": offset,
         "limit": limit,
         "has_cleaned_version": bool(ds.cleaned_data),
