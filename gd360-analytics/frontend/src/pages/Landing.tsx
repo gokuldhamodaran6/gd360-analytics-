@@ -23,20 +23,20 @@ const FEATURES = [
 
 const TRUST_POINTS = [
   {
-    title: "Read-only by design",
-    body: "GD360 only reads from the data you connect. Your original files and databases are never modified.",
+    title: "Minutes, not hours",
+    body: "Connect your data and get a finished chart in minutes. No dashboard building, no waiting on an analyst, no learning curve.",
   },
   {
-    title: "Protected accounts",
-    body: "Sign-in is protected with rate limiting and automatic lockout after repeated failed attempts.",
+    title: "One tool, every data source",
+    body: "Spreadsheets, CSV and Excel files, SQL and NoSQL databases, all analyzed the same simple way, instead of juggling separate tools.",
   },
   {
-    title: "No spam signups",
-    body: "A quick human check at signup keeps bot and spam accounts out, with no email or phone number required.",
+    title: "Answers, not just charts",
+    body: "Every chart comes with a plain-English explanation of what it means, so you do not have to interpret the numbers yourself.",
   },
   {
-    title: "Free to start",
-    body: "Unlimited free plan. No credit card required to create an account or explore your data.",
+    title: "Full access, free",
+    body: "Every feature, unlimited, with no credit card and no seat limits, unlike most analytics tools that lock the best parts behind a paid plan.",
   },
 ];
 
@@ -160,9 +160,9 @@ export default function Landing() {
         {/* ---- Trust section ---- */}
         <div className="mb-10">
           <div className="text-center mb-6">
-            <h2 className="text-2xl font-bold">Why teams trust GD360 Analytics</h2>
+            <h2 className="text-2xl font-bold">Why choose GD360 Analytics</h2>
             <p className="text-muted mt-2 max-w-2xl mx-auto">
-              Know what you are signing up for before you create an account.
+              Here is what makes this easier than most other analytics tools.
             </p>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
