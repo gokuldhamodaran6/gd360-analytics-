@@ -4,9 +4,9 @@ upload a file (CSV/Excel). Credentials are encrypted before storage and
 never returned to the client after creation. Every connection is tested
 and introspected (read-only) before being saved.
 
-Also exposes the data-preparation surface: a paginated table preview
-(original or AI-cleaned), a reset back to the original data, and a
-download/export of either version as CSV or Excel.
+Also exposes the data-preparation surface: a paginated table preview of the
+original data or any saved/named table, listing/renaming/deleting those
+saved tables, and a download/export of any of them as CSV or Excel.
 """
 import io
 import json
@@ -21,7 +21,7 @@ from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
 from ..services.connectors import SQLConnector, MongoConnector, FileConnector
-from ..services.data_loader import load_dataframe
+from ..services.data_loader import load_dataframe, load_version_dataframe, ensure_legacy_migrated
 
 router = APIRouter(prefix="/datasources", tags=["datasources"])
 settings = get_settings()
@@ -112,10 +112,61 @@ def get_schema(datasource_id: str, db: Session = Depends(get_db), user: models.U
     return ds.schema_cache or {}
 
 
+@router.get("/{datasource_id}/versions")
+def list_versions(datasource_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    ds = _get_owned_datasource(db, user, datasource_id)
+    ensure_legacy_migrated(db, ds)
+    versions = (
+        db.query(models.DatasetVersion)
+        .filter(models.DatasetVersion.datasource_id == ds.id)
+        .order_by(models.DatasetVersion.position, models.DatasetVersion.created_at)
+        .all()
+    )
+    return [
+        {
+            "id": v.id,
+            "name": v.name,
+            "parent_version_id": v.parent_version_id,
+            "step_count": len(v.cleaning_log or []),
+            "created_at": v.created_at,
+        }
+        for v in versions
+    ]
+
+
+@router.patch("/{datasource_id}/versions/{version_id}")
+def rename_version(
+    datasource_id: str,
+    version_id: str,
+    payload: schemas.RenameVersionRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    ds = _get_owned_datasource(db, user, datasource_id)
+    v = _get_owned_version(db, ds, version_id)
+    v.name = payload.name.strip()[:80] or v.name
+    db.commit()
+    return {"id": v.id, "name": v.name}
+
+
+@router.delete("/{datasource_id}/versions/{version_id}", status_code=204)
+def delete_version(
+    datasource_id: str, version_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
+):
+    ds = _get_owned_datasource(db, user, datasource_id)
+    v = _get_owned_version(db, ds, version_id)
+    has_children = db.query(models.DatasetVersion).filter(models.DatasetVersion.parent_version_id == v.id).first()
+    if has_children:
+        raise HTTPException(400, "Delete the newer tables built from this one first.")
+    db.delete(v)
+    db.commit()
+    return None
+
+
 @router.get("/{datasource_id}/preview")
 def preview_datasource(
     datasource_id: str,
-    version: str = "auto",
+    version_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
     sort_by: str | None = None,
@@ -125,8 +176,11 @@ def preview_datasource(
     user: models.User = Depends(get_current_user),
 ):
     ds = _get_owned_datasource(db, user, datasource_id)
+    ensure_legacy_migrated(db, ds)
+
+    active_version = _get_owned_version(db, ds, version_id) if version_id else None
     try:
-        df = load_dataframe(ds, version=version)
+        df = load_version_dataframe(active_version) if active_version else load_dataframe(ds, version="original")
     except Exception as e:
         raise HTTPException(400, f"Could not load data: {e}")
 
@@ -161,29 +215,32 @@ def preview_datasource(
         "total_rows": total_rows,
         "offset": offset,
         "limit": limit,
-        "has_cleaned_version": bool(ds.cleaned_data),
-        "cleaned_updated_at": ds.cleaned_updated_at,
-        "cleaning_log": ds.cleaning_log or [],
+        "version_id": active_version.id if active_version else None,
+        "version_name": active_version.name if active_version else "Original data",
+        "cleaning_log": (active_version.cleaning_log if active_version else None) or [],
     }
 
 
 @router.get("/{datasource_id}/export")
 def export_datasource(
     datasource_id: str,
-    version: str = "auto",
+    version_id: str | None = None,
     export_format: str = "csv",
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
     ds = _get_owned_datasource(db, user, datasource_id)
+    ensure_legacy_migrated(db, ds)
+
+    active_version = _get_owned_version(db, ds, version_id) if version_id else None
     try:
-        df = load_dataframe(ds, version=version)
+        df = load_version_dataframe(active_version) if active_version else load_dataframe(ds, version="original")
     except Exception as e:
         raise HTTPException(400, f"Could not load data: {e}")
 
     buf = io.BytesIO()
     safe_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in ds.name) or "data"
-    label = "cleaned" if (version == "cleaned" or (version == "auto" and ds.cleaned_data)) else "original"
+    label = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in active_version.name) if active_version else "original"
 
     if export_format == "xlsx":
         df.to_excel(buf, index=False, engine="openpyxl")
@@ -200,16 +257,6 @@ def export_datasource(
         media_type=media_type,
         headers={"Content-Disposition": f"attachment; filename=\"{filename}\""},
     )
-
-
-@router.post("/{datasource_id}/reset-cleaning", status_code=204)
-def reset_cleaning(datasource_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    ds = _get_owned_datasource(db, user, datasource_id)
-    ds.cleaned_data = None
-    ds.cleaning_log = None
-    ds.cleaned_updated_at = None
-    db.commit()
-    return None
 
 
 @router.delete("/{datasource_id}", status_code=204)
@@ -234,3 +281,12 @@ def _get_owned_datasource(db: Session, user: models.User, datasource_id: str) ->
     if not ds:
         raise HTTPException(404, "Datasource not found.")
     return ds
+
+
+def _get_owned_version(db: Session, ds: models.DataSource, version_id: str) -> models.DatasetVersion:
+    v = db.query(models.DatasetVersion).filter(
+        models.DatasetVersion.id == version_id, models.DatasetVersion.datasource_id == ds.id
+    ).first()
+    if not v:
+        raise HTTPException(404, "That saved table no longer exists.")
+    return v
