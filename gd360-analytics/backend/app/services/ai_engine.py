@@ -326,7 +326,7 @@ def _extract_json(text: str) -> dict:
     return json.loads(match.group(0))
 
 
-def _call_llm(messages: list[dict], max_tokens: int = 3000) -> str:
+def _call_llm(messages: list[dict], max_tokens: int = 3000, model_override: str | None = None) -> str:
     provider = settings.AI_PROVIDER
 
     # Kept low and the SAME across every provider so the same question,
@@ -341,8 +341,14 @@ def _call_llm(messages: list[dict], max_tokens: int = 3000) -> str:
     if provider == "groq":
         if not settings.GROQ_API_KEY:
             raise RuntimeError("GROQ_API_KEY is not set. Get a free key at https://console.groq.com/keys")
+        # model_override lets a specific caller (currently only Goku) use a
+        # different Groq model than the rest of the app - on the Groq free
+        # tier each model has its own separate daily token budget, so this
+        # is how Goku gets a budget of its own instead of racing everything
+        # else for the same one.
+        model_name = model_override or settings.GROQ_MODEL
         payload = {
-            "model": settings.GROQ_MODEL,
+            "model": model_name,
             "messages": messages,
             "temperature": _TEMPERATURE,
             # Groq (like current OpenAI-compatible APIs) treats max_tokens as
@@ -359,7 +365,7 @@ def _call_llm(messages: list[dict], max_tokens: int = 3000) -> str:
         # simple classification + short code generation, not something
         # that benefits from deep reasoning, so we keep reasoning effort
         # low and leave the budget for the real answer.
-        model_lower = settings.GROQ_MODEL.lower()
+        model_lower = model_name.lower()
         if "gpt-oss" in model_lower or "qwen" in model_lower:
             payload["reasoning_effort"] = "low"
         resp = requests.post(
@@ -432,6 +438,26 @@ def _raise_with_body(resp: requests.Response, provider_label: str) -> None:
         body = "(empty response body)"
     raise RuntimeError(
         f"{provider_label} API error {resp.status_code} for {resp.request.method} {resp.url}: {body}"
+    )
+
+
+def friendly_ai_error(e: Exception) -> str:
+    """Turns a raw provider exception (an HTTP status code plus a JSON body
+    full of internal provider/account details) into a short, plain-English
+    message that is safe and useful to show a non-technical person - the
+    real detail is still written to the server logs at every call site that
+    catches an exception, so it stays available there for debugging without
+    ever reaching the UI."""
+    text = str(e)
+    text_lower = text.lower()
+    if "429" in text or "rate_limit" in text_lower or "tokens per day" in text_lower:
+        return (
+            "The free AI plan has reached its usage limit for the moment - this is not a problem with your "
+            "data. It recovers on its own, usually within the hour. Please try again shortly."
+        )
+    return (
+        "The AI service could not complete this just now. Please try again in a moment - if this keeps "
+        "happening, let support know."
     )
 
 
@@ -1157,16 +1183,17 @@ def _generate_insight(prompt: str, summary: dict) -> str:
         {"role": "system", "content": INSIGHT_SYSTEM_PROMPT},
         {"role": "user", "content": f"The user asked: {prompt}\n\nResult data summary (JSON): {json.dumps(summary)[:4000]}"},
     ]
-    # Two attempts, with a generous token budget on each - the default free
-    # model reasons before it answers, and a small budget could be used up
+    # One attempt, with a generous token budget - the default free model
+    # reasons before it answers, and a small budget could be used up
     # entirely by that hidden reasoning on a request with a longer/more
     # detailed prompt like this one, coming back empty and silently falling
-    # back with no real numbers in it. A higher budget plus a second try
-    # recovers almost every one of those cases; every failure is also
-    # logged so a genuine, repeated provider problem is visible in the
-    # service logs instead of only ever showing up as a generic message to
-    # the person.
-    for attempt in (1, 2):
+    # back with no real numbers in it. Kept to a single try to conserve the
+    # shared free daily token budget (a second attempt would nearly double
+    # the worst-case cost of every insight); the rare empty response still
+    # falls back to a safe, honest message below rather than an error, and
+    # every failure is logged so a genuine, repeated provider problem is
+    # visible in the service logs.
+    for attempt in (1,):
         try:
             text = _call_llm(messages, max_tokens=1400).strip()
             if text:
@@ -1282,8 +1309,12 @@ def verify_answer(
         {"role": "user", "content": audit_user_content},
     ]
 
+    # A single attempt, to conserve the shared free daily token budget (see
+    # _generate_insight above for why) - the rare empty/unparseable response
+    # still falls back to the safe "could not verify right now" message
+    # below rather than an error, and the failure is logged.
     verdict = None
-    for attempt in (1, 2):
+    for attempt in (1,):
         try:
             raw = _call_llm(audit_messages, max_tokens=700)
             verdict = _extract_json(raw)
@@ -1315,19 +1346,26 @@ def verify_answer(
     return _reverify_via_replan(prompt, tables, history, action, issue)
 
 
-def _goku_profile_text(tables: dict[str, pd.DataFrame]) -> str:
+def _goku_profile_text(tables: dict[str, pd.DataFrame], max_cols: int = 40) -> str:
     """Builds the real, concrete facts Goku reasons from - unlike
     _dataset_schema_text above (used by the main analysis chat, which just
     needs column names/types), this includes how much of each column is
     missing and a few real example values, so Goku can actually judge what
     a column IS (an id, an email, a price, free text) and whether the data
     looks ready to analyze - the whole point of a beginner-guidance
-    assistant is grounded, specific advice, never a generic checklist."""
+    assistant is grounded, specific advice, never a generic checklist.
+    Capped at max_cols per table (same cap chart_suggester.profile_dataframe
+    already uses elsewhere) so a very wide dataset cannot blow up the token
+    cost of every single Goku message - Goku still gets the real column
+    count and can ask the person to point out which specific columns
+    matter, rather than silently reasoning over dozens of unshown ones."""
     blocks = []
     for name, table_df in tables.items():
         total = len(table_df)
-        lines = [f"Table \"{name}\": {total} rows, {len(table_df.columns)} columns."]
-        for col in table_df.columns:
+        all_cols = list(table_df.columns)
+        shown_cols = all_cols[:max_cols]
+        lines = [f"Table \"{name}\": {total} rows, {len(all_cols)} columns."]
+        for col in shown_cols:
             series = table_df[col]
             nulls = int(series.isna().sum())
             null_pct = round(nulls / total * 100, 1) if total else 0.0
@@ -1335,6 +1373,11 @@ def _goku_profile_text(tables: dict[str, pd.DataFrame]) -> str:
             sample_text = ", ".join(sample_values) if sample_values else "(no non-empty values)"
             lines.append(
                 f"  - {col} ({series.dtype}): {nulls} missing ({null_pct}%). Example values: {sample_text}"
+            )
+        if len(all_cols) > max_cols:
+            lines.append(
+                f"  (...and {len(all_cols) - max_cols} more columns not shown here - ask the person which "
+                "ones matter most if you need to reason about them.)"
             )
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
@@ -1375,10 +1418,17 @@ def goku_chat(
 
     messages.append({"role": "user", "content": "\n\n".join(context_parts)})
 
+    # Goku uses settings.GOKU_MODEL rather than the default GROQ_MODEL - a
+    # separate model on the Groq free tier means a separate daily token
+    # budget, so Goku no longer competes with the main analysis chat,
+    # Double-check, and insight-writing for the same shared budget. A
+    # single attempt (not two) conserves that budget further; the rare
+    # empty/unparseable response still falls back to a friendly message
+    # below rather than an error, and the failure is logged.
     parsed = None
-    for attempt in (1, 2):
+    for attempt in (1,):
         try:
-            raw = _call_llm(messages, max_tokens=900)
+            raw = _call_llm(messages, max_tokens=900, model_override=settings.GOKU_MODEL)
             parsed = _extract_json(raw)
             break
         except Exception as e:
