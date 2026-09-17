@@ -205,6 +205,29 @@ explaining how the statistical method works in the abstract. Every claim must tr
 the data summary you were given - if the summary does not contain enough to support a number, say what IS
 shown instead rather than inventing one."""
 
+VERIFY_SYSTEM_PROMPT = """You are the GD360 verification module - a second, independent reviewer whose only job
+is to audit a previous answer for correctness before a person trusts it, the way a second analyst double-checking
+a colleague work would. You are given: the user original question, the exact python/pandas code that was run to
+answer it, the REAL computed result from re-running that exact code just now, and the plain-English insight text
+that was shown to the person based on it. Check three things: (1) does the code actually implement what was
+asked - right columns, right operation, right method (e.g. if a specific method like Pearson or median was
+named, was that the one actually used); (2) does every number/claim in the insight text genuinely match the
+computed result summary you were given, with no invented or miscalculated figures; (3) is this generally a sound,
+standard way to answer this specific question, not a plausible-looking but wrong shortcut. Respond with ONLY a
+single JSON object, no prose outside it:
+
+{
+  "verified": true | false,
+  "issue": string | null   // required, one concise sentence, if verified is false: EXACTLY what is wrong,
+                            // specific enough that someone re-solving this would know not to repeat the same
+                            // mistake. null if verified is true.
+}
+
+Be a genuinely skeptical, careful reviewer - this exists specifically to catch mistakes a first pass missed, so
+do not simply confirm out of politeness. But also do not invent a problem that is not really there: if the code
+and the insight genuinely do match what was asked and the numbers shown, set verified to true. Respond with raw
+JSON only."""
+
 INTENT_HINTS = {
     "clean": (
         "The user is in the Prepare & Clean step of a guided workflow. If their request could reasonably be "
@@ -512,6 +535,63 @@ def _extract_last_code_from_history(history: list[dict] | None) -> str | None:
     return None
 
 
+# Matches the action-tagged code marker chat._recent_history embeds on an
+# assistant turn that ran real code, e.g.:
+#   (The exact python code used for this - action=analyze chart_type=heatmap: ```python ... ```)
+# The chart_type token is only present for an analyze turn (a transform has
+# no chart type of its own). Only rows saved after these columns were added
+# carry this tag at all; older rows still carry a plain code marker (for
+# the "give me the code" shortcut above) but without action=..., and are
+# deliberately not matched here - see _find_repeated_prompt_code.
+_REPEAT_CODE_RE = re.compile(
+    r"\(The exact python code used for this - action=(\w+)(?:\s+chart_type=([^\s:]+))?:\s*```(?:python)?\n?(.*?)```\)",
+    re.DOTALL,
+)
+
+
+def _find_repeated_prompt_code(prompt: str, history: list[dict] | None) -> tuple[str, str, str, str | None] | None:
+    """Looks back through recent conversation history for an earlier
+    occurrence of this EXACT SAME question (normalized for whitespace and
+    case) whose reply carries an action-tagged code marker - i.e. a genuine
+    analyze/transform this exact question already answered. If found,
+    returns (action, narrative, code, chart_type) from that earlier turn
+    (chart_type is None for a transform, or for an older row saved before
+    that tag existed), so this repeat can re-run the identical code -
+    and, for an analyze, redraw it with the identical chart type - instead
+    of asking the model to write new code from scratch. Because the code
+    would then be the literal same code, and pandas is deterministic, this
+    makes "the same question against unchanged data gives the same answer"
+    a guarantee of how the code runs, not just a strong likelihood based on
+    the model behaving consistently."""
+    if not history:
+        return None
+    normalized_prompt = re.sub(r"\s+", " ", (prompt or "").strip().lower())
+    if not normalized_prompt:
+        return None
+    for i, turn in enumerate(history):
+        if turn.get("role") != "user":
+            continue
+        turn_text = re.sub(r"\s+", " ", (turn.get("content") or "").strip().lower())
+        if turn_text != normalized_prompt:
+            continue
+        if i + 1 >= len(history):
+            continue
+        reply = history[i + 1]
+        if reply.get("role") != "assistant":
+            continue
+        match = _REPEAT_CODE_RE.search(reply.get("content") or "")
+        if not match:
+            continue
+        action = match.group(1).strip()
+        chart_type = match.group(2).strip() if match.group(2) else None
+        code = match.group(3).strip()
+        if action not in ("analyze", "transform") or not code:
+            continue
+        narrative = reply.get("content", "")[: match.start()].strip()
+        return action, narrative, code, chart_type
+    return None
+
+
 def _infer_chart_type(prompt: str, result: Any, chart_type: str | None) -> str:
     """A deterministic safety net on top of the model own chart_type choice.
     Smaller/free models sometimes write a narrative describing one chart
@@ -642,6 +722,43 @@ def analyze(
                 ],
                 "code": None,
             }
+
+    # A deterministic shortcut for the exact same question being asked
+    # again: rather than asking the model to write pandas code for it a
+    # second time (which, even at low randomness, is still an AI decision
+    # and not a hard guarantee of picking the identical approach), just
+    # re-run the identical code that answered it last time. Pandas is
+    # deterministic, so replaying the same code against the same data is
+    # guaranteed to give the same number, not just very likely to. If the
+    # data has changed since (a column renamed, a row count different), the
+    # replay naturally reflects that - it is the code that is fixed, not a
+    # cached answer. If replaying old code no longer works at all (e.g. a
+    # column it used no longer exists), this quietly falls through to the
+    # normal AI-planned flow below instead of surfacing an error for what
+    # looks, to the person, like an entirely reasonable repeat question.
+    repeat = _find_repeated_prompt_code(prompt, history)
+    if repeat:
+        repeat_action, repeat_narrative, repeat_code, repeat_chart_type = repeat
+        replay_plan = {
+            "action": repeat_action,
+            "narrative": repeat_narrative or "Re-running the same analysis as before, since this is the same question against the same data.",
+            # Reusing the exact chart_type from last time (when known) keeps
+            # the chart visually consistent too, not just the number behind
+            # it - without this, re-deriving a chart type fresh could
+            # independently land on a different, still-valid choice (e.g.
+            # a correlation matrix could be redrawn as a heatmap instead of
+            # the scatter it was shown as before) and look like a changed
+            # answer even though the math is identical.
+            "chart_type": repeat_chart_type,
+            "title": None,
+            "x_label": None,
+            "y_label": None,
+            "code": repeat_code,
+            "follow_up_suggestions": [],
+        }
+        replay_result = _execute_plan(prompt, tables, profile, replay_plan, chart_override)
+        if not replay_result.get("_retry_needed"):
+            return replay_result
 
     schema_text = _dataset_schema_text(tables)
 
@@ -849,6 +966,10 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
         "action": "analyze",
         "narrative": plan.get("narrative") or "Here is your analysis.",
         "chart_spec": chart_spec,
+        # The chart_type actually used, after any override/inference - kept
+        # so an exact repeat of this same question later can reuse it and
+        # stay visually consistent, not just numerically consistent.
+        "chart_type": chart_type,
         "insight": insight,
         "rows_before": None,
         "rows_after": None,
@@ -999,3 +1120,142 @@ def _generate_insight(prompt: str, summary: dict) -> str:
         except Exception as e:
             print(f"[ai_engine] insight generation attempt {attempt} failed: {e}")
     return _fallback_insight(summary)
+
+
+def _reverify_via_replan(
+    prompt: str, tables: dict[str, pd.DataFrame], history: list[dict] | None, action: str, issue_detail: str
+) -> dict:
+    """Used by verify_answer below when a previously-shown answer needs to
+    be redone from scratch - either its code no longer runs against the
+    current data, or a fresh review pass found a genuine logic problem with
+    it. Re-plans the request with the model from a clean slate, explicitly
+    telling it what was wrong with the first attempt so it does not simply
+    repeat the same mistake. This intentionally calls the model/execute
+    steps directly rather than going through analyze() above, so it never
+    hits the exact-repeat replay shortcut in analyze() - replaying would
+    just find and reuse that very same flawed code again."""
+    profile = profile_dataframe(next(iter(tables.values())))
+    schema_text = _dataset_schema_text(tables)
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for turn in (history or [])[-6:]:
+        messages.append({"role": turn["role"], "content": turn["content"]})
+    messages.append({
+        "role": "user",
+        "content": (
+            f"Dataset schema:\n{schema_text}\n\nUser request: {prompt}\n\n"
+            f"(A review of a previous answer to this exact request found a problem: {issue_detail} "
+            "Please solve this correctly from scratch - do not repeat that mistake.)"
+        ),
+    })
+    plan = _plan_with_retry(messages)
+    result = _execute_plan(prompt, tables, profile, plan, None)
+    result.pop("_retry_needed", None)
+    result.pop("_retry_detail", None)
+
+    if result.get("action") != action:
+        # The corrected plan disagrees about what KIND of request this even
+        # is (e.g. now thinks it should be a transform, not an analyze) -
+        # too big a change to silently swap into the existing message in
+        # place, so this surfaces as guidance instead of an auto-fix.
+        return {
+            "status": "unavailable",
+            "message": (
+                f"The review found that this needs a different kind of approach than before ({issue_detail}). "
+                "Rather than silently swap this in place, please ask the question again as a new message so "
+                "you can see the corrected approach clearly."
+            ),
+            "result": None,
+        }
+
+    return {
+        "status": "corrected",
+        "message": f"Found and corrected an issue: {issue_detail}",
+        "result": result,
+    }
+
+
+def verify_answer(
+    prompt: str,
+    tables: dict[str, pd.DataFrame],
+    code: str,
+    action: str,
+    chart_type: str | None,
+    insight: str | None,
+    history: list[dict] | None = None,
+) -> dict:
+    """Re-checks a previously computed, already-shown answer for
+    correctness, on demand (the "Double-check this" action) - rather than
+    the person having to trust a first pass indefinitely. Two things are
+    checked: that the exact code still runs and gives the same computed
+    numbers against the current data, and that a fresh, independent AI
+    audit pass - given the REAL freshly-recomputed numbers, not the old
+    ones - agrees the code and the insight genuinely are correct for the
+    question. Returns {"status": "confirmed"|"corrected"|"unavailable",
+    "message": str, "result": dict|None} - "result" (in the same shape
+    _execute_plan returns) is only present for "corrected", ready for the
+    caller to persist in place of the original message fields."""
+    df = next(iter(tables.values()))
+
+    result, error = run_sandboxed(code, tables, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
+    if error:
+        detail = error.splitlines()[-1] if error else "unknown error"
+        return _reverify_via_replan(
+            prompt, tables, history, action,
+            f"the original code no longer runs against the current data ({detail}).",
+        )
+    if action == "transform" and not isinstance(result, pd.DataFrame):
+        return _reverify_via_replan(
+            prompt, tables, history, action,
+            "the code ran but did not produce a full table as a transform should.",
+        )
+
+    summary = result_to_summary(result)
+    summary["source_row_count"] = int(len(result)) if action == "transform" else int(len(df))
+    summary = _augment_summary_with_computed_stats(summary)
+
+    not_applicable = "n/a"
+    none_shown = "(none)"
+    audit_user_content = (
+        f"The user originally asked: {prompt}\n\n"
+        f"The python code that was run to answer it:\n```python\n{code}\n```\n\n"
+        f"The chart type used to display this (only meaningful for an analyze request): {chart_type or not_applicable}\n\n"
+        f"The computed result, freshly re-run just now against the current data (JSON): "
+        f"{json.dumps(summary)[:4000]}\n\n"
+        f"The plain-English insight text that was shown to the user based on this result: {insight or none_shown}"
+    )
+    audit_messages = [
+        {"role": "system", "content": VERIFY_SYSTEM_PROMPT},
+        {"role": "user", "content": audit_user_content},
+    ]
+
+    verdict = None
+    for attempt in (1, 2):
+        try:
+            raw = _call_llm(audit_messages, max_tokens=700)
+            verdict = _extract_json(raw)
+            break
+        except Exception as e:
+            print(f"[ai_engine] verify audit attempt {attempt} failed: {e}")
+
+    if verdict is None:
+        return {
+            "status": "unavailable",
+            "message": (
+                "Automatic verification could not be completed right now (the AI service did not respond). "
+                "The original answer is unchanged - please try again in a moment."
+            ),
+            "result": None,
+        }
+
+    if bool(verdict.get("verified")):
+        return {
+            "status": "confirmed",
+            "message": (
+                "Verified: the code correctly computes what was asked, and every number in the insight "
+                "matches the freshly recomputed result. No changes were needed."
+            ),
+            "result": None,
+        }
+
+    issue = (verdict.get("issue") or "").strip() or "the original approach did not correctly answer the question."
+    return _reverify_via_replan(prompt, tables, history, action, issue)
