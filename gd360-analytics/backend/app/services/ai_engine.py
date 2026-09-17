@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 import pandas as pd
@@ -515,6 +516,44 @@ def _raise_with_body(resp: requests.Response, provider_label: str) -> None:
     )
 
 
+def _is_transient_provider_error(text: str) -> bool:
+    """True for errors that are the AI provider own servers being briefly
+    overloaded (a 503/502/504, or Gemini "high demand" message) rather
+    than anything wrong with the request itself. Google own error text
+    for these literally says the spike is "usually temporary" - so the
+    right response is a short pause and one retry, not giving up right
+    away the way we do for a malformed-JSON reply."""
+    text_lower = text.lower()
+    return (
+        "503" in text or "502" in text or "504" in text
+        or "unavailable" in text_lower
+        or "overloaded" in text_lower
+        or "high demand" in text_lower
+        or "timed out" in text_lower or "timeout" in text_lower
+    )
+
+
+def _call_llm_resilient(messages: list[dict], max_tokens: int = 3000, model_override: str | None = None) -> str:
+    """Wraps _call_llm with a single short-delay retry for transient
+    provider-side errors only (see _is_transient_provider_error) - never
+    for a 429/rate-limit, since that needs real time to clear, not a few
+    seconds. This is what keeps a passing spike of "model overloaded" from
+    Google turning into a failed request the person has to manually retry
+    themselves."""
+    try:
+        return _call_llm(messages, max_tokens=max_tokens, model_override=model_override)
+    except RuntimeError as e:
+        text = str(e)
+        text_lower = text.lower()
+        if "429" in text or "rate_limit" in text_lower or "tokens per day" in text_lower:
+            raise
+        if not _is_transient_provider_error(text):
+            raise
+        print(f"[ai_engine] transient provider error, retrying once after a short pause: {e}")
+        time.sleep(3)
+        return _call_llm(messages, max_tokens=max_tokens, model_override=model_override)
+
+
 def friendly_ai_error(e: Exception) -> str:
     """Turns a raw provider exception (an HTTP status code plus a JSON body
     full of internal provider/account details) into a short, plain-English
@@ -543,7 +582,7 @@ def _plan_with_retry(messages: list[dict]) -> dict:
     failed attempt do we surface a friendly error to the user."""
     raw = ""
     try:
-        raw = _call_llm(messages)
+        raw = _call_llm_resilient(messages)
         return _extract_json(raw)
     except (ValueError, _EmptyModelResponse):
         pass
@@ -560,7 +599,7 @@ def _plan_with_retry(messages: list[dict]) -> dict:
         },
     ]
     try:
-        raw = _call_llm(retry_messages)
+        raw = _call_llm_resilient(retry_messages)
         return _extract_json(raw)
     except (ValueError, _EmptyModelResponse):
         raise RuntimeError(
