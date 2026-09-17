@@ -56,13 +56,13 @@ class Settings(BaseSettings):
     # again (e.g. switching back, or as a manual fallback).
     AI_PROVIDER: str = "gemini"  # "gemini" | "groq" | "openai" | "anthropic"
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-2.5-flash"
+    GEMINI_MODEL: str = "gemini-3.8-flash"
     # Goku (the guided data-analytics helper on the Workspace page) talks to
     # this lighter, cheaper Gemini model instead of GEMINI_MODEL above -
     # Goku only ever writes plain guidance chat, never pandas code, so it
     # does not need the extra capability the main analysis chat does. Only
     # used when AI_PROVIDER=="gemini".
-    GEMINI_GOKU_MODEL: str = "gemini-2.5-flash-lite"
+    GEMINI_GOKU_MODEL: str = "gemini-3.5-flash-lite"
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "openai/gpt-oss-20b"
     # Goku talks to this model instead of GROQ_MODEL above, when
