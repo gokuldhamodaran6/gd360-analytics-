@@ -32,6 +32,12 @@ export type ChatTurn = {
   sourceIds?: string[];
   priorActiveVersionId?: string | null;
   newVersionId?: string | null;
+  // The backend Message.id this turn corresponds to - present on every
+  // assistant turn that computed something (analyze/transform), used to
+  // trigger a "Double-check this" re-verification of that specific answer.
+  messageId?: string | null;
+  verifyStatus?: "confirmed" | "corrected" | "unavailable";
+  verifyMessage?: string;
 };
 
 export type CustomizeSeed = { text: string; nonce: number };
@@ -113,7 +119,7 @@ function renderMessageContent(content: string) {
 
 export default function ChatPanel({
   turns, onSend, busy, onApproveTransform, onRejectTransform, onCustomizeTransform, customizeSeed,
-  versions, sourceIds, onSourceIdsChange,
+  versions, sourceIds, onSourceIdsChange, onVerify, verifyingIndex,
 }: {
   turns: ChatTurn[];
   onSend: (prompt: string) => void;
@@ -125,6 +131,12 @@ export default function ChatPanel({
   versions: DatasetVersion[];
   sourceIds: string[];
   onSourceIdsChange: (ids: string[]) => void;
+  // "Double-check this": re-verifies the computed answer for a given turn
+  // on demand. verifyingIndex is which turn (if any) is currently being
+  // checked, so only that row shows a loading state and every button is
+  // disabled while a check is in flight.
+  onVerify?: (index: number) => void;
+  verifyingIndex?: number | null;
 }) {
   const [text, setText] = useState("");
   const [workingOnOpen, setWorkingOnOpen] = useState(false);
@@ -232,6 +244,34 @@ export default function ChatPanel({
               <div className="mt-2 text-sm bg-accent/10 border border-accent/30 rounded-xl px-4 py-2.5 whitespace-pre-wrap">
                 <span className="font-semibold text-accent">Insight: </span>
                 {renderInlineBold(t.insight, "insight")}
+              </div>
+            )}
+            {t.role === "assistant" && (t.action === "analyze" || t.action === "transform") && t.messageId && (
+              <div className="mt-1.5">
+                {!t.verifyStatus ? (
+                  <button
+                    type="button"
+                    className="text-[11px] px-2.5 py-1 rounded-lg btn-secondary font-medium"
+                    disabled={busy || verifyingIndex != null}
+                    onClick={() => onVerify?.(i)}
+                  >
+                    {verifyingIndex === i ? "Double-checking..." : "Double-check this"}
+                  </button>
+                ) : t.verifyStatus === "confirmed" ? (
+                  <div className="text-[11px] text-accent flex items-start gap-1">
+                    <span className="shrink-0">&#10003;</span>
+                    <span>{t.verifyMessage || "Verified correct."}</span>
+                  </div>
+                ) : t.verifyStatus === "corrected" ? (
+                  <div className="text-[11px] text-accent flex items-start gap-1">
+                    <span className="shrink-0">&#9888;</span>
+                    <span>{t.verifyMessage || "An issue was found and corrected."}</span>
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-muted flex items-start gap-1">
+                    <span>{t.verifyMessage || "Could not verify this right now."}</span>
+                  </div>
+                )}
               </div>
             )}
             {t.role === "assistant" && t.followUp && t.followUp.length > 0 && !dismissedFollowUps.has(i) && (
