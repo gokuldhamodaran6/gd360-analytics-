@@ -277,6 +277,11 @@ def delete_datasource(datasource_id: str, db: Session = Depends(get_db), user: m
     db.query(models.Conversation).filter(models.Conversation.datasource_id == datasource_id).update(
         {models.Conversation.datasource_id: None}
     )
+    # Goku conversation history only ever makes sense grounded in this
+    # exact data source columns/profile - unlike the main chat above, it
+    # has nothing useful to say once the data it was about is gone, so it
+    # is deleted outright here instead of detached.
+    db.query(models.GokuMessage).filter(models.GokuMessage.datasource_id == datasource_id).delete()
     db.delete(ds)
     db.commit()
     return None
