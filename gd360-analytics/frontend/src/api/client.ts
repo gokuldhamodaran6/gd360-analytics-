@@ -202,3 +202,29 @@ export const chatApi = {
       .post<VerifyResult>("/chat/verify", { message_id: messageId, source_version_ids: sourceVersionIds })
       .then((r) => r.data),
 };
+
+// Goku: the guided, beginner-friendly assistant that lives only in the
+// Workspace page - see backend routers/goku.py and services/ai_engine.py
+// goku_chat for what it actually does. One conversation per data source.
+export type GokuActionPrompt = { label: string; prompt: string };
+
+export type GokuMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  action_prompts: GokuActionPrompt[] | null;
+  created_at: string;
+};
+
+export const gokuApi = {
+  getMessages: (datasourceId: string) =>
+    api.get<{ messages: GokuMessage[] }>(`/goku/${datasourceId}/messages`).then((r) => r.data),
+  chat: (datasourceId: string, message: string, sourceVersionIds: string[] | null) =>
+    api
+      .post<GokuMessage>("/goku/chat", {
+        datasource_id: datasourceId,
+        message,
+        source_version_ids: sourceVersionIds,
+      })
+      .then((r) => r.data),
+};
