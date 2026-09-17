@@ -158,12 +158,14 @@ export type ConversationSummary = {
 };
 
 export type ConversationMessage = {
+  id: string;
   role: "user" | "assistant" | "system";
   content: string;
   chart_spec: any;
   insight: string | null;
   suggestions: { charts?: any[]; stats?: any[]; follow_up?: { label: string; prompt: string }[] } | null;
   needs_clarification: boolean;
+  action: "analyze" | "transform" | "clarify" | "explain" | null;
   created_at: string;
 };
 
@@ -177,4 +179,26 @@ export type ConversationDetail = {
 export const conversationApi = {
   list: () => api.get<ConversationSummary[]>("/conversations").then((r) => r.data),
   getMessages: (id: string) => api.get<ConversationDetail>(`/conversations/${id}/messages`).then((r) => r.data),
+};
+
+// The "Double-check this" action: re-checks a previously computed answer
+// for correctness on demand, instead of the person having to just trust
+// the first pass indefinitely - see backend routers/chat.py verify_message
+// and services/ai_engine.py verify_answer for what actually happens.
+export type VerifyResult = {
+  status: "confirmed" | "corrected" | "unavailable";
+  message: string;
+  message_id: string;
+  reply_text?: string | null;
+  chart_spec?: any;
+  insight?: string | null;
+  new_version_id?: string | null;
+  new_version_name?: string | null;
+};
+
+export const chatApi = {
+  verify: (messageId: string, sourceVersionIds: string[] | null) =>
+    api
+      .post<VerifyResult>("/chat/verify", { message_id: messageId, source_version_ids: sourceVersionIds })
+      .then((r) => r.data),
 };
