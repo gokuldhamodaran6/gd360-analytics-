@@ -23,7 +23,7 @@ from .. import models, schemas
 from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
-from ..schemas_extra import ChatRequestFull
+from ..schemas_extra import ChatRequestFull, VerifyRequest
 from ..services import ai_engine
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, dataframe_to_csv_bytes, ensure_legacy_migrated, NeedsTableSelection,
@@ -71,46 +71,12 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     # than one lets a single prompt compare or combine several tables at
     # once; each entry is only loaded once even if listed twice.
     requested_ids = payload.source_version_ids or ["original"]
-    ordered_ids: list[str] = []
-    for raw_id in requested_ids:
-        key = raw_id or "original"
-        if key not in ordered_ids:
-            ordered_ids.append(key)
-
-    tables: dict[str, object] = {}
-    used_names: set[str] = set()
-    source_versions: list[models.DatasetVersion] = []
-
-    def _unique_key(name: str) -> str:
-        key, n = name, 2
-        while key in used_names:
-            key = f"{name} ({n})"
-            n += 1
-        used_names.add(key)
-        return key
-
-    for source_id in ordered_ids:
-        if source_id == "original":
-            try:
-                tables[_unique_key("Original data")] = load_dataframe(ds, table=payload.table, version="original")
-            except NeedsTableSelection as e:
-                available_list = ", ".join(e.available)
-                reply = f"This datasource has multiple tables/collections: {available_list}. Which one would you like to analyze?"
-                return _persist_and_respond(db, conversation.id, reply, needs_clarification=True)
-            except Exception as e:
-                raise HTTPException(400, f"Could not load data: {e}")
-            continue
-
-        version = db.query(models.DatasetVersion).filter(
-            models.DatasetVersion.id == source_id, models.DatasetVersion.datasource_id == ds.id,
-        ).first()
-        if not version:
-            raise HTTPException(404, "One of the selected tables no longer exists. Please update your selection and try again.")
-        try:
-            tables[_unique_key(version.name)] = load_version_dataframe(version)
-        except Exception as e:
-            raise HTTPException(400, f"Could not load data: {e}")
-        source_versions.append(version)
+    try:
+        tables, source_versions = _load_selected_tables(db, ds, requested_ids, table=payload.table)
+    except NeedsTableSelection as e:
+        available_list = ", ".join(e.available)
+        reply = f"This datasource has multiple tables/collections: {available_list}. Which one would you like to analyze?"
+        return _persist_and_respond(db, conversation.id, reply, needs_clarification=True)
 
     history = _recent_history(db, conversation.id)
 
@@ -150,6 +116,159 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         new_version_id=new_version.id if new_version else None,
         new_version_name=new_version.name if new_version else None,
         code=result.get("code"),
+        chart_type=result.get("chart_type"),
+    )
+
+
+def _load_selected_tables(
+    db: Session, ds: models.DataSource, requested_ids: list[str], table: str | None = None
+) -> tuple[dict[str, object], list[models.DatasetVersion]]:
+    """Loads every table a WORKING ON selection points at - "original"
+    always means the untouched original data, anything else is a
+    DatasetVersion.id - shared by the live /chat endpoint and by
+    /chat/verify (which re-checks a prior answer against the same kind of
+    selection it originally ran against). Raises NeedsTableSelection when
+    the datasource has more than one table/collection and none was
+    specified, or HTTPException for any other load failure - the caller
+    decides how to turn NeedsTableSelection into a response, since /chat
+    and /chat/verify handle it differently."""
+    ordered_ids: list[str] = []
+    for raw_id in requested_ids:
+        key = raw_id or "original"
+        if key not in ordered_ids:
+            ordered_ids.append(key)
+
+    tables: dict[str, object] = {}
+    used_names: set[str] = set()
+    source_versions: list[models.DatasetVersion] = []
+
+    def _unique_key(name: str) -> str:
+        key, n = name, 2
+        while key in used_names:
+            key = f"{name} ({n})"
+            n += 1
+        used_names.add(key)
+        return key
+
+    for source_id in ordered_ids:
+        if source_id == "original":
+            try:
+                tables[_unique_key("Original data")] = load_dataframe(ds, table=table, version="original")
+            except NeedsTableSelection:
+                raise
+            except Exception as e:
+                raise HTTPException(400, f"Could not load data: {e}")
+            continue
+
+        version = db.query(models.DatasetVersion).filter(
+            models.DatasetVersion.id == source_id, models.DatasetVersion.datasource_id == ds.id,
+        ).first()
+        if not version:
+            raise HTTPException(404, "One of the selected tables no longer exists. Please update your selection and try again.")
+        try:
+            tables[_unique_key(version.name)] = load_version_dataframe(version)
+        except Exception as e:
+            raise HTTPException(400, f"Could not load data: {e}")
+        source_versions.append(version)
+
+    return tables, source_versions
+
+
+@router.post("/verify", response_model=schemas.VerifyResponse)
+def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """The "Double-check this" action a person can trigger on any prior
+    analyze/transform answer, instead of just trusting the first pass
+    forever: re-runs the exact code that produced it against the current
+    data, then has a fresh, independent AI review pass check that the code
+    and the insight genuinely hold up - and if not, redoes it correctly and
+    updates this same message in place. See ai_engine.verify_answer for
+    exactly what is checked."""
+    msg = db.query(models.Message).filter(models.Message.id == payload.message_id).first()
+    if not msg:
+        raise HTTPException(404, "Message not found.")
+
+    conversation = db.query(models.Conversation).filter(
+        models.Conversation.id == msg.conversation_id, models.Conversation.owner_id == user.id
+    ).first()
+    if not conversation:
+        raise HTTPException(404, "Message not found.")
+
+    if msg.role != "assistant" or not msg.code or msg.action not in ("analyze", "transform"):
+        raise HTTPException(400, "There is no computed result attached to this message to verify.")
+
+    if not conversation.datasource_id:
+        raise HTTPException(400, "This conversation has no linked data source to verify against.")
+    ds = db.query(models.DataSource).filter(models.DataSource.id == conversation.datasource_id).first()
+    if not ds:
+        raise HTTPException(404, "Datasource not found.")
+    ensure_legacy_migrated(db, ds)
+
+    # The original question this message answered - the nearest preceding
+    # user turn in the same conversation.
+    prior_user_msg = (
+        db.query(models.Message)
+        .filter(
+            models.Message.conversation_id == conversation.id,
+            models.Message.role == "user",
+            models.Message.created_at <= msg.created_at,
+        )
+        .order_by(models.Message.created_at.desc())
+        .first()
+    )
+    prompt = prior_user_msg.content if prior_user_msg else msg.content
+
+    requested_ids = payload.source_version_ids or ["original"]
+    try:
+        tables, source_versions = _load_selected_tables(db, ds, requested_ids, table=None)
+    except NeedsTableSelection as e:
+        available_list = ", ".join(e.available)
+        raise HTTPException(400, f"This datasource has multiple tables/collections ({available_list}); please pick one before verifying.")
+
+    history = _recent_history(db, conversation.id)
+
+    try:
+        audit = ai_engine.verify_answer(
+            prompt, tables, code=msg.code, action=msg.action, chart_type=msg.chart_type,
+            insight=msg.insight, history=history,
+        )
+    except Exception as e:
+        raise HTTPException(502, f"Verification failed: {e}")
+
+    status = audit["status"]
+    if status != "corrected":
+        return schemas.VerifyResponse(status=status, message=audit["message"], message_id=msg.id)
+
+    result = audit["result"]
+    new_version = None
+    if msg.action == "transform" and result.get("cleaned_df") is not None:
+        new_version = _save_cleaning_result(db, ds, source_versions, prompt, result)
+
+    reply_text = result.get("narrative") or "Corrected."
+    if msg.action == "transform" and result.get("rows_before") is not None:
+        rows_before = result.get("rows_before")
+        rows_after = result.get("rows_after")
+        nulls_before = result.get("nulls_before")
+        nulls_after = result.get("nulls_after")
+        arrow = "→"
+        reply_text += f" ({rows_before} {arrow} {rows_after} rows, {nulls_before} {arrow} {nulls_after} missing values)"
+
+    msg.content = reply_text
+    msg.chart_spec = result.get("chart_spec")
+    msg.insight = result.get("insight")
+    msg.code = result.get("code")
+    msg.chart_type = result.get("chart_type")
+    db.commit()
+    db.refresh(msg)
+
+    return schemas.VerifyResponse(
+        status="corrected",
+        message=audit["message"],
+        message_id=msg.id,
+        reply_text=reply_text,
+        chart_spec=msg.chart_spec,
+        insight=msg.insight,
+        new_version_id=new_version.id if new_version else None,
+        new_version_name=new_version.name if new_version else None,
     )
 
 
@@ -232,9 +351,22 @@ def _recent_history(db: Session, conversation_id: str, limit: int = 8) -> list[d
         # into what the model sees for this turn (not into what the person
         # sees - that stays in the plain reply above). This is what lets a
         # later "give me the python code" / "show me the code" be answered
-        # with the real code instead of the model having nothing to go on.
+        # with the real code instead of the model having nothing to go on,
+        # and - when the action is known (rows written after this column
+        # was added) - lets an exact repeat of the same question reuse the
+        # identical code instead of asking the AI to write it again, so the
+        # same question on unchanged data is guaranteed to give the same
+        # answer. Older rows saved before this column existed have no
+        # action recorded; the marker still carries the code for the
+        # "give me the code" case, just without the action tag, so a repeat
+        # of one of those older questions simply falls back to the normal
+        # AI-planned flow instead of being reused.
         if m.role == "assistant" and m.code:
-            content = f"{content}\n\n(The exact python code used for this: ```python\n{m.code}\n```)"
+            if m.action:
+                chart_type_tag = f" chart_type={m.chart_type}" if m.chart_type else ""
+                content = f"{content}\n\n(The exact python code used for this - action={m.action}{chart_type_tag}: ```python\n{m.code}\n```)"
+            else:
+                content = f"{content}\n\n(The exact python code used for this: ```python\n{m.code}\n```)"
         history.append({"role": m.role, "content": content})
     return history
 
@@ -243,7 +375,7 @@ def _persist_and_respond(
     db: Session, conversation_id: str, reply_text: str, action: str = "analyze",
     chart_spec=None, insight=None, suggestions=None, needs_clarification=False,
     rows_before=None, rows_after=None, nulls_before=None, nulls_after=None,
-    new_version_id=None, new_version_name=None, code=None,
+    new_version_id=None, new_version_name=None, code=None, chart_type=None,
 ) -> schemas.ChatResponse:
     msg = models.Message(
         conversation_id=conversation_id,
@@ -254,6 +386,8 @@ def _persist_and_respond(
         suggestions=suggestions,
         needs_clarification=needs_clarification,
         code=code,
+        action=action,
+        chart_type=chart_type,
     )
     db.add(msg)
     db.commit()
