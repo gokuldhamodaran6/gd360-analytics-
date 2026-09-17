@@ -174,22 +174,36 @@ Rules:
 """
 
 INSIGHT_SYSTEM_PROMPT = """You are the GD360 insight-writing module - the part of a professional data analyst
-copilot that a senior analyst relies on to turn a raw result into a sharp, decision-ready takeaway. Given a
-JSON summary of the actual computed data and the user original question, respond with EXACTLY this three-part
-structure, in plain English, and nothing else before or after it:
+copilot that a senior analyst relies on to turn a raw result into a sharp, decision-ready takeaway that reads as
+genuinely derived from the computation behind it, not a vague comment added afterward. Given a JSON summary of
+the actual computed data (which may include a "computed" section with comparison figures already worked out for
+you, and a "source_row_count" giving the real sample size, n, behind the result) and the user original question,
+respond with EXACTLY this three-part structure, in plain English, and nothing else before or after it:
 
-**Key insight:** the single most important, concrete finding, citing a REAL number pulled from the data
-summary you were given (e.g. "r is about 0.99", "42% higher", "$12,400 total") - never a generic textbook
-description of the method, and never a placeholder or rounded-for-convenience number that is not actually in
-the summary. One to two sentences.
-**Implication:** what this concretely means for the business - one sentence.
+**Key insight:** the single most important, concrete finding. Cite the REAL number(s) that support it straight
+from the data summary you were given, and show how you got there - name the values being compared, the sample
+size (n) behind them when "source_row_count" is present, and the gap between them using whatever figure the
+summary already computed for you under "computed" (gap_absolute, gap_percentage_points, gap_relative_percent) -
+never recalculate a gap or percentage yourself. Pair standard statistical notation with plain English where it
+fits the number - r for a correlation, mean (or the mu symbol) for an average, n for a sample size or count,
+a gap or delta for a difference, pp for a percentage-point difference, percent for a relative change - so it
+reads as coming from real computation, not a guess. Two to three sentences.
+**Implication:** what this concretely means for the business, grounded in the same real numbers - one to two
+sentences.
 **Next step:** one specific, practical thing to investigate or try next, tied to this exact result - one
 sentence.
 
-Keep strictly to this structure and these three bolded labels - no chart-mechanics description ("this bar
-chart shows..."), no restating the question, no explaining how the statistical method works in the abstract.
-Every claim must trace back to a real number in the data summary you were given - if the summary does not
-contain enough to support a number, say what IS shown instead rather than inventing one."""
+Strict rules for accuracy, because this must never be wrong: never perform new arithmetic on the numbers in the
+summary yourself - no subtracting, dividing, or averaging on the fly. Only state a derived figure (a gap, a
+percentage-point difference, a relative percent change, a rank) if it already appears in the summary under its
+"computed" key; if a comparison you want to make was not already computed for you, describe it in words instead
+of computing a new number, since arithmetic performed in the middle of writing a sentence is exactly where small
+mistakes happen. Never invent a sample size, a p-value, a standard deviation, or any other figure that is not
+literally present in the summary you were given. Keep strictly to the three-part structure and these three
+bolded labels - no chart-mechanics description ("this bar chart shows..."), no restating the question, no
+explaining how the statistical method works in the abstract. Every claim must trace back to a real number in
+the data summary you were given - if the summary does not contain enough to support a number, say what IS
+shown instead rather than inventing one."""
 
 INTENT_HINTS = {
     "clean": (
@@ -771,6 +785,9 @@ def _run_transform(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, 
 
     new_profile = profile_dataframe(cleaned)
     summary = result_to_summary(cleaned)
+    # The real row count behind this result, so the insight can cite an
+    # actual sample size (n) instead of leaving it unstated.
+    summary["source_row_count"] = rows_after
     insight = _generate_insight(prompt, summary)
 
     return {
@@ -820,6 +837,10 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
         return out
 
     summary = result_to_summary(result)
+    # The real row count of the table this was computed from, so the
+    # insight can cite an actual sample size (n) instead of leaving it
+    # unstated or, worse, the model guessing one.
+    summary["source_row_count"] = int(len(next(iter(tables.values()))))
     insight = _generate_insight(prompt, summary)
 
     return {
@@ -840,23 +861,107 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
     }
 
 
+def _augment_summary_with_computed_stats(summary: dict) -> dict:
+    """Pre-computes a small set of comparison statistics in Python - the
+    gap between the top and bottom category, that gap expressed as
+    percentage points (when the values are ratios/proportions between 0
+    and 1) and as a relative percent change, plus the full ranking - and
+    attaches them under summary["computed"]. This exists specifically so
+    the insight-writing model is never the one doing the subtraction: a
+    model composing a sentence and doing arithmetic in the same breath is
+    exactly where a wrong number (e.g. writing "6.4 percentage points" for
+    a gap that is actually 3.4) can slip in even when every input number it
+    was given was correct. Every figure here is computed with plain Python
+    arithmetic on numbers already present in the summary, so it is
+    guaranteed correct; the model is only ever asked to narrate it."""
+    preview = summary.get("preview") or []
+    if not isinstance(preview, list) or len(preview) < 2 or len(preview) > 12:
+        return summary
+    first = preview[0]
+    if not isinstance(first, dict):
+        return summary
+
+    numeric_col = None
+    label_col = None
+    for key, val in first.items():
+        if numeric_col is None and isinstance(val, (int, float)) and not isinstance(val, bool):
+            numeric_col = key
+        elif label_col is None:
+            label_col = key
+    if numeric_col is None:
+        return summary
+
+    rows = []
+    for r in preview:
+        if not isinstance(r, dict) or numeric_col not in r:
+            continue
+        val = r.get(numeric_col)
+        if not isinstance(val, (int, float)) or isinstance(val, bool):
+            continue
+        rows.append((str(r.get(label_col, "item")), float(val)))
+    if len(rows) < 2:
+        return summary
+
+    ranked = sorted(rows, key=lambda x: x[1], reverse=True)
+    top_label, top_val = ranked[0]
+    bottom_label, bottom_val = ranked[-1]
+    gap = top_val - bottom_val
+
+    computed = {
+        "ranked": [{"label": lbl, "value": round(v, 4)} for lbl, v in ranked],
+        "top": {"label": top_label, "value": round(top_val, 4)},
+        "bottom": {"label": bottom_label, "value": round(bottom_val, 4)},
+        "gap_absolute": round(gap, 4),
+    }
+    if bottom_val:
+        computed["gap_relative_percent"] = round(gap / bottom_val * 100, 2)
+    if all(0 <= v <= 1 for _, v in rows):
+        computed["gap_percentage_points"] = round(gap * 100, 2)
+
+    summary = dict(summary)
+    summary["computed"] = computed
+    return summary
+
+
 def _fallback_insight(summary: dict) -> str:
     """Used only if the model genuinely could not write an insight after
     every retry below (e.g. a transient provider error) - builds a plain,
     still-structured insight straight from the computed summary instead of
     a message with no real content in it. Every number here is read
-    directly out of the summary produced by result_to_summary, never
-    invented, so it stays accurate even though it is simpler than what the
-    model would normally write."""
+    directly out of the summary (including the Python-computed "computed"
+    section, when present), never invented, so it stays accurate even
+    though it is simpler than what the model would normally write."""
     scalar = summary.get("scalar_result")
     if isinstance(scalar, (int, float)):
         value = round(scalar, 3)
+        n = summary.get("source_row_count")
+        n_text = f" (n = {n})" if isinstance(n, int) else ""
         return (
-            f"**Key insight:** The computed result for this request is {value}.\n"
+            f"**Key insight:** The computed result for this request is {value}{n_text}.\n"
             f"**Implication:** Compare this figure against what you would expect for these columns to judge "
             f"whether it is strong, weak, or typical.\n"
             f"**Next step:** Break this down further - for example by a category or over time - to see what is "
             f"driving this number."
+        )
+    computed = summary.get("computed") or {}
+    top = computed.get("top")
+    bottom = computed.get("bottom")
+    if top and bottom:
+        top_label = top.get("label")
+        top_value = top.get("value")
+        bottom_label = bottom.get("label")
+        bottom_value = bottom.get("value")
+        gap_points = computed.get("gap_percentage_points")
+        gap_abs = computed.get("gap_absolute")
+        gap_rel = computed.get("gap_relative_percent")
+        gap_desc = f"{gap_points} percentage points" if gap_points is not None else f"{gap_abs}"
+        relative = f" ({gap_rel}% relative)" if gap_rel is not None else ""
+        return (
+            f"**Key insight:** {top_label} leads at {top_value}, versus {bottom_label} at "
+            f"{bottom_value} - a gap of {gap_desc}{relative}.\n"
+            f"**Implication:** {top_label} is meaningfully ahead of {bottom_label} on this measure.\n"
+            f"**Next step:** Look into what is different about {top_label} versus {bottom_label} to "
+            f"understand what is driving this gap."
         )
     preview = summary.get("preview") or []
     if preview:
@@ -872,22 +977,23 @@ def _fallback_insight(summary: dict) -> str:
 
 
 def _generate_insight(prompt: str, summary: dict) -> str:
+    summary = _augment_summary_with_computed_stats(summary)
     messages = [
         {"role": "system", "content": INSIGHT_SYSTEM_PROMPT},
         {"role": "user", "content": f"The user asked: {prompt}\n\nResult data summary (JSON): {json.dumps(summary)[:4000]}"},
     ]
     # Two attempts, with a generous token budget on each - the default free
-    # model reasons before it answers, and the earlier 600-token budget
-    # could be used up entirely by that hidden reasoning on a request with
-    # a longer/more detailed prompt like this one, coming back empty and
-    # silently falling back with no real numbers in it. A higher budget
-    # plus a second try recovers almost every one of those cases; every
-    # failure is also logged so a genuine, repeated provider problem is
-    # visible in the service logs instead of only ever showing up as a
-    # generic message to the person.
+    # model reasons before it answers, and a small budget could be used up
+    # entirely by that hidden reasoning on a request with a longer/more
+    # detailed prompt like this one, coming back empty and silently falling
+    # back with no real numbers in it. A higher budget plus a second try
+    # recovers almost every one of those cases; every failure is also
+    # logged so a genuine, repeated provider problem is visible in the
+    # service logs instead of only ever showing up as a generic message to
+    # the person.
     for attempt in (1, 2):
         try:
-            text = _call_llm(messages, max_tokens=1200).strip()
+            text = _call_llm(messages, max_tokens=1400).strip()
             if text:
                 return text
         except Exception as e:
