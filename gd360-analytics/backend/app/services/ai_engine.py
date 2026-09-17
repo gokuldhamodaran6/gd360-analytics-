@@ -140,6 +140,15 @@ Rules:
   there is nothing relevant to reference, say so plainly in the narrative and, only if genuinely useful, offer
   a short example - never fabricate a new chart or run new code against the data just because nothing to
   reference was found.
+- If the request explicitly asks you to generate/create/build/make a TABLE (e.g. "Generate a table with total
+  spending, transaction count, and average spend per transaction for each city", "Create a table showing X, Y,
+  Z per <group>"), that is action="transform", never action="analyze" - even though it involves aggregating or
+  summarizing (totals, counts, averages per group). The person explicitly asked for a real table they can keep
+  working from and export, not a single chart reduced from it, so the code MUST assign the FULL resulting
+  table (every requested column, one row per group) to `result` as a pandas DataFrame, exactly like any other
+  transform. This creates a new saved version of the table - after it is done, a natural follow_up_suggestion
+  is to visualize that new table, but do not skip straight to a chart instead of actually building the table
+  that was asked for.
 - Never invent columns that are not in the schema you were given.
 - Prefer simple, correct pandas over clever one-liners.
 - For transform requests with no further detail (e.g. "clean this data" / "prepare this for analysis"), use
@@ -243,7 +252,8 @@ values are missing and what percent, and a few real example values per column - 
 column IS, such as an identifier, an email, a free-text note, a price, a date, or a category, and whether it
 looks ready to analyze), the recent conversation with Goku (you) on this data source, and - when available -
 the recent conversation in the person main analysis chat (so you never repeat advice they have already acted
-on).
+on) and a Status line telling you, as a plain fact (not your own guess), whether the most recent main-chat step
+genuinely just completed successfully and whether it was a table-creating step or a chart/insight step.
 
 Respond with ONLY a single JSON object, no prose outside it, matching exactly this schema:
 
@@ -276,6 +286,14 @@ How to behave - drive a clear, ordered process, like a real data analyst would, 
   the person may prefer a different cut, metric, or column. But never hand back an action_prompt whose prompt
   text just repeats what the person already said or already asked (word for word or close to it) - always move
   the process forward with either a new, more specific question or a concrete next step, never the same one.
+- When you are given a Status line saying the most recent main-chat step just completed successfully, open
+  your reply by confirming that plainly in one short sentence (e.g. "Done - you now have a new table with total
+  online and offline spending per city."), using the real facts you were given, never invented ones. Then hand
+  over exactly ONE action_prompt for the very next step, with its label starting with "Next:" so it reads as a
+  clear next-step button (e.g. label "Next: Visualize this", prompt "Create a bar chart comparing total online
+  and offline spending by city"). If the step that just completed created a NEW TABLE and the person goal
+  implies comparing, ranking, or visualizing, the obvious next step is a chart/analysis built on that new
+  table - do not just describe several open-ended options in prose instead of handing over one concrete step.
 - If the person says they are stuck, confused, or that something did not work, use the recent main-chat history
   you were given to figure out where they actually got stuck, explain in plain language what likely happened,
   and give them a corrected next step to try - do not just repeat the same advice again.
@@ -580,6 +598,25 @@ def _looks_like_code_request(prompt: str) -> bool:
     return bool(_CODE_REQUEST_RE.search(prompt or ""))
 
 
+# A deterministic nudge (not a hard override - the SYSTEM_PROMPT rule above
+# is the actual instruction) for the specific failure mode reported live: a
+# request that explicitly asks to generate/create/build a TABLE was instead
+# answered as a chart, because on its own the request can read like a
+# summarize/aggregate "analyze" ask to a free model. This only ever adds an
+# explicit reminder into the prompt sent to the model for this one turn - it
+# never bypasses the model or writes code itself - so a genuinely ambiguous
+# "table" mention elsewhere in a longer sentence still gets the model
+# judgement, not a forced classification.
+_TABLE_REQUEST_RE = re.compile(
+    r"\b(generate|create|build|make|produce|give me)\b[^.?!\n]{0,60}\btable\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_table_request(prompt: str) -> bool:
+    return bool(_TABLE_REQUEST_RE.search(prompt or ""))
+
+
 # Another deterministic safety net, for the exact opposite situation: the
 # person is not asking a new question at all, they are waving off whatever
 # is currently on the table (a stuck clarifying question, a failed attempt,
@@ -874,6 +911,13 @@ def analyze(
     hint = INTENT_HINTS.get(intent or "")
     if hint:
         user_content += f"\n\n(Context: {hint})"
+    if _looks_like_table_request(prompt):
+        user_content += (
+            "\n\n(Context: this request explicitly asks to generate/create/build a table - use "
+            "action=\"transform\" and assign the full resulting table to `result`, even though it involves "
+            "aggregating or summarizing per group. See the system instructions rule on explicit table "
+            "requests.)"
+        )
     if chart_override:
         user_content += f"\n\nThe user also explicitly wants these chart customizations applied: {json.dumps(chart_override)}"
     messages.append({"role": "user", "content": user_content})
@@ -1423,6 +1467,7 @@ def goku_chat(
     tables: dict[str, pd.DataFrame],
     goku_history: list[dict] | None,
     main_chat_history: list[dict] | None,
+    main_chat_status: str | None = None,
 ) -> dict:
     """Goku: the guided, beginner-friendly helper that lives only in the
     Workspace page (see routers/goku.py). Unlike the main analysis chat,
@@ -1431,8 +1476,13 @@ def goku_chat(
     missing values, example values) plus its own recent conversation and -
     when available - what has already happened in the person main
     analysis chat, so it can give concrete, grounded, step-by-step
-    guidance instead of generic advice. Returns {"reply": str,
-    "action_prompts": [{"label": str, "prompt": str}, ...]}."""
+    guidance instead of generic advice. main_chat_status, when given, is a
+    small deterministic fact (built in routers/goku.py from the real
+    database row, not inferred from prose) saying whether the most recent
+    main-chat step genuinely completed - this is what lets Goku open with a
+    real "Done" confirmation and one clear "Next:" step instead of only
+    guessing from the chat text. Returns {"reply": str, "action_prompts":
+    [{"label": str, "prompt": str}, ...]}."""
     profile_text = _goku_profile_text(tables)
 
     messages = [{"role": "system", "content": GOKU_SYSTEM_PROMPT}]
@@ -1449,6 +1499,8 @@ def goku_chat(
         context_parts.append("Recent activity in the main analysis chat:\n" + "\n".join(chat_lines))
     else:
         context_parts.append("The person has not asked the main analysis chat anything yet.")
+    if main_chat_status:
+        context_parts.append(f"Status: {main_chat_status}")
     context_parts.append(f"The person just said to you, Goku: {user_message}")
 
     messages.append({"role": "user", "content": "\n\n".join(context_parts)})
