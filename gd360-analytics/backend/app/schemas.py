@@ -113,6 +113,25 @@ class ChatResponse(BaseModel):
     new_version_name: Optional[str] = None
 
 
+# ---------- Verify ("Double-check this") ----------
+class VerifyResponse(BaseModel):
+    # "confirmed": reviewed and found correct, nothing changed.
+    # "corrected": an issue was found and this message was fixed in place
+    #   (reply_text/chart_spec/insight below are the corrected versions).
+    # "unavailable": the review itself could not be completed (a transient
+    #   AI service issue), or found a bigger problem that needs a fresh
+    #   message rather than an in-place fix - the original answer is
+    #   unchanged either way.
+    status: str
+    message: str
+    message_id: str
+    reply_text: Optional[str] = None
+    chart_spec: Optional[dict] = None
+    insight: Optional[str] = None
+    new_version_id: Optional[str] = None
+    new_version_name: Optional[str] = None
+
+
 # ---------- Dataset versions (saved/named tables) ----------
 class RenameVersionRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
