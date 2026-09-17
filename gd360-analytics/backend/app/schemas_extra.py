@@ -31,3 +31,14 @@ class VerifyRequest(BaseModel):
     # verification checks the code against the same data it originally ran
     # against (or that data as it stands now, if it has since changed).
     source_version_ids: Optional[List[str]] = None
+
+
+class GokuChatRequest(BaseModel):
+    # One message sent to Goku, the guided data-assistant chat that lives
+    # only in the Workspace page - see routers/goku.py.
+    datasource_id: str
+    message: str
+    # Same meaning as ChatRequestFull.source_version_ids above - which
+    # saved table(s) Goku should profile/reason about right now (the
+    # person current WORKING ON selection).
+    source_version_ids: Optional[List[str]] = None
