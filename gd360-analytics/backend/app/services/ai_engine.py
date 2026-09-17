@@ -257,17 +257,31 @@ Respond with ONLY a single JSON object, no prose outside it, matching exactly th
                                 // instead, or when this reply is a scope refusal (see below)
 }
 
-How to behave:
+How to behave - drive a clear, ordered process, like a real data analyst would, not a single one-off answer:
 - If this is early in the conversation and you do not yet know what the person is trying to achieve from this
-  data, ask them in plain language first - do not just start listing cleaning steps blind. Once they tell you
-  (or if it is already obvious from the data and earlier messages), lay out a short, ordered plan: what needs
-  fixing first (missing values, wrong types, duplicates - reference the REAL columns and REAL missing-value
-  counts/percentages you were given, never invented ones), then what to explore, then what to visualize to get
-  the answer they want - and hand over the FIRST step as an action_prompt so they have something concrete to do
-  right now, rather than a wall of instructions to work through alone.
+  data, ask them in plain language first - do not just start listing cleaning steps blind.
+- Once you know the goal (they told you, or it is already obvious from the data and earlier messages), judge
+  out loud, in one clear sentence, whether the data as it currently stands is actually ready to answer that
+  directly, or whether it needs a preparation step first - for example cleaning missing values, duplicates, or
+  a wrong type, or, when the question itself is a comparison between two columns (e.g. "which is doing better,
+  online or offline"), creating a NEW column that compares or combines those two columns. Reference the REAL
+  columns and REAL missing-value counts/percentages you were given, never invented ones.
+- Hand over exactly ONE action_prompt for whichever step comes first: either that preparation step, phrased as
+  something to run in the main analysis chat (e.g. "Add a column that marks each row as online or offline,
+  then compare total spending between the two"), or, if the data is already ready, the actual chart/analysis
+  to run. Running a preparation step in the main chat creates a NEW version of the table - once the recent
+  main-chat activity you were given shows that happened, move on to the next step (usually the analysis
+  itself) built on that new table, instead of repeating the same preparation suggestion.
+- If a genuinely useful alternative approach exists at any step, mention it briefly as a second action_prompt -
+  the person may prefer a different cut, metric, or column. But never hand back an action_prompt whose prompt
+  text just repeats what the person already said or already asked (word for word or close to it) - always move
+  the process forward with either a new, more specific question or a concrete next step, never the same one.
 - If the person says they are stuck, confused, or that something did not work, use the recent main-chat history
   you were given to figure out where they actually got stuck, explain in plain language what likely happened,
   and give them a corrected next step to try - do not just repeat the same advice again.
+- If the person asks a doubt or question about a step or a result at any point, answer it directly using what
+  you were given, then return to guiding the next step in the process - never drop the plan because of a side
+  question.
 - Always ground your guidance in the real profile you were given - a column with a high missing-value
   percentage is worth calling out by name; a column whose example values look like an email address, an id, or
   free text should be treated accordingly, never treated as something to average or chart as a number.
@@ -1383,6 +1397,27 @@ def _goku_profile_text(tables: dict[str, pd.DataFrame], max_cols: int = 40) -> s
     return "\n\n".join(blocks)
 
 
+def _strip_self_echo_action_prompts(action_prompts: list[dict], user_message: str) -> list[dict]:
+    """A deterministic safety net for a specific failure mode a free model
+    occasionally falls into: proposing an action_prompt whose "prompt" text
+    is essentially the exact same thing the person just said - which, if
+    clicked, just resends that same message and can loop Goku back to the
+    same clarifying question forever instead of moving the process forward.
+    Mirrors the same "trust the model generally, guarantee the obvious case"
+    layering already used elsewhere in this module (e.g.
+    _looks_like_reset_request, _find_repeated_prompt_code)."""
+    normalized_user = re.sub(r"\s+", " ", (user_message or "").strip().lower())
+    if not normalized_user:
+        return action_prompts
+    out = []
+    for item in action_prompts:
+        normalized_prompt = re.sub(r"\s+", " ", (item.get("prompt") or "").strip().lower())
+        if normalized_prompt == normalized_user:
+            continue
+        out.append(item)
+    return out
+
+
 def goku_chat(
     user_message: str,
     tables: dict[str, pd.DataFrame],
@@ -1444,4 +1479,5 @@ def goku_chat(
 
     reply = (parsed.get("reply") or "").strip() or "Could you tell me a bit more about what you would like to do with this data?"
     action_prompts = _sanitize_follow_ups(parsed.get("action_prompts"))
+    action_prompts = _strip_self_echo_action_prompts(action_prompts, user_message)
     return {"reply": reply, "action_prompts": action_prompts}
