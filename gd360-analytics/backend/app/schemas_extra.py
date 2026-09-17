@@ -19,3 +19,15 @@ class ChatRequestFull(BaseModel):
     # a prompt never silently runs against the wrong one - and picking more
     # than one lets a single prompt compare or combine several tables.
     source_version_ids: Optional[List[str]] = None
+
+
+class VerifyRequest(BaseModel):
+    # Which assistant message (a prior analyze/transform answer) to
+    # re-check for correctness on demand - the "Double-check this" action.
+    message_id: str
+    # Same meaning as ChatRequestFull.source_version_ids above - which
+    # saved table(s) to re-run the stored code against. The client sends
+    # whatever selection was active for that original answer, so
+    # verification checks the code against the same data it originally ran
+    # against (or that data as it stands now, if it has since changed).
+    source_version_ids: Optional[List[str]] = None
