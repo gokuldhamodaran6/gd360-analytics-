@@ -83,7 +83,8 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     try:
         result = ai_engine.analyze(payload.prompt, tables, history=history, chart_override=payload.chart_override, intent=payload.intent)
     except Exception as e:
-        raise HTTPException(502, f"AI analysis failed: {e}")
+        print(f"[chat] AI analysis failed: {e}")
+        raise HTTPException(502, ai_engine.friendly_ai_error(e))
 
     new_version = None
     if result.get("action") == "transform" and result.get("cleaned_df") is not None:
@@ -232,7 +233,8 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
             insight=msg.insight, history=history,
         )
     except Exception as e:
-        raise HTTPException(502, f"Verification failed: {e}")
+        print(f"[chat] Verification failed: {e}")
+        raise HTTPException(502, ai_engine.friendly_ai_error(e))
 
     status = audit["status"]
     if status != "corrected":
