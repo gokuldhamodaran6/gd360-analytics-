@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     AI_PROVIDER: str = "groq"  # "groq" | "openai" | "anthropic"
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "openai/gpt-oss-20b"
+    # Goku (the guided data-analytics helper on the Workspace page) talks to
+    # this model instead of GROQ_MODEL above. On the Groq free tier, each
+    # model has its own separate daily token budget - so giving Goku a
+    # different model gives it its own separate budget too, instead of
+    # sharing (and competing for) the same one as the main analysis chat,
+    # Double-check, and insight-writing. Only used when AI_PROVIDER=="groq".
+    GOKU_MODEL: str = "openai/gpt-oss-120b"
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o-mini"
     ANTHROPIC_API_KEY: str = ""
