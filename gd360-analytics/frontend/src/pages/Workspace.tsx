@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
-import { api, conversationApi, datasourceApi, DatasetVersion } from "../api/client";
+import { api, chatApi, conversationApi, datasourceApi, DatasetVersion } from "../api/client";
 import TopNav from "../components/TopNav";
 import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID } from "../components/ChatPanel";
 import ChartCanvas from "../components/ChartCanvas";
@@ -35,6 +35,7 @@ export default function Workspace() {
   const [styleOpen, setStyleOpen] = useState(false);
   const [chartStyle, setChartStyle] = useState<ChartStyle>(defaultChartStyle());
   const [customizeSeed, setCustomizeSeed] = useState<CustomizeSeed | null>(null);
+  const [verifyingIndex, setVerifyingIndex] = useState<number | null>(null);
 
   // The saved/named tables for this data source (created by cleaning/prep
   // prompts). `activeVersionId` is which single one - or the original data
@@ -114,7 +115,9 @@ export default function Workspace() {
           content: m.content,
           insight: m.insight,
           needsClarification: m.needs_clarification,
+          action: (m.action as ChatTurn["action"]) || undefined,
           followUp: m.suggestions?.follow_up || null,
+          messageId: m.id,
         }));
         setTurns(restored);
 
@@ -172,6 +175,7 @@ export default function Workspace() {
         priorActiveVersionId,
         newVersionId: data.new_version_id || null,
         followUp: data.follow_up_suggestions || null,
+        messageId: data.message_id,
       }]);
 
       if (data.action === "transform") {
@@ -254,6 +258,58 @@ export default function Workspace() {
     setCustomizeSeed({ text: "Also, ", nonce: Date.now() });
   };
 
+  // "Double-check this": re-verifies a previously computed answer on
+  // demand rather than asking the person to just trust the first pass -
+  // re-runs the exact code, then has a fresh AI review pass check it
+  // against the real recomputed numbers, and corrects it in place if it
+  // finds a genuine problem. See routers/chat.py verify_message.
+  const verifyTurn = async (index: number) => {
+    const t = turns[index];
+    if (!t?.messageId || verifyingIndex != null) return;
+    setVerifyingIndex(index);
+    setError("");
+    try {
+      const data = await chatApi.verify(t.messageId, t.sourceIds && t.sourceIds.length ? t.sourceIds : sourceIds);
+      setTurns((ts) => ts.map((turn, i) => {
+        if (i !== index) return turn;
+        if (data.status === "corrected") {
+          return {
+            ...turn,
+            content: data.reply_text || turn.content,
+            insight: data.insight ?? turn.insight,
+            newVersionId: data.new_version_id || turn.newVersionId,
+            resolved: turn.action === "transform" && data.new_version_id ? false : turn.resolved,
+            verifyStatus: "corrected",
+            verifyMessage: data.message,
+          };
+        }
+        return { ...turn, verifyStatus: data.status, verifyMessage: data.message };
+      }));
+
+      if (data.status === "corrected") {
+        if (data.chart_spec) {
+          setChartSpec(data.chart_spec);
+          setChartStyle(defaultChartStyle(data.chart_spec));
+          setCenterTab(t.action === "transform" ? "data" : "chart");
+        }
+        if (data.insight) setLastInsight(data.insight);
+        if (data.new_version_id) {
+          setDataRefreshKey((k) => k + 1);
+          setActiveVersionId(data.new_version_id);
+          setSourceIds([data.new_version_id]);
+        }
+      }
+    } catch (err: any) {
+      setTurns((ts) => ts.map((turn, i) => (i === index ? {
+        ...turn,
+        verifyStatus: "unavailable",
+        verifyMessage: err?.response?.data?.detail || "Could not verify this right now. Please try again.",
+      } : turn)));
+    } finally {
+      setVerifyingIndex(null);
+    }
+  };
+
   const saveChart = async () => {
     if (!displaySpec) return;
     setSaveMsg("");
@@ -312,6 +368,8 @@ export default function Workspace() {
             versions={versions}
             sourceIds={sourceIds}
             onSourceIdsChange={setSourceIds}
+            onVerify={verifyTurn}
+            verifyingIndex={verifyingIndex}
           />
         </div>
         <div className="min-h-[400px] flex flex-col gap-4 overflow-hidden">
