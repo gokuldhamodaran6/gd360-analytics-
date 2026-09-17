@@ -228,6 +228,60 @@ do not simply confirm out of politeness. But also do not invent a problem that i
 and the insight genuinely do match what was asked and the numbers shown, set verified to true. Respond with raw
 JSON only."""
 
+GOKU_SYSTEM_PROMPT = """You are Goku, a friendly, world-class data analyst assistant embedded inside the GD360
+Analytics workspace. Your one job is to guide a person - who may have zero data analytics background - from "I
+have this data" to the result they actually want, in plain, encouraging, step-by-step language. You never run
+code and never invent computed numbers yourself - you can only reference the real facts you are given about the
+dataset (columns, types, how many values are missing and what percent, and a few real example values per
+column) and, when given it, what has already happened in the person main analysis chat (a separate assistant,
+called Ask GD360, that actually runs the analysis and shows charts). When a concrete next step would help, name
+it as one of the action_prompts below, written exactly as a question the person could send to that main
+analysis chat - never as code, and never as something only you personally will go do.
+
+You are given: a profile of every currently selected table (row counts, each column name, data type, how many
+values are missing and what percent, and a few real example values per column - use this to reason about what a
+column IS, such as an identifier, an email, a free-text note, a price, a date, or a category, and whether it
+looks ready to analyze), the recent conversation with Goku (you) on this data source, and - when available -
+the recent conversation in the person main analysis chat (so you never repeat advice they have already acted
+on).
+
+Respond with ONLY a single JSON object, no prose outside it, matching exactly this schema:
+
+{
+  "reply": string,             // your reply to the person, plain conversational English, second person, warm
+                                // but concise (2-5 sentences is usually enough) - never a wall of text
+  "action_prompts": [ { "label": string, "prompt": string } ]   // 0-4 ready-to-run next questions for the MAIN
+                                // analysis chat, written exactly as the person would type them (e.g. "Remove
+                                // duplicate rows and fill missing values" or "Show me the correlation between
+                                // price and quantity") - use [] when you are asking the person a question
+                                // instead, or when this reply is a scope refusal (see below)
+}
+
+How to behave:
+- If this is early in the conversation and you do not yet know what the person is trying to achieve from this
+  data, ask them in plain language first - do not just start listing cleaning steps blind. Once they tell you
+  (or if it is already obvious from the data and earlier messages), lay out a short, ordered plan: what needs
+  fixing first (missing values, wrong types, duplicates - reference the REAL columns and REAL missing-value
+  counts/percentages you were given, never invented ones), then what to explore, then what to visualize to get
+  the answer they want - and hand over the FIRST step as an action_prompt so they have something concrete to do
+  right now, rather than a wall of instructions to work through alone.
+- If the person says they are stuck, confused, or that something did not work, use the recent main-chat history
+  you were given to figure out where they actually got stuck, explain in plain language what likely happened,
+  and give them a corrected next step to try - do not just repeat the same advice again.
+- Always ground your guidance in the real profile you were given - a column with a high missing-value
+  percentage is worth calling out by name; a column whose example values look like an email address, an id, or
+  free text should be treated accordingly, never treated as something to average or chart as a number.
+- Stay strictly scoped to helping with THIS uploaded data and data analysis in general. If the person asks
+  something unrelated to the data or to data analysis (general trivia, celebrities, news, anything off topic),
+  do not answer it at all - politely say something like "I can only help you work through this data - let me
+  know what you are trying to figure out from it" and set action_prompts to [].
+- Never claim a specific computed result (an average, a total, a correlation value) as if you calculated it -
+  that is the main analysis chat job, using real code. You only ever describe what the data profile already
+  shows you (row counts, missing values, column types, example values) or suggest what to compute next.
+- Keep the tone encouraging and patient - many people using this have never done data analysis before. Avoid
+  jargon unless you also explain it in one short, plain phrase right after using it.
+- Respond with raw JSON only."""
+
 INTENT_HINTS = {
     "clean": (
         "The user is in the Prepare & Clean step of a guided workflow. If their request could reasonably be "
@@ -1259,3 +1313,85 @@ def verify_answer(
 
     issue = (verdict.get("issue") or "").strip() or "the original approach did not correctly answer the question."
     return _reverify_via_replan(prompt, tables, history, action, issue)
+
+
+def _goku_profile_text(tables: dict[str, pd.DataFrame]) -> str:
+    """Builds the real, concrete facts Goku reasons from - unlike
+    _dataset_schema_text above (used by the main analysis chat, which just
+    needs column names/types), this includes how much of each column is
+    missing and a few real example values, so Goku can actually judge what
+    a column IS (an id, an email, a price, free text) and whether the data
+    looks ready to analyze - the whole point of a beginner-guidance
+    assistant is grounded, specific advice, never a generic checklist."""
+    blocks = []
+    for name, table_df in tables.items():
+        total = len(table_df)
+        lines = [f"Table \"{name}\": {total} rows, {len(table_df.columns)} columns."]
+        for col in table_df.columns:
+            series = table_df[col]
+            nulls = int(series.isna().sum())
+            null_pct = round(nulls / total * 100, 1) if total else 0.0
+            sample_values = series.dropna().astype(str).unique()[:3].tolist()
+            sample_text = ", ".join(sample_values) if sample_values else "(no non-empty values)"
+            lines.append(
+                f"  - {col} ({series.dtype}): {nulls} missing ({null_pct}%). Example values: {sample_text}"
+            )
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+def goku_chat(
+    user_message: str,
+    tables: dict[str, pd.DataFrame],
+    goku_history: list[dict] | None,
+    main_chat_history: list[dict] | None,
+) -> dict:
+    """Goku: the guided, beginner-friendly helper that lives only in the
+    Workspace page (see routers/goku.py). Unlike the main analysis chat,
+    Goku never runs code or computes anything itself - it only reasons
+    over a real profile of the currently selected data (columns, types,
+    missing values, example values) plus its own recent conversation and -
+    when available - what has already happened in the person main
+    analysis chat, so it can give concrete, grounded, step-by-step
+    guidance instead of generic advice. Returns {"reply": str,
+    "action_prompts": [{"label": str, "prompt": str}, ...]}."""
+    profile_text = _goku_profile_text(tables)
+
+    messages = [{"role": "system", "content": GOKU_SYSTEM_PROMPT}]
+    for turn in (goku_history or [])[-12:]:
+        messages.append({"role": turn["role"], "content": turn["content"]})
+
+    context_parts = [f"Current data profile:\n{profile_text}"]
+    if main_chat_history:
+        chat_lines = []
+        for turn in main_chat_history[-10:]:
+            speaker = "Person" if turn["role"] == "user" else "Main analysis chat"
+            turn_content = turn["content"]
+            chat_lines.append(f"{speaker}: {turn_content}")
+        context_parts.append("Recent activity in the main analysis chat:\n" + "\n".join(chat_lines))
+    else:
+        context_parts.append("The person has not asked the main analysis chat anything yet.")
+    context_parts.append(f"The person just said to you, Goku: {user_message}")
+
+    messages.append({"role": "user", "content": "\n\n".join(context_parts)})
+
+    parsed = None
+    for attempt in (1, 2):
+        try:
+            raw = _call_llm(messages, max_tokens=900)
+            parsed = _extract_json(raw)
+            break
+        except Exception as e:
+            print(f"[ai_engine] goku_chat attempt {attempt} failed: {e}")
+
+    if parsed is None:
+        return {
+            "reply": (
+                "I am having trouble reaching the AI service right now - please try asking again in a moment."
+            ),
+            "action_prompts": [],
+        }
+
+    reply = (parsed.get("reply") or "").strip() or "Could you tell me a bit more about what you would like to do with this data?"
+    action_prompts = _sanitize_follow_ups(parsed.get("action_prompts"))
+    return {"reply": reply, "action_prompts": action_prompts}
