@@ -117,7 +117,8 @@ def goku_chat(
     try:
         result = ai_engine.goku_chat(message, tables, goku_history, main_chat_history)
     except Exception as e:
-        raise HTTPException(502, f"Goku could not respond: {e}")
+        print(f"[goku] Goku could not respond: {e}")
+        raise HTTPException(502, ai_engine.friendly_ai_error(e))
 
     assistant_msg = models.GokuMessage(
         datasource_id=ds.id, owner_id=user.id, role="assistant",
