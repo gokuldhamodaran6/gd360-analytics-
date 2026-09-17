@@ -35,19 +35,31 @@ def init_db():
     _ensure_new_columns()
 
 
+# Every column added to an existing model after it first went live needs an
+# entry here (table, column name, SQL type) - see _ensure_new_columns below.
+_NEW_COLUMNS = [
+    ("messages", "code", "TEXT"),
+    ("messages", "action", "TEXT"),
+    ("messages", "chart_type", "TEXT"),
+]
+
+
 def _ensure_new_columns():
     # create_all() above only creates missing TABLES - it never alters a
     # table that already exists, and this project has no Alembic. On a live
     # database that already has data, a newly added model column (like
-    # Message.code) needs an explicit ALTER TABLE the first time this runs
-    # against it, or every insert referencing that column would fail. This
-    # is written to be safe to run on every startup: it only ever adds a
-    # column that is genuinely missing, and does nothing once it exists.
+    # Message.code or Message.action) needs an explicit ALTER TABLE the
+    # first time this runs against it, or every insert referencing that
+    # column would fail. This is written to be safe to run on every
+    # startup: it only ever adds a column that is genuinely missing, and
+    # does nothing once every column in _NEW_COLUMNS already exists.
     inspector = inspect(engine)
-    if "messages" not in inspector.get_table_names():
-        return
-    existing_columns = {c["name"] for c in inspector.get_columns("messages")}
-    if "code" in existing_columns:
-        return
-    with engine.begin() as conn:
-        conn.execute(text("ALTER TABLE messages ADD COLUMN code TEXT"))
+    existing_tables = set(inspector.get_table_names())
+    for table, column, sql_type in _NEW_COLUMNS:
+        if table not in existing_tables:
+            continue
+        existing_columns = {c["name"] for c in inspector.get_columns(table)}
+        if column in existing_columns:
+            continue
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
