@@ -80,12 +80,18 @@ def get_conversation_messages(
         "datasource_id": conv.datasource_id,
         "messages": [
             {
+                "id": m.id,
                 "role": m.role,
                 "content": m.content,
                 "chart_spec": m.chart_spec,
                 "insight": m.insight,
                 "suggestions": m.suggestions,
                 "needs_clarification": m.needs_clarification,
+                # Which kind of turn this was - needed so a resumed
+                # conversation can show the "Double-check this" action on
+                # the same messages a live one does (only analyze/transform
+                # turns that actually computed something).
+                "action": m.action,
                 "created_at": m.created_at,
             }
             for m in messages
