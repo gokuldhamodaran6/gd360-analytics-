@@ -49,16 +49,27 @@ class Settings(BaseSettings):
     CREDENTIAL_ENCRYPTION_KEY: str = ""
 
     # --- AI provider ---
-    # Free-tier default: Groq (https://console.groq.com) - generous free rate limits.
-    AI_PROVIDER: str = "groq"  # "groq" | "openai" | "anthropic"
+    # Google Gemini (https://aistudio.google.com/apikey) is the app default -
+    # its paid rate past the free allowance is a small fraction of a cent
+    # per request, so it does not hit the hard daily wall Groq free tier
+    # does. Groq is kept fully working below in case it is ever needed
+    # again (e.g. switching back, or as a manual fallback).
+    AI_PROVIDER: str = "gemini"  # "gemini" | "groq" | "openai" | "anthropic"
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+    # Goku (the guided data-analytics helper on the Workspace page) talks to
+    # this lighter, cheaper Gemini model instead of GEMINI_MODEL above -
+    # Goku only ever writes plain guidance chat, never pandas code, so it
+    # does not need the extra capability the main analysis chat does. Only
+    # used when AI_PROVIDER=="gemini".
+    GEMINI_GOKU_MODEL: str = "gemini-2.5-flash-lite"
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "openai/gpt-oss-20b"
-    # Goku (the guided data-analytics helper on the Workspace page) talks to
-    # this model instead of GROQ_MODEL above. On the Groq free tier, each
-    # model has its own separate daily token budget - so giving Goku a
-    # different model gives it its own separate budget too, instead of
-    # sharing (and competing for) the same one as the main analysis chat,
-    # Double-check, and insight-writing. Only used when AI_PROVIDER=="groq".
+    # Goku talks to this model instead of GROQ_MODEL above, when
+    # AI_PROVIDER=="groq" - see GEMINI_GOKU_MODEL above for why Goku uses a
+    # separate, lighter model; on the Groq free tier this also happened to
+    # give Goku its own separate daily token budget, since each Groq model
+    # has its own. Only used when AI_PROVIDER=="groq".
     GOKU_MODEL: str = "openai/gpt-oss-120b"
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o-mini"
