@@ -3,6 +3,7 @@ import { useParams, useSearchParams } from "react-router-dom";
 import { api, chatApi, conversationApi, datasourceApi, DatasetVersion } from "../api/client";
 import TopNav from "../components/TopNav";
 import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID } from "../components/ChatPanel";
+import GokuChat from "../components/GokuChat";
 import ChartCanvas from "../components/ChartCanvas";
 import SuggestionsPanel from "../components/SuggestionsPanel";
 import ChartStylePanel from "../components/ChartStylePanel";
@@ -452,6 +453,15 @@ export default function Workspace() {
             </div>
           </div>
         </div>
+      )}
+
+      {datasourceId && (
+        <GokuChat
+          datasourceId={datasourceId}
+          sourceIds={sourceIds}
+          busy={busy}
+          onRunInMainChat={(prompt) => runPrompt(prompt)}
+        />
       )}
     </div>
   );
