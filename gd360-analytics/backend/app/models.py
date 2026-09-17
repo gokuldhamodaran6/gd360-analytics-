@@ -156,6 +156,39 @@ class Message(Base):
     conversation = relationship("Conversation", back_populates="messages")
 
 
+class GokuMessage(Base):
+    """
+    Goku is the guided, beginner-friendly AI helper that lives only inside
+    the Workspace page (never the main Ask GD360 analysis chat, and never
+    anywhere else in the app). Its one job is to help someone who may have
+    zero data-analytics background go from "I have this data" to the
+    result they actually want, by explaining - in plain language, one
+    concrete step at a time - what to do next, and handing them a
+    ready-to-run question for the main analysis chat when that helps. Goku
+    never runs code or computes anything itself - see
+    services/ai_engine.py goku_chat for exactly what it is given and how
+    it decides what to say.
+
+    There is only ever ONE Goku conversation per (datasource, owner) -
+    unlike the main analysis chat, which can have several separate
+    conversations for the same data source, Goku always picks back up
+    exactly where the person left off on a given data source.
+    """
+    __tablename__ = "goku_messages"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    datasource_id = Column(String, ForeignKey("datasources.id"), nullable=False)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False)
+    role = Column(String, nullable=False)  # user | assistant
+    content = Column(Text, nullable=False)
+    # 0-4 ready-to-run suggestions Goku is offering right now, each shaped
+    # like {"label": short button text, "prompt": the exact question to
+    # send to the main Ask GD360 chat} - only ever set on an assistant
+    # message, null otherwise.
+    action_prompts = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Dashboard(Base):
     __tablename__ = "dashboards"
 
