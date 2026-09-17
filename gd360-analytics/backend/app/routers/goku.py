@@ -109,13 +109,14 @@ def goku_chat(
     goku_history = [{"role": m.role, "content": m.content} for m in reversed(goku_history_rows)]
 
     main_chat_history = _latest_main_chat_history(db, ds.id, user.id)
+    main_chat_status = _latest_main_chat_status(db, ds.id, user.id)
 
     user_msg = models.GokuMessage(datasource_id=ds.id, owner_id=user.id, role="user", content=message)
     db.add(user_msg)
     db.commit()
 
     try:
-        result = ai_engine.goku_chat(message, tables, goku_history, main_chat_history)
+        result = ai_engine.goku_chat(message, tables, goku_history, main_chat_history, main_chat_status=main_chat_status)
     except Exception as e:
         print(f"[goku] Goku could not respond: {e}")
         raise HTTPException(502, ai_engine.friendly_ai_error(e))
@@ -159,3 +160,37 @@ def _latest_main_chat_history(db: Session, datasource_id: str, owner_id: str, li
         .all()
     )
     return [{"role": m.role, "content": m.content} for m in reversed(msgs)]
+
+
+def _latest_main_chat_status(db: Session, datasource_id: str, owner_id: str) -> str | None:
+    """A small, deterministic fact - read straight off the real database
+    row, never inferred from chat text - about whether the most recent
+    main-chat step genuinely just completed. This is what lets Goku open
+    with a real "Done" confirmation and hand over exactly one clear "Next:"
+    step (see GOKU_SYSTEM_PROMPT), instead of only guessing that from prose,
+    which is the same "ground it in a real fact" approach the rest of this
+    app already uses. Returns None when there is nothing to report yet: no
+    main-chat activity at all, the latest turn was a clarifying question, or
+    it was a failed attempt that produced no real result (no code saved)."""
+    latest_message = (
+        db.query(models.Message)
+        .join(models.Conversation, models.Message.conversation_id == models.Conversation.id)
+        .filter(models.Conversation.datasource_id == datasource_id, models.Conversation.owner_id == owner_id)
+        .order_by(models.Message.created_at.desc())
+        .first()
+    )
+    if not latest_message or latest_message.role != "assistant":
+        return None
+    if latest_message.needs_clarification or not latest_message.code:
+        return None
+    if latest_message.action == "transform":
+        return (
+            "The most recent step in the main analysis chat just completed successfully - it created a NEW "
+            "table, now saved as a version the person can keep building on."
+        )
+    if latest_message.action == "analyze":
+        return (
+            "The most recent step in the main analysis chat just completed successfully - it produced a "
+            "chart and an insight."
+        )
+    return None
