@@ -135,6 +135,22 @@ class Message(Base):
     # nothing to go on and guessing at a brand-new, unrelated analysis.
     # Internal only - never returned directly by the API.
     code = Column(Text, nullable=True)
+    # Which kind of turn this was (analyze | transform | clarify | explain).
+    # Kept alongside code so that if the exact same question is asked again
+    # later, the app can tell whether the earlier code produced a chart
+    # (analyze) or a cleaned table (transform) - the two are replayed
+    # differently, and guessing wrong would misuse the code. Internal only -
+    # never returned directly by the API.
+    action = Column(String, nullable=True)
+    # The chart_type actually rendered for an analyze turn (e.g. "scatter",
+    # "heatmap"). Kept alongside code/action so that replaying the exact
+    # same question later reuses the same chart type too, not just the
+    # same numbers - without this, the same underlying code re-run fresh
+    # could independently pick a different (still valid) chart type and
+    # look, to the person, like a different answer even though the number
+    # behind it is identical. Internal only - never returned directly by
+    # the API.
+    chart_type = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     conversation = relationship("Conversation", back_populates="messages")
