@@ -426,6 +426,40 @@ def _call_llm(messages: list[dict], max_tokens: int = 3000, model_override: str 
             )
         return content
 
+    if provider == "gemini":
+        if not settings.GEMINI_API_KEY:
+            raise RuntimeError("GEMINI_API_KEY is not set. Get a free key at https://aistudio.google.com/apikey")
+        # model_override lets a specific caller (currently only Goku) use a
+        # lighter, cheaper Gemini model than the rest of the app - Goku only
+        # ever writes plain guidance chat, never pandas code, so it does not
+        # need the extra capability the main analysis chat does.
+        model_name = model_override or settings.GEMINI_MODEL
+        # Google publishes an OpenAI-compatible endpoint for Gemini, so this
+        # is the exact same request shape as the OpenAI branch just below -
+        # only the base URL, API key, and model name differ.
+        resp = requests.post(
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.GEMINI_API_KEY.strip()}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model_name,
+                "messages": messages,
+                "temperature": _TEMPERATURE,
+                "max_tokens": max_tokens,
+            },
+            timeout=60,
+        )
+        _raise_with_body(resp, "Gemini")
+        content = resp.json()["choices"][0]["message"]["content"]
+        if not content or not content.strip():
+            raise _EmptyModelResponse(
+                "The AI model returned an empty response, most likely because it used its "
+                "whole token budget on internal reasoning instead of answering."
+            )
+        return content
+
     if provider == "openai":
         if not settings.OPENAI_API_KEY:
             raise RuntimeError("OPENAI_API_KEY is not set.")
@@ -1386,18 +1420,26 @@ def verify_answer(
         {"role": "user", "content": audit_user_content},
     ]
 
-    # A single attempt, to conserve the shared free daily token budget (see
-    # _generate_insight above for why) - the rare empty/unparseable response
-    # still falls back to the safe "could not verify right now" message
-    # below rather than an error, and the failure is logged.
+    # A second attempt is worth it here for the same reason it is in
+    # _generate_insight above: an empty/malformed first response is usually
+    # a transient hiccup, and this is an explicit, on-demand "Double-check
+    # this" click - the person is actively waiting on it, so it is worth
+    # recovering from a shaky first attempt rather than immediately
+    # reporting "could not verify". Skipped on a real rate-limit error,
+    # since a second call right away would just hit the same wall. Every
+    # failure is logged.
     verdict = None
-    for attempt in (1,):
+    last_error_text = ""
+    for attempt in (1, 2):
         try:
             raw = _call_llm(audit_messages, max_tokens=700)
             verdict = _extract_json(raw)
             break
         except Exception as e:
+            last_error_text = str(e)
             print(f"[ai_engine] verify audit attempt {attempt} failed: {e}")
+        if "429" in last_error_text or "rate_limit" in last_error_text.lower() or "tokens per day" in last_error_text.lower():
+            break
 
     if verdict is None:
         return {
@@ -1458,6 +1500,20 @@ def _goku_profile_text(tables: dict[str, pd.DataFrame], max_cols: int = 40) -> s
             )
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
+
+
+def _goku_model_override() -> str | None:
+    """Which model override, if any, Goku should use instead of the current
+    provider default model (see GEMINI_GOKU_MODEL / GOKU_MODEL in config.py
+    for why: Goku only ever writes plain guidance chat, never pandas code,
+    so it can run on a lighter, cheaper model of its own). Returns None for
+    a provider with no separate Goku model configured, in which case Goku
+    simply uses that provider default model like every other caller does."""
+    if settings.AI_PROVIDER == "gemini":
+        return settings.GEMINI_GOKU_MODEL
+    if settings.AI_PROVIDER == "groq":
+        return settings.GOKU_MODEL
+    return None
 
 
 def _strip_self_echo_action_prompts(action_prompts: list[dict], user_message: str) -> list[dict]:
@@ -1524,21 +1580,27 @@ def goku_chat(
 
     messages.append({"role": "user", "content": "\n\n".join(context_parts)})
 
-    # Goku uses settings.GOKU_MODEL rather than the default GROQ_MODEL - a
-    # separate model on the Groq free tier means a separate daily token
-    # budget, so Goku no longer competes with the main analysis chat,
-    # Double-check, and insight-writing for the same shared budget. A
-    # single attempt (not two) conserves that budget further; the rare
-    # empty/unparseable response still falls back to a friendly message
-    # below rather than an error, and the failure is logged.
+    # Goku uses a lighter, cheaper model than the main analysis chat (see
+    # _goku_model_override above). A second attempt is worth it here for
+    # the same reason it is in _generate_insight below: an empty/malformed
+    # first response is usually a transient hiccup, not evidence the
+    # request itself is unanswerable, and Goku guidance quality matters
+    # for building trust with someone new to data analysis. The one case
+    # where retrying is pure waste is a real rate-limit error, since a
+    # second call right away would just hit the same wall - that case is
+    # detected and skipped. Every failure is logged.
     parsed = None
-    for attempt in (1,):
+    last_error_text = ""
+    for attempt in (1, 2):
         try:
-            raw = _call_llm(messages, max_tokens=900, model_override=settings.GOKU_MODEL)
+            raw = _call_llm(messages, max_tokens=900, model_override=_goku_model_override())
             parsed = _extract_json(raw)
             break
         except Exception as e:
+            last_error_text = str(e)
             print(f"[ai_engine] goku_chat attempt {attempt} failed: {e}")
+        if "429" in last_error_text or "rate_limit" in last_error_text.lower() or "tokens per day" in last_error_text.lower():
+            break
 
     if parsed is None:
         return {
