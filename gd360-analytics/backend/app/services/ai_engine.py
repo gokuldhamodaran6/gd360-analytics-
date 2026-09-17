@@ -192,11 +192,15 @@ respond with EXACTLY this three-part structure, in plain English, and nothing el
 **Key insight:** the single most important, concrete finding. Cite the REAL number(s) that support it straight
 from the data summary you were given, and show how you got there - name the values being compared, the sample
 size (n) behind them when "source_row_count" is present, and the gap between them using whatever figure the
-summary already computed for you under "computed" (gap_absolute, gap_percentage_points, gap_relative_percent) -
-never recalculate a gap or percentage yourself. Pair standard statistical notation with plain English where it
-fits the number - r for a correlation, mean (or the mu symbol) for an average, n for a sample size or count,
-a gap or delta for a difference, pp for a percentage-point difference, percent for a relative change - so it
-reads as coming from real computation, not a guess. Two to three sentences.
+summary already computed for you under "computed" - never recalculate a gap or percentage yourself, and never
+write the internal field names themselves (things like gap underscore absolute, gap underscore percentage
+underscore points, or gap underscore relative underscore percent) into your sentence - those are data labels
+for you to read, not words a person should ever see written out. Translate each one into plain language instead,
+for example "a gap of $5,911.55", "321.95 percent higher", or "5.2 percentage points higher". Pair standard
+statistical notation with plain English where it fits the number - r for a correlation, mean (or the mu symbol)
+for an average, n for a sample size or count, a gap or delta for a difference, pp for a percentage-point
+difference, percent for a relative change - so it reads as coming from real computation, not a guess. Two to
+three sentences.
 **Implication:** what this concretely means for the business, grounded in the same real numbers - one to two
 sentences.
 **Next step:** one specific, practical thing to investigate or try next, tied to this exact result - one
@@ -212,7 +216,11 @@ literally present in the summary you were given. Keep strictly to the three-part
 bolded labels - no chart-mechanics description ("this bar chart shows..."), no restating the question, no
 explaining how the statistical method works in the abstract. Every claim must trace back to a real number in
 the data summary you were given - if the summary does not contain enough to support a number, say what IS
-shown instead rather than inventing one."""
+shown instead rather than inventing one. Also never let a raw JSON key or field name from the summary you were
+given (things like "computed", "source_row_count", "preview", or any underscored label such as gap underscore
+absolute) show up as literal text in your sentences - those are internal data labels meant only for you to read,
+never words for a person to see. Always translate the number behind each one into an ordinary plain-English
+phrase before writing it."""
 
 VERIFY_SYSTEM_PROMPT = """You are the GD360 verification module - a second, independent reviewer whose only job
 is to audit a previous answer for correctness before a person trusts it, the way a second analyst double-checking
@@ -1215,9 +1223,11 @@ def _fallback_insight(summary: dict) -> str:
         gap_rel = computed.get("gap_relative_percent")
         gap_desc = f"{gap_points} percentage points" if gap_points is not None else f"{gap_abs}"
         relative = f" ({gap_rel}% relative)" if gap_rel is not None else ""
+        n = summary.get("source_row_count")
+        n_text = f" (n = {n})" if isinstance(n, int) else ""
         return (
             f"**Key insight:** {top_label} leads at {top_value}, versus {bottom_label} at "
-            f"{bottom_value} - a gap of {gap_desc}{relative}.\n"
+            f"{bottom_value} - a gap of {gap_desc}{relative}{n_text}.\n"
             f"**Implication:** {top_label} is meaningfully ahead of {bottom_label} on this measure.\n"
             f"**Next step:** Look into what is different about {top_label} versus {bottom_label} to "
             f"understand what is driving this gap."
@@ -1241,23 +1251,32 @@ def _generate_insight(prompt: str, summary: dict) -> str:
         {"role": "system", "content": INSIGHT_SYSTEM_PROMPT},
         {"role": "user", "content": f"The user asked: {prompt}\n\nResult data summary (JSON): {json.dumps(summary)[:4000]}"},
     ]
-    # One attempt, with a generous token budget - the default free model
-    # reasons before it answers, and a small budget could be used up
-    # entirely by that hidden reasoning on a request with a longer/more
-    # detailed prompt like this one, coming back empty and silently falling
-    # back with no real numbers in it. Kept to a single try to conserve the
-    # shared free daily token budget (a second attempt would nearly double
-    # the worst-case cost of every insight); the rare empty response still
-    # falls back to a safe, honest message below rather than an error, and
-    # every failure is logged so a genuine, repeated provider problem is
-    # visible in the service logs.
-    for attempt in (1,):
+    # A real, model-written insight is noticeably richer than the plain
+    # template _fallback_insight below falls back to (it cites the sample
+    # size, phrases the gap in natural language, and reads like an analyst
+    # wrote it), so it is worth one retry before giving up on it. The
+    # first attempt already has a generous token budget, so a failure here
+    # is usually either a transient provider hiccup or an empty response
+    # from a reasoning model that used its whole budget thinking rather
+    # than answering - both recover fine on a second try. The one case
+    # where retrying is pure waste is a real "tokens per day" rate limit,
+    # since a second call in the same second will hit the exact same wall -
+    # that case is detected and skipped so this never doubles the cost of
+    # an insight during an actual rate-limit stretch. Every failure is
+    # logged so a genuine, repeated provider problem is visible in the
+    # service logs.
+    last_error_text = ""
+    for attempt in (1, 2):
         try:
             text = _call_llm(messages, max_tokens=1400).strip()
             if text:
                 return text
+            last_error_text = "empty response"
         except Exception as e:
+            last_error_text = str(e)
             print(f"[ai_engine] insight generation attempt {attempt} failed: {e}")
+        if "429" in last_error_text or "rate_limit" in last_error_text.lower() or "tokens per day" in last_error_text.lower():
+            break
     return _fallback_insight(summary)
 
 
