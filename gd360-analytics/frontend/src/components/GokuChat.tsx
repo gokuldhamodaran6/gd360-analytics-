@@ -20,7 +20,10 @@ export default function GokuChat({
   // True while the main Ask GD360 chat is busy running something - Goku
   // avoids sending a new prompt into it at the same time.
   busy: boolean;
-  onRunInMainChat: (prompt: string) => void;
+  // Runs a prompt in the main "Ask GD360" chat and resolves once it has
+  // genuinely finished, true on success / false on failure - so Goku can
+  // wait for the real result before following up, instead of guessing.
+  onRunInMainChat: (prompt: string) => Promise<boolean>;
 }) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<GokuMessage[]>([]);
@@ -28,6 +31,9 @@ export default function GokuChat({
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  // The prompt behind an action-prompt click that did not complete, so the
+  // Retry button (shown alongside the error) knows exactly what to redo.
+  const [retryPrompt, setRetryPrompt] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -63,6 +69,7 @@ export default function GokuChat({
     const toSend = (message ?? text).trim();
     if (!toSend || sending) return;
     setError("");
+    setRetryPrompt(null);
     setText("");
     setMessages((m) => [
       ...m,
@@ -74,6 +81,49 @@ export default function GokuChat({
       setMessages((m) => [...m, reply]);
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Goku could not respond. Please try again.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // Clicking one of Goku's suggested next-step buttons used to just fire
+  // the prompt into the main chat silently, with no sign in Goku's own
+  // conversation that anything happened, and no automatic follow-up once
+  // it finished - the person had to come back and ask Goku again to find
+  // out. This instead: (1) echoes the click as a sent message right here
+  // in Goku's own pane, exactly like typing it would, (2) waits for the
+  // main chat to genuinely finish, then (3) automatically asks Goku the
+  // same thing for real - which persists it and, because the main-chat
+  // step has now genuinely completed, lets Goku open with a real "Done"
+  // confirmation and hand over the next step (see GOKU_SYSTEM_PROMPT /
+  // main_chat_status on the backend). Any failure along the way leaves a
+  // Retry button in place rather than silently going nowhere.
+  const runActionPrompt = async (prompt: string) => {
+    if (sending || busy) return;
+    setError("");
+    setRetryPrompt(null);
+    setMessages((m) => [
+      ...m,
+      { id: `local-${Date.now()}`, role: "user", content: prompt, action_prompts: null, created_at: new Date().toISOString() },
+    ]);
+    setSending(true);
+    try {
+      const ranOk = await onRunInMainChat(prompt);
+      if (!ranOk) {
+        setError("That did not complete in the main chat, so I have not followed up yet.");
+        setRetryPrompt(prompt);
+        return;
+      }
+      try {
+        const reply = await gokuApi.chat(datasourceId, prompt, sourceIds.length ? sourceIds : null);
+        setMessages((m) => [...m, reply]);
+      } catch (err: any) {
+        // The main-chat step itself succeeded - only Goku's own follow-up
+        // failed - so say that precisely rather than implying the result
+        // itself is in doubt.
+        setError(err?.response?.data?.detail || "That finished in the main chat, but Goku could not follow up just now.");
+        setRetryPrompt(prompt);
+      }
     } finally {
       setSending(false);
     }
@@ -126,8 +176,8 @@ export default function GokuChat({
                         key={ai}
                         type="button"
                         className="text-xs px-2.5 py-1.5 rounded-lg btn-secondary font-medium text-left"
-                        disabled={busy}
-                        onClick={() => onRunInMainChat(a.prompt)}
+                        disabled={busy || sending}
+                        onClick={() => runActionPrompt(a.prompt)}
                       >
                         {a.label}
                       </button>
@@ -145,7 +195,21 @@ export default function GokuChat({
             <div ref={bottomRef} />
           </div>
 
-          {error && <div className="px-3 pb-1 text-xs text-red-400">{error}</div>}
+          {error && (
+            <div className="px-3 pb-1.5 flex items-center gap-2">
+              <span className="text-xs text-red-400">{error}</span>
+              {retryPrompt && (
+                <button
+                  type="button"
+                  className="text-xs px-2 py-1 rounded-lg btn-secondary font-medium shrink-0"
+                  disabled={sending || busy}
+                  onClick={() => runActionPrompt(retryPrompt)}
+                >
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
 
           <div className="p-3 border-t border-border flex gap-2 shrink-0">
             <input
