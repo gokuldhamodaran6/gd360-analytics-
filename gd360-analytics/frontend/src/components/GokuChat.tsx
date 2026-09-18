@@ -11,7 +11,7 @@ import { gokuApi, GokuMessage } from "../api/client";
 // never computes anything itself - see backend routers/goku.py and
 // services/ai_engine.py goku_chat.
 export default function GokuChat({
-  datasourceId, sourceIds, busy, onRunInMainChat,
+  datasourceId, sourceIds, busy, onRunInMainChat, analysisMode, onAnalysisModeChange,
 }: {
   datasourceId: string;
   // The same WORKING ON selection driving the main chat, so Goku reasons
@@ -24,6 +24,12 @@ export default function GokuChat({
   // genuinely finished, true on success / false on failure - so Goku can
   // wait for the real result before following up, instead of guessing.
   onRunInMainChat: (prompt: string) => Promise<boolean>;
+  // The same one-click/step-by-step preference the main chat toggle
+  // controls (see ChatPanel). Goku offers the same choice, as buttons,
+  // right at the start of a brand new conversation - so a person who opens
+  // Goku first, before ever touching the main chat, still gets asked.
+  analysisMode?: "auto" | "guided";
+  onAnalysisModeChange?: (mode: "auto" | "guided") => void;
 }) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<GokuMessage[]>([]);
@@ -34,6 +40,12 @@ export default function GokuChat({
   // The prompt behind an action-prompt click that did not complete, so the
   // Retry button (shown alongside the error) knows exactly what to redo.
   const [retryPrompt, setRetryPrompt] = useState<string | null>(null);
+  // Whether Goku has already asked (or the person has already answered,
+  // by typing straight past it) the one-click/step-by-step preference for
+  // THIS data source. Remembered per data source in localStorage - purely
+  // a per-viewer convenience, so it survives closing and reopening Goku
+  // without needing a real backend message (asking costs no AI tokens).
+  const [modeAsked, setModeAsked] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -44,7 +56,40 @@ export default function GokuChat({
     setMessages([]);
     setLoaded(false);
     setError("");
+    try {
+      setModeAsked(localStorage.getItem(`gd360-goku-mode-asked-${datasourceId}`) === "1");
+    } catch {
+      // Private browsing / blocked storage - Goku will just offer the
+      // choice again next time, which is harmless.
+      setModeAsked(false);
+    }
   }, [datasourceId]);
+
+  // Marks the preference as settled for this data source, whether the
+  // person picked a button or just started typing straight past it - both
+  // are a real answer (typing means they are fine with whatever is
+  // currently set), so the card never needs to interrupt them again here.
+  const markModeAsked = () => {
+    setModeAsked(true);
+    try {
+      localStorage.setItem(`gd360-goku-mode-asked-${datasourceId}`, "1");
+    } catch {
+      // Nothing to do - the card may just reappear next time, which is a
+      // minor inconvenience, not a failure.
+    }
+  };
+
+  const pickMode = (mode: "auto" | "guided") => {
+    onAnalysisModeChange?.(mode);
+    markModeAsked();
+    const ack = mode === "guided"
+      ? "Got it - I will pause after each step so you can confirm before we move on. You can switch this anytime with the toggle at the top of Ask GD360. Now, what would you like to find out from this data?"
+      : "Got it - I will handle preparation and analysis for you automatically, one step after another, in order. You can switch this anytime with the toggle at the top of Ask GD360. Now, what would you like to find out from this data?";
+    setMessages((m) => [
+      ...m,
+      { id: "local-mode-ack", role: "assistant", content: ack, action_prompts: null, created_at: new Date().toISOString() },
+    ]);
+  };
 
   useEffect(() => {
     if (!open || loaded) return;
@@ -71,6 +116,7 @@ export default function GokuChat({
     setError("");
     setRetryPrompt(null);
     setText("");
+    markModeAsked();
     setMessages((m) => [
       ...m,
       { id: `local-${Date.now()}`, role: "user", content: toSend, action_prompts: null, created_at: new Date().toISOString() },
@@ -102,6 +148,7 @@ export default function GokuChat({
     if (sending || busy) return;
     setError("");
     setRetryPrompt(null);
+    markModeAsked();
     setMessages((m) => [
       ...m,
       { id: `local-${Date.now()}`, role: "user", content: prompt, action_prompts: null, created_at: new Date().toISOString() },
@@ -160,6 +207,27 @@ export default function GokuChat({
 
           <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
             {!loaded && !error && <div className="text-sm text-muted px-1">Loading Goku...</div>}
+            {loaded && !error && messages.length === 0 && !modeAsked && (
+              <div className="rounded-2xl border border-border bg-surface2 px-3.5 py-3 text-sm rounded-bl-sm">
+                <div className="font-medium mb-2">Before we start - how would you like me to guide you?</div>
+                <div className="flex flex-col gap-1.5">
+                  <button
+                    type="button"
+                    className="text-left text-xs px-2.5 py-2 rounded-lg btn-secondary font-medium"
+                    onClick={() => pickMode("auto")}
+                  >
+                    One-click - handle everything for me automatically, in order
+                  </button>
+                  <button
+                    type="button"
+                    className="text-left text-xs px-2.5 py-2 rounded-lg btn-secondary font-medium"
+                    onClick={() => pickMode("guided")}
+                  >
+                    Step-by-step - pause after each step so I can confirm with you
+                  </button>
+                </div>
+              </div>
+            )}
             {messages.map((m, i) => (
               <div key={m.id || i} className={`max-w-[92%] ${m.role === "user" ? "ml-auto" : ""}`}>
                 <div
