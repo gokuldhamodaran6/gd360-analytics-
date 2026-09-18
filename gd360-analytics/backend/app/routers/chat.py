@@ -72,18 +72,31 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     # once; each entry is only loaded once even if listed twice.
     requested_ids = payload.source_version_ids or ["original"]
     try:
-        tables, source_versions = _load_selected_tables(db, ds, requested_ids, table=payload.table)
+        tables, source_versions, original_df = _load_selected_tables(db, ds, requested_ids, table=payload.table)
     except NeedsTableSelection as e:
         available_list = ", ".join(e.available)
         reply = f"This datasource has multiple tables/collections: {available_list}. Which one would you like to analyze?"
         return _persist_and_respond(db, conversation.id, reply, needs_clarification=True)
+
+    if original_df is None:
+        # The person is working on a derived table, not the original data -
+        # load the original too (best-effort only, never blocks the main
+        # request on failure) so a prep step can pull in a column that
+        # table is missing straight from there, instead of the person
+        # having to notice the gap, switch WORKING ON by hand, and ask
+        # again from scratch - see ai_engine._schema_with_fallback.
+        try:
+            original_df = load_dataframe(ds, table=payload.table, version="original")
+        except Exception as e:
+            print(f"[chat] Could not load original data as a merge fallback: {e}")
+            original_df = None
 
     history = _recent_history(db, conversation.id)
 
     try:
         result = ai_engine.analyze(
             payload.prompt, tables, history=history, chart_override=payload.chart_override, intent=payload.intent,
-            guided=(payload.analysis_mode == "guided"), skip_prep=payload.skip_prep,
+            guided=(payload.analysis_mode == "guided"), skip_prep=payload.skip_prep, original_df=original_df,
         )
     except Exception as e:
         print(f"[chat] AI analysis failed: {e}")
@@ -153,7 +166,7 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
 
 def _load_selected_tables(
     db: Session, ds: models.DataSource, requested_ids: list[str], table: str | None = None
-) -> tuple[dict[str, object], list[models.DatasetVersion]]:
+) -> tuple[dict[str, object], list[models.DatasetVersion], object]:
     """Loads every table a WORKING ON selection points at - "original"
     always means the untouched original data, anything else is a
     DatasetVersion.id - shared by the live /chat endpoint and by
@@ -162,7 +175,12 @@ def _load_selected_tables(
     the datasource has more than one table/collection and none was
     specified, or HTTPException for any other load failure - the caller
     decides how to turn NeedsTableSelection into a response, since /chat
-    and /chat/verify handle it differently."""
+    and /chat/verify handle it differently.
+
+    Also returns the original, untouched dataframe whenever it was part of
+    this selection (None otherwise - loading it when it was not asked for
+    is the caller job, see the "original data as a merge fallback" note in
+    both endpoints below and ai_engine._schema_with_fallback)."""
     ordered_ids: list[str] = []
     for raw_id in requested_ids:
         key = raw_id or "original"
@@ -172,6 +190,7 @@ def _load_selected_tables(
     tables: dict[str, object] = {}
     used_names: set[str] = set()
     source_versions: list[models.DatasetVersion] = []
+    original_df = None
 
     def _unique_key(name: str) -> str:
         key, n = name, 2
@@ -184,11 +203,12 @@ def _load_selected_tables(
     for source_id in ordered_ids:
         if source_id == "original":
             try:
-                tables[_unique_key("Original data")] = load_dataframe(ds, table=table, version="original")
+                original_df = load_dataframe(ds, table=table, version="original")
             except NeedsTableSelection:
                 raise
             except Exception as e:
                 raise HTTPException(400, f"Could not load data: {e}")
+            tables[_unique_key("Original data")] = original_df
             continue
 
         version = db.query(models.DatasetVersion).filter(
@@ -202,7 +222,7 @@ def _load_selected_tables(
             raise HTTPException(400, f"Could not load data: {e}")
         source_versions.append(version)
 
-    return tables, source_versions
+    return tables, source_versions, original_df
 
 
 @router.post("/verify", response_model=schemas.VerifyResponse)
@@ -250,17 +270,24 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
 
     requested_ids = payload.source_version_ids or ["original"]
     try:
-        tables, source_versions = _load_selected_tables(db, ds, requested_ids, table=None)
+        tables, source_versions, original_df = _load_selected_tables(db, ds, requested_ids, table=None)
     except NeedsTableSelection as e:
         available_list = ", ".join(e.available)
         raise HTTPException(400, f"This datasource has multiple tables/collections ({available_list}); please pick one before verifying.")
+
+    if original_df is None:
+        try:
+            original_df = load_dataframe(ds, table=None, version="original")
+        except Exception as e:
+            print(f"[chat] Could not load original data as a merge fallback for verify: {e}")
+            original_df = None
 
     history = _recent_history(db, conversation.id)
 
     try:
         audit = ai_engine.verify_answer(
             prompt, tables, code=msg.code, action=msg.action, chart_type=msg.chart_type,
-            insight=msg.insight, history=history,
+            insight=msg.insight, history=history, original_df=original_df,
         )
     except Exception as e:
         print(f"[chat] Verification failed: {e}")
