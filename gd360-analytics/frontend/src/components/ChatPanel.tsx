@@ -32,6 +32,13 @@ export type ChatTurn = {
   sourceIds?: string[];
   priorActiveVersionId?: string | null;
   newVersionId?: string | null;
+  // Set only in step-by-step ("guided") analysis mode, right after this
+  // turn prepared a table but has NOT yet run the actual analysis on it -
+  // rendered as a single prominent "Continue" button (see
+  // onContinueAnalysis). Cleared client-side (continuedInto set instead)
+  // once that button has been used, so it cannot be clicked twice.
+  continueAction?: { label: string; prompt: string; version_id: string } | null;
+  continuedInto?: boolean;
   // The backend Message.id this turn corresponds to - present on every
   // assistant turn that computed something (analyze/transform), used to
   // trigger a "Double-check this" re-verification of that specific answer.
@@ -118,8 +125,8 @@ function renderMessageContent(content: string) {
 }
 
 export default function ChatPanel({
-  turns, onSend, busy, onApproveTransform, onRejectTransform, onCustomizeTransform, customizeSeed,
-  versions, sourceIds, onSourceIdsChange, onVerify, verifyingIndex,
+  turns, onSend, busy, onApproveTransform, onRejectTransform, onCustomizeTransform, onContinueAnalysis, customizeSeed,
+  versions, sourceIds, onSourceIdsChange, onVerify, verifyingIndex, analysisMode, onAnalysisModeChange,
 }: {
   turns: ChatTurn[];
   onSend: (prompt: string) => void;
@@ -127,6 +134,9 @@ export default function ChatPanel({
   onApproveTransform?: (index: number) => void;
   onRejectTransform?: (index: number) => void;
   onCustomizeTransform?: (index: number) => void;
+  // "Continue -> run the analysis": the button on a paused, step-by-step
+  // preparation turn (see ChatTurn.continueAction).
+  onContinueAnalysis?: (index: number) => void;
   customizeSeed?: CustomizeSeed | null;
   versions: DatasetVersion[];
   sourceIds: string[];
@@ -137,6 +147,13 @@ export default function ChatPanel({
   // disabled while a check is in flight.
   onVerify?: (index: number) => void;
   verifyingIndex?: number | null;
+  // How much control the person wants over an analysis question that needs
+  // its own data-preparation step first - "auto" (one smooth explained
+  // answer) or "guided" (pause after preparation for a confirm). Shown as
+  // a small toggle at the top of the chat so it is available from the very
+  // first question, and switchable any time after.
+  analysisMode?: "auto" | "guided";
+  onAnalysisModeChange?: (mode: "auto" | "guided") => void;
 }) {
   const [text, setText] = useState("");
   const [workingOnOpen, setWorkingOnOpen] = useState(false);
@@ -197,14 +214,43 @@ export default function ChatPanel({
     setText("");
   };
 
-  const lastTransformIndex = turns.reduce((last, t, i) => (t.action === "transform" ? i : last), -1);
+  // The most recent turn that created (or is in the middle of creating) a
+  // saved table - a "clean this data" transform, or an analyze question
+  // that had to prepare its own table first - is the only one that still
+  // shows Approve/Reject/Customize further, so an older, already-superseded
+  // result never gets confused for the current one.
+  const lastVersionTurnIndex = turns.reduce((last, t, i) => (t.newVersionId ? i : last), -1);
 
   return (
     <>
     <div className="card flex flex-col h-full">
       <div className="p-4 border-b border-border">
-        <div className="font-semibold">Ask GD360</div>
-        <div className="text-xs text-muted mt-0.5">Clean, explore, visualize, or just ask a question. GD360 writes and runs the work itself.</div>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <div className="font-semibold">Ask GD360</div>
+            <div className="text-xs text-muted mt-0.5">Clean, explore, visualize, or just ask a question. GD360 writes and runs the work itself.</div>
+          </div>
+          {onAnalysisModeChange && (
+            <div className="shrink-0 flex rounded-lg border border-border overflow-hidden text-[11px] font-medium" role="group" aria-label="How much control do you want over analysis">
+              <button
+                type="button"
+                title="Explain preparation and show the result in one smooth answer"
+                className={`px-2 py-1 transition ${analysisMode !== "guided" ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"}`}
+                onClick={() => onAnalysisModeChange("auto")}
+              >
+                One-click
+              </button>
+              <button
+                type="button"
+                title="Pause after each table is prepared so you can confirm before the analysis runs"
+                className={`px-2 py-1 transition border-l border-border ${analysisMode === "guided" ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"}`}
+                onClick={() => onAnalysisModeChange("guided")}
+              >
+                Step-by-step
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -225,12 +271,17 @@ export default function ChatPanel({
               {t.action === "transform" && (
                 <div className="text-[10px] uppercase tracking-wide text-accent font-semibold mb-1">Data cleaned</div>
               )}
+              {t.action === "analyze" && t.newVersionId && (
+                <div className="text-[10px] uppercase tracking-wide text-accent font-semibold mb-1">
+                  {t.continueAction ? "Table prepared" : "Table prepared for this analysis"}
+                </div>
+              )}
               {t.action === "explain" && (
                 <div className="text-[10px] uppercase tracking-wide text-accent font-semibold mb-1">Answer</div>
               )}
               {renderMessageContent(t.content)}
             </div>
-            {t.action === "transform" && t.rowsBefore != null && (
+            {t.rowsBefore != null && (
               <div className="mt-1.5 flex flex-wrap gap-2 text-[11px]">
                 <span className="bg-surface2 border border-border rounded-full px-2.5 py-1">
                   Rows: {t.rowsBefore} &rarr; {t.rowsAfter}
@@ -246,7 +297,7 @@ export default function ChatPanel({
                 {renderInlineBold(t.insight, "insight")}
               </div>
             )}
-            {t.role === "assistant" && (t.action === "analyze" || t.action === "transform") && t.messageId && (
+            {t.role === "assistant" && (t.action === "analyze" || t.action === "transform") && t.messageId && !t.continueAction && (
               <div className="mt-1.5">
                 {!t.verifyStatus ? (
                   <button
@@ -303,7 +354,7 @@ export default function ChatPanel({
                 </div>
               </div>
             )}
-            {t.action === "transform" && i === lastTransformIndex && (
+            {t.newVersionId && i === lastVersionTurnIndex && (
               <div className="mt-2">
                 {t.resolved ? (
                   <div className="text-[11px] text-accent flex items-center gap-1">
@@ -334,6 +385,24 @@ export default function ChatPanel({
                       Customize further
                     </button>
                   </div>
+                )}
+              </div>
+            )}
+            {t.continueAction && (
+              <div className="mt-2">
+                {t.continuedInto ? (
+                  <div className="text-[11px] text-accent flex items-center gap-1">
+                    <span>&#10003;</span> Continued into the analysis below
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="text-xs px-3 py-1.5 rounded-lg bg-primary text-white font-semibold hover:opacity-90 transition disabled:opacity-60"
+                    disabled={busy}
+                    onClick={() => onContinueAnalysis?.(i)}
+                  >
+                    {t.continueAction.label}
+                  </button>
                 )}
               </div>
             )}
