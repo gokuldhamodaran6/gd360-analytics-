@@ -553,6 +553,8 @@ export default function Workspace() {
           sourceIds={sourceIds}
           busy={busy}
           onRunInMainChat={(prompt) => runPrompt(prompt)}
+          analysisMode={analysisMode}
+          onAnalysisModeChange={setAnalysisMode}
         />
       )}
     </div>
