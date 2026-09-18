@@ -19,6 +19,17 @@ class ChatRequestFull(BaseModel):
     # a prompt never silently runs against the wrong one - and picking more
     # than one lets a single prompt compare or combine several tables.
     source_version_ids: Optional[List[str]] = None
+    # The person choice of how much control they want over an analysis
+    # question that needs its own data preparation step first: "auto" (the
+    # default) explains preparation and shows the result in one smooth
+    # answer; "guided" pauses right after preparation so they can confirm
+    # before the actual analysis runs - see ai_engine.analyze `guided`.
+    analysis_mode: Optional[str] = "auto"
+    # True only for the follow-up request that continues a paused, guided
+    # turn: tells the AI this exact table was already prepared for this
+    # exact question, so it should analyze it directly instead of
+    # preparing it again - see ai_engine.analyze `skip_prep`.
+    skip_prep: bool = False
 
 
 class VerifyRequest(BaseModel):
