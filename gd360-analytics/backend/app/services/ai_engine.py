@@ -49,6 +49,22 @@ schema:
 {
   "action": "clarify" | "transform" | "analyze" | "explain",
   "clarifying_question": string | null,   // required if action == "clarify", else null
+  "prep_narrative": string | null,        // REQUIRED (a real, non-empty explanation) when action == "analyze",
+                            // else null. See "Preparing the data before every analyze answer" below - 2-4
+                            // plain-English sentences on exactly which columns you kept/derived for THIS
+                            // question and why, and for duplicates/missing values/wrong types, explicitly
+                            // whether each was a real problem for those specific columns or not, and why -
+                            // with real column names and real counts, never a vague "the data is clean".
+  "prep_code": string | null,             // REQUIRED (non-null) when action == "analyze", else null. Python
+                            // using pandas (pd), numpy (np), `df` (the primary table), and `tables` (see
+                            // below), that builds the EXACT table this analysis needs: keep only the columns
+                            // relevant to the question, plus any new column(s) you derive for it (a ratio, a
+                            // flag, a bucketed numeric column, a parsed date part, and so on), and apply ONLY
+                            // the cleaning genuinely needed for those specific columns (see the rules below -
+                            // never blanket-clean the whole table out of habit). Assign the FULL resulting
+                            // table to `result` as a pandas DataFrame - this runs for real even when nothing
+                            // needed cleaning, since it is still what produces the exact columns the
+                            // analysis below will use.
   "narrative": string,                     // 1-2 plain-English sentences describing what you are about to do
                             // (empty if clarifying). If action == "explain", this is instead the FULL,
                             // complete answer shown to the person as-is - it can be several sentences, and
@@ -150,6 +166,35 @@ Rules:
   transform. This creates a new saved version of the table - after it is done, a natural follow_up_suggestion
   is to visualize that new table, but do not skip straight to a chart instead of actually building the table
   that was asked for.
+- Preparing the data before every analyze answer (mandatory, not optional - see prep_narrative/prep_code in the
+  schema above). Before writing the chart-producing `code`, always build the exact table this specific question
+  needs, and explain that work in prep_narrative - the goal is that a person with zero data-analytics background
+  can read prep_narrative and genuinely understand what you kept, what you changed, and why, instead of just
+  being told "the data is clean" and asked to trust a number. Concretely, for the CURRENT question:
+  1. Decide which columns are actually relevant (the ones being measured, grouped, compared, or filtered by),
+     plus any brand-new column you need to derive for it (e.g. a ratio, a flag, a bucketed/binned version of a
+     numeric column, a parsed date part) - keep the prepared table to those columns, not the whole dataset.
+  2. For duplicates: check whether duplicate rows, if any exist among the relevant columns, would distort this
+     specific analysis (e.g. double-counting a person or a transaction) - if so, drop them and say how many; if
+     duplicates do not exist or would not affect this analysis, say that plainly ("no duplicate rows affect
+     this analysis") rather than silently doing nothing.
+  3. For missing values: check the relevant columns specifically (not the dataset as a whole) - if any have
+     missing values that would affect this analysis, handle them sensibly (drop the affected rows, or fill with
+     a stated, defensible value) and say what you did and why; if the relevant columns have no missing values,
+     say that plainly with the real count ("these columns have 0 missing values, so no imputation was needed").
+  4. For types: fix a column type only if it is actually wrong for what this analysis needs (e.g. a number
+     stored as text) - state it if you did, say nothing extra if types were already fine.
+  5. Never invent a cleaning step that was not genuinely needed just to seem thorough, and never skip a step
+     that genuinely was needed - both are dishonest. Ground every claim in the REAL profile you were given (the
+     actual missing-value counts, the actual dtypes), never a guess.
+  Write prep_narrative as 2-4 short sentences covering the above in plain language - specific column names and
+  real counts, not generic phrases like "the data was already clean" with nothing to back it up. Then, unless
+  told otherwise below, proceed in the SAME response straight into the actual chart/insight using the prepared
+  table - never pause here to ask the person for permission to continue.
+- If the incoming message includes the note "(This table has already been prepared specifically for this
+  analysis - skip preparation and analyze it directly.)", the preparation step already happened in an earlier
+  turn: set prep_code and prep_narrative to null and go straight to producing the chart-ready `code` against the
+  current table exactly as action="analyze" would without any preparation step.
 - Never invent columns that are not in the schema you were given.
 - Prefer simple, correct pandas over clever one-liners.
 - For transform requests with no further detail (e.g. "clean this data" / "prepare this for analysis"), use
@@ -850,20 +895,45 @@ def _infer_chart_type(prompt: str, result: Any, chart_type: str | None) -> str:
     return fallback
 
 
+# The exact note appended to the user-facing prompt content when the caller
+# says this table was already prepared for this exact question (the
+# "Continue" step after a paused, step-by-step preparation) - must stay
+# byte-for-byte identical to the note SYSTEM_PROMPT tells the model to look
+# for, so the model reliably recognizes it and skips preparation instead of
+# doing it a second time.
+_SKIP_PREP_NOTE = "(This table has already been prepared specifically for this analysis - skip preparation and analyze it directly.)"
+
+
 def analyze(
     prompt: str,
     tables: dict[str, pd.DataFrame],
     history: list[dict] | None = None,
     chart_override: dict | None = None,
     intent: str | None = None,
+    guided: bool = False,
+    skip_prep: bool = False,
 ) -> dict:
     """
     Main entrypoint. `tables` maps display name -> DataFrame for every table
     the person selected (almost always just one; more than one when they
     picked several to compare/combine in a single prompt). Returns a dict
     with: needs_clarification, clarifying_question, action, narrative,
-    chart_spec, insight, cleaned_df (only for transform), rows_before/after,
+    chart_spec, insight, cleaned_df (set for a transform, or for an analyze
+    that had to prepare its own table first), rows_before/after,
     nulls_before/after, suggested_charts, suggested_stats.
+
+    `guided` controls what happens when an analyze question needs its own
+    preparation step first (see the SYSTEM_PROMPT rule on prep_code): False
+    (the default, "one-click explain" mode) runs preparation and the actual
+    analysis together in one response, explained in one smooth narrative.
+    True ("step-by-step" mode) stops right after preparation and returns a
+    paused result (paused_for_continue=True) so the caller can show the
+    prepared table and let the person confirm before the analysis runs.
+
+    `skip_prep` is for the follow-up call that continues a paused
+    step-by-step turn: it tells the model this table was already prepared
+    for this exact question, so it should go straight to the analysis
+    instead of preparing again.
 
     If the first attempt fails (sandbox error, wrong result shape, or an
     unrenderable chart), the model is given one retry with the exact error
@@ -968,7 +1038,11 @@ def analyze(
             "code": repeat_code,
             "follow_up_suggestions": [],
         }
-        replay_result = _execute_plan(prompt, tables, profile, replay_plan, chart_override)
+        # A replayed turn re-runs an exact, already-known-good script and
+        # must never pause - even in step-by-step mode - since there is
+        # nothing new to confirm about a question already answered
+        # identically before.
+        replay_result = _execute_plan(prompt, tables, profile, replay_plan, chart_override, guided=False)
         if not replay_result.get("_retry_needed"):
             return replay_result
 
@@ -1001,10 +1075,12 @@ def analyze(
         )
     if chart_override:
         user_content += f"\n\nThe user also explicitly wants these chart customizations applied: {json.dumps(chart_override)}"
+    if skip_prep:
+        user_content += f"\n\n{_SKIP_PREP_NOTE}"
     messages.append({"role": "user", "content": user_content})
 
     plan = _plan_with_retry(messages)
-    result = _execute_plan(prompt, tables, profile, plan, chart_override)
+    result = _execute_plan(prompt, tables, profile, plan, chart_override, guided)
 
     if result.pop("_retry_needed", False):
         # Give the model one chance to see exactly what went wrong with its
@@ -1030,7 +1106,7 @@ def analyze(
         ]
         try:
             fixed_plan = _plan_with_retry(retry_messages)
-            result = _execute_plan(prompt, tables, profile, fixed_plan, chart_override)
+            result = _execute_plan(prompt, tables, profile, fixed_plan, chart_override, guided)
         except Exception:
             pass  # keep the first attempt friendly failure message already in `result`
         result.pop("_retry_needed", None)
@@ -1039,7 +1115,9 @@ def analyze(
     return result
 
 
-def _execute_plan(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, plan: dict, chart_override: dict | None) -> dict:
+def _execute_plan(
+    prompt: str, tables: dict[str, pd.DataFrame], profile: dict, plan: dict, chart_override: dict | None, guided: bool = False,
+) -> dict:
     action = plan.get("action") or "analyze"
 
     if action == "clarify":
@@ -1057,6 +1135,9 @@ def _execute_plan(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, p
 
     if action == "transform":
         return _run_transform(prompt, tables, profile, plan, code)
+
+    if (plan.get("prep_code") or "").strip():
+        return _run_analyze_with_prep(prompt, tables, profile, plan, chart_override, guided)
 
     return _run_analyze(prompt, tables, profile, plan, code, chart_override)
 
@@ -1142,6 +1223,142 @@ def _run_transform(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, 
         "suggested_stats": suggest_stats(new_profile),
         "follow_up_suggestions": _sanitize_follow_ups(plan.get("follow_up_suggestions")),
         "code": code,
+    }
+
+
+def _run_analyze_with_prep(
+    prompt: str, tables: dict[str, pd.DataFrame], profile: dict, plan: dict, chart_override: dict | None, guided: bool,
+) -> dict:
+    """Handles action="analyze" whenever the model produced a prep_code step
+    (see the "Preparing the data before every analyze answer" rule in
+    SYSTEM_PROMPT): runs the preparation step for real first, against the
+    original table(s) - genuinely building the exact, minimal, clean table
+    this specific question needs, not just claiming to - then persists it
+    as a new saved version (via cleaned_df below, same as a transform) so
+    the person can see and trust it in the Data tab.
+
+    When `guided` is False ("one-click explain" mode), the chart-producing
+    step then runs immediately after, in this SAME response, and the whole
+    thing - prep and analysis - is explained in one smooth narrative.
+
+    When `guided` is True ("step-by-step" mode), this stops right after the
+    preparation step and hands back a paused result (paused_for_continue) so
+    the caller can show the prepared table and let the person confirm
+    before the actual analysis runs - see continue_action in routers/chat.py."""
+    prep_code = (plan.get("prep_code") or "").strip()
+    prep_narrative = (plan.get("prep_narrative") or "").strip() or "Preparing the data needed for this analysis."
+
+    prepped, prep_error = run_sandboxed(prep_code, tables, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
+
+    if prep_error or not isinstance(prepped, pd.DataFrame):
+        out = _no_result(profile, _ANALYZE_FAILURE_NARRATIVE)
+        out["action"] = "analyze"
+        out["_retry_needed"] = True
+        out["_retry_detail"] = (
+            prep_error.splitlines()[-1] if prep_error
+            else "The preparation step ran but did not assign a full table to `result`."
+        )
+        return out
+
+    rows_before = sum(len(t) for t in tables.values())
+    rows_after = int(len(prepped))
+    nulls_before = sum(int(t.isna().sum().sum()) for t in tables.values())
+    nulls_after = int(prepped.isna().sum().sum())
+    prepped_profile = profile_dataframe(prepped)
+
+    if guided:
+        try:
+            prep_chart_spec = build_cleaning_summary_chart(
+                rows_before, rows_after, nulls_before, nulls_after,
+                title=plan.get("title") or "Data prepared for this analysis",
+            )
+        except Exception:
+            prep_chart_spec = None
+        prep_summary = result_to_summary(prepped)
+        prep_summary["source_row_count"] = rows_after
+        prep_insight = _generate_insight(prompt, prep_summary)
+        return {
+            "needs_clarification": False,
+            "clarifying_question": None,
+            "action": "analyze",
+            "narrative": prep_narrative,
+            "chart_spec": prep_chart_spec,
+            "insight": prep_insight,
+            "cleaned_df": prepped,
+            "rows_before": rows_before,
+            "rows_after": rows_after,
+            "nulls_before": nulls_before,
+            "nulls_after": nulls_after,
+            "suggested_charts": suggest_charts(prepped_profile),
+            "suggested_stats": suggest_stats(prepped_profile),
+            "follow_up_suggestions": [],
+            "code": prep_code,
+            # Tells routers/chat.py this turn is paused right after
+            # preparation, waiting on the person to continue into the
+            # actual analysis - never set outside step-by-step mode.
+            "paused_for_continue": True,
+        }
+
+    primary_name = next(iter(tables.keys()))
+    chart_code = plan.get("code") or ""
+    result, error = run_sandboxed(chart_code, {primary_name: prepped}, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
+
+    if error:
+        out = _no_result(profile, _ANALYZE_FAILURE_NARRATIVE)
+        out["action"] = "analyze"
+        out["_retry_needed"] = True
+        out["_retry_detail"] = error.splitlines()[-1] if error else "unknown error"
+        return out
+
+    chart_type = (chart_override or {}).get("chart_type") or plan.get("chart_type") or "bar"
+    if not (chart_override or {}).get("chart_type"):
+        chart_type = _infer_chart_type(prompt, result, chart_type)
+    title = (chart_override or {}).get("title") or plan.get("title") or prompt[:80]
+    try:
+        chart_spec = build_figure(result, chart_type, title, plan.get("x_label"), plan.get("y_label"))
+    except Exception as e:
+        out = _no_result(profile, _ANALYZE_FAILURE_NARRATIVE)
+        out["action"] = "analyze"
+        out["_retry_needed"] = True
+        out["_retry_detail"] = f"Could not render the result as a {chart_type} chart: {e}"
+        return out
+
+    summary = result_to_summary(result)
+    summary["source_row_count"] = rows_after
+    insight = _generate_insight(prompt, summary)
+
+    chart_narrative = plan.get("narrative") or "Here is your analysis."
+    combined_narrative = f"**Data prep:** {prep_narrative}\n\n**Analysis:** {chart_narrative}"
+    # One combined script - preparation, then the chart code against the
+    # prepared table - stored as the single `code` this turn ran, so "give
+    # me the code" hands back the real, complete pipeline, and a later
+    # exact repeat of this same question (see _find_repeated_prompt_code)
+    # can replay it deterministically in one pass without needing a second
+    # preparation step or creating a second saved version.
+    combined_code = (
+        f"{prep_code}\n\n"
+        "# --- preparation complete; the analysis below runs against the prepared table ---\n"
+        "df = result\n\n"
+        f"{chart_code}"
+    )
+
+    return {
+        "needs_clarification": False,
+        "clarifying_question": None,
+        "action": "analyze",
+        "narrative": combined_narrative,
+        "chart_spec": chart_spec,
+        "chart_type": chart_type,
+        "insight": insight,
+        "cleaned_df": prepped,
+        "rows_before": rows_before,
+        "rows_after": rows_after,
+        "nulls_before": nulls_before,
+        "nulls_after": nulls_after,
+        "suggested_charts": suggest_charts(prepped_profile),
+        "suggested_stats": suggest_stats(prepped_profile),
+        "follow_up_suggestions": _sanitize_follow_ups(plan.get("follow_up_suggestions")),
+        "code": combined_code,
     }
 
 
