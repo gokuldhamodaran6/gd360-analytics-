@@ -81,23 +81,52 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     history = _recent_history(db, conversation.id)
 
     try:
-        result = ai_engine.analyze(payload.prompt, tables, history=history, chart_override=payload.chart_override, intent=payload.intent)
+        result = ai_engine.analyze(
+            payload.prompt, tables, history=history, chart_override=payload.chart_override, intent=payload.intent,
+            guided=(payload.analysis_mode == "guided"), skip_prep=payload.skip_prep,
+        )
     except Exception as e:
         print(f"[chat] AI analysis failed: {e}")
         raise HTTPException(502, ai_engine.friendly_ai_error(e))
 
+    # A "transform" always persists its result as a new saved table; so
+    # does an "analyze" that had to prepare its own table first (see
+    # ai_engine._run_analyze_with_prep) - either way, cleaned_df being set
+    # is what means a real, executed table exists to save, regardless of
+    # which action produced it.
     new_version = None
-    if result.get("action") == "transform" and result.get("cleaned_df") is not None:
+    if result.get("cleaned_df") is not None:
         new_version = _save_cleaning_result(db, ds, source_versions, payload.prompt, result)
 
     reply_text = result.get("clarifying_question") or result.get("narrative") or "Done."
-    if result.get("action") == "transform" and result.get("rows_before") is not None:
+    if result.get("rows_before") is not None:
         rows_before = result.get("rows_before")
         rows_after = result.get("rows_after")
         nulls_before = result.get("nulls_before")
         nulls_after = result.get("nulls_after")
         arrow = "→"
         reply_text += f" ({rows_before} {arrow} {rows_after} rows, {nulls_before} {arrow} {nulls_after} missing values)"
+
+    # Step-by-step mode stops right after preparation - hand back a single
+    # clear button that continues into the actual analysis against the
+    # table just prepared and saved, instead of silently going nowhere.
+    continue_action = None
+    if result.get("paused_for_continue") and new_version:
+        continue_action = {
+            "label": "Continue → run the analysis",
+            "prompt": payload.prompt,
+            "version_id": new_version.id,
+        }
+
+    # A paused turn only ran the preparation step, not a complete analysis -
+    # its code is not something a later "give me the code" should hand
+    # back, and, more importantly, it must never be stored as a
+    # repeat-matchable marker (see ai_engine._find_repeated_prompt_code):
+    # the "Continue" click re-sends this SAME question text, and if this
+    # turn prep-only code were tagged as a real action=analyze marker, that
+    # exact-repeat shortcut would wrongly replay just the preparation step
+    # as if it were the whole analysis instead of actually continuing.
+    persisted_code = None if result.get("paused_for_continue") else result.get("code")
 
     return _persist_and_respond(
         db, conversation.id, reply_text,
@@ -116,8 +145,9 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         nulls_after=result.get("nulls_after"),
         new_version_id=new_version.id if new_version else None,
         new_version_name=new_version.name if new_version else None,
-        code=result.get("code"),
+        code=persisted_code,
         chart_type=result.get("chart_type"),
+        continue_action=continue_action,
     )
 
 
@@ -242,11 +272,11 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
 
     result = audit["result"]
     new_version = None
-    if msg.action == "transform" and result.get("cleaned_df") is not None:
+    if result.get("cleaned_df") is not None:
         new_version = _save_cleaning_result(db, ds, source_versions, prompt, result)
 
     reply_text = result.get("narrative") or "Corrected."
-    if msg.action == "transform" and result.get("rows_before") is not None:
+    if result.get("rows_before") is not None:
         rows_before = result.get("rows_before")
         rows_after = result.get("rows_after")
         nulls_before = result.get("nulls_before")
@@ -378,6 +408,7 @@ def _persist_and_respond(
     chart_spec=None, insight=None, suggestions=None, needs_clarification=False,
     rows_before=None, rows_after=None, nulls_before=None, nulls_after=None,
     new_version_id=None, new_version_name=None, code=None, chart_type=None,
+    continue_action=None,
 ) -> schemas.ChatResponse:
     msg = models.Message(
         conversation_id=conversation_id,
@@ -412,4 +443,5 @@ def _persist_and_respond(
         nulls_after=nulls_after,
         new_version_id=new_version_id,
         new_version_name=new_version_name,
+        continue_action=continue_action,
     )
