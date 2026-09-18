@@ -111,6 +111,12 @@ class ChatResponse(BaseModel):
     # transform), so the client can add it as a new tab and switch to it.
     new_version_id: Optional[str] = None
     new_version_name: Optional[str] = None
+    # Set only in step-by-step ("guided") analysis mode, right after this
+    # turn prepared a table but has NOT yet run the actual analysis on it -
+    # the client shows this as a single prominent button; clicking it
+    # re-sends "prompt" with skip_prep=true and source_version_ids=
+    # [version_id] to run the analysis against the just-prepared table.
+    continue_action: Optional[dict] = None
 
 
 # ---------- Verify ("Double-check this") ----------
