@@ -51,6 +51,33 @@ export default function Workspace() {
   const [sourceIds, setSourceIds] = useState<string[]>([ORIGINAL_SOURCE_ID]);
   const versionsInitRef = useRef<string | null>(null);
 
+  // How much control the person wants over an analysis question that needs
+  // its own data-preparation step first (see ai_engine._run_analyze_with_prep):
+  // "auto" explains the preparation and shows the result in one smooth
+  // answer; "guided" pauses right after preparation with a "Continue" button
+  // so they can see and confirm the prepared table first. Remembered per
+  // data source (a per-viewer convenience only, never anything the server
+  // needs to read back), so it does not reset every time they open this
+  // data source again.
+  const [analysisMode, setAnalysisModeState] = useState<"auto" | "guided">("auto");
+  useEffect(() => {
+    if (!datasourceId) return;
+    try {
+      const saved = localStorage.getItem(`gd360-analysis-mode-${datasourceId}`);
+      if (saved === "auto" || saved === "guided") setAnalysisModeState(saved);
+    } catch {
+      // Private browsing / blocked storage - just keep the "auto" default.
+    }
+  }, [datasourceId]);
+  const setAnalysisMode = (mode: "auto" | "guided") => {
+    setAnalysisModeState(mode);
+    try {
+      if (datasourceId) localStorage.setItem(`gd360-analysis-mode-${datasourceId}`, mode);
+    } catch {
+      // Nothing to do - the choice just will not be remembered next time.
+    }
+  };
+
   const displaySpec = useMemo(
     () => (chartSpec ? applyChartStyle(chartSpec, chartStyle, chartTitle) : null),
     [chartSpec, chartStyle, chartTitle]
@@ -146,10 +173,31 @@ export default function Workspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resumeConversationId]);
 
-  const runPrompt = async (prompt: string, chartOverride?: any) => {
+  // Returns true on a genuinely successful run, false on failure - so a
+  // caller that needs to know whether it is safe to move on (for example
+  // Goku, which only follows up with a "Done - next step" message once the
+  // main chat has actually finished) can await this instead of firing it
+  // and hoping for the best.
+  const runPrompt = async (
+    prompt: string,
+    chartOverride?: any,
+    opts?: {
+      // The follow-up call that continues a paused, step-by-step turn:
+      // tells the backend this exact table was already prepared for this
+      // exact question, so it analyzes it directly instead of preparing it
+      // again (which would otherwise create a second, redundant version).
+      skipPrep?: boolean;
+      // Run this one call against a specific table (the one just prepared)
+      // instead of whatever WORKING ON currently has selected - without
+      // changing that selection for anything asked afterward.
+      forceSourceIds?: string[];
+    }
+  ): Promise<boolean> => {
     setError("");
     setBusy(true);
-    const requestSourceIds = sourceIds.length ? sourceIds : [ORIGINAL_SOURCE_ID];
+    const requestSourceIds = opts?.forceSourceIds?.length
+      ? opts.forceSourceIds
+      : sourceIds.length ? sourceIds : [ORIGINAL_SOURCE_ID];
     const priorActiveVersionId = activeVersionId;
     setTurns((t) => [...t, { role: "user", content: prompt }]);
     try {
@@ -160,6 +208,8 @@ export default function Workspace() {
         chart_override: chartOverride,
         intent: guidedMode ? activeStep : null,
         source_version_ids: requestSourceIds,
+        analysis_mode: analysisMode,
+        skip_prep: !!opts?.skipPrep,
       });
       setConversationId(data.conversation_id);
       setTurns((t) => [...t, {
@@ -175,6 +225,7 @@ export default function Workspace() {
         sourceIds: requestSourceIds,
         priorActiveVersionId,
         newVersionId: data.new_version_id || null,
+        continueAction: data.continue_action || null,
         followUp: data.follow_up_suggestions || null,
         messageId: data.message_id,
       }]);
@@ -189,7 +240,18 @@ export default function Workspace() {
           setSourceIds([data.new_version_id]);
         }
         setCenterTab("data");
-      } else if (data.chart_spec) {
+      }
+      if (data.chart_spec) {
+        // An analyze answer now often builds its OWN small prepared table
+        // first (see ai_engine._run_analyze_with_prep) - it shows up as a
+        // new version in the Data tab for transparency, but - unlike a
+        // "clean this data" transform - it is scoped to this one question
+        // (often just the few columns it needed), so it deliberately does
+        // NOT become the active working table for whatever gets asked
+        // next; that stays whatever it already was.
+        if (data.action === "analyze" && data.new_version_id) {
+          setDataRefreshKey((k) => k + 1);
+        }
         setChartSpec(data.chart_spec);
         // A chart-type change from the Style panel keeps the current user
         // styling (colors, title, labels) intact - only a brand new prompt
@@ -198,12 +260,21 @@ export default function Workspace() {
         setChartTitle(prompt);
         setCenterTab("chart");
       }
+      // Step-by-step mode stops right after preparation - land on the Data
+      // tab so the person sees the prepared table (and the Continue button
+      // in the chat) instead of the small before/after chart it also
+      // carries.
+      if (data.continue_action) {
+        setCenterTab("data");
+      }
 
       if (data.insight) setLastInsight(data.insight);
       if (data.suggested_charts) setSuggestedCharts(data.suggested_charts);
       if (data.suggested_stats) setSuggestedStats(data.suggested_stats);
+      return true;
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Something went wrong. Please try again.");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -249,6 +320,24 @@ export default function Workspace() {
       setError("Could not undo that. Please try again.");
     } finally {
       setBusy(false);
+    }
+  };
+
+  // "Continue -> run the analysis": the button on a paused, step-by-step
+  // preparation turn. Re-sends the same original question, but pinned to
+  // the table that was just prepared and saved, and flagged skip_prep so
+  // the AI analyzes it directly instead of preparing it a second time.
+  const continueAnalysis = async (index: number) => {
+    const t = turns[index];
+    if (!t?.continueAction || busy) return;
+    setTurns((ts) => ts.map((turn, i) => (i === index ? { ...turn, continuedInto: true } : turn)));
+    const ok = await runPrompt(t.continueAction.prompt, undefined, {
+      skipPrep: true,
+      forceSourceIds: [t.continueAction.version_id],
+    });
+    if (!ok) {
+      // Let them try the button again rather than leaving it silently gone.
+      setTurns((ts) => ts.map((turn, i) => (i === index ? { ...turn, continuedInto: false } : turn)));
     }
   };
 
@@ -365,12 +454,15 @@ export default function Workspace() {
             onApproveTransform={approveTransform}
             onRejectTransform={rejectTransform}
             onCustomizeTransform={customizeTransform}
+            onContinueAnalysis={continueAnalysis}
             customizeSeed={customizeSeed}
             versions={versions}
             sourceIds={sourceIds}
             onSourceIdsChange={setSourceIds}
             onVerify={verifyTurn}
             verifyingIndex={verifyingIndex}
+            analysisMode={analysisMode}
+            onAnalysisModeChange={setAnalysisMode}
           />
         </div>
         <div className="min-h-[400px] flex flex-col gap-4 overflow-hidden">
