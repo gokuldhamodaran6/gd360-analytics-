@@ -121,6 +121,16 @@ Rules:
   MOST RECENT message. Never re-ask, or keep circling back to, a clarifying question about an earlier, different
   topic from earlier in the conversation just because it is still nearby in the history - if the newest message
   does not clearly continue that earlier topic, treat it as its own, separate request.
+- Before ever asking the person to re-select or re-upload data, check what else is available to you. If the
+  table(s) currently selected are missing a column this question needs, but the schema section below also lists
+  a table marked as available for reference only (not part of the current selection - most commonly "Original
+  data"), and it has that column, pull it in yourself: in prep_code (or, for a transform, in code), merge it
+  into the working table using whichever column both tables genuinely share as a row identifier - then say
+  plainly, in prep_narrative or narrative, which column you brought in and from where, and continue straight
+  into the rest of the request. Only fall back to action="clarify" and ask the person to re-select or re-upload
+  something when the column genuinely does not exist in ANY table you can see, or there is no shared identifier
+  column to merge on - a person who already told you, in this exact message, which data to use should never be
+  asked to say it again just because you have not looked at what is actually available.
 - For a well-defined, common computation (a correlation, an average, a sum, a count, and so on) on the same
   named columns, always write the same, simplest, most standard pandas for it - e.g. a correlation between two
   named columns is always their .corr() against each other. Never vary the approach, the columns used, or the
@@ -163,9 +173,12 @@ Rules:
   summarizing (totals, counts, averages per group). The person explicitly asked for a real table they can keep
   working from and export, not a single chart reduced from it, so the code MUST assign the FULL resulting
   table (every requested column, one row per group) to `result` as a pandas DataFrame, exactly like any other
-  transform. This creates a new saved version of the table - after it is done, a natural follow_up_suggestion
-  is to visualize that new table, but do not skip straight to a chart instead of actually building the table
-  that was asked for.
+  transform. Also keep a genuine row-identifier column from the source data in this new table, even when it was
+  not explicitly requested, whenever one exists (an actual id/record key, never something like a department
+  name that repeats across rows) - this is what lets a later question merge in something this table does not
+  have without starting over. This creates a new saved version of the table - after it is done, a natural
+  follow_up_suggestion is to visualize that new table, but do not skip straight to a chart instead of actually
+  building the table that was asked for.
 - Preparing the data before every analyze answer (mandatory, not optional - see prep_narrative/prep_code in the
   schema above). Before writing the chart-producing `code`, always build the exact table this specific question
   needs, and explain that work in prep_narrative - the goal is that a person with zero data-analytics background
@@ -173,7 +186,9 @@ Rules:
   being told "the data is clean" and asked to trust a number. Concretely, for the CURRENT question:
   1. Decide which columns are actually relevant (the ones being measured, grouped, compared, or filtered by),
      plus any brand-new column you need to derive for it (e.g. a ratio, a flag, a bucketed/binned version of a
-     numeric column, a parsed date part) - keep the prepared table to those columns, not the whole dataset.
+     numeric column, a parsed date part) - keep the prepared table to those columns, not the whole dataset. Also
+     keep a genuine row-identifier column from the source data whenever one exists, even if not directly asked
+     for, so a later question can merge in something this prepared table does not have without starting over.
   2. For duplicates: check whether duplicate rows, if any exist among the relevant columns, would distort this
      specific analysis (e.g. double-counting a person or a transaction) - if so, drop them and say how many; if
      duplicates do not exist or would not affect this analysis, say that plainly ("no duplicate rows affect
@@ -664,6 +679,41 @@ def _dataset_schema_text(tables: dict[str, pd.DataFrame]) -> str:
     return "\n\n".join(blocks)
 
 
+def _schema_with_fallback(
+    tables: dict[str, pd.DataFrame], original_df: pd.DataFrame | None
+) -> tuple[dict[str, pd.DataFrame], str, str]:
+    """Builds the schema text for the table(s) the person actually
+    selected, and - only when the original, untouched data is not already
+    one of them - quietly makes it available too, as a clearly-labeled
+    reference table a prep step (or a transform) can merge a missing
+    column in from, instead of stopping to ask the person to re-select or
+    re-upload data that is already sitting right there (see the SYSTEM_PROMPT
+    rule on this - this is what fixes the exact loop where someone types
+    "switch back to the original dataset" and the AI just repeats the same
+    clarifying question instead of noticing the original data is right
+    there to merge from). This costs nothing extra when it does not apply:
+    if the person already selected the original data (or a table that
+    happens to already be named "Original data"), this is a no-op and the
+    prompt is not one token larger than it always was. Returns (tables,
+    possibly with "Original data" added; the schema text for the actual
+    selection only; an extra note to append to the prompt describing the
+    reference table - empty string when there is nothing new to add)."""
+    schema_text = _dataset_schema_text(tables)
+    if original_df is None or "Original data" in tables:
+        return tables, schema_text, ""
+    extended = dict(tables)
+    extended["Original data"] = original_df
+    original_cols = ", ".join(str(c) for c in original_df.columns)
+    note = (
+        "\n\n(Also available to you, but NOT part of the selection above - table \"Original data\" in the "
+        f"`tables` dict, columns: {original_cols}. If the table(s) selected above are missing a column this "
+        "specific request needs, and it exists here, merge it in yourself using a shared row-identifier column "
+        "present in both, rather than asking the person to re-select or re-upload anything - see the system "
+        "instructions rule on this.)"
+    )
+    return extended, schema_text, note
+
+
 def _no_result(profile: dict, narrative: str, needs_clarification: bool = False, clarifying_question: str | None = None) -> dict:
     return {
         "needs_clarification": needs_clarification,
@@ -912,6 +962,7 @@ def analyze(
     intent: str | None = None,
     guided: bool = False,
     skip_prep: bool = False,
+    original_df: pd.DataFrame | None = None,
 ) -> dict:
     """
     Main entrypoint. `tables` maps display name -> DataFrame for every table
@@ -935,12 +986,25 @@ def analyze(
     for this exact question, so it should go straight to the analysis
     instead of preparing again.
 
+    `original_df` is the original, untouched data, passed in whenever the
+    person is working on a DERIVED table instead of the original (None when
+    they already selected the original, or when it could not be loaded).
+    When present, it is quietly made available to the model as a reference
+    table a prep step can merge a missing column in from - see
+    _schema_with_fallback - so a request like "switch back to the original
+    dataset and calculate X" against a derived table that lacks a needed
+    column succeeds in one pass instead of the AI just repeating a
+    clarifying question the person already answered by naming the data
+    they wanted used.
+
     If the first attempt fails (sandbox error, wrong result shape, or an
     unrenderable chart), the model is given one retry with the exact error
     attached before any of that reaches the caller - see module docstring.
     """
     df = next(iter(tables.values()))  # the primary table - profiling/suggestions are based on this one
     profile = profile_dataframe(df)
+    explicit_table_names = list(tables.keys())
+    tables, explicit_schema_text, fallback_note = _schema_with_fallback(tables, original_df)
 
     # A deterministic shortcut for when the person is simply waving off
     # whatever is currently pending (a stuck clarifying question, a failed
@@ -1046,15 +1110,15 @@ def analyze(
         if not replay_result.get("_retry_needed"):
             return replay_result
 
-    schema_text = _dataset_schema_text(tables)
+    schema_text = explicit_schema_text
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for turn in (history or [])[-6:]:
         messages.append({"role": turn["role"], "content": turn["content"]})
 
     user_content = f"Dataset schema:\n{schema_text}\n\nUser request: {prompt}"
-    if len(tables) > 1:
-        names = list(tables.keys())
+    if len(explicit_table_names) > 1:
+        names = explicit_table_names
         all_names = ", ".join(repr(n) for n in names)
         other_names = ", ".join(repr(n) for n in names[1:])
         user_content += (
@@ -1063,6 +1127,8 @@ def analyze(
             f"\"{names[0]}\" is also available as `df`. If the request implies comparing, combining, merging, "
             f"or reconciling tables, actually use {other_names} together with `df`, not just `df` alone."
         )
+    if fallback_note:
+        user_content += fallback_note
     hint = INTENT_HINTS.get(intent or "")
     if hint:
         user_content += f"\n\n(Context: {hint})"
@@ -1571,7 +1637,8 @@ def _generate_insight(prompt: str, summary: dict) -> str:
 
 
 def _reverify_via_replan(
-    prompt: str, tables: dict[str, pd.DataFrame], history: list[dict] | None, action: str, issue_detail: str
+    prompt: str, tables: dict[str, pd.DataFrame], history: list[dict] | None, action: str, issue_detail: str,
+    original_df: pd.DataFrame | None = None,
 ) -> dict:
     """Used by verify_answer below when a previously-shown answer needs to
     be redone from scratch - either its code no longer runs against the
@@ -1581,9 +1648,12 @@ def _reverify_via_replan(
     repeat the same mistake. This intentionally calls the model/execute
     steps directly rather than going through analyze() above, so it never
     hits the exact-repeat replay shortcut in analyze() - replaying would
-    just find and reuse that very same flawed code again."""
+    just find and reuse that very same flawed code again. `original_df`
+    is the same merge-fallback reference table analyze() offers - see
+    _schema_with_fallback - so a redo can also pull in a column missing
+    from the currently selected table(s) instead of just failing again."""
     profile = profile_dataframe(next(iter(tables.values())))
-    schema_text = _dataset_schema_text(tables)
+    tables, schema_text, fallback_note = _schema_with_fallback(tables, original_df)
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for turn in (history or [])[-6:]:
         messages.append({"role": turn["role"], "content": turn["content"]})
@@ -1593,7 +1663,7 @@ def _reverify_via_replan(
             f"Dataset schema:\n{schema_text}\n\nUser request: {prompt}\n\n"
             f"(A review of a previous answer to this exact request found a problem: {issue_detail} "
             "Please solve this correctly from scratch - do not repeat that mistake.)"
-        ),
+        ) + fallback_note,
     })
     plan = _plan_with_retry(messages)
     result = _execute_plan(prompt, tables, profile, plan, None)
@@ -1630,6 +1700,7 @@ def verify_answer(
     chart_type: str | None,
     insight: str | None,
     history: list[dict] | None = None,
+    original_df: pd.DataFrame | None = None,
 ) -> dict:
     """Re-checks a previously computed, already-shown answer for
     correctness, on demand (the "Double-check this" action) - rather than
@@ -1638,10 +1709,13 @@ def verify_answer(
     numbers against the current data, and that a fresh, independent AI
     audit pass - given the REAL freshly-recomputed numbers, not the old
     ones - agrees the code and the insight genuinely are correct for the
-    question. Returns {"status": "confirmed"|"corrected"|"unavailable",
-    "message": str, "result": dict|None} - "result" (in the same shape
-    _execute_plan returns) is only present for "corrected", ready for the
-    caller to persist in place of the original message fields."""
+    question. `original_df`, when given, is threaded into any redo (see
+    _reverify_via_replan) as the same merge-fallback reference table
+    analyze() offers. Returns {"status": "confirmed"|"corrected"|
+    "unavailable", "message": str, "result": dict|None} - "result" (in the
+    same shape _execute_plan returns) is only present for "corrected",
+    ready for the caller to persist in place of the original message
+    fields."""
     df = next(iter(tables.values()))
 
     result, error = run_sandboxed(code, tables, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
@@ -1650,11 +1724,13 @@ def verify_answer(
         return _reverify_via_replan(
             prompt, tables, history, action,
             f"the original code no longer runs against the current data ({detail}).",
+            original_df=original_df,
         )
     if action == "transform" and not isinstance(result, pd.DataFrame):
         return _reverify_via_replan(
             prompt, tables, history, action,
             "the code ran but did not produce a full table as a transform should.",
+            original_df=original_df,
         )
 
     summary = result_to_summary(result)
@@ -1718,7 +1794,7 @@ def verify_answer(
         }
 
     issue = (verdict.get("issue") or "").strip() or "the original approach did not correctly answer the question."
-    return _reverify_via_replan(prompt, tables, history, action, issue)
+    return _reverify_via_replan(prompt, tables, history, action, issue, original_df=original_df)
 
 
 def _goku_profile_text(tables: dict[str, pd.DataFrame], max_cols: int = 40) -> str:
