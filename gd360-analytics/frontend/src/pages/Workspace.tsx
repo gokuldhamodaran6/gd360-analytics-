@@ -186,11 +186,16 @@ export default function Workspace() {
   }, [datasourceId]);
 
   // Loads the list of saved tables for this data source. The very first
-  // time this runs for a given data source, it also picks a starting tab -
-  // the most recently created table if one exists, otherwise the original
-  // data - the same way the app used to default to showing cleaned data
-  // when it existed. After that first pick, only an explicit tab click or
-  // a new cleaning result changes which one is active.
+  // time this runs for a given data source, it also picks a starting tab.
+  // Resuming one specific past conversation from Recent conversations still
+  // lands on whichever table was most recently built there, exactly as
+  // before. A FRESH open (clicking straight into this data source, not via
+  // Recent conversations) always starts clean on the original data instead
+  // - the earlier tables are not hidden, they are still listed as tabs
+  // above, just not auto-selected, so the workspace never looks like it is
+  // already mid-way through an old session the moment it opens. After this
+  // first pick, only an explicit tab click or a new cleaning result changes
+  // which one is active.
   useEffect(() => {
     if (!datasourceId) return;
     datasourceApi
@@ -199,13 +204,13 @@ export default function Workspace() {
         setVersions(vs);
         if (versionsInitRef.current !== datasourceId) {
           versionsInitRef.current = datasourceId;
-          const startId = vs.length ? vs[vs.length - 1].id : null;
+          const startId = resumeConversationId && vs.length ? vs[vs.length - 1].id : null;
           setActiveVersionId(startId);
           setSourceIds([startId ?? ORIGINAL_SOURCE_ID]);
         }
       })
       .catch(() => {});
-  }, [datasourceId, dataRefreshKey]);
+  }, [datasourceId, dataRefreshKey, resumeConversationId]);
 
   // Restore a prior chat session in full - messages, the FULL chart
   // history (one tab per answer that had a chart, not just the last one),
@@ -751,6 +756,7 @@ export default function Workspace() {
           onRunInMainChat={(prompt) => runPrompt(prompt)}
           analysisMode={analysisMode}
           onAnalysisModeChange={setAnalysisMode}
+          startFresh={!resumeConversationId}
         />
       )}
     </div>
