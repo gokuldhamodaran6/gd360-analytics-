@@ -18,18 +18,36 @@
 // NOT decided here - see components/ChartCanvas.tsx, which applies those
 // on top of whatever this file returns.
 
-export type PaletteId = "original" | "aurora" | "sunset" | "forest" | "mono" | "vibrant" | "custom";
+export type PaletteId = "original" | "aurora" | "sunset" | "forest" | "mono" | "vibrant" | "single" | "custom";
 export type FontSize = "small" | "medium" | "large";
+export type LegendPosition = "top" | "bottom";
 
 export type ChartStyle = {
   paletteId: PaletteId;
   customColors: string[];
+  // The one color used for every bar/slice/line when paletteId is "single" -
+  // for a person who wants their own brand color everywhere rather than a
+  // multi-hue palette. Falls back to SIGNATURE_COLORS[0] wherever it's
+  // missing (older saved styles, from before this field existed).
+  singleColor: string;
+  // Per-role color overrides for a chart's decorative, non-series traces -
+  // right now just a scatter plot's regression trend line (role
+  // "trend_line" - see isDecorativeTrace below). Keyed by role rather than
+  // trace index so it survives every re-render even though the trace itself
+  // is rebuilt from scratch each time. Missing/empty means "use whatever
+  // color the backend chose" (chart_builder.py's TREND_COLOR).
+  accentColors: Record<string, string>;
   title: string;
   xAxisLabel: string;
   yAxisLabel: string;
   seriesNames: string[];
   showGrid: boolean;
   showLegend: boolean;
+  // Where the legend sits when it's showing. "bottom" (the default) never
+  // competes with the title for the same top-of-chart space - see the
+  // "Legend" section of applyChartStyle for why "top" used to overlap the
+  // title once a chart had more than a couple of legend entries.
+  legendPosition: LegendPosition;
   dataLabels: boolean;
   xAxisTilt: "none" | "slight" | "diagonal" | "vertical";
   fontSize: FontSize;
@@ -65,6 +83,103 @@ const SIGNATURE_COLORS = [
   "#1F8A3C", // green
   "#E34948", // red
 ];
+
+// Exposed so the Style panel can use the same brand violet as the default
+// swatch for "Single color, one shade for all" and as the fallback trend-
+// line swatch, instead of a second hardcoded copy of the hex value drifting
+// out of sync with this one.
+export const DEFAULT_ACCENT_COLOR = SIGNATURE_COLORS[0];
+
+// chart_builder.py's own TREND_COLOR constant (backend/app/services/
+// chart_builder.py) - the shade a scatter chart's regression trend line and
+// confidence band start out as before anyone picks a custom one. Kept here,
+// duplicated rather than fetched, since this is the one place on the
+// frontend that needs to recognize "this is still the backend's original
+// color" (see the annotation-recoloring note in applyChartStyle below).
+const BACKEND_TREND_COLOR = "#E24C4C";
+
+/** Parses a "#rrggbb" (or "#rgb") hex string into 0-255 RGB components.
+ * Returns black for anything that isn't recognizably hex (defensive only -
+ * every color this file hands out, and every color a browser's native
+ * <input type="color"> can produce, is always "#rrggbb"). */
+function hexToRgb(hex: string): [number, number, number] {
+  let h = (hex || "").replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const n = parseInt(h, 16);
+  if (h.length !== 6 || Number.isNaN(n)) return [0, 0, 0];
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/** Formats a hex color as an rgba() string at the given opacity - used to
+ * recolor a trend line's shaded confidence band to match a person's chosen
+ * trend-line color while keeping the same soft, translucent feel the
+ * backend's own band already has (see chart_builder.py's _add_trend_overlay,
+ * which shades its band at 0.15 alpha of the same hue as the line). */
+function hexToRgba(hex: string, alpha: number): string {
+  const [r, g, b] = hexToRgb(hex);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0;
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d !== 0) {
+    s = d / (1 - Math.abs(2 * l - 1));
+    switch (max) {
+      case r: h = ((g - b) / d) % 6; break;
+      case g: h = (b - r) / d + 2; break;
+      default: h = (r - g) / d + 4; break;
+    }
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return [h, s * 100, l * 100];
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  h = ((h % 360) + 360) % 360;
+  s = Math.min(100, Math.max(0, s)) / 100;
+  l = Math.min(100, Math.max(0, l)) / 100;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  let [r, g, b] = [0, 0, 0];
+  if (h < 60) [r, g, b] = [c, x, 0];
+  else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x];
+  else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const toHex = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, "0");
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
+}
+
+/** A palette (named or custom) only ever ships 6-8 hand-picked colors - fine
+ * for a typical chart, not enough once a bar chart has 10+ categories (the
+ * old behavior just silently repeated colors every N bars, which is exactly
+ * what made two unrelated bars look like "the same series"). This extends
+ * ANY palette to an arbitrary length on demand: the first `base.length`
+ * colors are the palette exactly as designed, and every color after that is
+ * a lightness/hue-shifted variant of an earlier one (alternating lighter/
+ * darker, nudging the hue a little further each pass) - so a 24-bar chart
+ * still gets 24 visibly distinct colors instead of the same 6-8 repeating
+ * four times over. */
+function extendedColorAt(base: string[], i: number): string {
+  if (base.length === 0) return "#4A3AA7";
+  if (i < base.length) return base[i];
+  const cycle = Math.floor(i / base.length);
+  const within = i % base.length;
+  const [r, g, b] = hexToRgb(base[within]);
+  const [h, s, l] = rgbToHsl(r, g, b);
+  const step = Math.ceil(cycle / 2);
+  const direction = cycle % 2 === 1 ? 1 : -1;
+  const newL = Math.min(85, Math.max(15, l + direction * step * 11));
+  const newH = (h + step * 19) % 360;
+  return hslToHex(newH, Math.min(100, Math.max(35, s)), newL);
+}
 
 const FONT_FAMILY = '-apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif';
 
@@ -162,6 +277,8 @@ export function defaultChartStyle(spec?: any): ChartStyle {
   return {
     paletteId: "original",
     customColors: [],
+    singleColor: DEFAULT_ACCENT_COLOR,
+    accentColors: {},
     title: "",
     xAxisLabel: "",
     yAxisLabel: "",
@@ -171,6 +288,7 @@ export function defaultChartStyle(spec?: any): ChartStyle {
     // series to tell apart - a lone bar/line/scatter trace is already
     // named by the chart's own title.
     showLegend: pieLike || multiSeries,
+    legendPosition: "bottom",
     // A short headline bar comparison (few categories, one series) reads
     // best with its values right on the bars, the way every reference
     // "premium" chart shows a number above each bar. Longer series
@@ -196,6 +314,32 @@ export function seriesLabels(spec: any): string[] {
   const data = Array.isArray(spec?.data) ? spec.data : [];
   if (data.length === 0) return [];
   if (isPieLikeSpec(data)) return (data[0].labels || []).map((l: any) => String(l));
+  const real = data.filter((t) => !isDecorativeTrace(t));
+  if (real.length > 1) return real.map((t: any, i: number) => t.name || `Series ${i + 1}`);
+  return [];
+}
+
+/** Returns the real name behind EVERY colorable thing on a chart - every pie
+ * slice, every bar in a single-trace bar chart, or every series in a
+ * multi-series chart - used to size and label the custom-color picker in the
+ * Style panel. Deliberately broader than seriesLabels above: seriesLabels is
+ * about what's worth offering a rename box for (and single-categorical bars
+ * don't get one, since "Sales"/"HR"/"R&D" are already their real names, not
+ * an AI-assigned "trace 0"), while this is about how many distinct colors a
+ * chart actually needs and what each one is really called - which a
+ * single-categorical bar chart very much does have one of per bar. This is
+ * also what fixes the old bug where a 10-bar chart's custom-color picker
+ * only ever showed 6 swatches: that picker used to size itself off
+ * seriesLabels, which returns nothing at all for this exact chart shape. */
+export function colorableLabels(spec: any): string[] {
+  const data = Array.isArray(spec?.data) ? spec.data : [];
+  if (data.length === 0) return [];
+  if (isPieLikeSpec(data)) return (data[0].labels || []).map((l: any) => String(l));
+  if (isSingleCategoricalSpec(data)) {
+    const t = data[0];
+    const arr = t?.orientation === "h" ? t?.y : t?.x;
+    return Array.isArray(arr) ? arr.map((v: any) => String(v)) : [];
+  }
   const real = data.filter((t) => !isDecorativeTrace(t));
   if (real.length > 1) return real.map((t: any, i: number) => t.name || `Series ${i + 1}`);
   return [];
@@ -274,6 +418,14 @@ export function detectChartType(spec: any): string {
 }
 
 function paletteColors(style: ChartStyle, count: number): string[] {
+  // "Single color" paints every bar/slice/line the one color the person
+  // picked, for a brand look rather than a rainbow of series - the only
+  // palette mode where every item is deliberately NOT distinct from the
+  // others, since that's the whole point of choosing it.
+  if (style.paletteId === "single") {
+    const c = style.singleColor || DEFAULT_ACCENT_COLOR;
+    return Array.from({ length: count }, () => c);
+  }
   const base =
     style.paletteId === "custom"
       ? style.customColors.length
@@ -282,8 +434,12 @@ function paletteColors(style: ChartStyle, count: number): string[] {
       : style.paletteId === "original"
       ? SIGNATURE_COLORS
       : PALETTES.find((p) => p.id === style.paletteId)?.colors || PALETTES[0].colors;
+  // Every palette here has 6-8 hand-picked colors; extendedColorAt keeps
+  // generating fresh, visibly distinct shades past that point instead of
+  // silently repeating the same 6-8 colors once a chart has more bars than
+  // that (see extendedColorAt's own note for why/how).
   const out: string[] = [];
-  for (let i = 0; i < count; i++) out.push(base[i % base.length]);
+  for (let i = 0; i < count; i++) out.push(extendedColorAt(base, i));
   return out;
 }
 
@@ -393,7 +549,43 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
     // default, and it is on even for "Signature, GD360 default".
     const count = categoryCount(data[0]);
     const colors = colorsForStyle(style, count);
-    data[0].marker = { ...(data[0].marker || {}), color: colors };
+    const t0 = data[0];
+    // A plain bar chart (not histogram/waterfall/funnel, which don't have
+    // one bar per independently-named category the same way) whose legend
+    // is switched on gets split into one trace PER BAR, each carrying its
+    // real category name and its own single color - this is what makes the
+    // legend actually say "Sales" / "Human Resources" / "R&D" next to the
+    // right color swatch, instead of Plotly's single meaningless "trace 0"
+    // entry that a one-trace bar chart used to produce (a legend can only
+    // ever show one entry per TRACE, and this chart used to be only one
+    // trace no matter how many bars/colors it had). Left as a single trace
+    // whenever the legend is off, since splitting has no visible benefit
+    // there and keeps every other chart's spec exactly as before.
+    if (t0?.type === "bar" && style.showLegend && count > 1) {
+      const horizontalBar = t0.orientation === "h";
+      const cats: any[] = (horizontalBar ? t0.y : t0.x) || [];
+      const vals: any[] = (horizontalBar ? t0.x : t0.y) || [];
+      const perBar = cats.map((cat, i) => {
+        const one: any = {
+          ...t0,
+          name: cat != null && String(cat).trim() ? String(cat) : `Bar ${i + 1}`,
+          showlegend: true,
+          marker: { ...(t0.marker || {}), color: colors[i] },
+        };
+        if (horizontalBar) {
+          one.y = [cat];
+          one.x = [vals[i]];
+        } else {
+          one.x = [cat];
+          one.y = [vals[i]];
+        }
+        if (Array.isArray(t0.text)) one.text = [t0.text[i]];
+        return one;
+      });
+      data.splice(0, 1, ...perBar);
+    } else {
+      t0.marker = { ...(t0.marker || {}), color: colors };
+    }
   } else {
     // Every other chart - a multi-series comparison (several bars or
     // lines, e.g. Revenue vs Expenses), a dual-axis combo (see
@@ -417,6 +609,37 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
       t.marker = { ...(t.marker || {}), color: c };
       if (t.line || t.type === "scatter") t.line = { ...(t.line || {}), color: c };
     });
+  }
+
+  // ---- Accent colors: a decorative trace (right now just a scatter plot's
+  // regression trend line - see isDecorativeTrace) is deliberately never
+  // touched by the palette logic above, but a person can still give it its
+  // own branded color here via style.accentColors.trend_line, independent
+  // of whatever palette the real data series are using. The confidence band
+  // that shades in behind the line (role "trend_band") isn't separately
+  // pickable - it always follows the line's own color at the same soft 15%
+  // opacity chart_builder.py already draws it at, so the two never drift
+  // apart into mismatched colors. The little "Trend: strong positive
+  // relationship..." annotation chart_builder.py prints in the corner is
+  // recolored to match too, but ONLY if it's still wearing the backend's
+  // original color unchanged - if a future backend change ever gives that
+  // annotation a deliberately different color of its own, this leaves it
+  // alone rather than assuming it's always the trend line's color. ----
+  const trendOverride = style.accentColors?.trend_line;
+  if (trendOverride) {
+    data.forEach((t) => {
+      if (!isDecorativeTrace(t)) return;
+      const role = t?.meta?.role;
+      if (role === "trend_line") t.line = { ...(t.line || {}), color: trendOverride };
+      else if (role === "trend_band") t.fillcolor = hexToRgba(trendOverride, 0.15);
+    });
+    if (Array.isArray(layout.annotations)) {
+      layout.annotations = layout.annotations.map((a: any) =>
+        a?.font?.color && String(a.font.color).toUpperCase() === BACKEND_TREND_COLOR
+          ? { ...a, font: { ...a.font, color: trendOverride } }
+          : a
+      );
+    }
   }
 
   // ---- Bar-family shape: rounded ends + breathing room between bars, the
@@ -462,15 +685,44 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
   // happened to already set - the backend's own default margin is tight
   // enough on its own that it used to silently defeat this file's premium
   // margin entirely) - this file is the single source of truth for chart
-  // structure, the same principle as everything else in it. When a legend
-  // is actually going to render, the top margin opens up further - legend
-  // and title both live in that top band, stacked, and a legend needs
-  // real pixel room there or it prints directly on top of the title
-  // (empirically verified against real rendered output: 110px keeps both
-  // clear at every font size this panel offers, 60px does not).
-  // automargin below still expands this further for long tick/axis labels. ----
-  const legendWillShow = style.showLegend && (pieLike || multiSeries);
-  layout.margin = { t: legendWillShow ? 110 : 60, r: 28, b: 52, l: 60, pad: 6 };
+  // structure, the same principle as everything else in it.
+  //
+  // How many entries the legend will actually have, counted AFTER the
+  // colors section above (which may have just split a single-categorical
+  // bar chart into one trace per bar - see singleCategorical above) so this
+  // always reflects what will really be drawn, not what the raw AI spec
+  // started out as. This is also what used to be wrong: the old code only
+  // reserved extra top margin for a "real" multi-series chart, so turning
+  // "Show legend" on for a plain one-trace bar chart (the single most
+  // common chart in this app) reserved NO extra room at all, and the
+  // resulting legend printed straight on top of the title - exactly the
+  // "showing in a place I can't see" bug this fixes. ----
+  const legendEntryCount = pieLike
+    ? data[0]?.labels?.length || 0
+    : data.filter((t) => !isDecorativeTrace(t) && t.showlegend !== false).length;
+  const legendWillShow = style.showLegend && (pieLike || legendEntryCount > 1);
+  const legendPos: LegendPosition = style.legendPosition || "bottom";
+  // A horizontal legend wraps onto extra rows on its own once it runs out
+  // of width (Plotly's own behavior) - this is only a reservation estimate
+  // for how much margin to set aside, assuming a modest ~6 short entries
+  // fit per row, so a 20-entry legend reserves roughly 4 rows of room
+  // rather than the space for just one.
+  const legendRows = legendWillShow ? Math.max(1, Math.ceil(legendEntryCount / 6)) : 0;
+  const legendBandPx = legendWillShow ? 30 + (legendRows - 1) * 24 : 0;
+  // A tilted (diagonal/vertical) x-axis needs its own extra room below the
+  // plot for the slanted tick labels themselves - only relevant when the
+  // legend is ALSO at the bottom, since that's the one case the two would
+  // otherwise compete for the same band under the chart.
+  const tiltExtraPx =
+    isCartesian && legendPos === "bottom" && (style.xAxisTilt === "diagonal" || style.xAxisTilt === "vertical") ? 46 : 0;
+
+  layout.margin = {
+    t: legendWillShow && legendPos === "top" ? 60 + legendBandPx + 20 : 60,
+    r: 28,
+    b: 52 + tiltExtraPx + (legendWillShow && legendPos === "bottom" ? legendBandPx + 26 : 0),
+    l: 60,
+    pad: 6,
+  };
 
   // ---- Axes (labels, grid, tilt, font, and auto margin so long or many
   // category labels - like a wide correlation heatmap - never get clipped
@@ -498,20 +750,45 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
     layout.yaxis.zeroline = false;
   }
 
-  // ---- Legend: a slim horizontal strip above the title (never a boxed
-  // sidebar, and never competing with the title for the same row - see the
-  // taller top margin reserved for exactly this above), only styled - not
-  // toggled - here; whether it shows at all is decided by style.showLegend
-  // (see defaultChartStyle for the default). ----
+  // ---- Legend: a name for every real trace (never left blank, which is
+  // what makes Plotly fall back to its own generic "trace 0"/"trace 1" -
+  // the second half of the original bug report, alongside the legend
+  // showing up somewhere unreadable). The singleCategorical branch above
+  // already gives a split-for-legend bar chart its real per-bar names; this
+  // is the catch-all for everything else - a lone line/scatter/histogram
+  // trace with no name of its own falls back to the y-axis label or the
+  // chart's own title, so if someone switches its legend on anyway it says
+  // something real instead of "trace 0". ----
+  data.forEach((t, i) => {
+    if (isDecorativeTrace(t)) return;
+    if (!t.name || !String(t.name).trim()) {
+      t.name = style.yAxisLabel || titleTextOf(layout.title) || style.title || fallbackTitle || `Series ${i + 1}`;
+    }
+  });
+
+  // ---- Legend: a slim horizontal strip, positioned either just above the
+  // title (legendPosition "top") or as a centered row below the plot
+  // (legendPosition "bottom", the default) - never a boxed sidebar, and
+  // never competing with the title or the plot area for the same space,
+  // see the legend-aware margin reserved for exactly this above. Only
+  // styled - not toggled - here; whether it shows at all is decided by
+  // style.showLegend (see defaultChartStyle for the default). ----
   layout.showlegend = style.showLegend;
+  // These y-offsets are expressed as a fraction of an assumed ~520px chart
+  // height (this file has no way to know the real rendered pixel height -
+  // it only ever builds a spec, never touches the DOM) - deliberately
+  // generous rather than exact, since a little extra whitespace around the
+  // legend is a far safer failure mode here than the legend drifting back
+  // onto the title or the plot area on a shorter or taller chart than the
+  // assumed reference height.
+  const REF_CHART_HEIGHT = 520;
   layout.legend = {
     ...(layout.legend || {}),
     orientation: "h",
-    x: 0,
-    xanchor: "left",
-    y: 1.1,
-    yanchor: "bottom",
     font: { ...(layout.legend?.font || {}), size: baseSize, family: FONT_FAMILY },
+    ...(legendPos === "top"
+      ? { x: 0, xanchor: "left", y: 1 + (legendBandPx + 14) / REF_CHART_HEIGHT, yanchor: "bottom" }
+      : { x: 0.5, xanchor: "center", y: -((tiltExtraPx + legendBandPx + 14) / REF_CHART_HEIGHT), yanchor: "top" }),
   };
 
   // ---- Hover: one clean readout per mark, value bolded and leading, the
