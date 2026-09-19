@@ -91,6 +91,23 @@ function SpinnerIcon({ className }: { className?: string }) {
   );
 }
 
+function CloseIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 6L6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
+function TableIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M3 9h18M3 15h18M9 3v18" />
+    </svg>
+  );
+}
+
 // Turns the epoch-seconds timestamp the backend returns into a short,
 // human "Xm ago" - separate from Dashboard.tsx's timeAgo, which takes an
 // ISO date string instead.
@@ -111,13 +128,61 @@ const DB_KINDS = [
   { value: "mongodb", label: "MongoDB", defaultPort: 27017, color: "#47A248", Logo: MongoDbLogo },
 ];
 
+// Same shape the backend's DataSourceOut returns.
+type CreatedDataSource = {
+  id: string;
+  name: string;
+  kind: string;
+  created_at: string;
+  schema_cache?: Record<string, unknown> | null;
+};
+
+// Icon + label + brand color for the "Connected" confirmation, for a kind
+// that might be a database (in DB_KINDS) or a file upload (csv/excel,
+// which never appear in DB_KINDS since that picker is database-only).
+function connectionKindMeta(kind: string) {
+  const found = DB_KINDS.find((d) => d.value === kind);
+  if (found) return { label: found.label, color: found.color, Logo: found.Logo };
+  if (kind === "excel") return { label: "Excel file", color: "#1D6F42", Logo: FileSpreadsheetIcon };
+  return { label: "CSV file", color: "#64748b", Logo: FileSpreadsheetIcon };
+}
+
+// Normalizes the three different shapes `schema_cache` can come back in
+// (SQL: { table: [{name,type}] }, MongoDB: { collection: ["field", ...] },
+// file upload: { columns: [{name,type}] }) into one consistent list the
+// confirmation panel can render the same way regardless of kind.
+function getTableEntries(
+  kind: string,
+  schemaCache: Record<string, unknown> | null | undefined,
+  fallbackName: string
+): { name: string; columns: { name: string; type?: string }[] }[] {
+  if (!schemaCache) return [];
+  if (kind === "csv" || kind === "excel") {
+    const cols = Array.isArray((schemaCache as any).columns) ? (schemaCache as any).columns : [];
+    return [{ name: fallbackName, columns: cols }];
+  }
+  return Object.entries(schemaCache).map(([tableName, cols]) => {
+    if (Array.isArray(cols) && (cols.length === 0 || typeof cols[0] === "string")) {
+      // MongoDB: a plain array of field name strings.
+      return { name: tableName, columns: (cols as string[]).map((f) => ({ name: f })) };
+    }
+    return { name: tableName, columns: (cols as { name: string; type: string }[]) || [] };
+  });
+}
+
 // `onCreated` is handed the datasource the server just created (id, name,
-// kind, created_at) - the homepage uses that id to jump straight into its
-// workspace, since there is no dataset grid to click into any more.
+// kind, created_at) once the person confirms in the "Connected" panel that
+// they want to jump into it - the homepage uses that id to jump straight
+// into its workspace, since there is no dataset grid to click into any
+// more. `onConnected` (optional) fires immediately on a successful
+// connect/upload, before that confirmation, so the parent can quietly
+// refresh its own lists in the background without navigating away yet.
 export default function DataSourceForm({
   onCreated,
+  onConnected,
 }: {
   onCreated: (ds: { id: string; name: string; kind: string; created_at: string }) => void;
+  onConnected?: (ds: CreatedDataSource) => void;
 }) {
   const [mode, setMode] = useState<"db" | "file">("db");
   const [busy, setBusy] = useState(false);
@@ -136,6 +201,14 @@ export default function DataSourceForm({
   // File form state
   const [fileName, setFileName] = useState("");
   const [file, setFile] = useState<File | null>(null);
+
+  // "Connected" confirmation panel: shown right after a successful connect
+  // or upload, before handing off to the workspace, so the person can see
+  // exactly what GD360 found (which tables/collections/columns) and confirm
+  // it's the right thing before diving into chat - real-time confirmation
+  // instead of a blind jump straight into the workspace.
+  const [connectedDs, setConnectedDs] = useState<CreatedDataSource | null>(null);
+  const [expandedTables, setExpandedTables] = useState<Record<string, boolean>>({});
 
   // "Show IPs to whitelist": some managed databases (AWS RDS, GCP Cloud
   // SQL, MongoDB Atlas, and similar) only accept connections from an
@@ -185,14 +258,25 @@ export default function DataSourceForm({
     if (found) setPort(found.defaultPort);
   };
 
+  // Shared by both submit handlers: shows the "Connected" confirmation panel
+  // instead of jumping straight to the workspace, and auto-expands it when
+  // there's only a single table/file (nothing to choose between, so no
+  // point making the person click to see its columns).
+  const showConnectedPanel = (data: CreatedDataSource) => {
+    setConnectedDs(data);
+    const entries = getTableEntries(data.kind, data.schema_cache, data.name);
+    setExpandedTables(entries.length === 1 ? { [entries[0].name]: true } : {});
+    onConnected?.(data);
+  };
+
   const submitDb = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError("");
     try {
       const { data } = await api.post("/datasources/database", { name, kind, host, port, database, username, password, ssl });
-      onCreated(data);
       setName(""); setHost(""); setDatabase(""); setUsername(""); setPassword("");
+      showConnectedPanel(data);
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Could not connect. Check your credentials and network access.");
     } finally {
@@ -210,8 +294,8 @@ export default function DataSourceForm({
       form.append("name", fileName || file.name);
       form.append("file", file);
       const { data } = await api.post("/datasources/file", form, { headers: { "Content-Type": "multipart/form-data" } });
-      onCreated(data);
       setFileName(""); setFile(null);
+      showConnectedPanel(data);
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Could not read file.");
     } finally {
@@ -219,7 +303,22 @@ export default function DataSourceForm({
     }
   };
 
+  const closeConnectedPanel = () => setConnectedDs(null);
+
+  const proceedToWorkspace = () => {
+    if (connectedDs) onCreated(connectedDs);
+    setConnectedDs(null);
+  };
+
+  const toggleTableExpanded = (tableName: string) => {
+    setExpandedTables((prev) => ({ ...prev, [tableName]: !prev[tableName] }));
+  };
+
+  const connectedTableEntries = connectedDs ? getTableEntries(connectedDs.kind, connectedDs.schema_cache, connectedDs.name) : [];
+  const connectedMeta = connectedDs ? connectionKindMeta(connectedDs.kind) : null;
+
   return (
+    <>
     <div className="card p-6">
       <div className="flex gap-2 mb-5">
         <button
@@ -402,5 +501,107 @@ export default function DataSourceForm({
         </form>
       )}
     </div>
+
+    {/* ---- "Connected" confirmation: shown right after a successful connect
+        or upload, before handing off to the workspace, so the person gets
+        real-time confirmation of exactly what they connected and what
+        GD360 can see in it - never a blind jump straight into chat. ---- */}
+    {connectedDs && connectedMeta && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={closeConnectedPanel} aria-hidden />
+        <div className="relative card bg-surface w-full max-w-md p-6 max-h-[85vh] overflow-y-auto" role="dialog" aria-modal="true">
+          <button
+            type="button"
+            onClick={closeConnectedPanel}
+            aria-label="Close"
+            className="absolute top-4 right-4 text-muted hover:text-text transition"
+          >
+            <CloseIcon className="w-4 h-4" />
+          </button>
+
+          <div className="flex items-center gap-3 pr-6">
+            <div className="w-10 h-10 rounded-full bg-accent/15 flex items-center justify-center text-accent shrink-0">
+              <CheckIcon className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="font-bold text-lg leading-tight">Connected</div>
+              <div className="text-xs text-muted mt-0.5">Your data source connected successfully.</div>
+            </div>
+          </div>
+
+          <div className="mt-5 rounded-lg border border-border bg-surface2 p-3 flex items-center gap-3">
+            <div
+              className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+              style={{ backgroundColor: `${connectedMeta.color}1a`, color: connectedMeta.color }}
+            >
+              <connectedMeta.Logo className="w-5 h-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="font-medium text-sm truncate">{connectedDs.name}</div>
+              <div className="text-xs text-muted">Connected to {connectedMeta.label}</div>
+            </div>
+            <CheckIcon className="w-4 h-4 text-accent shrink-0" />
+          </div>
+
+          <div className="mt-5">
+            <div className="text-sm font-semibold mb-1">Available data</div>
+            <div className="text-xs text-muted mb-3 leading-relaxed">
+              {connectedTableEntries.length > 0
+                ? "Here's what GD360 found - ask about any of it."
+                : "Connected, but GD360 didn't find any tables to read yet."}
+            </div>
+
+            {connectedTableEntries.length > 0 && (
+              <div className="space-y-1.5">
+                {connectedTableEntries.map((entry) => (
+                  <div key={entry.name} className="rounded-lg border border-border overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => toggleTableExpanded(entry.name)}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface2 transition"
+                    >
+                      <ChevronRightIcon
+                        className={`w-3.5 h-3.5 shrink-0 text-muted transition-transform ${expandedTables[entry.name] ? "rotate-90" : ""}`}
+                      />
+                      <TableIcon className="w-3.5 h-3.5 shrink-0 text-muted" />
+                      <span className="text-sm font-medium truncate flex-1">{entry.name}</span>
+                      <span className="text-[11px] text-muted shrink-0">
+                        {entry.columns.length} col{entry.columns.length === 1 ? "" : "s"}
+                      </span>
+                    </button>
+                    {expandedTables[entry.name] && (
+                      <div className="px-3 pb-2.5 pt-0.5 flex flex-wrap gap-1.5 bg-surface2">
+                        {entry.columns.length > 0 ? (
+                          entry.columns.map((c) => (
+                            <span
+                              key={c.name}
+                              className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-base border border-border text-muted"
+                            >
+                              {c.name}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-[11px] text-muted">No columns detected.</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 mt-6">
+            <button type="button" className="btn-secondary flex-1" onClick={closeConnectedPanel}>
+              Close
+            </button>
+            <button type="button" className="btn-primary flex-1" onClick={proceedToWorkspace}>
+              Try it out &rarr;
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
