@@ -49,6 +49,62 @@ function FileSpreadsheetIcon({ className }: { className?: string }) {
   );
 }
 
+function ShieldIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z" />
+    </svg>
+  );
+}
+
+function ChevronRightIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  );
+}
+
+function CopyIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="9" width="12" height="12" rx="2" />
+      <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+    </svg>
+  );
+}
+
+function CheckIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 6L9 17l-5-5" />
+    </svg>
+  );
+}
+
+function SpinnerIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" strokeOpacity="0.25" />
+      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// Turns the epoch-seconds timestamp the backend returns into a short,
+// human "Xm ago" - separate from Dashboard.tsx's timeAgo, which takes an
+// ISO date string instead.
+function timeAgoShort(epochSeconds: number): string {
+  const diffMs = Date.now() - epochSeconds * 1000;
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
 const DB_KINDS = [
   { value: "postgres", label: "PostgreSQL", defaultPort: 5432, color: "#4169E1", Logo: PostgresLogo },
   { value: "mysql", label: "MySQL / MariaDB", defaultPort: 3306, color: "#4479A1", Logo: MySqlLogo },
@@ -80,6 +136,48 @@ export default function DataSourceForm({
   // File form state
   const [fileName, setFileName] = useState("");
   const [file, setFile] = useState<File | null>(null);
+
+  // "Show IPs to whitelist": some managed databases (AWS RDS, GCP Cloud
+  // SQL, MongoDB Atlas, and similar) only accept connections from an
+  // allowed list of IP addresses. ipData holds whatever the backend has
+  // genuinely, live-observed as this server's own outbound address(es) -
+  // see GET /datasources/network/outbound-ips - never a hardcoded guess.
+  const [showIps, setShowIps] = useState(false);
+  const [ipData, setIpData] = useState<{ ips: string[]; checked_at: number | null } | null>(null);
+  const [ipLoading, setIpLoading] = useState(false);
+  const [ipError, setIpError] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  const fetchOutboundIps = async (refresh = false) => {
+    setIpLoading(true);
+    setIpError("");
+    try {
+      const { data } = await api.get(`/datasources/network/outbound-ips${refresh ? "?refresh=true" : ""}`);
+      setIpData(data);
+    } catch (err: any) {
+      setIpError(err?.response?.data?.detail || "Could not reach GD360's server to detect its outbound address.");
+    } finally {
+      setIpLoading(false);
+    }
+  };
+
+  const toggleShowIps = () => {
+    const next = !showIps;
+    setShowIps(next);
+    if (next && !ipData && !ipLoading) fetchOutboundIps();
+  };
+
+  const copyIps = async () => {
+    if (!ipData?.ips?.length) return;
+    try {
+      await navigator.clipboard.writeText(ipData.ips.join(", "));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API can be blocked in some browser contexts - fail
+      // quietly, the addresses are still visible and selectable by hand.
+    }
+  };
 
   const selectDbKind = (value: string) => {
     setKind(value);
@@ -212,6 +310,80 @@ export default function DataSourceForm({
               GD360 only ever runs read-only SELECT / find queries against your database, and your password is
               encrypted at rest. For extra safety, connect with a database user that only has SELECT privileges.
             </div>
+
+            {/* ---- IP allow-listing: some managed databases only accept connections
+                from a list of allowed addresses, so this shows this server's real,
+                live-detected outbound IP(s) for the person to add there. ---- */}
+            <div className="sm:col-span-2">
+              <div className="flex items-start gap-2 text-xs text-muted mb-2">
+                <ShieldIcon className="w-4 h-4 mt-0.5 shrink-0 text-accent" />
+                <span>
+                  Some managed databases (AWS RDS, GCP Cloud SQL, MongoDB Atlas, and similar) only accept
+                  connections from an allowed list of IP addresses. If yours does, add GD360's outbound
+                  addresses to it.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={toggleShowIps}
+                className="text-xs font-medium text-primary flex items-center gap-1 hover:underline"
+              >
+                <ChevronRightIcon className={`w-3.5 h-3.5 transition-transform ${showIps ? "rotate-90" : ""}`} />
+                {showIps ? "Hide IPs to whitelist" : "Show IPs to whitelist"}
+              </button>
+
+              {showIps && (
+                <div className="mt-3 rounded-lg border border-border bg-surface2 p-4">
+                  {ipLoading ? (
+                    <div className="text-xs text-muted flex items-center gap-2">
+                      <SpinnerIcon className="w-3.5 h-3.5 animate-spin" /> Detecting GD360's live outbound addresses...
+                    </div>
+                  ) : ipError ? (
+                    <div className="text-xs text-red-400 flex items-center justify-between gap-3">
+                      <span>{ipError}</span>
+                      <button type="button" onClick={() => fetchOutboundIps(true)} className="text-primary font-medium hover:underline shrink-0">
+                        Retry
+                      </button>
+                    </div>
+                  ) : ipData && ipData.ips.length > 0 ? (
+                    <>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="font-mono text-sm leading-relaxed break-all">
+                          {ipData.ips.map((ip) => (
+                            <div key={ip}>{ip}</div>
+                          ))}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={copyIps}
+                          title="Copy to clipboard"
+                          className="shrink-0 w-8 h-8 rounded-lg border border-border flex items-center justify-center text-muted hover:text-primary hover:border-primary/40 transition"
+                        >
+                          {copied ? <CheckIcon className="w-4 h-4 text-accent" /> : <CopyIcon className="w-4 h-4" />}
+                        </button>
+                      </div>
+                      <div className="flex items-center justify-between mt-3 pt-3 border-t border-border">
+                        <span className="text-[11px] text-muted">
+                          Live-detected from GD360's own servers
+                          {ipData.checked_at ? ` · updated ${timeAgoShort(ipData.checked_at)}` : ""}
+                        </span>
+                        <button type="button" onClick={() => fetchOutboundIps(true)} className="text-[11px] text-primary font-medium hover:underline">
+                          Refresh
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-xs text-muted flex items-center justify-between gap-3">
+                      <span>Could not detect any addresses just now.</span>
+                      <button type="button" onClick={() => fetchOutboundIps(true)} className="text-primary font-medium hover:underline shrink-0">
+                        Try again
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div className="sm:col-span-2">
               <button className="btn-primary" type="submit" disabled={busy}>{busy ? "Connecting..." : "Test & connect"}</button>
             </div>
