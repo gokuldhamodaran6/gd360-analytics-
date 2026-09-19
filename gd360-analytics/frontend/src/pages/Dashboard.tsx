@@ -93,12 +93,13 @@ const FEATURES = [
   },
 ];
 
-// How many rows a scrolling list (Recent conversations, Saved dashboards)
-// shows comfortably before it starts scrolling internally instead of just
-// making the whole homepage taller and taller - keeps things feeling tidy
-// and premium instead of an ever-lengthening feed, no matter how many
-// conversations or dashboards someone has built up over time.
-const CONVERSATIONS_MAX_HEIGHT = "560px";
+// "Saved dashboards" still caps its own height and scrolls internally
+// (it sits inside the already-tall "Add a data source" column, so it
+// shouldn't push that column even taller). "Recent conversations" no
+// longer has a fixed cap - see the grid below - it now stretches to
+// match whatever height the "Add a data source" column ends up being,
+// so the two columns always look like a matched pair instead of one
+// trailing off with empty space beside it.
 const DASHBOARDS_MAX_HEIGHT = "360px";
 
 function timeAgo(dateStr: string): string {
@@ -324,7 +325,13 @@ export default function Dashboard() {
             )}
           </div>
 
-          <div>
+          {/* `h-full flex flex-col` + the list below being `flex-1 min-h-0`:
+              a CSS Grid row stretches every column to match its tallest
+              column's natural height by default, so this column already
+              gets stretched to match "Add a data source"'s height - this
+              just makes its own content (the list) actually fill that
+              stretched height instead of leaving empty space below it. */}
+          <div className="flex flex-col h-full">
             <h2 className="text-xl font-bold mb-4">Recent conversations</h2>
             {!loading && conversations.length === 0 && (
               <div className="card p-8 text-center text-muted text-sm leading-relaxed">
@@ -332,7 +339,7 @@ export default function Dashboard() {
               </div>
             )}
             {conversations.length > 0 && (
-              <div className="space-y-3 pr-1 overflow-y-auto" style={{ maxHeight: CONVERSATIONS_MAX_HEIGHT }}>
+              <div className="space-y-3 pr-1 overflow-y-auto flex-1 min-h-0">
                 {conversations.map((c) => (
                   <div
                     key={c.id}
