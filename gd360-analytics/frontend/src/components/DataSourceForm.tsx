@@ -307,8 +307,8 @@ export default function DataSourceForm({
               <label htmlFor="ssl" className="text-sm text-muted">Require SSL/TLS</label>
             </div>
             <div className="sm:col-span-2 text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
-              GD360 only ever runs read-only SELECT / find queries against your database, and your password is
-              encrypted at rest. For extra safety, connect with a database user that only has SELECT privileges.
+              Read-only, always. GD360 never modifies your data, and your password is encrypted. Tip: use a
+              read-only database user for extra safety.
             </div>
 
             {/* ---- IP allow-listing: some managed databases only accept connections
@@ -318,9 +318,8 @@ export default function DataSourceForm({
               <div className="flex items-start gap-2 text-xs text-muted mb-2">
                 <ShieldIcon className="w-4 h-4 mt-0.5 shrink-0 text-accent" />
                 <span>
-                  Some managed databases (AWS RDS, GCP Cloud SQL, MongoDB Atlas, and similar) only accept
-                  connections from an allowed list of IP addresses. If yours does, add GD360's outbound
-                  addresses to it.
+                  Some databases only accept connections from approved IP addresses. If yours does,
+                  whitelist GD360's addresses below.
                 </span>
               </div>
               <button
