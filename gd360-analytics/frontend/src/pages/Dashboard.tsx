@@ -299,18 +299,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* ---- Your data sources: everything already connected/uploaded,
-            searchable and sortable, click-through to resume a conversation
-            or start a new one. Shown before "Add a data source" so people
-            see what they already have before being prompted to add more. ---- */}
-        <StoredDataSection
-          datasources={datasources}
-          conversations={conversations}
-          loading={loading}
-          onOpenConversation={openConversation}
-          onAddNew={openConnectFlow}
-        />
-
         {/* ---- Add a data source + Recent conversations ---- */}
         <div ref={formRef} className="grid grid-cols-1 lg:grid-cols-[1fr_1.3fr] gap-8">
           <div>
@@ -368,6 +356,20 @@ export default function Dashboard() {
               </div>
             )}
           </div>
+        </div>
+
+        {/* ---- Your data sources: everything already connected/uploaded,
+            searchable and sortable, click-through to resume a conversation
+            or start a new one. Shown below "Add a data source" / "Recent
+            conversations" per Gokul's layout feedback (2026-09-19). ---- */}
+        <div className="mt-10">
+          <StoredDataSection
+            datasources={datasources}
+            conversations={conversations}
+            loading={loading}
+            onOpenConversation={openConversation}
+            onAddNew={openConnectFlow}
+          />
         </div>
       </div>
     </div>
