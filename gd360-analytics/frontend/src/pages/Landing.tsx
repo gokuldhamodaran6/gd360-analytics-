@@ -17,7 +17,7 @@ const HOW_IT_WORKS = [
   {
     step: "1",
     title: "Connect your data",
-    body: "A database (Postgres, MySQL, MongoDB) or a file (CSV, Excel, JSON) - read-only, encrypted, and never modified.",
+    body: "A database (Postgres, MySQL, SQL Server, MongoDB, Supabase), a data warehouse (BigQuery), or a file (CSV, Excel, JSON) - read-only, encrypted, and never modified.",
   },
   {
     step: "2",
@@ -214,7 +214,7 @@ export default function Landing() {
             </span>
             <span className="hidden sm:inline text-border">|</span>
             <span className="flex items-center gap-1.5">
-              <span>&#128451;</span> Postgres &middot; MySQL &middot; MongoDB &middot; CSV &middot; Excel &middot; JSON
+              <span>&#128451;</span> Postgres &middot; MySQL &middot; SQL Server &middot; MongoDB &middot; Supabase &middot; BigQuery &middot; CSV &middot; Excel &middot; JSON
             </span>
             <span className="hidden sm:inline text-border">|</span>
             <span className="flex items-center gap-1.5">
