@@ -33,6 +33,7 @@ def get_stats(db: Session = Depends(get_db), admin: models.User = Depends(get_cu
     now = datetime.utcnow()
     today_start = datetime(now.year, now.month, now.day)
     week_start = now - timedelta(days=7)
+    month_start = now - timedelta(days=30)
 
     total_users = db.query(func.count(models.User.id)).scalar() or 0
     new_users_today = (
@@ -87,6 +88,17 @@ def get_stats(db: Session = Depends(get_db), admin: models.User = Depends(get_cu
         .scalar()
         or 0
     )
+    # Same distinct-owner pattern as active_today/active_7d, just over a
+    # 30-day window - powers the "Active users" KPI tile's own Today/7d/30d
+    # toggle in the frontend. A real distinct count, not a sum of daily
+    # counts (which would double-count anyone active on more than one day).
+    active_30d = (
+        db.query(func.count(func.distinct(models.Conversation.owner_id)))
+        .join(models.Message, models.Message.conversation_id == models.Conversation.id)
+        .filter(models.Message.role == "user", models.Message.created_at >= month_start)
+        .scalar()
+        or 0
+    )
 
     # Activation funnel counts - how many distinct users have reached each
     # stage, ever (not windowed). Each is a simple distinct-owner count
@@ -118,6 +130,7 @@ def get_stats(db: Session = Depends(get_db), admin: models.User = Depends(get_cu
         "total_dashboards": total_dashboards,
         "active_users_today": active_today,
         "active_users_7d": active_7d,
+        "active_users_30d": active_30d,
         "total_verify_checks": total_verify_checks,
         "funnel": {
             "signed_up": total_users,
