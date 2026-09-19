@@ -7,7 +7,14 @@ const DB_KINDS = [
   { value: "mongodb", label: "MongoDB", defaultPort: 27017 },
 ];
 
-export default function DataSourceForm({ onCreated }: { onCreated: () => void }) {
+// `onCreated` is handed the datasource the server just created (id, name,
+// kind, created_at) - the homepage uses that id to jump straight into its
+// workspace, since there is no dataset grid to click into any more.
+export default function DataSourceForm({
+  onCreated,
+}: {
+  onCreated: (ds: { id: string; name: string; kind: string; created_at: string }) => void;
+}) {
   const [mode, setMode] = useState<"db" | "file">("db");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -31,8 +38,8 @@ export default function DataSourceForm({ onCreated }: { onCreated: () => void })
     setBusy(true);
     setError("");
     try {
-      await api.post("/datasources/database", { name, kind, host, port, database, username, password, ssl });
-      onCreated();
+      const { data } = await api.post("/datasources/database", { name, kind, host, port, database, username, password, ssl });
+      onCreated(data);
       setName(""); setHost(""); setDatabase(""); setUsername(""); setPassword("");
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Could not connect. Check your credentials and network access.");
@@ -50,8 +57,8 @@ export default function DataSourceForm({ onCreated }: { onCreated: () => void })
       const form = new FormData();
       form.append("name", fileName || file.name);
       form.append("file", file);
-      await api.post("/datasources/file", form, { headers: { "Content-Type": "multipart/form-data" } });
-      onCreated();
+      const { data } = await api.post("/datasources/file", form, { headers: { "Content-Type": "multipart/form-data" } });
+      onCreated(data);
       setFileName(""); setFile(null);
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Could not read file.");
