@@ -38,6 +38,29 @@ import {
 // on each chart instead (see the per-chart "showLabels" threshold below),
 // which is the more PowerBI-style, glanceable way to read a value without
 // needing to hover anything.
+//
+// This round (2026-09-19, "elite/premium" polish pass, reference: Google
+// AI Studio's own usage dashboard): every chart's `dragmode` is switched
+// off (baseLayout.dragmode = false) so hovering a chart shows only the
+// normal pointer cursor - Plotly's built-in click-drag zoom/pan cursor
+// (a crosshair/magnifying icon) was still active even with the modebar
+// hidden, which is the odd cursor this fixes. Vertical (category-axis)
+// gridlines are removed from every trend chart - only the value axis
+// keeps a light horizontal grid (see axisBase/valueAxis/categoryAxis
+// below) - and bars get the same rounded corners + breathing room
+// chartStyle.ts already gives every chart elsewhere in the app, so this
+// page's chart chrome matches the rest of the product, not just looks
+// generically "nicer". "Most-used chart types" is now a scrollable ranked
+// table instead of a bar chart (same slot, same place in the grid) so a
+// longer chart-type list never needs more colors or crowds the page. A
+// new "Prompts per active user, per day" trend chart answers "how many
+// prompts does a typical active user send in a day" honestly - each
+// day's own prompt-count / active-user ratio, never a distinct-user count
+// pooled across multiple days, which nothing already on this page can
+// compute (see bucketPromptsPerUser's own note). The users table also
+// gained its own "Last active" day-range filter (Today/7d/30d/90d),
+// independent of search and sort, so a specific window's worth of usage
+// can be isolated at a glance.
 
 const BRAND = SIGNATURE_COLORS[0]; // violet - single-hue magnitude/trend charts
 const ACTION_COLORS: Record<string, string> = {
@@ -241,6 +264,39 @@ function bucketUsage(points: AdminUsagePoint[], granularity: Granularity) {
     }));
 }
 
+// Re-buckets the daily usage series into "prompts per active user, per
+// day" - each day's own prompt count (p.count) divided by that same day's
+// distinct active-user count (0 whenever nobody was active that day, since
+// a day with zero active users also has zero prompts). For weekly/monthly
+// grouping this AVERAGES that daily ratio across the bucket's days, rather
+// than dividing the bucket's total prompts by some pooled distinct-user
+// count spanning multiple days - this app has no way to compute a real
+// distinct-active-user count across more than one day from data already on
+// screen (the same reason bucketUsage above averages active_users instead
+// of summing it), so averaging the daily ratio is the only honest way to
+// show this at a coarser grain. The chart's own subtitle says so whenever
+// that averaging is in effect.
+function bucketPromptsPerUser(points: AdminUsagePoint[], granularity: Granularity) {
+  const dailyRatios = points.map((p) => ({
+    day: p.day,
+    ratio: p.active_users > 0 ? Math.round((p.count / p.active_users) * 100) / 100 : 0,
+  }));
+  if (granularity === "daily") {
+    return dailyRatios.map((p) => ({ key: p.day, label: bucketLabelForKey(p.day, "daily"), value: p.ratio }));
+  }
+  const map = new Map<string, { sum: number; n: number }>();
+  for (const p of dailyRatios) {
+    const key = bucketKeyForDay(p.day, granularity);
+    const cur = map.get(key) || { sum: 0, n: 0 };
+    cur.sum += p.ratio;
+    cur.n += 1;
+    map.set(key, cur);
+  }
+  return [...map.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([key, v]) => ({ key, label: bucketLabelForKey(key, granularity), value: Math.round((v.sum / v.n) * 100) / 100 }));
+}
+
 function GranularityToggle({ value, onChange }: { value: Granularity; onChange: (g: Granularity) => void }) {
   return (
     <div className="flex items-center gap-1 shrink-0">
@@ -261,7 +317,7 @@ function GranularityToggle({ value, onChange }: { value: Granularity; onChange: 
 
 function StatTile({ label, value, sub }: { label: string; value: number | string; sub?: string }) {
   return (
-    <div className="card p-5">
+    <div className="card p-5 transition-colors duration-200 hover:border-primary/25">
       <div className="text-sm text-muted">{label}</div>
       <div className="text-3xl font-extrabold mt-1">{typeof value === "number" ? formatStatValue(value) : value}</div>
       {sub && <div className="text-xs text-muted mt-1">{sub}</div>}
@@ -285,7 +341,7 @@ function ActiveUsersRangeTile({ stats }: { stats: AdminStats }) {
   const value = range === "today" ? stats.active_users_today : range === "7d" ? stats.active_users_7d : stats.active_users_30d;
   const subLabel = range === "today" ? "sent a prompt today" : `sent a prompt in the last ${range}`;
   return (
-    <div className="card p-5">
+    <div className="card p-5 transition-colors duration-200 hover:border-primary/25">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="text-sm text-muted">Active users</div>
         <div className="flex items-center gap-1">
@@ -314,6 +370,7 @@ function ChartCard({
   controls,
   fading,
   empty,
+  className,
   children,
 }: {
   title: string;
@@ -321,10 +378,15 @@ function ChartCard({
   controls?: React.ReactNode;
   fading?: boolean;
   empty?: boolean;
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className={`card p-4 transition-opacity duration-300 ${fading ? "opacity-60" : "opacity-100"}`}>
+    <div
+      className={`card p-4 transition-all duration-300 hover:border-primary/25 ${fading ? "opacity-60" : "opacity-100"} ${
+        className || ""
+      }`}
+    >
       <div className="flex items-start justify-between gap-2 mb-2">
         <div className="min-w-0">
           <div className="font-semibold">{title}</div>
@@ -354,6 +416,36 @@ function csvEscape(value: string): string {
   return value;
 }
 
+// A day-range filter on the users table itself, independent of search and
+// sort - "how does each user's usage look within a specific window" rather
+// than "find this one person". Filters by last_prompt_at, the same field
+// the table's own "Active/Inactive this week" badge already reads, so
+// "Active within: 7d" and a green "Active" badge always agree with each
+// other. "Today" matches the backend's own UTC-calendar-day definition
+// (see admin.py's today_start) so it means the same thing as the "Active
+// today" KPI tile above, not a rolling 24 hours.
+type UserDateFilter = "all" | "today" | "7d" | "30d" | "90d";
+const USER_DATE_FILTERS: { key: UserDateFilter; label: string }[] = [
+  { key: "all", label: "All time" },
+  { key: "today", label: "Today" },
+  { key: "7d", label: "7d" },
+  { key: "30d", label: "30d" },
+  { key: "90d", label: "90d" },
+];
+
+function isWithinUserDateFilter(lastPromptAt: string | null, filter: UserDateFilter): boolean {
+  if (filter === "all") return true;
+  if (!lastPromptAt) return false;
+  const d = new Date(lastPromptAt + (lastPromptAt.endsWith("Z") ? "" : "Z"));
+  if (filter === "today") {
+    const now = new Date();
+    const utcTodayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    return d.getTime() >= utcTodayStart;
+  }
+  const days = filter === "7d" ? 7 : filter === "30d" ? 30 : 90;
+  return Date.now() - d.getTime() < days * 24 * 60 * 60 * 1000;
+}
+
 export default function AdminDashboard() {
   const { theme } = useTheme();
   const chrome = THEME_CHROME[theme === "dark" ? "dark" : "light"];
@@ -374,6 +466,7 @@ export default function AdminDashboard() {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("created_at");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [userDateFilter, setUserDateFilter] = useState<UserDateFilter>("all");
 
   // Each trend chart's own Day/Week/Month grouping - see the bucketing
   // helpers above. Independent per chart, on purpose.
@@ -381,6 +474,7 @@ export default function AdminDashboard() {
   const [totalUsersGranularity, setTotalUsersGranularity] = useState<Granularity>("daily");
   const [promptsGranularity, setPromptsGranularity] = useState<Granularity>("daily");
   const [activeUsersGranularity, setActiveUsersGranularity] = useState<Granularity>("daily");
+  const [promptsPerUserGranularity, setPromptsPerUserGranularity] = useState<Granularity>("daily");
 
   const loadAll = async (range: DayRange) => {
     const [s, u, b, f, t, g] = await Promise.all([
@@ -457,14 +551,14 @@ export default function AdminDashboard() {
 
   const filteredSortedUsers = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const filtered = q
-      ? users.filter(
-          (u) =>
-            u.email.toLowerCase().includes(q) ||
-            (u.full_name || "").toLowerCase().includes(q) ||
-            (u.company || "").toLowerCase().includes(q)
-        )
-      : users;
+    const filtered = users.filter((u) => {
+      const matchesSearch =
+        !q ||
+        u.email.toLowerCase().includes(q) ||
+        (u.full_name || "").toLowerCase().includes(q) ||
+        (u.company || "").toLowerCase().includes(q);
+      return matchesSearch && isWithinUserDateFilter(u.last_prompt_at, userDateFilter);
+    });
     const dir = sortDir === "asc" ? 1 : -1;
     return [...filtered].sort((a, b) => {
       let av: string | number = "";
@@ -490,7 +584,7 @@ export default function AdminDashboard() {
       if (av > bv) return 1 * dir;
       return 0;
     });
-  }, [users, search, sortKey, sortDir]);
+  }, [users, search, sortKey, sortDir, userDateFilter]);
 
   const toggleSort = (key: SortKey) => {
     if (key === sortKey) {
@@ -535,9 +629,24 @@ export default function AdminDashboard() {
     margin: { l: 44, r: 16, t: 10, b: 40 },
     hoverlabel: { bgcolor: chrome.hoverBg, bordercolor: chrome.hoverBorder, font: { color: chrome.text } },
     showlegend: false,
+    // Disables Plotly's built-in click-drag zoom/pan/select layer so
+    // hovering any chart shows only the normal pointer cursor - the
+    // crosshair/zoom cursor this replaces was still reachable even with
+    // the modebar hidden, since dragmode defaults on regardless. Hover
+    // tooltips work exactly the same with dragmode off; only click-drag
+    // interaction (the only thing the hidden modebar buttons controlled
+    // anyway) is disabled.
+    dragmode: false as const,
   };
 
-  const gridAxis = { gridcolor: chrome.grid, linecolor: chrome.axisLine, zeroline: false, color: chrome.muted };
+  // Only the value axis carries a light horizontal grid; the category axis
+  // (dates/buckets along the bottom of every trend chart) stays clean, with
+  // no vertical gridlines crossing the bars/lines - the "clarity" look of a
+  // polished analytics dashboard, applied consistently across every chart
+  // on this page.
+  const axisBase = { linecolor: chrome.axisLine, zeroline: false, color: chrome.muted };
+  const valueAxis = { ...axisBase, gridcolor: chrome.grid, showgrid: true };
+  const categoryAxis = { ...axisBase, showgrid: false };
 
   // Plotly's own floating modebar (camera/zoom/box-select) is switched
   // off on every chart on this page - see the header comment for why.
@@ -556,6 +665,18 @@ export default function AdminDashboard() {
   const totalUsersBuckets = useMemo(() => bucketGrowth(growth, totalUsersGranularity), [growth, totalUsersGranularity]);
   const promptsBuckets = useMemo(() => bucketUsage(usage, promptsGranularity), [usage, promptsGranularity]);
   const activeUsersBuckets = useMemo(() => bucketUsage(usage, activeUsersGranularity), [usage, activeUsersGranularity]);
+  const promptsPerUserBuckets = useMemo(
+    () => bucketPromptsPerUser(usage, promptsPerUserGranularity),
+    [usage, promptsPerUserGranularity]
+  );
+
+  // Ranked-table bars on "Most-used chart types" are sized relative to the
+  // single most-used chart type, so the longest bar always reads as "100%
+  // of the leader" rather than against some fixed scale.
+  const maxChartTypeCount = useMemo(
+    () => Math.max(1, ...(breakdowns?.chart_types.map((c) => c.count) || [1])),
+    [breakdowns]
+  );
 
   // Past this many bars/points, a direct data label on every one of them
   // would just overlap into noise - the dataviz rule this app already
@@ -566,9 +687,23 @@ export default function AdminDashboard() {
   const totalUsersLabelAll = totalUsersBuckets.length > 0 && totalUsersBuckets.length <= 10;
   const promptsShowLabels = promptsBuckets.length > 0 && promptsBuckets.length <= 10;
   const activeUsersLabelAll = activeUsersBuckets.length > 0 && activeUsersBuckets.length <= 10;
+  const promptsPerUserLabelAll = promptsPerUserBuckets.length > 0 && promptsPerUserBuckets.length <= 10;
 
   return (
-    <div>
+    <div className="admin-dashboard">
+      {/* Plotly still paints its own hover-only drag layer with a CSS
+          class it calls "cursor-crosshair" even with dragmode switched
+          off above (dragmode:false stops the actual click-drag zoom/pan,
+          but Plotly's cursor logic doesn't special-case "false" - it just
+          isn't 'pan', so it still picks the crosshair cursor). This is the
+          other half of that fix: force the normal pointer back on, scoped
+          to this page only via the .admin-dashboard wrapper so it can
+          never affect any other chart elsewhere in the app. */}
+      <style>{`
+        .admin-dashboard .js-plotly-plot .cursor-crosshair {
+          cursor: default !important;
+        }
+      `}</style>
       <TopNav />
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
@@ -667,7 +802,7 @@ export default function AdminDashboard() {
                       x: signupsBuckets.map((p) => p.label),
                       y: signupsBuckets.map((p) => p.new_users),
                       type: "bar",
-                      marker: { color: BRAND },
+                      marker: { color: BRAND, cornerradius: 6 },
                       hovertemplate: "%{x}<br>%{y} new users<extra></extra>",
                       ...(signupsShowLabels
                         ? {
@@ -681,9 +816,10 @@ export default function AdminDashboard() {
                   layout={{
                     ...baseLayout,
                     margin: { ...baseLayout.margin, t: signupsShowLabels ? 26 : baseLayout.margin.t },
-                    xaxis: gridAxis,
+                    bargap: 0.42,
+                    xaxis: categoryAxis,
                     yaxis: {
-                      ...gridAxis,
+                      ...valueAxis,
                       tickformat: "d",
                       rangemode: "tozero",
                       dtick: integerDtick(signupsBuckets.map((p) => p.new_users)),
@@ -712,6 +848,12 @@ export default function AdminDashboard() {
                       marker: { color: BRAND, size: 6 },
                       fill: "tozeroy",
                       fillcolor: `${BRAND}1a`,
+                      // Plotly clips a scatter trace's text/markers right at
+                      // the plot's edge by default (cliponaxis defaults to
+                      // true) - with no bar-style half-category padding on a
+                      // line chart, the first/last point sits flush against
+                      // that edge, so its label used to render half-cut-off.
+                      cliponaxis: false,
                       ...(totalUsersLabelAll
                         ? {
                             text: totalUsersBuckets.map((p) => String(p.cumulative_users)),
@@ -732,6 +874,7 @@ export default function AdminDashboard() {
                             textposition: "top center" as const,
                             textfont: { color: chrome.text, size: 11 },
                             marker: { color: BRAND, size: 8 },
+                            cliponaxis: false,
                             hoverinfo: "skip" as const,
                             showlegend: false,
                           },
@@ -740,8 +883,8 @@ export default function AdminDashboard() {
                   ]}
                   layout={{
                     ...baseLayout,
-                    xaxis: gridAxis,
-                    yaxis: { ...gridAxis, tickformat: "d", dtick: integerDtick(totalUsersBuckets.map((p) => p.cumulative_users)) },
+                    xaxis: categoryAxis,
+                    yaxis: { ...valueAxis, tickformat: "d", dtick: integerDtick(totalUsersBuckets.map((p) => p.cumulative_users)) },
                   }}
                   style={{ width: "100%", height: 260 }}
                   useResizeHandler
@@ -763,7 +906,7 @@ export default function AdminDashboard() {
                       y: promptsBuckets.map((p) => p.analyze_count),
                       name: "Analyze",
                       type: "bar",
-                      marker: { color: ACTION_COLORS.analyze },
+                      marker: { color: ACTION_COLORS.analyze, cornerradius: 6 },
                       ...(promptsShowLabels
                         ? {
                             text: promptsBuckets.map((p) => (p.analyze_count > 0 ? String(p.analyze_count) : "")),
@@ -777,7 +920,7 @@ export default function AdminDashboard() {
                       y: promptsBuckets.map((p) => p.transform_count),
                       name: "Transform",
                       type: "bar",
-                      marker: { color: ACTION_COLORS.transform },
+                      marker: { color: ACTION_COLORS.transform, cornerradius: 6 },
                       ...(promptsShowLabels
                         ? {
                             text: promptsBuckets.map((p) => (p.transform_count > 0 ? String(p.transform_count) : "")),
@@ -790,11 +933,12 @@ export default function AdminDashboard() {
                   layout={{
                     ...baseLayout,
                     barmode: "stack",
+                    bargap: 0.28,
                     showlegend: true,
                     legend: { orientation: "h", y: -0.2, font: { color: chrome.muted, size: 11 } },
-                    xaxis: gridAxis,
+                    xaxis: categoryAxis,
                     yaxis: {
-                      ...gridAxis,
+                      ...valueAxis,
                       tickformat: "d",
                       dtick: integerDtick(promptsBuckets.map((p) => p.analyze_count + p.transform_count)),
                     },
@@ -819,8 +963,12 @@ export default function AdminDashboard() {
                       y: activeUsersBuckets.map((p) => p.active_users),
                       type: "scatter",
                       mode: activeUsersLabelAll ? "lines+markers+text" : "lines+markers",
-                      line: { color: BRAND, width: 2 },
+                      line: { color: BRAND, width: 2, shape: "spline" },
                       marker: { color: BRAND, size: 6 },
+                      // See the "Total users over time" chart's own note above
+                      // on why this is needed - the first/last point's label
+                      // otherwise clips against the plot's edge.
+                      cliponaxis: false,
                       ...(activeUsersLabelAll
                         ? {
                             text: activeUsersBuckets.map((p) => String(p.active_users)),
@@ -841,6 +989,7 @@ export default function AdminDashboard() {
                             textposition: "top center" as const,
                             textfont: { color: chrome.text, size: 11 },
                             marker: { color: BRAND, size: 8 },
+                            cliponaxis: false,
                             hoverinfo: "skip" as const,
                             showlegend: false,
                           },
@@ -849,8 +998,73 @@ export default function AdminDashboard() {
                   ]}
                   layout={{
                     ...baseLayout,
-                    xaxis: gridAxis,
-                    yaxis: { ...gridAxis, tickformat: "d", dtick: integerDtick(activeUsersBuckets.map((p) => p.active_users)) },
+                    xaxis: categoryAxis,
+                    yaxis: { ...valueAxis, tickformat: "d", dtick: integerDtick(activeUsersBuckets.map((p) => p.active_users)) },
+                  }}
+                  style={{ width: "100%", height: 260 }}
+                  useResizeHandler
+                  config={plotConfig}
+                />
+              </ChartCard>
+
+              <ChartCard
+                title="Prompts per active user, per day"
+                subtitle={
+                  promptsPerUserGranularity !== "daily"
+                    ? "Avg of each day's prompts-per-active-user ratio in the period"
+                    : "How many prompts a typical active user sent that day"
+                }
+                controls={<GranularityToggle value={promptsPerUserGranularity} onChange={setPromptsPerUserGranularity} />}
+                fading={refreshingRange}
+                empty={promptsPerUserBuckets.length === 0}
+                className="lg:col-span-2"
+              >
+                <Plot
+                  data={[
+                    {
+                      x: promptsPerUserBuckets.map((p) => p.label),
+                      y: promptsPerUserBuckets.map((p) => p.value),
+                      type: "scatter",
+                      mode: promptsPerUserLabelAll ? "lines+markers+text" : "lines+markers",
+                      line: { color: BRAND, width: 2, shape: "spline" },
+                      marker: { color: BRAND, size: 6 },
+                      fill: "tozeroy",
+                      fillcolor: `${BRAND}1a`,
+                      // See "Total users over time"'s own note above on why
+                      // this is needed - the first/last point's label
+                      // otherwise clips against the plot's edge.
+                      cliponaxis: false,
+                      ...(promptsPerUserLabelAll
+                        ? {
+                            text: promptsPerUserBuckets.map((p) => p.value.toFixed(1)),
+                            textposition: "top center" as const,
+                            textfont: { color: chrome.muted, size: 10 },
+                          }
+                        : {}),
+                      hovertemplate: "%{x}<br>%{y:.2f} prompts per active user<extra></extra>",
+                    },
+                    ...(!promptsPerUserLabelAll && promptsPerUserBuckets.length > 0
+                      ? [
+                          {
+                            x: [promptsPerUserBuckets[promptsPerUserBuckets.length - 1].label],
+                            y: [promptsPerUserBuckets[promptsPerUserBuckets.length - 1].value],
+                            type: "scatter" as const,
+                            mode: "markers+text" as const,
+                            text: [promptsPerUserBuckets[promptsPerUserBuckets.length - 1].value.toFixed(1)],
+                            textposition: "top center" as const,
+                            textfont: { color: chrome.text, size: 11 },
+                            marker: { color: BRAND, size: 8 },
+                            cliponaxis: false,
+                            hoverinfo: "skip" as const,
+                            showlegend: false,
+                          },
+                        ]
+                      : []),
+                  ]}
+                  layout={{
+                    ...baseLayout,
+                    xaxis: categoryAxis,
+                    yaxis: { ...valueAxis, tickformat: "d", dtick: integerDtick(promptsPerUserBuckets.map((p) => p.value)) },
                   }}
                   style={{ width: "100%", height: 260 }}
                   useResizeHandler
@@ -886,35 +1100,26 @@ export default function AdminDashboard() {
                   />
                 </ChartCard>
 
-                <ChartCard title="Most-used chart types" empty={breakdowns.chart_types.length === 0}>
-                  <Plot
-                    data={[
-                      {
-                        type: "bar",
-                        orientation: "h",
-                        y: [...breakdowns.chart_types].reverse().map((c) => c.chart_type),
-                        x: [...breakdowns.chart_types].reverse().map((c) => c.count),
-                        marker: { color: BRAND },
-                        text: [...breakdowns.chart_types].reverse().map((c) => String(c.count)),
-                        textposition: "outside",
-                        textfont: { color: chrome.muted, size: 11 },
-                        hovertemplate: "%{y}<br>%{x} charts<extra></extra>",
-                      } as any,
-                    ]}
-                    layout={{
-                      ...baseLayout,
-                      margin: { l: 100, r: 30, t: 10, b: 30 },
-                      xaxis: {
-                        ...gridAxis,
-                        tickformat: "d",
-                        dtick: integerDtick(breakdowns.chart_types.map((c) => c.count)),
-                      },
-                      yaxis: { ...gridAxis, automargin: true },
-                    }}
-                    style={{ width: "100%", height: 280 }}
-                    useResizeHandler
-                    config={plotConfig}
-                  />
+                <ChartCard
+                  title="Most-used chart types"
+                  subtitle="Ranked by how often each has been generated"
+                  empty={breakdowns.chart_types.length === 0}
+                >
+                  <div className="max-h-72 overflow-y-auto pr-1 -mr-1">
+                    {breakdowns.chart_types.map((c, i) => (
+                      <div key={c.chart_type} className="flex items-center gap-3 py-2 border-b border-border last:border-0">
+                        <span className="text-xs text-muted w-5 shrink-0 text-right">{i + 1}</span>
+                        <span className="text-sm flex-1 min-w-0 truncate capitalize">{c.chart_type.replace(/_/g, " ")}</span>
+                        <div className="w-20 sm:w-28 h-1.5 rounded-full bg-surface2 overflow-hidden shrink-0 hidden sm:block">
+                          <div
+                            className="h-full rounded-full"
+                            style={{ width: `${Math.max(4, (c.count / maxChartTypeCount) * 100)}%`, backgroundColor: BRAND }}
+                          />
+                        </div>
+                        <span className="text-sm font-semibold w-10 text-right shrink-0">{c.count}</span>
+                      </div>
+                    ))}
+                  </div>
                 </ChartCard>
               </div>
             )}
@@ -1002,6 +1207,24 @@ export default function AdminDashboard() {
                 </button>
               </div>
             </div>
+            {/* Last-active day filter - independent of search/sort, so a
+                specific window's usage can be isolated at a glance ("today"
+                matches the same UTC-calendar-day definition the "Active
+                today" KPI tile above uses, not a rolling 24 hours). */}
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <span className="text-sm text-muted mr-1">Last active</span>
+              {USER_DATE_FILTERS.map((f) => (
+                <button
+                  key={f.key}
+                  onClick={() => setUserDateFilter(f.key)}
+                  className={`text-xs sm:text-sm px-3 py-1.5 rounded-lg border transition ${
+                    userDateFilter === f.key ? "border-primary bg-primary/10 text-primary font-semibold" : "border-border hover:bg-surface2"
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
             <div className="card overflow-x-auto">
               <table className="w-full text-sm table-fixed">
                 <colgroup>
@@ -1081,7 +1304,7 @@ export default function AdminDashboard() {
                   {filteredSortedUsers.length === 0 && (
                     <tr>
                       <td colSpan={9} className="p-6 text-center text-muted">
-                        No users match "{search}".
+                        {search ? `No users match "${search}".` : "No users match this filter."}
                       </td>
                     </tr>
                   )}
