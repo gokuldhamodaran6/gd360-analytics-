@@ -30,6 +30,14 @@ import {
 // round to round just because the underlying counts changed rank. No
 // chart on this page uses two y-axes - see ChartCanvas.tsx / chartStyle.ts
 // for why that's a hard rule in this codebase, not just a preference.
+//
+// Every chart's Plotly modebar (the floating camera/zoom/box-select
+// toolbar) is switched off via config={{ displayModeBar: false }} - it
+// used to appear on hover and sit on top of the bars/lines, which read as
+// a stray gray box rather than a control. Data labels are shown directly
+// on each chart instead (see the per-chart "showLabels" threshold below),
+// which is the more PowerBI-style, glanceable way to read a value without
+// needing to hover anything.
 
 const BRAND = SIGNATURE_COLORS[0]; // violet - single-hue magnitude/trend charts
 const ACTION_COLORS: Record<string, string> = {
@@ -80,6 +88,15 @@ function formatDate(value: string | null): string {
   return d.toLocaleString();
 }
 
+// Compact form used inside the users table so every column fits without a
+// horizontal scrollbar - the full date+time is still one hover away via
+// each cell's title attribute (formatDate above).
+function formatDateCompact(value: string | null): string {
+  if (!value) return "Never";
+  const d = new Date(value + (value.endsWith("Z") ? "" : "Z"));
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
 function timeAgo(value: string | null): string {
   if (!value) return "Never";
   const d = new Date(value + (value.endsWith("Z") ? "" : "Z"));
@@ -110,6 +127,138 @@ function pct(part: number, whole: number): string {
   return `${Math.round((part / whole) * 100)}%`;
 }
 
+// Plotly picks its own y-axis tick spacing, and with small counts (0, 1,
+// 2...) it often lands on a fractional step like 0.5 - combined with this
+// page's tickformat: "d" (whole numbers only), that renders as the same
+// integer twice in a row (e.g. "1, 1, 0, 0"). Forcing a whole-number
+// dtick sized to the data's own range avoids that once and for all.
+function integerDtick(values: number[]): number {
+  const max = values.length ? Math.max(...values) : 1;
+  return Math.max(1, Math.ceil(max / 5));
+}
+
+// ---------------------------------------------------------------------
+// Per-chart Day / Week / Month grouping - independent from the shared
+// 7d/30d/90d "Trends over" filter above the chart row. That filter picks
+// how much history is fetched; this toggle picks how the days already on
+// screen are grouped, box by box, exactly like a PowerBI visual's own
+// field well. Each of the four trend charts keeps its own granularity
+// state, so one chart can sit on "Week" while another stays on "Day".
+// ---------------------------------------------------------------------
+type Granularity = "daily" | "weekly" | "monthly";
+const GRANULARITIES: { key: Granularity; label: string }[] = [
+  { key: "daily", label: "Day" },
+  { key: "weekly", label: "Week" },
+  { key: "monthly", label: "Month" },
+];
+
+// The bucket key for a "YYYY-MM-DD" day string: itself for "daily", the
+// Monday (UTC) that starts its week for "weekly", or its "YYYY-MM" for
+// "monthly". Used only to group points together - bucketLabelForKey below
+// is what actually gets displayed on the axis.
+function bucketKeyForDay(day: string, granularity: Granularity): string {
+  if (granularity === "daily") return day;
+  const d = new Date(`${day}T00:00:00Z`);
+  if (granularity === "monthly") {
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  }
+  const weekday = d.getUTCDay(); // 0 = Sunday
+  const mondayOffset = weekday === 0 ? -6 : 1 - weekday;
+  d.setUTCDate(d.getUTCDate() + mondayOffset);
+  return d.toISOString().slice(0, 10);
+}
+
+function bucketLabelForKey(key: string, granularity: Granularity): string {
+  if (granularity === "daily") {
+    return new Date(`${key}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+  if (granularity === "monthly") {
+    const [y, m] = key.split("-").map(Number);
+    return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString(undefined, { month: "short", year: "2-digit" });
+  }
+  const weekStart = new Date(`${key}T00:00:00Z`);
+  return `Wk of ${weekStart.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+}
+
+// Re-buckets the daily growth series (new signups + running total) into
+// weekly/monthly points. "new_users" SUMS across the bucket - a true
+// count of how many people joined that period. "cumulative_users" takes
+// the LAST day's running total in the bucket instead - the real total as
+// of that period's end - since summing a running total would be
+// meaningless.
+function bucketGrowth(points: AdminGrowthPoint[], granularity: Granularity) {
+  if (granularity === "daily") {
+    return points.map((p) => ({ key: p.day, label: bucketLabelForKey(p.day, "daily"), new_users: p.new_users, cumulative_users: p.cumulative_users }));
+  }
+  const map = new Map<string, { new_users: number; cumulative_users: number }>();
+  for (const p of points) {
+    const key = bucketKeyForDay(p.day, granularity);
+    const cur = map.get(key) || { new_users: 0, cumulative_users: 0 };
+    cur.new_users += p.new_users;
+    cur.cumulative_users = p.cumulative_users; // days arrive in ascending order, so the last write is the bucket's true end-of-period total
+    map.set(key, cur);
+  }
+  return [...map.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([key, v]) => ({ key, label: bucketLabelForKey(key, granularity), ...v }));
+}
+
+// Re-buckets the daily usage series (prompts split by action + active
+// users). Prompt counts SUM across the bucket - a real total for that
+// period. Active users is instead AVERAGED per day within the bucket -
+// summing daily active-user counts across a week would double-count
+// anyone active on more than one day, which isn't a real number. The
+// chart's own subtitle says "avg active users per day" whenever this
+// averaging is in effect, so it's never silently misleading.
+function bucketUsage(points: AdminUsagePoint[], granularity: Granularity) {
+  if (granularity === "daily") {
+    return points.map((p) => ({
+      key: p.day,
+      label: bucketLabelForKey(p.day, "daily"),
+      analyze_count: p.analyze_count,
+      transform_count: p.transform_count,
+      active_users: p.active_users,
+    }));
+  }
+  const map = new Map<string, { analyze: number; transform: number; activeSum: number; n: number }>();
+  for (const p of points) {
+    const key = bucketKeyForDay(p.day, granularity);
+    const cur = map.get(key) || { analyze: 0, transform: 0, activeSum: 0, n: 0 };
+    cur.analyze += p.analyze_count;
+    cur.transform += p.transform_count;
+    cur.activeSum += p.active_users;
+    cur.n += 1;
+    map.set(key, cur);
+  }
+  return [...map.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([key, v]) => ({
+      key,
+      label: bucketLabelForKey(key, granularity),
+      analyze_count: v.analyze,
+      transform_count: v.transform,
+      active_users: Math.round((v.activeSum / v.n) * 10) / 10,
+    }));
+}
+
+function GranularityToggle({ value, onChange }: { value: Granularity; onChange: (g: Granularity) => void }) {
+  return (
+    <div className="flex items-center gap-1 shrink-0">
+      {GRANULARITIES.map((g) => (
+        <button
+          key={g.key}
+          onClick={() => onChange(g.key)}
+          className={`text-[10px] sm:text-xs px-2 py-1 rounded-md border transition ${
+            value === g.key ? "border-primary bg-primary/10 text-primary font-semibold" : "border-border hover:bg-surface2 text-muted"
+          }`}
+        >
+          {g.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function StatTile({ label, value, sub }: { label: string; value: number | string; sub?: string }) {
   return (
     <div className="card p-5">
@@ -120,24 +269,68 @@ function StatTile({ label, value, sub }: { label: string; value: number | string
   );
 }
 
+// The one KPI tile that carries its own filter buttons, built in - a
+// direct answer to "active users, but let me pick the window myself"
+// without needing a whole extra chart. Sits where "Saved dashboards" used
+// to (that count is still visible in the activation funnel below, as the
+// "Saved a dashboard" stage).
+const ACTIVE_TILE_RANGES: { key: "today" | "7d" | "30d"; label: string }[] = [
+  { key: "today", label: "Today" },
+  { key: "7d", label: "7d" },
+  { key: "30d", label: "30d" },
+];
+
+function ActiveUsersRangeTile({ stats }: { stats: AdminStats }) {
+  const [range, setRange] = useState<"today" | "7d" | "30d">("7d");
+  const value = range === "today" ? stats.active_users_today : range === "7d" ? stats.active_users_7d : stats.active_users_30d;
+  const subLabel = range === "today" ? "sent a prompt today" : `sent a prompt in the last ${range}`;
+  return (
+    <div className="card p-5">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="text-sm text-muted">Active users</div>
+        <div className="flex items-center gap-1">
+          {ACTIVE_TILE_RANGES.map((r) => (
+            <button
+              key={r.key}
+              onClick={() => setRange(r.key)}
+              className={`text-[10px] px-1.5 py-0.5 rounded border transition ${
+                range === r.key ? "border-primary bg-primary/10 text-primary font-semibold" : "border-border hover:bg-surface2 text-muted"
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="text-3xl font-extrabold mt-1">{formatStatValue(value)}</div>
+      <div className="text-xs text-muted mt-1">{subLabel}</div>
+    </div>
+  );
+}
+
 function ChartCard({
   title,
   subtitle,
+  controls,
   fading,
   empty,
   children,
 }: {
   title: string;
   subtitle?: string;
+  controls?: React.ReactNode;
   fading?: boolean;
   empty?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div className={`card p-4 transition-opacity duration-300 ${fading ? "opacity-60" : "opacity-100"}`}>
-      <div className="mb-2">
-        <div className="font-semibold">{title}</div>
-        {subtitle && <div className="text-xs text-muted mt-0.5">{subtitle}</div>}
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="min-w-0">
+          <div className="font-semibold">{title}</div>
+          {subtitle && <div className="text-xs text-muted mt-0.5">{subtitle}</div>}
+        </div>
+        {controls}
       </div>
       {empty ? (
         <div className="text-muted text-sm py-10 text-center">Not enough data yet.</div>
@@ -154,7 +347,7 @@ const EVENT_META: Record<AdminActivityEvent["type"], { label: string; color: str
   saved_dashboard: { label: "Saved dashboard", color: SIGNATURE_COLORS[2] },
 };
 
-type SortKey = "email" | "created_at" | "prompt_count" | "datasource_count" | "dashboard_count" | "verified_count" | "last_prompt_at";
+type SortKey = "email" | "created_at" | "prompt_count" | "datasource_count" | "verified_count" | "last_prompt_at";
 
 function csvEscape(value: string): string {
   if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
@@ -181,6 +374,13 @@ export default function AdminDashboard() {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("created_at");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+  // Each trend chart's own Day/Week/Month grouping - see the bucketing
+  // helpers above. Independent per chart, on purpose.
+  const [signupsGranularity, setSignupsGranularity] = useState<Granularity>("daily");
+  const [totalUsersGranularity, setTotalUsersGranularity] = useState<Granularity>("daily");
+  const [promptsGranularity, setPromptsGranularity] = useState<Granularity>("daily");
+  const [activeUsersGranularity, setActiveUsersGranularity] = useState<Granularity>("daily");
 
   const loadAll = async (range: DayRange) => {
     const [s, u, b, f, t, g] = await Promise.all([
@@ -304,7 +504,7 @@ export default function AdminDashboard() {
   const sortArrow = (key: SortKey) => (key === sortKey ? (sortDir === "asc" ? " ▲" : " ▼") : "");
 
   const exportUsersCsv = () => {
-    const headers = ["Email", "Name", "Company", "Signed up", "Prompts", "Data sources", "Dashboards", "Verified checks", "Last active"];
+    const headers = ["Email", "Name", "Company", "Signed up", "Prompts", "Data sources", "Verified checks", "Last active"];
     const rows = filteredSortedUsers.map((u) => [
       u.email,
       u.full_name || "",
@@ -312,7 +512,6 @@ export default function AdminDashboard() {
       u.created_at || "",
       String(u.prompt_count),
       String(u.datasource_count),
-      String(u.dashboard_count),
       String(u.verified_count),
       u.last_prompt_at || "",
     ]);
@@ -340,12 +539,33 @@ export default function AdminDashboard() {
 
   const gridAxis = { gridcolor: chrome.grid, linecolor: chrome.axisLine, zeroline: false, color: chrome.muted };
 
+  // Plotly's own floating modebar (camera/zoom/box-select) is switched
+  // off on every chart on this page - see the header comment for why.
+  const plotConfig = { displayModeBar: false, responsive: true } as const;
+
   const funnelStages: { key: keyof AdminStats["funnel"]; label: string }[] = [
     { key: "signed_up", label: "Signed up" },
     { key: "connected_data", label: "Connected data" },
     { key: "ran_a_prompt", label: "Ran a prompt" },
     { key: "saved_a_dashboard", label: "Saved a dashboard" },
   ];
+
+  // Bucketed series for the four trend charts, each independent per its
+  // own granularity toggle.
+  const signupsBuckets = useMemo(() => bucketGrowth(growth, signupsGranularity), [growth, signupsGranularity]);
+  const totalUsersBuckets = useMemo(() => bucketGrowth(growth, totalUsersGranularity), [growth, totalUsersGranularity]);
+  const promptsBuckets = useMemo(() => bucketUsage(usage, promptsGranularity), [usage, promptsGranularity]);
+  const activeUsersBuckets = useMemo(() => bucketUsage(usage, activeUsersGranularity), [usage, activeUsersGranularity]);
+
+  // Past this many bars/points, a direct data label on every one of them
+  // would just overlap into noise - the dataviz rule this app already
+  // follows elsewhere ("selective direct labels, never a number on every
+  // point"). Below the threshold every value is labeled; at or above it,
+  // line charts fall back to labeling just their most recent point.
+  const signupsShowLabels = signupsBuckets.length > 0 && signupsBuckets.length <= 14;
+  const totalUsersLabelAll = totalUsersBuckets.length > 0 && totalUsersBuckets.length <= 10;
+  const promptsShowLabels = promptsBuckets.length > 0 && promptsBuckets.length <= 10;
+  const activeUsersLabelAll = activeUsersBuckets.length > 0 && activeUsersBuckets.length <= 10;
 
   return (
     <div>
@@ -389,7 +609,7 @@ export default function AdminDashboard() {
                 sub="over the last 7 days"
               />
               <StatTile label="Data sources connected" value={stats.total_datasources} />
-              <StatTile label="Saved dashboards" value={stats.total_dashboards} />
+              <ActiveUsersRangeTile stats={stats} />
               <StatTile label="Verify checks run" value={stats.total_verify_checks} sub="'Double-check this' usage" />
               <StatTile
                 label="Activation rate"
@@ -414,11 +634,11 @@ export default function AdminDashboard() {
                 layout={{ ...baseLayout, margin: { l: 140, r: 24, t: 10, b: 10 } }}
                 style={{ width: "100%", height: 260 }}
                 useResizeHandler
-                config={{ displaylogo: false, responsive: true }}
+                config={plotConfig}
               />
             </ChartCard>
 
-            {/* Shared date-range filter - scopes the four trend charts directly below it, exactly the charts whose x-axis is a day, per the dataviz skill's "one row above what it scopes" rule. */}
+            {/* Shared date-range filter - scopes the four trend charts directly below it, exactly the charts whose x-axis is a day, per the dataviz skill's "one row above what it scopes" rule. Each chart card below also has its own Day/Week/Month grouping toggle, independent of this one. */}
             <div className="flex items-center gap-2 mt-8 mb-3">
               <span className="text-sm text-muted mr-1">Trends over</span>
               {DAY_RANGES.map((r) => (
@@ -435,61 +655,136 @@ export default function AdminDashboard() {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-8">
-              <ChartCard title="New signups per day" fading={refreshingRange} empty={growth.length === 0}>
+              <ChartCard
+                title="New signups per day"
+                controls={<GranularityToggle value={signupsGranularity} onChange={setSignupsGranularity} />}
+                fading={refreshingRange}
+                empty={signupsBuckets.length === 0}
+              >
                 <Plot
                   data={[
                     {
-                      x: growth.map((p) => p.day),
-                      y: growth.map((p) => p.new_users),
+                      x: signupsBuckets.map((p) => p.label),
+                      y: signupsBuckets.map((p) => p.new_users),
                       type: "bar",
                       marker: { color: BRAND },
                       hovertemplate: "%{x}<br>%{y} new users<extra></extra>",
+                      ...(signupsShowLabels
+                        ? {
+                            text: signupsBuckets.map((p) => String(p.new_users)),
+                            textposition: "outside" as const,
+                            textfont: { color: chrome.muted, size: 10 },
+                          }
+                        : {}),
                     },
                   ]}
-                  layout={{ ...baseLayout, xaxis: gridAxis, yaxis: { ...gridAxis, tickformat: "d" } }}
+                  layout={{
+                    ...baseLayout,
+                    margin: { ...baseLayout.margin, t: signupsShowLabels ? 26 : baseLayout.margin.t },
+                    xaxis: gridAxis,
+                    yaxis: {
+                      ...gridAxis,
+                      tickformat: "d",
+                      rangemode: "tozero",
+                      dtick: integerDtick(signupsBuckets.map((p) => p.new_users)),
+                    },
+                  }}
                   style={{ width: "100%", height: 260 }}
                   useResizeHandler
-                  config={{ displaylogo: false, responsive: true }}
+                  config={plotConfig}
                 />
               </ChartCard>
 
-              <ChartCard title="Total users over time" fading={refreshingRange} empty={growth.length === 0}>
+              <ChartCard
+                title="Total users over time"
+                controls={<GranularityToggle value={totalUsersGranularity} onChange={setTotalUsersGranularity} />}
+                fading={refreshingRange}
+                empty={totalUsersBuckets.length === 0}
+              >
                 <Plot
                   data={[
                     {
-                      x: growth.map((p) => p.day),
-                      y: growth.map((p) => p.cumulative_users),
+                      x: totalUsersBuckets.map((p) => p.label),
+                      y: totalUsersBuckets.map((p) => p.cumulative_users),
                       type: "scatter",
-                      mode: "lines",
+                      mode: totalUsersLabelAll ? "lines+markers+text" : "lines",
                       line: { color: BRAND, width: 2, shape: "spline" },
+                      marker: { color: BRAND, size: 6 },
                       fill: "tozeroy",
                       fillcolor: `${BRAND}1a`,
+                      ...(totalUsersLabelAll
+                        ? {
+                            text: totalUsersBuckets.map((p) => String(p.cumulative_users)),
+                            textposition: "top center" as const,
+                            textfont: { color: chrome.muted, size: 10 },
+                          }
+                        : {}),
                       hovertemplate: "%{x}<br>%{y} total users<extra></extra>",
                     },
+                    ...(!totalUsersLabelAll && totalUsersBuckets.length > 0
+                      ? [
+                          {
+                            x: [totalUsersBuckets[totalUsersBuckets.length - 1].label],
+                            y: [totalUsersBuckets[totalUsersBuckets.length - 1].cumulative_users],
+                            type: "scatter" as const,
+                            mode: "markers+text" as const,
+                            text: [String(totalUsersBuckets[totalUsersBuckets.length - 1].cumulative_users)],
+                            textposition: "top center" as const,
+                            textfont: { color: chrome.text, size: 11 },
+                            marker: { color: BRAND, size: 8 },
+                            hoverinfo: "skip" as const,
+                            showlegend: false,
+                          },
+                        ]
+                      : []),
                   ]}
-                  layout={{ ...baseLayout, xaxis: gridAxis, yaxis: { ...gridAxis, tickformat: "d" } }}
+                  layout={{
+                    ...baseLayout,
+                    xaxis: gridAxis,
+                    yaxis: { ...gridAxis, tickformat: "d", dtick: integerDtick(totalUsersBuckets.map((p) => p.cumulative_users)) },
+                  }}
                   style={{ width: "100%", height: 260 }}
                   useResizeHandler
-                  config={{ displaylogo: false, responsive: true }}
+                  config={plotConfig}
                 />
               </ChartCard>
 
-              <ChartCard title="Prompts per day" subtitle="Analyze vs. transform" fading={refreshingRange} empty={usage.length === 0}>
+              <ChartCard
+                title="Prompts per day"
+                subtitle="Analyze vs. transform"
+                controls={<GranularityToggle value={promptsGranularity} onChange={setPromptsGranularity} />}
+                fading={refreshingRange}
+                empty={promptsBuckets.length === 0}
+              >
                 <Plot
                   data={[
                     {
-                      x: usage.map((p) => p.day),
-                      y: usage.map((p) => p.analyze_count),
+                      x: promptsBuckets.map((p) => p.label),
+                      y: promptsBuckets.map((p) => p.analyze_count),
                       name: "Analyze",
                       type: "bar",
                       marker: { color: ACTION_COLORS.analyze },
+                      ...(promptsShowLabels
+                        ? {
+                            text: promptsBuckets.map((p) => (p.analyze_count > 0 ? String(p.analyze_count) : "")),
+                            textposition: "inside" as const,
+                            textfont: { color: "#FFFFFF", size: 10 },
+                          }
+                        : {}),
                     },
                     {
-                      x: usage.map((p) => p.day),
-                      y: usage.map((p) => p.transform_count),
+                      x: promptsBuckets.map((p) => p.label),
+                      y: promptsBuckets.map((p) => p.transform_count),
                       name: "Transform",
                       type: "bar",
                       marker: { color: ACTION_COLORS.transform },
+                      ...(promptsShowLabels
+                        ? {
+                            text: promptsBuckets.map((p) => (p.transform_count > 0 ? String(p.transform_count) : "")),
+                            textposition: "inside" as const,
+                            textfont: { color: "#FFFFFF", size: 10 },
+                          }
+                        : {}),
                     },
                   ]}
                   layout={{
@@ -498,31 +793,68 @@ export default function AdminDashboard() {
                     showlegend: true,
                     legend: { orientation: "h", y: -0.2, font: { color: chrome.muted, size: 11 } },
                     xaxis: gridAxis,
-                    yaxis: { ...gridAxis, tickformat: "d" },
+                    yaxis: {
+                      ...gridAxis,
+                      tickformat: "d",
+                      dtick: integerDtick(promptsBuckets.map((p) => p.analyze_count + p.transform_count)),
+                    },
                   }}
                   style={{ width: "100%", height: 260 }}
                   useResizeHandler
-                  config={{ displaylogo: false, responsive: true }}
+                  config={plotConfig}
                 />
               </ChartCard>
 
-              <ChartCard title="Active users per day" fading={refreshingRange} empty={usage.length === 0}>
+              <ChartCard
+                title="Active users per day"
+                subtitle={activeUsersGranularity !== "daily" ? "Avg active users per day in each period" : undefined}
+                controls={<GranularityToggle value={activeUsersGranularity} onChange={setActiveUsersGranularity} />}
+                fading={refreshingRange}
+                empty={activeUsersBuckets.length === 0}
+              >
                 <Plot
                   data={[
                     {
-                      x: usage.map((p) => p.day),
-                      y: usage.map((p) => p.active_users),
+                      x: activeUsersBuckets.map((p) => p.label),
+                      y: activeUsersBuckets.map((p) => p.active_users),
                       type: "scatter",
-                      mode: "lines+markers",
+                      mode: activeUsersLabelAll ? "lines+markers+text" : "lines+markers",
                       line: { color: BRAND, width: 2 },
                       marker: { color: BRAND, size: 6 },
+                      ...(activeUsersLabelAll
+                        ? {
+                            text: activeUsersBuckets.map((p) => String(p.active_users)),
+                            textposition: "top center" as const,
+                            textfont: { color: chrome.muted, size: 10 },
+                          }
+                        : {}),
                       hovertemplate: "%{x}<br>%{y} active users<extra></extra>",
                     },
+                    ...(!activeUsersLabelAll && activeUsersBuckets.length > 0
+                      ? [
+                          {
+                            x: [activeUsersBuckets[activeUsersBuckets.length - 1].label],
+                            y: [activeUsersBuckets[activeUsersBuckets.length - 1].active_users],
+                            type: "scatter" as const,
+                            mode: "markers+text" as const,
+                            text: [String(activeUsersBuckets[activeUsersBuckets.length - 1].active_users)],
+                            textposition: "top center" as const,
+                            textfont: { color: chrome.text, size: 11 },
+                            marker: { color: BRAND, size: 8 },
+                            hoverinfo: "skip" as const,
+                            showlegend: false,
+                          },
+                        ]
+                      : []),
                   ]}
-                  layout={{ ...baseLayout, xaxis: gridAxis, yaxis: { ...gridAxis, tickformat: "d" } }}
+                  layout={{
+                    ...baseLayout,
+                    xaxis: gridAxis,
+                    yaxis: { ...gridAxis, tickformat: "d", dtick: integerDtick(activeUsersBuckets.map((p) => p.active_users)) },
+                  }}
                   style={{ width: "100%", height: 260 }}
                   useResizeHandler
-                  config={{ displaylogo: false, responsive: true }}
+                  config={plotConfig}
                 />
               </ChartCard>
             </div>
@@ -550,7 +882,7 @@ export default function AdminDashboard() {
                     layout={{ ...baseLayout, margin: { l: 10, r: 10, t: 10, b: 10 }, showlegend: true, legend: { font: { color: chrome.muted, size: 11 } } }}
                     style={{ width: "100%", height: 280 }}
                     useResizeHandler
-                    config={{ displaylogo: false, responsive: true }}
+                    config={plotConfig}
                   />
                 </ChartCard>
 
@@ -572,12 +904,16 @@ export default function AdminDashboard() {
                     layout={{
                       ...baseLayout,
                       margin: { l: 100, r: 30, t: 10, b: 30 },
-                      xaxis: { ...gridAxis, tickformat: "d" },
+                      xaxis: {
+                        ...gridAxis,
+                        tickformat: "d",
+                        dtick: integerDtick(breakdowns.chart_types.map((c) => c.count)),
+                      },
                       yaxis: { ...gridAxis, automargin: true },
                     }}
                     style={{ width: "100%", height: 280 }}
                     useResizeHandler
-                    config={{ displaylogo: false, responsive: true }}
+                    config={plotConfig}
                   />
                 </ChartCard>
               </div>
@@ -641,7 +977,11 @@ export default function AdminDashboard() {
               )}
             </div>
 
-            {/* Users table */}
+            {/* Users table - deliberately table-fixed with percentage
+                column widths (rather than letting content dictate width)
+                so the whole table sits inside the card and never forces a
+                horizontal scrollbar; long values truncate with the full
+                value available on hover via each cell's title attribute. */}
             <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
               <div className="font-semibold">
                 All users ({filteredSortedUsers.length}
@@ -663,33 +1003,41 @@ export default function AdminDashboard() {
               </div>
             </div>
             <div className="card overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full text-sm table-fixed">
+                <colgroup>
+                  <col style={{ width: "24%" }} />
+                  <col style={{ width: "13%" }} />
+                  <col style={{ width: "13%" }} />
+                  <col style={{ width: "11%" }} />
+                  <col style={{ width: "8%" }} />
+                  <col style={{ width: "9%" }} />
+                  <col style={{ width: "8%" }} />
+                  <col style={{ width: "11%" }} />
+                  <col style={{ width: "9%" }} />
+                </colgroup>
                 <thead>
                   <tr className="text-left text-muted border-b border-border select-none">
-                    <th className="p-3 cursor-pointer hover:text-fg" onClick={() => toggleSort("email")}>
+                    <th className="p-2 cursor-pointer hover:text-fg" onClick={() => toggleSort("email")}>
                       Email{sortArrow("email")}
                     </th>
-                    <th className="p-3">Name</th>
-                    <th className="p-3">Company</th>
-                    <th className="p-3 cursor-pointer hover:text-fg" onClick={() => toggleSort("created_at")}>
+                    <th className="p-2">Name</th>
+                    <th className="p-2">Company</th>
+                    <th className="p-2 cursor-pointer hover:text-fg" onClick={() => toggleSort("created_at")}>
                       Signed up{sortArrow("created_at")}
                     </th>
-                    <th className="p-3 cursor-pointer hover:text-fg" onClick={() => toggleSort("prompt_count")}>
+                    <th className="p-2 cursor-pointer hover:text-fg" onClick={() => toggleSort("prompt_count")}>
                       Prompts{sortArrow("prompt_count")}
                     </th>
-                    <th className="p-3 cursor-pointer hover:text-fg" onClick={() => toggleSort("datasource_count")}>
+                    <th className="p-2 cursor-pointer hover:text-fg" onClick={() => toggleSort("datasource_count")}>
                       Data sources{sortArrow("datasource_count")}
                     </th>
-                    <th className="p-3 cursor-pointer hover:text-fg" onClick={() => toggleSort("dashboard_count")}>
-                      Dashboards{sortArrow("dashboard_count")}
-                    </th>
-                    <th className="p-3 cursor-pointer hover:text-fg" onClick={() => toggleSort("verified_count")}>
+                    <th className="p-2 cursor-pointer hover:text-fg" onClick={() => toggleSort("verified_count")}>
                       Verified{sortArrow("verified_count")}
                     </th>
-                    <th className="p-3 cursor-pointer hover:text-fg" onClick={() => toggleSort("last_prompt_at")}>
+                    <th className="p-2 cursor-pointer hover:text-fg" onClick={() => toggleSort("last_prompt_at")}>
                       Last active{sortArrow("last_prompt_at")}
                     </th>
-                    <th className="p-3">Status</th>
+                    <th className="p-2">Status</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -699,16 +1047,25 @@ export default function AdminDashboard() {
                       Date.now() - new Date(u.last_prompt_at + (u.last_prompt_at.endsWith("Z") ? "" : "Z")).getTime() < 7 * 24 * 60 * 60 * 1000;
                     return (
                       <tr key={u.id} className="border-b border-border last:border-0">
-                        <td className="p-3">{u.email}</td>
-                        <td className="p-3">{u.full_name || "—"}</td>
-                        <td className="p-3">{u.company || "—"}</td>
-                        <td className="p-3 whitespace-nowrap">{formatDate(u.created_at)}</td>
-                        <td className="p-3 font-semibold">{u.prompt_count}</td>
-                        <td className="p-3">{u.datasource_count}</td>
-                        <td className="p-3">{u.dashboard_count}</td>
-                        <td className="p-3">{u.verified_count}</td>
-                        <td className="p-3 whitespace-nowrap">{formatDate(u.last_prompt_at)}</td>
-                        <td className="p-3">
+                        <td className="p-2 truncate" title={u.email}>
+                          {u.email}
+                        </td>
+                        <td className="p-2 truncate" title={u.full_name || undefined}>
+                          {u.full_name || "—"}
+                        </td>
+                        <td className="p-2 truncate" title={u.company || undefined}>
+                          {u.company || "—"}
+                        </td>
+                        <td className="p-2 truncate" title={formatDate(u.created_at)}>
+                          {formatDateCompact(u.created_at)}
+                        </td>
+                        <td className="p-2 font-semibold">{u.prompt_count}</td>
+                        <td className="p-2">{u.datasource_count}</td>
+                        <td className="p-2">{u.verified_count}</td>
+                        <td className="p-2 truncate" title={formatDate(u.last_prompt_at)}>
+                          {formatDateCompact(u.last_prompt_at)}
+                        </td>
+                        <td className="p-2">
                           <span
                             className={`inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full ${
                               activeThisWeek ? "bg-green-500/10 text-green-600 dark:text-green-400" : "bg-surface2 text-muted"
@@ -723,7 +1080,7 @@ export default function AdminDashboard() {
                   })}
                   {filteredSortedUsers.length === 0 && (
                     <tr>
-                      <td colSpan={10} className="p-6 text-center text-muted">
+                      <td colSpan={9} className="p-6 text-center text-muted">
                         No users match "{search}".
                       </td>
                     </tr>
