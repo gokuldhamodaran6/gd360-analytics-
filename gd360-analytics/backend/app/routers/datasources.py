@@ -11,10 +11,12 @@ saved tables, and a download/export of any of them as CSV or Excel.
 import io
 import json
 import os
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+import requests
 
 from .. import models, schemas, security
 from ..config import get_settings
@@ -25,6 +27,94 @@ from ..services.data_loader import load_dataframe, load_version_dataframe, ensur
 
 router = APIRouter(prefix="/datasources", tags=["datasources"])
 settings = get_settings()
+
+# How long a detected outbound IP address stays cached before being
+# re-checked, in seconds. Render (our hosting provider) shares outbound IP
+# addresses across every service in a region and does not publish a fixed,
+# documented list anywhere an app can read programmatically - the only way
+# to hand a person accurate addresses to whitelist on their own managed
+# database is to genuinely observe, right now, what this exact server's
+# real outbound connections look like from the outside. See
+# get_outbound_ips below.
+_OUTBOUND_IP_CACHE_SECONDS = 21600  # 6 hours
+_outbound_ip_cache: dict = {"ips": set(), "checked_at": 0.0}
+
+
+def _probe_outbound_ips(attempts_per_service: int = 2, timeout: float = 4.0) -> set[str]:
+    """Makes a handful of real outbound HTTP calls from this exact running
+    server to three independent public "what's my IP" services, and returns
+    every distinct source address seen. Several services (not one) so any
+    single one being briefly down never blanks the result, and more than
+    one attempt per service so that if the hosting provider's outbound NAT
+    round-robins new connections across more than one address, repeat
+    calls have a real chance of surfacing each of them - this is never a
+    guess or a hardcoded number, only what was actually observed."""
+    seen: set[str] = set()
+    for _ in range(attempts_per_service):
+        try:
+            resp = requests.get("https://api.ipify.org?format=json", timeout=timeout)
+            resp.raise_for_status()
+            ip = (resp.json() or {}).get("ip")
+            if ip:
+                seen.add(ip)
+        except Exception as e:
+            print(f"[datasources] outbound IP probe (ipify) failed: {e}")
+    for _ in range(attempts_per_service):
+        try:
+            resp = requests.get("https://ifconfig.me/ip", timeout=timeout)
+            resp.raise_for_status()
+            ip = resp.text.strip()
+            if ip:
+                seen.add(ip)
+        except Exception as e:
+            print(f"[datasources] outbound IP probe (ifconfig.me) failed: {e}")
+    for _ in range(attempts_per_service):
+        try:
+            resp = requests.get("https://checkip.amazonaws.com", timeout=timeout)
+            resp.raise_for_status()
+            ip = resp.text.strip()
+            if ip:
+                seen.add(ip)
+        except Exception as e:
+            print(f"[datasources] outbound IP probe (checkip.amazonaws.com) failed: {e}")
+    return seen
+
+
+@router.get("/network/outbound-ips")
+def get_outbound_ips(refresh: bool = False):
+    """Real, currently-observed outbound IP address(es) this server uses
+    when IT connects OUT to a database - not the person's own IP. Several
+    managed databases (AWS RDS, GCP Cloud SQL, MongoDB Atlas, and similar)
+    only accept incoming connections from an allowed list of IP addresses,
+    so someone connecting one of those needs to add these to its
+    firewall/allow-list before GD360 can reach it. Powers the "Show IPs to
+    whitelist" panel in the connect-a-database form.
+
+    Deliberately NOT behind get_current_user, unlike every other route in
+    this file: the answer is the same fact for every caller (this server's
+    own address, never anything about a particular person or their data),
+    so there is nothing to protect by requiring login - and leaving it open
+    is also what lets this be checked directly (e.g. with curl) to confirm
+    it is correct without needing to be signed in first.
+
+    Cached in memory for _OUTBOUND_IP_CACHE_SECONDS so repeat clicks do not
+    re-probe every time; refresh=true forces a fresh check on demand (the
+    UI's "Refresh" action). The cached set only ever grows within a cache
+    window - a probe that (transiently) finds fewer addresses than before
+    never makes a previously-confirmed-real one disappear.
+    """
+    now = time.time()
+    is_stale = now - _outbound_ip_cache["checked_at"] > _OUTBOUND_IP_CACHE_SECONDS
+    if refresh or is_stale or not _outbound_ip_cache["ips"]:
+        newly_seen = _probe_outbound_ips()
+        if newly_seen:
+            _outbound_ip_cache["ips"] = _outbound_ip_cache["ips"] | newly_seen
+            _outbound_ip_cache["checked_at"] = now
+
+    return {
+        "ips": sorted(_outbound_ip_cache["ips"]),
+        "checked_at": _outbound_ip_cache["checked_at"] or None,
+    }
 
 
 @router.get("", response_model=list[schemas.DataSourceOut])
