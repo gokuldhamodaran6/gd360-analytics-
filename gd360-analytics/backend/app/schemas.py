@@ -57,13 +57,26 @@ class ChangePasswordRequest(BaseModel):
 # ---------- DataSources ----------
 class DataSourceCreateDB(BaseModel):
     name: str
-    kind: str  # postgres | mysql | mongodb
+    kind: str  # postgres | mysql | mongodb | sqlserver | supabase
     host: str
     port: int
     database: str
     username: str
     password: str
     ssl: bool = True
+
+
+# A data warehouse authenticates completely differently from a database
+# connection above (a service-account key, never a host/port/username/
+# password), so it gets its own request shape and its own endpoint
+# (POST /datasources/warehouse) rather than being squeezed into
+# DataSourceCreateDB.
+class DataSourceCreateWarehouse(BaseModel):
+    name: str
+    kind: str  # bigquery (more warehouse kinds may be added later)
+    project_id: str
+    dataset_id: str
+    service_account_json: str
 
 
 class DataSourceOut(BaseModel):
