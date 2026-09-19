@@ -20,7 +20,7 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from .. import models, security
-from .connectors import SQLConnector, MongoConnector, FileConnector
+from .connectors import SQLConnector, MongoConnector, FileConnector, BigQueryConnector
 
 
 class NeedsTableSelection(Exception):
@@ -57,7 +57,7 @@ def _load_original(ds: models.DataSource, table: str | None = None) -> pd.DataFr
         ext_hint = ".xlsx" if ds.kind == "excel" else ".csv"
         return FileConnector(ds.file_data, ext_hint).load_dataframe()
 
-    if ds.kind in ("postgres", "mysql"):
+    if ds.kind in ("postgres", "mysql", "sqlserver", "supabase"):
         username, password = security.decrypt_secret(ds.encrypted_secret).split("␟")
         info = ds.connection_info
         connector = SQLConnector(ds.kind, info["host"], info["port"], info["database"], username, password, info.get("ssl", True))
@@ -70,6 +70,13 @@ def _load_original(ds: models.DataSource, table: str | None = None) -> pd.DataFr
         connector = MongoConnector(info["host"], info["port"], info["database"], username, password, info.get("ssl", True))
         table = table or _pick_single(ds.schema_cache)
         return connector.load_dataframe(table)
+
+    if ds.kind == "bigquery":
+        service_account_json = security.decrypt_secret(ds.encrypted_secret)
+        info = ds.connection_info
+        connector = BigQueryConnector(info["project_id"], info["dataset_id"], service_account_json)
+        table = table or _pick_single(ds.schema_cache)
+        return connector.load_dataframe(table, is_raw_sql=False)
 
     raise ValueError(f"Unsupported datasource kind: {ds.kind}")
 
