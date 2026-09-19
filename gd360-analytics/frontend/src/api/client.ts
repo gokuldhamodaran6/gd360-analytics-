@@ -40,6 +40,15 @@ export type AdminStats = {
   prompts_7d: number;
   total_datasources: number;
   total_dashboards: number;
+  active_users_today: number;
+  active_users_7d: number;
+  total_verify_checks: number;
+  funnel: {
+    signed_up: number;
+    connected_data: number;
+    ran_a_prompt: number;
+    saved_a_dashboard: number;
+  };
 };
 
 export type AdminUserRow = {
@@ -50,15 +59,45 @@ export type AdminUserRow = {
   created_at: string;
   prompt_count: number;
   last_prompt_at: string | null;
+  datasource_count: number;
+  dashboard_count: number;
+  verified_count: number;
 };
 
-export type AdminUsagePoint = { day: string; count: number };
+export type AdminUsagePoint = {
+  day: string;
+  count: number;
+  active_users: number;
+  analyze_count: number;
+  transform_count: number;
+};
+
+export type AdminGrowthPoint = { day: string; new_users: number; cumulative_users: number };
+
+export type AdminBreakdowns = {
+  datasource_kinds: { kind: string; count: number }[];
+  action_mix: { action: string; count: number }[];
+  chart_types: { chart_type: string; count: number }[];
+  goku: { total_questions: number; users: number };
+  verification: { total_checks: number; messages_ever_verified: number; verifiable_messages: number };
+};
+
+export type AdminActivityEvent = {
+  type: "signup" | "connected_data" | "saved_dashboard";
+  at: string | null;
+  text: string;
+};
 
 export const adminApi = {
   getStats: () => api.get<AdminStats>("/admin/stats").then((r) => r.data),
   getUsers: () => api.get<AdminUserRow[]>("/admin/users").then((r) => r.data),
   getUsageTimeseries: (days = 14) =>
     api.get<AdminUsagePoint[]>(`/admin/usage-timeseries?days=${days}`).then((r) => r.data),
+  getGrowthTimeseries: (days = 30) =>
+    api.get<AdminGrowthPoint[]>(`/admin/growth-timeseries?days=${days}`).then((r) => r.data),
+  getBreakdowns: () => api.get<AdminBreakdowns>("/admin/breakdowns").then((r) => r.data),
+  getActivityFeed: (limit = 30) =>
+    api.get<AdminActivityEvent[]>(`/admin/activity-feed?limit=${limit}`).then((r) => r.data),
 };
 
 export type CleaningLogEntry = {
