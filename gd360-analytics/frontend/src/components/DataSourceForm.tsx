@@ -50,30 +50,9 @@ function FileSpreadsheetIcon({ className }: { className?: string }) {
 }
 
 const DB_KINDS = [
-  {
-    value: "postgres",
-    label: "PostgreSQL",
-    description: "Connect your PostgreSQL data for instant AI analysis",
-    defaultPort: 5432,
-    color: "#4169E1",
-    Logo: PostgresLogo,
-  },
-  {
-    value: "mysql",
-    label: "MySQL / MariaDB",
-    description: "Connect your MySQL or MariaDB data for instant AI analysis",
-    defaultPort: 3306,
-    color: "#4479A1",
-    Logo: MySqlLogo,
-  },
-  {
-    value: "mongodb",
-    label: "MongoDB",
-    description: "Connect your MongoDB data for instant AI analysis",
-    defaultPort: 27017,
-    color: "#47A248",
-    Logo: MongoDbLogo,
-  },
+  { value: "postgres", label: "PostgreSQL", defaultPort: 5432, color: "#4169E1", Logo: PostgresLogo },
+  { value: "mysql", label: "MySQL / MariaDB", defaultPort: 3306, color: "#4479A1", Logo: MySqlLogo },
+  { value: "mongodb", label: "MongoDB", defaultPort: 27017, color: "#47A248", Logo: MongoDbLogo },
 ];
 
 // `onCreated` is handed the datasource the server just created (id, name,
@@ -164,36 +143,39 @@ export default function DataSourceForm({
       {mode === "db" ? (
         <div>
           {/* Connector picker: a real, recognizable logo per database type
-              instead of a plain text dropdown, so people can identify their
-              database at a glance the same way any connector gallery works. */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
+              instead of a plain text dropdown or a card full of copy - the
+              logo alone is enough to identify it, the same way a polished
+              connector gallery works. Name is still there as a native
+              tooltip/aria-label for accessibility, just not printed as text. */}
+          <div className="grid grid-cols-3 gap-3 mb-5">
             {DB_KINDS.map((d) => {
               const selected = kind === d.value;
               return (
                 <button
                   type="button"
                   key={d.value}
+                  title={d.label}
+                  aria-label={d.label}
+                  aria-pressed={selected}
                   onClick={() => selectDbKind(d.value)}
-                  className={`text-left p-4 rounded-xl border transition flex items-start gap-3 ${
+                  className={`relative h-20 rounded-xl border flex items-center justify-center transition ${
                     selected ? "border-primary bg-primary/5 ring-1 ring-primary" : "border-border hover:border-primary/40"
                   }`}
                 >
                   <div
-                    className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
+                    className="w-11 h-11 rounded-lg flex items-center justify-center"
                     style={{ backgroundColor: `${d.color}1a`, color: d.color }}
                   >
-                    <d.Logo className="w-5 h-5" />
+                    <d.Logo className="w-6 h-6" />
                   </div>
-                  <div className="min-w-0">
-                    <div className="font-semibold text-sm flex items-center gap-1.5">
-                      {d.label}
-                      {selected && <span className="text-primary text-xs" aria-hidden>&#10003;</span>}
-                    </div>
-                    <div className="text-xs text-muted mt-0.5 leading-snug">{d.description}</div>
-                    <span className="inline-block mt-2 text-[10px] px-1.5 py-0.5 rounded border border-border text-muted uppercase tracking-wide">
-                      Database
+                  {selected && (
+                    <span
+                      className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-primary text-white flex items-center justify-center text-[10px] leading-none"
+                      aria-hidden
+                    >
+                      &#10003;
                     </span>
-                  </div>
+                  )}
                 </button>
               );
             })}
