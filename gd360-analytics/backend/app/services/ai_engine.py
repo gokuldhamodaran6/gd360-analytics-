@@ -4,8 +4,10 @@ The AI copilot. Responsible for:
      plan: either a clarifying question, a data cleaning/preparation
      transform, or a chart-producing analysis.
   2. Calling the sandbox to execute that code safely.
-  3. Building the chart (for analyze) or a before/after summary chart
-     (for transform).
+  3. Building the chart - ONLY for analyze. A transform (a request that just
+     wants a cleaned/prepared/grouped table back) never gets a chart
+     attached, even internally - a person who asked for a table should see
+     exactly a table, nothing else auto-generated alongside it.
   4. Writing a plain-English insight from the result.
   5. Suggesting follow-up charts / statistical methods.
 
@@ -32,7 +34,7 @@ import pandas as pd
 import requests
 
 from ..config import get_settings
-from .chart_builder import build_cleaning_summary_chart, build_figure, result_to_summary
+from .chart_builder import build_figure, result_to_summary
 from .chart_suggester import profile_dataframe, suggest_charts, suggest_stats
 from .sandbox import run_sandboxed
 
@@ -1266,16 +1268,20 @@ def _run_transform(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, 
     # With a single table selected this is exactly the old before/after
     # comparison; with several selected, "before" reflects everything that
     # went in, since e.g. a merge or a comparison legitimately starts from
-    # the combined rows across every selected table.
+    # the combined rows across every selected table. These numbers still
+    # feed the plain-English "N rows -> M rows, X -> Y missing values"
+    # summary text - only the auto-generated bar chart is gone (see below).
     rows_before = sum(len(t) for t in tables.values())
     rows_after = int(len(cleaned))
     nulls_before = sum(int(t.isna().sum().sum()) for t in tables.values())
     nulls_after = int(cleaned.isna().sum().sum())
 
-    try:
-        chart_spec = build_cleaning_summary_chart(rows_before, rows_after, nulls_before, nulls_after, title=plan.get("title") or "Before vs after")
-    except Exception:
-        chart_spec = None
+    # A transform means "give me a table" - never attach a chart here, even
+    # a small before/after one. Auto-generating a chart nobody asked for
+    # (and that has nothing to do with the table's actual content, e.g. a
+    # groupby that deliberately collapses 100 rows into 2) confused people
+    # into thinking an irrelevant chart was the answer to their question.
+    chart_spec = None
 
     new_profile = profile_dataframe(cleaned)
     summary = result_to_summary(cleaned)
@@ -1344,13 +1350,12 @@ def _run_analyze_with_prep(
     prepped_profile = profile_dataframe(prepped)
 
     if guided:
-        try:
-            prep_chart_spec = build_cleaning_summary_chart(
-                rows_before, rows_after, nulls_before, nulls_after,
-                title=plan.get("title") or "Data prepared for this analysis",
-            )
-        except Exception:
-            prep_chart_spec = None
+        # This is the paused "here is the prepared table, confirm to
+        # continue" step, not the final analysis - it is still just a
+        # table at this point, so (same as a plain transform, above) no
+        # chart gets attached here either. The real chart is built once the
+        # person continues past this pause, further down in this function.
+        prep_chart_spec = None
         prep_summary = result_to_summary(prepped)
         prep_summary["source_row_count"] = rows_after
         prep_insight = _generate_insight(prompt, prep_summary)
