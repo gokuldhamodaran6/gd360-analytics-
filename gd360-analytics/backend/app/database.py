@@ -41,6 +41,7 @@ _NEW_COLUMNS = [
     ("messages", "code", "TEXT"),
     ("messages", "action", "TEXT"),
     ("messages", "chart_type", "TEXT"),
+    ("messages", "verified_count", "INTEGER DEFAULT 0"),
 ]
 
 
