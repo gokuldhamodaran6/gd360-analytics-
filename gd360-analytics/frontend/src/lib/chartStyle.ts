@@ -310,6 +310,27 @@ function titleTextOf(value: any): string {
  * premium chart never shows an unrounded float like "9164.399999999998". */
 const VALUE_FORMAT = ",.2~f";
 
+/** Formats a single bar's value the same way VALUE_FORMAT does for every
+ * everyday magnitude (9164 -> "9,164", 8851.36 -> "8,851.36", -0.57 ->
+ * "-0.57"), but switches to scientific notation for a genuinely tiny
+ * nonzero value (a regression p-value like 0.0000000000000000000000000000
+ * 000000000000000000000000000000000128, i.e. 1.28e-62) that would
+ * otherwise round straight to "0" under fixed 2-decimal formatting -
+ * which, on a bar chart, also means the bar itself renders at an
+ * imperceptible sub-pixel height, indistinguishable from an empty one.
+ * Showing the real magnitude in the label is what still lets someone read
+ * the true result off a bar that is, visually, empty. Used for both the
+ * on-bar label and the hover readout (see the bar/histogram branches
+ * below) so the two always agree with each other. */
+function formatValueSmart(v: any): string {
+  const n = typeof v === "number" ? v : parseFloat(v);
+  if (!Number.isFinite(n)) return "";
+  if (n === 0) return "0";
+  const abs = Math.abs(n);
+  if (abs < 0.01) return n.toExponential(2);
+  return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
 /** Applies the given style on top of the AI-generated Plotly spec, without
  * mutating the original. Safe to call repeatedly (e.g. on every render) -
  * always starts fresh from the raw spec so switching palettes, font size or
@@ -507,8 +528,15 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
     if (isDecorativeTrace(t)) return;
     const type = t.type;
     const extra = multiSeries ? "<extra>%{fullData.name}</extra>" : "<extra></extra>";
-    if (BAR_LIKE_TYPES.has(type)) {
-      const h = t.orientation === "h";
+    const h = t.orientation === "h";
+    if (type === "bar" || type === "histogram") {
+      // Reads the same precomputed, tiny-value-safe text the on-bar label
+      // below is built from (see formatValueSmart) - so hovering a bar
+      // always reports its real value, never a rounded "0.00" that
+      // contradicts what the label (or a near-invisible sliver of a bar)
+      // actually represents.
+      t.hovertemplate = `${h ? "%{y}" : "%{x}"}<br><b>%{text}</b>${extra}`;
+    } else if (BAR_LIKE_TYPES.has(type)) {
       t.hovertemplate = `${h ? "%{y}" : "%{x}"}<br><b>%{${h ? "x" : "y"}:${VALUE_FORMAT}}</b>${extra}`;
     } else if (type === "scatter" || type === undefined) {
       t.hovertemplate = `<b>%{y:${VALUE_FORMAT}}</b>${extra}`;
@@ -533,8 +561,22 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
       t.texttemplate = style.dataLabels ? `%{${t.orientation === "h" ? "x" : "y"}:${VALUE_FORMAT}}` : undefined;
       t.textposition = "outside";
     } else if (type === "bar" || type === "histogram") {
-      t.texttemplate = style.dataLabels ? `%{${t.orientation === "h" ? "x" : "y"}:${VALUE_FORMAT}}` : undefined;
-      t.textposition = "auto";
+      // Precomputed text (not a Plotly texttemplate/d3-format string) so a
+      // genuinely tiny nonzero value - a p-value like 1.28e-62 - always
+      // shows its real magnitude instead of silently rounding to "0" and
+      // vanishing (see formatValueSmart). "outside" (not "auto") guarantees
+      // the label still renders even when the bar itself is an
+      // imperceptible sliver - Plotly's own "auto" placement can otherwise
+      // skip the label entirely once a bar's rendered height rounds to
+      // zero pixels, which is exactly what was silently dropping the
+      // P-value label on a regression-summary chart. cliponaxis:false
+      // keeps that outside label from ever being clipped right at the
+      // plot's edge.
+      const vals: any[] = t.orientation === "h" ? t.x : t.y;
+      t.text = Array.isArray(vals) ? vals.map(formatValueSmart) : undefined;
+      delete t.texttemplate;
+      t.textposition = style.dataLabels ? "outside" : "none";
+      t.cliponaxis = false;
       t.textfont = { ...(t.textfont || {}), family: FONT_FAMILY, weight: 650 };
     } else if (type === "scatter" || type === undefined) {
       const baseMode = (t.mode || "lines+markers").replace("+text", "");
