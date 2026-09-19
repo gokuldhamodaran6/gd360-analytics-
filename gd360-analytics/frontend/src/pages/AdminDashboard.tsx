@@ -70,14 +70,21 @@ const ACTION_COLORS: Record<string, string> = {
 // Fixed kind -> palette slot so a data source kind's color never depends
 // on which kinds happen to be present this round (color follows the
 // entity, never its rank - see the data-viz skill's non-negotiables).
+// All 8 SIGNATURE_COLORS are now spoken for by the app's 8 real kinds, so
+// FALLBACK_KIND_COLOR below (a plain neutral gray, not one of the 8) is
+// reserved only for a genuinely unknown/future kind, never reused from
+// this fixed list.
 const KIND_COLOR: Record<string, string> = {
   postgres: SIGNATURE_COLORS[0],
   mysql: SIGNATURE_COLORS[1],
   mongodb: SIGNATURE_COLORS[2],
-  csv: SIGNATURE_COLORS[3],
-  excel: SIGNATURE_COLORS[4],
+  sqlserver: SIGNATURE_COLORS[3],
+  supabase: SIGNATURE_COLORS[4],
+  bigquery: SIGNATURE_COLORS[5],
+  csv: SIGNATURE_COLORS[6],
+  excel: SIGNATURE_COLORS[7],
 };
-const FALLBACK_KIND_COLOR = SIGNATURE_COLORS[5];
+const FALLBACK_KIND_COLOR = "#94A3B8";
 
 // Mirrors ChartCanvas.tsx's THEME_CHROME by design - kept as its own copy
 // here rather than importing (that constant isn't exported there, and this
