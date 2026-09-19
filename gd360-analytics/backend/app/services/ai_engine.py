@@ -234,6 +234,17 @@ Rules:
   flows between stages, "gauge" for a single KPI. Only reach for one of these when the result genuinely has the
   shape it needs (e.g. sankey needs source/target/value columns) - never force data into a chart type it does
   not fit.
+- When the request describes one named variable's effect on another - "impact of X on Y", "does X affect Y",
+  "influence of X on Y", "how does X drive Y", "relationship between X and Y" - the variable named as the
+  cause/driver (X) MUST end up as one of the (at most two) columns in `result`, and as x_label: never reduce
+  `result` down to two OUTCOME columns and drop the explicitly named cause variable from the chart entirely.
+  This matters most when the request also names more than one outcome (e.g. "impact of distance to store on
+  transactions and spending") - it is tempting to plot the two outcome metrics against each other since they
+  are both sitting right there in the prepared table, but that answers a different question than the one
+  asked. Instead, pick the single most central outcome to pair with the named cause for `result`/the chart
+  (x_label = the cause, y_label = that outcome), and mention in narrative or a follow_up_suggestion that the
+  other named outcome can be charted the same way next - never silently substitute two outcomes against each
+  other for the cause-and-effect pair the person actually named.
 - Always populate follow_up_suggestions (see schema above) with specific, non-generic next steps tied to what
   you just did, the way a senior data analyst would proactively suggest the next useful angle.
 - When more than one table is selected, actually use all of them if the request implies it (e.g. "compare",
