@@ -1,428 +1,423 @@
 """
-Owner-only admin endpoints: how many people have signed up, how much of the
-AI chat feature they are using, and where the product's real adoption and
-trust signals stand. Restricted to the email addresses listed in the
-ADMIN_EMAILS setting (see config.py) via get_current_admin.
-
-Every number here is computed straight from the application's own tables -
-nothing is estimated, sampled, or hardcoded. Where a metric would need data
-this app does not track yet (for example, AI token spend), it is simply not
-exposed rather than approximated, so nothing on this dashboard can silently
-drift from what actually happened.
+The core AI analytics endpoint. Given a prompt + a datasource, it:
+  1. Loads the relevant data (read-only), preferring an AI-cleaned snapshot
+     when one exists and the caller did not ask for the original.
+  2. Asks the AI engine to plan + (safely) execute pandas code - either a
+     data cleaning/preparation transform, or a chart-producing analysis.
+  3. For a transform, persists the cleaned snapshot back onto the
+     datasource (never onto the real file/database the user connected) and
+     logs what changed.
+  4. Persists the conversation turn.
+  5. Returns chart spec + insight + follow-up suggestions, or a
+     clarifying question if the AI/system needs more info.
 """
-from datetime import datetime, timedelta
+import time
+from collections import defaultdict, deque
+from datetime import datetime
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import case, func
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from .. import models
+from .. import models, schemas
+from ..config import get_settings
 from ..database import get_db
-from ..deps import get_current_admin
+from ..deps import get_current_user
+from ..schemas_extra import ChatRequestFull, VerifyRequest
+from ..services import ai_engine
+from ..services.data_loader import (
+    load_dataframe, load_version_dataframe, dataframe_to_csv_bytes, ensure_legacy_migrated, NeedsTableSelection,
+)
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(prefix="/chat", tags=["chat"])
+settings = get_settings()
 
-# chart_type / action values this app can actually produce, used only to
-# keep the breakdown queries' `filter(...in_(...))` calls self-documenting -
-# never used to reject a value; an unexpected one still shows up in "Other".
-_ACTION_KINDS = ("analyze", "transform")
-
-
-@router.get("/stats")
-def get_stats(db: Session = Depends(get_db), admin: models.User = Depends(get_current_admin)):
-    now = datetime.utcnow()
-    today_start = datetime(now.year, now.month, now.day)
-    week_start = now - timedelta(days=7)
-
-    total_users = db.query(func.count(models.User.id)).scalar() or 0
-    new_users_today = (
-        db.query(func.count(models.User.id))
-        .filter(models.User.created_at >= today_start)
-        .scalar()
-        or 0
-    )
-    new_users_7d = (
-        db.query(func.count(models.User.id))
-        .filter(models.User.created_at >= week_start)
-        .scalar()
-        or 0
-    )
-
-    total_prompts = (
-        db.query(func.count(models.Message.id))
-        .filter(models.Message.role == "user")
-        .scalar()
-        or 0
-    )
-    prompts_today = (
-        db.query(func.count(models.Message.id))
-        .filter(models.Message.role == "user", models.Message.created_at >= today_start)
-        .scalar()
-        or 0
-    )
-    prompts_7d = (
-        db.query(func.count(models.Message.id))
-        .filter(models.Message.role == "user", models.Message.created_at >= week_start)
-        .scalar()
-        or 0
-    )
-
-    total_datasources = db.query(func.count(models.DataSource.id)).scalar() or 0
-    total_dashboards = db.query(func.count(models.Dashboard.id)).scalar() or 0
-
-    # Distinct people who actually sent a prompt in the window - "active",
-    # not just "signed up". Joined through Conversation since Message only
-    # carries conversation_id, not owner_id directly.
-    active_today = (
-        db.query(func.count(func.distinct(models.Conversation.owner_id)))
-        .join(models.Message, models.Message.conversation_id == models.Conversation.id)
-        .filter(models.Message.role == "user", models.Message.created_at >= today_start)
-        .scalar()
-        or 0
-    )
-    active_7d = (
-        db.query(func.count(func.distinct(models.Conversation.owner_id)))
-        .join(models.Message, models.Message.conversation_id == models.Conversation.id)
-        .filter(models.Message.role == "user", models.Message.created_at >= week_start)
-        .scalar()
-        or 0
-    )
-
-    # Activation funnel counts - how many distinct users have reached each
-    # stage, ever (not windowed). Each is a simple distinct-owner count
-    # against one table, so there is no join fan-out to worry about.
-    activated_users = (
-        db.query(func.count(func.distinct(models.DataSource.owner_id))).scalar() or 0
-    )
-    prompted_users = (
-        db.query(func.count(func.distinct(models.Conversation.owner_id)))
-        .join(models.Message, models.Message.conversation_id == models.Conversation.id)
-        .filter(models.Message.role == "user")
-        .scalar()
-        or 0
-    )
-    dashboarded_users = (
-        db.query(func.count(func.distinct(models.Dashboard.owner_id))).scalar() or 0
-    )
-
-    total_verify_checks = db.query(func.coalesce(func.sum(models.Message.verified_count), 0)).scalar() or 0
-
-    return {
-        "total_users": total_users,
-        "new_users_today": new_users_today,
-        "new_users_7d": new_users_7d,
-        "total_prompts": total_prompts,
-        "prompts_today": prompts_today,
-        "prompts_7d": prompts_7d,
-        "total_datasources": total_datasources,
-        "total_dashboards": total_dashboards,
-        "active_users_today": active_today,
-        "active_users_7d": active_7d,
-        "total_verify_checks": total_verify_checks,
-        "funnel": {
-            "signed_up": total_users,
-            "connected_data": activated_users,
-            "ran_a_prompt": prompted_users,
-            "saved_a_dashboard": dashboarded_users,
-        },
-    }
+# Simple in-memory sliding-window rate limiter (per process). Protects the
+# free AI tier from accidental hammering; swap for Redis in multi-instance
+# deployments. Generous by default - see config.RATE_LIMIT_PER_MINUTE.
+_call_log: dict[str, deque] = defaultdict(deque)
 
 
-@router.get("/users")
-def list_users(db: Session = Depends(get_db), admin: models.User = Depends(get_current_admin)):
-    rows = (
-        db.query(
-            models.User.id,
-            models.User.email,
-            models.User.full_name,
-            models.User.company,
-            models.User.created_at,
-            func.count(models.Message.id).label("prompt_count"),
-            func.max(models.Message.created_at).label("last_prompt_at"),
+def _check_rate_limit(user_id: str):
+    now = time.time()
+    window = _call_log[user_id]
+    while window and now - window[0] > 60:
+        window.popleft()
+    if len(window) >= settings.RATE_LIMIT_PER_MINUTE:
+        raise HTTPException(429, "You are sending requests a bit fast for the free AI tier - please wait a few seconds and try again.")
+    window.append(now)
+
+
+@router.post("", response_model=schemas.ChatResponse)
+def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    _check_rate_limit(user.id)
+
+    ds = db.query(models.DataSource).filter(
+        models.DataSource.id == payload.datasource_id, models.DataSource.owner_id == user.id
+    ).first()
+    if not ds:
+        raise HTTPException(404, "Datasource not found.")
+    ensure_legacy_migrated(db, ds)
+
+    conversation = _get_or_create_conversation(db, user, payload.conversation_id, ds.id, payload.prompt)
+
+    user_msg = models.Message(conversation_id=conversation.id, role="user", content=payload.prompt)
+    db.add(user_msg)
+    db.commit()
+
+    # The person picks which saved table(s) - or the original data - this
+    # prompt runs against, never inferred silently: "original" always means
+    # the untouched data, anything else is a DatasetVersion.id. Picking more
+    # than one lets a single prompt compare or combine several tables at
+    # once; each entry is only loaded once even if listed twice.
+    requested_ids = payload.source_version_ids or ["original"]
+    try:
+        tables, source_versions, original_df = _load_selected_tables(db, ds, requested_ids, table=payload.table)
+    except NeedsTableSelection as e:
+        available_list = ", ".join(e.available)
+        reply = f"This datasource has multiple tables/collections: {available_list}. Which one would you like to analyze?"
+        return _persist_and_respond(db, conversation.id, reply, needs_clarification=True)
+
+    if original_df is None:
+        # The person is working on a derived table, not the original data -
+        # load the original too (best-effort only, never blocks the main
+        # request on failure) so a prep step can pull in a column that
+        # table is missing straight from there, instead of the person
+        # having to notice the gap, switch WORKING ON by hand, and ask
+        # again from scratch - see ai_engine._schema_with_fallback.
+        try:
+            original_df = load_dataframe(ds, table=payload.table, version="original")
+        except Exception as e:
+            print(f"[chat] Could not load original data as a merge fallback: {e}")
+            original_df = None
+
+    history = _recent_history(db, conversation.id)
+
+    try:
+        result = ai_engine.analyze(
+            payload.prompt, tables, history=history, chart_override=payload.chart_override, intent=payload.intent,
+            guided=(payload.analysis_mode == "guided"), skip_prep=payload.skip_prep, original_df=original_df,
         )
-        .outerjoin(models.Conversation, models.Conversation.owner_id == models.User.id)
-        .outerjoin(
-            models.Message,
-            (models.Message.conversation_id == models.Conversation.id) & (models.Message.role == "user"),
-        )
-        .group_by(
-            models.User.id,
-            models.User.email,
-            models.User.full_name,
-            models.User.company,
-            models.User.created_at,
-        )
-        .order_by(func.count(models.Message.id).desc())
-        .all()
-    )
+    except Exception as e:
+        print(f"[chat] AI analysis failed: {e}")
+        raise HTTPException(502, ai_engine.friendly_ai_error(e))
 
-    # Per-user counts computed as separate, single-table aggregates rather
-    # than joined onto the query above - joining DataSource/Dashboard rows
-    # onto the Conversation/Message join above would multiply the prompt
-    # count by however many datasources or dashboards that user has (join
-    # fan-out), silently inflating it. Each dict below is keyed by owner_id
-    # so it merges cleanly in Python instead.
-    ds_counts = dict(
-        db.query(models.DataSource.owner_id, func.count(models.DataSource.id))
-        .group_by(models.DataSource.owner_id)
-        .all()
-    )
-    dash_counts = dict(
-        db.query(models.Dashboard.owner_id, func.count(models.Dashboard.id))
-        .group_by(models.Dashboard.owner_id)
-        .all()
-    )
-    verify_counts = dict(
-        db.query(models.Conversation.owner_id, func.coalesce(func.sum(models.Message.verified_count), 0))
-        .join(models.Message, models.Message.conversation_id == models.Conversation.id)
-        .group_by(models.Conversation.owner_id)
-        .all()
-    )
+    # A "transform" always persists its result as a new saved table; so
+    # does an "analyze" that had to prepare its own table first (see
+    # ai_engine._run_analyze_with_prep) - either way, cleaned_df being set
+    # is what means a real, executed table exists to save, regardless of
+    # which action produced it.
+    new_version = None
+    if result.get("cleaned_df") is not None:
+        new_version = _save_cleaning_result(db, ds, source_versions, payload.prompt, result)
 
-    return [
-        {
-            "id": r.id,
-            "email": r.email,
-            "full_name": r.full_name,
-            "company": r.company,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
-            "prompt_count": r.prompt_count or 0,
-            "last_prompt_at": r.last_prompt_at.isoformat() if r.last_prompt_at else None,
-            "datasource_count": ds_counts.get(r.id, 0),
-            "dashboard_count": dash_counts.get(r.id, 0),
-            "verified_count": int(verify_counts.get(r.id, 0) or 0),
+    reply_text = result.get("clarifying_question") or result.get("narrative") or "Done."
+    if result.get("rows_before") is not None:
+        rows_before = result.get("rows_before")
+        rows_after = result.get("rows_after")
+        nulls_before = result.get("nulls_before")
+        nulls_after = result.get("nulls_after")
+        arrow = "→"
+        reply_text += f" ({rows_before} {arrow} {rows_after} rows, {nulls_before} {arrow} {nulls_after} missing values)"
+
+    # Step-by-step mode stops right after preparation - hand back a single
+    # clear button that continues into the actual analysis against the
+    # table just prepared and saved, instead of silently going nowhere.
+    continue_action = None
+    if result.get("paused_for_continue") and new_version:
+        continue_action = {
+            "label": "Continue → run the analysis",
+            "prompt": payload.prompt,
+            "version_id": new_version.id,
         }
-        for r in rows
-    ]
 
+    # A paused turn only ran the preparation step, not a complete analysis -
+    # its code is not something a later "give me the code" should hand
+    # back, and, more importantly, it must never be stored as a
+    # repeat-matchable marker (see ai_engine._find_repeated_prompt_code):
+    # the "Continue" click re-sends this SAME question text, and if this
+    # turn prep-only code were tagged as a real action=analyze marker, that
+    # exact-repeat shortcut would wrongly replay just the preparation step
+    # as if it were the whole analysis instead of actually continuing.
+    persisted_code = None if result.get("paused_for_continue") else result.get("code")
 
-@router.get("/usage-timeseries")
-def usage_timeseries(
-    days: int = 14,
-    db: Session = Depends(get_db),
-    admin: models.User = Depends(get_current_admin),
-):
-    """One row per day: how many prompts were sent, the analyze/transform
-    split of the ANSWERS to those prompts, and how many distinct people
-    were active. Two separate day-grouped queries merged in Python rather
-    than one joined query, because "prompt sent" (role=user) and "action
-    taken" (role=assistant) live on different rows of the same table -
-    joining them onto one grouped query would double-count."""
-    since = datetime.utcnow() - timedelta(days=days)
-
-    prompt_rows = (
-        db.query(
-            func.date(models.Message.created_at).label("day"),
-            func.count(models.Message.id).label("count"),
-            func.count(func.distinct(models.Conversation.owner_id)).label("active_users"),
-        )
-        .join(models.Conversation, models.Conversation.id == models.Message.conversation_id)
-        .filter(models.Message.role == "user", models.Message.created_at >= since)
-        .group_by(func.date(models.Message.created_at))
-        .all()
+    return _persist_and_respond(
+        db, conversation.id, reply_text,
+        action=result.get("action", "analyze"),
+        chart_spec=result.get("chart_spec"),
+        insight=result.get("insight"),
+        suggestions={
+            "charts": result.get("suggested_charts"),
+            "stats": result.get("suggested_stats"),
+            "follow_up": result.get("follow_up_suggestions"),
+        },
+        needs_clarification=result.get("needs_clarification", False),
+        rows_before=result.get("rows_before"),
+        rows_after=result.get("rows_after"),
+        nulls_before=result.get("nulls_before"),
+        nulls_after=result.get("nulls_after"),
+        new_version_id=new_version.id if new_version else None,
+        new_version_name=new_version.name if new_version else None,
+        code=persisted_code,
+        chart_type=result.get("chart_type"),
+        continue_action=continue_action,
     )
-    action_rows = (
-        db.query(
-            func.date(models.Message.created_at).label("day"),
-            func.sum(case((models.Message.action == "analyze", 1), else_=0)).label("analyze_count"),
-            func.sum(case((models.Message.action == "transform", 1), else_=0)).label("transform_count"),
-        )
+
+
+def _load_selected_tables(
+    db: Session, ds: models.DataSource, requested_ids: list[str], table: str | None = None
+) -> tuple[dict[str, object], list[models.DatasetVersion], object]:
+    """Loads every table a WORKING ON selection points at - "original"
+    always means the untouched original data, anything else is a
+    DatasetVersion.id - shared by the live /chat endpoint and by
+    /chat/verify (which re-checks a prior answer against the same kind of
+    selection it originally ran against). Raises NeedsTableSelection when
+    the datasource has more than one table/collection and none was
+    specified, or HTTPException for any other load failure - the caller
+    decides how to turn NeedsTableSelection into a response, since /chat
+    and /chat/verify handle it differently.
+
+    Also returns the original, untouched dataframe whenever it was part of
+    this selection (None otherwise - loading it when it was not asked for
+    is the caller job, see the "original data as a merge fallback" note in
+    both endpoints below and ai_engine._schema_with_fallback)."""
+    ordered_ids: list[str] = []
+    for raw_id in requested_ids:
+        key = raw_id or "original"
+        if key not in ordered_ids:
+            ordered_ids.append(key)
+
+    tables: dict[str, object] = {}
+    used_names: set[str] = set()
+    source_versions: list[models.DatasetVersion] = []
+    original_df = None
+
+    def _unique_key(name: str) -> str:
+        key, n = name, 2
+        while key in used_names:
+            key = f"{name} ({n})"
+            n += 1
+        used_names.add(key)
+        return key
+
+    for source_id in ordered_ids:
+        if source_id == "original":
+            try:
+                original_df = load_dataframe(ds, table=table, version="original")
+            except NeedsTableSelection:
+                raise
+            except Exception as e:
+                raise HTTPException(400, f"Could not load data: {e}")
+            tables[_unique_key("Original data")] = original_df
+            continue
+
+        version = db.query(models.DatasetVersion).filter(
+            models.DatasetVersion.id == source_id, models.DatasetVersion.datasource_id == ds.id,
+        ).first()
+        if not version:
+            raise HTTPException(404, "One of the selected tables no longer exists. Please update your selection and try again.")
+        try:
+            tables[_unique_key(version.name)] = load_version_dataframe(version)
+        except Exception as e:
+            raise HTTPException(400, f"Could not load data: {e}")
+        source_versions.append(version)
+
+    return tables, source_versions, original_df
+
+
+@router.post("/verify", response_model=schemas.VerifyResponse)
+def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """The "Double-check this" action a person can trigger on any prior
+    analyze/transform answer, instead of just trusting the first pass
+    forever: re-runs the exact code that produced it against the current
+    data, then has a fresh, independent AI review pass check that the code
+    and the insight genuinely hold up - and if not, redoes it correctly and
+    updates this same message in place. See ai_engine.verify_answer for
+    exactly what is checked."""
+    msg = db.query(models.Message).filter(models.Message.id == payload.message_id).first()
+    if not msg:
+        raise HTTPException(404, "Message not found.")
+
+    conversation = db.query(models.Conversation).filter(
+        models.Conversation.id == msg.conversation_id, models.Conversation.owner_id == user.id
+    ).first()
+    if not conversation:
+        raise HTTPException(404, "Message not found.")
+
+    if msg.role != "assistant" or not msg.code or msg.action not in ("analyze", "transform"):
+        raise HTTPException(400, "There is no computed result attached to this message to verify.")
+
+    if not conversation.datasource_id:
+        raise HTTPException(400, "This conversation has no linked data source to verify against.")
+    ds = db.query(models.DataSource).filter(models.DataSource.id == conversation.datasource_id).first()
+    if not ds:
+        raise HTTPException(404, "Datasource not found.")
+    ensure_legacy_migrated(db, ds)
+
+    # The original question this message answered - the nearest preceding
+    # user turn in the same conversation.
+    prior_user_msg = (
+        db.query(models.Message)
         .filter(
-            models.Message.role == "assistant",
-            models.Message.action.in_(_ACTION_KINDS),
-            models.Message.created_at >= since,
+            models.Message.conversation_id == conversation.id,
+            models.Message.role == "user",
+            models.Message.created_at <= msg.created_at,
         )
-        .group_by(func.date(models.Message.created_at))
-        .all()
+        .order_by(models.Message.created_at.desc())
+        .first()
     )
-    actions_by_day = {str(r.day): (r.analyze_count or 0, r.transform_count or 0) for r in action_rows}
+    prompt = prior_user_msg.content if prior_user_msg else msg.content
 
-    out = []
-    for r in sorted(prompt_rows, key=lambda r: str(r.day)):
-        day = str(r.day)
-        analyze_count, transform_count = actions_by_day.get(day, (0, 0))
-        out.append({
-            "day": day,
-            "count": r.count,
-            "active_users": r.active_users,
-            "analyze_count": analyze_count,
-            "transform_count": transform_count,
-        })
-    return out
+    requested_ids = payload.source_version_ids or ["original"]
+    try:
+        tables, source_versions, original_df = _load_selected_tables(db, ds, requested_ids, table=None)
+    except NeedsTableSelection as e:
+        available_list = ", ".join(e.available)
+        raise HTTPException(400, f"This datasource has multiple tables/collections ({available_list}); please pick one before verifying.")
 
+    if original_df is None:
+        try:
+            original_df = load_dataframe(ds, table=None, version="original")
+        except Exception as e:
+            print(f"[chat] Could not load original data as a merge fallback for verify: {e}")
+            original_df = None
 
-@router.get("/growth-timeseries")
-def growth_timeseries(
-    days: int = 30,
-    db: Session = Depends(get_db),
-    admin: models.User = Depends(get_current_admin),
-):
-    """Daily new signups plus a running cumulative total - the cumulative
-    line starts from the real total as of the window start, not from zero,
-    so it reads correctly even on a short window."""
-    since = datetime.utcnow() - timedelta(days=days)
-    users_before = db.query(func.count(models.User.id)).filter(models.User.created_at < since).scalar() or 0
+    history = _recent_history(db, conversation.id)
 
-    rows = (
-        db.query(
-            func.date(models.User.created_at).label("day"),
-            func.count(models.User.id).label("new_users"),
+    try:
+        audit = ai_engine.verify_answer(
+            prompt, tables, code=msg.code, action=msg.action, chart_type=msg.chart_type,
+            insight=msg.insight, history=history, original_df=original_df,
         )
-        .filter(models.User.created_at >= since)
-        .group_by(func.date(models.User.created_at))
-        .order_by(func.date(models.User.created_at))
-        .all()
+    except Exception as e:
+        print(f"[chat] Verification failed: {e}")
+        raise HTTPException(502, ai_engine.friendly_ai_error(e))
+
+    # Counts real usage of the "Double-check this" trust feature for the
+    # admin dashboard, regardless of whether this particular check found
+    # anything to correct - committed separately, right away, so it is
+    # never lost even if something below this point raises.
+    msg.verified_count = (msg.verified_count or 0) + 1
+    db.commit()
+
+    status = audit["status"]
+    if status != "corrected":
+        return schemas.VerifyResponse(status=status, message=audit["message"], message_id=msg.id)
+
+    result = audit["result"]
+    new_version = None
+    if result.get("cleaned_df") is not None:
+        new_version = _save_cleaning_result(db, ds, source_versions, prompt, result)
+
+    reply_text = result.get("narrative") or "Corrected."
+    if result.get("rows_before") is not None:
+        rows_before = result.get("rows_before")
+        rows_after = result.get("rows_after")
+        nulls_before = result.get("nulls_before")
+        nulls_after = result.get("nulls_after")
+        arrow = "→"
+        reply_text += f" ({rows_before} {arrow} {rows_after} rows, {nulls_before} {arrow} {nulls_after} missing values)"
+
+    msg.content = reply_text
+    msg.chart_spec = result.get("chart_spec")
+    msg.insight = result.get("insight")
+    msg.code = result.get("code")
+    msg.chart_type = result.get("chart_type")
+    db.commit()
+    db.refresh(msg)
+
+    return schemas.VerifyResponse(
+        status="corrected",
+        message=audit["message"],
+        message_id=msg.id,
+        reply_text=reply_text,
+        chart_spec=msg.chart_spec,
+        insight=msg.insight,
+        new_version_id=new_version.id if new_version else None,
+        new_version_name=new_version.name if new_version else None,
     )
 
-    out = []
-    running = users_before
-    for r in rows:
-        running += r.new_users
-        out.append({"day": str(r.day), "new_users": r.new_users, "cumulative_users": running})
-    return out
 
+def _save_cleaning_result(
+    db: Session, ds: models.DataSource, source_versions: list[models.DatasetVersion], prompt: str, result: dict
+) -> models.DatasetVersion:
+    """Every cleaning/prep prompt becomes its own new saved table, built on
+    top of whichever table(s) the person picked as the source, instead of
+    overwriting anything - so earlier results stay around to come back to.
+    Numbering is based on the highest position used so far (not a row
+    count), so it never reuses a number after an earlier table was deleted,
+    and never collides even if two prompts land close together."""
+    cleaned_df = result["cleaned_df"]
+    log_entry = {
+        "prompt": prompt,
+        "summary": result.get("narrative"),
+        "rows_before": result.get("rows_before"),
+        "rows_after": result.get("rows_after"),
+        "nulls_before": result.get("nulls_before"),
+        "nulls_after": result.get("nulls_after"),
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    prior_log: list = []
+    for v in source_versions:
+        prior_log.extend(v.cleaning_log or [])
 
-@router.get("/breakdowns")
-def breakdowns(db: Session = Depends(get_db), admin: models.User = Depends(get_current_admin)):
-    """Everything that is naturally a "which kind" question rather than a
-    "how many over time" one: what people connect, what they ask for, and
-    how much they lean on the trust features. Bundled into one call since
-    each piece is a small, cheap aggregate and the admin page always wants
-    all of them together."""
-    datasource_kinds = [
-        {"kind": kind or "unknown", "count": count}
-        for kind, count in (
-            db.query(models.DataSource.kind, func.count(models.DataSource.id))
-            .group_by(models.DataSource.kind)
-            .order_by(func.count(models.DataSource.id).desc())
-            .all()
-        )
-    ]
-
-    action_mix = [
-        {"action": action, "count": count}
-        for action, count in (
-            db.query(models.Message.action, func.count(models.Message.id))
-            .filter(models.Message.role == "assistant", models.Message.action.in_(_ACTION_KINDS))
-            .group_by(models.Message.action)
-            .all()
-        )
-    ]
-
-    # Every distinct chart type actually rendered, most-used first. Capped
-    # to the top 12 in the response - the frontend folds anything beyond
-    # that into "Other" rather than ever drawing more than a handful of
-    # bars (see the dataviz guidance this app already follows elsewhere:
-    # past ~7-8 categories, fold the tail rather than adding more colors).
-    chart_type_rows = (
-        db.query(models.Message.chart_type, func.count(models.Message.id))
-        .filter(models.Message.role == "assistant", models.Message.chart_type.isnot(None))
-        .group_by(models.Message.chart_type)
-        .order_by(func.count(models.Message.id).desc())
-        .limit(12)
-        .all()
-    )
-    chart_types = [{"chart_type": ct, "count": count} for ct, count in chart_type_rows]
-
-    goku_total_questions = (
-        db.query(func.count(models.GokuMessage.id)).filter(models.GokuMessage.role == "user").scalar() or 0
-    )
-    goku_users = db.query(func.count(func.distinct(models.GokuMessage.owner_id))).scalar() or 0
-
-    total_verify_checks = db.query(func.coalesce(func.sum(models.Message.verified_count), 0)).scalar() or 0
-    messages_ever_verified = (
-        db.query(func.count(models.Message.id)).filter(models.Message.verified_count > 0).scalar() or 0
-    )
-    verifiable_messages = (
-        db.query(func.count(models.Message.id))
-        .filter(models.Message.role == "assistant", models.Message.action.in_(_ACTION_KINDS))
+    max_position = (
+        db.query(func.max(models.DatasetVersion.position))
+        .filter(models.DatasetVersion.datasource_id == ds.id)
         .scalar()
         or 0
     )
+    parent_ids = [v.id for v in source_versions] or None
+    version = models.DatasetVersion(
+        datasource_id=ds.id,
+        name=f"Version {max_position + 1}",
+        parent_version_id=parent_ids[0] if parent_ids else None,
+        parent_version_ids=parent_ids,
+        data=dataframe_to_csv_bytes(cleaned_df),
+        cleaning_log=prior_log + [log_entry],
+        position=max_position + 1,
+    )
+    db.add(version)
+    db.commit()
+    db.refresh(version)
+    return version
 
-    return {
-        "datasource_kinds": datasource_kinds,
-        "action_mix": action_mix,
-        "chart_types": chart_types,
-        "goku": {"total_questions": goku_total_questions, "users": goku_users},
-        "verification": {
-            "total_checks": int(total_verify_checks),
-            "messages_ever_verified": messages_ever_verified,
-            "verifiable_messages": verifiable_messages,
-        },
-    }
+
+def _get_or_create_conversation(
+    db: Session, user: models.User, conversation_id: str | None, datasource_id: str, first_prompt: str
+) -> models.Conversation:
+    if conversation_id:
+        conv = db.query(models.Conversation).filter(
+            models.Conversation.id == conversation_id, models.Conversation.owner_id == user.id
+        ).first()
+        if conv:
+            return conv
+    title = (first_prompt or "").strip()
+    if len(title) > 60:
+        title = title[:57] + "..."
+    conv = models.Conversation(owner_id=user.id, datasource_id=datasource_id, title=title or "New analysis")
+    db.add(conv)
+    db.commit()
+    db.refresh(conv)
+    return conv
 
 
-@router.get("/activity-feed")
-def activity_feed(
-    limit: int = 30,
-    db: Session = Depends(get_db),
-    admin: models.User = Depends(get_current_admin),
-):
-    """A merged, real timeline of what has actually happened in the app
-    recently - signups, new data source connections, and saved dashboards -
-    each pulled straight from its own table's created_at and merged by
-    time. There is no separate "events" table, so this is built from the
-    same rows every other admin number comes from, not a parallel log that
-    could drift from them."""
-    limit = max(1, min(limit, 100))
-
-    signups = (
-        db.query(models.User.id, models.User.email, models.User.full_name, models.User.created_at)
-        .order_by(models.User.created_at.desc())
+def _recent_history(db: Session, conversation_id: str, limit: int = 8) -> list[dict]:
+    msgs = (
+        db.query(models.Message)
+        .filter(models.Message.conversation_id == conversation_id)
+        .order_by(models.Message.created_at.desc())
         .limit(limit)
         .all()
     )
-    connects = (
-        db.query(
-            models.DataSource.id,
-            models.DataSource.name,
-            models.DataSource.kind,
-            models.DataSource.created_at,
-            models.User.email,
-            models.User.full_name,
-        )
-        .join(models.User, models.User.id == models.DataSource.owner_id)
-        .order_by(models.DataSource.created_at.desc())
-        .limit(limit)
-        .all()
-    )
-    saves = (
-        db.query(
-            models.Dashboard.id,
-            models.Dashboard.name,
-            models.Dashboard.created_at,
-            models.User.email,
-            models.User.full_name,
-        )
-        .join(models.User, models.User.id == models.Dashboard.owner_id)
-        .order_by(models.Dashboard.created_at.desc())
-        .limit(limit)
-        .all()
-    )
-
-    events = []
-    for r in signups:
-        who = r.full_name or r.email
-        events.append({
-            "type": "signup",
-            "at": r.created_at.isoformat() if r.created_at else None,
-            "text": f"{who} signed up",
-        })
-    for r in connects:
-        who = r.full_name or r.email
-        events.append({
-            "type": "connected_data",
-            "at": r.created_at.isoformat() if r.created_at else None,
-            "text": f"{who} connected a {r.kind} data source — “{r.name}”",
-        })
-    for r in saves:
-        who = r.full_name or r.email
-        events.append({
-            "type": "saved_dashboard",
-            "at": r.created_at.isoformat() if r.created_at else None,
-            "text": f"{who} saved a dashboard — “{r.name}”",
-        })
-
-    events.sort(key=lambda e: e["at"] or "", reverse=True)
-    return events[:limit]
+    history = []
+    for m in reversed(msgs):
+        content = m.content
+        # For an assistant turn that actually ran code, fold the exact code
+        # into what the model sees for this turn (not into what the person
+        # sees - that stays in the plain reply above). This is what lets a
+        # later "give me the python code" / "show me the code" be answered
+        # with the real code instead of the model having nothing to go on,
+        # and - when the action is known (rows written after this column
+        # was added) - lets an exact repeat of the same question reuse the
+        # identical code
