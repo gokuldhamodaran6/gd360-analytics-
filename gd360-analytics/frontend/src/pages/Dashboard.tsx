@@ -93,13 +93,8 @@ const FEATURES = [
   },
 ];
 
-// "Saved dashboards" still caps its own height and scrolls internally
-// (it sits inside the already-tall "Add a data source" column, so it
-// shouldn't push that column even taller). "Recent conversations" no
-// longer has a fixed cap - see the grid below - it now stretches to
-// match whatever height the "Add a data source" column ends up being,
-// so the two columns always look like a matched pair instead of one
-// trailing off with empty space beside it.
+// "Saved dashboards" caps its own height and scrolls internally (it sits
+// below the connect form, so it shouldn't push that column even taller).
 const DASHBOARDS_MAX_HEIGHT = "360px";
 
 function timeAgo(dateStr: string): string {
@@ -157,6 +152,33 @@ export default function Dashboard() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const formRef = useRef<HTMLDivElement>(null);
+
+  // Measures the real rendered height of "Add a data source" (title +
+  // intro line + the connect form, ending right at its "Test & connect" /
+  // "Upload" button - NOT including "Saved dashboards" below it) so
+  // "Recent conversations" on the right can be given that exact height and
+  // scroll internally within it, the way it used to, instead of either a
+  // guessed fixed px value (drifts out of sync the moment the form's
+  // content changes) or stretching to fill the grid row (which leaves an
+  // empty gap under a short conversation list). A ResizeObserver keeps this
+  // in sync live - e.g. when the "Show IPs to whitelist" panel is expanded,
+  // which changes the form's height on the fly.
+  const addDataSourceRef = useRef<HTMLDivElement>(null);
+  const [addDataSourceHeight, setAddDataSourceHeight] = useState<number | null>(null);
+
+  useEffect(() => {
+    const el = addDataSourceRef.current;
+    if (!el) return;
+    const measure = () => setAddDataSourceHeight(el.getBoundingClientRect().height);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
 
   const load = async () => {
     setLoading(true);
@@ -303,12 +325,14 @@ export default function Dashboard() {
         {/* ---- Add a data source + Recent conversations ---- */}
         <div ref={formRef} className="grid grid-cols-1 lg:grid-cols-[1fr_1.3fr] gap-8">
           <div>
-            <h2 className="text-xl font-bold mb-1">Add a data source</h2>
-            <p className="text-xs text-muted mb-4 leading-relaxed">
-              Connect a database or upload a file — it'll appear in Recent conversations once you ask something.
-            </p>
+            <div ref={addDataSourceRef}>
+              <h2 className="text-xl font-bold mb-1">Add a data source</h2>
+              <p className="text-xs text-muted mb-4 leading-relaxed">
+                Connect a database or upload a file — it'll appear in Recent conversations once you ask something.
+              </p>
 
-            <DataSourceForm onCreated={handleDataSourceCreated} onConnected={handleDataSourceConnected} />
+              <DataSourceForm onCreated={handleDataSourceCreated} onConnected={handleDataSourceConnected} />
+            </div>
 
             {dashboards.length > 0 && (
               <>
@@ -325,13 +349,12 @@ export default function Dashboard() {
             )}
           </div>
 
-          {/* `h-full flex flex-col` + the list below being `flex-1 min-h-0`:
-              a CSS Grid row stretches every column to match its tallest
-              column's natural height by default, so this column already
-              gets stretched to match "Add a data source"'s height - this
-              just makes its own content (the list) actually fill that
-              stretched height instead of leaving empty space below it. */}
-          <div className="flex flex-col h-full">
+          {/* Height comes from the live measurement above, so this box's
+              bottom edge lines up with "Add a data source"'s "Test &
+              connect" button - the list scrolls internally past that
+              (`flex-1 min-h-0` + `overflow-y-auto`), same scrolling
+              behavior as before rather than growing the page. */}
+          <div className="flex flex-col" style={{ height: addDataSourceHeight ?? undefined }}>
             <h2 className="text-xl font-bold mb-4">Recent conversations</h2>
             {!loading && conversations.length === 0 && (
               <div className="card p-8 text-center text-muted text-sm leading-relaxed">
