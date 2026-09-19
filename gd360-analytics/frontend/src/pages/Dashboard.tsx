@@ -284,7 +284,7 @@ export default function Dashboard() {
             </span>
             <span className="hidden sm:inline text-border">|</span>
             <span className="flex items-center gap-1.5">
-              <span>🗄</span> Postgres &middot; MySQL &middot; MongoDB &middot; CSV &middot; Excel &middot; JSON
+              <span>🗄</span> Postgres &middot; MySQL &middot; SQL Server &middot; MongoDB &middot; Supabase &middot; BigQuery &middot; CSV &middot; Excel &middot; JSON
             </span>
             <span className="hidden sm:inline text-border">|</span>
             <span className="flex items-center gap-1.5">
