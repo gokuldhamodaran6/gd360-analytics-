@@ -73,7 +73,11 @@ export const PALETTES: { id: Exclude<PaletteId, "original" | "custom">; name: st
 // surface by themselves, which is exactly why every chart that uses this
 // palette also gets a direct value label and a legend (see below) - the
 // color is never the only way to read the chart.
-const SIGNATURE_COLORS = [
+// Exported (not just used locally) so any other screen that needs GD360's
+// own validated categorical order - e.g. the admin dashboard's breakdown
+// charts - can reuse the exact same fixed hue sequence instead of a second
+// hardcoded copy that could drift out of sync with this one.
+export const SIGNATURE_COLORS = [
   "#4A3AA7", // violet - brand primary family
   "#1BAF7A", // aqua/teal - brand accent family
   "#EB6834", // orange
