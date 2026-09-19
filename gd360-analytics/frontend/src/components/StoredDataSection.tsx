@@ -196,7 +196,6 @@ export default function StoredDataSection({
     <div className="mb-10">
       <div className="flex items-center gap-2 mb-1">
         <h2 className="text-xl font-bold">Your data sources</h2>
-        {totalCount > 0 && <span className="text-xs text-muted">{totalCount} connected</span>}
       </div>
       <p className="text-xs text-muted mb-4 leading-relaxed">
         Everything you've connected or uploaded, in one place. Click one to pick up a conversation or start a new analysis.
@@ -223,9 +222,16 @@ export default function StoredDataSection({
         <>
           <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-3">
             <div className="relative flex-1 max-w-sm">
-              <SearchIcon className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+              <SearchIcon className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+              {/* `.input`'s own CSS `padding` shorthand (in index.css) is compiled after
+                  Tailwind's utility classes, so a `pl-*` utility on this element loses the
+                  cascade and the left padding silently falls back to `.input`'s default -
+                  the icon then overlaps the placeholder text. An inline style always wins
+                  over any class, regardless of source order, so the left padding is set
+                  here instead of via a `pl-*` class. */}
               <input
-                className="input pl-9"
+                className="input"
+                style={{ paddingLeft: "2.75rem" }}
                 placeholder="Search your data sources..."
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
