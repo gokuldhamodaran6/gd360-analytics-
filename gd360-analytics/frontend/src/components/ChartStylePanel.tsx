@@ -1,5 +1,33 @@
-import { useMemo, useState } from "react";
-import { ChartStyle, FontSize, PALETTES, hasCartesianAxes, isHeatmapSpec, seriesLabels, detectChartType } from "../lib/chartStyle";
+import { useEffect, useMemo, useState } from "react";
+import {
+  ChartStyle,
+  FontSize,
+  LegendPosition,
+  PALETTES,
+  DEFAULT_ACCENT_COLOR,
+  hasCartesianAxes,
+  isHeatmapSpec,
+  seriesLabels,
+  colorableLabels,
+  detectChartType,
+} from "../lib/chartStyle";
+
+// How many custom-color swatches show at once - past this, the picker pages
+// through them instead of cramming an ever-growing grid onto the screen (see
+// the pagination controls below the swatch grid).
+const COLORS_PER_PAGE = 12;
+
+// A scatter plot's automatic regression trend line and its shaded confidence
+// band (chart_builder.py's _add_trend_overlay) - the fallback color shown in
+// the "Trend line color" swatch before anyone picks their own, matching
+// chart_builder.py's own TREND_COLOR default exactly so the swatch never
+// starts out looking wrong.
+const DEFAULT_TREND_COLOR = "#E24C4C";
+
+const LEGEND_POSITION_OPTIONS: { value: LegendPosition; label: string }[] = [
+  { value: "bottom", label: "Below chart" },
+  { value: "top", label: "Above chart" },
+];
 
 type ChartTypeDef = { id: string; label: string };
 
@@ -119,6 +147,7 @@ export default function ChartStylePanel({
 }) {
   const [showAllCharts, setShowAllCharts] = useState(false);
   const [chartSearch, setChartSearch] = useState("");
+  const [colorPage, setColorPage] = useState(0);
 
   const filteredCatalog = useMemo(() => {
     const q = chartSearch.trim().toLowerCase();
@@ -142,7 +171,33 @@ export default function ChartStylePanel({
   const showAxes = hasCartesianAxes(chartSpec);
   const isHeatmap = isHeatmapSpec(chartSpec);
   const cappedNames = names.slice(0, 20);
-  const customCount = Math.max(cappedNames.length || 6, 6);
+
+  // Every distinct bar/slice/series this chart actually has, by its real
+  // name - not just the ones seriesLabels considers "renameable" (see
+  // colorableLabels' own note). This is what the custom-color picker below
+  // sizes and labels itself off, which is the fix for the old bug where a
+  // 10-bar chart's picker only ever showed 6 swatches: it used to size
+  // itself off `names` above, which returns nothing at all for a
+  // single-categorical bar chart.
+  const colorLabels = useMemo(() => colorableLabels(chartSpec), [chartSpec]);
+  const colorCount = Math.max(colorLabels.length, 6);
+  const totalColorPages = Math.max(1, Math.ceil(colorCount / COLORS_PER_PAGE));
+  const colorPageClamped = Math.min(colorPage, totalColorPages - 1);
+
+  // A brand-new chart (or a chart-type switch) resets back to page 1 of its
+  // color picker, so a person never lands on a now-empty page 3 left over
+  // from a previous, much larger chart.
+  useEffect(() => {
+    setColorPage(0);
+  }, [chartSpec]);
+
+  // Does this chart have a scatter regression trend line (chart_builder.py's
+  // _add_trend_overlay)? If so, the Style panel offers a swatch to recolor
+  // it for branding purposes - see accentColors on ChartStyle.
+  const hasTrendLine = useMemo(() => {
+    const data = Array.isArray(chartSpec?.data) ? chartSpec.data : [];
+    return data.some((t: any) => t?.meta?.role === "trend_line");
+  }, [chartSpec]);
 
   const setSeriesName = (i: number, value: string) => {
     const next = [...style.seriesNames];
@@ -155,6 +210,10 @@ export default function ChartStylePanel({
     while (base.length <= i) base.push(PALETTES[0].colors[base.length % PALETTES[0].colors.length]);
     base[i] = value;
     onStyleChange({ paletteId: "custom", customColors: base });
+  };
+
+  const setAccentColor = (role: string, value: string) => {
+    onStyleChange({ accentColors: { ...(style.accentColors || {}), [role]: value } });
   };
 
   const pickType = (id: string) => {
@@ -279,6 +338,19 @@ export default function ChartStylePanel({
           <button
             disabled={disabled}
             className={`w-full flex items-center gap-2 text-sm rounded-lg px-3 py-2 border transition ${
+              style.paletteId === "single" ? "border-primary bg-primary/10" : "border-border bg-surface2"
+            }`}
+            onClick={() => onStyleChange({ paletteId: "single" })}
+          >
+            <span
+              className="w-4 h-4 rounded-full border border-border"
+              style={{ background: style.singleColor || DEFAULT_ACCENT_COLOR }}
+            />
+            Single color, one shade for all
+          </button>
+          <button
+            disabled={disabled}
+            className={`w-full flex items-center gap-2 text-sm rounded-lg px-3 py-2 border transition ${
               style.paletteId === "custom" ? "border-primary bg-primary/10" : "border-border bg-surface2"
             }`}
             onClick={() => onStyleChange({ paletteId: "custom" })}
@@ -291,20 +363,98 @@ export default function ChartStylePanel({
           </button>
         </div>
 
+        {style.paletteId === "single" && (
+          <div className="mt-3 flex items-center gap-3">
+            <input
+              type="color"
+              disabled={disabled}
+              value={style.singleColor || DEFAULT_ACCENT_COLOR}
+              onChange={(e) => onStyleChange({ paletteId: "single", singleColor: e.target.value })}
+              className="w-10 h-10 rounded-lg border border-border bg-transparent cursor-pointer p-0"
+            />
+            <span className="text-[11px] text-muted leading-relaxed">
+              Every bar, slice or line on this chart uses this one color - good for a branded look
+              instead of a multi-color palette.
+            </span>
+          </div>
+        )}
+
         {style.paletteId === "custom" && (
-          <div className="mt-3 grid grid-cols-6 gap-2">
-            {Array.from({ length: customCount }).map((_, i) => (
-              <label key={i} className="flex flex-col items-center gap-1">
-                <input
-                  type="color"
-                  disabled={disabled}
-                  value={style.customColors[i] || PALETTES[0].colors[i % PALETTES[0].colors.length]}
-                  onChange={(e) => setCustomColor(i, e.target.value)}
-                  className="w-7 h-7 rounded-md border border-border bg-transparent cursor-pointer p-0"
-                />
-                <span className="text-[9px] text-muted">{i + 1}</span>
-              </label>
-            ))}
+          <div className="mt-3 space-y-2">
+            <div className="grid grid-cols-4 gap-2">
+              {Array.from({
+                length: Math.min(COLORS_PER_PAGE, colorCount - colorPageClamped * COLORS_PER_PAGE),
+              }).map((_, k) => {
+                const i = colorPageClamped * COLORS_PER_PAGE + k;
+                const label = colorLabels[i] || `Bar ${i + 1}`;
+                return (
+                  <label key={i} className="flex flex-col items-center gap-1 min-w-0">
+                    <input
+                      type="color"
+                      disabled={disabled}
+                      value={style.customColors[i] || PALETTES[0].colors[i % PALETTES[0].colors.length]}
+                      onChange={(e) => setCustomColor(i, e.target.value)}
+                      className="w-8 h-8 rounded-md border border-border bg-transparent cursor-pointer p-0"
+                    />
+                    <span className="text-[9px] text-muted text-center truncate w-full" title={label}>
+                      {label}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+
+            {totalColorPages > 1 && (
+              <>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    disabled={disabled || colorPageClamped === 0}
+                    className="text-xs btn-secondary px-2 py-1 disabled:opacity-40"
+                    onClick={() => setColorPage((p) => Math.max(0, p - 1))}
+                  >
+                    ‹ Prev
+                  </button>
+                  <input
+                    type="range"
+                    min={0}
+                    max={totalColorPages - 1}
+                    step={1}
+                    value={colorPageClamped}
+                    disabled={disabled}
+                    onChange={(e) => setColorPage(Number(e.target.value))}
+                    className="flex-1 accent-primary"
+                    aria-label="Color swatch page"
+                  />
+                  <button
+                    type="button"
+                    disabled={disabled || colorPageClamped === totalColorPages - 1}
+                    className="text-xs btn-secondary px-2 py-1 disabled:opacity-40"
+                    onClick={() => setColorPage((p) => Math.min(totalColorPages - 1, p + 1))}
+                  >
+                    Next ›
+                  </button>
+                </div>
+                <div className="text-[10px] text-muted text-center">
+                  Colors {colorPageClamped * COLORS_PER_PAGE + 1}-
+                  {Math.min(colorCount, (colorPageClamped + 1) * COLORS_PER_PAGE)} of {colorCount} · page{" "}
+                  {colorPageClamped + 1} of {totalColorPages}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {hasTrendLine && (
+          <div className="mt-3 flex items-center justify-between">
+            <span className="text-sm">Trend line color</span>
+            <input
+              type="color"
+              disabled={disabled}
+              value={style.accentColors?.trend_line || DEFAULT_TREND_COLOR}
+              onChange={(e) => setAccentColor("trend_line", e.target.value)}
+              className="w-8 h-8 rounded-md border border-border bg-transparent cursor-pointer p-0"
+            />
           </div>
         )}
       </div>
@@ -399,6 +549,25 @@ export default function ChartStylePanel({
               <span className="switch-track" />
             </label>
           </div>
+          {style.showLegend && (
+            <div className="flex items-center justify-between">
+              <span className="text-sm">Legend position</span>
+              <div className="flex gap-1">
+                {LEGEND_POSITION_OPTIONS.map((o) => (
+                  <button
+                    key={o.value}
+                    disabled={disabled}
+                    className={`text-xs px-2.5 py-1 rounded-lg transition ${
+                      (style.legendPosition || "bottom") === o.value ? "bg-primary text-white" : "btn-secondary"
+                    }`}
+                    onClick={() => onStyleChange({ legendPosition: o.value })}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="flex items-center justify-between">
             <span className="text-sm">Data labels</span>
             <label className="switch">
