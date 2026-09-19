@@ -1,8 +1,9 @@
 """
-Datasource management: connect a database (Postgres/MySQL/MongoDB) or
-upload a file (CSV/Excel). Credentials are encrypted before storage and
-never returned to the client after creation. Every connection is tested
-and introspected (read-only) before being saved.
+Datasource management: connect a database (Postgres/MySQL/SQL Server/
+MongoDB/Supabase), a data warehouse (BigQuery), or upload a file
+(CSV/Excel). Credentials are encrypted before storage and never returned
+to the client after creation. Every connection is tested and introspected
+(read-only) before being saved.
 
 Also exposes the data-preparation surface: a paginated table preview of the
 original data or any saved/named table, listing/renaming/deleting those
@@ -22,7 +23,7 @@ from .. import models, schemas, security
 from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
-from ..services.connectors import SQLConnector, MongoConnector, FileConnector
+from ..services.connectors import SQLConnector, MongoConnector, FileConnector, BigQueryConnector
 from ..services.data_loader import load_dataframe, load_version_dataframe, ensure_legacy_migrated
 
 router = APIRouter(prefix="/datasources", tags=["datasources"])
@@ -128,8 +129,8 @@ def connect_database(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    if payload.kind not in ("postgres", "mysql", "mongodb"):
-        raise HTTPException(400, "kind must be one of: postgres, mysql, mongodb")
+    if payload.kind not in ("postgres", "mysql", "mongodb", "sqlserver", "supabase"):
+        raise HTTPException(400, "kind must be one of: postgres, mysql, mongodb, sqlserver, supabase")
 
     try:
         if payload.kind == "mongodb":
@@ -151,6 +152,47 @@ def connect_database(
             "database": payload.database, "ssl": payload.ssl,
         },
         encrypted_secret=security.encrypt_secret(secret_blob),
+        read_only=True,
+        schema_cache=schema,
+    )
+    db.add(ds)
+    db.commit()
+    db.refresh(ds)
+    return ds
+
+
+@router.post("/warehouse", response_model=schemas.DataSourceOut, status_code=201)
+def connect_warehouse(
+    payload: schemas.DataSourceCreateWarehouse,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Connects a data warehouse - BigQuery today, more can be added later
+    the same way this app's other connectors were: a new kind here, a new
+    class in services/connectors.py, and a matching branch in
+    services/data_loader.py, without touching anything else. Authenticates
+    with a pasted service-account key rather than host/port/username/
+    password, so it is a separate endpoint and request shape from
+    /datasources/database above, not a variant of it."""
+    if payload.kind not in ("bigquery",):
+        raise HTTPException(400, "kind must be one of: bigquery")
+
+    try:
+        connector = BigQueryConnector(payload.project_id, payload.dataset_id, payload.service_account_json)
+        connector.test_connection()
+        schema = connector.introspect_schema()
+    except Exception as e:
+        raise HTTPException(400, f"Could not connect: {e}")
+
+    ds = models.DataSource(
+        owner_id=user.id,
+        name=payload.name,
+        kind=payload.kind,
+        connection_info={"project_id": payload.project_id, "dataset_id": payload.dataset_id},
+        # The whole service-account key JSON is the secret here - there is
+        # no separate username/password to join with the "␟" delimiter the
+        # way connect_database does above.
+        encrypted_secret=security.encrypt_secret(payload.service_account_json),
         read_only=True,
         schema_cache=schema,
     )
