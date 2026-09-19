@@ -38,9 +38,11 @@ class User(Base):
 class DataSource(Base):
     """
     Metadata + encrypted credentials for a connection a user has added.
-    kind: "postgres" | "mysql" | "mongodb" | "csv" | "excel"
-    connection_info: non-secret fields (host, port, db name, table allowlist...) as JSON
-    encrypted_secret: encrypted connection string / password (never plaintext)
+    kind: "postgres" | "mysql" | "sqlserver" | "mongodb" | "supabase" | "bigquery" | "csv" | "excel"
+    connection_info: non-secret fields (host, port, db name, table allowlist...
+        for a database; project_id/dataset_id for the bigquery warehouse) as JSON
+    encrypted_secret: encrypted connection string / password (never plaintext) -
+        for bigquery this is the whole pasted service-account key JSON instead
     file_path: for uploaded csv/excel files, path on server storage
     """
     __tablename__ = "datasources"
