@@ -10,8 +10,14 @@ import { gokuApi, GokuMessage } from "../api/client";
 // them a ready-to-run question for the main chat when that helps. Goku
 // never computes anything itself - see backend routers/goku.py and
 // services/ai_engine.py goku_chat.
+// The exact opening line the backend seeds for a brand-new Goku
+// conversation (see backend routers/goku.py _GOKU_GREETING) - kept here so
+// a "fresh" open (below) can show it locally, word for word, without a
+// fetch.
+const GOKU_GREETING = "Hi, I am Goku! How can I help you with this data today?";
+
 export default function GokuChat({
-  datasourceId, sourceIds, busy, onRunInMainChat, analysisMode, onAnalysisModeChange,
+  datasourceId, sourceIds, busy, onRunInMainChat, analysisMode, onAnalysisModeChange, startFresh,
 }: {
   datasourceId: string;
   // The same WORKING ON selection driving the main chat, so Goku reasons
@@ -30,6 +36,15 @@ export default function GokuChat({
   // Goku first, before ever touching the main chat, still gets asked.
   analysisMode?: "auto" | "guided";
   onAnalysisModeChange?: (mode: "auto" | "guided") => void;
+  // True when this Workspace was opened fresh from the homepage (not by
+  // resuming one specific past conversation from Recent conversations) -
+  // Goku then opens on just its plain greeting instead of the full running
+  // history for this data source, matching the main chat and chart tabs
+  // starting fresh too. Nothing is deleted: sending a message here still
+  // adds to the same real, ongoing Goku conversation for this data source,
+  // and the earlier back-and-forth reappears the next time this exact
+  // conversation is resumed from Recent conversations.
+  startFresh?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<GokuMessage[]>([]);
@@ -93,6 +108,20 @@ export default function GokuChat({
 
   useEffect(() => {
     if (!open || loaded) return;
+    if (startFresh) {
+      // A fresh open shows just the greeting - it never fetches (and so
+      // never surfaces) the real running history for this data source. See
+      // the `startFresh` prop note above.
+      setMessages([{
+        id: "local-fresh-greeting",
+        role: "assistant",
+        content: GOKU_GREETING,
+        action_prompts: null,
+        created_at: new Date().toISOString(),
+      }]);
+      setLoaded(true);
+      return;
+    }
     gokuApi
       .getMessages(datasourceId)
       .then((data) => {
@@ -100,7 +129,7 @@ export default function GokuChat({
         setLoaded(true);
       })
       .catch(() => setError("Could not load Goku right now. Please try again."));
-  }, [open, loaded, datasourceId]);
+  }, [open, loaded, datasourceId, startFresh]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
