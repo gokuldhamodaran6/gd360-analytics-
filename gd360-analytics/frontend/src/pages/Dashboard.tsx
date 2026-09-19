@@ -88,7 +88,6 @@ export default function Dashboard() {
   const [datasources, setDatasources] = useState<DataSource[]>([]);
   const [dashboards, setDashboards] = useState<DashboardSummary[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(true);
   const formRef = useRef<HTMLDivElement>(null);
 
@@ -119,8 +118,9 @@ export default function Dashboard() {
     setTimeout(() => formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 30);
   };
 
+  // The "Add a data source" panel is always on-screen now (no more
+  // click-to-reveal), so "connecting data" just means scrolling to it.
   const openConnectFlow = () => {
-    setShowForm(true);
     scrollToForm();
   };
 
@@ -142,7 +142,6 @@ export default function Dashboard() {
   // card used to - otherwise a brand new data source (with no conversation
   // yet) would have no way to be opened at all.
   const handleDataSourceCreated = (ds: { id: string }) => {
-    setShowForm(false);
     load();
     if (ds?.id) navigate(`/workspace/${ds.id}`);
   };
@@ -219,29 +218,12 @@ export default function Dashboard() {
         {/* ---- Add a data source + Recent conversations ---- */}
         <div ref={formRef} className="grid grid-cols-1 lg:grid-cols-[1fr_1.3fr] gap-8">
           <div>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-bold">Add a data source</h2>
-              {!showForm && (
-                <button className="text-primary text-sm font-medium hover:underline" onClick={() => setShowForm(true)}>
-                  + New
-                </button>
-              )}
-            </div>
+            <h2 className="text-xl font-bold mb-1">Add a data source</h2>
+            <p className="text-xs text-muted mb-4 leading-relaxed">
+              Connect a database or upload a file — it'll appear in Recent conversations once you ask something.
+            </p>
 
-            {showForm ? (
-              <div className="space-y-3">
-                <DataSourceForm onCreated={handleDataSourceCreated} />
-                <button className="text-sm text-muted hover:text-text" onClick={() => setShowForm(false)}>
-                  Cancel
-                </button>
-              </div>
-            ) : (
-              <div className="card p-6 text-sm text-muted leading-relaxed">
-                Connect a spreadsheet, file, or database to start a fresh analysis. Once you ask GD360
-                something about it, it shows up in Recent conversations below so you can always find
-                your way straight back to it.
-              </div>
-            )}
+            <DataSourceForm onCreated={handleDataSourceCreated} />
 
             {dashboards.length > 0 && (
               <>
