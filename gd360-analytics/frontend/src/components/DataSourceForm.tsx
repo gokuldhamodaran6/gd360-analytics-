@@ -143,10 +143,9 @@ export default function DataSourceForm({
       {mode === "db" ? (
         <div>
           {/* Connector picker: a real, recognizable logo per database type
-              instead of a plain text dropdown or a card full of copy - the
-              logo alone is enough to identify it, the same way a polished
-              connector gallery works. Name is still there as a native
-              tooltip/aria-label for accessibility, just not printed as text. */}
+              with just its name underneath - no extra copy or tags - so
+              people can identify their database at a glance the same way a
+              polished connector gallery works. */}
           <div className="grid grid-cols-3 gap-3 mb-5">
             {DB_KINDS.map((d) => {
               const selected = kind === d.value;
@@ -154,11 +153,9 @@ export default function DataSourceForm({
                 <button
                   type="button"
                   key={d.value}
-                  title={d.label}
-                  aria-label={d.label}
                   aria-pressed={selected}
                   onClick={() => selectDbKind(d.value)}
-                  className={`relative h-20 rounded-xl border flex items-center justify-center transition ${
+                  className={`relative flex flex-col items-center justify-center gap-1.5 py-4 rounded-xl border transition ${
                     selected ? "border-primary bg-primary/5 ring-1 ring-primary" : "border-border hover:border-primary/40"
                   }`}
                 >
@@ -168,6 +165,7 @@ export default function DataSourceForm({
                   >
                     <d.Logo className="w-6 h-6" />
                   </div>
+                  <span className="text-xs font-medium text-muted text-center leading-tight px-1">{d.label}</span>
                   {selected && (
                     <span
                       className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-primary text-white flex items-center justify-center text-[10px] leading-none"
