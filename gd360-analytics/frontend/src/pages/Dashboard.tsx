@@ -7,10 +7,6 @@ import DataSourceForm from "../components/DataSourceForm";
 type DataSource = { id: string; name: string; kind: string; created_at: string };
 type DashboardSummary = { id: string; name: string; chart_count: number; created_at: string };
 
-const KIND_ICON: Record<string, string> = {
-  postgres: "🐘", mysql: "🐬", mongodb: "🍃", csv: "📄", excel: "📊",
-};
-
 const CHART_TYPES = [
   "Bar", "Line", "Area", "Pie", "Scatter", "Histogram",
   "Box", "Heatmap", "Waterfall", "Funnel", "Treemap",
@@ -30,6 +26,14 @@ const FEATURES = [
     body: "Waterfall, funnel, heatmap, treemap and more, with one-click export to PNG, JPG, SVG or WEBP.",
   },
 ];
+
+// How many rows a scrolling list (Recent conversations, Saved dashboards)
+// shows comfortably before it starts scrolling internally instead of just
+// making the whole homepage taller and taller - keeps things feeling tidy
+// and premium instead of an ever-lengthening feed, no matter how many
+// conversations or dashboards someone has built up over time.
+const CONVERSATIONS_MAX_HEIGHT = "560px";
+const DASHBOARDS_MAX_HEIGHT = "360px";
 
 function timeAgo(dateStr: string): string {
   const diffMs = Date.now() - new Date(dateStr).getTime();
@@ -86,8 +90,7 @@ export default function Dashboard() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [removeError, setRemoveError] = useState("");
-  const datasetsRef = useRef<HTMLDivElement>(null);
+  const formRef = useRef<HTMLDivElement>(null);
 
   const load = async () => {
     setLoading(true);
@@ -104,29 +107,21 @@ export default function Dashboard() {
 
   useEffect(() => { load(); }, []);
 
+  // Still needed even without a datasets grid on screen: "Start analyzing"
+  // (below) jumps straight into the most recently added data source when
+  // one already exists.
   const sortedDatasources = useMemo(
     () => [...datasources].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
     [datasources]
   );
 
-  const removeDatasource = async (id: string) => {
-    if (!confirm("Remove this data source? This does not affect your original database or files.")) return;
-    setRemoveError("");
-    try {
-      await api.delete(`/datasources/${id}`);
-      load();
-    } catch (err: any) {
-      setRemoveError(err?.response?.data?.detail || "Could not remove this data source. Please try again.");
-    }
-  };
-
-  const scrollToDatasets = () => {
-    setTimeout(() => datasetsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 30);
+  const scrollToForm = () => {
+    setTimeout(() => formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 30);
   };
 
   const openConnectFlow = () => {
     setShowForm(true);
-    scrollToDatasets();
+    scrollToForm();
   };
 
   const startAnalyzing = () => {
@@ -140,6 +135,16 @@ export default function Dashboard() {
   const openConversation = (c: ConversationSummary) => {
     if (!c.datasource_id) return;
     navigate(`/workspace/${c.datasource_id}?conversation=${c.id}`);
+  };
+
+  // There is no dataset grid to click into any more, so once a data source
+  // is added, jump straight into its workspace the same way clicking a
+  // card used to - otherwise a brand new data source (with no conversation
+  // yet) would have no way to be opened at all.
+  const handleDataSourceCreated = (ds: { id: string }) => {
+    setShowForm(false);
+    load();
+    if (ds?.id) navigate(`/workspace/${ds.id}`);
   };
 
   return (
@@ -211,64 +216,39 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* ---- Datasets + recent conversations ---- */}
-        <div ref={datasetsRef} className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-8">
+        {/* ---- Add a data source + Recent conversations ---- */}
+        <div ref={formRef} className="grid grid-cols-1 lg:grid-cols-[1fr_1.3fr] gap-8">
           <div>
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-bold">Your datasets</h2>
-              <button className="text-primary text-sm font-medium hover:underline" onClick={() => setShowForm((v) => !v)}>
-                {showForm ? "Close" : "+ New"}
-              </button>
+              <h2 className="text-xl font-bold">Add a data source</h2>
+              {!showForm && (
+                <button className="text-primary text-sm font-medium hover:underline" onClick={() => setShowForm(true)}>
+                  + New
+                </button>
+              )}
             </div>
 
-            {removeError && (
-              <div className="mb-4 text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{removeError}</div>
-            )}
-
-            {showForm && (
-              <div className="mb-6">
-                <DataSourceForm onCreated={() => { setShowForm(false); load(); }} />
+            {showForm ? (
+              <div className="space-y-3">
+                <DataSourceForm onCreated={handleDataSourceCreated} />
+                <button className="text-sm text-muted hover:text-text" onClick={() => setShowForm(false)}>
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <div className="card p-6 text-sm text-muted leading-relaxed">
+                Connect a spreadsheet, file, or database to start a fresh analysis. Once you ask GD360
+                something about it, it shows up in Recent conversations below so you can always find
+                your way straight back to it.
               </div>
             )}
-
-            {!loading && sortedDatasources.length === 0 && !showForm && (
-              <div className="card p-10 text-center text-muted">
-                No data sources yet.
-                <div className="mt-3">
-                  <button className="btn-primary text-sm" onClick={openConnectFlow}>+ Add your first data source</button>
-                </div>
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {sortedDatasources.map((ds) => (
-                <div
-                  key={ds.id}
-                  className="card p-5 hover:shadow-glow transition cursor-pointer group"
-                  onClick={() => navigate(`/workspace/${ds.id}`)}
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="text-2xl mb-3">{KIND_ICON[ds.kind] || "🗂"}</div>
-                    <button
-                      className="text-muted hover:text-red-400 text-sm opacity-0 group-hover:opacity-100 transition"
-                      onClick={(e) => { e.stopPropagation(); removeDatasource(ds.id); }}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                  <div className="font-semibold">{ds.name}</div>
-                  <div className="text-xs text-muted uppercase tracking-wide mt-1">{ds.kind}</div>
-                  <div className="text-primary text-sm font-medium mt-4 group-hover:underline">Open workspace &rarr;</div>
-                </div>
-              ))}
-            </div>
 
             {dashboards.length > 0 && (
               <>
-                <h2 className="text-xl font-bold mt-10 mb-4">Saved dashboards</h2>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <h2 className="text-xl font-bold mt-8 mb-4">Saved dashboards</h2>
+                <div className="space-y-3 pr-1 overflow-y-auto" style={{ maxHeight: DASHBOARDS_MAX_HEIGHT }}>
                   {dashboards.map((d) => (
-                    <div key={d.id} className="card p-5 hover:shadow-glow transition cursor-pointer" onClick={() => navigate(`/dashboards/${d.id}`)}>
+                    <div key={d.id} className="card p-4 hover:shadow-glow transition cursor-pointer" onClick={() => navigate(`/dashboards/${d.id}`)}>
                       <div className="font-semibold">{d.name}</div>
                       <div className="text-sm text-muted mt-1">{d.chart_count} chart{d.chart_count === 1 ? "" : "s"}</div>
                     </div>
@@ -285,28 +265,30 @@ export default function Dashboard() {
                 Your recent chats and analyses will show up here once you start asking GD360 questions about your data.
               </div>
             )}
-            <div className="space-y-3">
-              {conversations.slice(0, 8).map((c) => (
-                <div
-                  key={c.id}
-                  className="card p-4 hover:shadow-glow transition cursor-pointer"
-                  onClick={() => openConversation(c)}
-                >
-                  <div className="flex items-start gap-3">
-                    <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-primary/25 to-accent/25 flex items-center justify-center text-primary shrink-0">
-                      <ChartTypeIcon chartType={c.last_chart_type} />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium text-sm truncate">{c.title}</div>
-                      <div className="text-xs text-muted mt-0.5 truncate">
-                        {c.datasource_name || "Removed data source"} &middot; {timeAgo(c.updated_at)}
+            {conversations.length > 0 && (
+              <div className="space-y-3 pr-1 overflow-y-auto" style={{ maxHeight: CONVERSATIONS_MAX_HEIGHT }}>
+                {conversations.map((c) => (
+                  <div
+                    key={c.id}
+                    className="card p-4 hover:shadow-glow transition cursor-pointer"
+                    onClick={() => openConversation(c)}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-primary/25 to-accent/25 flex items-center justify-center text-primary shrink-0">
+                        <ChartTypeIcon chartType={c.last_chart_type} />
                       </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium text-sm truncate">{c.title}</div>
+                        <div className="text-xs text-muted mt-0.5 truncate">
+                          {c.datasource_name || "Removed data source"} &middot; {timeAgo(c.updated_at)}
+                        </div>
+                      </div>
+                      <div className="text-xs text-muted shrink-0">{c.message_count}</div>
                     </div>
-                    <div className="text-xs text-muted shrink-0">{c.message_count}</div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
