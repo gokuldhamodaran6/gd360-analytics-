@@ -4,17 +4,24 @@ Data connectors.
 Design principle: GD360 NEVER writes to a customer source system. Every
 connector here only ever reads data, and every raw query path is validated
 to be read-only before it touches a real connection. Recommend (in the UI
-and README) that users supply a read-only database role/user as
-defense-in-depth on top of this application-level check.
+and README) that users supply a read-only database role/user (or, for
+BigQuery, a service account with only the BigQuery Data Viewer + BigQuery
+Job User IAM roles) as defense-in-depth on top of this application-level
+check.
 
-Supported now: Postgres, MySQL, MongoDB, CSV, Excel.
-The connector interface is intentionally generic (`load_dataframe`,
-`introspect_schema`) so new backends (Snowflake, BigQuery, a generic REST
-ERP/CRM connector, etc.) can be added as additional classes without
-touching the rest of the app.
+Supported now: Postgres, MySQL, SQL Server, MongoDB, Supabase (which is
+just Postgres under the hood - see _sql_engine_url), CSV, Excel, and the
+BigQuery data warehouse. The connector interface is intentionally generic
+(`load_dataframe`, `introspect_schema`) so new backends (Snowflake, a
+generic REST ERP/CRM connector, etc.) can be added as additional classes
+without touching the rest of the app - BigQueryConnector below is the
+first connector to actually exercise that promise: it authenticates
+completely differently (a service-account JSON key, not host/port/
+username/password) and still plugs into the exact same interface.
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -58,7 +65,19 @@ def _sql_engine_url(kind: str, host: str, port: int, database: str, username: st
     from urllib.parse import quote_plus
     user = quote_plus(username)
     pw = quote_plus(password)
-    if kind == "postgres":
+    if kind in ("postgres", "supabase"):
+        # Supabase's own database IS Postgres - there is no separate
+        # "Supabase driver," it just needs its own picker tile so people
+        # recognize it by name/logo instead of having to know that fact.
+        # One real operational catch worth the person's time, though: a
+        # Supabase project's *direct* connection host (db.<ref>.supabase.co)
+        # is IPv6-only, and GD360's own servers (Render) have no outbound
+        # IPv6 - the exact issue this app's own Supabase-backed database hit
+        # during setup (see the build notes). Supabase's *connection
+        # pooler* host (aws-0-<region>.pooler.supabase.com, port 6543) is
+        # IPv4-reachable, which is why the "supabase" kind's UI defaults the
+        # port to 6543 and calls this out - a plain "postgres" connection to
+        # some other IPv4-reachable Postgres is unaffected either way.
         url = f"postgresql+psycopg2://{user}:{pw}@{host}:{port}/{database}"
         if ssl:
             url += "?sslmode=require"
@@ -68,6 +87,18 @@ def _sql_engine_url(kind: str, host: str, port: int, database: str, username: st
         if ssl:
             url += "?ssl_verify_cert=true"
         return url
+    if kind == "sqlserver":
+        # pymssql (FreeTDS under the hood) rather than pyodbc/pytds - it
+        # ships prebuilt manylinux wheels with FreeTDS already bundled, so
+        # it installs cleanly on Render's slim Docker image with no extra
+        # system packages. Deliberately NOT threading the `ssl` toggle
+        # through here the way postgres/mysql do above: pymssql has no
+        # simple connection-string flag for it, and most managed SQL Server
+        # offerings (Azure SQL among them) require and negotiate encryption
+        # on their own regardless of what the client asks for - so rather
+        # than wire up a checkbox that would not actually do anything, the
+        # UI explains this instead of showing it.
+        return f"mssql+pymssql://{user}:{pw}@{host}:{port}/{database}"
     raise ValueError(f"Unsupported SQL kind: {kind}")
 
 
@@ -154,6 +185,72 @@ class MongoConnector:
             return pd.DataFrame(docs)
         finally:
             client.close()
+
+
+class BigQueryConnector:
+    """Google BigQuery, GD360's first data-warehouse connector.
+
+    Authenticates completely differently from every SQL connector above -
+    a pasted service-account key (JSON), never a host/port/username/
+    password - so it is its own class rather than squeezed into
+    SQLConnector. Everything else (schema introspection, read-only
+    querying, the row-limit/quoting logic) reuses the exact same
+    SQLAlchemy machinery via the `sqlalchemy-bigquery` dialect, so this
+    connector is held to the same read-only discipline as every other one
+    here - only how the engine authenticates is different.
+    """
+
+    def __init__(self, project_id: str, dataset_id: str, service_account_json: str):
+        self.project_id = project_id
+        self.dataset_id = dataset_id
+        try:
+            self.credentials_info = json.loads(service_account_json)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Service account key is not valid JSON: {e}")
+
+    def _engine(self):
+        # sqlalchemy-bigquery's dialect takes the project/dataset from the
+        # URL path and forwards `credentials_info` straight to its
+        # `BigQueryDialect.__init__` as a dict - no temp file on disk
+        # needed, unlike the more common `credentials_path` form.
+        url = f"bigquery://{self.project_id}/{self.dataset_id}"
+        return create_engine(url, credentials_info=self.credentials_info)
+
+    def test_connection(self) -> None:
+        engine = self._engine()
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        engine.dispose()
+
+    def introspect_schema(self, max_tables: int = 50) -> dict:
+        engine = self._engine()
+        insp = inspect(engine)
+        schema = {}
+        for table_name in insp.get_table_names()[:max_tables]:
+            cols = insp.get_columns(table_name)
+            schema[table_name] = [{"name": c["name"], "type": str(c["type"])} for c in cols]
+        engine.dispose()
+        return schema
+
+    def load_dataframe(self, query_or_table: str, is_raw_sql: bool = False, row_limit: int | None = None) -> pd.DataFrame:
+        row_limit = row_limit or settings.MAX_ROWS_LOADED_PER_QUERY
+        engine = self._engine()
+        try:
+            if is_raw_sql:
+                assert_read_only_sql(query_or_table)
+                sql = query_or_table
+                if "limit" not in sql.lower():
+                    trimmed_sql = sql.rstrip(";")
+                    sql = f"SELECT * FROM ({trimmed_sql}) AS gd360_sub LIMIT {row_limit}"
+            else:
+                insp = inspect(engine)
+                if query_or_table not in insp.get_table_names():
+                    raise ValueError(f"Unknown table: {query_or_table}")
+                quoted = engine.dialect.identifier_preparer.quote(query_or_table)
+                sql = f"SELECT * FROM {quoted} LIMIT {row_limit}"
+            return pd.read_sql(text(sql), engine)
+        finally:
+            engine.dispose()
 
 
 class FileConnector:
