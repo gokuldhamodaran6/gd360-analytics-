@@ -11,6 +11,39 @@ import DataTable from "../components/DataTable";
 import StepFlow, { WorkflowStep } from "../components/StepFlow";
 import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
 
+// One tab in the chart history strip. Every question (or corrected answer)
+// that produces a chart gets its own entry here instead of overwriting
+// whatever was on screen before - each keeps its own independent styling,
+// so opening the Style panel on one tab never touches any other tab's
+// chart. `messageId` is what lets a "Double-check this" correction find
+// and update the SAME tab in place rather than creating a duplicate.
+type ChartEntry = {
+  id: string;
+  spec: any;
+  style: ChartStyle;
+  title: string;
+  label: string;
+  messageId?: string | null;
+};
+
+const makeChartId = () => {
+  try {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  } catch {
+    // Fall through to the manual id below.
+  }
+  return `chart-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+};
+
+// A short, readable tab label derived from the question that produced the
+// chart - trimmed so a long prompt does not blow out the tab strip. The
+// person can always overwrite this with their own name via the rename icon.
+const shortChartLabel = (text: string | null | undefined) => {
+  const t = (text || "").trim().replace(/\s+/g, " ");
+  if (!t) return "Chart";
+  return t.length > 28 ? `${t.slice(0, 28)}…` : t;
+};
+
 export default function Workspace() {
   const { datasourceId } = useParams();
   const [searchParams] = useSearchParams();
@@ -18,8 +51,15 @@ export default function Workspace() {
 
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
-  const [chartSpec, setChartSpec] = useState<any>(null);
-  const [chartTitle, setChartTitle] = useState<string>("");
+
+  // The full chart history for this session - every new question appends a
+  // new tab here rather than replacing what is already on screen, exactly
+  // like the Data tab's saved-table tabs never replace each other either.
+  const [charts, setCharts] = useState<ChartEntry[]>([]);
+  const [activeChartId, setActiveChartId] = useState<string | null>(null);
+  const [renamingChartId, setRenamingChartId] = useState<string | null>(null);
+  const [renameChartDraft, setRenameChartDraft] = useState("");
+
   const [lastInsight, setLastInsight] = useState<string | null>(null);
   const [suggestedCharts, setSuggestedCharts] = useState<any[] | null>(null);
   const [suggestedStats, setSuggestedStats] = useState<any[] | null>(null);
@@ -34,7 +74,6 @@ export default function Workspace() {
   const [activeStep, setActiveStep] = useState<WorkflowStep>("clean");
   const [resuming, setResuming] = useState(!!resumeConversationId);
   const [styleOpen, setStyleOpen] = useState(false);
-  const [chartStyle, setChartStyle] = useState<ChartStyle>(defaultChartStyle());
   const [customizeSeed, setCustomizeSeed] = useState<CustomizeSeed | null>(null);
   const [verifyingIndex, setVerifyingIndex] = useState<number | null>(null);
 
@@ -78,12 +117,57 @@ export default function Workspace() {
     }
   };
 
+  const activeChart = charts.find((c) => c.id === activeChartId) || null;
+  const chartSpec = activeChart?.spec ?? null;
+  const chartStyle = activeChart?.style ?? defaultChartStyle();
+  const chartTitle = activeChart?.title ?? "";
+
   const displaySpec = useMemo(
     () => (chartSpec ? applyChartStyle(chartSpec, chartStyle, chartTitle) : null),
     [chartSpec, chartStyle, chartTitle]
   );
 
-  const updateStyle = (next: Partial<ChartStyle>) => setChartStyle((s) => ({ ...s, ...next }));
+  // Every style/chart-type edit from the Style panel touches only the
+  // currently active tab's own style - every other tab's chart is
+  // completely unaffected, exactly as asked.
+  const updateStyle = (next: Partial<ChartStyle>) => {
+    if (!activeChartId) return;
+    setCharts((cs) => cs.map((c) => (c.id === activeChartId ? { ...c, style: { ...c.style, ...next } } : c)));
+  };
+
+  const resetActiveChartStyle = () => {
+    if (!activeChartId) return;
+    setCharts((cs) => cs.map((c) => (c.id === activeChartId ? { ...c, style: defaultChartStyle(c.spec) } : c)));
+  };
+
+  const startRenameChart = (c: ChartEntry) => {
+    setRenamingChartId(c.id);
+    setRenameChartDraft(c.label);
+  };
+
+  const commitRenameChart = (c: ChartEntry) => {
+    const label = renameChartDraft.trim();
+    setRenamingChartId(null);
+    if (!label || label === c.label) return;
+    setCharts((cs) => cs.map((x) => (x.id === c.id ? { ...x, label } : x)));
+  };
+
+  // Closing a tab only removes it from this view - it never deletes or
+  // touches any other chart, and nothing is deleted on the server, so if
+  // this same conversation is reopened later from Recent conversations,
+  // every answer that had a chart is rebuilt into its own tab again (see
+  // the resume effect below).
+  const closeChart = (id: string) => {
+    setCharts((cs) => {
+      const idx = cs.findIndex((c) => c.id === id);
+      const next = cs.filter((c) => c.id !== id);
+      if (activeChartId === id) {
+        const fallback = next[idx] || next[idx - 1] || null;
+        setActiveChartId(fallback ? fallback.id : null);
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (!styleOpen) return;
@@ -123,9 +207,11 @@ export default function Workspace() {
       .catch(() => {});
   }, [datasourceId, dataRefreshKey]);
 
-  // Restore a prior chat session in full - messages, last chart, last
-  // insight and suggestions - so clicking a "Recent conversation" from the
-  // home page drops the person back exactly where they left off.
+  // Restore a prior chat session in full - messages, the FULL chart
+  // history (one tab per answer that had a chart, not just the last one),
+  // last insight and suggestions - so clicking a "Recent conversation" from
+  // the home page drops the person back exactly where they left off,
+  // including every chart tab they had open.
   useEffect(() => {
     if (!resumeConversationId) {
       setResuming(false);
@@ -149,17 +235,35 @@ export default function Workspace() {
         }));
         setTurns(restored);
 
-        for (let i = data.messages.length - 1; i >= 0; i--) {
+        const restoredCharts: ChartEntry[] = [];
+        for (let i = 0; i < data.messages.length; i++) {
           const m = data.messages[i];
-          if (m.chart_spec) {
-            setChartSpec(m.chart_spec);
-            setChartStyle(defaultChartStyle(m.chart_spec));
-            const lastUserPrompt = [...data.messages].reverse().find((mm) => mm.role === "user")?.content;
-            setChartTitle(lastUserPrompt || "");
-            setCenterTab("chart");
-            break;
+          if (m.role !== "assistant" || !m.chart_spec) continue;
+          // The nearest preceding user turn is the question this chart
+          // answers - used as its title and default tab label, the same
+          // text a live turn's prompt would have used.
+          let promptText = "";
+          for (let j = i - 1; j >= 0; j--) {
+            if (data.messages[j].role === "user") {
+              promptText = data.messages[j].content;
+              break;
+            }
           }
+          restoredCharts.push({
+            id: m.id || makeChartId(),
+            spec: m.chart_spec,
+            style: defaultChartStyle(m.chart_spec),
+            title: promptText,
+            label: shortChartLabel(promptText),
+            messageId: m.id,
+          });
         }
+        if (restoredCharts.length) {
+          setCharts(restoredCharts);
+          setActiveChartId(restoredCharts[restoredCharts.length - 1].id);
+          setCenterTab("chart");
+        }
+
         const lastWithInsight = [...data.messages].reverse().find((m) => m.insight);
         if (lastWithInsight?.insight) setLastInsight(lastWithInsight.insight);
         const lastWithSuggestions = [...data.messages].reverse().find((m) => m.suggestions);
@@ -252,12 +356,28 @@ export default function Workspace() {
         if (data.action === "analyze" && data.new_version_id) {
           setDataRefreshKey((k) => k + 1);
         }
-        setChartSpec(data.chart_spec);
-        // A chart-type change from the Style panel keeps the current user
-        // styling (colors, title, labels) intact - only a brand new prompt
-        // starts from a clean style, since it is effectively a new chart.
-        if (!chartOverride) setChartStyle(defaultChartStyle(data.chart_spec));
-        setChartTitle(prompt);
+        if (chartOverride && activeChartId) {
+          // A chart-type/style redraw from the Style panel re-sends the
+          // same question - it updates THIS chart's own tab in place and
+          // keeps the current styling (colors, title, labels) intact,
+          // rather than opening a new tab or touching any other chart.
+          setCharts((cs) => cs.map((c) => (c.id === activeChartId ? { ...c, spec: data.chart_spec } : c)));
+        } else {
+          // A brand new question always opens its own new tab - it never
+          // replaces whatever chart is already on screen, so switching
+          // back to an earlier tab always shows exactly what it showed
+          // before.
+          const id = makeChartId();
+          setCharts((cs) => [...cs, {
+            id,
+            spec: data.chart_spec,
+            style: defaultChartStyle(data.chart_spec),
+            title: prompt,
+            label: shortChartLabel(prompt),
+            messageId: data.message_id,
+          }]);
+          setActiveChartId(id);
+        }
         setCenterTab("chart");
       }
       // Step-by-step mode stops right after preparation - land on the Data
@@ -378,8 +498,31 @@ export default function Workspace() {
 
       if (data.status === "corrected") {
         if (data.chart_spec) {
-          setChartSpec(data.chart_spec);
-          setChartStyle(defaultChartStyle(data.chart_spec));
+          // Update the SAME chart tab this message originally produced,
+          // matched by message id, rather than opening a duplicate tab or
+          // touching any other chart. If it somehow is not tracked yet
+          // (for example a conversation resumed before this feature
+          // existed), add it as its own new tab instead of dropping it.
+          setCharts((cs) => {
+            const idx = cs.findIndex((c) => c.messageId === t.messageId);
+            if (idx === -1) {
+              const id = makeChartId();
+              const label = shortChartLabel(t.content || "Corrected chart");
+              setActiveChartId(id);
+              return [...cs, {
+                id,
+                spec: data.chart_spec,
+                style: defaultChartStyle(data.chart_spec),
+                title: t.content || "Corrected chart",
+                label,
+                messageId: t.messageId,
+              }];
+            }
+            const next = [...cs];
+            next[idx] = { ...next[idx], spec: data.chart_spec, style: defaultChartStyle(data.chart_spec) };
+            setActiveChartId(next[idx].id);
+            return next;
+          });
           setCenterTab(t.action === "transform" ? "data" : "chart");
         }
         if (data.insight) setLastInsight(data.insight);
@@ -505,7 +648,60 @@ export default function Workspace() {
                 onVersionsChanged={() => setDataRefreshKey((k) => k + 1)}
               />
             ) : (
-              <ChartCanvas chartSpec={displaySpec} title={chartStyle.title || chartTitle} />
+              <div className="h-full flex flex-col gap-2 overflow-hidden">
+                {charts.length > 0 && (
+                  <div className="flex items-center gap-1.5 overflow-x-auto shrink-0 pb-0.5">
+                    {charts.map((c) => (
+                      <div
+                        key={c.id}
+                        className={`flex items-center gap-1 rounded-lg pl-3 pr-1.5 py-1.5 text-xs font-medium shrink-0 transition ${
+                          activeChartId === c.id ? "bg-primary text-white" : "btn-secondary"
+                        }`}
+                      >
+                        {renamingChartId === c.id ? (
+                          <input
+                            autoFocus
+                            className="bg-transparent border-b border-current outline-none w-24 text-xs"
+                            value={renameChartDraft}
+                            onChange={(e) => setRenameChartDraft(e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") commitRenameChart(c);
+                              if (e.key === "Escape") setRenamingChartId(null);
+                            }}
+                            onBlur={() => commitRenameChart(c)}
+                          />
+                        ) : (
+                          <span
+                            className="cursor-pointer whitespace-nowrap"
+                            onClick={() => setActiveChartId(c.id)}
+                            title={c.title}
+                          >
+                            {c.label}
+                          </span>
+                        )}
+                        <button
+                          className="opacity-70 hover:opacity-100 px-0.5"
+                          title="Rename this chart"
+                          onClick={() => startRenameChart(c)}
+                        >
+                          &#9998;
+                        </button>
+                        <button
+                          className="opacity-70 hover:opacity-100 px-0.5"
+                          title="Close this chart tab"
+                          onClick={() => closeChart(c.id)}
+                        >
+                          &times;
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex-1 min-h-0">
+                  <ChartCanvas chartSpec={displaySpec} title={chartStyle.title || chartTitle} />
+                </div>
+              </div>
             )}
           </div>
         </div>
@@ -539,7 +735,7 @@ export default function Workspace() {
                 style={chartStyle}
                 onStyleChange={updateStyle}
                 onChartTypeChange={(type) => applyChartOverride({ chart_type: type })}
-                onReset={() => setChartStyle(defaultChartStyle(chartSpec))}
+                onReset={resetActiveChartStyle}
                 disabled={busy || !chartSpec}
               />
             </div>
