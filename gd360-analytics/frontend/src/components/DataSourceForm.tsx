@@ -29,6 +29,44 @@ function MongoDbLogo({ className }: { className?: string }) {
   );
 }
 
+// Real official Supabase + Google BigQuery marks (path data + brand hex -
+// Simple Icons project, MIT licensed - simpleicons.org), same provenance
+// as the Postgres/MySQL/MongoDB marks above. Simple Icons has no entry for
+// Microsoft SQL Server (it is not in that curated set), so that connector
+// below reuses the generic DatabaseIcon outline tinted with Microsoft's own
+// documented SQL Server brand red instead of an invented logo.
+function SupabaseLogo({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+      <path d="M11.9 1.036c-.015-.986-1.26-1.41-1.874-.637L.764 12.05C-.33 13.427.65 15.455 2.409 15.455h9.579l.113 7.51c.014.985 1.259 1.408 1.873.636l9.262-11.653c1.093-1.375.113-3.403-1.645-3.403h-9.642z" />
+    </svg>
+  );
+}
+
+function BigQueryLogo({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+      <path d="M5.676 10.595h2.052v5.244a5.892 5.892 0 0 1-2.052-2.088v-3.156zm18.179 10.836a.504.504 0 0 1 0 .708l-1.716 1.716a.504.504 0 0 1-.708 0l-4.248-4.248a.206.206 0 0 1-.007-.007c-.02-.02-.028-.045-.043-.066a10.736 10.736 0 0 1-6.334 2.065C4.835 21.599 0 16.764 0 10.799S4.835 0 10.8 0s10.799 4.835 10.799 10.8c0 2.369-.772 4.553-2.066 6.333.025.017.052.028.074.05l4.248 4.248zm-5.028-10.632a8.015 8.015 0 1 0-8.028 8.028h.024a8.016 8.016 0 0 0 8.004-8.028zm-4.86 4.98a6.002 6.002 0 0 0 2.04-2.184v-1.764h-2.04v3.948zm-4.5.948c.442.057.887.08 1.332.072.4.025.8.025 1.2 0V7.692H9.468v9.035z" />
+    </svg>
+  );
+}
+
+// Generic line-art icon (not a brand mark) used both as the "Data
+// warehouse" section header icon in StoredDataSection.tsx and anywhere
+// else a neutral warehouse glyph is useful - matches DatabaseIcon/
+// FileSpreadsheetIcon's own line-art style below so all three section
+// icons read as one consistent set.
+export function WarehouseIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 21V10l9-6 9 6v11" />
+      <path d="M3 21h18" />
+      <path d="M8 21v-6h8v6" />
+      <path d="M8 12h.01M12 12h.01M16 12h.01" />
+    </svg>
+  );
+}
+
 export function DatabaseIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -125,7 +163,25 @@ function timeAgoShort(epochSeconds: number): string {
 const DB_KINDS = [
   { value: "postgres", label: "PostgreSQL", defaultPort: 5432, color: "#4169E1", Logo: PostgresLogo },
   { value: "mysql", label: "MySQL / MariaDB", defaultPort: 3306, color: "#4479A1", Logo: MySqlLogo },
+  // Microsoft's own documented SQL Server brand red, paired with the
+  // generic database outline (see the note above DatabaseIcon/WarehouseIcon
+  // for why - Simple Icons has no SQL Server mark to draw exactly).
+  { value: "sqlserver", label: "Microsoft SQL Server", defaultPort: 1433, color: "#CC2927", Logo: DatabaseIcon },
   { value: "mongodb", label: "MongoDB", defaultPort: 27017, color: "#47A248", Logo: MongoDbLogo },
+  // Supabase's database IS Postgres under the hood (see connectors.py's
+  // _sql_engine_url) - this tile exists purely so people recognize it by
+  // its own name/logo instead of having to know that. Defaults to the
+  // *pooler* port (6543), not Postgres's usual 5432: GD360's servers can
+  // only reach a Supabase project through its connection pooler (see the
+  // hint shown once this kind is selected, below).
+  { value: "supabase", label: "Supabase", defaultPort: 6543, color: "#3FCF8E", Logo: SupabaseLogo },
+];
+
+// The one warehouse kind today; structured as a list (like DB_KINDS) so
+// more can be added later (Snowflake, Redshift, ...) without reshaping
+// anything that reads from it.
+const WAREHOUSE_KINDS = [
+  { value: "bigquery", label: "Google BigQuery", color: "#669DF6", Logo: BigQueryLogo },
 ];
 
 // Same shape the backend's DataSourceOut returns. Exported so other
@@ -146,7 +202,7 @@ export type CreatedDataSource = {
 // the app that displays a data source's kind (currently: the "Connected"
 // confirmation panel below, and the "Your data sources" homepage section).
 export function connectionKindMeta(kind: string) {
-  const found = DB_KINDS.find((d) => d.value === kind);
+  const found = DB_KINDS.find((d) => d.value === kind) || WAREHOUSE_KINDS.find((w) => w.value === kind);
   if (found) return { label: found.label, color: found.color, Logo: found.Logo };
   if (kind === "excel") return { label: "Excel file", color: "#1D6F42", Logo: FileSpreadsheetIcon };
   return { label: "CSV file", color: "#64748b", Logo: FileSpreadsheetIcon };
@@ -191,7 +247,7 @@ export default function DataSourceForm({
   onCreated: (ds: { id: string; name: string; kind: string; created_at: string }) => void;
   onConnected?: (ds: CreatedDataSource) => void;
 }) {
-  const [mode, setMode] = useState<"db" | "file">("db");
+  const [mode, setMode] = useState<"db" | "warehouse" | "file">("db");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -204,6 +260,19 @@ export default function DataSourceForm({
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [ssl, setSsl] = useState(true);
+
+  // Data warehouse: unlike the database picker above (which selects a kind
+  // inline and shows one shared form below it), a warehouse tile opens its
+  // own popout form on click - warehouseModalKind holds which warehouse
+  // kind's popout is open (null = closed). Kept as its own small form
+  // rather than folded into the DB form above since BigQuery authenticates
+  // completely differently (a service-account key, not host/port/username/
+  // password) and has nothing in common with it field-for-field.
+  const [warehouseModalKind, setWarehouseModalKind] = useState<string | null>(null);
+  const [whName, setWhName] = useState("");
+  const [projectId, setProjectId] = useState("");
+  const [datasetId, setDatasetId] = useState("");
+  const [serviceAccountJson, setServiceAccountJson] = useState("");
 
   // File form state
   const [fileName, setFileName] = useState("");
@@ -291,6 +360,43 @@ export default function DataSourceForm({
     }
   };
 
+  const openWarehouseForm = (value: string) => {
+    setWarehouseModalKind(value);
+    setWhName("");
+    setProjectId("");
+    setDatasetId("");
+    setServiceAccountJson("");
+    setError("");
+  };
+
+  const closeWarehouseForm = () => {
+    setWarehouseModalKind(null);
+    setError("");
+  };
+
+  const submitWarehouse = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!warehouseModalKind) return;
+    setBusy(true);
+    setError("");
+    try {
+      const { data } = await api.post("/datasources/warehouse", {
+        name: whName,
+        kind: warehouseModalKind,
+        project_id: projectId,
+        dataset_id: datasetId,
+        service_account_json: serviceAccountJson,
+      });
+      setWhName(""); setProjectId(""); setDatasetId(""); setServiceAccountJson("");
+      setWarehouseModalKind(null);
+      showConnectedPanel(data);
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Could not connect. Check your project ID, dataset, and service account key.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const submitFile = async (e: FormEvent) => {
     e.preventDefault();
     if (!file) return;
@@ -327,12 +433,18 @@ export default function DataSourceForm({
   return (
     <>
     <div className="card p-6">
-      <div className="flex gap-2 mb-5">
+      <div className="flex flex-wrap gap-2 mb-5">
         <button
           className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-1.5 ${mode === "db" ? "bg-primary text-white" : "btn-secondary"}`}
           onClick={() => setMode("db")}
         >
           <DatabaseIcon className="w-4 h-4" /> Connect a database
+        </button>
+        <button
+          className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-1.5 ${mode === "warehouse" ? "bg-primary text-white" : "btn-secondary"}`}
+          onClick={() => setMode("warehouse")}
+        >
+          <WarehouseIcon className="w-4 h-4" /> Connect a data warehouse
         </button>
         <button
           className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-1.5 ${mode === "file" ? "bg-primary text-white" : "btn-secondary"}`}
@@ -342,7 +454,9 @@ export default function DataSourceForm({
         </button>
       </div>
 
-      {error && <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-4">{error}</div>}
+      {error && !warehouseModalKind && (
+        <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-4">{error}</div>
+      )}
 
       {mode === "db" ? (
         <div>
@@ -350,7 +464,7 @@ export default function DataSourceForm({
               with just its name underneath - no extra copy or tags - so
               people can identify their database at a glance the same way a
               polished connector gallery works. */}
-          <div className="grid grid-cols-3 gap-3 mb-5">
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-3 mb-5">
             {DB_KINDS.map((d) => {
               const selected = kind === d.value;
               return (
@@ -383,6 +497,15 @@ export default function DataSourceForm({
             })}
           </div>
 
+          {kind === "supabase" && (
+            <div className="text-xs text-muted bg-surface2 border border-border rounded-lg p-3 mb-5 leading-relaxed">
+              Use Supabase's <strong>Connection pooling</strong> details (Project Settings &rarr; Database &rarr;
+              Connection pooling), not the direct connection - GD360's servers can only reach Supabase through the
+              pooler host (something like <code className="font-mono">aws-0-&lt;region&gt;.pooler.supabase.com</code>,
+              port 6543).
+            </div>
+          )}
+
           <form onSubmit={submitDb} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="sm:col-span-2">
               <label className="text-sm text-muted mb-1 block">Connection name</label>
@@ -408,10 +531,16 @@ export default function DataSourceForm({
               <label className="text-sm text-muted mb-1 block">Password</label>
               <input className="input" required type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
             </div>
-            <div className="flex items-center gap-2 mt-6">
-              <input id="ssl" type="checkbox" checked={ssl} onChange={(e) => setSsl(e.target.checked)} />
-              <label htmlFor="ssl" className="text-sm text-muted">Require SSL/TLS</label>
-            </div>
+            {kind === "sqlserver" ? (
+              <div className="text-xs text-muted mt-1 sm:col-span-2 sm:mt-0 flex items-center">
+                Encryption is negotiated automatically for SQL Server - no toggle needed here.
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 mt-6">
+                <input id="ssl" type="checkbox" checked={ssl} onChange={(e) => setSsl(e.target.checked)} />
+                <label htmlFor="ssl" className="text-sm text-muted">Require SSL/TLS</label>
+              </div>
+            )}
             <div className="sm:col-span-2 text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
               Read-only, always. GD360 never modifies your data, and your password is encrypted. Tip: use a
               read-only database user for extra safety.
@@ -494,6 +623,32 @@ export default function DataSourceForm({
             </div>
           </form>
         </div>
+      ) : mode === "warehouse" ? (
+        <div>
+          {/* Icon-only picker: no inline form beneath it. Clicking a tile
+              opens that warehouse's own popout form below instead - a data
+              warehouse's fields (project/dataset/service-account key) have
+              nothing in common with the database form above, so there is no
+              shared form to switch into here the way DB_KINDS does. */}
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
+            {WAREHOUSE_KINDS.map((w) => (
+              <button
+                type="button"
+                key={w.value}
+                onClick={() => openWarehouseForm(w.value)}
+                className="relative flex flex-col items-center justify-center gap-1.5 py-4 rounded-xl border border-border hover:border-primary/40 transition"
+              >
+                <div
+                  className="w-11 h-11 rounded-lg flex items-center justify-center"
+                  style={{ backgroundColor: `${w.color}1a`, color: w.color }}
+                >
+                  <w.Logo className="w-6 h-6" />
+                </div>
+                <span className="text-xs font-medium text-muted text-center leading-tight px-1">{w.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
       ) : (
         <form onSubmit={submitFile} className="space-y-4">
           <div>
@@ -508,6 +663,102 @@ export default function DataSourceForm({
         </form>
       )}
     </div>
+
+    {/* ---- Data warehouse popout: the picker tile above only ever opens
+        this - a small, self-contained form for that one warehouse kind's
+        very different credential shape (project/dataset/service-account
+        key, not host/port/username/password), plus a link to a dedicated
+        step-by-step guide for actually getting those values, since nothing
+        else in this app walks someone through a GCP console. ---- */}
+    {warehouseModalKind && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={closeWarehouseForm} aria-hidden />
+        <div className="relative card bg-surface w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto" role="dialog" aria-modal="true">
+          <button
+            type="button"
+            onClick={closeWarehouseForm}
+            aria-label="Close"
+            className="absolute top-4 right-4 text-muted hover:text-text transition"
+          >
+            <CloseIcon className="w-4 h-4" />
+          </button>
+
+          <div className="flex items-start justify-between gap-3 pr-6">
+            <div className="flex items-center gap-3">
+              <div
+                className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
+                style={{
+                  backgroundColor: `${connectionKindMeta(warehouseModalKind).color}1a`,
+                  color: connectionKindMeta(warehouseModalKind).color,
+                }}
+              >
+                {(() => {
+                  const WLogo = connectionKindMeta(warehouseModalKind).Logo;
+                  return <WLogo className="w-5 h-5" />;
+                })()}
+              </div>
+              <div className="font-bold text-lg leading-tight">Connect {connectionKindMeta(warehouseModalKind).label}</div>
+            </div>
+          </div>
+
+          {/* The "side" link the person asked for - opens the dedicated
+              step-by-step guide in a new browser tab, so filling this form
+              out never means losing their place in it. */}
+          
+            href="/help/connect-bigquery"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+          >
+            How to connect BigQuery to GD360
+            <ChevronRightIcon className="w-3 h-3" />
+          </a>
+
+          {error && (
+            <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mt-4">{error}</div>
+          )}
+
+          <form onSubmit={submitWarehouse} className="grid grid-cols-1 gap-4 mt-4">
+            <div>
+              <label className="text-sm text-muted mb-1 block">Connection name</label>
+              <input className="input" required value={whName} onChange={(e) => setWhName(e.target.value)} placeholder="Production BigQuery" />
+            </div>
+            <div>
+              <label className="text-sm text-muted mb-1 block">Project ID</label>
+              <input className="input" required value={projectId} onChange={(e) => setProjectId(e.target.value)} placeholder="my-gcp-project-123" />
+            </div>
+            <div>
+              <label className="text-sm text-muted mb-1 block">Dataset ID</label>
+              <input className="input" required value={datasetId} onChange={(e) => setDatasetId(e.target.value)} placeholder="analytics" />
+            </div>
+            <div>
+              <label className="text-sm text-muted mb-1 block">Service account key (JSON)</label>
+              <textarea
+                className="input font-mono text-xs"
+                rows={6}
+                required
+                value={serviceAccountJson}
+                onChange={(e) => setServiceAccountJson(e.target.value)}
+                placeholder='{ "type": "service_account", "project_id": "...", ... }'
+              />
+            </div>
+            <div className="text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
+              Read-only, always. GD360 only ever runs SELECT queries against BigQuery, and your service account
+              key is encrypted at rest. Tip: create a service account with only the <strong>BigQuery Data
+              Viewer</strong> and <strong>BigQuery Job User</strong> roles for extra safety.
+            </div>
+            <div className="flex items-center gap-3">
+              <button type="button" className="btn-secondary flex-1" onClick={closeWarehouseForm}>
+                Cancel
+              </button>
+              <button className="btn-primary flex-1" type="submit" disabled={busy}>
+                {busy ? "Connecting..." : "Test & connect"}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    )}
 
     {/* ---- "Connected" confirmation: shown right after a successful connect
         or upload, before handing off to the workspace, so the person gets
