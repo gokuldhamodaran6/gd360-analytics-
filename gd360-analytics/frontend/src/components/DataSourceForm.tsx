@@ -29,7 +29,7 @@ function MongoDbLogo({ className }: { className?: string }) {
   );
 }
 
-function DatabaseIcon({ className }: { className?: string }) {
+export function DatabaseIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <ellipse cx="12" cy="5" rx="8" ry="3" />
@@ -39,7 +39,7 @@ function DatabaseIcon({ className }: { className?: string }) {
   );
 }
 
-function FileSpreadsheetIcon({ className }: { className?: string }) {
+export function FileSpreadsheetIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -57,7 +57,7 @@ function ShieldIcon({ className }: { className?: string }) {
   );
 }
 
-function ChevronRightIcon({ className }: { className?: string }) {
+export function ChevronRightIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M9 6l6 6-6 6" />
@@ -74,7 +74,7 @@ function CopyIcon({ className }: { className?: string }) {
   );
 }
 
-function CheckIcon({ className }: { className?: string }) {
+export function CheckIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M20 6L9 17l-5-5" />
@@ -91,7 +91,7 @@ function SpinnerIcon({ className }: { className?: string }) {
   );
 }
 
-function CloseIcon({ className }: { className?: string }) {
+export function CloseIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M18 6L6 18M6 6l12 12" />
@@ -99,7 +99,7 @@ function CloseIcon({ className }: { className?: string }) {
   );
 }
 
-function TableIcon({ className }: { className?: string }) {
+export function TableIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="3" width="18" height="18" rx="2" />
@@ -128,8 +128,11 @@ const DB_KINDS = [
   { value: "mongodb", label: "MongoDB", defaultPort: 27017, color: "#47A248", Logo: MongoDbLogo },
 ];
 
-// Same shape the backend's DataSourceOut returns.
-type CreatedDataSource = {
+// Same shape the backend's DataSourceOut returns. Exported so other
+// components (e.g. the "Your data sources" homepage section) that also
+// render a connected datasource share this one definition instead of
+// redeclaring it.
+export type CreatedDataSource = {
   id: string;
   name: string;
   kind: string;
@@ -137,10 +140,12 @@ type CreatedDataSource = {
   schema_cache?: Record<string, unknown> | null;
 };
 
-// Icon + label + brand color for the "Connected" confirmation, for a kind
-// that might be a database (in DB_KINDS) or a file upload (csv/excel,
-// which never appear in DB_KINDS since that picker is database-only).
-function connectionKindMeta(kind: string) {
+// Icon + label + brand color for a kind that might be a database (in
+// DB_KINDS) or a file upload (csv/excel, which never appear in DB_KINDS
+// since that picker is database-only). Exported for reuse anywhere else in
+// the app that displays a data source's kind (currently: the "Connected"
+// confirmation panel below, and the "Your data sources" homepage section).
+export function connectionKindMeta(kind: string) {
   const found = DB_KINDS.find((d) => d.value === kind);
   if (found) return { label: found.label, color: found.color, Logo: found.Logo };
   if (kind === "excel") return { label: "Excel file", color: "#1D6F42", Logo: FileSpreadsheetIcon };
@@ -149,9 +154,11 @@ function connectionKindMeta(kind: string) {
 
 // Normalizes the three different shapes `schema_cache` can come back in
 // (SQL: { table: [{name,type}] }, MongoDB: { collection: ["field", ...] },
-// file upload: { columns: [{name,type}] }) into one consistent list the
-// confirmation panel can render the same way regardless of kind.
-function getTableEntries(
+// file upload: { columns: [{name,type}] }) into one consistent list any
+// panel can render the same way regardless of kind. Exported for reuse
+// (currently: the "Connected" confirmation panel below, and the "Your data
+// sources" homepage section's per-source schema preview).
+export function getTableEntries(
   kind: string,
   schemaCache: Record<string, unknown> | null | undefined,
   fallbackName: string
