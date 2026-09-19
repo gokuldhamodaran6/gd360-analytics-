@@ -705,7 +705,7 @@ export default function DataSourceForm({
               step-by-step guide in a new browser tab, so filling this form
               out never means losing their place in it. */}
           
-            href="/help/connect-bigquery"
+            <a href="/help/connect-bigquery"
             target="_blank"
             rel="noopener noreferrer"
             className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
