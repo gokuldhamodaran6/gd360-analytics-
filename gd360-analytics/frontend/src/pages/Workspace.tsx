@@ -565,9 +565,17 @@ export default function Workspace() {
   };
 
   return (
-    <div className="h-screen flex flex-col">
+    // min-h-screen (not a hard h-screen) below lg lets the page grow to fit
+    // its real content and scroll normally on a phone - only at lg+ does
+    // this lock to the exact viewport height for the fixed, non-scrolling
+    // 3-pane desktop layout below. Without this, the 3 stacked panels'
+    // combined minimum heights on mobile exceeded what a fixed-height,
+    // overflow-hidden page had room for, and the bottom of the layout
+    // (typically the Ideas panel) was simply clipped off-screen with no way
+    // to scroll down to it.
+    <div className="min-h-screen lg:h-screen flex flex-col">
       <TopNav />
-      <div className="px-6 py-3 border-b border-border flex items-center justify-between">
+      <div className="px-4 sm:px-6 py-3 border-b border-border flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm text-muted">
           Analyzing: <span className="text-text font-medium">{dsName}</span>
           {resuming && <span className="ml-2 text-xs text-accent">Loading conversation...</span>}
@@ -580,7 +588,7 @@ export default function Workspace() {
         )}
       </div>
 
-      {error && <div className="mx-6 mt-3 text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
+      {error && <div className="mx-4 sm:mx-6 mt-3 text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
 
       <div className="px-4 pt-4">
         <StepFlow
@@ -593,7 +601,11 @@ export default function Workspace() {
         />
       </div>
 
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[380px_1fr_340px] gap-4 px-4 pb-4 overflow-hidden">
+      {/* overflow-visible below lg lets these 3 panels take their natural,
+          possibly-tall content height and the page scroll to reach all of
+          them; lg:overflow-hidden restores the original fixed, internally-
+          scrolling 3-pane desktop behavior unchanged. */}
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[380px_1fr_340px] gap-4 px-4 pb-4 overflow-visible lg:overflow-hidden">
         <div className="min-h-[400px] lg:min-h-0">
           <ChatPanel
             turns={turns}
@@ -613,7 +625,7 @@ export default function Workspace() {
             onAnalysisModeChange={setAnalysisMode}
           />
         </div>
-        <div className="min-h-[400px] flex flex-col gap-4 overflow-hidden">
+        <div className="min-h-[400px] flex flex-col gap-4 overflow-visible lg:overflow-hidden">
           <div className="flex items-center justify-between gap-1.5 shrink-0">
             <div className="flex gap-1.5">
               <button
@@ -636,7 +648,7 @@ export default function Workspace() {
               <span aria-hidden>🎨</span> Style
             </button>
           </div>
-          <div className="flex-1 min-h-[350px] overflow-hidden">
+          <div className="flex-1 min-h-[350px] overflow-visible lg:overflow-hidden">
             {centerTab === "data" && datasourceId ? (
               <DataTable
                 datasourceId={datasourceId}
@@ -710,9 +722,9 @@ export default function Workspace() {
             )}
           </div>
         </div>
-        <div className="min-h-[200px] flex flex-col gap-3 overflow-hidden">
+        <div className="min-h-[200px] flex flex-col gap-3 overflow-visible lg:overflow-hidden">
           <div className="text-sm font-semibold px-1 shrink-0">Ideas</div>
-          <div className="flex-1 overflow-y-auto">
+          <div className="flex-1 overflow-visible lg:overflow-y-auto">
             <SuggestionsPanel charts={suggestedCharts} stats={suggestedStats} onPick={(p) => runPrompt(p)} />
           </div>
         </div>
