@@ -152,6 +152,13 @@ class Message(Base):
     # the API.
     chart_type = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # How many times "Double-check this" has been run on this message (see
+    # routers/chat.py verify_message, which increments this on every
+    # completed audit regardless of whether it found anything to correct).
+    # Only ever set on an assistant analyze/transform turn - the thing being
+    # measured is real trust-feature usage for the admin dashboard, not
+    # anything shown back to the person who owns the message.
+    verified_count = Column(Integer, default=0)
 
     conversation = relationship("Conversation", back_populates="messages")
 
