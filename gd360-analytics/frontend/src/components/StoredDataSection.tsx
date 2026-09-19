@@ -7,6 +7,7 @@ import {
   TableIcon,
   DatabaseIcon,
   FileSpreadsheetIcon,
+  WarehouseIcon,
   connectionKindMeta,
   getTableEntries,
   type CreatedDataSource,
@@ -47,7 +48,8 @@ function timeAgo(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString();
 }
 
-const isDbKind = (k: string) => k === "postgres" || k === "mysql" || k === "mongodb";
+const isDbKind = (k: string) => k === "postgres" || k === "mysql" || k === "sqlserver" || k === "mongodb" || k === "supabase";
+const isWarehouseKind = (k: string) => k === "bigquery";
 
 // "4 tables" / "1 collection" / "12 columns" (files are a single sheet, so
 // column count is the meaningful number there, not a table count of 1).
@@ -63,7 +65,7 @@ function dataSummaryLabel(ds: CreatedDataSource): string {
 }
 
 type SortKey = "newest" | "oldest" | "name-asc" | "name-desc";
-type KindFilter = "all" | "database" | "file";
+type KindFilter = "all" | "database" | "warehouse" | "file";
 
 // A single data source card - reused identically for the Databases and
 // Files subsections below, so both stay visually consistent.
@@ -147,12 +149,14 @@ export default function StoredDataSection({
 
   const totalCount = datasources.length;
   const dbCount = useMemo(() => datasources.filter((d) => isDbKind(d.kind)).length, [datasources]);
-  const fileCount = totalCount - dbCount;
+  const warehouseCount = useMemo(() => datasources.filter((d) => isWarehouseKind(d.kind)).length, [datasources]);
+  const fileCount = totalCount - dbCount - warehouseCount;
 
   const visible = useMemo(() => {
     let list = datasources;
     if (kindFilter === "database") list = list.filter((d) => isDbKind(d.kind));
-    if (kindFilter === "file") list = list.filter((d) => !isDbKind(d.kind));
+    if (kindFilter === "warehouse") list = list.filter((d) => isWarehouseKind(d.kind));
+    if (kindFilter === "file") list = list.filter((d) => !isDbKind(d.kind) && !isWarehouseKind(d.kind));
     const q = query.trim().toLowerCase();
     if (q) list = list.filter((d) => d.name.toLowerCase().includes(q));
     const sorted = [...list];
@@ -164,7 +168,8 @@ export default function StoredDataSection({
   }, [datasources, kindFilter, query, sortKey]);
 
   const databaseItems = useMemo(() => visible.filter((d) => isDbKind(d.kind)), [visible]);
-  const fileItems = useMemo(() => visible.filter((d) => !isDbKind(d.kind)), [visible]);
+  const warehouseItems = useMemo(() => visible.filter((d) => isWarehouseKind(d.kind)), [visible]);
+  const fileItems = useMemo(() => visible.filter((d) => !isDbKind(d.kind) && !isWarehouseKind(d.kind)), [visible]);
 
   const selectedDs = selectedId ? datasources.find((d) => d.id === selectedId) || null : null;
   const selectedMeta = selectedDs ? connectionKindMeta(selectedDs.kind) : null;
@@ -254,6 +259,7 @@ export default function StoredDataSection({
             {([
               ["all", `All (${totalCount})`],
               ["database", `Databases (${dbCount})`],
+              ["warehouse", `Data warehouses (${warehouseCount})`],
               ["file", `Files (${fileCount})`],
             ] as [KindFilter, string][]).map(([key, label]) => (
               <button
@@ -287,6 +293,26 @@ export default function StoredDataSection({
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                     {databaseItems.map((ds) => (
+                      <SourceCard
+                        key={ds.id}
+                        ds={ds}
+                        conversationCount={(conversationsByDs[ds.id] || []).length}
+                        onClick={() => openCard(ds)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {warehouseItems.length > 0 && (
+                <div className="mb-6">
+                  <div className="flex items-center gap-2 mb-3">
+                    <WarehouseIcon className="w-4 h-4 text-muted" />
+                    <h3 className="text-sm font-semibold">Data warehouses</h3>
+                    <span className="text-xs text-muted">{warehouseItems.length}</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {warehouseItems.map((ds) => (
                       <SourceCard
                         key={ds.id}
                         ds={ds}
