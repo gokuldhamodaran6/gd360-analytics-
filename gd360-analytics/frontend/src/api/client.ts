@@ -42,6 +42,7 @@ export type AdminStats = {
   total_dashboards: number;
   active_users_today: number;
   active_users_7d: number;
+  active_users_30d: number;
   total_verify_checks: number;
   funnel: {
     signed_up: number;
