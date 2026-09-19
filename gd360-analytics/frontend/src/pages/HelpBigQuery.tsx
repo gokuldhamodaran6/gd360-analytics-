@@ -9,13 +9,22 @@ import ThemeToggle from "../components/ThemeToggle";
 // content anyone can read, and a fresh tab may not carry an existing
 // session yet anyway.
 //
-// Every step below is real, accurate Google Cloud Console navigation as of
-// this app's build date - nothing here is invented or approximate. The
-// IAM role recommendation (BigQuery Data Viewer + BigQuery Job User) is
-// the standard least-privilege combination for a service account
-// that only needs to run SELECT queries: Data Viewer can read table data and
-// metadata, and Job User can actually run a query job - together they are
-// enough for GD360's read-only access and nothing more.
+// Deliberately terse (2026-09-19 rewrite, per Gokul: "make it crisp and
+// short... user has to understand quickly and complete their step asap").
+// Originally 8 fuller-sentence steps; condensed to 6 short, scannable
+// fragments with the actual clickable button/field names bolded, since
+// those are the only words someone mid-task actually needs to find fast.
+// Dropped the standalone "confirm the BigQuery API is enabled" step -
+// almost always already true for anyone with existing BigQuery data - and
+// folded "open the file and copy it" into the same step as creating the
+// key, since those two actions always happen back-to-back anyway. Every
+// navigation path below is still real, accurate Google Cloud Console
+// navigation, just said in fewer words. The IAM role recommendation
+// (BigQuery Data Viewer + BigQuery Job User) is the standard least-
+// privilege combination for a service account that only needs to run
+// SELECT queries: Data Viewer can read table data and metadata, and Job
+// User can actually run a query job - together they are enough for
+// GD360's read-only access and nothing more.
 
 function StepNumber({ n }: { n: number }) {
   return (
@@ -27,60 +36,54 @@ function StepNumber({ n }: { n: number }) {
 
 const STEPS = [
   {
-    title: "Open (or create) a Google Cloud project",
-    body:
-      "Go to console.cloud.google.com and sign in with the Google account that owns your data. Use the project " +
-      "picker at the top of the page to select the project your BigQuery data lives in, or create a new one if " +
-      "you're starting fresh.",
-  },
-  {
-    title: "Make sure the BigQuery API is enabled",
-    body:
-      "In the left-hand menu (or the search bar at the top), go to “APIs & Services” and confirm " +
-      "“BigQuery API” is enabled for this project. If your project already has BigQuery datasets in it, " +
-      "it almost certainly already is.",
+    title: "Open your Google Cloud project",
+    body: (
+      <>
+        Go to <strong>console.cloud.google.com</strong> and pick your project from the picker at the top.
+      </>
+    ),
   },
   {
     title: "Create a service account",
-    body:
-      "Go to “IAM & Admin” → “Service Accounts” → “Create Service Account”. " +
-      "Give it any name you like, for example “gd360-read-only” - GD360 will only ever use this account " +
-      "to read data, never to change anything.",
+    body: (
+      <>
+        <strong>IAM &amp; Admin → Service Accounts → Create Service Account</strong>. Any name works.
+      </>
+    ),
   },
   {
-    title: "Grant it read-only access",
-    body:
-      "On the “Grant this service account access to project” step, add two roles: BigQuery Data Viewer " +
-      "and BigQuery Job User. That's enough for GD360 to list your tables and run SELECT queries against them - " +
-      "nothing more. Skip granting it anything else.",
+    title: "Give it read-only access",
+    body: (
+      <>
+        Add only these two roles: <strong>BigQuery Data Viewer</strong> and <strong>BigQuery Job User</strong>.
+      </>
+    ),
   },
   {
-    title: "Create a JSON key for it",
-    body:
-      "Open the service account you just created, go to its “Keys” tab, click “Add Key” → " +
-      "“Create new key”, and choose JSON. A .json file downloads automatically to your computer - this " +
-      "is the credential GD360 needs. Keep it somewhere safe; anyone who has it can read the data it's scoped to.",
-  },
-  {
-    title: "Open that file and copy everything in it",
-    body:
-      "Open the downloaded .json file in any text editor (Notepad, TextEdit, VS Code - anything works). Select " +
-      "all of its contents (the whole thing, starting from the first { to the last }) and copy it.",
+    title: "Create and copy the key",
+    body: (
+      <>
+        Open the account → <strong>Keys → Add Key → Create new key → JSON</strong>. Open the downloaded file
+        and copy everything in it.
+      </>
+    ),
   },
   {
     title: "Find your Project ID and Dataset ID",
-    body:
-      "Your Project ID is shown on the Cloud Console's dashboard, right under the project name (it looks like " +
-      "“my-project-123456”, not the friendly display name). Your Dataset ID is the name of the BigQuery " +
-      "dataset you want GD360 to read from - find it under “BigQuery” → “SQL Workspace” " +
-      "in the left-hand tree, listed under your project.",
+    body: (
+      <>
+        <strong>Project ID</strong>: on your dashboard, under the project name.{" "}
+        <strong>Dataset ID</strong>: under <strong>BigQuery → SQL Workspace</strong>.
+      </>
+    ),
   },
   {
-    title: "Fill in GD360's form and connect",
-    body:
-      "Back in the GD360 tab, paste your Project ID, your Dataset ID, and the full JSON key you copied in step 6 " +
-      "into the matching fields, give the connection a name, and click “Test & connect.” GD360 tests the " +
-      "connection and reads your dataset's table list before saving anything.",
+    title: "Paste and connect",
+    body: (
+      <>
+        Paste both IDs and the JSON key into GD360, then click <strong>Test &amp; connect</strong>.
+      </>
+    ),
   },
 ];
 
@@ -99,9 +102,7 @@ export default function HelpBigQuery() {
           <div className="text-xs font-semibold uppercase tracking-wide text-primary mb-2">Data warehouse setup</div>
           <h1 className="text-2xl sm:text-3xl font-bold leading-tight mb-3">How to connect BigQuery to GD360</h1>
           <p className="text-sm text-muted leading-relaxed">
-            GD360 connects to BigQuery with a read-only service account, not your personal Google login. These
-            steps walk through getting the three things GD360's connect form asks for: your Project ID, your
-            Dataset ID, and a service account key. It takes about five minutes the first time.
+            GD360 uses a <strong>read-only service account</strong> - not your Google login. Takes about 5 minutes.
           </p>
         </div>
 
@@ -118,9 +119,8 @@ export default function HelpBigQuery() {
         </div>
 
         <div className="mt-8 text-xs text-muted bg-surface2 border border-border rounded-lg p-4 leading-relaxed">
-          GD360 never asks for your Google account password, and this service account can only read the data you
-          scope it to - it cannot change or delete anything in BigQuery. You can revoke access at any time by
-          deleting the service account (or just its key) from the Google Cloud Console.
+          GD360 never asks for your Google password. This key is <strong>read-only</strong> - revoke it anytime
+          by deleting the service account in Google Cloud Console.
         </div>
 
         <div className="mt-8 text-center">
