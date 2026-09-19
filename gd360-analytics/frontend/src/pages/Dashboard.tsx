@@ -3,8 +3,13 @@ import { useNavigate } from "react-router-dom";
 import { api, conversationApi, ConversationSummary } from "../api/client";
 import TopNav from "../components/TopNav";
 import DataSourceForm from "../components/DataSourceForm";
+import StoredDataSection from "../components/StoredDataSection";
 
-type DataSource = { id: string; name: string; kind: string; created_at: string };
+// Widened to include schema_cache (present on every real /datasources
+// response, since the backend's DataSourceOut always returns it) so it can
+// be handed straight to StoredDataSection, which needs it to show each
+// source's real tables/columns.
+type DataSource = { id: string; name: string; kind: string; created_at: string; schema_cache?: Record<string, unknown> | null };
 type DashboardSummary = { id: string; name: string; chart_count: number; created_at: string };
 
 // A curated, representative slice of the chart types GD360 can actually
@@ -78,7 +83,7 @@ const FEATURES = [
   },
   {
     title: "Verified, not guessed",
-    body: "Every number in an insight traces back to a real computation. Hit \u201cDouble-check this\u201d and an independent AI audit re-checks the answer before you trust it.",
+    body: "Every number in an insight traces back to a real computation. Hit “Double-check this” and an independent AI audit re-checks the answer before you trust it.",
     Icon: VerifiedIcon,
   },
   {
@@ -293,6 +298,18 @@ export default function Dashboard() {
             ))}
           </div>
         </div>
+
+        {/* ---- Your data sources: everything already connected/uploaded,
+            searchable and sortable, click-through to resume a conversation
+            or start a new one. Shown before "Add a data source" so people
+            see what they already have before being prompted to add more. ---- */}
+        <StoredDataSection
+          datasources={datasources}
+          conversations={conversations}
+          loading={loading}
+          onOpenConversation={openConversation}
+          onAddNew={openConnectFlow}
+        />
 
         {/* ---- Add a data source + Recent conversations ---- */}
         <div ref={formRef} className="grid grid-cols-1 lg:grid-cols-[1fr_1.3fr] gap-8">
