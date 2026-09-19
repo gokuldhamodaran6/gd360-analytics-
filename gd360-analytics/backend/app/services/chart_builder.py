@@ -17,15 +17,38 @@ different chart; the caller (ai_engine._run_analyze) already treats that as
 a retryable failure, so the AI gets a chance to reshape its own code to fit,
 or the person is told plainly what is missing - never a silent switch to
 something else.
+
+Two chart shapes get extra analytical depth automatically, with no chart_type
+of their own to ask for - the AI just needs to hand back a normal scatter or
+bar result, and this file does the rest, the way a working data analyst
+would reach for these by reflex rather than plotting the bare numbers:
+
+  - "scatter" always tries to fit and draw a linear trend line with a shaded
+    confidence band on top of the raw points (see `_fit_regression`), plus a
+    plain-English read of the relationship's strength/direction/significance
+    in the corner - a bare cloud of dots answers "what are the values" but
+    not "is there a relationship here", which is almost always the real
+    question behind a scatter plot request.
+  - "bar"/"column" against a result that actually carries TWO numeric
+    metrics per category (e.g. an average transaction count next to an
+    average dollar amount) automatically becomes a dual-axis combo instead
+    of a single flat bar - metric one as bars on the left axis, metric two
+    as an annotated line on its own right-hand axis (see
+    `_build_dual_axis_combo`). Forcing two differently-scaled metrics onto
+    one shared axis is how a $72 line and a 5.7 count end up looking like a
+    flat line at the bottom of the chart; giving the second metric its own
+    axis is what makes both readable at once.
 """
 from __future__ import annotations
 
 import json
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+from scipy import stats as scipy_stats
 
 DARK_TEMPLATE = "plotly_dark"
 
@@ -33,6 +56,15 @@ PALETTE = [
     "#6C5CE7", "#00D1B2", "#FF6B6B", "#FFD166", "#4D96FF",
     "#F72585", "#43AA8B", "#F8961E", "#90BE6D", "#577590",
 ]
+
+# The color used for an automatic regression trend line and its confidence
+# band on a scatter plot - deliberately NOT one of the categorical PALETTE
+# colors above, so it always reads as "analysis drawn on top of the data"
+# rather than "one more data series", regardless of which palette the
+# person later picks in the frontend Style panel (see chartStyle.ts -
+# marker.meta.role is how that file recognizes and protects this trace from
+# being recolored or captioned like a real series).
+TREND_COLOR = "#E24C4C"
 
 # Chart types that render as a continuous color gradient rather than
 # discrete series colors - used by chartStyle.ts on the frontend too, but
@@ -66,6 +98,130 @@ def _series_or_first_col(obj: pd.DataFrame | pd.Series) -> pd.Series:
     return obj.iloc[:, 0]
 
 
+def _fit_regression(x_raw: Any, y_raw: Any):
+    """Fits a simple linear trend line through (x, y) with a 95% confidence
+    band, the same statistical picture a working analyst would sanity-check
+    a scatter plot with before calling a pattern "real". Returns None
+    (never raises) whenever there is not enough clean, varying numeric data
+    to fit anything meaningful - fewer than 4 usable points, or every x the
+    same value - so the caller can just fall back to a plain, undecorated
+    scatter rather than showing a misleading or broken trend line.
+
+    Returns (fit_x, fit_y, upper, lower, r_value, p_value, slope) as plain
+    numpy arrays / floats, ready to drop straight into Plotly traces."""
+    x = pd.to_numeric(pd.Series(x_raw), errors="coerce")
+    y = pd.to_numeric(pd.Series(y_raw), errors="coerce")
+    mask = x.notna() & y.notna()
+    x = x[mask].to_numpy(dtype=float)
+    y = y[mask].to_numpy(dtype=float)
+    n = len(x)
+    if n < 4 or np.unique(x).size < 2:
+        return None
+    try:
+        slope, intercept, r_value, p_value, _std_err = scipy_stats.linregress(x, y)
+    except Exception:
+        return None
+    if not np.isfinite([slope, intercept, r_value, p_value]).all():
+        return None
+
+    fit_x = np.linspace(float(x.min()), float(x.max()), 60)
+    fit_y = slope * fit_x + intercept
+
+    mean_x = float(x.mean())
+    sxx = float(np.sum((x - mean_x) ** 2))
+    dof = n - 2
+    if dof > 0 and sxx > 0:
+        residuals = y - (slope * x + intercept)
+        mse = float(np.sum(residuals ** 2) / dof)
+        s = mse ** 0.5
+        try:
+            t_val = float(scipy_stats.t.ppf(0.975, dof))
+        except Exception:
+            t_val = 1.96
+        se_fit = s * np.sqrt(1.0 / n + (fit_x - mean_x) ** 2 / sxx)
+        band = t_val * se_fit
+    else:
+        band = np.zeros_like(fit_x)
+
+    return fit_x, fit_y, fit_y + band, fit_y - band, float(r_value), float(p_value), float(slope)
+
+
+def _add_trend_overlay(fig: go.Figure, x_raw: Any, y_raw: Any) -> None:
+    """Adds the confidence band and trend line traces (in that order, so
+    the band sits visually behind the line) plus a plain-English summary
+    annotation to a scatter figure already holding the raw data trace. Both
+    added traces carry meta.role so chartStyle.ts on the frontend knows to
+    leave their color, hover and legend alone rather than treating them as
+    another real data series - see the note on TREND_COLOR above."""
+    reg = _fit_regression(x_raw, y_raw)
+    if reg is None:
+        return
+    fit_x, fit_y, upper, lower, r_value, p_value, slope = reg
+
+    band_x = list(fit_x) + list(fit_x[::-1])
+    band_y = list(upper) + list(lower[::-1])
+    fig.add_trace(go.Scatter(
+        x=band_x, y=band_y, fill="toself",
+        fillcolor="rgba(226, 76, 76, 0.15)",
+        line=dict(width=0),
+        hoverinfo="skip", showlegend=False,
+        meta={"role": "trend_band"},
+    ))
+    fig.add_trace(go.Scatter(
+        x=list(fit_x), y=list(fit_y), mode="lines",
+        line=dict(color=TREND_COLOR, width=2.5),
+        hoverinfo="skip", showlegend=False,
+        meta={"role": "trend_line"},
+    ))
+
+    direction = "positive" if slope > 0 else "negative" if slope < 0 else "flat"
+    strength = "strong" if abs(r_value) >= 0.6 else "moderate" if abs(r_value) >= 0.3 else "weak"
+    significance = "statistically significant" if p_value < 0.05 else "not statistically significant at this sample size"
+    fig.add_annotation(
+        xref="paper", yref="paper", x=0.99, y=0.03,
+        xanchor="right", yanchor="bottom", showarrow=False, align="right",
+        text=f"Trend: {strength} {direction} relationship  (r = {r_value:.2f}, {significance})",
+        font=dict(size=12, color=TREND_COLOR),
+    )
+
+
+def _build_dual_axis_combo(result: pd.DataFrame, cols: list) -> go.Figure:
+    """When a result naturally carries two numeric metrics per category
+    (e.g. an average transaction count alongside an average dollar spend),
+    a single shared axis is nearly always the wrong call - whichever metric
+    has the smaller scale ends up a sliver next to the other, or a flat
+    line along the bottom. This is the fix: metric one draws as bars on the
+    left axis, metric two as an annotated line on its own right-hand axis -
+    the same combo-chart pattern a working analyst reaches for whenever two
+    related-but-differently-scaled numbers need to be read side by side
+    against the same categories."""
+    metric_a, metric_b = cols[0], cols[1]
+    categories = [str(v) for v in result.index]
+    a_vals = pd.to_numeric(result[metric_a], errors="coerce")
+    b_vals = pd.to_numeric(result[metric_b], errors="coerce")
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        name=str(metric_a), x=categories, y=a_vals,
+        marker_color=PALETTE[0], yaxis="y",
+        texttemplate="%{y:,.2~f}", textposition="outside",
+        textfont=dict(color=PALETTE[0]),
+    ))
+    fig.add_trace(go.Scatter(
+        name=str(metric_b), x=categories, y=b_vals, yaxis="y2",
+        mode="lines+markers+text",
+        line=dict(color=PALETTE[2], width=3),
+        marker=dict(size=9, color=PALETTE[2]),
+        texttemplate="%{y:,.2~f}", textposition="top center",
+        textfont=dict(color=PALETTE[2]),
+    ))
+    fig.update_layout(
+        yaxis=dict(title=str(metric_a), rangemode="tozero"),
+        yaxis2=dict(title=str(metric_b), overlaying="y", side="right", showgrid=False, rangemode="tozero"),
+    )
+    return fig
+
+
 def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | None = None, y_label: str | None = None) -> dict:
     chart_type = (chart_type or "bar").lower().strip()
     numeric_cols = _numeric_cols(result)
@@ -87,10 +243,24 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
 
     fig = None
     barmode = None
+    # Set when the dual-axis combo path below is used - its two axes each
+    # already carry their own meaningful title (the metric name), so the
+    # generic yaxis_title=y_label applied near the bottom of this function
+    # must be skipped for it rather than blanking the left axis title out.
+    dual_axis_combo_used = False
 
     # ---- Core / everyday chart types (unchanged from the original set) ----
     if chart_type in ("bar", "column"):
-        fig = go.Figure(go.Bar(x=df["x"], y=df["y"], marker_color=PALETTE[0]))
+        # A result that genuinely carries two numeric metrics per category
+        # (not just a single value plus its own index) gets the dual-axis
+        # combo treatment automatically - see _build_dual_axis_combo above.
+        # A single numeric column (the overwhelmingly common case) renders
+        # exactly as before.
+        if isinstance(result, pd.DataFrame) and len(numeric_cols) >= 2:
+            fig = _build_dual_axis_combo(result, numeric_cols[:2])
+            dual_axis_combo_used = True
+        else:
+            fig = go.Figure(go.Bar(x=df["x"], y=df["y"], marker_color=PALETTE[0]))
     elif chart_type == "line":
         fig = go.Figure(go.Scatter(x=df["x"], y=df["y"], mode="lines+markers", line=dict(color=PALETTE[3], width=3)))
     elif chart_type == "area":
@@ -98,7 +268,14 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
     elif chart_type == "pie":
         fig = go.Figure(go.Pie(labels=df["x"], values=df["y"], marker=dict(colors=PALETTE), hole=0.45))
     elif chart_type == "scatter":
-        fig = go.Figure(go.Scatter(x=df["x"], y=df["y"], mode="markers", marker=dict(color=PALETTE[4], size=9)))
+        fig = go.Figure(go.Scatter(
+            x=df["x"], y=df["y"], mode="markers",
+            marker=dict(color=PALETTE[4], size=9, opacity=0.8, line=dict(width=1, color="rgba(255,255,255,0.35)")),
+            meta={"role": "primary"},
+        ))
+        # A trend line only means something once the raw points are on the
+        # chart - added on top of, never instead of, the actual data.
+        _add_trend_overlay(fig, df["x"], df["y"])
     elif chart_type == "histogram":
         fig = go.Figure(go.Histogram(x=df["x"] if df["x"].dtype != object else df["y"], marker_color=PALETTE[2]))
     elif chart_type == "box":
@@ -336,7 +513,6 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
         template=DARK_TEMPLATE,
         title=title or "",
         xaxis_title=x_label or "",
-        yaxis_title=y_label or "",
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         font=dict(family="Inter, system-ui, sans-serif", size=13, color="#E8E8F0"),
@@ -344,6 +520,12 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
         hoverlabel=dict(bgcolor="#1E1E2E", font_size=13),
         legend=dict(bgcolor="rgba(0,0,0,0)"),
     )
+    if not dual_axis_combo_used:
+        # The normal case: one shared y axis, titled from the AI's own
+        # y_label (or blank). The dual-axis combo above already gave each
+        # of its two axes its own meaningful title (the metric name), so
+        # it deliberately skips this generic overwrite.
+        fig.update_layout(yaxis_title=y_label or "")
 
     # fig.to_json() guarantees full JSON-safety (numpy types, NaT, etc handled)
     return json.loads(fig.to_json())
