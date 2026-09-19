@@ -92,7 +92,7 @@ def goku_chat(
 
     requested_ids = payload.source_version_ids or ["original"]
     try:
-        tables, _ = _load_selected_tables(db, ds, requested_ids, table=None)
+        tables, _, _ = _load_selected_tables(db, ds, requested_ids, table=None)
     except NeedsTableSelection as e:
         available_list = ", ".join(e.available)
         raise HTTPException(
