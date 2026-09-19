@@ -420,4 +420,62 @@ def _recent_history(db: Session, conversation_id: str, limit: int = 8) -> list[d
         # with the real code instead of the model having nothing to go on,
         # and - when the action is known (rows written after this column
         # was added) - lets an exact repeat of the same question reuse the
-        # identical code
+        # identical code instead of asking the AI to write it again, so the
+        # same question on unchanged data is guaranteed to give the same
+        # answer. Older rows saved before this column existed have no
+        # action recorded; the marker still carries the code for the
+        # "give me the code" case, just without the action tag, so a repeat
+        # of one of those older questions simply falls back to the normal
+        # AI-planned flow instead of being reused.
+        if m.role == "assistant" and m.code:
+            if m.action:
+                chart_type_tag = f" chart_type={m.chart_type}" if m.chart_type else ""
+                content = f"{content}\n\n(The exact python code used for this - action={m.action}{chart_type_tag}: ```python\n{m.code}\n```)"
+            else:
+                content = f"{content}\n\n(The exact python code used for this: ```python\n{m.code}\n```)"
+        history.append({"role": m.role, "content": content})
+    return history
+
+
+def _persist_and_respond(
+    db: Session, conversation_id: str, reply_text: str, action: str = "analyze",
+    chart_spec=None, insight=None, suggestions=None, needs_clarification=False,
+    rows_before=None, rows_after=None, nulls_before=None, nulls_after=None,
+    new_version_id=None, new_version_name=None, code=None, chart_type=None,
+    continue_action=None,
+) -> schemas.ChatResponse:
+    msg = models.Message(
+        conversation_id=conversation_id,
+        role="assistant",
+        content=reply_text,
+        chart_spec=chart_spec,
+        insight=insight,
+        suggestions=suggestions,
+        needs_clarification=needs_clarification,
+        code=code,
+        action=action,
+        chart_type=chart_type,
+    )
+    db.add(msg)
+    db.commit()
+    db.refresh(msg)
+
+    return schemas.ChatResponse(
+        conversation_id=conversation_id,
+        message_id=msg.id,
+        action=action,
+        reply_text=reply_text,
+        chart_spec=chart_spec,
+        insight=insight,
+        suggested_charts=(suggestions or {}).get("charts"),
+        suggested_stats=(suggestions or {}).get("stats"),
+        follow_up_suggestions=(suggestions or {}).get("follow_up"),
+        needs_clarification=needs_clarification,
+        rows_before=rows_before,
+        rows_after=rows_after,
+        nulls_before=nulls_before,
+        nulls_after=nulls_after,
+        new_version_id=new_version_id,
+        new_version_name=new_version_name,
+        continue_action=continue_action,
+    )
