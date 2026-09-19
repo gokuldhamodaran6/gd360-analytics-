@@ -7,23 +7,84 @@ import DataSourceForm from "../components/DataSourceForm";
 type DataSource = { id: string; name: string; kind: string; created_at: string };
 type DashboardSummary = { id: string; name: string; chart_count: number; created_at: string };
 
+// A curated, representative slice of the chart types GD360 can actually
+// render (the full engine supports many more specialized ones - see
+// chart_builder.py) - kept to a number that reads as impressive on the
+// landing page without turning the strip into visual noise. The count
+// shown in the badge/heading is always this array's real length, so it
+// can never drift out of sync with what is actually displayed.
 const CHART_TYPES = [
-  "Bar", "Line", "Area", "Pie", "Scatter", "Histogram",
-  "Box", "Heatmap", "Waterfall", "Funnel", "Treemap",
+  "Bar", "Horizontal Bar", "Grouped Bar", "Stacked Bar",
+  "Line", "Step Line", "Area", "Stacked Area",
+  "Pie", "Donut", "Scatter", "Bubble",
+  "Histogram", "Box", "Violin", "Heatmap",
+  "Waterfall", "Funnel", "Sankey", "Treemap",
+  "Sunburst", "Radar", "Gauge", "Candlestick",
 ];
+
+function SparkIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M12 2l1.8 5.6L19.5 9l-5.7 1.4L12 16l-1.8-5.6L4.5 9l5.7-1.4L12 2z" />
+    </svg>
+  );
+}
+
+function PromptToChartIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+      <path d="M8 12l2-2 2 2 4-4" />
+    </svg>
+  );
+}
+
+function CleanPrepIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 5h16M7 12h10M10 19h4" />
+    </svg>
+  );
+}
+
+function VerifiedIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z" />
+      <path d="M9 12l2 2 4-4" />
+    </svg>
+  );
+}
+
+function GuidedIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M15 9l-2 5-5 2 2-5z" />
+    </svg>
+  );
+}
 
 const FEATURES = [
   {
     title: "Prompt to chart",
-    body: "Describe what you want to see. GD360 picks the chart, transforms the data, and renders it live.",
+    body: "Describe what you want in plain English. GD360 picks the right chart from 24+ types, transforms the data, and renders it live.",
+    Icon: PromptToChartIcon,
   },
   {
-    title: "AI cleaning and prep",
-    body: "Ask in plain English to fix errors, fill missing values, or remove duplicates and outliers. See the before and after side by side.",
+    title: "AI cleaning, fully explained",
+    body: "Every prep step - duplicates removed, missing values handled, types fixed - is explained in plain English with real row counts. Never a black box.",
+    Icon: CleanPrepIcon,
   },
   {
-    title: "Studio-grade visuals",
-    body: "Waterfall, funnel, heatmap, treemap and more, with one-click export to PNG, JPG, SVG or WEBP.",
+    title: "Verified, not guessed",
+    body: "Every number in an insight traces back to a real computation. Hit \u201cDouble-check this\u201d and an independent AI audit re-checks the answer before you trust it.",
+    Icon: VerifiedIcon,
+  },
+  {
+    title: "Guided by Goku",
+    body: "New to data analysis? Goku walks you through what to clean, what to explore, and what to ask next - one clear step at a time.",
+    Icon: GuidedIcon,
   },
 ];
 
@@ -51,7 +112,7 @@ function timeAgo(dateStr: string): string {
 
 function ChartTypeIcon({ chartType }: { chartType: string | null }) {
   const t = (chartType || "").toLowerCase();
-  if (t.includes("pie")) {
+  if (t.includes("pie") || t.includes("donut")) {
     return (
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M21.21 15.89A10 10 0 1 1 8 2.83" />
@@ -59,7 +120,7 @@ function ChartTypeIcon({ chartType }: { chartType: string | null }) {
       </svg>
     );
   }
-  if (t.includes("scatter")) {
+  if (t.includes("scatter") || t.includes("bubble")) {
     return (
       <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
         <circle cx="6" cy="17" r="2" />
@@ -151,49 +212,59 @@ export default function Dashboard() {
       <TopNav onConnectData={openConnectFlow} />
 
       {/* ---- Hero ---- */}
-      <div className="max-w-5xl mx-auto px-6 pt-16 pb-14 text-center">
-        <div className="pill mx-auto mb-6 w-fit">
-          <span>✨</span> No-code, AI-driven end-to-end analytics
-        </div>
-        <h1 className="text-4xl sm:text-5xl md:text-6xl font-extrabold leading-tight tracking-tight">
-          Ask your data anything.
-          <br />
-          <span className="gradient-text">Get answers, insights and charts.</span>
-        </h1>
-        <p className="text-muted text-base sm:text-lg mt-6 max-w-2xl mx-auto leading-relaxed">
-          GD360 connects to your data, writes the queries, cleans and prepares it, picks the right
-          visualization, and explains what it means in plain English. No SQL. No Python. No code.
-        </p>
-        <div className="flex items-center justify-center gap-3 mt-8 flex-wrap">
-          <button className="btn-primary text-base px-6 py-3" onClick={startAnalyzing}>
-            Start analyzing &rarr;
-          </button>
-          <button className="btn-secondary text-base px-6 py-3" onClick={openConnectFlow}>
-            Open studio
-          </button>
-        </div>
-        <div className="flex items-center justify-center gap-6 mt-8 text-sm text-muted flex-wrap">
-          <span className="flex items-center gap-1.5">
-            <span className="text-accent">🛡</span> Read-only. Your data is never modified.
-          </span>
-          <span className="hidden sm:inline text-border">|</span>
-          <span className="flex items-center gap-1.5">
-            <span>🗄</span> CSV &middot; Excel &middot; JSON &middot; SQL &middot; NoSQL
-          </span>
-          <span className="hidden sm:inline text-border">|</span>
-          <span className="flex items-center gap-1.5">
-            <span>📈</span> {CHART_TYPES.length} chart types
-          </span>
+      <div className="relative overflow-hidden">
+        <div className="pointer-events-none absolute -top-24 -left-24 w-96 h-96 rounded-full bg-primary/20 blur-3xl" aria-hidden />
+        <div className="pointer-events-none absolute -top-10 -right-24 w-96 h-96 rounded-full bg-accent/15 blur-3xl" aria-hidden />
+
+        <div className="relative max-w-5xl mx-auto px-6 pt-16 pb-14 text-center">
+          <div className="pill mx-auto mb-6 w-fit">
+            <SparkIcon className="w-3.5 h-3.5 text-accent" /> AI-native analytics, verified every step
+          </div>
+          <h1 className="text-4xl sm:text-5xl md:text-6xl font-extrabold leading-tight tracking-tight">
+            Ask your data anything.
+            <br />
+            <span className="gradient-text">Get analyst-grade answers you can trust.</span>
+          </h1>
+          <p className="text-muted text-base sm:text-lg mt-6 max-w-2xl mx-auto leading-relaxed">
+            GD360 connects straight to your databases and files, cleans and prepares the data with a
+            plain-English explanation of every step, picks the right chart for what you asked, and writes
+            the insight from real computed numbers - never a guess. No SQL. No Python. No code.
+          </p>
+          <div className="flex items-center justify-center gap-3 mt-8 flex-wrap">
+            <button className="btn-primary text-base px-6 py-3" onClick={startAnalyzing}>
+              Start analyzing &rarr;
+            </button>
+            <button className="btn-secondary text-base px-6 py-3" onClick={openConnectFlow}>
+              Open studio
+            </button>
+          </div>
+          <div className="flex items-center justify-center gap-6 mt-8 text-sm text-muted flex-wrap">
+            <span className="flex items-center gap-1.5">
+              <span className="text-accent">🛡</span> Read-only. Your data is never modified.
+            </span>
+            <span className="hidden sm:inline text-border">|</span>
+            <span className="flex items-center gap-1.5">
+              <span className="text-accent">✓</span> Every answer independently verified
+            </span>
+            <span className="hidden sm:inline text-border">|</span>
+            <span className="flex items-center gap-1.5">
+              <span>🗄</span> Postgres &middot; MySQL &middot; MongoDB &middot; CSV &middot; Excel &middot; JSON
+            </span>
+            <span className="hidden sm:inline text-border">|</span>
+            <span className="flex items-center gap-1.5">
+              <span>📈</span> {CHART_TYPES.length} chart types
+            </span>
+          </div>
         </div>
       </div>
 
       <div className="max-w-6xl mx-auto px-6 pb-16">
         {/* ---- Feature cards ---- */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           {FEATURES.map((f) => (
             <div key={f.title} className="card p-6">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center text-lg mb-4">
-                ✨
+              <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center text-primary mb-4">
+                <f.Icon />
               </div>
               <div className="font-semibold mb-1.5">{f.title}</div>
               <div className="text-sm text-muted leading-relaxed">{f.body}</div>
@@ -204,7 +275,7 @@ export default function Dashboard() {
         {/* ---- Chart type chip strip ---- */}
         <div className="card p-6 mb-10 text-center">
           <div className="text-xs font-semibold tracking-wide text-muted mb-4">
-            {CHART_TYPES.length} WAYS TO SEE YOUR DATA
+            {CHART_TYPES.length}+ WAYS TO SEE YOUR DATA
           </div>
           <div className="flex flex-wrap justify-center gap-2.5">
             {CHART_TYPES.map((c) => (
