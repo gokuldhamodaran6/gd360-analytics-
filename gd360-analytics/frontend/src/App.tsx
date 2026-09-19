@@ -9,6 +9,7 @@ import Workspace from "./pages/Workspace";
 import DashboardView from "./pages/DashboardView";
 import AdminDashboard from "./pages/AdminDashboard";
 import Profile from "./pages/Profile";
+import HelpBigQuery from "./pages/HelpBigQuery";
 
 function Protected({ children }: { children: JSX.Element }) {
   const { user, loading } = useAuth();
@@ -38,6 +39,10 @@ export default function App() {
       <Route path="/dashboards/:dashboardId" element={<Protected><DashboardView /></Protected>} />
       <Route path="/admin" element={<Protected><AdminDashboard /></Protected>} />
       <Route path="/profile" element={<Protected><Profile /></Protected>} />
+      {/* Public and standalone (no <Protected> wrapper): opened in a new
+          browser tab from the BigQuery connect popout, so it needs to work
+          even in a fresh tab that may not carry an existing session yet. */}
+      <Route path="/help/connect-bigquery" element={<HelpBigQuery />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
