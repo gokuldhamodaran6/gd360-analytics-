@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { ConversationSummary } from "../api/client";
+import ConversationRow from "./ConversationRow";
 import {
   CloseIcon,
   ChevronRightIcon,
@@ -121,12 +122,17 @@ export default function StoredDataSection({
   loading = false,
   onOpenConversation,
   onAddNew,
+  onConversationRenamed,
 }: {
   datasources: CreatedDataSource[];
   conversations: ConversationSummary[];
   loading?: boolean;
   onOpenConversation: (c: ConversationSummary) => void;
   onAddNew?: () => void;
+  // Keeps a rename made here reflected instantly in whatever list handed
+  // this component its `conversations` prop (the homepage's own Recent
+  // conversations) - the same conversation, same title, everywhere.
+  onConversationRenamed?: (id: string, title: string) => void;
 }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
@@ -433,15 +439,14 @@ export default function StoredDataSection({
               ) : (
                 <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
                   {selectedConversations.map((c) => (
-                    <button
+                    <ConversationRow
                       key={c.id}
-                      type="button"
-                      onClick={() => openExistingConversation(c)}
-                      className="w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-border text-left hover:bg-surface2 transition"
-                    >
-                      <span className="text-sm truncate">{c.title}</span>
-                      <span className="text-[11px] text-muted shrink-0">{timeAgo(c.updated_at)}</span>
-                    </button>
+                      conversation={c}
+                      variant="row"
+                      trailing={timeAgo(c.updated_at)}
+                      onOpen={() => openExistingConversation(c)}
+                      onRenamed={(id, title) => onConversationRenamed?.(id, title)}
+                    />
                   ))}
                 </div>
               )}
