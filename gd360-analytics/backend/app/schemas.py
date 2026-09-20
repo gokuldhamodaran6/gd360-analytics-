@@ -156,6 +156,20 @@ class RenameVersionRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
 
 
+# ---------- Rename a data source (the file/connection name shown as
+# "Analyzing: <name>" at the top of the Workspace page, and everywhere else
+# that name is displayed) ----------
+class RenameDataSourceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+# ---------- Rename a conversation (its title, wherever it's listed - the
+# homepage's Recent conversations, a data source's own conversation list,
+# and the Workspace page's own Recent conversations panel) ----------
+class RenameConversationRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=80)
+
+
 # ---------- Dashboards ----------
 class DashboardCreate(BaseModel):
     name: str
