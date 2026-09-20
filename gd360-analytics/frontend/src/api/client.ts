@@ -160,6 +160,9 @@ export const datasourceApi = {
 
   listVersions: (id: string) => api.get<DatasetVersion[]>(`/datasources/${id}/versions`).then((r) => r.data),
 
+  rename: (id: string, name: string) =>
+    api.patch<{ id: string; name: string }>(`/datasources/${id}`, { name }).then((r) => r.data),
+
   renameVersion: (id: string, versionId: string, name: string) =>
     api.patch<{ id: string; name: string }>(`/datasources/${id}/versions/${versionId}`, { name }).then((r) => r.data),
 
@@ -219,6 +222,8 @@ export type ConversationDetail = {
 export const conversationApi = {
   list: () => api.get<ConversationSummary[]>("/conversations").then((r) => r.data),
   getMessages: (id: string) => api.get<ConversationDetail>(`/conversations/${id}/messages`).then((r) => r.data),
+  rename: (id: string, title: string) =>
+    api.patch<{ id: string; title: string }>(`/conversations/${id}`, { title }).then((r) => r.data),
 };
 
 // The "Double-check this" action: re-checks a previously computed answer
