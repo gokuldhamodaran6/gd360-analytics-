@@ -33,6 +33,20 @@ def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8")
 
 
+def purpose_label(prompt: str | None, fallback: str = "Prepared data") -> str:
+    """A short, readable label derived from the prompt that produced a
+    saved table - the same idea as the chart tabs' own short_chart_label on
+    the frontend (see Workspace.tsx), so a table tab reads as what it
+    actually is ("Remove duplicate orders", "Group sales by region") instead
+    of a bare sequence number like the old "Version 3". The person can
+    always overwrite this with their own name via the rename icon on the
+    tab - this only decides the starting name."""
+    text = " ".join((prompt or "").split())
+    if not text:
+        return fallback
+    return text if len(text) <= 34 else f"{text[:34].rstrip()}…"
+
+
 def load_dataframe(ds: models.DataSource, table: str | None = None, version: str = "auto") -> pd.DataFrame:
     use_cleaned = version == "cleaned" or (version == "auto" and ds.cleaned_data is not None)
     if version == "original":
@@ -128,13 +142,15 @@ def ensure_legacy_migrated(db: Session, ds: models.DataSource) -> None:
         db.commit()
         return
 
+    prior_log = ds.cleaning_log or []
+    label = purpose_label(prior_log[-1].get("prompt") if prior_log else None)
     version = models.DatasetVersion(
         datasource_id=ds.id,
-        name="Version 1",
+        name=label,
         parent_version_id=None,
         parent_version_ids=None,
         data=ds.cleaned_data,
-        cleaning_log=ds.cleaning_log or [],
+        cleaning_log=prior_log,
         position=1,
         created_at=ds.cleaned_updated_at or datetime.utcnow(),
     )
