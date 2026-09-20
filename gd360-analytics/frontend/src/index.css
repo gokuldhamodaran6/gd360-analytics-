@@ -21,6 +21,16 @@
   --glow-1: rgba(108, 92, 231, 0.18);
   --glow-2: rgba(0, 209, 178, 0.1);
   --card-alpha: 0.75;
+  /* Tells the browser this page's own UI (including the native parts of
+     an <input>/<textarea> it renders, like the text caret and - on some
+     browsers - autofill) is dark, so it stops silently re-theming those
+     controls to match the OS's own dark/light preference. Without this,
+     a person whose OS is set to dark mode but who picks GD360's own light
+     theme could get a form control the browser insists on rendering with
+     light-on-light (or otherwise mismatched) native styling underneath
+     our own CSS - typed text that is technically "there" but not
+     visible. This is flipped explicitly below for the light theme. */
+  color-scheme: dark;
 }
 
 :root[data-theme="light"] {
@@ -35,6 +45,7 @@
   --glow-1: rgba(91, 74, 219, 0.1);
   --glow-2: rgba(0, 141, 121, 0.08);
   --card-alpha: 0.92;
+  color-scheme: light;
 }
 
 html, body, #root {
@@ -95,6 +106,23 @@ body {
   outline: none;
 }
 .input:focus { border-color: #6C5CE7; box-shadow: 0 0 0 3px rgba(108, 92, 231, 0.15); }
+
+/* Chrome/Edge autofill (an email or password box the browser recognizes)
+   paints its own background and text color underneath ours, ignoring
+   `color` above entirely - a long-standing browser quirk, not something
+   `.input`'s own rules can override on their own. Forcing both back to
+   this theme's real colors, with a absurdly slow background-color
+   transition (the standard trick, since -webkit-autofill offers no
+   direct "background" property to set), keeps autofilled text exactly as
+   readable as anything typed by hand, in both themes. */
+.input:-webkit-autofill,
+.input:-webkit-autofill:hover,
+.input:-webkit-autofill:focus {
+  -webkit-text-fill-color: rgb(var(--color-text));
+  -webkit-box-shadow: 0 0 0px 1000px rgb(var(--color-base)) inset;
+  box-shadow: 0 0 0px 1000px rgb(var(--color-base)) inset;
+  transition: background-color 5000s ease-in-out 0s;
+}
 
 .gradient-text {
   background: linear-gradient(135deg, #8B7CFF, #00D1B2);
