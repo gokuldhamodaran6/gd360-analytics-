@@ -4,6 +4,7 @@ import { api, conversationApi, ConversationSummary } from "../api/client";
 import TopNav from "../components/TopNav";
 import DataSourceForm from "../components/DataSourceForm";
 import StoredDataSection from "../components/StoredDataSection";
+import ConversationRow from "../components/ConversationRow";
 
 // Widened to include schema_cache (present on every real /datasources
 // response, since the backend's DataSourceOut always returns it) so it can
@@ -226,6 +227,13 @@ export default function Dashboard() {
     navigate(`/workspace/${c.datasource_id}?conversation=${c.id}`);
   };
 
+  // Keeps a rename made here (or, via the exact same component, inside a
+  // data source's own popup or the Workspace page) reflected instantly in
+  // this list too, without a full refetch.
+  const renameConversation = (id: string, title: string) => {
+    setConversations((cs) => cs.map((c) => (c.id === id ? { ...c, title } : c)));
+  };
+
   // There is no dataset grid to click into any more, so once a data source
   // is added and the person confirms it in DataSourceForm's "Connected"
   // panel, jump straight into its workspace the same way clicking a card
@@ -364,24 +372,15 @@ export default function Dashboard() {
             {conversations.length > 0 && (
               <div className="space-y-3 pr-1 overflow-y-auto flex-1 min-h-0">
                 {conversations.map((c) => (
-                  <div
+                  <ConversationRow
                     key={c.id}
-                    className="card p-4 hover:shadow-glow transition cursor-pointer"
-                    onClick={() => openConversation(c)}
-                  >
-                    <div className="flex items-start gap-3">
-                      <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-primary/25 to-accent/25 flex items-center justify-center text-primary shrink-0">
-                        <ChartTypeIcon chartType={c.last_chart_type} />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="font-medium text-sm truncate">{c.title}</div>
-                        <div className="text-xs text-muted mt-0.5 truncate">
-                          {c.datasource_name || "Removed data source"} &middot; {timeAgo(c.updated_at)}
-                        </div>
-                      </div>
-                      <div className="text-xs text-muted shrink-0">{c.message_count}</div>
-                    </div>
-                  </div>
+                    conversation={c}
+                    icon={<ChartTypeIcon chartType={c.last_chart_type} />}
+                    subtitle={`${c.datasource_name || "Removed data source"} · ${timeAgo(c.updated_at)}`}
+                    trailing={c.message_count}
+                    onOpen={() => openConversation(c)}
+                    onRenamed={renameConversation}
+                  />
                 ))}
               </div>
             )}
@@ -399,6 +398,7 @@ export default function Dashboard() {
             loading={loading}
             onOpenConversation={openConversation}
             onAddNew={openConnectFlow}
+            onConversationRenamed={renameConversation}
           />
         </div>
       </div>
