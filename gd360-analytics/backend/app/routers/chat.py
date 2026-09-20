@@ -27,6 +27,7 @@ from ..schemas_extra import ChatRequestFull, VerifyRequest
 from ..services import ai_engine
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, dataframe_to_csv_bytes, ensure_legacy_migrated, NeedsTableSelection,
+    purpose_label,
 )
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -370,7 +371,7 @@ def _save_cleaning_result(
     parent_ids = [v.id for v in source_versions] or None
     version = models.DatasetVersion(
         datasource_id=ds.id,
-        name=f"Version {max_position + 1}",
+        name=purpose_label(prompt),
         parent_version_id=parent_ids[0] if parent_ids else None,
         parent_version_ids=parent_ids,
         data=dataframe_to_csv_bytes(cleaned_df),
