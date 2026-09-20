@@ -10,7 +10,7 @@ List and resume past chat conversations. Powers two things:
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from .. import models
+from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_user
 
@@ -61,6 +61,30 @@ def list_conversations(db: Session = Depends(get_db), user: models.User = Depend
 
     out.sort(key=lambda row: row["updated_at"], reverse=True)
     return out
+
+
+@router.patch("/{conversation_id}")
+def rename_conversation(
+    conversation_id: str,
+    payload: schemas.RenameConversationRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Lets a person give a conversation their own name (rather than living
+    forever with the auto-generated title from its first question) - shown
+    everywhere a conversation is listed: the homepage's Recent
+    conversations, a data source's own conversation list, and the
+    Workspace page's own Recent conversations panel. All three read the
+    same title from here, so a rename made in any one of them is instantly
+    the title everywhere else too, the next time each is loaded."""
+    conv = db.query(models.Conversation).filter(
+        models.Conversation.id == conversation_id, models.Conversation.owner_id == user.id
+    ).first()
+    if not conv:
+        raise HTTPException(404, "Conversation not found.")
+    conv.title = payload.title.strip()[:80] or conv.title
+    db.commit()
+    return {"id": conv.id, "title": conv.title}
 
 
 @router.get("/{conversation_id}/messages")
