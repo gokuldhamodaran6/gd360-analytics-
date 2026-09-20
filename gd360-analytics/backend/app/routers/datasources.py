@@ -238,6 +238,27 @@ async def upload_file(
     return ds
 
 
+@router.patch("/{datasource_id}")
+def rename_datasource(
+    datasource_id: str,
+    payload: schemas.RenameDataSourceRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Renames a connected data source - the name shown as "Analyzing:
+    <name>" at the top of its Workspace page, on its card on the homepage,
+    and everywhere else this data source is listed. Nothing about the
+    underlying connection, credentials, or saved tables changes - this is
+    a display name only, same shape of response as the saved-table rename
+    right above (just {id, name}) rather than the full connection record."""
+    ds = _get_owned_datasource(db, user, datasource_id)
+    name = payload.name.strip()[:120]
+    if name:
+        ds.name = name
+    db.commit()
+    return {"id": ds.id, "name": ds.name}
+
+
 @router.get("/{datasource_id}/schema")
 def get_schema(datasource_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     ds = _get_owned_datasource(db, user, datasource_id)
