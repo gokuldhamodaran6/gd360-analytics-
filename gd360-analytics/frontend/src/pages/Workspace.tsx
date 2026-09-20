@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
-import { api, chatApi, conversationApi, datasourceApi, DatasetVersion } from "../api/client";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { api, chatApi, conversationApi, datasourceApi, ConversationSummary, DatasetVersion } from "../api/client";
 import TopNav from "../components/TopNav";
 import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID } from "../components/ChatPanel";
 import GokuChat from "../components/GokuChat";
 import ChartCanvas from "../components/ChartCanvas";
-import SuggestionsPanel from "../components/SuggestionsPanel";
+import ConversationRow from "../components/ConversationRow";
 import ChartStylePanel from "../components/ChartStylePanel";
 import DataTable from "../components/DataTable";
 import StepFlow, { WorkflowStep } from "../components/StepFlow";
@@ -46,6 +46,7 @@ const shortChartLabel = (text: string | null | undefined) => {
 
 export default function Workspace() {
   const { datasourceId } = useParams();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const resumeConversationId = searchParams.get("conversation");
 
@@ -61,12 +62,36 @@ export default function Workspace() {
   const [renameChartDraft, setRenameChartDraft] = useState("");
 
   const [lastInsight, setLastInsight] = useState<string | null>(null);
-  const [suggestedCharts, setSuggestedCharts] = useState<any[] | null>(null);
-  const [suggestedStats, setSuggestedStats] = useState<any[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [dsName, setDsName] = useState("");
   const [saveMsg, setSaveMsg] = useState("");
+
+  // Inline rename of the data source itself - the "Analyzing: <name>"
+  // header, right next to the pencil icon. Mirrors the same
+  // rename-icon/draft-input pattern already used for chart tabs and saved
+  // table tabs below, so it feels like the same app rather than a
+  // bolted-on feature.
+  const [renamingDs, setRenamingDs] = useState(false);
+  const [dsNameDraft, setDsNameDraft] = useState("");
+  const [savingDsName, setSavingDsName] = useState(false);
+  const [dsRenameFailed, setDsRenameFailed] = useState(false);
+
+  // This data source's own recent conversations - replaces the old
+  // "Ideas" panel, which kept repeating the same generic suggestions
+  // regardless of what was actually being analyzed. Scoped to just this
+  // data source (not every conversation the person has ever had) so it is
+  // always relevant to what is on screen right now.
+  const [recentConversations, setRecentConversations] = useState<ConversationSummary[]>([]);
+
+  // Which saved tables were actually built during THIS visit to the
+  // workspace, as opposed to ones that already existed from an earlier
+  // session. A brand-new "Start new analysis" should not look like it is
+  // already mid-way through old work just because earlier tables still
+  // exist for this data source - they are not deleted, just not the first
+  // thing shown; see `visibleVersions` and the reset effect below.
+  const [sessionVersionIds, setSessionVersionIds] = useState<string[]>([]);
+  const [olderVersionsRevealed, setOlderVersionsRevealed] = useState(!!resumeConversationId);
 
   const [centerTab, setCenterTab] = useState<"data" | "chart">("data");
   const [dataRefreshKey, setDataRefreshKey] = useState(0);
@@ -185,6 +210,90 @@ export default function Workspace() {
     });
   }, [datasourceId]);
 
+  const startRenameDs = () => {
+    setDsNameDraft(dsName);
+    setDsRenameFailed(false);
+    setRenamingDs(true);
+  };
+
+  const commitRenameDs = async () => {
+    const name = dsNameDraft.trim();
+    setRenamingDs(false);
+    if (!datasourceId || !name || name === dsName) return;
+    setSavingDsName(true);
+    setDsRenameFailed(false);
+    try {
+      const updated = await datasourceApi.rename(datasourceId, name);
+      setDsName(updated.name);
+    } catch {
+      setDsRenameFailed(true);
+    } finally {
+      setSavingDsName(false);
+    }
+  };
+
+  // A new data source, or switching which conversation (if any) is being
+  // resumed, is a genuinely new session - every bit of state carried over
+  // from whatever was on screen a moment ago needs to start clean, exactly
+  // once for that new (datasourceId, resumeConversationId) pair. This
+  // covers a real full-page navigation here (Workspace unmounts and
+  // remounts, which resets everything on its own anyway), and also an
+  // in-place switch that keeps this same page mounted - clicking a
+  // different "Recent conversation" below, or "+ New" next to it, both of
+  // which change only the `conversation` query param without ever leaving
+  // this route. Without this, that second case would leave old turns,
+  // chart tabs and the saved-table tab selection on screen from whichever
+  // conversation was open before.
+  const sessionKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const key = `${datasourceId || ""}|${resumeConversationId || ""}`;
+    if (sessionKeyRef.current === key) return;
+    sessionKeyRef.current = key;
+    setTurns([]);
+    setConversationId(null);
+    setCharts([]);
+    setActiveChartId(null);
+    setRenamingChartId(null);
+    setLastInsight(null);
+    setCenterTab("data");
+    setError("");
+    setSaveMsg("");
+    setSessionVersionIds([]);
+    setOlderVersionsRevealed(!!resumeConversationId);
+    setGuidedMode(!resumeConversationId);
+    // Forces the versions-loading effect below to re-pick a starting tab
+    // for this "new" session instead of leaving whatever was active before.
+    versionsInitRef.current = null;
+  }, [datasourceId, resumeConversationId]);
+
+  // This data source's own recent conversations, newest first - refetched
+  // whenever the data source changes, and again once a brand new
+  // conversation is actually created (conversationId flips from null to a
+  // real id) so it shows up here right away rather than only after a
+  // manual refresh.
+  useEffect(() => {
+    if (!datasourceId) return;
+    conversationApi
+      .list()
+      .then((all) => setRecentConversations(all.filter((c) => c.datasource_id === datasourceId)))
+      .catch(() => {});
+  }, [datasourceId, conversationId]);
+
+  const renameRecentConversation = (id: string, title: string) => {
+    setRecentConversations((cs) => cs.map((c) => (c.id === id ? { ...c, title } : c)));
+  };
+
+  // What the saved-table tab strip (and the chat's WORKING ON picker)
+  // actually shows: every table on a resumed conversation (its full real
+  // history), but only the ones built during this visit on a fresh start -
+  // "Show N earlier tables" below reveals the rest without hiding anything
+  // permanently or deleting it.
+  const visibleVersions = useMemo(
+    () => (olderVersionsRevealed ? versions : versions.filter((v) => sessionVersionIds.includes(v.id))),
+    [versions, olderVersionsRevealed, sessionVersionIds]
+  );
+  const hiddenVersionsCount = versions.length - visibleVersions.length;
+
   // Loads the list of saved tables for this data source. The very first
   // time this runs for a given data source, it also picks a starting tab.
   // Resuming one specific past conversation from Recent conversations still
@@ -271,11 +380,6 @@ export default function Workspace() {
 
         const lastWithInsight = [...data.messages].reverse().find((m) => m.insight);
         if (lastWithInsight?.insight) setLastInsight(lastWithInsight.insight);
-        const lastWithSuggestions = [...data.messages].reverse().find((m) => m.suggestions);
-        if (lastWithSuggestions?.suggestions) {
-          setSuggestedCharts(lastWithSuggestions.suggestions.charts || null);
-          setSuggestedStats(lastWithSuggestions.suggestions.stats || null);
-        }
       })
       .catch(() => setError("Could not load that conversation. Starting a new one instead."))
       .finally(() => setResuming(false));
@@ -347,6 +451,7 @@ export default function Workspace() {
         if (data.new_version_id) {
           setActiveVersionId(data.new_version_id);
           setSourceIds([data.new_version_id]);
+          setSessionVersionIds((ids) => [...ids, data.new_version_id]);
         }
         setCenterTab("data");
       }
@@ -360,6 +465,7 @@ export default function Workspace() {
         // next; that stays whatever it already was.
         if (data.action === "analyze" && data.new_version_id) {
           setDataRefreshKey((k) => k + 1);
+          setSessionVersionIds((ids) => [...ids, data.new_version_id]);
         }
         if (chartOverride && activeChartId) {
           // A chart-type/style redraw from the Style panel re-sends the
@@ -394,8 +500,6 @@ export default function Workspace() {
       }
 
       if (data.insight) setLastInsight(data.insight);
-      if (data.suggested_charts) setSuggestedCharts(data.suggested_charts);
-      if (data.suggested_stats) setSuggestedStats(data.suggested_stats);
       return true;
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Something went wrong. Please try again.");
@@ -535,6 +639,7 @@ export default function Workspace() {
           setDataRefreshKey((k) => k + 1);
           setActiveVersionId(data.new_version_id);
           setSourceIds([data.new_version_id]);
+          setSessionVersionIds((ids) => [...ids, data.new_version_id]);
         }
       }
     } catch (err: any) {
@@ -571,14 +676,42 @@ export default function Workspace() {
     // 3-pane desktop layout below. Without this, the 3 stacked panels'
     // combined minimum heights on mobile exceeded what a fixed-height,
     // overflow-hidden page had room for, and the bottom of the layout
-    // (typically the Ideas panel) was simply clipped off-screen with no way
-    // to scroll down to it.
+    // (typically the Recent conversations panel) was simply clipped
+    // off-screen with no way to scroll down to it.
     <div className="min-h-screen lg:h-screen flex flex-col">
       <TopNav />
       <div className="px-4 sm:px-6 py-3 border-b border-border flex flex-wrap items-center justify-between gap-2">
-        <div className="text-sm text-muted">
-          Analyzing: <span className="text-text font-medium">{dsName}</span>
-          {resuming && <span className="ml-2 text-xs text-accent">Loading conversation...</span>}
+        <div className="text-sm text-muted flex items-center gap-1.5 min-w-0">
+          <span className="shrink-0">Analyzing:</span>
+          {renamingDs ? (
+            <input
+              autoFocus
+              className="input py-1 text-sm font-medium max-w-xs"
+              value={dsNameDraft}
+              onChange={(e) => setDsNameDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitRenameDs();
+                if (e.key === "Escape") setRenamingDs(false);
+              }}
+              onBlur={commitRenameDs}
+              maxLength={120}
+            />
+          ) : (
+            <span className="flex items-center gap-1 min-w-0">
+              <span className="text-text font-medium truncate">{dsName}</span>
+              <button
+                type="button"
+                className="opacity-60 hover:opacity-100 transition shrink-0"
+                title="Rename this data source"
+                onClick={startRenameDs}
+              >
+                &#9998;
+              </button>
+            </span>
+          )}
+          {savingDsName && <span className="text-xs text-accent shrink-0">Saving&hellip;</span>}
+          {dsRenameFailed && <span className="text-xs text-red-400 shrink-0">Could not rename</span>}
+          {resuming && <span className="ml-2 text-xs text-accent shrink-0">Loading conversation...</span>}
         </div>
         {chartSpec && centerTab === "chart" && (
           <div className="flex items-center gap-3">
@@ -616,7 +749,7 @@ export default function Workspace() {
             onCustomizeTransform={customizeTransform}
             onContinueAnalysis={continueAnalysis}
             customizeSeed={customizeSeed}
-            versions={versions}
+            versions={visibleVersions}
             sourceIds={sourceIds}
             onSourceIdsChange={setSourceIds}
             onVerify={verifyTurn}
@@ -641,19 +774,29 @@ export default function Workspace() {
                 Chart
               </button>
             </div>
-            <button
-              className="text-sm px-4 py-2 rounded-lg font-medium btn-secondary flex items-center gap-1.5"
-              onClick={() => setStyleOpen(true)}
-            >
-              <span aria-hidden>🎨</span> Style
-            </button>
+            <div className="flex items-center gap-3 shrink-0">
+              {centerTab === "data" && hiddenVersionsCount > 0 && (
+                <button
+                  className="text-xs text-accent underline shrink-0"
+                  onClick={() => setOlderVersionsRevealed(true)}
+                >
+                  Show {hiddenVersionsCount} earlier table{hiddenVersionsCount === 1 ? "" : "s"}
+                </button>
+              )}
+              <button
+                className="text-sm px-4 py-2 rounded-lg font-medium btn-secondary flex items-center gap-1.5"
+                onClick={() => setStyleOpen(true)}
+              >
+                <span aria-hidden>🎨</span> Style
+              </button>
+            </div>
           </div>
           <div className="flex-1 min-h-[350px] overflow-visible lg:overflow-hidden">
             {centerTab === "data" && datasourceId ? (
               <DataTable
                 datasourceId={datasourceId}
                 refreshKey={dataRefreshKey}
-                versions={versions}
+                versions={visibleVersions}
                 activeVersionId={activeVersionId}
                 onActiveVersionChange={(id) => {
                   // Clicking a tab points the next chat prompt at that one
@@ -723,9 +866,37 @@ export default function Workspace() {
           </div>
         </div>
         <div className="min-h-[200px] flex flex-col gap-3 overflow-visible lg:overflow-hidden">
-          <div className="text-sm font-semibold px-1 shrink-0">Ideas</div>
-          <div className="flex-1 overflow-visible lg:overflow-y-auto">
-            <SuggestionsPanel charts={suggestedCharts} stats={suggestedStats} onPick={(p) => runPrompt(p)} />
+          <div className="flex items-center justify-between gap-2 px-1 shrink-0">
+            <div className="text-sm font-semibold">Recent conversations</div>
+            {(resumeConversationId || turns.length > 0) && datasourceId && (
+              <button
+                type="button"
+                className="text-xs text-accent underline"
+                onClick={() => navigate(`/workspace/${datasourceId}`)}
+              >
+                + New
+              </button>
+            )}
+          </div>
+          <div className="flex-1 overflow-visible lg:overflow-y-auto space-y-2">
+            {recentConversations.length === 0 ? (
+              <div className="card p-4 text-xs text-muted leading-relaxed">
+                Your conversations about this data source will show up here once you ask GD360 a question.
+              </div>
+            ) : (
+              recentConversations.map((c) => (
+                <ConversationRow
+                  key={c.id}
+                  conversation={c}
+                  variant="row"
+                  trailing={c.id === resumeConversationId ? "Open" : `${c.message_count}`}
+                  onOpen={() => {
+                    if (c.id !== resumeConversationId) navigate(`/workspace/${datasourceId}?conversation=${c.id}`);
+                  }}
+                  onRenamed={renameRecentConversation}
+                />
+              ))
+            )}
           </div>
         </div>
       </div>
