@@ -68,12 +68,19 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
 
     # The person picks which saved table(s) - or the original data - this
     # prompt runs against, never inferred silently: "original" always means
-    # the untouched data, anything else is a DatasetVersion.id. Picking more
-    # than one lets a single prompt compare or combine several tables at
+    # this datasource's untouched data, a bare id is a DatasetVersion.id
+    # (any datasource the person owns, not just this one - see
+    # _load_selected_tables), "sheet:<name>" is one specific sheet of THIS
+    # datasource when it is a multi-sheet Excel workbook, and
+    # "ds:<other_datasource_id>:original" / "ds:<other_datasource_id>:
+    # sheet:<name>" pulls in another, separately-connected data source's
+    # own original data or a specific sheet of it - the "+ Add more data"
+    # picker in the chat panel. Picking more than one lets a single prompt
+    # compare or combine several tables (from one datasource or several) at
     # once; each entry is only loaded once even if listed twice.
     requested_ids = payload.source_version_ids or ["original"]
     try:
-        tables, source_versions, original_df = _load_selected_tables(db, ds, requested_ids, table=payload.table)
+        tables, source_versions, original_df = _load_selected_tables(db, user, ds, requested_ids, table=payload.table)
     except NeedsTableSelection as e:
         available_list = ", ".join(e.available)
         reply = f"This datasource has multiple tables/collections: {available_list}. Which one would you like to analyze?"
@@ -166,22 +173,37 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
 
 
 def _load_selected_tables(
-    db: Session, ds: models.DataSource, requested_ids: list[str], table: str | None = None
+    db: Session, user: models.User, ds: models.DataSource, requested_ids: list[str], table: str | None = None
 ) -> tuple[dict[str, object], list[models.DatasetVersion], object]:
-    """Loads every table a WORKING ON selection points at - "original"
-    always means the untouched original data, anything else is a
-    DatasetVersion.id - shared by the live /chat endpoint and by
-    /chat/verify (which re-checks a prior answer against the same kind of
-    selection it originally ran against). Raises NeedsTableSelection when
-    the datasource has more than one table/collection and none was
-    specified, or HTTPException for any other load failure - the caller
+    """Loads every table a WORKING ON selection points at, shared by the
+    live /chat endpoint, /chat/verify (which re-checks a prior answer
+    against the same kind of selection it originally ran against), and
+    /goku/chat. Each entry in `requested_ids` is one of:
+      - "original": this datasource's own untouched original data (its
+        first/only sheet, for Excel).
+      - "sheet:<name>": one specific sheet of THIS datasource, when it is a
+        multi-sheet Excel workbook (see data_loader._is_multi_sheet_schema).
+      - a bare DatasetVersion.id: a saved table - globally unique, so this
+        can be a table saved under ANY data source the person owns, not
+        only this one; picking a table someone built while working on a
+        different, separately-connected data source is exactly what lets
+        one prompt combine two data sources, since a saved table's
+        ownership is checked directly rather than assumed from which
+        datasource happened to be open when it was picked.
+      - "ds:<other_datasource_id>:original" / "ds:<other_datasource_id>:
+        sheet:<name>": another, separately-connected data source's own
+        original data (or one sheet of it) - the "+ Add more data" picker.
+    Raises NeedsTableSelection when a table/sheet is ambiguous and none was
+    specified, or HTTPException for any other load failure (including
+    trying to use a table/datasource this user does not own) - the caller
     decides how to turn NeedsTableSelection into a response, since /chat
     and /chat/verify handle it differently.
 
-    Also returns the original, untouched dataframe whenever it was part of
-    this selection (None otherwise - loading it when it was not asked for
-    is the caller job, see the "original data as a merge fallback" note in
-    both endpoints below and ai_engine._schema_with_fallback)."""
+    Also returns the original, untouched dataframe for THIS datasource
+    whenever it was part of this selection (None otherwise - loading it
+    when it was not asked for is the caller's job, see the "original data
+    as a merge fallback" note in both endpoints below and
+    ai_engine._schema_with_fallback)."""
     ordered_ids: list[str] = []
     for raw_id in requested_ids:
         key = raw_id or "original"
@@ -192,6 +214,9 @@ def _load_selected_tables(
     used_names: set[str] = set()
     source_versions: list[models.DatasetVersion] = []
     original_df = None
+    # Another datasource this same selection already pulled in - fetched at
+    # most once each even if more than one of its sheets/tables is picked.
+    other_ds_cache: dict[str, models.DataSource] = {}
 
     def _unique_key(name: str) -> str:
         key, n = name, 2
@@ -200,6 +225,17 @@ def _load_selected_tables(
             n += 1
         used_names.add(key)
         return key
+
+    def _get_other_ds(other_id: str) -> models.DataSource:
+        if other_id in other_ds_cache:
+            return other_ds_cache[other_id]
+        other_ds = db.query(models.DataSource).filter(
+            models.DataSource.id == other_id, models.DataSource.owner_id == user.id
+        ).first()
+        if not other_ds:
+            raise HTTPException(404, "One of the added data sources no longer exists or is not yours.")
+        other_ds_cache[other_id] = other_ds
+        return other_ds
 
     for source_id in ordered_ids:
         if source_id == "original":
@@ -212,16 +248,63 @@ def _load_selected_tables(
             tables[_unique_key("Original data")] = original_df
             continue
 
-        version = db.query(models.DatasetVersion).filter(
-            models.DatasetVersion.id == source_id, models.DatasetVersion.datasource_id == ds.id,
-        ).first()
+        if source_id.startswith("sheet:"):
+            sheet_name = source_id[len("sheet:"):]
+            try:
+                sheet_df = load_dataframe(ds, table=sheet_name, version="original")
+            except Exception as e:
+                raise HTTPException(400, f"Could not load data: {e}")
+            tables[_unique_key(sheet_name)] = sheet_df
+            continue
+
+        if source_id.startswith("ds:"):
+            # "ds:<other_datasource_id>:original" or
+            # "ds:<other_datasource_id>:sheet:<name>" - another, separately
+            # connected data source added via "+ Add more data".
+            rest = source_id[len("ds:"):]
+            other_id, _, selector = rest.partition(":")
+            other_ds = _get_other_ds(other_id)
+            other_sheet = selector[len("sheet:"):] if selector.startswith("sheet:") else None
+            try:
+                other_df = load_dataframe(other_ds, table=other_sheet, version="original")
+            except Exception as e:
+                raise HTTPException(400, f"Could not load data from {other_ds.name}: {e}")
+            label = f"{other_ds.name} — {other_sheet}" if other_sheet else f"{other_ds.name} (original)"
+            tables[_unique_key(label)] = other_df
+            continue
+
+        # A bare id is a saved table (DatasetVersion) - looked up globally
+        # (not scoped to `ds`) and ownership-checked through a join, since
+        # picking a table saved under a DIFFERENT, separately-connected
+        # data source than the one this endpoint was opened for is exactly
+        # what "+ Add more data" lets someone do.
+        version = (
+            db.query(models.DatasetVersion)
+            .join(models.DataSource, models.DatasetVersion.datasource_id == models.DataSource.id)
+            .filter(models.DatasetVersion.id == source_id, models.DataSource.owner_id == user.id)
+            .first()
+        )
         if not version:
             raise HTTPException(404, "One of the selected tables no longer exists. Please update your selection and try again.")
+        label = version.name
+        if version.datasource_id != ds.id:
+            other_ds = _get_other_ds(version.datasource_id)
+            label = f"{other_ds.name} — {version.name}"
         try:
-            tables[_unique_key(version.name)] = load_version_dataframe(version)
+            tables[_unique_key(label)] = load_version_dataframe(version)
         except Exception as e:
             raise HTTPException(400, f"Could not load data: {e}")
-        source_versions.append(version)
+        # `source_versions` becomes the `parent_version_ids`/cleaning-log
+        # lineage of whatever new table this prompt might save (see
+        # _save_cleaning_result) - that lineage only makes sense within
+        # THIS datasource's own version history (the delete-guard in
+        # routers/datasources.py that checks "does anything depend on this
+        # table?" only ever looks within one datasource's versions), so a
+        # table added in from a different, separately-connected data source
+        # contributes its DATA to this analysis without being recorded as a
+        # parent of any new table saved here.
+        if version.datasource_id == ds.id:
+            source_versions.append(version)
 
     return tables, source_versions, original_df
 
@@ -271,7 +354,7 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
 
     requested_ids = payload.source_version_ids or ["original"]
     try:
-        tables, source_versions, original_df = _load_selected_tables(db, ds, requested_ids, table=None)
+        tables, source_versions, original_df = _load_selected_tables(db, user, ds, requested_ids, table=None)
     except NeedsTableSelection as e:
         available_list = ", ".join(e.available)
         raise HTTPException(400, f"This datasource has multiple tables/collections ({available_list}); please pick one before verifying.")
