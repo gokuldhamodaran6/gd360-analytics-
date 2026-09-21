@@ -125,6 +125,7 @@ const CHART_CATALOG: { category: string; types: ChartTypeDef[] }[] = [
       { id: "horizontal_bar", label: "Horizontal bar" },
       { id: "grouped_bar", label: "Grouped bar" },
       { id: "stacked_bar", label: "Stacked bar" },
+      { id: "faceted_bar", label: "Faceted bar (small multiples)" },
       { id: "radar", label: "Radar" },
       { id: "polar_bar", label: "Polar bar" },
     ],
@@ -366,8 +367,9 @@ export default function ChartStylePanel({
               ))}
             </div>
             <p className="text-[11px] text-muted leading-relaxed">
-              A few of these (sankey, candlestick, gauge, choropleth, 3D scatter and similar) only work when the
-              underlying data has the right shape for them - GD360 will say so and try again if it does not fit.
+              A few of these (sankey, candlestick, gauge, choropleth, faceted bar, 3D scatter and similar) only
+              work when the underlying data has the right shape for them - GD360 will say so and try again if
+              it does not fit.
             </p>
           </div>
         )}
