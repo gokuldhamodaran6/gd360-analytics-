@@ -114,6 +114,10 @@ class Conversation(Base):
     datasource_id = Column(String, ForeignKey("datasources.id"), nullable=True)
     title = Column(String, default="New analysis")
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Pinned conversations sort to the top of every "Recent conversations"
+    # list (the homepage, a data source's own popup, and the Workspace
+    # page's panel all read this same column) - see routers/conversations.py.
+    pinned = Column(Boolean, default=False)
 
     owner = relationship("User", back_populates="conversations")
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
