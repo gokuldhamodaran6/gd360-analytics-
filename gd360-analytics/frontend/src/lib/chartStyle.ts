@@ -20,7 +20,6 @@
 
 export type PaletteId = "original" | "aurora" | "sunset" | "forest" | "mono" | "vibrant" | "single" | "custom";
 export type FontSize = "small" | "medium" | "large";
-export type LegendPosition = "top" | "bottom";
 
 export type ChartStyle = {
   paletteId: PaletteId;
@@ -42,12 +41,11 @@ export type ChartStyle = {
   yAxisLabel: string;
   seriesNames: string[];
   showGrid: boolean;
+  // The legend, when on, always docks in its own reserved strip to the
+  // right of the plot - never above or below it - so it can never land on
+  // top of the title or the bars. See the "Legend" section of
+  // applyChartStyle for why a top/bottom band used to overlap the title.
   showLegend: boolean;
-  // Where the legend sits when it's showing. "bottom" (the default) never
-  // competes with the title for the same top-of-chart space - see the
-  // "Legend" section of applyChartStyle for why "top" used to overlap the
-  // title once a chart had more than a couple of legend entries.
-  legendPosition: LegendPosition;
   dataLabels: boolean;
   xAxisTilt: "none" | "slight" | "diagonal" | "vertical";
   fontSize: FontSize;
@@ -292,7 +290,6 @@ export function defaultChartStyle(spec?: any): ChartStyle {
     // series to tell apart - a lone bar/line/scatter trace is already
     // named by the chart's own title.
     showLegend: pieLike || multiSeries,
-    legendPosition: "bottom",
     // A short headline bar comparison (few categories, one series) reads
     // best with its values right on the bars, the way every reference
     // "premium" chart shows a number above each bar. Longer series
@@ -346,6 +343,11 @@ export function colorableLabels(spec: any): string[] {
   }
   const real = data.filter((t) => !isDecorativeTrace(t));
   if (real.length > 1) return real.map((t: any, i: number) => t.name || `Series ${i + 1}`);
+  // A single real trace (a plain line/scatter/histogram with no pie and no
+  // per-category bars) still has exactly one colorable thing - its own
+  // line/marker color - so this always offers that one real swatch rather
+  // than zero, and never a padded-out fake count either way.
+  if (real.length === 1) return [real[0].name || "Series 1"];
   return [];
 }
 
@@ -695,35 +697,41 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
   // colors section above (which may have just split a single-categorical
   // bar chart into one trace per bar - see singleCategorical above) so this
   // always reflects what will really be drawn, not what the raw AI spec
-  // started out as. This is also what used to be wrong: the old code only
-  // reserved extra top margin for a "real" multi-series chart, so turning
-  // "Show legend" on for a plain one-trace bar chart (the single most
-  // common chart in this app) reserved NO extra room at all, and the
-  // resulting legend printed straight on top of the title - exactly the
-  // "showing in a place I can't see" bug this fixes. ----
+  // started out as.
   const legendEntryCount = pieLike
     ? data[0]?.labels?.length || 0
     : data.filter((t) => !isDecorativeTrace(t) && t.showlegend !== false).length;
   const legendWillShow = style.showLegend && (pieLike || legendEntryCount > 1);
-  const legendPos: LegendPosition = style.legendPosition || "bottom";
-  // A horizontal legend wraps onto extra rows on its own once it runs out
-  // of width (Plotly's own behavior) - this is only a reservation estimate
-  // for how much margin to set aside, assuming a modest ~6 short entries
-  // fit per row, so a 20-entry legend reserves roughly 4 rows of room
-  // rather than the space for just one.
-  const legendRows = legendWillShow ? Math.max(1, Math.ceil(legendEntryCount / 6)) : 0;
-  const legendBandPx = legendWillShow ? 30 + (legendRows - 1) * 24 : 0;
+
+  // The legend ALWAYS sits in its own dedicated strip to the right of the
+  // plot - never above or below it - so it can never land on top of the
+  // title or the bars, at any chart size and at any window width,
+  // including while someone is actively resizing the browser. This
+  // replaces an earlier top/bottom-band approach that had to estimate how
+  // many rows a wrapping horizontal legend would take, and kept getting
+  // that estimate wrong at real chart sizes - a vertical list in its own
+  // margin column needs no such guess, since each entry is simply one more
+  // row growing downward inside space reserved for it and nothing else.
+  // The reserved width is sized to the longest real legend label (capped
+  // both ways), so a short "Yes/No" legend gets a slim strip and a chart
+  // with longer category names gets a little more room, without ever
+  // crushing the plot area on a narrow screen.
+  const legendLabelsForWidth: string[] = pieLike
+    ? (data[0]?.labels || []).map((l: any) => String(l))
+    : data.filter((t) => !isDecorativeTrace(t) && t.showlegend !== false).map((t) => String(t.name || ""));
+  const longestLegendLabel = legendLabelsForWidth.reduce((m, l) => Math.max(m, l.length), 0);
+  const legendWidthPx = legendWillShow
+    ? Math.min(190, Math.max(84, 30 + Math.round(longestLegendLabel * baseSize * 0.58)))
+    : 0;
   // A tilted (diagonal/vertical) x-axis needs its own extra room below the
-  // plot for the slanted tick labels themselves - only relevant when the
-  // legend is ALSO at the bottom, since that's the one case the two would
-  // otherwise compete for the same band under the chart.
-  const tiltExtraPx =
-    isCartesian && legendPos === "bottom" && (style.xAxisTilt === "diagonal" || style.xAxisTilt === "vertical") ? 46 : 0;
+  // plot for the slanted tick labels - unconditional now, since the legend
+  // never competes for that band anymore (it lives on the right instead).
+  const tiltExtraPx = isCartesian && (style.xAxisTilt === "diagonal" || style.xAxisTilt === "vertical") ? 46 : 0;
 
   layout.margin = {
-    t: legendWillShow && legendPos === "top" ? 60 + legendBandPx + 20 : 60,
-    r: 28,
-    b: 52 + tiltExtraPx + (legendWillShow && legendPos === "bottom" ? legendBandPx + 26 : 0),
+    t: 60,
+    r: 28 + legendWidthPx,
+    b: 52 + tiltExtraPx,
     l: 60,
     pad: 6,
   };
@@ -770,29 +778,30 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
     }
   });
 
-  // ---- Legend: a slim horizontal strip, positioned either just above the
-  // title (legendPosition "top") or as a centered row below the plot
-  // (legendPosition "bottom", the default) - never a boxed sidebar, and
-  // never competing with the title or the plot area for the same space,
-  // see the legend-aware margin reserved for exactly this above. Only
-  // styled - not toggled - here; whether it shows at all is decided by
-  // style.showLegend (see defaultChartStyle for the default). ----
+  // ---- Legend: a vertical list docked in its own reserved strip on the
+  // right (see the margin math above) - never a boxed sidebar overlapping
+  // the plot, and never sharing space with the title, which stays pinned
+  // at the top-left. Plotly's margins are absolute pixels, not a fraction
+  // of the chart, so this stays correctly clear of both the title and the
+  // bars at any window width or chart height, including while a person is
+  // actively resizing the browser. Only styled - not toggled - here;
+  // whether it shows at all is decided by style.showLegend (see
+  // defaultChartStyle for the default). ----
   layout.showlegend = style.showLegend;
-  // These y-offsets are expressed as a fraction of an assumed ~520px chart
-  // height (this file has no way to know the real rendered pixel height -
-  // it only ever builds a spec, never touches the DOM) - deliberately
-  // generous rather than exact, since a little extra whitespace around the
-  // legend is a far safer failure mode here than the legend drifting back
-  // onto the title or the plot area on a shorter or taller chart than the
-  // assumed reference height.
-  const REF_CHART_HEIGHT = 520;
   layout.legend = {
     ...(layout.legend || {}),
-    orientation: "h",
-    font: { ...(layout.legend?.font || {}), size: baseSize, family: FONT_FAMILY },
-    ...(legendPos === "top"
-      ? { x: 0, xanchor: "left", y: 1 + (legendBandPx + 14) / REF_CHART_HEIGHT, yanchor: "bottom" }
-      : { x: 0.5, xanchor: "center", y: -((tiltExtraPx + legendBandPx + 14) / REF_CHART_HEIGHT), yanchor: "top" }),
+    orientation: "v",
+    x: 1,
+    xanchor: "left",
+    xref: "paper",
+    y: 0.5,
+    yanchor: "middle",
+    yref: "paper",
+    bgcolor: "rgba(0,0,0,0)",
+    bordercolor: "rgba(0,0,0,0)",
+    font: { ...(layout.legend?.font || {}), size: Math.max(11, baseSize - 1), family: FONT_FAMILY },
+    tracegroupgap: 4,
+    itemwidth: 30,
   };
 
   // ---- Hover: one clean readout per mark, value bolded and leading, the
