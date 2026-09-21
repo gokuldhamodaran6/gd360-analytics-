@@ -90,6 +90,53 @@ export default function ChartCanvas({ chartSpec, title }: { chartSpec: any; titl
 
   const c = THEME_CHROME[theme];
 
+  // Every axis key present on the spec - just "xaxis"/"yaxis" for almost
+  // every chart, but a faceted/small-multiples grid (chart_builder.py's
+  // build_figure "faceted_bar" branch, via Plotly's make_subplots) carries
+  // a whole family of them: xaxis/yaxis for panel 1, xaxis2/yaxis2 for
+  // panel 2, xaxis3/yaxis3 for panel 3, and so on. Theming is built by
+  // looping over every one actually on the spec, rather than three
+  // hardcoded keys, so EVERY panel of a facet grid gets the same dark/
+  // light-aware grid, axis-line and tick colors as a plain chart's single
+  // axis pair - not just the first one. This is a pure generalization of
+  // the previous fixed xaxis/yaxis/yaxis2 handling: for every chart that
+  // only ever had those three keys, the result is identical to before.
+  const axisKeyPattern = /^(x|y)axis(\d*)$/;
+  const isDualAxisCombo =
+    chartSpec.layout?.yaxis2 && (chartSpec.data || []).some((t: any) => t?.yaxis === "y2");
+  const themedAxes: Record<string, any> = {};
+  Object.keys(chartSpec.layout || {}).forEach((key) => {
+    if (!axisKeyPattern.test(key)) return;
+    const existing = chartSpec.layout[key] || {};
+    themedAxes[key] = {
+      ...existing,
+      // A dual-axis combo chart's right-hand axis (see chartStyle.ts's
+      // isDualAxisComboSpec) is always kept grid-free (chart_builder.py
+      // already sets showgrid:false there too) - two overlapping axes each
+      // drawing their own gridlines is exactly the visual clutter a second
+      // axis is meant to avoid. This only ever applies to that one real
+      // "yaxis2" case, never to a facet grid's own second panel, which
+      // just happens to share that same key name.
+      ...(key === "yaxis2" && isDualAxisCombo ? { showgrid: false } : {}),
+      gridcolor: c.grid,
+      zerolinecolor: c.axisLine,
+      linecolor: c.axisLine,
+      tickfont: { ...(existing.tickfont || {}), color: c.muted },
+      title: existing.title
+        ? { ...existing.title, font: { ...(existing.title.font || {}), color: c.muted } }
+        : undefined,
+    };
+  });
+  // A bare figure with no explicit layout.xaxis/yaxis of its own (rare, but
+  // not impossible) still gets a themed pair, same guarantee the old fixed
+  // xaxis/yaxis keys always gave.
+  if (!themedAxes.xaxis) {
+    themedAxes.xaxis = { gridcolor: c.grid, zerolinecolor: c.axisLine, linecolor: c.axisLine, tickfont: { color: c.muted } };
+  }
+  if (!themedAxes.yaxis) {
+    themedAxes.yaxis = { gridcolor: c.grid, zerolinecolor: c.axisLine, linecolor: c.axisLine, tickfont: { color: c.muted } };
+  }
+
   // Every chart renders on a fully transparent surface so it sits directly
   // on the card - no separate white/gray rectangle behind it in either
   // theme - with hand-set text, grid and hover-card colors layered on top
@@ -102,46 +149,7 @@ export default function ChartCanvas({ chartSpec, title }: { chartSpec: any; titl
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(0,0,0,0)",
     font: { ...(chartSpec.layout?.font || {}), color: c.text },
-    xaxis: {
-      ...(chartSpec.layout?.xaxis || {}),
-      gridcolor: c.grid,
-      zerolinecolor: c.axisLine,
-      linecolor: c.axisLine,
-      tickfont: { ...(chartSpec.layout?.xaxis?.tickfont || {}), color: c.muted },
-      title: chartSpec.layout?.xaxis?.title
-        ? { ...chartSpec.layout.xaxis.title, font: { ...(chartSpec.layout.xaxis.title.font || {}), color: c.muted } }
-        : undefined,
-    },
-    yaxis: {
-      ...(chartSpec.layout?.yaxis || {}),
-      gridcolor: c.grid,
-      zerolinecolor: c.axisLine,
-      linecolor: c.axisLine,
-      tickfont: { ...(chartSpec.layout?.yaxis?.tickfont || {}), color: c.muted },
-      title: chartSpec.layout?.yaxis?.title
-        ? { ...chartSpec.layout.yaxis.title, font: { ...(chartSpec.layout.yaxis.title.font || {}), color: c.muted } }
-        : undefined,
-    },
-    // A dual-axis combo chart's right-hand axis (see chartStyle.ts's
-    // isDualAxisComboSpec) - only present at all on that one chart shape,
-    // so this is a no-op spread of `{}` for every other chart. Always kept
-    // grid-free (chart_builder.py already sets showgrid:false there too) -
-    // two overlapping axes each drawing their own gridlines is exactly the
-    // visual clutter a second axis is meant to avoid.
-    ...(chartSpec.layout?.yaxis2
-      ? {
-          yaxis2: {
-            ...chartSpec.layout.yaxis2,
-            showgrid: false,
-            zerolinecolor: c.axisLine,
-            linecolor: c.axisLine,
-            tickfont: { ...(chartSpec.layout.yaxis2.tickfont || {}), color: c.muted },
-            title: chartSpec.layout.yaxis2.title
-              ? { ...chartSpec.layout.yaxis2.title, font: { ...(chartSpec.layout.yaxis2.title.font || {}), color: c.muted } }
-              : undefined,
-          },
-        }
-      : {}),
+    ...themedAxes,
     legend: {
       ...(chartSpec.layout?.legend || {}),
       bgcolor: "rgba(0,0,0,0)",
