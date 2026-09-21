@@ -48,6 +48,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+from plotly.subplots import make_subplots
 from scipy import stats as scipy_stats
 
 DARK_TEMPLATE = "plotly_dark"
@@ -222,8 +223,125 @@ def _build_dual_axis_combo(result: pd.DataFrame, cols: list) -> go.Figure:
     return fig
 
 
+def _build_faceted_bar(result: pd.DataFrame) -> go.Figure:
+    """Small multiples / facet grid: the "X by Y, in each Z" shape a working
+    analyst reaches for constantly (e.g. "profit by sub-category in each
+    market") and that, before this, GD360 had no way to draw at all - every
+    other branch in this file draws exactly one set of axes, never a grid of
+    them. One horizontal-bar panel is drawn per distinct value of the facet
+    column, all panels sharing the same category order down the left side so
+    they stay visually comparable at a glance, with a red zero-reference
+    line through every panel - the same read as a ggplot facet_wrap chart.
+
+    `result` MUST be a 3-column DataFrame/table in this exact order: (1) the
+    column whose distinct values become the separate panels, (2) the
+    category column shown as bars within every panel, (3) the numeric
+    value. This shape is deliberately different from every other chart type
+    in this file (which normalize down to at most 2 columns) because a
+    facet grid genuinely needs a third dimension - which panel a row
+    belongs to - that a 2-column result has no room to carry.
+    """
+    if not isinstance(result, pd.DataFrame) or result.shape[1] < 3:
+        raise ValueError(
+            "Faceted bar needs a result with three columns in this exact order: the column to split into "
+            "separate panels (the \"in each ___\" column), the category column for the bars within every "
+            "panel, and the numeric value - this result does not have all three."
+        )
+    cols = list(result.columns)
+    facet_col, cat_col, val_col = cols[0], cols[1], cols[2]
+    frame = result[[facet_col, cat_col, val_col]].copy()
+    frame[val_col] = pd.to_numeric(frame[val_col], errors="coerce")
+
+    facet_values = [str(v) for v in pd.unique(frame[facet_col])]
+    if len(facet_values) < 2:
+        raise ValueError(
+            "Faceted bar needs at least two distinct panel values in the first column - a single value is "
+            "not worth splitting into separate panels; use a plain bar chart instead."
+        )
+    if len(facet_values) > 24:
+        raise ValueError(f"Faceted bar supports up to 24 panels; this result would need {len(facet_values)}.")
+
+    # The same category order in every panel - the order categories first
+    # appear in the result, not re-sorted alphabetically - so a caller that
+    # already ordered them meaningfully (e.g. by total value) keeps that
+    # order, and every panel reads the same top-to-bottom, which is what
+    # makes a facet grid actually comparable at a glance.
+    category_order = list(dict.fromkeys(str(v) for v in frame[cat_col]))
+
+    n_cols = min(3, len(facet_values))
+    n_rows = -(-len(facet_values) // n_cols)  # ceil division
+    total_cells = n_rows * n_cols
+    subplot_titles = facet_values + [""] * (total_cells - len(facet_values))
+
+    fig = make_subplots(
+        rows=n_rows, cols=n_cols, subplot_titles=subplot_titles,
+        horizontal_spacing=0.09, vertical_spacing=0.16,
+    )
+
+    for i, facet_value in enumerate(facet_values):
+        row, col = i // n_cols + 1, i % n_cols + 1
+        panel = frame[frame[facet_col].astype(str) == facet_value]
+        by_cat = panel.groupby(panel[cat_col].astype(str))[val_col].sum()
+        values = [float(by_cat.get(c, 0.0)) for c in category_order]
+        fig.add_trace(
+            go.Bar(
+                x=values, y=category_order, orientation="h",
+                marker_color=PALETTE[0], name=facet_value, showlegend=False,
+                meta={"role": "facet_panel", "facet": facet_value},
+            ),
+            row=row, col=col,
+        )
+        fig.add_vline(x=0, line_color=TREND_COLOR, line_width=1.5, row=row, col=col)
+
+    # Unused grid cells (e.g. 7 panels in a 3x3 grid leaves 2 empty) get
+    # their axes hidden entirely rather than left as empty, distracting box
+    # outlines with no data in them.
+    for i in range(len(facet_values), total_cells):
+        row, col = i // n_cols + 1, i % n_cols + 1
+        fig.update_xaxes(visible=False, row=row, col=col)
+        fig.update_yaxes(visible=False, row=row, col=col)
+
+    fig.update_yaxes(categoryorder="array", categoryarray=category_order)
+    return fig
+
+
 def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | None = None, y_label: str | None = None) -> dict:
     chart_type = (chart_type or "bar").lower().strip()
+
+    # Faceted bar needs its own three-column shape (facet column, category
+    # column, value column) rather than the generic <=2-column "x"/"y"
+    # normalization every other chart type below shares - so it is handled
+    # entirely separately, before that normalization ever runs, and skips
+    # straight to the shared closing layout block further down.
+    if chart_type == "faceted_bar":
+        fig = _build_faceted_bar(result)
+        fig.update_layout(
+            template=DARK_TEMPLATE,
+            title=title or "",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Inter, system-ui, sans-serif", size=13, color="#E8E8F0"),
+            margin=dict(l=70, r=20, t=60, b=60),
+            hoverlabel=dict(bgcolor="#1E1E2E", font_size=13),
+            legend=dict(bgcolor="rgba(0,0,0,0)"),
+        )
+        # A facet grid has no single shared axis pair to title - each panel
+        # has its own - so instead of xaxis_title/yaxis_title (meaningless
+        # here), the requested labels become one shared caption centered
+        # under, and to the left of, the whole grid, the same read as the
+        # R/ggplot reference chart's outer axis labels.
+        if x_label:
+            fig.add_annotation(
+                text=x_label, xref="paper", yref="paper", x=0.5, y=-0.14,
+                showarrow=False, font=dict(size=13),
+            )
+        if y_label:
+            fig.add_annotation(
+                text=y_label, xref="paper", yref="paper", x=-0.1, y=0.5,
+                showarrow=False, textangle=-90, font=dict(size=13),
+            )
+        return json.loads(fig.to_json())
+
     numeric_cols = _numeric_cols(result)
 
     if isinstance(result, pd.Series):
