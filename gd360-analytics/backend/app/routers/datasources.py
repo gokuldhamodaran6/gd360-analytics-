@@ -365,6 +365,7 @@ def delete_version(
 def preview_datasource(
     datasource_id: str,
     version_id: str | None = None,
+    table: str | None = None,
     limit: int = 50,
     offset: int = 0,
     sort_by: str | None = None,
@@ -378,16 +379,19 @@ def preview_datasource(
 
     active_version = _get_owned_version(db, ds, version_id) if version_id else None
     try:
-        # A multi-sheet Excel workbook (see data_loader.default_table_for_
-        # preview) always defaults to its first sheet here - there is no
-        # back-and-forth in a page view to ask "which sheet?" through, so
-        # this never raises the way an ambiguous WORKING ON chat selection
-        # would; the person can still open the picker in chat to work with
-        # any other sheet.
+        # `table` (new) is the Data tab's own per-table/per-sheet tab strip
+        # asking for one specific original table by name - the same
+        # mechanism the chat WORKING ON picker already uses (see
+        # data_loader.load_dataframe). Left unset, a multi-table datasource
+        # (see data_loader.default_table_for_preview) always defaults to its
+        # first table/sheet here rather than raising - there is no
+        # back-and-forth in a page view to ask "which one?" through, so this
+        # never dead-ends the way an ambiguous WORKING ON chat selection
+        # would.
         df = (
             load_version_dataframe(active_version)
             if active_version
-            else load_dataframe(ds, table=default_table_for_preview(ds), version="original")
+            else load_dataframe(ds, table=table or default_table_for_preview(ds), version="original")
         )
     except Exception as e:
         raise HTTPException(400, f"Could not load data: {e}")
@@ -433,6 +437,7 @@ def preview_datasource(
 def export_datasource(
     datasource_id: str,
     version_id: str | None = None,
+    table: str | None = None,
     export_format: str = "csv",
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
@@ -445,14 +450,18 @@ def export_datasource(
         df = (
             load_version_dataframe(active_version)
             if active_version
-            else load_dataframe(ds, table=default_table_for_preview(ds), version="original")
+            else load_dataframe(ds, table=table or default_table_for_preview(ds), version="original")
         )
     except Exception as e:
         raise HTTPException(400, f"Could not load data: {e}")
 
     buf = io.BytesIO()
     safe_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in ds.name) or "data"
-    label = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in active_version.name) if active_version else "original"
+    label = (
+        "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in active_version.name)
+        if active_version
+        else "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in table) if table else "original"
+    )
 
     if export_format == "xlsx":
         df.to_excel(buf, index=False, engine="openpyxl")
