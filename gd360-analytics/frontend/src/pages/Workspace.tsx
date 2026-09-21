@@ -283,6 +283,26 @@ export default function Workspace() {
     setRecentConversations((cs) => cs.map((c) => (c.id === id ? { ...c, title } : c)));
   };
 
+  const pinRecentConversation = (id: string, pinned: boolean) => {
+    setRecentConversations((cs) => {
+      const next = cs.map((c) => (c.id === id ? { ...c, pinned } : c));
+      next.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+      next.sort((a, b) => Number(b.pinned) - Number(a.pinned));
+      return next;
+    });
+  };
+
+  // Deleting the conversation currently open on screen leaves nothing left
+  // to show - land back on a fresh chat for this same data source, exactly
+  // like clicking "+ New" above this list already does, rather than
+  // showing a now-broken resumed session.
+  const deleteRecentConversation = (id: string) => {
+    setRecentConversations((cs) => cs.filter((c) => c.id !== id));
+    if (id === resumeConversationId && datasourceId) {
+      navigate(`/workspace/${datasourceId}`);
+    }
+  };
+
   // What the saved-table tab strip (and the chat's WORKING ON picker)
   // actually shows: every table on a resumed conversation (its full real
   // history), but only the ones built during this visit on a fresh start -
@@ -889,11 +909,14 @@ export default function Workspace() {
                   key={c.id}
                   conversation={c}
                   variant="row"
-                  trailing={c.id === resumeConversationId ? "Open" : `${c.message_count}`}
+                  active={c.id === resumeConversationId}
+                  trailing={`${c.message_count}`}
                   onOpen={() => {
                     if (c.id !== resumeConversationId) navigate(`/workspace/${datasourceId}?conversation=${c.id}`);
                   }}
                   onRenamed={renameRecentConversation}
+                  onPinned={pinRecentConversation}
+                  onDeleted={deleteRecentConversation}
                 />
               ))
             )}
