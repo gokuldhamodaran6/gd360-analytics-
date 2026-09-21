@@ -234,6 +234,22 @@ export default function Dashboard() {
     setConversations((cs) => cs.map((c) => (c.id === id ? { ...c, title } : c)));
   };
 
+  // Same idea for pin/delete - update locally so the pinned-to-top order
+  // and the removed row both show immediately, without waiting on a
+  // refetch. Mirrors the backend's own sort (pinned first, newest within
+  // each group) so this list never looks out of order until the next load.
+  const pinConversation = (id: string, pinned: boolean) => {
+    setConversations((cs) => {
+      const next = cs.map((c) => (c.id === id ? { ...c, pinned } : c));
+      next.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+      next.sort((a, b) => Number(b.pinned) - Number(a.pinned));
+      return next;
+    });
+  };
+  const deleteConversation = (id: string) => {
+    setConversations((cs) => cs.filter((c) => c.id !== id));
+  };
+
   // There is no dataset grid to click into any more, so once a data source
   // is added and the person confirms it in DataSourceForm's "Connected"
   // panel, jump straight into its workspace the same way clicking a card
@@ -380,6 +396,8 @@ export default function Dashboard() {
                     trailing={c.message_count}
                     onOpen={() => openConversation(c)}
                     onRenamed={renameConversation}
+                    onPinned={pinConversation}
+                    onDeleted={deleteConversation}
                   />
                 ))}
               </div>
@@ -399,6 +417,8 @@ export default function Dashboard() {
             onOpenConversation={openConversation}
             onAddNew={openConnectFlow}
             onConversationRenamed={renameConversation}
+            onConversationPinned={pinConversation}
+            onConversationDeleted={deleteConversation}
           />
         </div>
       </div>
