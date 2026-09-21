@@ -164,11 +164,19 @@ export const datasourceApi = {
   // open on) as something to pull into the current analysis.
   list: () => api.get<DataSourceSummary[]>("/datasources").then((r) => r.data),
 
-  preview: (id: string, versionId: string | null, limit = 50, offset = 0, opts: PreviewOptions = {}) =>
+  // `table` (new) picks one specific original table/sheet by name - the
+  // Data tab's own per-table tab strip for a multi-table datasource (see
+  // DataTable.tsx). Ignored server-side whenever `versionId` is set (a
+  // saved/AI-built table is not addressed by table name), and left
+  // undefined otherwise falls back to the backend's own sensible default
+  // (the first table, for a multi-table source - see
+  // data_loader.default_table_for_preview).
+  preview: (id: string, versionId: string | null, limit = 50, offset = 0, opts: PreviewOptions = {}, table?: string | null) =>
     api
       .get<DataPreview>(`/datasources/${id}/preview`, {
         params: {
           version_id: versionId || undefined,
+          table: versionId ? undefined : table || undefined,
           limit,
           offset,
           sort_by: opts.sortBy || undefined,
@@ -191,9 +199,13 @@ export const datasourceApi = {
 
   deleteVersion: (id: string, versionId: string) => api.delete(`/datasources/${id}/versions/${versionId}`),
 
-  downloadExport: async (id: string, versionId: string | null, format: "csv" | "xlsx") => {
+  downloadExport: async (id: string, versionId: string | null, format: "csv" | "xlsx", table?: string | null) => {
     const res = await api.get(`/datasources/${id}/export`, {
-      params: { version_id: versionId || undefined, export_format: format },
+      params: {
+        version_id: versionId || undefined,
+        table: versionId ? undefined : table || undefined,
+        export_format: format,
+      },
       responseType: "blob",
     });
     const disposition: string = res.headers["content-disposition"] || "";
