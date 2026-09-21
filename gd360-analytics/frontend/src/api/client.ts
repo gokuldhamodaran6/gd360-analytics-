@@ -140,7 +140,30 @@ export type PreviewOptions = {
   filters?: Record<string, string>;
 };
 
+// The same shape the backend's DataSourceOut returns - kept here (rather
+// than only as DataSourceForm.tsx's CreatedDataSource, which this mirrors)
+// so the API client itself can be typed without importing a component
+// file. schema_cache is what a multi-sheet Excel upload's per-sheet
+// columns, or a database's per-table columns, actually live in - see
+// getTableEntries in DataSourceForm.tsx for how it gets turned into a
+// uniform list of pickable tables regardless of kind.
+export type DataSourceSummary = {
+  id: string;
+  name: string;
+  kind: string;
+  connection_info: Record<string, unknown>;
+  read_only: boolean;
+  schema_cache?: Record<string, unknown> | null;
+  created_at: string;
+};
+
 export const datasourceApi = {
+  // Every data source this person has connected - used by the chat
+  // panel's "+ Add more data" picker to offer every OTHER already-
+  // connected data source (not just the one the current Workspace page is
+  // open on) as something to pull into the current analysis.
+  list: () => api.get<DataSourceSummary[]>("/datasources").then((r) => r.data),
+
   preview: (id: string, versionId: string | null, limit = 50, offset = 0, opts: PreviewOptions = {}) =>
     api
       .get<DataPreview>(`/datasources/${id}/preview`, {
