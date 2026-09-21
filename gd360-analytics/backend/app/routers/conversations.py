@@ -55,36 +55,68 @@ def list_conversations(db: Session = Depends(get_db), user: models.User = Depend
             "message_count": len(messages),
             "last_message": last.content,
             "last_chart_type": last_chart_type,
+            "pinned": bool(c.pinned),
             "created_at": c.created_at,
             "updated_at": last.created_at,
         })
 
+    # Pinned conversations always float to the top (the same convention as
+    # every mainstream chat app), newest-first within each of the two
+    # groups - so pinning something is immediately visible as "moved up",
+    # not just a quiet badge easy to miss. Python's sort is stable, so
+    # sorting by updated_at first and then, separately, by pinned keeps
+    # each group in updated_at order without needing a combined key.
     out.sort(key=lambda row: row["updated_at"], reverse=True)
+    out.sort(key=lambda row: row["pinned"], reverse=True)
     return out
 
 
 @router.patch("/{conversation_id}")
-def rename_conversation(
+def update_conversation(
     conversation_id: str,
-    payload: schemas.RenameConversationRequest,
+    payload: schemas.UpdateConversationRequest,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    """Lets a person give a conversation their own name (rather than living
-    forever with the auto-generated title from its first question) - shown
-    everywhere a conversation is listed: the homepage's Recent
-    conversations, a data source's own conversation list, and the
-    Workspace page's own Recent conversations panel. All three read the
-    same title from here, so a rename made in any one of them is instantly
-    the title everywhere else too, the next time each is loaded."""
+    """Updates a conversation's title and/or pinned state - either or both,
+    whichever the caller actually sent. Shown everywhere a conversation is
+    listed: the homepage's Recent conversations, a data source's own
+    conversation list, and the Workspace page's own Recent conversations
+    panel. All three read the same row from here, so a change made in any
+    one of them is instantly reflected everywhere else too, the next time
+    each is loaded."""
     conv = db.query(models.Conversation).filter(
         models.Conversation.id == conversation_id, models.Conversation.owner_id == user.id
     ).first()
     if not conv:
         raise HTTPException(404, "Conversation not found.")
-    conv.title = payload.title.strip()[:80] or conv.title
+    if payload.title is not None:
+        conv.title = payload.title.strip()[:80] or conv.title
+    if payload.pinned is not None:
+        conv.pinned = payload.pinned
     db.commit()
-    return {"id": conv.id, "title": conv.title}
+    return {"id": conv.id, "title": conv.title, "pinned": bool(conv.pinned)}
+
+
+@router.delete("/{conversation_id}")
+def delete_conversation(
+    conversation_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
+):
+    """Permanently removes a conversation and every message in it (the
+    ORM relationship's cascade="all, delete-orphan" takes care of the
+    messages once the parent row is deleted through the session, so this
+    never leaves orphaned rows behind). This only ever deletes the saved
+    chat/analysis history itself - any table version it produced along the
+    way stays in the data source's Data tab exactly as it would if the
+    conversation had simply been left alone."""
+    conv = db.query(models.Conversation).filter(
+        models.Conversation.id == conversation_id, models.Conversation.owner_id == user.id
+    ).first()
+    if not conv:
+        raise HTTPException(404, "Conversation not found.")
+    db.delete(conv)
+    db.commit()
+    return {"id": conversation_id, "deleted": True}
 
 
 @router.get("/{conversation_id}/messages")
