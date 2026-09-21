@@ -1,4 +1,5 @@
 import { FormEvent, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../api/client";
 
 // Real brand marks (path data + official color from the Simple Icons
@@ -301,6 +302,12 @@ export default function DataSourceForm({
   // completely differently (a service-account key, not host/port/username/
   // password) and has nothing in common with it field-for-field.
   const [warehouseModalKind, setWarehouseModalKind] = useState<string | null>(null);
+
+  // Same idea, one level up: which database kind's own popout connect form
+  // is currently open (null = closed, showing just the logo grid). Mirrors
+  // warehouseModalKind exactly so both connector families share one visual
+  // language - pick a logo, get one focused form, cancel or connect.
+  const [dbModalKind, setDbModalKind] = useState<string | null>(null);
   const [whName, setWhName] = useState("");
   const [projectId, setProjectId] = useState("");
   const [datasetId, setDatasetId] = useState("");
@@ -360,10 +367,30 @@ export default function DataSourceForm({
     }
   };
 
-  const selectDbKind = (value: string) => {
+  // Like the data-warehouse picker's openWarehouseForm below: clicking a
+  // database logo opens its own popout connect form instead of an inline
+  // one that used to sit under the picker grid the whole time - one
+  // consistent "click a logo, get a focused connect form" pattern across
+  // every connector kind (database or warehouse alike), matching the
+  // BigQuery-style flow Gokul specifically asked for.
+  const openDbForm = (value: string) => {
+    setDbModalKind(value);
     setKind(value);
     const found = DB_KINDS.find((d) => d.value === value);
-    if (found) setPort(found.defaultPort);
+    setPort(found ? found.defaultPort : 5432);
+    setName("");
+    setHost("");
+    setDatabase("");
+    setUsername("");
+    setPassword("");
+    setSsl(true);
+    setShowIps(false);
+    setError("");
+  };
+
+  const closeDbForm = () => {
+    setDbModalKind(null);
+    setError("");
   };
 
   // Shared by both submit handlers: shows the "Connected" confirmation panel
@@ -384,6 +411,7 @@ export default function DataSourceForm({
     try {
       const { data } = await api.post("/datasources/database", { name, kind, host, port, database, username, password, ssl });
       setName(""); setHost(""); setDatabase(""); setUsername(""); setPassword("");
+      setDbModalKind(null);
       showConnectedPanel(data);
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Could not connect. Check your credentials and network access.");
@@ -465,72 +493,150 @@ export default function DataSourceForm({
   return (
     <>
     <div className="card p-6">
-      <div className="flex flex-wrap gap-2 mb-5">
-        <button
-          className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-1.5 ${mode === "db" ? "bg-primary text-white" : "btn-secondary"}`}
-          onClick={() => setMode("db")}
-        >
-          <DatabaseIcon className="w-4 h-4" /> Connect a database
-        </button>
-        <button
-          className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-1.5 ${mode === "warehouse" ? "bg-primary text-white" : "btn-secondary"}`}
-          onClick={() => setMode("warehouse")}
-        >
-          <WarehouseIcon className="w-4 h-4" /> Connect a data warehouse
-        </button>
-        <button
-          className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-1.5 ${mode === "file" ? "bg-primary text-white" : "btn-secondary"}`}
-          onClick={() => setMode("file")}
-        >
-          <FileSpreadsheetIcon className="w-4 h-4" /> Upload CSV / Excel
-        </button>
+      {/* A true segmented control - one bordered track, three equal-width
+          slots, the active one lifted onto its own pill - instead of three
+          independently-sized buttons that used to wrap unevenly and never
+          lined up with each other. */}
+      <div className="grid grid-cols-3 gap-1 p-1 mb-6 rounded-xl bg-surface2 border border-border">
+        {(
+          [
+            { key: "db" as const, label: "Database", Icon: DatabaseIcon },
+            { key: "warehouse" as const, label: "Warehouse", Icon: WarehouseIcon },
+            { key: "file" as const, label: "Upload file", Icon: FileSpreadsheetIcon },
+          ]
+        ).map((m) => (
+          <button
+            type="button"
+            key={m.key}
+            onClick={() => setMode(m.key)}
+            aria-pressed={mode === m.key}
+            className={`flex flex-col items-center justify-center gap-1 px-1 py-2.5 rounded-lg text-xs font-medium transition ${
+              mode === m.key ? "bg-primary text-white shadow-sm" : "text-muted hover:text-text"
+            }`}
+          >
+            <m.Icon className="w-4 h-4 shrink-0" />
+            <span className="w-full text-center leading-tight truncate">{m.label}</span>
+          </button>
+        ))}
       </div>
 
-      {error && !warehouseModalKind && (
+      {error && !warehouseModalKind && !dbModalKind && (
         <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-4">{error}</div>
       )}
 
       {mode === "db" ? (
         <div>
-          {/* Connector picker: a real, recognizable logo per database type
-              with just its name underneath - no extra copy or tags - so
-              people can identify their database at a glance the same way a
-              polished connector gallery works. */}
-          <div className="grid grid-cols-3 sm:grid-cols-5 gap-3 mb-5">
-            {DB_KINDS.map((d) => {
-              const selected = kind === d.value;
-              return (
-                <button
-                  type="button"
-                  key={d.value}
-                  aria-pressed={selected}
-                  onClick={() => selectDbKind(d.value)}
-                  className={`relative flex flex-col items-center justify-center gap-1.5 py-4 rounded-xl border transition ${
-                    selected ? "border-primary bg-primary/5 ring-1 ring-primary" : "border-border hover:border-primary/40"
-                  }`}
+          {/* Icon-only picker, same pattern as the data-warehouse picker
+              below: no inline form under the grid. Clicking a logo opens
+              that database's own focused popout form instead of showing
+              every field inline the whole time - one consistent "pick a
+              logo, get a clean connect form" experience across every
+              connector kind, database or warehouse alike. */}
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
+            {DB_KINDS.map((d) => (
+              <button
+                type="button"
+                key={d.value}
+                onClick={() => openDbForm(d.value)}
+                className="relative flex flex-col items-center justify-center gap-1.5 py-4 rounded-xl border border-border hover:border-primary/40 hover:bg-surface2 transition"
+              >
+                <div
+                  className="w-11 h-11 rounded-lg flex items-center justify-center"
+                  style={{ backgroundColor: `${d.color}1a`, color: d.color }}
                 >
-                  <div
-                    className="w-11 h-11 rounded-lg flex items-center justify-center"
-                    style={{ backgroundColor: `${d.color}1a`, color: d.color }}
-                  >
-                    <d.Logo className="w-6 h-6" />
-                  </div>
-                  <span className="text-xs font-medium text-muted text-center leading-tight px-1">{d.label}</span>
-                  {selected && (
-                    <span
-                      className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-primary text-white flex items-center justify-center text-[10px] leading-none"
-                      aria-hidden
-                    >
-                      &#10003;
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+                  <d.Logo className="w-6 h-6" />
+                </div>
+                <span className="text-xs font-medium text-muted text-center leading-tight px-1">{d.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : mode === "warehouse" ? (
+        <div>
+          {/* Icon-only picker: no inline form beneath it. Clicking a tile
+              opens that warehouse's own popout form below instead - a data
+              warehouse's fields (project/dataset/service-account key) have
+              nothing in common with the database form above, so there is no
+              shared form to switch into here the way DB_KINDS does. */}
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
+            {WAREHOUSE_KINDS.map((w) => (
+              <button
+                type="button"
+                key={w.value}
+                onClick={() => openWarehouseForm(w.value)}
+                className="relative flex flex-col items-center justify-center gap-1.5 py-4 rounded-xl border border-border hover:border-primary/40 transition"
+              >
+                <div
+                  className="w-11 h-11 rounded-lg flex items-center justify-center"
+                  style={{ backgroundColor: `${w.color}1a`, color: w.color }}
+                >
+                  <w.Logo className="w-6 h-6" />
+                </div>
+                <span className="text-xs font-medium text-muted text-center leading-tight px-1">{w.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <form onSubmit={submitFile} className="space-y-4">
+          <div>
+            <label className="text-sm text-muted mb-1 block">Name</label>
+            <input className="input" value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder="Q3 sales export" />
+          </div>
+          <div>
+            <label className="text-sm text-muted mb-1 block">File (.csv, .xlsx, .xls)</label>
+            <input className="input" type="file" accept=".csv,.xlsx,.xls" required onChange={(e) => setFile(e.target.files?.[0] || null)} />
+          </div>
+          <button className="btn-primary" type="submit" disabled={busy}>{busy ? "Uploading..." : "Upload"}</button>
+        </form>
+      )}
+    </div>
+
+    {/* ---- Database connect popout: mirrors the data-warehouse popout
+        below field-for-field in its chrome (same header treatment, same
+        Cancel / Test & connect footer) so every connector kind - database
+        or warehouse - opens the same kind of focused, single-purpose form
+        instead of a database's fields sitting inline in the page the whole
+        time. Portaled straight to document.body (like the warehouse and
+        "Connected" popouts below) so it always centers on the real
+        viewport and stacks above everything, even when this whole form is
+        itself embedded inside another popup (the "+ Add data" picker) -
+        a `position: fixed` descendant does NOT escape an ancestor that has
+        its own backdrop-filter/transform, which the "+ Add data" popup's
+        own card does, so without the portal this modal would get trapped
+        and mis-sized inside that smaller card instead of covering the
+        screen. ---- */}
+    {dbModalKind && createPortal(
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={closeDbForm} aria-hidden />
+        <div className="relative card bg-surface w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto" role="dialog" aria-modal="true">
+          <button
+            type="button"
+            onClick={closeDbForm}
+            aria-label="Close"
+            className="absolute top-4 right-4 text-muted hover:text-text transition"
+          >
+            <CloseIcon className="w-4 h-4" />
+          </button>
+
+          <div className="flex items-center gap-3 pr-6">
+            <div
+              className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
+              style={{
+                backgroundColor: `${connectionKindMeta(dbModalKind).color}1a`,
+                color: connectionKindMeta(dbModalKind).color,
+              }}
+            >
+              {(() => {
+                const DLogo = connectionKindMeta(dbModalKind).Logo;
+                return <DLogo className="w-5 h-5" />;
+              })()}
+            </div>
+            <div className="font-bold text-lg leading-tight">Connect {connectionKindMeta(dbModalKind).label}</div>
           </div>
 
           {kind === "supabase" && (
-            <div className="text-xs text-muted bg-surface2 border border-border rounded-lg p-3 mb-5 leading-relaxed">
+            <div className="text-xs text-muted bg-surface2 border border-border rounded-lg p-3 mt-4 leading-relaxed">
               Use Supabase's <strong>Connection pooling</strong> details (Project Settings &rarr; Database &rarr;
               Connection pooling), not the direct connection - GD360's servers can only reach Supabase through the
               pooler host (something like <code className="font-mono">aws-0-&lt;region&gt;.pooler.supabase.com</code>,
@@ -538,7 +644,11 @@ export default function DataSourceForm({
             </div>
           )}
 
-          <form onSubmit={submitDb} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {error && (
+            <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mt-4">{error}</div>
+          )}
+
+          <form onSubmit={submitDb} className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
             <div className="sm:col-span-2">
               <label className="text-sm text-muted mb-1 block">Connection name</label>
               <input className="input" required value={name} onChange={(e) => setName(e.target.value)} placeholder="Production Postgres" />
@@ -650,59 +760,29 @@ export default function DataSourceForm({
               )}
             </div>
 
-            <div className="sm:col-span-2">
-              <button className="btn-primary" type="submit" disabled={busy}>{busy ? "Connecting..." : "Test & connect"}</button>
+            <div className="sm:col-span-2 flex items-center gap-3">
+              <button type="button" className="btn-secondary flex-1" onClick={closeDbForm}>
+                Cancel
+              </button>
+              <button className="btn-primary flex-1" type="submit" disabled={busy}>
+                {busy ? "Connecting..." : "Test & connect"}
+              </button>
             </div>
           </form>
         </div>
-      ) : mode === "warehouse" ? (
-        <div>
-          {/* Icon-only picker: no inline form beneath it. Clicking a tile
-              opens that warehouse's own popout form below instead - a data
-              warehouse's fields (project/dataset/service-account key) have
-              nothing in common with the database form above, so there is no
-              shared form to switch into here the way DB_KINDS does. */}
-          <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
-            {WAREHOUSE_KINDS.map((w) => (
-              <button
-                type="button"
-                key={w.value}
-                onClick={() => openWarehouseForm(w.value)}
-                className="relative flex flex-col items-center justify-center gap-1.5 py-4 rounded-xl border border-border hover:border-primary/40 transition"
-              >
-                <div
-                  className="w-11 h-11 rounded-lg flex items-center justify-center"
-                  style={{ backgroundColor: `${w.color}1a`, color: w.color }}
-                >
-                  <w.Logo className="w-6 h-6" />
-                </div>
-                <span className="text-xs font-medium text-muted text-center leading-tight px-1">{w.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : (
-        <form onSubmit={submitFile} className="space-y-4">
-          <div>
-            <label className="text-sm text-muted mb-1 block">Name</label>
-            <input className="input" value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder="Q3 sales export" />
-          </div>
-          <div>
-            <label className="text-sm text-muted mb-1 block">File (.csv, .xlsx, .xls)</label>
-            <input className="input" type="file" accept=".csv,.xlsx,.xls" required onChange={(e) => setFile(e.target.files?.[0] || null)} />
-          </div>
-          <button className="btn-primary" type="submit" disabled={busy}>{busy ? "Uploading..." : "Upload"}</button>
-        </form>
-      )}
-    </div>
+      </div>,
+      document.body
+    )}
 
     {/* ---- Data warehouse popout: the picker tile above only ever opens
         this - a small, self-contained form for that one warehouse kind's
         very different credential shape (project/dataset/service-account
         key, not host/port/username/password), plus a link to a dedicated
         step-by-step guide for actually getting those values, since nothing
-        else in this app walks someone through a GCP console. ---- */}
-    {warehouseModalKind && (
+        else in this app walks someone through a GCP console. Portaled to
+        document.body for the same reason the database popout above is -
+        see that block's comment. ---- */}
+    {warehouseModalKind && createPortal(
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={closeWarehouseForm} aria-hidden />
         <div className="relative card bg-surface w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto" role="dialog" aria-modal="true">
@@ -789,14 +869,17 @@ export default function DataSourceForm({
             </div>
           </form>
         </div>
-      </div>
+      </div>,
+      document.body
     )}
 
     {/* ---- "Connected" confirmation: shown right after a successful connect
         or upload, before handing off to the workspace, so the person gets
         real-time confirmation of exactly what they connected and what
-        GD360 can see in it - never a blind jump straight into chat. ---- */}
-    {connectedDs && connectedMeta && (
+        GD360 can see in it - never a blind jump straight into chat.
+        Portaled to document.body for the same reason the database and
+        warehouse popouts above are. ---- */}
+    {connectedDs && connectedMeta && createPortal(
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={closeConnectedPanel} aria-hidden />
         <div className="relative card bg-surface w-full max-w-md p-6 max-h-[85vh] overflow-y-auto" role="dialog" aria-modal="true">
@@ -890,7 +973,8 @@ export default function DataSourceForm({
             </button>
           </div>
         </div>
-      </div>
+      </div>,
+      document.body
     )}
     </>
   );
