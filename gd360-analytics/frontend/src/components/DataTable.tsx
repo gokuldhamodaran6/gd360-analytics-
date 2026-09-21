@@ -49,6 +49,9 @@ export default function DataTable({
   activeVersionId,
   onActiveVersionChange,
   onVersionsChanged,
+  originalTables,
+  activeTable,
+  onActiveTableChange,
 }: {
   datasourceId: string;
   refreshKey: number;
@@ -56,6 +59,19 @@ export default function DataTable({
   activeVersionId: string | null;
   onActiveVersionChange: (versionId: string | null) => void;
   onVersionsChanged: () => void;
+  // Real table/sheet names for THIS datasource's own original data - only
+  // populated (more than one entry) for a multi-table datasource (a
+  // multi-sheet Excel workbook, or a multi-table Postgres/MySQL/SQL
+  // Server/Supabase/MongoDB/BigQuery connection). Empty for an ordinary
+  // single-table source, in which case the tab strip below shows the same
+  // single "Original data" button it always has.
+  originalTables?: string[];
+  // Which of `originalTables` is currently previewed - only meaningful
+  // while activeVersionId is null (a saved/AI-built table has no table
+  // name of its own to pick). Ignored (and safe to pass null) for a
+  // single-table source.
+  activeTable?: string | null;
+  onActiveTableChange?: (table: string | null) => void;
 }) {
   const [preview, setPreview] = useState<DataPreview | null>(null);
   const [offset, setOffset] = useState(0);
@@ -91,11 +107,11 @@ export default function DataTable({
       setLoading(true);
       setError("");
       try {
-        const data = await datasourceApi.preview(datasourceId, activeVersionId, effectiveLimit, offset, {
-          sortBy,
-          sortDir,
-          filters: debouncedFilters,
-        });
+        const data = await datasourceApi.preview(
+          datasourceId, activeVersionId, effectiveLimit, offset,
+          { sortBy, sortDir, filters: debouncedFilters },
+          activeVersionId ? null : activeTable
+        );
         setPreview(data);
       } catch (err: any) {
         setError(err?.response?.data?.detail || "Could not load data preview.");
@@ -104,11 +120,11 @@ export default function DataTable({
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [datasourceId, activeVersionId, refreshKey, offset, pageSize, sortBy, sortDir, debouncedFilters]);
+  }, [datasourceId, activeVersionId, activeTable, refreshKey, offset, pageSize, sortBy, sortDir, debouncedFilters]);
 
-  // Switching tables (a different tab, or a different data source
-  // entirely) starts every view control fresh - a sort column or filter
-  // from a previous table would not make sense here.
+  // Switching tables (a different tab, a different original table/sheet, or
+  // a different data source entirely) starts every view control fresh - a
+  // sort column or filter from a previous table would not make sense here.
   useEffect(() => {
     setSortBy(null);
     setSortDir("asc");
@@ -118,7 +134,7 @@ export default function DataTable({
     setOffset(0);
     setOpenFilterCol(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [datasourceId, activeVersionId]);
+  }, [datasourceId, activeVersionId, activeTable]);
 
   // Closes the open column menu on a click anywhere else on the page. A
   // click inside the menu itself never reaches here, because the header
@@ -224,7 +240,7 @@ export default function DataTable({
   const doExport = async (format: "csv" | "xlsx") => {
     setBusyAction(format);
     try {
-      await datasourceApi.downloadExport(datasourceId, activeVersionId, format);
+      await datasourceApi.downloadExport(datasourceId, activeVersionId, format, activeVersionId ? null : activeTable);
     } catch {
       setError("Could not export the data. Please try again.");
     } finally {
@@ -248,14 +264,44 @@ export default function DataTable({
   return (
     <div className="card h-full flex flex-col overflow-hidden">
       <div className="p-3 border-b border-border flex items-center gap-3 overflow-x-auto shrink-0">
-        <button
-          className={`text-xs px-3 py-1.5 rounded-lg font-medium transition shrink-0 ${
-            activeVersionId === null ? "bg-primary text-white" : "btn-secondary"
-          }`}
-          onClick={() => onActiveVersionChange(null)}
-        >
-          Original data
-        </button>
+        {/* Original-data tab(s): teal, the same color used for a "real,
+            untouched source table" everywhere else in the app now (see the
+            WORKING ON picker's SourceDot in ChatPanel.tsx and the "+ Add
+            data" popup) - kept visually distinct from a saved/AI-built
+            table's violet tab below on purpose, so which is which reads at
+            a glance even with several of each open. A multi-table source
+            (more than one entry in originalTables) gets one tab per real
+            table/sheet name instead of a single generic "Original data"
+            button - every one of them is still "original data", just teal
+            either way, exactly as many teal tabs as there are real source
+            tables, however many that is. */}
+        {originalTables && originalTables.length > 1 ? (
+          originalTables.map((t) => (
+            <button
+              key={t}
+              className={`text-xs px-3 py-1.5 rounded-lg font-medium transition shrink-0 flex items-center gap-1.5 ${
+                activeVersionId === null && activeTable === t
+                  ? "bg-sky-600 text-white"
+                  : "border border-sky-500/40 text-sky-300 bg-sky-500/10 hover:bg-sky-500/20"
+              }`}
+              onClick={() => { onActiveVersionChange(null); onActiveTableChange?.(t); }}
+              title={`Original data — ${t}`}
+            >
+              {t}
+            </button>
+          ))
+        ) : (
+          <button
+            className={`text-xs px-3 py-1.5 rounded-lg font-medium transition shrink-0 ${
+              activeVersionId === null
+                ? "bg-sky-600 text-white"
+                : "border border-sky-500/40 text-sky-300 bg-sky-500/10 hover:bg-sky-500/20"
+            }`}
+            onClick={() => onActiveVersionChange(null)}
+          >
+            Original data
+          </button>
+        )}
         {versions.map((v) => (
           <div
             key={v.id}
