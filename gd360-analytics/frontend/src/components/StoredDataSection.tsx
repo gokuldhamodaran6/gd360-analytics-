@@ -52,16 +52,19 @@ function timeAgo(dateStr: string): string {
 const isDbKind = (k: string) => k === "postgres" || k === "mysql" || k === "sqlserver" || k === "mongodb" || k === "supabase";
 const isWarehouseKind = (k: string) => k === "bigquery";
 
-// "4 tables" / "1 collection" / "12 columns" (files are a single sheet, so
-// column count is the meaningful number there, not a table count of 1).
+// "4 tables" / "1 collection" / "12 columns" / "3 sheets" (a single-table
+// file - a CSV, or an Excel workbook with only one sheet - has no
+// meaningful table count of its own, so its column count is shown
+// instead; a genuinely multi-sheet Excel workbook shows its sheet count,
+// same as a database shows its table count).
 function dataSummaryLabel(ds: CreatedDataSource): string {
   const entries = getTableEntries(ds.kind, ds.schema_cache, ds.name);
-  if (ds.kind === "csv" || ds.kind === "excel") {
+  if (ds.kind === "csv" || (ds.kind === "excel" && entries.length <= 1)) {
     const cols = entries[0]?.columns.length || 0;
     return `${cols} column${cols === 1 ? "" : "s"}`;
   }
   const n = entries.length;
-  const noun = ds.kind === "mongodb" ? "collection" : "table";
+  const noun = ds.kind === "mongodb" ? "collection" : ds.kind === "excel" ? "sheet" : "table";
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
