@@ -239,6 +239,15 @@ Rules:
   three-column shape. Set x_label to the value's meaning (e.g. "Total Profit (USD)") and y_label to the
   category column's meaning (e.g. "Sub-Category") - these become the chart's shared outer axis captions, since
   a facet grid has no single axis pair of its own to title.
+- The same "<metric> by <category> in each/for every/split by <second category>" request can also be answered
+  as chart_type="heatmap" instead of "faceted_bar" - a matrix/grid read of the exact same comparison, generally
+  the CLEARER choice once the second category has more than about 6-8 distinct values (a facet grid of that
+  many separate panels gets hard to scan; one heatmap grid stays readable). When you pick heatmap for this kind
+  of request (as opposed to a correlation matrix - see below), `result` MUST be pivoted WIDE first - e.g.
+  `result = df.pivot_table(index="Sub.Category", columns="Market", values="Profit", aggfunc="sum", fill_value=0)`
+  - row index = the category column, columns = the "in each ___" column, cell = the aggregated numeric value.
+  Never hand back a long/tidy 3-column table for heatmap (that is the faceted_bar shape, not this one) - an
+  un-pivoted result raises an error here.
 - Prefer simple, correct pandas over clever one-liners.
 - For transform requests with no further detail (e.g. "clean this data" / "prepare this for analysis"), use
   reasonable defaults: drop exact duplicate rows, fill or drop missing values sensibly per column type, fix
@@ -995,6 +1004,433 @@ def _infer_chart_type(prompt: str, result: Any, chart_type: str | None) -> str:
 _SKIP_PREP_NOTE = "(This table has already been prepared specifically for this analysis - skip preparation and analyze it directly.)"
 
 
+# ---------------------------------------------------------------------------
+# Deterministic "cross-tab" fast path - no AI, no sandbox, just pandas.
+#
+# "<metric> by <category> in each/for every/split by <second category>" is
+# one of the single most common requests a data analyst tool gets (e.g.
+# "profit by sub-category in each market") and, being a plain groupby +
+# pivot, has exactly one correct answer - there is nothing for a model to
+# creatively get right, only column names to get wrong. Asking a free-tier
+# LLM to write fresh pandas code for this shape every single time is slow
+# (a network round trip, sometimes two if the first attempt mis-names a
+# dotted/spaced column or picks the wrong chart shape) and occasionally
+# fails outright even after a retry - which is exactly the failure this
+# section exists to eliminate. When the prompt confidently matches this
+# shape and every column resolves unambiguously, this computes and renders
+# the answer directly against the real dataframe - guaranteed correct
+# (it's arithmetic, not generated code) and near-instant even at 100k+ rows,
+# with a rich, analyst-style narrative instead of a bare chart. The moment
+# any part of this is not confident - an unmatched phrasing, an ambiguous
+# column, too many distinct values to read as a grid - it returns None and
+# the request falls straight through to the normal AI-planned flow below,
+# exactly as if this section did not exist.
+# ---------------------------------------------------------------------------
+
+_METRIC_PREFIX_RE = re.compile(r"^(total|average|avg|mean|sum(?:\s+of)?)\s+", re.IGNORECASE)
+_CROSSTAB_CONNECTORS = (
+    r"(?:in\s+each|for\s+each|for\s+every|per\s+each|split\s+by|broken\s+out\s+by|faceted\s+by|grouped\s+by)"
+)
+_CROSSTAB_RE = re.compile(
+    rf"^(?P<metric>.+?)\s+by\s+(?P<cat1>.+?)\s+{_CROSSTAB_CONNECTORS}\s+(?P<cat2>.+)$",
+    re.IGNORECASE,
+)
+_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
+
+
+def _normalize_phrase(s: str) -> str:
+    """Loose-matches a phrase against a real column name regardless of how
+    that column is punctuated in the actual file ("Sub.Category",
+    "sub_category", "Sub Category" all normalize the same way) or whether
+    the person used the singular/plural ("markets" -> "market") - this is
+    what lets the cross-tab matcher below work against ANY dataset's real
+    column names, not just one specific file's."""
+    s = (s or "").lower().strip()
+    s = re.sub(r"[.\-_/]+", " ", s)
+    s = re.sub(r"[^a-z0-9\s]", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if s.endswith("ies") and len(s) > 4:
+        s = s[:-3] + "y"
+    elif s.endswith("ses") and len(s) > 4:
+        s = s[:-2]
+    elif s.endswith("s") and not s.endswith("ss") and len(s) > 3:
+        s = s[:-1]
+    return s
+
+
+def _display_name(col: str) -> str:
+    """Turns a real column name into something readable in generated prose
+    and chart captions ("Sub.Category" -> "Sub Category", "order_date" ->
+    "order date") without ever touching the actual column name used to
+    index the dataframe - purely cosmetic, for narrative/insight text and
+    chart title/axis captions."""
+    return re.sub(r"[._]+", " ", str(col)).strip()
+
+
+def _resolve_column(phrase: str, columns: list) -> Any | None:
+    target = _normalize_phrase(phrase)
+    if not target:
+        return None
+    for c in columns:
+        if _normalize_phrase(str(c)) == target:
+            return c
+    target_tokens = set(target.split())
+    best = None
+    for c in columns:
+        col_tokens = set(_normalize_phrase(str(c)).split())
+        if not (target_tokens and col_tokens):
+            continue
+        # Allow the phrase to be a subset/superset of the column's own
+        # words ("sub category" <-> "sub.category"), but only up to a
+        # couple of stray extra words either side - past that it is too
+        # loose a match to trust (e.g. "market as a bar chart" should not
+        # silently resolve to "Market").
+        if col_tokens <= target_tokens and len(target_tokens - col_tokens) <= 2:
+            best = best or c
+        elif target_tokens <= col_tokens and len(col_tokens - target_tokens) <= 2:
+            best = best or c
+    return best
+
+
+def _crosstab_narrative(pivot: pd.DataFrame, metric_col: str, cat1_col: str, cat2_col: str, date_note: str) -> tuple[str, str]:
+    """Builds the plain-English reply + insight straight from the pivoted
+    numbers - every figure quoted here is read directly off `pivot` with
+    plain pandas/Python arithmetic, never phrased by a model, so it is
+    guaranteed to match the chart exactly."""
+    totals_by_cat2 = pivot.sum(axis=0).sort_values(ascending=False)
+    stacked = pivot.stack()
+    best_row, best_col = stacked.idxmax()
+    best_val = float(stacked.loc[(best_row, best_col)])
+    losses = stacked[stacked < 0].sort_values()
+    n_losses = int(len(losses))
+
+    def fmt(v: float) -> str:
+        return f"{v:,.1f}"
+
+    metric_col, cat1_col, cat2_col = _display_name(metric_col), _display_name(cat1_col), _display_name(cat2_col)
+
+    ranked_cat2 = list(totals_by_cat2.items())
+    grand_total = float(pivot.to_numpy().sum())
+
+    lines = [
+        f"**Overall results{date_note}**",
+        f"Total {metric_col.lower()}: {fmt(grand_total)}, across {pivot.shape[0]} {cat1_col.lower()} values "
+        f"and {pivot.shape[1]} {cat2_col.lower()} values.",
+        f"Top {cat2_col.lower()}: {ranked_cat2[0][0]} at {fmt(ranked_cat2[0][1])}"
+        + (
+            f", followed by {ranked_cat2[1][0]} ({fmt(ranked_cat2[1][1])}) and "
+            f"{ranked_cat2[2][0]} ({fmt(ranked_cat2[2][1])})."
+            if len(ranked_cat2) >= 3
+            else (f", followed by {ranked_cat2[1][0]} ({fmt(ranked_cat2[1][1])})." if len(ranked_cat2) == 2 else ".")
+        ),
+        f"Highest single combination: {best_row} in {best_col}, at {fmt(best_val)}.",
+    ]
+    if n_losses:
+        worst_row, worst_col = losses.index[0]
+        lines.append(
+            f"There are {n_losses} loss-making {cat1_col.lower()}/{cat2_col.lower()} combinations - the "
+            f"biggest is {worst_row} in {worst_col} at {fmt(losses.iloc[0])}."
+        )
+    leader_lines = []
+    for cat2_name in totals_by_cat2.index[:5]:
+        col = pivot[cat2_name]
+        leader = col.idxmax()
+        leader_lines.append(f"{leader} leads {cat2_name} at {fmt(col.loc[leader])}.")
+    if leader_lines:
+        lines.append("**Key patterns**")
+        lines.extend(leader_lines)
+    narrative = "\n\n".join(lines)
+
+    worst_focus = f"{losses.index[0][1]}" if n_losses else ranked_cat2[-1][0]
+    insight = (
+        f"**Key insight:** {ranked_cat2[0][0]} is the strongest {cat2_col.lower()} at {fmt(ranked_cat2[0][1])} "
+        f"total {metric_col.lower()}, led within it by {best_row} at {fmt(best_val)}.\n"
+        f"**Implication:** "
+        + (
+            f"{n_losses} combination(s) are actually losing {metric_col.lower()}, worth reviewing before "
+            f"investing further there."
+            if n_losses
+            else f"Every {cat1_col.lower()}/{cat2_col.lower()} combination here is net-positive on {metric_col.lower()}."
+        )
+        + "\n"
+        f"**Next step:** Drill into {worst_focus} to see what is driving its "
+        f"{'losses' if n_losses else 'weaker numbers'}."
+    )
+    return narrative, insight
+
+
+_EXPLICIT_FORMAT_RE = re.compile(r"\b(chart|graph|plot|panel|visuali[sz]e|diagram|table)\b", re.IGNORECASE)
+
+
+def _try_deterministic_crosstab(prompt: str, df: pd.DataFrame, profile: dict) -> dict | None:
+    m = _CROSSTAB_RE.match((prompt or "").strip())
+    if not m:
+        return None
+    # A person who names a specific presentation ("...as a bar chart", "as
+    # panels", "visualize...") cares about the format, not just the
+    # numbers - that choice is always handed to the AI-planned flow (which
+    # can honor grouped_bar/faceted_bar/etc. explicitly) rather than
+    # silently defaulting to this fast path's own heatmap.
+    if _EXPLICIT_FORMAT_RE.search(prompt or ""):
+        return None
+
+    metric_phrase = _METRIC_PREFIX_RE.sub("", m.group("metric")).strip()
+    cat1_phrase = m.group("cat1").strip()
+    cat2_raw = m.group("cat2").strip()
+    cat2_phrase = _YEAR_RE.sub("", cat2_raw).strip(" ,.-")
+
+    columns = list(df.columns)
+    metric_col = _resolve_column(metric_phrase, columns)
+    cat1_col = _resolve_column(cat1_phrase, columns)
+    cat2_col = _resolve_column(cat2_phrase, columns)
+    if not (metric_col and cat1_col and cat2_col) or len({metric_col, cat1_col, cat2_col}) < 3:
+        return None
+    if not pd.api.types.is_numeric_dtype(df[metric_col]):
+        return None
+    if pd.api.types.is_numeric_dtype(df[cat1_col]) or pd.api.types.is_numeric_dtype(df[cat2_col]):
+        return None
+
+    # A competitor-grade answer to this kind of request is never just the
+    # single requested metric plotted on its own - it is a full breakdown
+    # TABLE (e.g. Profit AND Sales AND an order count AND a profit margin,
+    # not just Profit alone) saved as a real, keepable table alongside the
+    # chart - see the final_table block below, right after the chart is
+    # built. Pull in a couple of other genuinely metric-like numeric
+    # columns for that table now (never an id/code/zip-style column, which
+    # is never something to sum) - generic, so this works for any dataset,
+    # not just one with columns named like Superstore's.
+    id_like_re = re.compile(r"\b(id|code|zip|postal|number|no|lat|lon|latitude|longitude)\b", re.IGNORECASE)
+    extra_numeric = [
+        c for c in columns
+        if c not in (cat1_col, cat2_col, metric_col)
+        and pd.api.types.is_numeric_dtype(df[c])
+        and not id_like_re.search(_normalize_phrase(str(c)))
+    ][:2]
+    # A distinct order/transaction count reads far more like a real
+    # analyst's "Orders" column than a plain row count does, whenever the
+    # data actually has an order/transaction identifier to count distinct
+    # values of - fall back to a plain row count only when it does not.
+    order_id_col = next(
+        (
+            c for c in columns
+            if _normalize_phrase(str(c)) in ("order id", "order number", "order no", "orderid", "transaction id")
+        ),
+        None,
+    )
+
+    work_cols = list(dict.fromkeys(
+        [cat1_col, cat2_col, metric_col] + extra_numeric + ([order_id_col] if order_id_col else [])
+    ))
+    work = df[work_cols].copy()
+
+    years_in_prompt = [int(y) for y in _YEAR_RE.findall(prompt or "")]
+    year_col = None
+    date_note = ""
+    lo = hi = None
+    if years_in_prompt:
+        lo, hi = min(years_in_prompt), max(years_in_prompt)
+        year_col = _resolve_column("year", columns)
+        if year_col and pd.api.types.is_numeric_dtype(df[year_col]):
+            years_series = pd.to_numeric(df[year_col], errors="coerce")
+            work = work[(years_series >= lo) & (years_series <= hi)]
+            date_note = f" for {lo}-{hi}" if lo != hi else f" for {lo}"
+        else:
+            year_col = None
+            date_col = next((c for c in columns if pd.api.types.is_datetime64_any_dtype(df[c])), None)
+            if date_col is None:
+                date_col = next((c for c in columns if "date" in _normalize_phrase(str(c))), None)
+            if date_col is not None:
+                try:
+                    parsed = pd.to_datetime(df[date_col], errors="coerce")
+                    mask = (parsed.dt.year >= lo) & (parsed.dt.year <= hi)
+                    work = work[mask.fillna(False)]
+                    date_note = f" for {lo}-{hi}" if lo != hi else f" for {lo}"
+                except Exception:
+                    pass
+
+    work[metric_col] = pd.to_numeric(work[metric_col], errors="coerce")
+    for extra_col in extra_numeric:
+        work[extra_col] = pd.to_numeric(work[extra_col], errors="coerce")
+    work = work.dropna(subset=[metric_col])
+    if work.empty:
+        return None
+
+    n_cat1 = work[cat1_col].nunique()
+    n_cat2 = work[cat2_col].nunique()
+    # A heatmap reads cleanly up to a few dozen rows/columns; past that it
+    # is an unreadable wall of tiny cells - fall through to the normal
+    # AI-planned flow (which can choose a more suitable chart, or ask a
+    # clarifying question) rather than force a bad one.
+    if n_cat1 < 2 or n_cat2 < 2 or n_cat1 > 60 or n_cat2 > 60:
+        return None
+
+    pivot = work.pivot_table(index=cat1_col, columns=cat2_col, values=metric_col, aggfunc="sum", fill_value=0)
+    pivot = pivot.loc[pivot.sum(axis=1).sort_values(ascending=False).index]
+    pivot = pivot[pivot.sum(axis=0).sort_values(ascending=False).index]
+
+    title = f"{_display_name(metric_col)} by {_display_name(cat1_col)} and {_display_name(cat2_col)}{date_note}"
+
+    # Pick whichever chart actually reads best for this result, not one
+    # fixed default - a small number of panels ("in each market", 7 of
+    # them) reads exactly like the reference RStudio facet_wrap chart this
+    # was built to match: one clean bar panel per value, easy to scan
+    # side by side. Past a handful of panels that same layout turns into a
+    # wall of tiny, hard-to-compare charts, so a single heatmap grid (every
+    # combination in one glance) takes over instead - the same threshold
+    # the SYSTEM_PROMPT heatmap rule uses for the AI-planned fallback path,
+    # so both paths agree on when to switch.
+    use_facets = n_cat2 <= 8
+    try:
+        if use_facets:
+            melted = pivot.reset_index().melt(id_vars=cat1_col, var_name=cat2_col, value_name=metric_col)
+            facet_frame = melted[[cat2_col, cat1_col, metric_col]]
+            chart_spec = build_figure(
+                facet_frame, "faceted_bar", title,
+                x_label=_display_name(metric_col), y_label=_display_name(cat1_col),
+            )
+            chosen_chart_type = "faceted_bar"
+        else:
+            chart_spec = build_figure(
+                pivot, "heatmap", title,
+                x_label=_display_name(cat2_col), y_label=_display_name(cat1_col),
+            )
+            chosen_chart_type = "heatmap"
+    except Exception as e:
+        print(f"[ai_engine] deterministic crosstab chart build failed for prompt={prompt!r}, falling back to AI: {e}")
+        return None
+
+    narrative, insight = _crosstab_narrative(pivot, metric_col, cat1_col, cat2_col, date_note)
+
+    # The final, keepable breakdown TABLE - same shape and clarity as a
+    # competitor's exported pivot (the requested metric plus related
+    # metrics plus a count plus a computed margin, one row per cat1/cat2
+    # combination), not just implied by the chart. This is what makes a
+    # single click deliver a complete result the way an analyst would:
+    # a real table to review/sort/download in the Data tab, AND the
+    # right-fit chart, AND the written analysis - all at once, every time
+    # this pattern is recognized, with zero AI/network round trip.
+    agg_spec = {metric_col: "sum", **{c: "sum" for c in extra_numeric}}
+    final_table = work.groupby([cat1_col, cat2_col], as_index=False).agg(agg_spec)
+    if order_id_col:
+        count_series = work.groupby([cat1_col, cat2_col])[order_id_col].nunique().reset_index(name="_count")
+        count_label = f"{_display_name(order_id_col)} Count"
+    else:
+        count_series = work.groupby([cat1_col, cat2_col]).size().reset_index(name="_count")
+        count_label = "Row Count"
+    final_table = final_table.merge(count_series, on=[cat1_col, cat2_col], how="left")
+    final_table = final_table.rename(columns={"_count": count_label})
+    # A "margin" percentage is only meaningful for one specific, well-
+    # understood shape: a profit-like metric divided by a sales/revenue-
+    # like column, both denominated in the same currency (exactly the
+    # "Profit Margin" a competitor tool computes). Dividing an arbitrary
+    # metric by an arbitrary other numeric column (e.g. Sales by Quantity)
+    # produces a number that LOOKS like a percentage but means nothing -
+    # worse than not showing one at all - so this only ever fires for that
+    # one specific, genuinely sensible case.
+    # Plain lowercase + punctuation-to-space only - deliberately NOT
+    # _normalize_phrase, whose plural-stripping would turn "Sales" into
+    # "sale" and silently break a whole-word match against "sales".
+    def _loose_lower(s: str) -> str:
+        return re.sub(r"[._\-/]+", " ", str(s)).lower()
+
+    _PROFIT_LIKE_RE = re.compile(r"\b(profit|margin|income|earnings)\b", re.IGNORECASE)
+    _SALES_LIKE_RE = re.compile(r"\b(sales?|revenue|amount)\b", re.IGNORECASE)
+    if _PROFIT_LIKE_RE.search(_loose_lower(metric_col)):
+        sales_candidate = next(
+            (c for c in extra_numeric if _SALES_LIKE_RE.search(_loose_lower(c))), None
+        )
+        if sales_candidate:
+            margin_label = f"{_display_name(metric_col)} Margin (%)"
+            final_table[margin_label] = (
+                final_table[metric_col] / final_table[sales_candidate].replace(0, float("nan")) * 100
+            ).round(1)
+    # Order the table the same way the chart itself is ordered - biggest
+    # cat1 totals first, then biggest metric value within each - so the
+    # table and the chart tell the identical story, top to bottom.
+    cat1_order = {name: i for i, name in enumerate(pivot.index)}
+    final_table["_sort"] = final_table[cat1_col].map(cat1_order)
+    final_table = final_table.sort_values(["_sort", metric_col], ascending=[True, False]).drop(columns="_sort")
+    final_table = final_table.reset_index(drop=True)
+    # Cosmetic column renaming happens only on this saved copy - the
+    # dataframe used for the pivot/chart above still uses the real,
+    # original column names throughout, so nothing about the actual
+    # computation changes.
+    final_table = final_table.rename(columns={c: _display_name(c) for c in final_table.columns})
+
+    relevant_source_cols = list(dict.fromkeys([cat1_col, cat2_col, metric_col] + extra_numeric))
+    nulls_before = int(df[relevant_source_cols].isna().sum().sum())
+    nulls_after = int(final_table.isna().sum().sum())
+    saved_cols_desc = ", ".join(c for c in final_table.columns if c not in (_display_name(cat1_col), _display_name(cat2_col)))
+    narrative += (
+        f"\n\nI also saved the complete {_display_name(cat1_col).lower()}-by-{_display_name(cat2_col).lower()} "
+        f"breakdown as a new table ({saved_cols_desc}) - you can find it in the Data tab."
+    )
+
+    code_lines = ["result = df.copy()"]
+    if year_col and lo is not None:
+        code_lines.append(
+            f"_years = pd.to_numeric(result[{year_col!r}], errors='coerce')\n"
+            f"result = result[(_years >= {lo}) & (_years <= {hi})]"
+        )
+    code_lines.append(f"result[{metric_col!r}] = pd.to_numeric(result[{metric_col!r}], errors='coerce')")
+    code_lines.append(
+        f"result = result.pivot_table(index={cat1_col!r}, columns={cat2_col!r}, values={metric_col!r}, "
+        f"aggfunc='sum', fill_value=0)"
+    )
+    if use_facets:
+        code_lines.append(
+            f"result = result.reset_index().melt(id_vars={cat1_col!r}, var_name={cat2_col!r}, "
+            f"value_name={metric_col!r})[[{cat2_col!r}, {cat1_col!r}, {metric_col!r}]]"
+        )
+    code = "\n".join(code_lines) + "\n"
+
+    if use_facets:
+        alt_follow_up = {
+            "label": "Show this as one combined heatmap instead",
+            "prompt": f"Show {metric_col} by {cat1_col} and {cat2_col} as a heatmap.",
+        }
+    else:
+        alt_follow_up = {
+            "label": "Show this as small-multiple bar panels instead",
+            "prompt": f"Show {metric_col} by {cat1_col} in each {cat2_col} as separate bar chart panels.",
+        }
+
+    return {
+        "needs_clarification": False,
+        "clarifying_question": None,
+        "action": "analyze",
+        "narrative": narrative,
+        "chart_spec": chart_spec,
+        "chart_type": chosen_chart_type,
+        "insight": insight,
+        # cleaned_df being set is what tells routers/chat.py a real,
+        # executed table exists to persist as a new saved version (see
+        # _save_cleaning_result) - the exact same contract an ordinary
+        # transform uses, so this final breakdown table shows up in the
+        # Data tab right alongside the chart, from this one click, with no
+        # separate "now build me a table" follow-up question needed.
+        "cleaned_df": final_table,
+        "rows_before": int(len(df)),
+        "rows_after": int(len(final_table)),
+        "nulls_before": nulls_before,
+        "nulls_after": nulls_after,
+        "suggested_charts": suggest_charts(profile),
+        "suggested_stats": suggest_stats(profile),
+        "follow_up_suggestions": [
+            alt_follow_up,
+            {
+                "label": "Explain the biggest loss-making combination",
+                "prompt": f"Which {cat1_col} and {cat2_col} combination lost the most {metric_col}, and why might that be?",
+            },
+            {
+                "label": "Visualize the saved breakdown table",
+                "prompt": f"Visualize the {_display_name(metric_col)} by {_display_name(cat1_col)} and {_display_name(cat2_col)} table you just saved.",
+            },
+        ],
+        "code": code,
+    }
+
+
 def analyze(
     prompt: str,
     tables: dict[str, pd.DataFrame],
@@ -1110,6 +1546,20 @@ def analyze(
                 "code": None,
             }
 
+    # A deterministic shortcut for the extremely common "<metric> by
+    # <category> in each/for every/split by <second category>" cross-tab
+    # request (e.g. "profit by sub-category in each market") - see the
+    # _try_deterministic_crosstab block above for why this exists and
+    # exactly what it guarantees. Only engaged for the plain one-click flow
+    # against a single selected table with no explicit chart override -
+    # step-by-step mode, a multi-table selection, or an explicit chart
+    # choice all fall straight through to the normal AI-planned flow below,
+    # unaffected.
+    if len(explicit_table_names) == 1 and not chart_override and not guided and not skip_prep:
+        deterministic = _try_deterministic_crosstab(prompt, df, profile)
+        if deterministic:
+            return deterministic
+
     # A deterministic shortcut for the exact same question being asked
     # again: rather than asking the model to write pandas code for it a
     # second time (which, even at low randomness, is still an AI decision
@@ -1197,6 +1647,7 @@ def analyze(
         # is actually run) quietly recovers instead of surfacing a
         # technical failure right away.
         retry_detail = result.pop("_retry_detail", "unknown error")
+        print(f"[ai_engine] first attempt failed for prompt={prompt!r}: {retry_detail}")
         retry_messages = messages + [
             {"role": "assistant", "content": json.dumps(plan)},
             {
@@ -1214,8 +1665,11 @@ def analyze(
         try:
             fixed_plan = _plan_with_retry(retry_messages)
             result = _execute_plan(prompt, tables, profile, fixed_plan, chart_override, guided)
-        except Exception:
+        except Exception as e:
+            print(f"[ai_engine] retry call itself raised for prompt={prompt!r}: {e}")
             pass  # keep the first attempt friendly failure message already in `result`
+        if result.get("_retry_needed"):
+            print(f"[ai_engine] retry ALSO failed for prompt={prompt!r}: {result.get('_retry_detail')}")
         result.pop("_retry_needed", None)
         result.pop("_retry_detail", None)
 
