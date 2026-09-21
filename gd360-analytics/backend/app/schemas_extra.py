@@ -12,12 +12,18 @@ class ChatRequestFull(BaseModel):
     # Which step of the guided workflow this prompt came from, if any:
     # "clean" | "explore" | "visualize" | None (freeform / pro mode).
     intent: Optional[str] = None
-    # Which saved table(s) to run this prompt against: each entry is either
-    # the literal string "original" (the untouched original data) or a
-    # DatasetVersion.id. None/empty means the original data alone. The
-    # person picks this explicitly whenever more than one table exists, so
-    # a prompt never silently runs against the wrong one - and picking more
-    # than one lets a single prompt compare or combine several tables.
+    # Which saved table(s) to run this prompt against. None/empty means the
+    # original data alone. The person picks this explicitly whenever more
+    # than one table exists, so a prompt never silently runs against the
+    # wrong one - and picking more than one lets a single prompt compare or
+    # combine several tables, from one data source or several, at once.
+    # Each entry is one of (see routers/chat.py _load_selected_tables for
+    # exactly how these are resolved):
+    #   "original"                          - this datasource's own original data
+    #   "sheet:<name>"                      - one sheet of THIS datasource, for a multi-sheet Excel upload
+    #   a bare DatasetVersion.id            - a saved table (any datasource the person owns)
+    #   "ds:<other_datasource_id>:original" - another, separately-connected data source's original data
+    #   "ds:<other_datasource_id>:sheet:<name>" - a specific sheet of that other data source
     source_version_ids: Optional[List[str]] = None
     # The person choice of how much control they want over an analysis
     # question that needs its own data preparation step first: "auto" (the
