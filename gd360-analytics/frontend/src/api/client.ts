@@ -196,6 +196,7 @@ export type ConversationSummary = {
   message_count: number;
   last_message: string;
   last_chart_type: string | null;
+  pinned: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -223,7 +224,10 @@ export const conversationApi = {
   list: () => api.get<ConversationSummary[]>("/conversations").then((r) => r.data),
   getMessages: (id: string) => api.get<ConversationDetail>(`/conversations/${id}/messages`).then((r) => r.data),
   rename: (id: string, title: string) =>
-    api.patch<{ id: string; title: string }>(`/conversations/${id}`, { title }).then((r) => r.data),
+    api.patch<{ id: string; title: string; pinned: boolean }>(`/conversations/${id}`, { title }).then((r) => r.data),
+  pin: (id: string, pinned: boolean) =>
+    api.patch<{ id: string; title: string; pinned: boolean }>(`/conversations/${id}`, { pinned }).then((r) => r.data),
+  remove: (id: string) => api.delete<{ id: string; deleted: boolean }>(`/conversations/${id}`).then((r) => r.data),
 };
 
 // The "Double-check this" action: re-checks a previously computed answer
