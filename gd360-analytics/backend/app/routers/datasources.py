@@ -24,7 +24,9 @@ from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
 from ..services.connectors import SQLConnector, MongoConnector, FileConnector, BigQueryConnector
-from ..services.data_loader import load_dataframe, load_version_dataframe, ensure_legacy_migrated, warm_cache
+from ..services.data_loader import (
+    load_dataframe, load_version_dataframe, ensure_legacy_migrated, warm_cache, default_table_for_preview,
+)
 
 router = APIRouter(prefix="/datasources", tags=["datasources"])
 settings = get_settings()
@@ -218,16 +220,32 @@ async def upload_file(
         raise HTTPException(400, f"File too large. Max {settings.MAX_UPLOAD_MB}MB.")
 
     kind = "excel" if ext in (".xlsx", ".xls") else "csv"
-    # Parse the workbook/CSV exactly once here (for the schema), instead of
-    # once here AND again on whatever the person's first preview/chat turns
-    # out to be - for a large file that second, redundant parse was pure
-    # waste. The already-loaded DataFrame is reused directly for the schema
-    # (see FileConnector.introspect_schema, which would otherwise do this
-    # same parse a second time internally) and then handed to warm_cache
-    # below.
+    # Parse the workbook/CSV exactly once here per sheet (for the schema),
+    # instead of once here AND again on whatever the person's first
+    # preview/chat turns out to be - for a large file that second,
+    # redundant parse was pure waste. A CSV, or an Excel workbook with only
+    # one sheet, keeps the original flat schema shape (a single implicit
+    # table) exactly as before. A genuinely multi-sheet workbook instead
+    # gets one schema entry PER SHEET (see FileConnector.introspect_schema)
+    # so every sheet - not just the first - is a pickable table in the
+    # WORKING ON selector, the same way a multi-table database already
+    # works; every sheet is parsed once, right here, and its DataFrame is
+    # handed to warm_cache below so the very first time each one is
+    # actually used is instant rather than a fresh parse.
+    connector = FileConnector(contents, ext)
     try:
-        df = FileConnector(contents, ext).load_dataframe()
-        schema = {"columns": [{"name": c, "type": str(df[c].dtype)} for c in df.columns]}
+        sheet_names = connector.list_sheet_names()
+        if not sheet_names or len(sheet_names) <= 1:
+            df = connector.load_dataframe(sheet_name=(sheet_names[0] if sheet_names else 0))
+            schema = {"columns": [{"name": c, "type": str(df[c].dtype)} for c in df.columns]}
+            sheet_frames = None
+        else:
+            sheet_frames = {}
+            schema = {}
+            for sheet in sheet_names[:50]:
+                sdf = connector.load_dataframe(sheet_name=sheet)
+                sheet_frames[sheet] = sdf
+                schema[sheet] = [{"name": c, "type": str(sdf[c].dtype)} for c in sdf.columns]
     except Exception as e:
         raise HTTPException(400, f"Could not read file: {e}")
 
@@ -243,12 +261,17 @@ async def upload_file(
     db.add(ds)
     db.commit()
     db.refresh(ds)
-    # Seeds the in-process cache with the parse this request already did,
-    # so the very first preview/chat message against this new datasource -
-    # commonly the next thing that happens - is instant instead of paying
-    # a full re-parse of a possibly large file. See data_loader.py's cache
-    # comment for why this is always safe (ds.file_data never changes).
-    warm_cache(ds.id, df)
+    # Seeds the in-process cache with the parse(s) this request already
+    # did, so the very first preview/chat message against this new
+    # datasource - commonly the next thing that happens - is instant
+    # instead of paying a full re-parse of a possibly large file/sheet. See
+    # data_loader.py's cache comment for why this is always safe
+    # (ds.file_data never changes).
+    if sheet_frames is None:
+        warm_cache(ds.id, df)
+    else:
+        for sheet, sdf in sheet_frames.items():
+            warm_cache(ds.id, sdf, table=sheet)
     return ds
 
 
@@ -355,7 +378,17 @@ def preview_datasource(
 
     active_version = _get_owned_version(db, ds, version_id) if version_id else None
     try:
-        df = load_version_dataframe(active_version) if active_version else load_dataframe(ds, version="original")
+        # A multi-sheet Excel workbook (see data_loader.default_table_for_
+        # preview) always defaults to its first sheet here - there is no
+        # back-and-forth in a page view to ask "which sheet?" through, so
+        # this never raises the way an ambiguous WORKING ON chat selection
+        # would; the person can still open the picker in chat to work with
+        # any other sheet.
+        df = (
+            load_version_dataframe(active_version)
+            if active_version
+            else load_dataframe(ds, table=default_table_for_preview(ds), version="original")
+        )
     except Exception as e:
         raise HTTPException(400, f"Could not load data: {e}")
 
@@ -409,7 +442,11 @@ def export_datasource(
 
     active_version = _get_owned_version(db, ds, version_id) if version_id else None
     try:
-        df = load_version_dataframe(active_version) if active_version else load_dataframe(ds, version="original")
+        df = (
+            load_version_dataframe(active_version)
+            if active_version
+            else load_dataframe(ds, table=default_table_for_preview(ds), version="original")
+        )
     except Exception as e:
         raise HTTPException(400, f"Could not load data: {e}")
 
