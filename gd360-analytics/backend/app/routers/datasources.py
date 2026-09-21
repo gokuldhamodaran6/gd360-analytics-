@@ -24,7 +24,7 @@ from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
 from ..services.connectors import SQLConnector, MongoConnector, FileConnector, BigQueryConnector
-from ..services.data_loader import load_dataframe, load_version_dataframe, ensure_legacy_migrated
+from ..services.data_loader import load_dataframe, load_version_dataframe, ensure_legacy_migrated, warm_cache
 
 router = APIRouter(prefix="/datasources", tags=["datasources"])
 settings = get_settings()
@@ -218,8 +218,16 @@ async def upload_file(
         raise HTTPException(400, f"File too large. Max {settings.MAX_UPLOAD_MB}MB.")
 
     kind = "excel" if ext in (".xlsx", ".xls") else "csv"
+    # Parse the workbook/CSV exactly once here (for the schema), instead of
+    # once here AND again on whatever the person's first preview/chat turns
+    # out to be - for a large file that second, redundant parse was pure
+    # waste. The already-loaded DataFrame is reused directly for the schema
+    # (see FileConnector.introspect_schema, which would otherwise do this
+    # same parse a second time internally) and then handed to warm_cache
+    # below.
     try:
-        schema = FileConnector(contents, ext).introspect_schema()
+        df = FileConnector(contents, ext).load_dataframe()
+        schema = {"columns": [{"name": c, "type": str(df[c].dtype)} for c in df.columns]}
     except Exception as e:
         raise HTTPException(400, f"Could not read file: {e}")
 
@@ -235,6 +243,12 @@ async def upload_file(
     db.add(ds)
     db.commit()
     db.refresh(ds)
+    # Seeds the in-process cache with the parse this request already did,
+    # so the very first preview/chat message against this new datasource -
+    # commonly the next thing that happens - is instant instead of paying
+    # a full re-parse of a possibly large file. See data_loader.py's cache
+    # comment for why this is always safe (ds.file_data never changes).
+    warm_cache(ds.id, df)
     return ds
 
 
