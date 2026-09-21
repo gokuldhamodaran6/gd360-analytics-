@@ -73,10 +73,10 @@ schema:
                             // can include a fenced code block (```python ... ```) when the question is about
                             // code.
   "chart_type": "bar"|"line"|"area"|"pie"|"scatter"|"histogram"|"box"|"heatmap"|"waterfall"|"funnel"|"treemap"
-                            // |"horizontal_bar"|"grouped_bar"|"stacked_bar"|"radar"|"polar_bar"|"stacked_area"
-                            // |"step_line"|"candlestick"|"ohlc"|"violin"|"dot_plot"|"density_heatmap"|"bubble"
-                            // |"contour"|"scatter_3d"|"error_bar"|"donut"|"sunburst"|"icicle"|"funnel_area"
-                            // |"sankey"|"gauge"|"parallel_coordinates"|"choropleth"|null,
+                            // |"horizontal_bar"|"grouped_bar"|"stacked_bar"|"faceted_bar"|"radar"|"polar_bar"
+                            // |"stacked_area"|"step_line"|"candlestick"|"ohlc"|"violin"|"dot_plot"
+                            // |"density_heatmap"|"bubble"|"contour"|"scatter_3d"|"error_bar"|"donut"|"sunburst"
+                            // |"icicle"|"funnel_area"|"sankey"|"gauge"|"parallel_coordinates"|"choropleth"|null,
   "title": string | null,
   "x_label": string | null,
   "y_label": string | null,
@@ -95,8 +95,11 @@ schema:
                             // If action == "analyze": the request is about exploring, summarizing,
                             // visualizing, finding patterns in, or categorizing the data for a chart/insight.
                             // The code MUST assign the final chart-ready data to `result` (a pandas Series or
-                            // a 2-column-or-fewer DataFrame, or a square numeric DataFrame for chart_type
-                            // "heatmap").
+                            // a 2-column-or-fewer DataFrame; a square numeric DataFrame for chart_type
+                            // "heatmap"; or, ONLY for chart_type "faceted_bar", a 3-column DataFrame in this
+                            // exact order - the column to split into separate panels, the category column for
+                            // the bars within every panel, and the numeric value - see the faceted_bar rule
+                            // below for when to use this chart_type).
                             //
                             // If action == "explain": leave this null. The request is a QUESTION about the
                             // data/result/method/code itself (e.g. "give me the python code", "can I get this
@@ -213,6 +216,29 @@ Rules:
   turn: set prep_code and prep_narrative to null and go straight to producing the chart-ready `code` against the
   current table exactly as action="analyze" would without any preparation step.
 - Never invent columns that are not in the schema you were given.
+- Never access a column with dot/attribute notation (e.g. df.Sub.Category, df.Order.Date) - ALWAYS use bracket
+  notation (df["Sub.Category"], df['Order Date'], tables["<table>"]["Col Name"]). Real-world column names
+  frequently contain dots, spaces or other punctuation (e.g. "Sub.Category", "Order.Date", "Customer ID"), and
+  dot-chaining a name like that does not access the column at all - it raises an AttributeError and the whole
+  request fails. This applies to every single column reference in prep_code and code, with no exceptions, even
+  for columns whose name looks like a plain identifier - bracket notation always works, dot notation sometimes
+  silently does not, so there is never a reason to use dot notation for a column.
+- Use chart_type="faceted_bar" (small multiples - one bar-chart panel per value of a second category, all
+  panels shown together in a grid) specifically when the request asks to break a comparison out "by <category>
+  IN EACH <group>", "split by <group>", "one chart per <group>", "faceted by <group>", "for every <group>", or
+  similarly wants the SAME bar comparison repeated separately for every value of a second categorical column -
+  for example "profit by sub-category in each market", "sales by product for every region", "revenue by month
+  split by country". This is different from grouped_bar/stacked_bar, which put every group's bars on ONE shared
+  axis instead of in separate panels - never use grouped_bar/stacked_bar for an "in each"/"for every" request,
+  and never use faceted_bar for a request that just wants groups compared side by side on one shared axis.
+  When you pick faceted_bar, `result` MUST be a DataFrame with EXACTLY three columns in this order: (1) the
+  column whose distinct values become the separate panels (the "in each ___" column - keep this to a sensible
+  number of distinct values, ideally under ~12, since each one becomes its own panel), (2) the category column
+  shown as bars within every panel, (3) the numeric value, already aggregated (e.g. summed) per
+  panel-value + category combination - do not pivot this into a wide table, keep it in this long/tidy
+  three-column shape. Set x_label to the value's meaning (e.g. "Total Profit (USD)") and y_label to the
+  category column's meaning (e.g. "Sub-Category") - these become the chart's shared outer axis captions, since
+  a facet grid has no single axis pair of its own to title.
 - Prefer simple, correct pandas over clever one-liners.
 - For transform requests with no further detail (e.g. "clean this data" / "prepare this for analysis"), use
   reasonable defaults: drop exact duplicate rows, fill or drop missing values sensibly per column type, fix
@@ -231,11 +257,13 @@ Rules:
   conversion stages. Only choose "bar" when comparing a measure across categories is genuinely the best fit
   for the request - not as a fallback. Beyond these core types, a much larger chart vocabulary is also
   available (see the chart_type list above) for when the data and request genuinely call for it, e.g.
-  "grouped_bar"/"stacked_bar" for several numeric columns compared per category, "radar" for comparing several
-  metrics across 3+ categories, "violin"/"bubble" for richer distribution/relationship views, "sankey" for
-  flows between stages, "gauge" for a single KPI. Only reach for one of these when the result genuinely has the
-  shape it needs (e.g. sankey needs source/target/value columns) - never force data into a chart type it does
-  not fit.
+  "grouped_bar"/"stacked_bar" for several numeric columns compared per category, "faceted_bar" for the same bar
+  comparison repeated in a separate panel per value of a second category (an "in each <group>"/"for every
+  <group>" request - see the dedicated faceted_bar rule below for exactly when and how), "radar" for comparing
+  several metrics across 3+ categories, "violin"/"bubble" for richer distribution/relationship views, "sankey"
+  for flows between stages, "gauge" for a single KPI. Only reach for one of these when the result genuinely has
+  the shape it needs (e.g. sankey needs source/target/value columns) - never force data into a chart type it
+  does not fit.
 - When the request describes one named variable's effect on another - "impact of X on Y", "does X affect Y",
   "influence of X on Y", "how does X drive Y", "relationship between X and Y" - the variable named as the
   cause/driver (X) MUST end up as one of the (at most two) columns in `result`, and as x_label: never reduce
