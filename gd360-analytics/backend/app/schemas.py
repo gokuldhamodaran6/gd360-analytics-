@@ -163,11 +163,20 @@ class RenameDataSourceRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
 
 
-# ---------- Rename a conversation (its title, wherever it's listed - the
-# homepage's Recent conversations, a data source's own conversation list,
-# and the Workspace page's own Recent conversations panel) ----------
-class RenameConversationRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=80)
+# ---------- Update a conversation (its title and/or pinned state, wherever
+# it's listed - the homepage's Recent conversations, a data source's own
+# conversation list, and the Workspace page's own Recent conversations
+# panel). Both fields are optional so the same endpoint serves a plain
+# rename, a plain pin/unpin, or - in principle - both at once, without the
+# caller needing to resend a field it isn't changing. ----------
+class UpdateConversationRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=80)
+    pinned: bool | None = None
+
+
+# Kept as an alias so any older caller still referencing the previous name
+# keeps working unchanged.
+RenameConversationRequest = UpdateConversationRequest
 
 
 # ---------- Dashboards ----------
