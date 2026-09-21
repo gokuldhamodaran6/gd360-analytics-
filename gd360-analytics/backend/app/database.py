@@ -42,6 +42,7 @@ _NEW_COLUMNS = [
     ("messages", "action", "TEXT"),
     ("messages", "chart_type", "TEXT"),
     ("messages", "verified_count", "INTEGER DEFAULT 0"),
+    ("conversations", "pinned", "BOOLEAN DEFAULT FALSE"),
 ]
 
 
