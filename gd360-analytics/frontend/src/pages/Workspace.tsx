@@ -3,7 +3,8 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, chatApi, conversationApi, datasourceApi, ConversationSummary, DatasetVersion, DataSourceSummary } from "../api/client";
 import TopNav from "../components/TopNav";
 import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID } from "../components/ChatPanel";
-import { isMultiSheetExcel } from "../components/DataSourceForm";
+import { hasMultipleTables, CreatedDataSource } from "../components/DataSourceForm";
+import AddDataPicker from "../components/AddDataPicker";
 import GokuChat from "../components/GokuChat";
 import ChartCanvas from "../components/ChartCanvas";
 import ConversationRow from "../components/ConversationRow";
@@ -228,22 +229,71 @@ export default function Workspace() {
 
   // A brand-new "Original data" pick (the untouched default this page
   // starts on, and what "+ New" resets back to) means something different
-  // once a datasource turns out to be a multi-sheet Excel workbook: there
-  // is no longer one single "original data" table, so it defaults instead
-  // to that workbook's first sheet - explicitly, the same way the WORKING
-  // ON picker now shows one checkbox per sheet rather than a single
-  // "Original data" row for a workbook like this. Only ever corrects the
-  // untouched auto-picked default (never an explicit pick - a resumed
-  // conversation's saved table, or anything the person has chosen in
-  // WORKING ON already), and is a no-op the moment it has already run once
-  // for the current selection.
+  // once a datasource turns out to have more than one real table: there is
+  // no longer one single "original data" table, so it defaults instead to
+  // the first one - explicitly, the same way the WORKING ON picker now
+  // shows one checkbox per table rather than a single "Original data" row
+  // for a datasource like this. Applies uniformly to a multi-sheet Excel
+  // workbook AND a multi-table Postgres/MySQL/SQL Server/Supabase/MongoDB/
+  // BigQuery connection - hasMultipleTables makes no distinction between
+  // them (see DataSourceForm.tsx). This is also what fixes a genuinely
+  // broken state a multi-table database/warehouse source used to be left
+  // in: with nothing auto-selected, a chat question against it fell
+  // through to a "which table?" clarifying question on literally the first
+  // message, and the Data tab crashed outright (see
+  // data_loader.default_table_for_preview, fixed the same day for the same
+  // underlying gap). Only ever corrects the untouched auto-picked default
+  // (never an explicit pick - a resumed conversation's saved table, or
+  // anything the person has chosen in WORKING ON already), and is a no-op
+  // the moment it has already run once for the current selection.
   useEffect(() => {
     if (!dsInfo || dsInfo.id !== datasourceId) return;
-    if (!isMultiSheetExcel(dsInfo.kind, dsInfo.schema_cache)) return;
+    if (!hasMultipleTables(dsInfo.kind, dsInfo.schema_cache)) return;
     if (sourceIds.length !== 1 || sourceIds[0] !== ORIGINAL_SOURCE_ID) return;
-    const firstSheet = Object.keys(dsInfo.schema_cache || {})[0];
-    if (firstSheet) setSourceIds([`sheet:${firstSheet}`]);
+    const firstTable = Object.keys(dsInfo.schema_cache || {})[0];
+    if (firstTable) setSourceIds([`sheet:${firstTable}`]);
   }, [dsInfo, datasourceId, sourceIds]);
+
+  // The Data tab's own per-table tab strip (independent of the chat's
+  // WORKING ON selection - someone can be previewing one table on the Data
+  // tab while chatting against a completely different combination) -
+  // always defaults to the first real table the moment a multi-table
+  // datasource is detected, the same zero-ambiguity default the backend's
+  // preview/export endpoints already fall back to on their own (see
+  // data_loader.default_table_for_preview) when nothing is explicitly
+  // requested.
+  const [activeOriginalTable, setActiveOriginalTable] = useState<string | null>(null);
+  const originalTables = useMemo(
+    () => (dsInfo && hasMultipleTables(dsInfo.kind, dsInfo.schema_cache) ? Object.keys(dsInfo.schema_cache || {}) : []),
+    [dsInfo]
+  );
+  useEffect(() => {
+    if (originalTables.length === 0) { setActiveOriginalTable(null); return; }
+    if (activeOriginalTable && originalTables.includes(activeOriginalTable)) return;
+    setActiveOriginalTable(originalTables[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [originalTables.join("|")]);
+
+  // The header-level "+ Add data" popup (see AddDataPicker.tsx) - an
+  // always-visible entry point next to the datasource name for pulling
+  // another connected data source, or a brand-new one, into this analysis,
+  // in addition to the same capability already reachable from inside the
+  // chat panel's own WORKING ON picker. Both write into the same
+  // `sourceIds` state below, so a pick from either one shows up in both.
+  const [addDataOpen, setAddDataOpen] = useState(false);
+  const handleDataSourceCreatedInPicker = (ds: CreatedDataSource) => {
+    // AddDataPicker only ever hands back the fields a just-created
+    // datasource response actually has (id/name/kind/created_at/
+    // schema_cache) - connection_info/read_only aren't known here and
+    // aren't used anywhere this list feeds into, so a harmless placeholder
+    // is fine; the very next full `/datasources` refetch (e.g. reopening
+    // this page) replaces this entry with the real, complete record anyway.
+    const summary: DataSourceSummary = {
+      id: ds.id, name: ds.name, kind: ds.kind, connection_info: {}, read_only: true,
+      schema_cache: ds.schema_cache, created_at: ds.created_at,
+    };
+    setAllDataSources((list) => (list.some((d) => d.id === ds.id) ? list : [...list, summary]));
+  };
 
   const startRenameDs = () => {
     setDsNameDraft(dsName);
@@ -767,6 +817,19 @@ export default function Workspace() {
           {savingDsName && <span className="text-xs text-accent shrink-0">Saving&hellip;</span>}
           {dsRenameFailed && <span className="text-xs text-red-400 shrink-0">Could not rename</span>}
           {resuming && <span className="ml-2 text-xs text-accent shrink-0">Loading conversation...</span>}
+          {/* "+ Add data": the header-level entry point Gokul asked for,
+              directly opposite the datasource name - opens a popup of every
+              other connected source's logo (plus a "New data" tile) instead
+              of requiring a click into the chat panel's own WORKING ON
+              dropdown first. See AddDataPicker.tsx; both write into the
+              exact same `sourceIds` selection ChatPanel reads from. */}
+          <button
+            type="button"
+            className="ml-2 text-xs px-2.5 py-1 rounded-lg border border-primary/40 text-primary hover:bg-primary/10 transition font-medium shrink-0 flex items-center gap-1"
+            onClick={() => setAddDataOpen(true)}
+          >
+            <span aria-hidden>+</span> Add data
+          </button>
         </div>
         {chartSpec && centerTab === "chart" && (
           <div className="flex items-center gap-3">
@@ -775,6 +838,15 @@ export default function Workspace() {
           </div>
         )}
       </div>
+
+      <AddDataPicker
+        open={addDataOpen}
+        onClose={() => setAddDataOpen(false)}
+        sourceIds={sourceIds}
+        onSourceIdsChange={setSourceIds}
+        otherDataSources={otherDataSources}
+        onDataSourceCreated={handleDataSourceCreatedInPicker}
+      />
 
       {error && <div className="mx-4 sm:mx-6 mt-3 text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
 
@@ -860,10 +932,23 @@ export default function Workspace() {
                   // Clicking a tab points the next chat prompt at that one
                   // table by default; WORKING ON can still widen the
                   // selection afterward without changing which tab shows.
+                  // For a multi-table datasource, clicking one of the real
+                  // original-table tabs also fires onActiveTableChange
+                  // right after this in the same click handler (see
+                  // DataTable.tsx), which sets the more specific
+                  // "sheet:<name>" selection - same-batch state updates
+                  // apply in order, so that ends up as the final sourceIds
+                  // value, not this plain ORIGINAL_SOURCE_ID fallback.
                   setActiveVersionId(id);
                   setSourceIds([id ?? ORIGINAL_SOURCE_ID]);
                 }}
                 onVersionsChanged={() => setDataRefreshKey((k) => k + 1)}
+                originalTables={originalTables}
+                activeTable={activeOriginalTable}
+                onActiveTableChange={(t) => {
+                  setActiveOriginalTable(t);
+                  setSourceIds([t ? `sheet:${t}` : ORIGINAL_SOURCE_ID]);
+                }}
               />
             ) : (
               <div className="h-full flex flex-col gap-2 overflow-hidden">
