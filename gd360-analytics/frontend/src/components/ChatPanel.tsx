@@ -1,22 +1,42 @@
 import { useEffect, useRef, useState } from "react";
 import { DatasetVersion, DataSourceSummary, datasourceApi } from "../api/client";
-import { isMultiSheetExcel } from "./DataSourceForm";
+import { hasMultipleTables } from "./DataSourceForm";
 
 // The literal id used, on both the client and the server, to mean "the
 // original, untouched data" inside a WORKING ON selection - every other
 // entry is one of: a real DatasetVersion.id (any datasource the person
 // owns - not only the one this chat panel is open on), "sheet:<name>" (one
-// sheet of THIS datasource, for a multi-sheet Excel upload), or
-// "ds:<other_datasource_id>:original" / "ds:<other_datasource_id>:
-// sheet:<name>" (another, separately-connected data source added with
-// "+ Add more data" - see the WORKING ON picker below and routers/chat.py
-// _load_selected_tables, which resolves every one of these forms).
+// specific table/sheet of THIS datasource - the wire name is historical
+// (it was first built for multi-sheet Excel), but the backend has always
+// resolved it identically for a multi-table Postgres/MySQL/SQL Server/
+// Supabase/MongoDB/BigQuery connection too - see routers/chat.py
+// _load_selected_tables), or "ds:<other_datasource_id>:original" /
+// "ds:<other_datasource_id>:sheet:<name>" (another, separately-connected
+// data source added with "+ Add data" - see the WORKING ON picker below
+// and the header-level Add data popup, which share this same selection).
 export const ORIGINAL_SOURCE_ID = "original";
-const SHEET_PREFIX = "sheet:";
+const TABLE_PREFIX = "sheet:";
 const OTHER_DS_PREFIX = "ds:";
 
-function otherDsSourceId(datasourceId: string, sheet?: string | null): string {
-  return sheet ? `${OTHER_DS_PREFIX}${datasourceId}:sheet:${sheet}` : `${OTHER_DS_PREFIX}${datasourceId}:original`;
+export function otherDsSourceId(datasourceId: string, table?: string | null): string {
+  return table ? `${OTHER_DS_PREFIX}${datasourceId}:sheet:${table}` : `${OTHER_DS_PREFIX}${datasourceId}:original`;
+}
+
+// A small colored dot shown before every WORKING ON row - teal for a real,
+// untouched source table (this datasource's own tables/sheets, or another
+// connected data source's), violet (the same purple already used for every
+// "this was built by GD360" surface: the active Data/Chart tab, the guided
+// step pills, a saved table's own tab) for a saved table GD360 generated
+// from a cleaning/prep prompt. Lets a mixed selection - some original
+// tables, some AI-built ones - read at a glance which is which, the same
+// distinction the Data tab's own tab strip now makes (see DataTable.tsx).
+function SourceDot({ generated }: { generated: boolean }) {
+  return (
+    <span
+      className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${generated ? "bg-primary" : "bg-sky-400"}`}
+      aria-hidden
+    />
+  );
 }
 
 export type FollowUpSuggestion = { label: string; prompt: string };
@@ -78,14 +98,14 @@ function labelForSource(
   otherVersionsById: Record<string, DatasetVersion[]>
 ): string {
   if (id === ORIGINAL_SOURCE_ID) return "Original data";
-  if (id.startsWith(SHEET_PREFIX)) return id.slice(SHEET_PREFIX.length);
+  if (id.startsWith(TABLE_PREFIX)) return id.slice(TABLE_PREFIX.length);
   if (id.startsWith(OTHER_DS_PREFIX)) {
     const rest = id.slice(OTHER_DS_PREFIX.length);
     const sepIndex = rest.indexOf(":");
     const otherId = sepIndex === -1 ? rest : rest.slice(0, sepIndex);
     const selector = sepIndex === -1 ? "" : rest.slice(sepIndex + 1);
     const otherName = otherDataSources.find((d) => d.id === otherId)?.name || "Another data source";
-    if (selector.startsWith(SHEET_PREFIX)) return `${otherName} — ${selector.slice(SHEET_PREFIX.length)}`;
+    if (selector.startsWith(TABLE_PREFIX)) return `${otherName} — ${selector.slice(TABLE_PREFIX.length)}`;
     return `${otherName} (original)`;
   }
   const own = versions.find((v) => v.id === id);
@@ -219,7 +239,7 @@ export default function ChatPanel({
   const inputRef = useRef<HTMLInputElement>(null);
 
   const otherSources = otherDataSources || [];
-  const anchorMultiSheet = isMultiSheetExcel(datasourceKind || "", datasourceSchema);
+  const anchorMultiSheet = hasMultipleTables(datasourceKind || "", datasourceSchema);
   const anchorSheets = anchorMultiSheet ? Object.keys(datasourceSchema || {}) : [];
 
   // Saved tables for an OTHER data source, fetched lazily (only once that
@@ -262,7 +282,7 @@ export default function ChatPanel({
     }
     const ownVersionIds = new Set(versions.map((v) => v.id));
     const hasUnresolvedBareId = sourceIds.some(
-      (id) => id !== ORIGINAL_SOURCE_ID && !id.startsWith(SHEET_PREFIX) && !id.startsWith(OTHER_DS_PREFIX) && !ownVersionIds.has(id)
+      (id) => id !== ORIGINAL_SOURCE_ID && !id.startsWith(TABLE_PREFIX) && !id.startsWith(OTHER_DS_PREFIX) && !ownVersionIds.has(id)
     );
     const toExpand = hasUnresolvedBareId ? otherSources.map((d) => d.id) : Array.from(directIds);
     if (toExpand.length === 0) return;
@@ -316,7 +336,7 @@ export default function ChatPanel({
   const addOtherDs = (ds: DataSourceSummary) => {
     setExpandedOtherDs((s) => new Set(s).add(ds.id));
     fetchOtherVersions(ds.id);
-    const multiSheet = isMultiSheetExcel(ds.kind, ds.schema_cache);
+    const multiSheet = hasMultipleTables(ds.kind, ds.schema_cache);
     const defaultId = multiSheet
       ? otherDsSourceId(ds.id, Object.keys(ds.schema_cache || {})[0])
       : otherDsSourceId(ds.id);
@@ -332,7 +352,7 @@ export default function ChatPanel({
     const ownedVersionIds = new Set((otherVersionsById[dsId] || []).map((v) => v.id));
     const next = sourceIds.filter((id) => {
       if (id === otherDsSourceId(dsId)) return false;
-      if (id.startsWith(`${OTHER_DS_PREFIX}${dsId}:${SHEET_PREFIX}`)) return false;
+      if (id.startsWith(`${OTHER_DS_PREFIX}${dsId}:${TABLE_PREFIX}`)) return false;
       if (ownedVersionIds.has(id)) return false;
       return true;
     });
@@ -623,10 +643,11 @@ export default function ChatPanel({
           <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
             {anchorMultiSheet ? (
               anchorSheets.map((sheet) => {
-                const id = `${SHEET_PREFIX}${sheet}`;
+                const id = `${TABLE_PREFIX}${sheet}`;
                 return (
                   <label key={id} className="flex items-center gap-2 text-sm px-2 py-2.5 rounded-lg hover:bg-surface2 cursor-pointer">
                     <input type="checkbox" checked={sourceIds.includes(id)} onChange={() => toggleSource(id)} />
+                    <SourceDot generated={false} />
                     {sheet}
                   </label>
                 );
@@ -638,12 +659,14 @@ export default function ChatPanel({
                   checked={sourceIds.includes(ORIGINAL_SOURCE_ID)}
                   onChange={() => toggleSource(ORIGINAL_SOURCE_ID)}
                 />
+                <SourceDot generated={false} />
                 Original data
               </label>
             )}
             {versions.map((v) => (
               <label key={v.id} className="flex items-center gap-2 text-sm px-2 py-2.5 rounded-lg hover:bg-surface2 cursor-pointer">
                 <input type="checkbox" checked={sourceIds.includes(v.id)} onChange={() => toggleSource(v.id)} />
+                <SourceDot generated={true} />
                 {v.name}
               </label>
             ))}
@@ -655,7 +678,7 @@ export default function ChatPanel({
                 </div>
                 {otherSources.map((ds) => {
                   const expanded = expandedOtherDs.has(ds.id);
-                  const dsMultiSheet = isMultiSheetExcel(ds.kind, ds.schema_cache);
+                  const dsMultiSheet = hasMultipleTables(ds.kind, ds.schema_cache);
                   const dsSheets = dsMultiSheet ? Object.keys(ds.schema_cache || {}) : [];
                   const dsVersions = otherVersionsById[ds.id] || [];
                   if (!expanded) {
@@ -689,6 +712,7 @@ export default function ChatPanel({
                           return (
                             <label key={id} className="flex items-center gap-2 text-sm px-2 py-2 rounded-lg hover:bg-surface2 cursor-pointer">
                               <input type="checkbox" checked={sourceIds.includes(id)} onChange={() => toggleSource(id)} />
+                              <SourceDot generated={false} />
                               {sheet}
                             </label>
                           );
@@ -700,6 +724,7 @@ export default function ChatPanel({
                             checked={sourceIds.includes(otherDsSourceId(ds.id))}
                             onChange={() => toggleSource(otherDsSourceId(ds.id))}
                           />
+                          <SourceDot generated={false} />
                           Original data
                         </label>
                       )}
@@ -709,6 +734,7 @@ export default function ChatPanel({
                       {dsVersions.map((v) => (
                         <label key={v.id} className="flex items-center gap-2 text-sm px-2 py-2 rounded-lg hover:bg-surface2 cursor-pointer">
                           <input type="checkbox" checked={sourceIds.includes(v.id)} onChange={() => toggleSource(v.id)} />
+                          <SourceDot generated={true} />
                           {v.name}
                         </label>
                       ))}
