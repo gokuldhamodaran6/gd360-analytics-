@@ -303,6 +303,8 @@ export default function ConversationRow({
     return (
       <div
         className={`relative w-full flex items-center justify-between gap-2 py-2 rounded-lg border text-left transition group cursor-pointer ${
+          menuOpen ? "z-30" : "z-0"
+        } ${
           active
             ? "pl-4 pr-3 bg-gradient-to-r from-primary/15 via-primary/5 to-transparent border-primary/40"
             : "pl-3 pr-3 border-border hover:bg-surface2"
@@ -321,7 +323,16 @@ export default function ConversationRow({
 
   return (
     <div
-      className={`relative card p-4 transition group cursor-pointer ${
+      // `.card`'s blurred-glass background creates its own CSS stacking
+      // context (backdrop-filter does that), so every card in a list is an
+      // isolated paint layer - by default the dropdown menu's z-20 only
+      // wins against elements INSIDE this same card, not against the next
+      // card in the list, which paints as a whole layer on top of this
+      // one's overflow the moment it comes later in the DOM. Bumping this
+      // card's own z-index above its siblings while its menu is open lifts
+      // the entire card - dropdown included - above the rest of the list,
+      // so the open menu is never sliced up by the cards below it.
+      className={`relative card p-4 transition group cursor-pointer ${menuOpen ? "z-30" : "z-0"} ${
         active ? "border-primary/50 shadow-glow bg-gradient-to-br from-primary/10 via-transparent to-accent/5" : "hover:shadow-glow"
       }`}
       onClick={renaming ? undefined : onOpen}
