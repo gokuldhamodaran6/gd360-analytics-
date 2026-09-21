@@ -208,22 +208,33 @@ export function connectionKindMeta(kind: string) {
   return { label: "CSV file", color: "#64748b", Logo: FileSpreadsheetIcon };
 }
 
-// Normalizes the three different shapes `schema_cache` can come back in
-// (SQL: { table: [{name,type}] }, MongoDB: { collection: ["field", ...] },
-// file upload: { columns: [{name,type}] }) into one consistent list any
-// panel can render the same way regardless of kind. Exported for reuse
-// (currently: the "Connected" confirmation panel below, and the "Your data
-// sources" homepage section's per-source schema preview).
+// Normalizes the different shapes `schema_cache` can come back in (SQL:
+// { table: [{name,type}] }, MongoDB: { collection: ["field", ...] }, a
+// single-table file upload - a CSV, or an Excel workbook with only one
+// sheet: { columns: [{name,type}] }, a multi-sheet Excel workbook:
+// { sheetName: [{name,type}], ... } - into one consistent list any panel
+// can render the same way regardless of kind. Exported for reuse
+// (currently: the "Connected" confirmation panel below, the "Your data
+// sources" homepage section's per-source schema preview, and the chat
+// panel's WORKING ON / "+ Add more data" picker).
 export function getTableEntries(
   kind: string,
   schemaCache: Record<string, unknown> | null | undefined,
   fallbackName: string
 ): { name: string; columns: { name: string; type?: string }[] }[] {
   if (!schemaCache) return [];
-  if (kind === "csv" || kind === "excel") {
+  // The old flat single-table shape: a plain CSV always has it, and so
+  // does an Excel upload with only one sheet (or one uploaded before
+  // multi-sheet support existed) - the "columns" key only ever appears in
+  // this exact shape, never as a real sheet/table name, so its presence
+  // reliably tells the two shapes apart.
+  if (kind === "csv" || (kind === "excel" && Array.isArray((schemaCache as any).columns))) {
     const cols = Array.isArray((schemaCache as any).columns) ? (schemaCache as any).columns : [];
     return [{ name: fallbackName, columns: cols }];
   }
+  // A genuinely multi-sheet Excel workbook falls through to here too, and
+  // is handled identically to a database's dict-of-tables - each sheet is
+  // just another pickable table by name.
   return Object.entries(schemaCache).map(([tableName, cols]) => {
     if (Array.isArray(cols) && (cols.length === 0 || typeof cols[0] === "string")) {
       // MongoDB: a plain array of field name strings.
@@ -231,6 +242,16 @@ export function getTableEntries(
     }
     return { name: tableName, columns: (cols as { name: string; type: string }[]) || [] };
   });
+}
+
+// True only for the new per-sheet Excel schema shape (more than one sheet)
+// - mirrors the backend's data_loader._is_multi_sheet_schema exactly, so
+// the frontend and backend always agree on which shape a given
+// schema_cache is in. Exported for the chat panel's sheet picker.
+export function isMultiSheetExcel(kind: string, schemaCache: Record<string, unknown> | null | undefined): boolean {
+  if (kind !== "excel" || !schemaCache) return false;
+  const keys = Object.keys(schemaCache);
+  return keys.length > 1 || (keys.length === 1 && keys[0] !== "columns");
 }
 
 // `onCreated` is handed the datasource the server just created (id, name,
