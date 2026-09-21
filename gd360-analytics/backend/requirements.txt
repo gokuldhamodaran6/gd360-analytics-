@@ -19,5 +19,6 @@ pymongo==4.9.1
 sqlalchemy-bigquery==1.17.2
 google-cloud-bigquery==3.45.2
 openpyxl==3.1.5
+python-calamine==0.8.2
 requests==2.32.3
 email-validator==2.2.0
