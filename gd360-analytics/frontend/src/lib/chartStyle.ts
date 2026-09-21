@@ -17,10 +17,10 @@
 // (text/grid/hover-card colors for dark vs light mode) are deliberately
 // NOT decided here - see components/ChartCanvas.tsx, which applies those
 // on top of whatever this file returns.
-
+ 
 export type PaletteId = "original" | "aurora" | "sunset" | "forest" | "mono" | "vibrant" | "single" | "custom";
 export type FontSize = "small" | "medium" | "large";
-
+ 
 export type ChartStyle = {
   paletteId: PaletteId;
   customColors: string[];
@@ -50,7 +50,7 @@ export type ChartStyle = {
   xAxisTilt: "none" | "slight" | "diagonal" | "vertical";
   fontSize: FontSize;
 };
-
+ 
 export const PALETTES: { id: Exclude<PaletteId, "original" | "custom">; name: string; colors: string[] }[] = [
   { id: "aurora", name: "Aurora", colors: ["#6366F1", "#06B6D4", "#EC4899", "#F59E0B", "#10B981", "#F97316"] },
   { id: "sunset", name: "Sunset", colors: ["#F97316", "#EF4444", "#EC4899", "#A855F7", "#6366F1", "#38BDF8"] },
@@ -58,7 +58,7 @@ export const PALETTES: { id: Exclude<PaletteId, "original" | "custom">; name: st
   { id: "mono", name: "Mono", colors: ["#94A3B8", "#64748B", "#334155", "#CBD5E1", "#475569", "#1E293B"] },
   { id: "vibrant", name: "Vibrant", colors: ["#EF4444", "#F59E0B", "#22C55E", "#3B82F6", "#A855F7", "#06B6D4"] },
 ];
-
+ 
 // GD360's own default palette - what "Signature, GD360 default" (the first
 // option in the Style panel, id "original") actually paints instead of
 // leaving whatever flat, single AI-picked color came back untouched. Led
@@ -85,13 +85,13 @@ export const SIGNATURE_COLORS = [
   "#1F8A3C", // green
   "#E34948", // red
 ];
-
+ 
 // Exposed so the Style panel can use the same brand violet as the default
 // swatch for "Single color, one shade for all" and as the fallback trend-
 // line swatch, instead of a second hardcoded copy of the hex value drifting
 // out of sync with this one.
 export const DEFAULT_ACCENT_COLOR = SIGNATURE_COLORS[0];
-
+ 
 // chart_builder.py's own TREND_COLOR constant (backend/app/services/
 // chart_builder.py) - the shade a scatter chart's regression trend line and
 // confidence band start out as before anyone picks a custom one. Kept here,
@@ -99,7 +99,7 @@ export const DEFAULT_ACCENT_COLOR = SIGNATURE_COLORS[0];
 // frontend that needs to recognize "this is still the backend's original
 // color" (see the annotation-recoloring note in applyChartStyle below).
 const BACKEND_TREND_COLOR = "#E24C4C";
-
+ 
 /** Parses a "#rrggbb" (or "#rgb") hex string into 0-255 RGB components.
  * Returns black for anything that isn't recognizably hex (defensive only -
  * every color this file hands out, and every color a browser's native
@@ -111,7 +111,7 @@ function hexToRgb(hex: string): [number, number, number] {
   if (h.length !== 6 || Number.isNaN(n)) return [0, 0, 0];
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
-
+ 
 /** Formats a hex color as an rgba() string at the given opacity - used to
  * recolor a trend line's shaded confidence band to match a person's chosen
  * trend-line color while keeping the same soft, translucent feel the
@@ -121,7 +121,7 @@ function hexToRgba(hex: string, alpha: number): string {
   const [r, g, b] = hexToRgb(hex);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
-
+ 
 function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
   r /= 255; g /= 255; b /= 255;
   const max = Math.max(r, g, b), min = Math.min(r, g, b);
@@ -140,7 +140,7 @@ function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
   }
   return [h, s * 100, l * 100];
 }
-
+ 
 function hslToHex(h: number, s: number, l: number): string {
   h = ((h % 360) + 360) % 360;
   s = Math.min(100, Math.max(0, s)) / 100;
@@ -158,7 +158,7 @@ function hslToHex(h: number, s: number, l: number): string {
   const toHex = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, "0");
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
 }
-
+ 
 /** A palette (named or custom) only ever ships 6-8 hand-picked colors - fine
  * for a typical chart, not enough once a bar chart has 10+ categories (the
  * old behavior just silently repeated colors every N bars, which is exactly
@@ -182,37 +182,37 @@ function extendedColorAt(base: string[], i: number): string {
   const newH = (h + step * 19) % 360;
   return hslToHex(newH, Math.min(100, Math.max(35, s)), newL);
 }
-
+ 
 const FONT_FAMILY = '-apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif';
-
+ 
 const TILT_ANGLES: Record<ChartStyle["xAxisTilt"], number> = {
   none: 0,
   slight: -30,
   diagonal: -45,
   vertical: -90,
 };
-
+ 
 const FONT_SIZES: Record<FontSize, number> = {
   small: 11,
   medium: 13,
   large: 16,
 };
-
+ 
 function isPieLikeSpec(data: any[]): boolean {
   return data.length >= 1 && data.every((t) => Array.isArray(t?.labels));
 }
-
+ 
 function isSingleCategoricalSpec(data: any[]): boolean {
   if (data.length !== 1) return false;
   const t = data[0];
   return ["bar", "funnel", "waterfall", "histogram"].includes(t?.type) && !Array.isArray(t?.labels);
 }
-
+ 
 // Bar-family types that support Plotly's rounded-corner marker and benefit
 // from the same "not touching" spacing treatment - the shared premium bar
 // look every chart type below draws from.
 const BAR_LIKE_TYPES = new Set(["bar", "histogram", "waterfall", "funnel"]);
-
+ 
 // A trace added purely as visual/analytical context - a regression trend
 // line or its shaded confidence band on a scatter plot (see
 // chart_builder.py's _add_trend_overlay on the backend) - rather than a
@@ -225,11 +225,27 @@ const BAR_LIKE_TYPES = new Set(["bar", "histogram", "waterfall", "funnel"]);
 function isDecorativeTrace(t: any): boolean {
   return t?.meta?.role === "trend_line" || t?.meta?.role === "trend_band";
 }
-
-function realSeriesCount(data: any[]): number {
-  return data.filter((t) => !isDecorativeTrace(t)).length;
+ 
+// One panel's bars in a faceted/small-multiples grid (see chart_builder.py's
+// _build_faceted_bar - "X by Y in each Z" requests, one horizontal-bar panel
+// per distinct value of Z, all sharing one figure). Tagged the same way a
+// scatter trend line is (meta.role), but unlike a trend line these ARE real,
+// independently colorable data - only excluded from the "how many series
+// does this chart have" count (realSeriesCount) below, since a facet grid's
+// panels are already labeled by their own subplot titles, not a legend.
+function isFacetPanelTrace(t: any): boolean {
+  return t?.meta?.role === "facet_panel";
 }
-
+ 
+export function isFacetedSpec(spec: any): boolean {
+  const data: any[] = Array.isArray(spec?.data) ? spec.data : Array.isArray(spec) ? spec : [];
+  return data.length > 0 && data.every((t) => isFacetPanelTrace(t));
+}
+ 
+function realSeriesCount(data: any[]): number {
+  return data.filter((t) => !isDecorativeTrace(t) && !isFacetPanelTrace(t)).length;
+}
+ 
 // A bar-plus-line chart with its own right-hand axis (see chart_builder.py's
 // _build_dual_axis_combo) - two metrics with very different scales shown
 // against the same categories, each getting its own axis so neither one
@@ -240,12 +256,12 @@ function realSeriesCount(data: any[]): number {
 function isDualAxisComboSpec(data: any[]): boolean {
   return data.length === 2 && data.some((t) => t?.type === "bar") && data.some((t) => t?.yaxis === "y2");
 }
-
+ 
 function categoryCount(t: any): number {
   const arr = Array.isArray(t?.x) ? t.x : Array.isArray(t?.y) ? t.y : null;
   return arr ? arr.length : 1;
 }
-
+ 
 /** Picks a sensible starting X-axis tilt for a brand new chart, so long or
  * numerous category labels (a wide correlation heatmap, a bar chart with
  * many long names) do not overlap by default. The person can still change
@@ -257,7 +273,7 @@ function smartDefaultTilt(spec: any): ChartStyle["xAxisTilt"] {
   if (cats.length > 6 && cats.some((c) => String(c).length > 6)) return "diagonal";
   return "none";
 }
-
+ 
 /** A brand-new chart's starting style, tuned to the shape of its data so it
  * already looks considered before the person ever opens the Style panel:
  * a single-series bar/line/scatter chart needs no legend (its title already
@@ -275,7 +291,7 @@ export function defaultChartStyle(spec?: any): ChartStyle {
   // plot with an automatic trend line still reads, and defaults, exactly
   // like the single-series scatter it visually is.
   const multiSeries = realSeriesCount(data) > 1 && !pieLike;
-
+ 
   return {
     paletteId: "original",
     customColors: [],
@@ -303,7 +319,7 @@ export function defaultChartStyle(spec?: any): ChartStyle {
     fontSize: "medium",
   };
 }
-
+ 
 /** Returns the labels shown in the "rename" UI: per-slice labels for a
  * pie-like chart, or per-trace (legend) names for a multi-series chart.
  * Returns an empty list for a single-series cartesian chart or a heatmap,
@@ -314,12 +330,17 @@ export function defaultChartStyle(spec?: any): ChartStyle {
 export function seriesLabels(spec: any): string[] {
   const data = Array.isArray(spec?.data) ? spec.data : [];
   if (data.length === 0) return [];
+  // A facet grid's panels are already labeled by their own subplot titles
+  // (baked into the figure by chart_builder.py) - a "rename this series"
+  // box here would have no visible effect, since renaming a trace's name
+  // does not touch its subplot title, so it is deliberately left out.
+  if (isFacetedSpec(data)) return [];
   if (isPieLikeSpec(data)) return (data[0].labels || []).map((l: any) => String(l));
   const real = data.filter((t) => !isDecorativeTrace(t));
   if (real.length > 1) return real.map((t: any, i: number) => t.name || `Series ${i + 1}`);
   return [];
 }
-
+ 
 /** Returns the real name behind EVERY colorable thing on a chart - every pie
  * slice, every bar in a single-trace bar chart, or every series in a
  * multi-series chart - used to size and label the custom-color picker in the
@@ -350,28 +371,36 @@ export function colorableLabels(spec: any): string[] {
   if (real.length === 1) return [real[0].name || "Series 1"];
   return [];
 }
-
+ 
 // Chart types with no 2D x/y cartesian axes at all - a polar chart (radar,
 // polar bar), a flow diagram (sankey), a single-number indicator (gauge), a
 // parallel-coordinates plot, a geo map (choropleth) or a 3D scatter. The
 // Style panel skips axis labels/gridlines/tilt for these, the same way it
 // already skips them for pie-like charts.
 const NON_CARTESIAN_TYPES = new Set(["scatterpolar", "barpolar", "sankey", "indicator", "parcoords", "choropleth", "scatter3d"]);
-
+ 
 function isNonCartesianSpec(data: any[]): boolean {
   return data.some((t) => NON_CARTESIAN_TYPES.has(t?.type));
 }
-
+ 
 export function hasCartesianAxes(spec: any): boolean {
   const data = Array.isArray(spec?.data) ? spec.data : [];
-  return data.length > 0 && !isPieLikeSpec(data) && !isNonCartesianSpec(data);
+  // A faceted grid has a whole GRID of axis pairs (xaxis/yaxis, xaxis2/
+  // yaxis2, ...), not the single shared pair every control gated on this
+  // flag assumes (the Style panel's X/Y axis label boxes and tilt picker,
+  // and applyChartStyle's single-axis-pair styling block below) - so it is
+  // treated the same as a non-cartesian chart here, even though it
+  // genuinely does have axes. Its own outer axis captions are instead set
+  // once, server-side, from the AI's x_label/y_label (see
+  // chart_builder.py's build_figure faceted_bar branch).
+  return data.length > 0 && !isPieLikeSpec(data) && !isNonCartesianSpec(data) && !isFacetedSpec(data);
 }
-
+ 
 export function isHeatmapSpec(spec: any): boolean {
   const data = Array.isArray(spec?.data) ? spec.data : [];
   return data.some((t) => t?.type === "heatmap");
 }
-
+ 
 // Chart types that render as one continuous color gradient rather than
 // discrete per-item colors - a palette here becomes a colorscale, same idea
 // as a heatmap, instead of per-series marker colors.
@@ -379,7 +408,7 @@ export function isGradientSpec(spec: any): boolean {
   const data = Array.isArray(spec?.data) ? spec.data : [];
   return data.some((t) => ["heatmap", "contour", "histogram2d", "choropleth"].includes(t?.type));
 }
-
+ 
 /** Best-effort guess at which of our supported chart types the current spec
  * represents, purely so the Style panel can highlight the matching "Chart
  * type" button. Never affects rendering. */
@@ -388,7 +417,9 @@ export function detectChartType(spec: any): string {
   const t = data[0];
   if (!t) return "";
   const layout = spec?.layout || {};
-
+ 
+  if (isFacetedSpec(data)) return "faceted_bar";
+ 
   switch (t.type) {
     case "scatter": {
       if (Array.isArray(t.marker?.size)) return "bubble";
@@ -422,7 +453,7 @@ export function detectChartType(spec: any): string {
       return t.type || "";
   }
 }
-
+ 
 function paletteColors(style: ChartStyle, count: number): string[] {
   // "Single color" paints every bar/slice/line the one color the person
   // picked, for a brand look rather than a rainbow of series - the only
@@ -448,7 +479,7 @@ function paletteColors(style: ChartStyle, count: number): string[] {
   for (let i = 0; i < count; i++) out.push(extendedColorAt(base, i));
   return out;
 }
-
+ 
 /** The colors this style paints onto a chart's bars/slices/series. Every
  * distinct thing on a chart - each bar, each pie slice, each line in a
  * multi-line comparison - always gets its own distinct, colorblind-safe
@@ -461,17 +492,17 @@ function paletteColors(style: ChartStyle, count: number): string[] {
 function colorsForStyle(style: ChartStyle, count: number): string[] {
   return paletteColors(style, count);
 }
-
+ 
 function titleTextOf(value: any): string {
   return typeof value === "string" ? value : value?.text || "";
 }
-
+ 
 /** Formats a value with thousand separators and up to 2 decimal places,
  * trimming insignificant trailing zeros (9164 -> "9,164", 8851.36 ->
  * "8,851.36") - used for the on-bar value labels and hover readout so a
  * premium chart never shows an unrounded float like "9164.399999999998". */
 const VALUE_FORMAT = ",.2~f";
-
+ 
 /** Formats a single bar's value the same way VALUE_FORMAT does for every
  * everyday magnitude (9164 -> "9,164", 8851.36 -> "8,851.36", -0.57 ->
  * "-0.57"), but switches to scientific notation for a genuinely tiny
@@ -492,7 +523,7 @@ function formatValueSmart(v: any): string {
   if (abs < 0.01) return n.toExponential(2);
   return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
-
+ 
 /** Applies the given style on top of the AI-generated Plotly spec, without
  * mutating the original. Safe to call repeatedly (e.g. on every render) -
  * always starts fresh from the raw spec so switching palettes, font size or
@@ -512,7 +543,7 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
   const spec = JSON.parse(JSON.stringify(rawSpec));
   const data: any[] = Array.isArray(spec.data) ? spec.data : [];
   const layout = spec.layout || (spec.layout = {});
-
+ 
   const pieLike = isPieLikeSpec(data);
   const singleCategorical = isSingleCategoricalSpec(data);
   const isGradient = isGradientSpec(spec);
@@ -527,9 +558,9 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
   const horizontal = data.some((t) => t?.orientation === "h");
   const isDualAxisCombo = isDualAxisComboSpec(data);
   const baseSize = FONT_SIZES[style.fontSize];
-
+ 
   layout.font = { ...(layout.font || {}), size: baseSize, family: FONT_FAMILY };
-
+ 
   // ---- Colors ----
   if (isGradient) {
     // A heatmap, contour, density heatmap or choropleth has no discrete
@@ -616,7 +647,7 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
       if (t.line || t.type === "scatter") t.line = { ...(t.line || {}), color: c };
     });
   }
-
+ 
   // ---- Accent colors: a decorative trace (right now just a scatter plot's
   // regression trend line - see isDecorativeTrace) is deliberately never
   // touched by the palette logic above, but a person can still give it its
@@ -647,7 +678,7 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
       );
     }
   }
-
+ 
   // ---- Bar-family shape: rounded ends + breathing room between bars, the
   // same on every palette/theme. Never fills the whole slot - a visible
   // surface gap between bars reads as separation, not a stroke around them. ----
@@ -659,7 +690,7 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
     if (layout.bargap === undefined) layout.bargap = multiSeries ? 0.28 : 0.42;
     if (layout.bargroupgap === undefined) layout.bargroupgap = 0.12;
   }
-
+ 
   // ---- Series / category names ----
   if (pieLike && style.seriesNames.length) {
     data[0].labels = (data[0].labels || []).map((l: any, i: number) => style.seriesNames[i] || l);
@@ -668,7 +699,7 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
       if (style.seriesNames[i]) t.name = style.seriesNames[i];
     });
   }
-
+ 
   // ---- Title (always resolved + sized, even if the person never opens
   // Style) - bold-weighted and left-aligned like a dashboard headline
   // rather than Plotly's small centered default. Plotly caps title.y at 1
@@ -685,7 +716,7 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
     y: 0.97,
     yanchor: "top",
   };
-
+ 
   // ---- Margins: generous breathing room by default, and ALWAYS applied
   // here (never left to whatever margin, if any, the raw AI/backend figure
   // happened to already set - the backend's own default margin is tight
@@ -702,7 +733,7 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
     ? data[0]?.labels?.length || 0
     : data.filter((t) => !isDecorativeTrace(t) && t.showlegend !== false).length;
   const legendWillShow = style.showLegend && (pieLike || legendEntryCount > 1);
-
+ 
   // The legend ALWAYS sits in its own dedicated strip to the right of the
   // plot - never above or below it - so it can never land on top of the
   // title or the bars, at any chart size and at any window width,
@@ -727,27 +758,34 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
   // plot for the slanted tick labels - unconditional now, since the legend
   // never competes for that band anymore (it lives on the right instead).
   const tiltExtraPx = isCartesian && (style.xAxisTilt === "diagonal" || style.xAxisTilt === "vertical") ? 46 : 0;
-
+  // A faceted grid carries its own shared outer axis captions as figure-
+  // level annotations (see chart_builder.py's build_figure faceted_bar
+  // branch) sitting just outside the plot area on the left and bottom -
+  // without this extra room they can get clipped by the card edge.
+  const isFaceted = isFacetedSpec(data);
+  const facetExtraBottomPx = isFaceted ? 34 : 0;
+  const facetExtraLeftPx = isFaceted ? 26 : 0;
+ 
   layout.margin = {
     t: 60,
     r: 28 + legendWidthPx,
-    b: 52 + tiltExtraPx,
-    l: 60,
+    b: 52 + tiltExtraPx + facetExtraBottomPx,
+    l: 60 + facetExtraLeftPx,
     pad: 6,
   };
-
+ 
   // ---- Axes (labels, grid, tilt, font, and auto margin so long or many
   // category labels - like a wide correlation heatmap - never get clipped
   // or overlap each other) ----
   if (isCartesian) {
     layout.xaxis = { ...(layout.xaxis || {}) };
     layout.yaxis = { ...(layout.yaxis || {}) };
-
+ 
     const xText = style.xAxisLabel || titleTextOf(layout.xaxis.title);
     if (xText) layout.xaxis.title = { text: xText, font: { size: Math.round(baseSize * 1.1) } };
     const yText = style.yAxisLabel || titleTextOf(layout.yaxis.title);
     if (yText) layout.yaxis.title = { text: yText, font: { size: Math.round(baseSize * 1.1) } };
-
+ 
     // Only the value axis carries gridlines by default - a premium chart
     // reads its categories off clean tick labels, not a grid crossing them
     // too. For a horizontal bar the value axis is X; everywhere else it's Y.
@@ -761,7 +799,7 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
     layout.xaxis.zeroline = false;
     layout.yaxis.zeroline = false;
   }
-
+ 
   // ---- Legend: a name for every real trace (never left blank, which is
   // what makes Plotly fall back to its own generic "trace 0"/"trace 1" -
   // the second half of the original bug report, alongside the legend
@@ -777,7 +815,7 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
       t.name = style.yAxisLabel || titleTextOf(layout.title) || style.title || fallbackTitle || `Series ${i + 1}`;
     }
   });
-
+ 
   // ---- Legend: a vertical list docked in its own reserved strip on the
   // right (see the margin math above) - never a boxed sidebar overlapping
   // the plot, and never sharing space with the title, which stays pinned
@@ -803,7 +841,7 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
     tracegroupgap: 4,
     itemwidth: 30,
   };
-
+ 
   // ---- Hover: one clean readout per mark, value bolded and leading, the
   // series name only shown when there is more than one series to tell
   // apart (otherwise the raw AI trace name is usually just "trace 0" noise,
@@ -832,7 +870,7 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
       t.hovertemplate = `<b>%{y:${VALUE_FORMAT}}</b>${extra}`;
     }
   });
-
+ 
   // ---- Data labels ---- (a decorative trend line/confidence band is
   // skipped - toggling "Data labels" on should never scatter text along a
   // trend line or its band edges)
@@ -875,6 +913,8 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
       t.textposition = "top center";
     }
   });
-
+ 
   return spec;
 }
+ 
+
