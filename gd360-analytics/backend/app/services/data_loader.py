@@ -14,6 +14,8 @@ exists, otherwise falls back to the original.
 """
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
 from datetime import datetime
 
 import pandas as pd
@@ -27,6 +29,84 @@ class NeedsTableSelection(Exception):
     def __init__(self, available: list[str]):
         self.available = available
         super().__init__("Multiple tables/collections available; please specify one.")
+
+
+# In-process cache of already-parsed DataFrames, keyed by a stable id for
+# each of the three genuinely immutable, write-once blobs this app ever
+# turns into a DataFrame: an uploaded file's original bytes
+# (DataSource.file_data), a datasource's legacy single cleaned snapshot
+# (DataSource.cleaned_data), and a named saved table's snapshot
+# (DatasetVersion.data). None of these three columns is ever reassigned
+# after the row that holds them is first created (confirmed by grep across
+# the backend) - a DataSource's file is fixed at upload time, and every
+# cleaning/prep result becomes its OWN new DatasetVersion row rather than
+# overwriting an old one - so there is no staleness risk here: once a given
+# id's bytes have been parsed once in this process, parsing them again can
+# only ever produce the exact same DataFrame.
+#
+# Why this matters for a large file specifically: every page turn/sort/
+# filter in the data table, and every single chat message, re-loads its
+# table(s) from scratch (see load_dataframe/load_version_dataframe below).
+# Before this cache, a 50,000-row Excel upload meant re-parsing the whole
+# workbook - several seconds even with the faster `calamine` engine (see
+# connectors.py), openpyxl-scale before it - on every single one of those
+# interactions, which is what made a big-file analysis feel like it was
+# "stuck" rather than just doing real work. With this cache, that parse
+# happens once per process lifetime per id; every later load is a plain
+# in-memory `.copy()` (milliseconds, not seconds, even at 50,000+ rows).
+#
+# A bounded, simple LRU (not a TTL cache - these ids never go stale) keeps
+# memory use predictable even if many different datasources/tables get
+# touched over a long-running process's lifetime; the oldest-touched entry
+# is evicted once the cache is full. `threading.Lock` guards it since
+# FastAPI can serve requests on more than one thread even in a single
+# worker process.
+_DF_CACHE_MAX_ENTRIES = 24
+_df_cache: "OrderedDict[str, pd.DataFrame]" = OrderedDict()
+_df_cache_lock = threading.Lock()
+
+
+def _cache_get(key: str) -> pd.DataFrame | None:
+    with _df_cache_lock:
+        cached = _df_cache.get(key)
+        if cached is None:
+            return None
+        _df_cache.move_to_end(key)
+        return cached.copy()
+
+
+def _cache_put(key: str, df: pd.DataFrame) -> None:
+    with _df_cache_lock:
+        _df_cache[key] = df
+        _df_cache.move_to_end(key)
+        while len(_df_cache) > _DF_CACHE_MAX_ENTRIES:
+            _df_cache.popitem(last=False)
+
+
+def _load_and_cache(key: str, loader) -> pd.DataFrame:
+    """Returns a cached copy of `key`'s DataFrame if this process has
+    already parsed it before; otherwise calls `loader()` once, caches the
+    result, and returns a copy of that. Always returns a copy (on both the
+    hit and the miss path) so nothing a caller does to the returned frame -
+    a sort, a filter, an in-place edit inside AI-generated code - can ever
+    corrupt the cached original for the next caller."""
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    df = loader()
+    _cache_put(key, df)
+    return df.copy()
+
+
+def warm_cache(datasource_id: str, df: pd.DataFrame) -> None:
+    """Called right after a file upload finishes parsing the workbook once
+    for its schema - seeds this same already-parsed DataFrame straight into
+    the cache under the same key `_load_original` will look for, so the
+    very first preview/chat message against a freshly-uploaded large file
+    does not pay a second full parse for data this process already has in
+    memory. Safe to skip (a cache miss just parses normally), never
+    required for correctness."""
+    _cache_put(f"original:{datasource_id}", df)
 
 
 def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
@@ -55,7 +135,9 @@ def load_dataframe(ds: models.DataSource, table: str | None = None, version: str
     if use_cleaned:
         if not ds.cleaned_data:
             raise ValueError("This data source does not have a cleaned/prepared version yet.")
-        return FileConnector(ds.cleaned_data, ".csv").load_dataframe()
+        return _load_and_cache(
+            f"cleaned:{ds.id}", lambda: FileConnector(ds.cleaned_data, ".csv").load_dataframe()
+        )
 
     return _load_original(ds, table)
 
@@ -69,7 +151,14 @@ def _load_original(ds: models.DataSource, table: str | None = None) -> pd.DataFr
                 "upload the file again; new uploads are stored permanently and will not be lost."
             )
         ext_hint = ".xlsx" if ds.kind == "excel" else ".csv"
-        return FileConnector(ds.file_data, ext_hint).load_dataframe()
+        # This is the hot path for a big uploaded file: every page turn,
+        # sort, filter and chat message against the original data lands
+        # here. See the cache's own module-level comment above for why this
+        # is safe to cache with no invalidation - ds.file_data is fixed at
+        # upload time and never changes afterward.
+        return _load_and_cache(
+            f"original:{ds.id}", lambda: FileConnector(ds.file_data, ext_hint).load_dataframe()
+        )
 
     if ds.kind in ("postgres", "mysql", "sqlserver", "supabase"):
         username, password = security.decrypt_secret(ds.encrypted_secret).split("␟")
@@ -104,8 +193,14 @@ def _pick_single(schema_cache: dict | None) -> str:
 
 def load_version_dataframe(version: models.DatasetVersion) -> pd.DataFrame:
     """Loads a specific saved/named snapshot (one of the person tables),
-    as opposed to the always-live original data."""
-    return FileConnector(version.data, ".csv").load_dataframe()
+    as opposed to the always-live original data. Cached the same way as the
+    original data above - a DatasetVersion's `.data` is set once when the
+    row is created and never updated afterward (each new cleaning/prep
+    result becomes its own new row instead), so it is just as safe to cache
+    with no invalidation, and just as worth it: working through a chain of
+    saved tables re-loads whichever one is selected on every chat message
+    the same way the original data does."""
+    return _load_and_cache(f"version:{version.id}", lambda: FileConnector(version.data, ".csv").load_dataframe())
 
 
 def ensure_legacy_migrated(db: Session, ds: models.DataSource) -> None:
