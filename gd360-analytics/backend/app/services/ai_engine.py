@@ -289,7 +289,25 @@ Rules:
 - When more than one table is selected, actually use all of them if the request implies it (e.g. "compare",
   "combine", "merge", "what changed between", "join") - use pd.merge/pd.concat/explicit comparisons on the
   named tables rather than only looking at `df`. If the request does not need more than one table, it is fine
-  to only use `df`.
+  to only use `df`. This applies exactly the same way whether the extra tables came from this same data source
+  (another sheet, another saved version) or from a completely separate, independently-connected data source
+  someone added with "+ Add more data" - a table is a table, `tables["<exact name>"]` works identically either
+  way, and the name itself (see the schema section below) already says where it came from when that matters.
+  When you actually merge/join two of the selected tables together (pd.merge, or a manual key-based combine):
+    1. Pick the join key(s) by matching real, meaningfully-related columns between the two tables - a shared id
+       (order id, customer id, SKU, email), or the same real-world field under a different name/casing (e.g.
+       "Customer ID" in one table and "CustID" in the other) - never a column that merely happens to have the
+       same dtype with no real relationship (e.g. two unrelated numeric columns), and never a full cross
+       join/cartesian product as a stand-in for a real key.
+    2. If you cannot find a column in each table that is genuinely the same real-world identifier, do NOT guess
+       - set action="clarify" and ask specifically which column in each table should be used to join them,
+       naming the real column names you saw in each. A wrong join produces a wrong answer that looks like a
+       right one, which is worse than asking.
+    3. When the join DOES go ahead, prep_narrative or narrative MUST say, in plain language, exactly which
+       column(s) you joined the tables on, and the real row counts before and after (e.g. "Joined on Customer
+       ID: 4,102 rows in Orders matched 3,890 rows in Customers, giving 4,020 combined rows; 82 orders had no
+       matching customer and were dropped.") - so a wrong or surprising join is visible immediately in the
+       answer itself, never silently hidden inside code the person cannot see.
 - Respond with raw JSON only.
 """
 
