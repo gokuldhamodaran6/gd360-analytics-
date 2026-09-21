@@ -286,6 +286,15 @@ class FileConnector:
             # workbook calamine cannot parse, or the dependency missing in
             # some environment - so this can only ever make a load faster,
             # never break one that used to work.
+            #
+            # `sheet_name` is a real sheet NAME (never left as the pandas-
+            # special None, which would return every sheet at once as a
+            # dict instead of a single DataFrame - see list_sheet_names/
+            # data_loader.py for how a specific sheet gets selected) once a
+            # workbook has more than one sheet; it stays the default `0`
+            # (the first sheet) for a single-sheet workbook or a plain CSV
+            # caller, exactly as this always behaved before multi-sheet
+            # support existed.
             buf.seek(0)
             try:
                 return pd.read_excel(buf, sheet_name=sheet_name, engine="calamine")
@@ -295,6 +304,43 @@ class FileConnector:
                 return pd.read_excel(buf, sheet_name=sheet_name)
         return pd.read_csv(buf)
 
-    def introspect_schema(self) -> dict:
-        df = self.load_dataframe()
-        return {"columns": [{"name": c, "type": str(df[c].dtype)} for c in df.columns]}
+    def list_sheet_names(self) -> list[str] | None:
+        """Every sheet name in this workbook, in file order - just the
+        table of contents, not a parse of any sheet's actual rows, so this
+        stays cheap even for a workbook with a lot of data in each sheet.
+        Returns None for a CSV upload, which has no concept of sheets (the
+        caller uses that to tell "this is a single-table file" apart from
+        "this is a one-sheet workbook", which matter differently for the
+        multi-sheet schema shape below)."""
+        if not self._is_excel():
+            return None
+        import io
+        buf = io.BytesIO(self.file_bytes)
+        try:
+            return list(pd.ExcelFile(buf, engine="calamine").sheet_names)
+        except Exception as e:
+            print(f"[connectors] calamine sheet-name read failed, falling back to default: {e}")
+            buf.seek(0)
+            return list(pd.ExcelFile(buf).sheet_names)
+
+    def introspect_schema(self, max_sheets: int = 50) -> dict:
+        """CSV (and, for backward compatibility, an excel workbook read by
+        older code) returns the original flat shape: {"columns": [...]}, a
+        single implicit table. A multi-sheet Excel workbook instead returns
+        one entry per sheet - {sheet_name: [{"name": c, "type": t}, ...]} -
+        the exact same dict-of-table shape SQLConnector/MongoConnector/
+        BigQueryConnector already return for a multi-table source, so every
+        piece of code that already knows how to offer someone a choice of
+        tables (see data_loader._pick_single/NeedsTableSelection, and the
+        frontend's getTableEntries) works for a workbook's sheets with no
+        special-casing. Capped at max_sheets, matching the same safety cap
+        every other multi-table connector already applies."""
+        sheet_names = self.list_sheet_names()
+        if sheet_names is None or len(sheet_names) <= 1:
+            df = self.load_dataframe(sheet_name=(sheet_names[0] if sheet_names else 0))
+            return {"columns": [{"name": c, "type": str(df[c].dtype)} for c in df.columns]}
+        schema: dict = {}
+        for sheet in sheet_names[:max_sheets]:
+            df = self.load_dataframe(sheet_name=sheet)
+            schema[sheet] = [{"name": c, "type": str(df[c].dtype)} for c in df.columns]
+        return schema
