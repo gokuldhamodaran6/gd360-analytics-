@@ -23,6 +23,82 @@ const COLORS_PER_PAGE = 12;
 // starts out looking wrong.
 const DEFAULT_TREND_COLOR = "#E24C4C";
 
+// Normalizes anything a person might type into a hex color box - with or
+// without a leading "#", 3-digit shorthand (e.g. "0BF" -> "#00BBFF") or the
+// full 6-digit form - into a canonical "#RRGGBB" string Plotly and the
+// native <input type="color"> both understand. Returns null for anything
+// that isn't a valid hex color, so a bad keystroke never corrupts a saved
+// style.
+function normalizeHex(value: string): string | null {
+  let s = value.trim();
+  if (!s) return null;
+  if (!s.startsWith("#")) s = `#${s}`;
+  if (/^#[0-9a-fA-F]{6}$/.test(s)) return s.toUpperCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(s)) {
+    const [r, g, b] = s.slice(1).split("");
+    return `#${r}${r}${g}${g}${b}${b}`.toUpperCase();
+  }
+  return null;
+}
+
+// A small text box that sits next to every color swatch in this panel, so a
+// person with a specific brand hex code (from a style guide, a design tool,
+// anywhere) can type or paste it directly instead of hunting for the same
+// shade in the browser's own color picker. Only commits a change once the
+// typed text is a genuinely valid hex color (on blur or Enter) - an
+// in-progress, invalid keystroke never touches the chart, and an invalid
+// value left in the box snaps back to the last real color rather than
+// silently accepting nonsense.
+function HexInput({
+  value, onChange, disabled, className,
+}: {
+  value: string;
+  onChange: (hex: string) => void;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  const commit = () => {
+    const normalized = normalizeHex(draft);
+    if (normalized) {
+      setDraft(normalized);
+      if (normalized !== value) onChange(normalized);
+    } else {
+      setDraft(value);
+    }
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="text"
+      className={className}
+      value={draft}
+      disabled={disabled}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+      placeholder="#RRGGBB"
+      maxLength={7}
+      spellCheck={false}
+      autoCapitalize="off"
+      autoCorrect="off"
+      aria-label="Hex color code"
+    />
+  );
+}
+
 type ChartTypeDef = { id: string; label: string };
 
 // The handful of chart types shown up front - the ones almost every prompt
@@ -362,42 +438,58 @@ export default function ChartStylePanel({
         </div>
 
         {style.paletteId === "single" && (
-          <div className="mt-3 flex items-center gap-3">
-            <input
-              type="color"
-              disabled={disabled}
-              value={style.singleColor || DEFAULT_ACCENT_COLOR}
-              onChange={(e) => onStyleChange({ paletteId: "single", singleColor: e.target.value })}
-              className="w-10 h-10 rounded-lg border border-border bg-transparent cursor-pointer p-0"
-            />
-            <span className="text-[11px] text-muted leading-relaxed">
+          <div className="mt-3 space-y-2">
+            <div className="flex items-center gap-3">
+              <input
+                type="color"
+                disabled={disabled}
+                value={style.singleColor || DEFAULT_ACCENT_COLOR}
+                onChange={(e) => onStyleChange({ paletteId: "single", singleColor: e.target.value })}
+                className="w-10 h-10 rounded-lg border border-border bg-transparent cursor-pointer p-0"
+              />
+              <HexInput
+                value={style.singleColor || DEFAULT_ACCENT_COLOR}
+                disabled={disabled}
+                onChange={(hex) => onStyleChange({ paletteId: "single", singleColor: hex })}
+                className="input text-sm py-1.5 px-2 w-28 font-mono uppercase"
+              />
+            </div>
+            <span className="text-[11px] text-muted leading-relaxed block">
               Every bar, slice or line on this chart uses this one color - good for a branded look
-              instead of a multi-color palette.
+              instead of a multi-color palette. Pick with the swatch, or type a hex code like
+              #4A3AA7.
             </span>
           </div>
         )}
 
         {style.paletteId === "custom" && (
           <div className="mt-3 space-y-2">
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               {Array.from({
                 length: Math.min(COLORS_PER_PAGE, colorCount - colorPageClamped * COLORS_PER_PAGE),
               }).map((_, k) => {
                 const i = colorPageClamped * COLORS_PER_PAGE + k;
                 const label = colorLabels[i] || `Bar ${i + 1}`;
+                const swatchValue = style.customColors[i] || PALETTES[0].colors[i % PALETTES[0].colors.length];
                 return (
-                  <label key={i} className="flex flex-col items-center gap-1 min-w-0">
+                  <div key={i} className="flex flex-col items-center gap-1 min-w-0">
                     <input
                       type="color"
                       disabled={disabled}
-                      value={style.customColors[i] || PALETTES[0].colors[i % PALETTES[0].colors.length]}
+                      value={swatchValue}
                       onChange={(e) => setCustomColor(i, e.target.value)}
                       className="w-8 h-8 rounded-md border border-border bg-transparent cursor-pointer p-0"
                     />
                     <span className="text-[9px] text-muted text-center truncate w-full" title={label}>
                       {label}
                     </span>
-                  </label>
+                    <HexInput
+                      value={swatchValue}
+                      disabled={disabled}
+                      onChange={(hex) => setCustomColor(i, hex)}
+                      className="input text-[10px] py-0.5 px-1 w-full text-center font-mono"
+                    />
+                  </div>
                 );
               })}
             </div>
@@ -446,13 +538,21 @@ export default function ChartStylePanel({
         {hasTrendLine && (
           <div className="mt-3 flex items-center justify-between">
             <span className="text-sm">Trend line color</span>
-            <input
-              type="color"
-              disabled={disabled}
-              value={style.accentColors?.trend_line || DEFAULT_TREND_COLOR}
-              onChange={(e) => setAccentColor("trend_line", e.target.value)}
-              className="w-8 h-8 rounded-md border border-border bg-transparent cursor-pointer p-0"
-            />
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                disabled={disabled}
+                value={style.accentColors?.trend_line || DEFAULT_TREND_COLOR}
+                onChange={(e) => setAccentColor("trend_line", e.target.value)}
+                className="w-8 h-8 rounded-md border border-border bg-transparent cursor-pointer p-0"
+              />
+              <HexInput
+                value={style.accentColors?.trend_line || DEFAULT_TREND_COLOR}
+                disabled={disabled}
+                onChange={(hex) => setAccentColor("trend_line", hex)}
+                className="input text-xs py-1 px-2 w-24 font-mono"
+              />
+            </div>
           </div>
         )}
       </div>
