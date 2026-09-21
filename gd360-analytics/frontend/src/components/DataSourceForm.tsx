@@ -244,12 +244,23 @@ export function getTableEntries(
   });
 }
 
-// True only for the new per-sheet Excel schema shape (more than one sheet)
-// - mirrors the backend's data_loader._is_multi_sheet_schema exactly, so
-// the frontend and backend always agree on which shape a given
-// schema_cache is in. Exported for the chat panel's sheet picker.
-export function isMultiSheetExcel(kind: string, schemaCache: Record<string, unknown> | null | undefined): boolean {
-  if (kind !== "excel" || !schemaCache) return false;
+// True for ANY datasource with more than one pickable table - a multi-sheet
+// Excel workbook, or a multi-table Postgres/MySQL/SQL Server/Supabase/
+// MongoDB/BigQuery connection alike - mirrors the backend's
+// data_loader._is_multi_sheet_schema exactly, so the frontend and backend
+// always agree on which shape a given schema_cache is in. The check itself
+// was always kind-agnostic (a dict keyed by real table/sheet names, as
+// opposed to the old flat {"columns": [...]} single-table shape); this used
+// to be gated to `kind === "excel"` only, which is what let a genuinely
+// multi-table BigQuery/SQL/MongoDB datasource default silently to
+// "Original data" with no way to pick a specific table from the WORKING ON
+// picker or the Data tab, and crash the Data tab preview with a raw
+// "Could not load data: Multiple tables/collections available" error the
+// moment nothing was explicitly picked (see default_table_for_preview in
+// data_loader.py, fixed the same day for the same reason). Exported for the
+// chat panel's WORKING ON picker and the Data tab's per-table tab strip.
+export function hasMultipleTables(kind: string, schemaCache: Record<string, unknown> | null | undefined): boolean {
+  if (!schemaCache) return false;
   const keys = Object.keys(schemaCache);
   return keys.length > 1 || (keys.length === 1 && keys[0] !== "columns");
 }
