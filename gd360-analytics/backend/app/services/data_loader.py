@@ -241,15 +241,33 @@ def _excel_sheet_name(table: str | None, schema_cache: dict | None) -> str | Non
 
 
 def default_table_for_preview(ds: models.DataSource) -> str | None:
-    """The sheet a plain "show me this data" view (the Data tab preview,
-    and its CSV/Excel export) should default to when nothing more specific
-    was asked - always the FIRST sheet for a multi-sheet workbook, never a
+    """The table/sheet a plain "show me this data" view (the Data tab
+    preview, and its CSV/Excel export) should default to when nothing more
+    specific was asked - always the FIRST table/sheet for any datasource
+    with more than one (a multi-sheet Excel workbook, or a multi-table
+    Postgres/MySQL/SQL Server/Supabase/MongoDB/BigQuery connection), never a
     clarifying question: unlike a chat prompt, there is no back-and-forth
-    here to ask a question through, and defaulting to the first sheet is
-    exactly the same zero-ambiguity behavior a single-sheet file (or a CSV)
-    already had before multi-sheet support existed. Returns None for
-    anything other than a multi-sheet Excel datasource."""
-    if ds.kind != "excel" or not _is_multi_sheet_schema(ds.schema_cache):
+    here to ask a question through, and defaulting to the first one is
+    exactly the same zero-ambiguity behavior a single-table file/database
+    already had before multi-table support existed.
+
+    IMPORTANT (bug fixed here, 2026-09-21): this used to only apply to
+    ds.kind == "excel", so opening the Data tab (or exporting) on a
+    multi-table SQL/Mongo/BigQuery datasource with nothing explicitly
+    selected fell straight through to _pick_single raising
+    NeedsTableSelection, which the preview/export endpoints only ever catch
+    generically - the person just saw a raw "Could not load data: Multiple
+    tables/collections available; please specify one." error instead of any
+    data at all. _is_multi_sheet_schema's underlying check (a dict keyed by
+    real table/sheet names, as opposed to the old flat {"columns": [...]}
+    shape) was already completely kind-agnostic - SQL/Mongo/BigQuery's
+    schema_cache is shaped exactly the same way a multi-sheet Excel
+    workbook's is - so the kind restriction here was the only thing making
+    this Excel-only; removing it fixes every multi-table kind uniformly with
+    no other change needed. Returns None for anything with only one table
+    (nothing to default - the existing single implicit table loads as
+    before)."""
+    if not _is_multi_sheet_schema(ds.schema_cache):
         return None
     return next(iter((ds.schema_cache or {}).keys()), None)
 
