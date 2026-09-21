@@ -123,6 +123,8 @@ export default function StoredDataSection({
   onOpenConversation,
   onAddNew,
   onConversationRenamed,
+  onConversationPinned,
+  onConversationDeleted,
 }: {
   datasources: CreatedDataSource[];
   conversations: ConversationSummary[];
@@ -133,6 +135,12 @@ export default function StoredDataSection({
   // this component its `conversations` prop (the homepage's own Recent
   // conversations) - the same conversation, same title, everywhere.
   onConversationRenamed?: (id: string, title: string) => void;
+  // Same idea for pin/delete - both delegate up to whichever page owns the
+  // real `conversations` state, exactly like onConversationRenamed already
+  // does, so a pin or delete made from inside this popup is reflected
+  // everywhere else that same conversation is listed too.
+  onConversationPinned?: (id: string, pinned: boolean) => void;
+  onConversationDeleted?: (id: string) => void;
 }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
@@ -446,6 +454,8 @@ export default function StoredDataSection({
                       trailing={timeAgo(c.updated_at)}
                       onOpen={() => openExistingConversation(c)}
                       onRenamed={(id, title) => onConversationRenamed?.(id, title)}
+                      onPinned={(id, pinned) => onConversationPinned?.(id, pinned)}
+                      onDeleted={(id) => onConversationDeleted?.(id)}
                     />
                   ))}
                 </div>
