@@ -98,15 +98,21 @@ def _load_and_cache(key: str, loader) -> pd.DataFrame:
     return df.copy()
 
 
-def warm_cache(datasource_id: str, df: pd.DataFrame) -> None:
+def warm_cache(datasource_id: str, df: pd.DataFrame, table: str | None = None) -> None:
     """Called right after a file upload finishes parsing the workbook once
     for its schema - seeds this same already-parsed DataFrame straight into
     the cache under the same key `_load_original` will look for, so the
     very first preview/chat message against a freshly-uploaded large file
     does not pay a second full parse for data this process already has in
     memory. Safe to skip (a cache miss just parses normally), never
-    required for correctness."""
-    _cache_put(f"original:{datasource_id}", df)
+    required for correctness.
+
+    `table` is the sheet name for a multi-sheet Excel upload (see
+    upload_file in routers/datasources.py, which parses every sheet once
+    for the schema and warms all of them here, not just the first) - None
+    for a CSV or single-sheet upload, matching `_load_original`'s own
+    "no table means the one implicit sheet" default."""
+    _cache_put(f"original:{datasource_id}:{table or ''}", df)
 
 
 def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
@@ -151,13 +157,27 @@ def _load_original(ds: models.DataSource, table: str | None = None) -> pd.DataFr
                 "upload the file again; new uploads are stored permanently and will not be lost."
             )
         ext_hint = ".xlsx" if ds.kind == "excel" else ".csv"
+        # A multi-sheet Excel workbook (schema_cache in the new
+        # {sheet_name: [...]} shape - see connectors.FileConnector.
+        # introspect_schema) needs to know WHICH sheet to load, the same
+        # way a multi-table database needs to know which table - reuses
+        # the exact same _pick_single/NeedsTableSelection mechanism DB/
+        # Mongo/BigQuery already use just below. A CSV, or an Excel upload
+        # with only one sheet (old flat {"columns": [...]} schema shape,
+        # from before multi-sheet support existed, or a fresh single-sheet
+        # upload), has nothing to pick - `sheet` stays None and this loads
+        # exactly the one implicit table, exactly as it always did.
+        sheet = _excel_sheet_name(table, ds.schema_cache) if ds.kind == "excel" else None
         # This is the hot path for a big uploaded file: every page turn,
         # sort, filter and chat message against the original data lands
         # here. See the cache's own module-level comment above for why this
         # is safe to cache with no invalidation - ds.file_data is fixed at
-        # upload time and never changes afterward.
+        # upload time and never changes afterward. The cache key includes
+        # the sheet so two different sheets of the same workbook are never
+        # confused for each other.
         return _load_and_cache(
-            f"original:{ds.id}", lambda: FileConnector(ds.file_data, ext_hint).load_dataframe()
+            f"original:{ds.id}:{sheet or ''}",
+            lambda: FileConnector(ds.file_data, ext_hint).load_dataframe(sheet_name=sheet if sheet else 0),
         )
 
     if ds.kind in ("postgres", "mysql", "sqlserver", "supabase"):
@@ -189,6 +209,49 @@ def _pick_single(schema_cache: dict | None) -> str:
     if len(keys) == 1:
         return keys[0]
     raise NeedsTableSelection(keys)
+
+
+def _is_multi_sheet_schema(schema_cache: dict | None) -> bool:
+    """True only for the new per-sheet Excel schema shape (see
+    connectors.FileConnector.introspect_schema) - a dict keyed by real
+    sheet names. False for the old flat {"columns": [...]} shape (a CSV,
+    or an Excel upload from before multi-sheet support / with only one
+    sheet), which is a single implicit table, not a dict of sheet names
+    that happens to have one entry."""
+    keys = list((schema_cache or {}).keys())
+    return keys != ["columns"] and len(keys) > 0
+
+
+def _excel_sheet_name(table: str | None, schema_cache: dict | None) -> str | None:
+    """Resolves which sheet an Excel load should use. `table` wins when
+    given (an explicit pick, from the WORKING ON selection or a legacy
+    clarify-then-retry). Otherwise: a plain flat-schema file (CSV-shaped,
+    see _is_multi_sheet_schema) has nothing to pick - returns None, meaning
+    "the one implicit sheet", exactly as this always behaved. A genuinely
+    multi-sheet workbook with nothing specified raises NeedsTableSelection
+    (same contract as _pick_single above) rather than silently guessing
+    which sheet was meant - the caller (chat.py) turns that into a
+    clarifying question the same way it already does for a multi-table
+    database."""
+    if table:
+        return table
+    if not _is_multi_sheet_schema(schema_cache):
+        return None
+    return _pick_single(schema_cache)
+
+
+def default_table_for_preview(ds: models.DataSource) -> str | None:
+    """The sheet a plain "show me this data" view (the Data tab preview,
+    and its CSV/Excel export) should default to when nothing more specific
+    was asked - always the FIRST sheet for a multi-sheet workbook, never a
+    clarifying question: unlike a chat prompt, there is no back-and-forth
+    here to ask a question through, and defaulting to the first sheet is
+    exactly the same zero-ambiguity behavior a single-sheet file (or a CSV)
+    already had before multi-sheet support existed. Returns None for
+    anything other than a multi-sheet Excel datasource."""
+    if ds.kind != "excel" or not _is_multi_sheet_schema(ds.schema_cache):
+        return None
+    return next(iter((ds.schema_cache or {}).keys()), None)
 
 
 def load_version_dataframe(version: models.DatasetVersion) -> pd.DataFrame:
