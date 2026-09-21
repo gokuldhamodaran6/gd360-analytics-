@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, chatApi, conversationApi, datasourceApi, ConversationSummary, DatasetVersion } from "../api/client";
+import { api, chatApi, conversationApi, datasourceApi, ConversationSummary, DatasetVersion, DataSourceSummary } from "../api/client";
 import TopNav from "../components/TopNav";
 import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID } from "../components/ChatPanel";
+import { isMultiSheetExcel } from "../components/DataSourceForm";
 import GokuChat from "../components/GokuChat";
 import ChartCanvas from "../components/ChartCanvas";
 import ConversationRow from "../components/ConversationRow";
@@ -65,6 +66,17 @@ export default function Workspace() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [dsName, setDsName] = useState("");
+  // The full record for this datasource - kind + schema_cache, used to
+  // detect a multi-sheet Excel workbook (see the sourceIds-defaulting
+  // effect below and the ChatPanel props) - and every OTHER data source
+  // this person has connected, for the chat panel's "+ Add more data"
+  // picker. Both come from the same /datasources list fetch below.
+  const [dsInfo, setDsInfo] = useState<DataSourceSummary | null>(null);
+  const [allDataSources, setAllDataSources] = useState<DataSourceSummary[]>([]);
+  const otherDataSources = useMemo(
+    () => allDataSources.filter((d) => d.id !== datasourceId),
+    [allDataSources, datasourceId]
+  );
   const [saveMsg, setSaveMsg] = useState("");
 
   // Inline rename of the data source itself - the "Analyzing: <name>"
@@ -205,10 +217,33 @@ export default function Workspace() {
 
   useEffect(() => {
     api.get("/datasources").then(({ data }) => {
+      setAllDataSources(data);
       const ds = data.find((d: any) => d.id === datasourceId);
-      if (ds) setDsName(ds.name);
+      if (ds) {
+        setDsName(ds.name);
+        setDsInfo(ds);
+      }
     });
   }, [datasourceId]);
+
+  // A brand-new "Original data" pick (the untouched default this page
+  // starts on, and what "+ New" resets back to) means something different
+  // once a datasource turns out to be a multi-sheet Excel workbook: there
+  // is no longer one single "original data" table, so it defaults instead
+  // to that workbook's first sheet - explicitly, the same way the WORKING
+  // ON picker now shows one checkbox per sheet rather than a single
+  // "Original data" row for a workbook like this. Only ever corrects the
+  // untouched auto-picked default (never an explicit pick - a resumed
+  // conversation's saved table, or anything the person has chosen in
+  // WORKING ON already), and is a no-op the moment it has already run once
+  // for the current selection.
+  useEffect(() => {
+    if (!dsInfo || dsInfo.id !== datasourceId) return;
+    if (!isMultiSheetExcel(dsInfo.kind, dsInfo.schema_cache)) return;
+    if (sourceIds.length !== 1 || sourceIds[0] !== ORIGINAL_SOURCE_ID) return;
+    const firstSheet = Object.keys(dsInfo.schema_cache || {})[0];
+    if (firstSheet) setSourceIds([`sheet:${firstSheet}`]);
+  }, [dsInfo, datasourceId, sourceIds]);
 
   const startRenameDs = () => {
     setDsNameDraft(dsName);
@@ -776,6 +811,9 @@ export default function Workspace() {
             verifyingIndex={verifyingIndex}
             analysisMode={analysisMode}
             onAnalysisModeChange={setAnalysisMode}
+            datasourceKind={dsInfo?.kind}
+            datasourceSchema={dsInfo?.schema_cache}
+            otherDataSources={otherDataSources}
           />
         </div>
         <div className="min-h-[400px] flex flex-col gap-4 overflow-visible lg:overflow-hidden">
