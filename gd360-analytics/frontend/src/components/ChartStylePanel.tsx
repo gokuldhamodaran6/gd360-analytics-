@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ChartStyle,
   FontSize,
-  LegendPosition,
   PALETTES,
   DEFAULT_ACCENT_COLOR,
   hasCartesianAxes,
@@ -23,11 +22,6 @@ const COLORS_PER_PAGE = 12;
 // chart_builder.py's own TREND_COLOR default exactly so the swatch never
 // starts out looking wrong.
 const DEFAULT_TREND_COLOR = "#E24C4C";
-
-const LEGEND_POSITION_OPTIONS: { value: LegendPosition; label: string }[] = [
-  { value: "bottom", label: "Below chart" },
-  { value: "top", label: "Above chart" },
-];
 
 type ChartTypeDef = { id: string; label: string };
 
@@ -180,7 +174,11 @@ export default function ChartStylePanel({
   // itself off `names` above, which returns nothing at all for a
   // single-categorical bar chart.
   const colorLabels = useMemo(() => colorableLabels(chartSpec), [chartSpec]);
-  const colorCount = Math.max(colorLabels.length, 6);
+  // Exactly as many swatches as this chart actually has colorable things -
+  // 2 bars gets 2 swatches, 10 unique bars gets 10, never a padded-out
+  // fixed count of 6 generic "Bar N" placeholders that don't correspond to
+  // anything real on the chart.
+  const colorCount = Math.max(colorLabels.length, 1);
   const totalColorPages = Math.max(1, Math.ceil(colorCount / COLORS_PER_PAGE));
   const colorPageClamped = Math.min(colorPage, totalColorPages - 1);
 
@@ -550,23 +548,10 @@ export default function ChartStylePanel({
             </label>
           </div>
           {style.showLegend && (
-            <div className="flex items-center justify-between">
-              <span className="text-sm">Legend position</span>
-              <div className="flex gap-1">
-                {LEGEND_POSITION_OPTIONS.map((o) => (
-                  <button
-                    key={o.value}
-                    disabled={disabled}
-                    className={`text-xs px-2.5 py-1 rounded-lg transition ${
-                      (style.legendPosition || "bottom") === o.value ? "bg-primary text-white" : "btn-secondary"
-                    }`}
-                    onClick={() => onStyleChange({ legendPosition: o.value })}
-                  >
-                    {o.label}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <p className="text-[11px] text-muted leading-relaxed -mt-1">
+              The legend docks to the right of the chart, sized to fit your labels - it never covers
+              the title or the bars, even while resizing.
+            </p>
           )}
           <div className="flex items-center justify-between">
             <span className="text-sm">Data labels</span>
