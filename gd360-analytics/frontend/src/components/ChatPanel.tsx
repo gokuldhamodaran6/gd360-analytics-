@@ -1,10 +1,23 @@
 import { useEffect, useRef, useState } from "react";
-import { DatasetVersion } from "../api/client";
+import { DatasetVersion, DataSourceSummary, datasourceApi } from "../api/client";
+import { isMultiSheetExcel } from "./DataSourceForm";
 
 // The literal id used, on both the client and the server, to mean "the
 // original, untouched data" inside a WORKING ON selection - every other
-// entry is a real DatasetVersion.id.
+// entry is one of: a real DatasetVersion.id (any datasource the person
+// owns - not only the one this chat panel is open on), "sheet:<name>" (one
+// sheet of THIS datasource, for a multi-sheet Excel upload), or
+// "ds:<other_datasource_id>:original" / "ds:<other_datasource_id>:
+// sheet:<name>" (another, separately-connected data source added with
+// "+ Add more data" - see the WORKING ON picker below and routers/chat.py
+// _load_selected_tables, which resolves every one of these forms).
 export const ORIGINAL_SOURCE_ID = "original";
+const SHEET_PREFIX = "sheet:";
+const OTHER_DS_PREFIX = "ds:";
+
+function otherDsSourceId(datasourceId: string, sheet?: string | null): string {
+  return sheet ? `${OTHER_DS_PREFIX}${datasourceId}:sheet:${sheet}` : `${OTHER_DS_PREFIX}${datasourceId}:original`;
+}
 
 export type FollowUpSuggestion = { label: string; prompt: string };
 
@@ -49,9 +62,42 @@ export type ChatTurn = {
 
 export type CustomizeSeed = { text: string; nonce: number };
 
-function labelForSource(id: string, versions: DatasetVersion[]): string {
+// Resolves any sourceId (see the forms documented on ORIGINAL_SOURCE_ID
+// above) to a short, human-readable label for the WORKING ON summary line
+// and the picker itself. `otherVersionsById` is only populated for another
+// data source once its own saved tables have actually been fetched (see
+// the picker's "+ Add more data" section below) - a cross-datasource
+// version id that has not been resolved yet (e.g. right after restoring an
+// old conversation, before its other data source has been expanded) falls
+// back to a plain "Saved table" rather than the misleading "Removed
+// table", since it has not been confirmed missing, only not looked up yet.
+function labelForSource(
+  id: string,
+  versions: DatasetVersion[],
+  otherDataSources: DataSourceSummary[],
+  otherVersionsById: Record<string, DatasetVersion[]>
+): string {
   if (id === ORIGINAL_SOURCE_ID) return "Original data";
-  return versions.find((v) => v.id === id)?.name || "Removed table";
+  if (id.startsWith(SHEET_PREFIX)) return id.slice(SHEET_PREFIX.length);
+  if (id.startsWith(OTHER_DS_PREFIX)) {
+    const rest = id.slice(OTHER_DS_PREFIX.length);
+    const sepIndex = rest.indexOf(":");
+    const otherId = sepIndex === -1 ? rest : rest.slice(0, sepIndex);
+    const selector = sepIndex === -1 ? "" : rest.slice(sepIndex + 1);
+    const otherName = otherDataSources.find((d) => d.id === otherId)?.name || "Another data source";
+    if (selector.startsWith(SHEET_PREFIX)) return `${otherName} — ${selector.slice(SHEET_PREFIX.length)}`;
+    return `${otherName} (original)`;
+  }
+  const own = versions.find((v) => v.id === id);
+  if (own) return own.name;
+  for (const [otherId, vs] of Object.entries(otherVersionsById)) {
+    const found = vs.find((v) => v.id === id);
+    if (found) {
+      const otherName = otherDataSources.find((d) => d.id === otherId)?.name || "Another data source";
+      return `${otherName} — ${found.name}`;
+    }
+  }
+  return "Saved table";
 }
 
 // A chat reply is usually just plain text, but an "explain"-style answer
@@ -127,6 +173,7 @@ function renderMessageContent(content: string) {
 export default function ChatPanel({
   turns, onSend, busy, onApproveTransform, onRejectTransform, onCustomizeTransform, onContinueAnalysis, customizeSeed,
   versions, sourceIds, onSourceIdsChange, onVerify, verifyingIndex, analysisMode, onAnalysisModeChange,
+  datasourceKind, datasourceSchema, otherDataSources,
 }: {
   turns: ChatTurn[];
   onSend: (prompt: string) => void;
@@ -154,12 +201,75 @@ export default function ChatPanel({
   // first question, and switchable any time after.
   analysisMode?: "auto" | "guided";
   onAnalysisModeChange?: (mode: "auto" | "guided") => void;
+  // This datasource's own kind/schema_cache - used only to detect whether
+  // it is a multi-sheet Excel workbook, in which case WORKING ON offers
+  // one checkbox per sheet instead of a single "Original data" row.
+  datasourceKind?: string;
+  datasourceSchema?: Record<string, unknown> | null;
+  // Every OTHER data source this person has connected (never including the
+  // one this chat panel is open on) - powers the "+ Add more data" section
+  // of the WORKING ON picker, which is how a single prompt can pull in and
+  // combine a separate, independently-connected data source.
+  otherDataSources?: DataSourceSummary[];
 }) {
   const [text, setText] = useState("");
   const [workingOnOpen, setWorkingOnOpen] = useState(false);
   const [dismissedFollowUps, setDismissedFollowUps] = useState<Set<number>>(new Set());
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const otherSources = otherDataSources || [];
+  const anchorMultiSheet = isMultiSheetExcel(datasourceKind || "", datasourceSchema);
+  const anchorSheets = anchorMultiSheet ? Object.keys(datasourceSchema || {}) : [];
+
+  // Saved tables for an OTHER data source, fetched lazily (only once that
+  // data source is actually expanded in the picker, or once an already-
+  // selected sourceId turns out to need resolving - see the effect below) -
+  // never fetched eagerly for every connected data source on every render,
+  // since most prompts never touch more than the one data source already
+  // open here.
+  const [otherVersionsById, setOtherVersionsById] = useState<Record<string, DatasetVersion[]>>({});
+  const [loadingOtherDs, setLoadingOtherDs] = useState<Set<string>>(new Set());
+  const [expandedOtherDs, setExpandedOtherDs] = useState<Set<string>>(new Set());
+
+  const fetchOtherVersions = (dsId: string) => {
+    if (otherVersionsById[dsId] || loadingOtherDs.has(dsId)) return;
+    setLoadingOtherDs((s) => new Set(s).add(dsId));
+    datasourceApi
+      .listVersions(dsId)
+      .then((vs) => setOtherVersionsById((m) => (m[dsId] ? m : { ...m, [dsId]: vs })))
+      .catch(() => setOtherVersionsById((m) => (m[dsId] ? m : { ...m, [dsId]: [] })))
+      .finally(() => setLoadingOtherDs((s) => { const n = new Set(s); n.delete(dsId); return n; }));
+  };
+
+  // Keeps the picker (and the WORKING ON summary line) correct even when
+  // the current selection already points at another data source before
+  // the person has opened the picker this session - most commonly right
+  // after restoring a past conversation that combined sources. A
+  // "ds:<id>:..." entry names its data source directly, so that one is
+  // expanded precisely; a bare id this panel cannot find among its OWN
+  // versions might belong to another data source instead of simply being
+  // gone, so every other connected data source's versions are fetched once
+  // to find out for sure, rather than guessing from silence.
+  useEffect(() => {
+    const directIds = new Set<string>();
+    for (const id of sourceIds) {
+      if (id.startsWith(OTHER_DS_PREFIX)) {
+        const rest = id.slice(OTHER_DS_PREFIX.length);
+        const otherId = rest.includes(":") ? rest.slice(0, rest.indexOf(":")) : rest;
+        directIds.add(otherId);
+      }
+    }
+    const ownVersionIds = new Set(versions.map((v) => v.id));
+    const hasUnresolvedBareId = sourceIds.some(
+      (id) => id !== ORIGINAL_SOURCE_ID && !id.startsWith(SHEET_PREFIX) && !id.startsWith(OTHER_DS_PREFIX) && !ownVersionIds.has(id)
+    );
+    const toExpand = hasUnresolvedBareId ? otherSources.map((d) => d.id) : Array.from(directIds);
+    if (toExpand.length === 0) return;
+    setExpandedOtherDs((s) => new Set([...s, ...toExpand]));
+    toExpand.forEach(fetchOtherVersions);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceIds.join("|"), versions.map((v) => v.id).join("|"), otherSources.map((d) => d.id).join("|")]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -190,11 +300,43 @@ export default function ChatPanel({
   };
 
   const workingOnSummary = () => {
-    const labels = sourceIds.map((id) => labelForSource(id, versions));
+    const labels = sourceIds.map((id) => labelForSource(id, versions, otherSources, otherVersionsById));
     if (labels.length === 0) return "Original data";
     if (labels.length === 1) return labels[0];
     if (labels.length === 2) return labels.join(" + ");
     return `${labels[0]} + ${labels.length - 1} more`;
+  };
+
+  // "+ Add more data": pulls another, separately-connected data source
+  // into this picker and pre-selects a sensible default from it (its first
+  // sheet, for a multi-sheet workbook, otherwise its original data) so
+  // adding a source is immediately useful in one click - the person can
+  // still refine exactly which of its tables/sheets to use with the
+  // checkboxes this reveals.
+  const addOtherDs = (ds: DataSourceSummary) => {
+    setExpandedOtherDs((s) => new Set(s).add(ds.id));
+    fetchOtherVersions(ds.id);
+    const multiSheet = isMultiSheetExcel(ds.kind, ds.schema_cache);
+    const defaultId = multiSheet
+      ? otherDsSourceId(ds.id, Object.keys(ds.schema_cache || {})[0])
+      : otherDsSourceId(ds.id);
+    if (!sourceIds.includes(defaultId)) onSourceIdsChange([...sourceIds, defaultId]);
+  };
+
+  // Collapses an added data source and drops every one of its tables
+  // (original data, any sheet, any saved version) out of the current
+  // selection - a clean, single "undo" for the "+ Add" click above, rather
+  // than making the person uncheck each box it added one at a time.
+  const removeOtherDs = (dsId: string) => {
+    setExpandedOtherDs((s) => { const n = new Set(s); n.delete(dsId); return n; });
+    const ownedVersionIds = new Set((otherVersionsById[dsId] || []).map((v) => v.id));
+    const next = sourceIds.filter((id) => {
+      if (id === otherDsSourceId(dsId)) return false;
+      if (id.startsWith(`${OTHER_DS_PREFIX}${dsId}:${SHEET_PREFIX}`)) return false;
+      if (ownedVersionIds.has(id)) return false;
+      return true;
+    });
+    onSourceIdsChange(next.length ? next : [ORIGINAL_SOURCE_ID]);
   };
 
   // A "Refine further" click on a data-cleaning result seeds the chat box
@@ -418,22 +560,20 @@ export default function ChatPanel({
       </div>
 
       <div className="border-t border-border">
-        {versions.length > 0 && (
-          <div className="px-4 pt-3">
-            <label className="text-[11px] font-semibold tracking-wide text-muted block mb-1">
-              WORKING ON
-            </label>
-            <button
-              type="button"
-              className="input text-sm py-1.5 w-full flex items-center justify-between gap-2 text-left"
-              disabled={busy}
-              onClick={() => setWorkingOnOpen(true)}
-            >
-              <span className="truncate">{workingOnSummary()}</span>
-              <span className="text-muted shrink-0 text-xs">▼</span>
-            </button>
-          </div>
-        )}
+        <div className="px-4 pt-3">
+          <label className="text-[11px] font-semibold tracking-wide text-muted block mb-1">
+            WORKING ON
+          </label>
+          <button
+            type="button"
+            className="input text-sm py-1.5 w-full flex items-center justify-between gap-2 text-left"
+            disabled={busy}
+            onClick={() => setWorkingOnOpen(true)}
+          >
+            <span className="truncate">{workingOnSummary()}</span>
+            <span className="text-muted shrink-0 text-xs">▼</span>
+          </button>
+        </div>
 
         <div className="p-4 pt-3 flex gap-2">
           <input
@@ -458,7 +598,7 @@ export default function ChatPanel({
         keyboard is covering half the screen - the exact conditions that
         clipped the old dropdown. Bottom sheet on narrow screens (easiest
         to reach with a thumb), centered modal from "sm" up. */}
-    {versions.length > 0 && workingOnOpen && (
+    {workingOnOpen && (
       <div
         className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60"
         onClick={() => setWorkingOnOpen(false)}
@@ -481,20 +621,102 @@ export default function ChatPanel({
             </button>
           </div>
           <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
-            <label className="flex items-center gap-2 text-sm px-2 py-2.5 rounded-lg hover:bg-surface2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={sourceIds.includes(ORIGINAL_SOURCE_ID)}
-                onChange={() => toggleSource(ORIGINAL_SOURCE_ID)}
-              />
-              Original data
-            </label>
+            {anchorMultiSheet ? (
+              anchorSheets.map((sheet) => {
+                const id = `${SHEET_PREFIX}${sheet}`;
+                return (
+                  <label key={id} className="flex items-center gap-2 text-sm px-2 py-2.5 rounded-lg hover:bg-surface2 cursor-pointer">
+                    <input type="checkbox" checked={sourceIds.includes(id)} onChange={() => toggleSource(id)} />
+                    {sheet}
+                  </label>
+                );
+              })
+            ) : (
+              <label className="flex items-center gap-2 text-sm px-2 py-2.5 rounded-lg hover:bg-surface2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={sourceIds.includes(ORIGINAL_SOURCE_ID)}
+                  onChange={() => toggleSource(ORIGINAL_SOURCE_ID)}
+                />
+                Original data
+              </label>
+            )}
             {versions.map((v) => (
               <label key={v.id} className="flex items-center gap-2 text-sm px-2 py-2.5 rounded-lg hover:bg-surface2 cursor-pointer">
                 <input type="checkbox" checked={sourceIds.includes(v.id)} onChange={() => toggleSource(v.id)} />
                 {v.name}
               </label>
             ))}
+
+            {otherSources.length > 0 && (
+              <div className="pt-3 mt-2 border-t border-border">
+                <div className="text-[11px] font-semibold tracking-wide text-muted px-2 pb-1">
+                  ADD MORE DATA
+                </div>
+                {otherSources.map((ds) => {
+                  const expanded = expandedOtherDs.has(ds.id);
+                  const dsMultiSheet = isMultiSheetExcel(ds.kind, ds.schema_cache);
+                  const dsSheets = dsMultiSheet ? Object.keys(ds.schema_cache || {}) : [];
+                  const dsVersions = otherVersionsById[ds.id] || [];
+                  if (!expanded) {
+                    return (
+                      <button
+                        key={ds.id}
+                        type="button"
+                        className="w-full flex items-center gap-2 text-sm px-2 py-2.5 rounded-lg hover:bg-surface2 text-left text-muted hover:text-text transition"
+                        onClick={() => addOtherDs(ds)}
+                      >
+                        <span className="text-accent font-semibold">+</span>
+                        <span className="truncate">Add "{ds.name}"</span>
+                      </button>
+                    );
+                  }
+                  return (
+                    <div key={ds.id} className="rounded-lg bg-surface2/60 my-1 py-1.5">
+                      <div className="flex items-center justify-between px-2 pb-1">
+                        <span className="text-xs font-semibold truncate">{ds.name}</span>
+                        <button
+                          type="button"
+                          className="text-[11px] text-muted hover:text-text transition shrink-0 ml-2"
+                          onClick={() => removeOtherDs(ds.id)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      {dsMultiSheet ? (
+                        dsSheets.map((sheet) => {
+                          const id = otherDsSourceId(ds.id, sheet);
+                          return (
+                            <label key={id} className="flex items-center gap-2 text-sm px-2 py-2 rounded-lg hover:bg-surface2 cursor-pointer">
+                              <input type="checkbox" checked={sourceIds.includes(id)} onChange={() => toggleSource(id)} />
+                              {sheet}
+                            </label>
+                          );
+                        })
+                      ) : (
+                        <label className="flex items-center gap-2 text-sm px-2 py-2 rounded-lg hover:bg-surface2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={sourceIds.includes(otherDsSourceId(ds.id))}
+                            onChange={() => toggleSource(otherDsSourceId(ds.id))}
+                          />
+                          Original data
+                        </label>
+                      )}
+                      {loadingOtherDs.has(ds.id) && (
+                        <div className="text-[11px] text-muted px-2 py-1">Loading saved tables…</div>
+                      )}
+                      {dsVersions.map((v) => (
+                        <label key={v.id} className="flex items-center gap-2 text-sm px-2 py-2 rounded-lg hover:bg-surface2 cursor-pointer">
+                          <input type="checkbox" checked={sourceIds.includes(v.id)} onChange={() => toggleSource(v.id)} />
+                          {v.name}
+                        </label>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
           <div className="p-3 border-t border-border shrink-0">
             <button type="button" className="btn-primary w-full text-sm" onClick={() => setWorkingOnOpen(false)}>
