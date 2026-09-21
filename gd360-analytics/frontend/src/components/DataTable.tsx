@@ -22,6 +22,26 @@ function FilterIcon({ active }: { active: boolean }) {
   );
 }
 
+// The cleaning-log summary the AI writes for "what changed" (see
+// backend/app/services/ai_engine.py) marks its own section headers with
+// plain **bold** markdown ("**Data prep:** ...", "**Analysis:** ..."). This
+// renders those spans as real bold text instead of showing the literal
+// asterisks - a small, dependency-free stand-in for a full markdown parser,
+// since bold is the only markdown this one piece of AI-written text ever
+// uses.
+function renderBoldText(text: string) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g).filter((p) => p.length > 0);
+  return parts.map((part, i) =>
+    part.startsWith("**") && part.endsWith("**") && part.length > 4 ? (
+      <strong key={i} className="font-semibold text-text">
+        {part.slice(2, -2)}
+      </strong>
+    ) : (
+      <span key={i}>{part}</span>
+    )
+  );
+}
+
 export default function DataTable({
   datasourceId,
   refreshKey,
@@ -321,7 +341,9 @@ export default function DataTable({
               {preview.cleaning_log.map((entry, i) => (
                 <div key={i} className="text-xs bg-surface2 border border-border rounded-lg px-2.5 py-1.5">
                   <div className="text-muted italic">"{entry.prompt}"</div>
-                  <div className="text-text mt-0.5">{entry.summary}</div>
+                  <div className="text-text mt-0.5 leading-relaxed">
+                    {entry.summary ? renderBoldText(entry.summary) : null}
+                  </div>
                 </div>
               ))}
             </div>
