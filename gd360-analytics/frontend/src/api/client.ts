@@ -219,10 +219,35 @@ export type DataPreview = {
   stats_capped: boolean;
 };
 
+// Each column's filter is now a small structured object - a values
+// checklist, or a type-aware condition (text/number/date/boolean) - built
+// by DataTable.tsx's Excel-style filter panel (see its ColumnFilterSpec)
+// and read on the backend by routers/datasources.py's _apply_column_filter.
+// Kept loosely typed here (rather than importing DataTable's own union)
+// since the API client is just a pass-through: it JSON-serializes whatever
+// shape the caller built and never inspects it itself.
 export type PreviewOptions = {
   sortBy?: string | null;
   sortDir?: "asc" | "desc";
-  filters?: Record<string, string>;
+  filters?: Record<string, any>;
+};
+
+// One distinct value (with its row count) for a single column - the
+// checkbox list in the Data tab's Excel-style filter panel is built from
+// these. Computed on demand, only for the one column a person opens the
+// filter for - see backend routers/datasources.py get_column_distinct_values
+// for why this is its own lazy endpoint rather than part of every preview.
+export type ColumnDistinctValue = { value: string | number | boolean | null; count: number };
+
+export type ColumnDistinctValues = {
+  column: string;
+  values: ColumnDistinctValue[];
+  null_count: number;
+  distinct_total: number;
+  // True when distinct_total is bigger than how many values were actually
+  // returned (capped by `limit`) - the filter panel shows "+N more, type to
+  // search" instead of silently looking like a complete list.
+  truncated: boolean;
 };
 
 // The same shape the backend's DataSourceOut returns - kept here (rather
@@ -275,6 +300,28 @@ export const datasourceApi = {
       .then((r) => r.data),
 
   listVersions: (id: string) => api.get<DatasetVersion[]>(`/datasources/${id}/versions`).then((r) => r.data),
+
+  // Distinct values (with counts) for one column, for the Excel-style
+  // checkbox filter panel - see get_column_distinct_values on the backend.
+  // `search` narrows the search-within-values box in that panel before
+  // the backend counts/truncates, so it stays fast even on a
+  // high-cardinality column.
+  getColumnDistinctValues: (
+    id: string,
+    column: string,
+    versionId: string | null,
+    opts: { table?: string | null; search?: string; limit?: number } = {}
+  ) =>
+    api
+      .get<ColumnDistinctValues>(`/datasources/${id}/columns/${encodeURIComponent(column)}/distinct-values`, {
+        params: {
+          version_id: versionId || undefined,
+          table: versionId ? undefined : opts.table || undefined,
+          search: opts.search || undefined,
+          limit: opts.limit || undefined,
+        },
+      })
+      .then((r) => r.data),
 
   // Every saved table and every chart/analysis ever built for this data
   // source, across every past conversation - the raw material for the
