@@ -1767,6 +1767,7 @@ def analyze(
     guided: bool = False,
     skip_prep: bool = False,
     original_df: pd.DataFrame | None = None,
+    durable_repeat: tuple[str, str, str, str | None] | None = None,
 ) -> dict:
     """
     Main entrypoint. `tables` maps display name -> DataFrame for every table
@@ -1776,6 +1777,16 @@ def analyze(
     chart_spec, insight, cleaned_df (set for a transform, or for an analyze
     that had to prepare its own table first), rows_before/after,
     nulls_before/after, suggested_charts, suggested_stats.
+
+    `durable_repeat`, when given, is (action, narrative, code, chart_type)
+    for this exact same question this same person already answered
+    correctly before - possibly in a completely different, earlier
+    conversation - looked up by the caller from the permanent per-account
+    memory in services/learned_answers.py. It is treated exactly like an
+    in-conversation exact-repeat match (see _find_repeated_prompt_code
+    below): the proven code is replayed for real against the CURRENT data,
+    and only if that replay itself fails does this fall through to the
+    normal AI-planned flow below, unaffected.
 
     `guided` controls what happens when an analyze question needs its own
     preparation step first (see the SYSTEM_PROMPT rule on prep_code): False
@@ -1900,7 +1911,7 @@ def analyze(
     # column it used no longer exists), this quietly falls through to the
     # normal AI-planned flow below instead of surfacing an error for what
     # looks, to the person, like an entirely reasonable repeat question.
-    repeat = _find_repeated_prompt_code(prompt, history)
+    repeat = _find_repeated_prompt_code(prompt, history) or durable_repeat
     if repeat:
         repeat_action, repeat_narrative, repeat_code, repeat_chart_type = repeat
         replay_plan = {
@@ -1926,6 +1937,13 @@ def analyze(
         # identically before.
         replay_result = _execute_plan(prompt, tables, profile, replay_plan, chart_override, guided=False)
         if not replay_result.get("_retry_needed"):
+            # Tells the caller (routers/chat.py) this turn was answered
+            # from an already-known-good replay, not a fresh AI plan - so
+            # it is not re-saved into the permanent learned-answer memory
+            # (there is nothing new to learn from replaying something
+            # already learned; saving it again would just be a redundant
+            # write with the same content).
+            replay_result["_answered_from_memory"] = True
             return replay_result
 
     schema_text = explicit_schema_text
