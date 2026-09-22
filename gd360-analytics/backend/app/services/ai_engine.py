@@ -1457,7 +1457,9 @@ def _try_deterministic_crosstab(prompt: str, df: pd.DataFrame, profile: dict) ->
         ],
         "code": code,
     }
-  def analyze(
+
+
+def analyze(
     prompt: str,
     tables: dict[str, pd.DataFrame],
     history: list[dict] | None = None,
