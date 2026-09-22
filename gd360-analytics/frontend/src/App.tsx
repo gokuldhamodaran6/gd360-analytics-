@@ -10,6 +10,7 @@ import DashboardView from "./pages/DashboardView";
 import AdminDashboard from "./pages/AdminDashboard";
 import Profile from "./pages/Profile";
 import HelpBigQuery from "./pages/HelpBigQuery";
+import HelpSnowflake from "./pages/HelpSnowflake";
 import ConnectResourcePicker from "./pages/ConnectResourcePicker";
 import PrivacyPolicy from "./pages/PrivacyPolicy";
 
@@ -45,6 +46,8 @@ export default function App() {
           browser tab from the BigQuery connect popout, so it needs to work
           even in a fresh tab that may not carry an existing session yet. */}
       <Route path="/help/connect-bigquery" element={<HelpBigQuery />} />
+      {/* Same idea, for the Snowflake connect popout. */}
+      <Route path="/help/connect-snowflake" element={<HelpSnowflake />} />
       {/* Public and standalone: read before someone ever creates an
           account, and it's also what Google/Microsoft's OAuth verification
           reviewers check when this app requests Sheets/Excel/Drive/
