@@ -26,10 +26,17 @@ services/oauth_tokens.py before either is constructed) and reading a live
 spreadsheet/workbook straight over HTTP rather than SQL - still the exact
 same `load_dataframe`/`introspect_schema` shape, so data_loader.py's
 dispatch and every downstream feature (preview, chat analysis, exports)
-needs no special-casing for them. BigQueryConnector and SnowflakeConnector
-additionally support a `run_pushdown_query` fast path - see the Enterprise
-Scale Roadmap doc and each class's own docstring for how that differs
-between the two.
+needs no special-casing for them. BigQueryConnector, SnowflakeConnector,
+SQLConnector (for Postgres/MySQL/SQL Server/Supabase), and MongoConnector
+additionally support a `run_pushdown_query`/`load_dataframe(is_raw_sql=
+True)` fast path - one governed query (SQL, or for Mongo one aggregation
+pipeline) run directly inside the source instead of pulling rows into
+GD360's own memory. See the Enterprise Scale Roadmap doc and each class's
+own docstring for how the safety model differs: BigQuery and Snowflake
+are metered cloud warehouses, so each guards against real cost (a
+pre-flight byte estimate for BigQuery, a compute-time cap for Snowflake);
+the plain SQL databases and MongoDB are a customer's own server with no
+metered billing, so those two exist purely for speed and memory safety.
 """
 from __future__ import annotations
 
@@ -54,6 +61,13 @@ FORBIDDEN_SQL_KEYWORDS = {
     "grant", "revoke", "merge", "replace", "call", "exec", "execute",
     "into outfile", "load_file", "attach", "detach", "vacuum", "copy",
 }
+
+# MongoDB pushdown's equivalent of FORBIDDEN_SQL_KEYWORDS above: any
+# aggregation stage/operator that writes to the database ($out, $merge)
+# or runs arbitrary server-side JavaScript ($function, $accumulator,
+# $where) is refused, at any nesting depth in the pipeline - see
+# assert_read_only_mongo_pipeline.
+FORBIDDEN_MONGO_STAGES = {"$out", "$merge", "$function", "$accumulator", "$where"}
 
 
 class ReadOnlyViolation(Exception):
@@ -88,6 +102,36 @@ def assert_read_only_sql(raw_sql: str) -> None:
     for kw in FORBIDDEN_SQL_KEYWORDS:
         if re.search(rf"\b{re.escape(kw)}\b", lowered):
             raise ReadOnlyViolation(f"Query contains a forbidden keyword: {kw}.")
+
+
+def assert_read_only_mongo_pipeline(pipeline: list) -> None:
+    """Raises ReadOnlyViolation unless every stage in `pipeline` - and
+    every stage of any sub-pipeline nested inside it (a $lookup, $facet,
+    or $unionWith can each embed one) - is free of a write or
+    arbitrary-code-execution operator. Unlike assert_read_only_sql's
+    text-keyword scan above, this walks the actual parsed JSON structure,
+    since a MongoDB aggregation pipeline is passed to the driver as real
+    data (a list of stage dicts), not a string to parse. The recursive
+    walk is deliberate defense-in-depth: MongoDB itself already refuses to
+    let $out/$merge appear inside a nested sub-pipeline, but this check
+    does not rely on that server-side restriction staying true."""
+    if not isinstance(pipeline, list) or not pipeline:
+        raise ReadOnlyViolation("The pipeline must be a non-empty list of aggregation stages.")
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if isinstance(key, str) and key in FORBIDDEN_MONGO_STAGES:
+                    raise ReadOnlyViolation(f"Pipeline contains a forbidden stage/operator: {key}.")
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    for stage in pipeline:
+        if not isinstance(stage, dict) or len(stage) != 1:
+            raise ReadOnlyViolation('Each pipeline stage must be a single-key object (e.g. {"$match": {...}}).')
+        walk(stage)
 
 
 def _sql_engine_url(kind: str, host: str, port: int, database: str, username: str, password: str, ssl: bool) -> str:
@@ -226,6 +270,46 @@ class MongoConnector:
         try:
             db = client[self.database]
             cursor = db[collection].find(find_filter or {}).limit(row_limit)
+            docs = list(cursor)
+            for d in docs:
+                d.pop("_id", None)
+            return pd.DataFrame(docs)
+        finally:
+            client.close()
+
+    def run_pushdown_query(
+        self, collection: str, pipeline: list[dict], row_limit: int | None = None, timeout_seconds: int | None = None
+    ) -> pd.DataFrame:
+        """The MongoDB pushdown path (Enterprise Scale Roadmap, Phase 2):
+        runs ONE governed aggregation pipeline directly inside MongoDB
+        (collection.aggregate(pipeline)) instead of the plain
+        load_dataframe above's find()+limit() pull - the MongoDB
+        counterpart to SQLConnector.load_dataframe's is_raw_sql path,
+        using an aggregation pipeline instead of SQL since Mongo has no
+        SQL dialect. MongoDB has no per-query metered billing (a
+        customer's own server, like every plain SQL database this app
+        supports), so the only safety machinery here - mirroring
+        SQLConnector.load_dataframe exactly - is: assert_read_only_mongo_
+        pipeline (blocks any write or arbitrary-code stage, at any
+        nesting depth), an automatic result cap (a trailing $limit stage,
+        added only if the pipeline doesn't already have one), and a
+        maxTimeMS server-side timeout as a runtime safety net (the same
+        idea as SnowflakeConnector's STATEMENT_TIMEOUT_IN_SECONDS, just
+        applied per call instead of per session - there is no cost to
+        protect against here, only the customer's own database's
+        runtime)."""
+        assert_read_only_mongo_pipeline(pipeline)
+        row_limit = row_limit or settings.MAX_ROWS_LOADED_PER_QUERY
+        has_limit = any(isinstance(stage, dict) and "$limit" in stage for stage in pipeline)
+        final_pipeline = pipeline if has_limit else [*pipeline, {"$limit": row_limit}]
+
+        client = self._client()
+        try:
+            db = client[self.database]
+            kwargs = {}
+            if timeout_seconds:
+                kwargs["maxTimeMS"] = timeout_seconds * 1000
+            cursor = db[collection].aggregate(final_pipeline, **kwargs)
             docs = list(cursor)
             for d in docs:
                 d.pop("_id", None)
