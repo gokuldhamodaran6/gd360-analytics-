@@ -151,40 +151,19 @@ class Settings(BaseSettings):
     AI_PROVIDER: str = "gemini"  # "gemini" | "groq" | "openai" | "anthropic"
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-3.8-flash"
-    # The app's "light tier" model when AI_PROVIDER=="gemini" - a lighter,
-    # cheaper Gemini model used instead of GEMINI_MODEL above for any task
-    # that does not need the full model's extra capability: Goku (the
-    # guided data-analytics helper on the Workspace page, which only ever
-    # writes plain guidance chat, never pandas code), the pushdown query
-    # writers (services/ai_engine.py generate_bigquery_sql/
-    # generate_snowflake_sql/generate_sql_pushdown_sql/
-    # generate_mongo_pipeline - each writes one narrow, strictly-formatted
-    # query, and any bad output safely falls back to the normal analysis
-    # path rather than ever reaching the person, so a lighter model here
-    # only risks losing the speed win occasionally, never a wrong answer).
-    # Deliberately NOT used for insight generation (_generate_insight) -
-    # tried briefly, reverted 2026-09-22 since the written insight text
-    # itself is the deliverable, and a lighter model's version read
-    # noticeably less clear; that still runs on GEMINI_MODEL above, full
-    # strength. See _light_tier_model() in ai_engine.py for the one place
-    # this routing decision is made. The field is still named
-    # GEMINI_GOKU_MODEL (kept as-is rather than renamed) since it is also
-    # the name of the environment variable already configured on Render -
-    # renaming it here would silently revert that deploy to this default
-    # instead of Render's configured value. Only used when
-    # AI_PROVIDER=="gemini".
+    # Goku (the guided data-analytics helper on the Workspace page) talks to
+    # this lighter, cheaper Gemini model instead of GEMINI_MODEL above -
+    # Goku only ever writes plain guidance chat, never pandas code, so it
+    # does not need the extra capability the main analysis chat does. Only
+    # used when AI_PROVIDER=="gemini".
     GEMINI_GOKU_MODEL: str = "gemini-3.5-flash-lite"
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "openai/gpt-oss-20b"
-    # The same "light tier" model as GEMINI_GOKU_MODEL above, used instead
-    # of GROQ_MODEL when AI_PROVIDER=="groq" - see that setting's comment
-    # for the full list of what now uses it (Goku, the pushdown query
-    # writers - deliberately not insight generation). Also still named
-    # GOKU_MODEL for the same Render-environment-variable reason. On the
-    # Groq free tier
-    # this also happens to give the light tier its own separate daily
-    # token budget, since each Groq model has its own. Only used when
-    # AI_PROVIDER=="groq".
+    # Goku talks to this model instead of GROQ_MODEL above, when
+    # AI_PROVIDER=="groq" - see GEMINI_GOKU_MODEL above for why Goku uses a
+    # separate, lighter model; on the Groq free tier this also happened to
+    # give Goku its own separate daily token budget, since each Groq model
+    # has its own. Only used when AI_PROVIDER=="groq".
     GOKU_MODEL: str = "openai/gpt-oss-120b"
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o-mini"
