@@ -20,7 +20,7 @@ export default function TopNav({ onConnectData }: { onConnectData?: () => void }
     // appears on (Dashboard, Workspace, Profile, Admin, saved dashboards).
     <div className="flex flex-wrap items-center justify-between gap-y-2 gap-x-3 px-4 sm:px-6 py-3 sm:py-4 border-b border-border">
       <Link to="/" className="flex items-center gap-2.5 shrink-0">
-        <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-accent flex items-center justify-center text-white font-bold text-sm shrink-0">
+        <span className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-white font-bold text-sm shrink-0">
           G
         </span>
         <span className="text-base sm:text-lg font-extrabold gradient-text">GD360 Analytics</span>
