@@ -59,8 +59,16 @@ class Settings(BaseSettings):
     # Google Cloud Console -> APIs & Services -> Credentials -> OAuth client
     # ID (Web application). Redirect URI to register there:
     # {BACKEND_BASE_URL}/connections/google/callback. The connected Google
-    # Cloud project also needs the Google Sheets API and Google Drive API
-    # enabled (APIs & Services -> Library).
+    # Cloud project also needs the Google Sheets API, Google Drive API, and
+    # Google Picker API enabled (APIs & Services -> Library) - Picker API
+    # powers the "choose a spreadsheet" step in the frontend (see
+    # oauth_tokens.GOOGLE_SCOPES for why picking happens through Google's
+    # own picker widget instead of our own search list). The OAuth consent
+    # screen's scopes list needs .../auth/drive.file, not .../auth/drive.
+    # readonly - a separate credential, a Picker API key (Credentials ->
+    # Create Credentials -> API key, restricted to the Picker API and to
+    # this app's own domain), is also needed, but only on the FRONTEND as
+    # VITE_GOOGLE_PICKER_API_KEY - it never touches this backend.
     GOOGLE_OAUTH_CLIENT_ID: str = ""
     GOOGLE_OAUTH_CLIENT_SECRET: str = ""
 
