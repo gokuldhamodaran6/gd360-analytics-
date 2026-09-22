@@ -159,8 +159,17 @@ class SQLConnector:
             if is_raw_sql:
                 assert_read_only_sql(query_or_table)
                 sql = query_or_table
-                if "limit" not in sql.lower():
-                    trimmed_sql = sql.rstrip(";")
+                trimmed_sql = sql.rstrip(";")
+                lowered = sql.lower()
+                if self.kind == "sqlserver":
+                    # T-SQL has no LIMIT keyword at all (unlike every other
+                    # dialect this class supports) - SQL Server would reject
+                    # a trailing "LIMIT n" with a syntax error. Cap the
+                    # result with an outer TOP instead, unless the query
+                    # already caps itself with its own TOP or OFFSET/FETCH.
+                    if "top " not in lowered and "fetch next" not in lowered and "fetch first" not in lowered:
+                        sql = f"SELECT TOP {row_limit} * FROM ({trimmed_sql}) AS gd360_sub"
+                elif "limit" not in lowered:
                     sql = f"SELECT * FROM ({trimmed_sql}) AS gd360_sub LIMIT {row_limit}"
             else:
                 # table name only -> safe parameterized identifier quoting via SQLAlchemy inspect
@@ -168,7 +177,16 @@ class SQLConnector:
                 if query_or_table not in insp.get_table_names():
                     raise ValueError(f"Unknown table: {query_or_table}")
                 quoted = engine.dialect.identifier_preparer.quote(query_or_table)
-                sql = f"SELECT * FROM {quoted} LIMIT {row_limit}"
+                if self.kind == "sqlserver":
+                    # Same T-SQL LIMIT issue as above - this branch is what
+                    # every plain "preview this table" / "load this table
+                    # for chat analysis" call has always used, for every SQL
+                    # kind including sqlserver, so this was a real pre-
+                    # existing bug: any SQL Server table load would fail
+                    # with a SQL Server syntax error, every single time.
+                    sql = f"SELECT TOP {row_limit} * FROM {quoted}"
+                else:
+                    sql = f"SELECT * FROM {quoted} LIMIT {row_limit}"
             return pd.read_sql(text(sql), engine)
         finally:
             engine.dispose()
