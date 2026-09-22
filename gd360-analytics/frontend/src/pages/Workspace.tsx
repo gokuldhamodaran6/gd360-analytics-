@@ -8,15 +8,18 @@ import AddDataPicker from "../components/AddDataPicker";
 import GokuChat from "../components/GokuChat";
 import ChartCanvas from "../components/ChartCanvas";
 import ConversationRow from "../components/ConversationRow";
-import ChartStylePanel from "../components/ChartStylePanel";
+import ExplorePanel from "../components/ExplorePanel";
 import DataTable from "../components/DataTable";
 import StepFlow, { WorkflowStep } from "../components/StepFlow";
 import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
+import {
+  CLIENT_PIVOTABLE_TYPES, ExploreConfig, ResultColumn, buildExploreFigure, defaultExploreConfig,
+} from "../lib/exploreEngine";
 
 // One tab in the chart history strip. Every question (or corrected answer)
 // that produces a chart gets its own entry here instead of overwriting
 // whatever was on screen before - each keeps its own independent styling,
-// so opening the Style panel on one tab never touches any other tab's
+// so opening the Explore panel on one tab never touches any other tab's
 // chart. `messageId` is what lets a "Double-check this" correction find
 // and update the SAME tab in place rather than creating a duplicate.
 type ChartEntry = {
@@ -26,6 +29,20 @@ type ChartEntry = {
   title: string;
   label: string;
   messageId?: string | null;
+  // The chart type the backend actually rendered, plus - when the result
+  // was tabular - the tidy row-level numbers it was built from and their
+  // column metadata (see backend chart_builder.result_to_tidy). `explore`
+  // is the person's current Explore-panel configuration for THIS chart;
+  // null until it's first opened, at which point it defaults from
+  // resultColumns/chartType (see defaultExploreConfig). All of this is
+  // undefined/null for a chart from before this feature existed, or whose
+  // result wasn't tabular - the Explore panel degrades gracefully for those
+  // (Style tab only, same as before).
+  chartType?: string | null;
+  resultColumns?: ResultColumn[] | null;
+  resultRows?: Record<string, any>[] | null;
+  resultTruncated?: boolean;
+  explore?: ExploreConfig | null;
 };
 
 const makeChartId = () => {
@@ -160,17 +177,79 @@ export default function Workspace() {
   const chartStyle = activeChart?.style ?? defaultChartStyle();
   const chartTitle = activeChart?.title ?? "";
 
-  const displaySpec = useMemo(
-    () => (chartSpec ? applyChartStyle(chartSpec, chartStyle, chartTitle) : null),
-    [chartSpec, chartStyle, chartTitle]
+  // Whether THIS chart's chart type can be redrawn client-side from its own
+  // tidy rows at all (see lib/exploreEngine.ts) - false for an older chart
+  // from before this feature, one whose result wasn't tabular, or one whose
+  // CURRENT explore.chartType is a specialized shape (heatmap, sankey, ...)
+  // that only the backend knows how to build.
+  const canExplore = !!(
+    activeChart?.resultColumns?.length && activeChart?.resultRows?.length && activeChart?.explore &&
+    (CLIENT_PIVOTABLE_TYPES as string[]).includes(activeChart.explore.chartType)
   );
 
-  // Every style/chart-type edit from the Style panel touches only the
+  // The chart actually plotted right now: the Explore panel's own live,
+  // client-built figure when this chart supports it, otherwise the fixed
+  // figure the backend built. Style (colors/title/legend/fonts) then
+  // applies identically on top either way - applyChartStyle only ever
+  // touches an already-built Plotly spec, so it does not care which of the
+  // two built it.
+  const effectiveSpec = useMemo(() => {
+    if (canExplore && activeChart?.resultColumns && activeChart?.resultRows && activeChart?.explore) {
+      const built = buildExploreFigure(activeChart.resultColumns, activeChart.resultRows, activeChart.explore);
+      if (built) return built;
+    }
+    return chartSpec;
+  }, [canExplore, activeChart, chartSpec]);
+
+  const displaySpec = useMemo(
+    () => (effectiveSpec ? applyChartStyle(effectiveSpec, chartStyle, chartTitle) : null),
+    [effectiveSpec, chartStyle, chartTitle]
+  );
+
+  // Every style/chart-type edit from the Style tab touches only the
   // currently active tab's own style - every other tab's chart is
   // completely unaffected, exactly as asked.
   const updateStyle = (next: Partial<ChartStyle>) => {
     if (!activeChartId) return;
     setCharts((cs) => cs.map((c) => (c.id === activeChartId ? { ...c, style: { ...c.style, ...next } } : c)));
+  };
+
+  // Every Data-tab edit (X/Y/series/sort/limit/filters) touches only the
+  // active tab's own explore config - instant, no backend call, since
+  // effectiveSpec above recomputes from it on every change.
+  const updateExplore = (next: ExploreConfig) => {
+    if (!activeChartId) return;
+    setCharts((cs) => cs.map((c) => (c.id === activeChartId ? { ...c, explore: next } : c)));
+  };
+
+  // Opening Explore on a chart that has tidy rows but has never had an
+  // explore config built yet (every chart starts this way) gives it one,
+  // seeded from its own columns and the chart type the backend rendered -
+  // lazy, so a chart that's never opened in Explore never pays this cost.
+  const ensureExploreConfig = () => {
+    if (!activeChartId || !activeChart) return;
+    if (activeChart.explore || !activeChart.resultColumns?.length) return;
+    const config = defaultExploreConfig(activeChart.resultColumns, activeChart.chartType);
+    setCharts((cs) => cs.map((c) => (c.id === activeChartId ? { ...c, explore: config } : c)));
+  };
+
+  // The Style tab's chart-type picker can request ANY type in the catalog.
+  // When the new type is one this engine can build client-side AND this
+  // chart has tidy rows, switch instantly with no AI call - otherwise fall
+  // back to the existing behavior (re-ask the AI to rebuild it). This is
+  // the "AI gets you a first result fast, then you take the wheel" balance:
+  // the very first chart always comes from Goku, but every ordinary type
+  // switch afterward should never have to wait on a round trip again.
+  const onChartTypeChange = (type: string) => {
+    if (
+      activeChart?.resultColumns?.length && activeChart?.resultRows?.length &&
+      (CLIENT_PIVOTABLE_TYPES as string[]).includes(type)
+    ) {
+      const base = activeChart.explore || defaultExploreConfig(activeChart.resultColumns, activeChart.chartType);
+      updateExplore({ ...base, chartType: type as ExploreConfig["chartType"] });
+      return;
+    }
+    applyChartOverride({ chart_type: type });
   };
 
   const resetActiveChartStyle = () => {
@@ -475,6 +554,11 @@ export default function Workspace() {
             title: promptText,
             label: shortChartLabel(promptText),
             messageId: m.id,
+            chartType: m.chart_type ?? null,
+            resultColumns: m.result_columns ?? null,
+            resultRows: m.result_rows ?? null,
+            resultTruncated: !!m.result_truncated,
+            explore: null,
           });
         }
         if (restoredCharts.length) {
@@ -573,11 +657,23 @@ export default function Workspace() {
           setSessionVersionIds((ids) => [...ids, data.new_version_id]);
         }
         if (chartOverride && activeChartId) {
-          // A chart-type/style redraw from the Style panel re-sends the
-          // same question - it updates THIS chart's own tab in place and
-          // keeps the current styling (colors, title, labels) intact,
-          // rather than opening a new tab or touching any other chart.
-          setCharts((cs) => cs.map((c) => (c.id === activeChartId ? { ...c, spec: data.chart_spec } : c)));
+          // A chart-type/style redraw that needed a real AI rebuild (see
+          // onChartTypeChange above) re-sends the same question - it
+          // updates THIS chart's own tab in place and keeps the current
+          // styling (colors, title, labels) intact, rather than opening a
+          // new tab or touching any other chart. explore resets to null so
+          // the Explore panel reseeds fresh defaults from the NEW result
+          // next time it's opened, instead of remapping stale field names
+          // onto a differently-shaped chart.
+          setCharts((cs) => cs.map((c) => (c.id === activeChartId ? {
+            ...c,
+            spec: data.chart_spec,
+            chartType: data.chart_type ?? null,
+            resultColumns: data.result_columns ?? null,
+            resultRows: data.result_rows ?? null,
+            resultTruncated: !!data.result_truncated,
+            explore: null,
+          } : c)));
         } else {
           // A brand new question always opens its own new tab - it never
           // replaces whatever chart is already on screen, so switching
@@ -591,6 +687,11 @@ export default function Workspace() {
             title: prompt,
             label: shortChartLabel(prompt),
             messageId: data.message_id,
+            chartType: data.chart_type ?? null,
+            resultColumns: data.result_columns ?? null,
+            resultRows: data.result_rows ?? null,
+            resultTruncated: !!data.result_truncated,
+            explore: null,
           }]);
           setActiveChartId(id);
         }
@@ -730,10 +831,24 @@ export default function Workspace() {
                 title: t.content || "Corrected chart",
                 label,
                 messageId: t.messageId,
+                chartType: data.chart_type ?? null,
+                resultColumns: data.result_columns ?? null,
+                resultRows: data.result_rows ?? null,
+                resultTruncated: !!data.result_truncated,
+                explore: null,
               }];
             }
             const next = [...cs];
-            next[idx] = { ...next[idx], spec: data.chart_spec, style: defaultChartStyle(data.chart_spec) };
+            next[idx] = {
+              ...next[idx],
+              spec: data.chart_spec,
+              style: defaultChartStyle(data.chart_spec),
+              chartType: data.chart_type ?? next[idx].chartType ?? null,
+              resultColumns: data.result_columns ?? next[idx].resultColumns ?? null,
+              resultRows: data.result_rows ?? next[idx].resultRows ?? null,
+              resultTruncated: data.result_truncated ?? next[idx].resultTruncated ?? false,
+              explore: null,
+            };
             setActiveChartId(next[idx].id);
             return next;
           });
@@ -915,9 +1030,10 @@ export default function Workspace() {
               )}
               <button
                 className="text-sm px-4 py-2 rounded-lg font-medium btn-secondary flex items-center gap-1.5"
-                onClick={() => setStyleOpen(true)}
+                onClick={() => { ensureExploreConfig(); setStyleOpen(true); }}
+                disabled={!chartSpec}
               >
-                <span aria-hidden>🎨</span> Style
+                <span aria-hidden>&#128269;</span> Explore
               </button>
             </div>
           </div>
@@ -1048,27 +1164,46 @@ export default function Workspace() {
       </div>
 
       {styleOpen && (
+        // A right-docked drawer (not a centered modal) - wide enough to
+        // comfortably hold field pickers, filter chips AND an in-browser
+        // data grid on the Table tab, the same "Explore" shape as the
+        // reference flow's own side panel, rather than the old narrow
+        // styling-only popup.
         <div
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60"
+          className="fixed inset-0 z-50 bg-black/50"
           onClick={() => setStyleOpen(false)}
         >
           <div
-            className="relative w-full sm:w-[420px] max-h-[90vh] sm:max-h-[85vh] flex flex-col"
+            className="absolute inset-y-0 right-0 w-full sm:w-[460px] lg:w-[560px] max-w-full flex flex-col p-2 sm:p-3"
             onClick={(e) => e.stopPropagation()}
           >
-            <button
-              type="button"
-              className="absolute top-3 right-3 z-10 text-muted hover:text-text text-xl leading-none w-8 h-8 flex items-center justify-center rounded-full bg-surface2 border border-border"
-              onClick={() => setStyleOpen(false)}
-            >
-              &times;
-            </button>
-            <div className="flex-1 overflow-y-auto rounded-b-none sm:rounded-2xl">
-              <ChartStylePanel
-                chartSpec={chartSpec}
+            <div className="flex items-center justify-between px-2 py-1.5 shrink-0">
+              <div className="text-sm font-bold">Explore{chartTitle ? ` — ${shortChartLabel(chartTitle)}` : ""}</div>
+              <button
+                type="button"
+                className="text-muted hover:text-text text-xl leading-none w-8 h-8 flex items-center justify-center rounded-full bg-surface2 border border-border"
+                onClick={() => setStyleOpen(false)}
+              >
+                &times;
+              </button>
+            </div>
+            <div className="flex-1 min-h-0">
+              {/* chartSpec below is effectiveSpec (not the raw server
+                  chartSpec) so the Style tab's own chart-type highlight and
+                  per-series color swatches always reflect what's ACTUALLY on
+                  screen right now, including a live Data-tab remap (e.g.
+                  Line with a SubCategory split) rather than the original
+                  server-built figure. */}
+              <ExplorePanel
+                columns={activeChart?.resultColumns ?? null}
+                rows={activeChart?.resultRows ?? null}
+                truncated={activeChart?.resultTruncated}
+                config={activeChart?.explore ?? null}
+                onConfigChange={updateExplore}
+                chartSpec={effectiveSpec}
                 style={chartStyle}
                 onStyleChange={updateStyle}
-                onChartTypeChange={(type) => applyChartOverride({ chart_type: type })}
+                onChartTypeChange={onChartTypeChange}
                 onReset={resetActiveChartStyle}
                 disabled={busy || !chartSpec}
               />
