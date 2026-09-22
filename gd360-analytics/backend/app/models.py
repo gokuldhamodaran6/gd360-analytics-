@@ -157,6 +157,16 @@ class Message(Base):
     # behind it is identical. Internal only - never returned directly by
     # the API.
     chart_type = Column(String, nullable=True)
+    # The tidy, row-level numbers this chart was actually built from (see
+    # chart_builder.result_to_tidy), alongside per-column dtype/role
+    # metadata - persisted so the frontend's Explore panel keeps working
+    # (switch chart type/axis/filters instantly, client-side) even after
+    # reopening a saved conversation, not only on the live turn that
+    # produced it. None for turns whose result wasn't tabular, or that
+    # predate this feature.
+    result_columns = Column(JSON, nullable=True)
+    result_rows = Column(JSON, nullable=True)
+    result_truncated = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     # How many times "Double-check this" has been run on this message (see
     # routers/chat.py verify_message, which increments this on every
