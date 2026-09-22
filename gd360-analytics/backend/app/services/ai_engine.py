@@ -588,6 +588,76 @@ Strict rules:
     return sql
 
 
+# --- MongoDB pushdown (Enterprise Scale Roadmap, Phase 2) ----------------
+# The MongoDB counterpart to generate_sql_pushdown_sql just above - same
+# idea (one governed, real query run directly inside the person's own
+# database instead of pulling documents into pandas), different query
+# language: MongoDB has no SQL dialect, so the model writes an aggregation
+# pipeline (a JSON array of stage objects) instead. Because an aggregation
+# pipeline has to be run against one specific starting collection (unlike
+# a SQL FROM clause, which just names a table inline), the model returns a
+# small JSON object naming both the collection and the pipeline, not just
+# the pipeline alone. See routers/chat.py's _try_mongo_pushdown for where
+# this fits into a real request, and
+# connectors.assert_read_only_mongo_pipeline/MongoConnector.
+# run_pushdown_query for the safety checks this still has to pass before
+# it ever runs.
+MONGO_PIPELINE_SYSTEM_PROMPT = """You are the GD360 MongoDB pushdown module - the part of the analytics engine that
+answers a question by writing ONE real MongoDB aggregation pipeline that runs directly inside the person's own
+MongoDB database, instead of downloading documents and analyzing them in Python. You are given the user's question
+and, for each collection, the field names seen in one sample document (MongoDB has no fixed schema, so other
+documents in the same collection may have additional fields not listed, and there are no column types - infer a
+field's likely type from its name and treat it flexibly). Respond with ONLY a single raw JSON object of the exact
+shape below - no markdown code fences, no explanation, nothing before or after the JSON itself:
+
+{"collection": "<the one collection this pipeline starts from>", "pipeline": [ <stage>, <stage>, ... ]}
+
+Strict rules:
+- The pipeline is a JSON array of aggregation stage objects (e.g. {"$match": {...}}, {"$group": {...}}). Every
+  stage object has exactly one key, the stage's operator name.
+- Never use $out, $merge, $function, $accumulator, or $where, anywhere in the pipeline (including inside a
+  $lookup, $facet, or $unionWith sub-pipeline) - no stage may write to the database or run arbitrary server-side
+  code. This runs against a real production database and must only ever read.
+- Reference only the real collection and field names given in the schema - never invent one. If the question needs
+  data from a second collection, use $lookup with a real shared field visible in both collections' schemas; with no
+  genuinely matching field, answer the closest real thing the schema actually supports instead of guessing at a
+  join key.
+- Always reduce the result so it comes back small - a $group with real accumulator expressions (like $sum, $avg,
+  $count) for a summary question, a $match for a filtered question, a $sort plus a $limit for a "top N" or "which
+  is highest/lowest" question. Never a pipeline that could return a huge, unreduced set of whole documents - the
+  whole point of this path is that MongoDB summarizes the data, not GD360. End the pipeline with a $limit stage
+  (a small one, sized to the question) unless it already ends in a $group/$count that naturally returns few
+  results.
+- If the question genuinely cannot be answered from the given schema (it needs a collection or field that does not
+  exist), respond with exactly: NOT_POSSIBLE"""
+
+
+def generate_mongo_pipeline(prompt: str, schema_text: str) -> str:
+    """The MongoDB pushdown path (Phase 2): writes one governed
+    aggregation pipeline that runs inside MongoDB itself, instead of the
+    usual pull-documents-then-pandas path MongoConnector.load_dataframe
+    otherwise uses. Returns raw JSON text (a {"collection", "pipeline"}
+    object - see MONGO_PIPELINE_SYSTEM_PROMPT), or the literal string
+    "NOT_POSSIBLE" if the model could not answer from the given schema.
+    Callers must treat both an exception from this function and a
+    "NOT_POSSIBLE" result, and a result that fails to parse as that JSON
+    shape, all the same way: fall back to the normal analysis path,
+    exactly like generate_bigquery_sql/generate_snowflake_sql/
+    generate_sql_pushdown_sql above."""
+    messages = [
+        {"role": "system", "content": MONGO_PIPELINE_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"},
+    ]
+    raw = _call_llm_resilient(messages, max_tokens=800)
+    pipeline_text = raw.strip()
+    if pipeline_text.startswith("```"):
+        pipeline_text = pipeline_text.strip("`")
+        if pipeline_text[:4].lower() == "json":
+            pipeline_text = pipeline_text[4:]
+        pipeline_text = pipeline_text.strip()
+    return pipeline_text
+
+
 GOKU_SYSTEM_PROMPT = """You are Goku, a friendly, world-class data analyst assistant embedded inside the GD360
 Analytics workspace. Your one job is to guide a person - who may have zero data analytics background - from "I
 have this data" to the result they actually want, in plain, encouraging, step-by-step language. You never run
