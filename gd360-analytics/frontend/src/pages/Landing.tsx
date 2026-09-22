@@ -349,6 +349,16 @@ export default function Landing() {
           </div>
         </div>
       </div>
+
+      {/* ---- Footer ---- */}
+      <div className="border-t border-border mt-4">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 flex flex-wrap items-center justify-between gap-3 text-sm text-muted">
+          <div>&copy; {new Date().getFullYear()} GD360 Analytics. All rights reserved.</div>
+          <Link to="/privacy" className="hover:text-text hover:underline">
+            Privacy Policy
+          </Link>
+        </div>
+      </div>
     </div>
   );
 }
