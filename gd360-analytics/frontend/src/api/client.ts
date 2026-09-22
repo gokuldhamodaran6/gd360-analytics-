@@ -400,6 +400,12 @@ export const datasourceApi = {
 
   deleteVersion: (id: string, versionId: string) => api.delete(`/datasources/${id}/versions/${versionId}`),
 
+  // Removes a connected data source entirely - used by the "New data" flow
+  // to clean up an abandoned Google Sheets/Excel OAuth connect (see
+  // connectionsApi below), and available anywhere else a "delete this data
+  // source" action is added later.
+  delete: (id: string) => api.delete(`/datasources/${id}`),
+
   downloadExport: async (id: string, versionId: string | null, format: "csv" | "xlsx", table?: string | null) => {
     const res = await api.get(`/datasources/${id}/export`, {
       params: {
@@ -422,6 +428,44 @@ export const datasourceApi = {
     link.remove();
     window.URL.revokeObjectURL(url);
   },
+};
+
+// ---- Live OAuth connectors: Google Sheets and Microsoft Excel (OneDrive/
+// SharePoint) - see backend routers/connections.py for the full authorize
+// -> provider consent -> callback -> pick a resource -> finish flow. The
+// SPA is left entirely during steps 1-2 (a real browser redirect to
+// Google's/Microsoft's own sign-in page), which is why this is a handful
+// of plain endpoint calls rather than anything resembling the rest of this
+// client's request/response round trips - see pages/ConnectResourcePicker.tsx
+// for where the redirect lands back in the app. ----
+
+export type OAuthProvider = "google_sheets" | "microsoft_excel";
+
+export type OAuthResource = {
+  id: string;
+  name: string;
+  modified_at: string | null;
+  drive_id?: string | null;
+};
+
+export type OAuthResourcesResult = {
+  provider: OAuthProvider;
+  resources: OAuthResource[];
+};
+
+export const connectionsApi = {
+  authorize: (provider: OAuthProvider) =>
+    api
+      .get<{ authorize_url: string }>(`/connections/${provider === "google_sheets" ? "google" : "microsoft"}/authorize`)
+      .then((r) => r.data.authorize_url),
+
+  listResources: (connectionId: string, search?: string) =>
+    api
+      .get<OAuthResourcesResult>(`/connections/${connectionId}/resources`, { params: { search: search || undefined } })
+      .then((r) => r.data),
+
+  finish: (connectionId: string, payload: { name: string; resource_id: string; resource_name: string; drive_id?: string | null }) =>
+    api.post<DataSourceSummary>(`/connections/${connectionId}/finish`, payload).then((r) => r.data),
 };
 
 export type ConversationSummary = {
