@@ -12,8 +12,9 @@ saved tables, and a download/export of any of them as CSV or Excel.
 import io
 import json
 import os
+import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
@@ -33,6 +34,85 @@ from ..services.data_loader import (
 
 router = APIRouter(prefix="/datasources", tags=["datasources"])
 settings = get_settings()
+
+# Second-layer cache for the Data tab's preview endpoint (preview_datasource
+# below). data_loader.py's own cache already means a CSV/Excel/cleaned/
+# saved-version load only re-parses its file once per process lifetime -
+# but every single preview request still re-filtered, re-sorted, and
+# re-computed every column's Totals-row stats (_column_stats below) over
+# the WHOLE table from scratch, even when only the page number changed and
+# the filter/sort state was identical to the last request. For a large
+# table that repeat work - not the file parse, which data_loader.py's own
+# cache already fixed - is the real remaining cost behind "the table feels
+# slow" during a normal browsing session (open it, click next page, click
+# next page again, ...). It matters even more for a live-connector
+# datasource (Postgres/MySQL/SQL Server/Supabase/MongoDB/BigQuery/
+# Snowflake): data_loader.py never caches those at all (a live source
+# should reflect live data), so today EVERY page-turn click re-runs a real
+# query against the person's own database, pulling up to
+# PREVIEW_ROW_LIMIT rows over the network again just to show 50 of them.
+#
+# This cache stores the filtered+sorted DataFrame and its computed
+# column_stats, keyed on everything that actually changes them (which
+# datasource/version/table, and the filter/sort state) but deliberately
+# NOT on offset/limit, since turning the page never changes either one - a
+# plain page-turn during the same browsing session is now a cache hit: a
+# dict lookup plus an `.iloc` slice of rows already in memory, instead of
+# redoing the filter/sort/stats work (or, for a live connector, a whole
+# new database round trip).
+#
+# A short TTL (unlike data_loader.py's own cache, which never expires
+# since it is keyed on genuinely immutable bytes) rather than "no expiry":
+# a live connector's underlying data can change between two preview
+# requests in a way this cache has no way to know about, so entries expire
+# after _PREVIEW_CACHE_TTL_SECONDS to bound how stale a cached page can
+# ever be. That window is short enough to be imperceptible in normal use
+# while still absorbing the repeat "next page" clicks that make up the
+# bulk of preview traffic within one sitting. A CSV/Excel/cleaned/saved-
+# version datasource has no staleness risk at all (see data_loader.py's
+# own comment on why), but shares the same short TTL anyway for
+# simplicity - correctness here never depends on the TTL, only speed
+# does, so there is no real cost to treating every kind the same way.
+_PREVIEW_CACHE_MAX_ENTRIES = 32
+_PREVIEW_CACHE_TTL_SECONDS = 30
+_preview_cache: "OrderedDict[str, tuple[float, pd.DataFrame, dict, int, int, bool]]" = OrderedDict()
+_preview_cache_lock = threading.Lock()
+
+
+def _get_filtered_preview(cache_key: str, compute):
+    """Returns (filtered_sorted_df, column_stats, total_rows,
+    loaded_row_count, stats_capped) for `cache_key`, reusing a cached
+    result from within the last _PREVIEW_CACHE_TTL_SECONDS if one exists;
+    otherwise calls `compute()` once, caches its result, and returns it.
+    A `compute()` that raises (e.g. the base load failing) is never
+    cached - only a genuinely successful result ever gets stored, so a
+    transient failure is never "remembered" for the TTL window. See the
+    cache's own comment above for why this exists.
+
+    Deliberately does NOT return a defensive `.copy()` of the cached
+    DataFrame the way data_loader.py's own cache does - every caller here
+    (preview_datasource below) only ever reads it (a `.iloc` page slice,
+    then `.to_json`), never mutates it in place, so a copy on every cache
+    hit would just be wasted work on what is often the largest object in
+    the request. If a future caller of this function ever needs to mutate
+    what it gets back, it must copy it first - this function will not."""
+    now = time.time()
+    with _preview_cache_lock:
+        entry = _preview_cache.get(cache_key)
+        if entry is not None:
+            ts, df, stats, total_rows, loaded_row_count, stats_capped = entry
+            if now - ts < _PREVIEW_CACHE_TTL_SECONDS:
+                _preview_cache.move_to_end(cache_key)
+                return df, stats, total_rows, loaded_row_count, stats_capped
+            del _preview_cache[cache_key]
+
+    result = compute()
+    with _preview_cache_lock:
+        _preview_cache[cache_key] = (now, *result)
+        _preview_cache.move_to_end(cache_key)
+        while len(_preview_cache) > _PREVIEW_CACHE_MAX_ENTRIES:
+            _preview_cache.popitem(last=False)
+    return result
 
 # How long a detected outbound IP address stays cached before being
 # re-checked, in seconds. Render (our hosting provider) shares outbound IP
@@ -708,67 +788,83 @@ def preview_datasource(
     ensure_legacy_migrated(db, ds)
 
     active_version = _get_owned_version(db, ds, version_id) if version_id else None
-    try:
-        # `table` (new) is the Data tab's own per-table/per-sheet tab strip
-        # asking for one specific original table by name - the same
-        # mechanism the chat WORKING ON picker already uses (see
-        # data_loader.load_dataframe). Left unset, a multi-table datasource
-        # (see data_loader.default_table_for_preview) always defaults to its
-        # first table/sheet here rather than raising - there is no
-        # back-and-forth in a page view to ask "which one?" through, so this
-        # never dead-ends the way an ambiguous WORKING ON chat selection
-        # would.
-        df = (
-            load_version_dataframe(active_version)
-            if active_version
-            else load_dataframe(
-                ds, table=table or default_table_for_preview(ds), version="original",
-                row_limit=settings.PREVIEW_ROW_LIMIT, db=db,
-            )
-        )
-    except Exception as e:
-        raise HTTPException(400, f"Could not load data: {e}")
 
-    # How many rows actually got loaded before any filter/sort - used just
-    # below to tell a Totals row honestly whether it's summing the WHOLE
-    # table or only however much of a big live-connector table
-    # PREVIEW_ROW_LIMIT allowed in (a CSV/Excel upload never hits this,
-    # since its full file is already in memory - see data_loader.py).
-    loaded_row_count = len(df)
+    # See _get_filtered_preview/_preview_cache's own comment above for why
+    # this cache exists and how it is scoped: deliberately everything that
+    # changes the filtered+sorted data or its Totals-row stats (which
+    # datasource/version/table, and the current filter/sort state), and
+    # deliberately NOT offset/limit, since turning the page changes neither.
+    cache_key = "|".join([
+        datasource_id, active_version.id if active_version else "", table or "",
+        sort_by or "", sort_dir, filters or "",
+    ])
 
-    # Per-column filter (the Data tab's Excel-style filter panel - a values
-    # checklist or a type-aware condition, see _apply_column_filter above),
-    # applied before pagination so it always searches the full dataset, not
-    # just whatever page happens to be showing.
-    if filters:
+    def _compute():
         try:
-            filter_map = json.loads(filters)
-        except Exception:
-            filter_map = {}
-        for col, spec in (filter_map or {}).items():
-            if col in df.columns and spec not in (None, ""):
-                try:
-                    df = _apply_column_filter(df, col, spec)
-                except Exception as e:
-                    # A malformed filter spec (e.g. a stray shape from a
-                    # client mid-deploy) should never break the whole
-                    # preview - just skip that one column's filter.
-                    print(f"[datasources] skipping unreadable filter on column {col!r}: {e}")
+            # `table` (new) is the Data tab's own per-table/per-sheet tab strip
+            # asking for one specific original table by name - the same
+            # mechanism the chat WORKING ON picker already uses (see
+            # data_loader.load_dataframe). Left unset, a multi-table datasource
+            # (see data_loader.default_table_for_preview) always defaults to its
+            # first table/sheet here rather than raising - there is no
+            # back-and-forth in a page view to ask "which one?" through, so this
+            # never dead-ends the way an ambiguous WORKING ON chat selection
+            # would.
+            inner_df = (
+                load_version_dataframe(active_version)
+                if active_version
+                else load_dataframe(
+                    ds, table=table or default_table_for_preview(ds), version="original",
+                    row_limit=settings.PREVIEW_ROW_LIMIT, db=db,
+                )
+            )
+        except Exception as e:
+            raise HTTPException(400, f"Could not load data: {e}")
 
-    # Column sort, also applied before pagination for the same reason -
-    # sorting only the current page would look broken to the person using it.
-    if sort_by and sort_by in df.columns:
-        df = df.sort_values(by=sort_by, ascending=(sort_dir != "desc"), na_position="last", kind="mergesort")
+        # How many rows actually got loaded before any filter/sort - used just
+        # below to tell a Totals row honestly whether it's summing the WHOLE
+        # table or only however much of a big live-connector table
+        # PREVIEW_ROW_LIMIT allowed in (a CSV/Excel upload never hits this,
+        # since its full file is already in memory - see data_loader.py).
+        inner_loaded_row_count = len(inner_df)
 
-    total_rows = int(len(df))
-    column_stats = _column_stats(df)
-    # Only a live-connector datasource (Postgres/MySQL/SQL Server/Supabase/
-    # MongoDB/BigQuery) can actually be short of its own true row count -
-    # see data_loader.py's row_limit plumbing. loaded_row_count hitting the
-    # cap exactly is the only signal available without a separate COUNT(*)
-    # query against the real source; a CSV/Excel upload's full file is
-    # always already in memory, so it is never capped here.
-    stats_capped = ds.kind not in ("csv", "excel") and loaded_row_count >= settings.PREVIEW_ROW_LIMIT
+        # Per-column filter (the Data tab's Excel-style filter panel - a values
+        # checklist or a type-aware condition, see _apply_column_filter above),
+        # applied before pagination so it always searches the full dataset, not
+        # just whatever page happens to be showing.
+        if filters:
+            try:
+                filter_map = json.loads(filters)
+            except Exception:
+                filter_map = {}
+            for col, spec in (filter_map or {}).items():
+                if col in inner_df.columns and spec not in (None, ""):
+                    try:
+                        inner_df = _apply_column_filter(inner_df, col, spec)
+                    except Exception as e:
+                        # A malformed filter spec (e.g. a stray shape from a
+                        # client mid-deploy) should never break the whole
+                        # preview - just skip that one column's filter.
+                        print(f"[datasources] skipping unreadable filter on column {col!r}: {e}")
+
+        # Column sort, also applied before pagination for the same reason -
+        # sorting only the current page would look broken to the person using it.
+        if sort_by and sort_by in inner_df.columns:
+            inner_df = inner_df.sort_values(by=sort_by, ascending=(sort_dir != "desc"), na_position="last", kind="mergesort")
+
+        inner_total_rows = int(len(inner_df))
+        inner_column_stats = _column_stats(inner_df)
+        # Only a live-connector datasource (Postgres/MySQL/SQL Server/Supabase/
+        # MongoDB/BigQuery) can actually be short of its own true row count -
+        # see data_loader.py's row_limit plumbing. loaded_row_count hitting the
+        # cap exactly is the only signal available without a separate COUNT(*)
+        # query against the real source; a CSV/Excel upload's full file is
+        # always already in memory, so it is never capped here.
+        inner_stats_capped = ds.kind not in ("csv", "excel") and inner_loaded_row_count >= settings.PREVIEW_ROW_LIMIT
+        return inner_df, inner_column_stats, inner_total_rows, inner_loaded_row_count, inner_stats_capped
+
+    df, column_stats, total_rows, loaded_row_count, stats_capped = _get_filtered_preview(cache_key, _compute)
+
     limit = max(1, min(limit, 5000))
     offset = max(0, offset)
     page = df.iloc[offset: offset + limit]
