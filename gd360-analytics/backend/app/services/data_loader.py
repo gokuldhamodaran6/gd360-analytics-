@@ -133,7 +133,20 @@ def purpose_label(prompt: str | None, fallback: str = "Prepared data") -> str:
     return text if len(text) <= 34 else f"{text[:34].rstrip()}…"
 
 
-def load_dataframe(ds: models.DataSource, table: str | None = None, version: str = "auto") -> pd.DataFrame:
+def load_dataframe(
+    ds: models.DataSource, table: str | None = None, version: str = "auto", row_limit: int | None = None
+) -> pd.DataFrame:
+    """`row_limit` only matters for a live-connector datasource (Postgres/
+    MySQL/SQL Server/Supabase/MongoDB/BigQuery) loading its always-live
+    original data - it overrides settings.MAX_ROWS_LOADED_PER_QUERY for just
+    this call (see connectors.py), so a caller that only needs a small page
+    (the Data tab preview/export - see datasources.py, which passes
+    settings.PREVIEW_ROW_LIMIT) doesn't have to pull as many rows into
+    memory as a caller doing real AI analysis (chat.py, which leaves this
+    None and gets the higher default). Left as None everywhere else,
+    matching the old behavior exactly. A CSV/Excel upload or a cleaned/
+    saved-table snapshot is unaffected either way - those are already
+    bounded at upload/save time, not by this per-query limit."""
     use_cleaned = version == "cleaned" or (version == "auto" and ds.cleaned_data is not None)
     if version == "original":
         use_cleaned = False
@@ -145,10 +158,10 @@ def load_dataframe(ds: models.DataSource, table: str | None = None, version: str
             f"cleaned:{ds.id}", lambda: FileConnector(ds.cleaned_data, ".csv").load_dataframe()
         )
 
-    return _load_original(ds, table)
+    return _load_original(ds, table, row_limit)
 
 
-def _load_original(ds: models.DataSource, table: str | None = None) -> pd.DataFrame:
+def _load_original(ds: models.DataSource, table: str | None = None, row_limit: int | None = None) -> pd.DataFrame:
     if ds.kind in ("csv", "excel"):
         if not ds.file_data:
             raise ValueError(
@@ -185,21 +198,21 @@ def _load_original(ds: models.DataSource, table: str | None = None) -> pd.DataFr
         info = ds.connection_info
         connector = SQLConnector(ds.kind, info["host"], info["port"], info["database"], username, password, info.get("ssl", True))
         table = table or _pick_single(ds.schema_cache)
-        return connector.load_dataframe(table, is_raw_sql=False)
+        return connector.load_dataframe(table, is_raw_sql=False, row_limit=row_limit)
 
     if ds.kind == "mongodb":
         username, password = security.decrypt_secret(ds.encrypted_secret).split("␟")
         info = ds.connection_info
         connector = MongoConnector(info["host"], info["port"], info["database"], username, password, info.get("ssl", True))
         table = table or _pick_single(ds.schema_cache)
-        return connector.load_dataframe(table)
+        return connector.load_dataframe(table, row_limit=row_limit)
 
     if ds.kind == "bigquery":
         service_account_json = security.decrypt_secret(ds.encrypted_secret)
         info = ds.connection_info
         connector = BigQueryConnector(info["project_id"], info["dataset_id"], service_account_json)
         table = table or _pick_single(ds.schema_cache)
-        return connector.load_dataframe(table, is_raw_sql=False)
+        return connector.load_dataframe(table, is_raw_sql=False, row_limit=row_limit)
 
     raise ValueError(f"Unsupported datasource kind: {ds.kind}")
 
