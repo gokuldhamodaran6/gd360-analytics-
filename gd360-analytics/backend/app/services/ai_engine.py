@@ -41,6 +41,14 @@ from .sandbox import run_sandboxed
 
 settings = get_settings()
 
+# How many extra chances the model gets to fix its own plan/code after a
+# sandbox execution error, on top of the first attempt (so 2 means 3
+# attempts total). See the retry loop in analyze() for the full rationale -
+# raised from a fixed single retry on 2026-09-22 after real production
+# evidence that some genuinely recoverable mistakes needed more than one
+# correction pass, especially on multi-table merge-then-analyze requests.
+_MAX_EXECUTION_RETRIES = 2
+
 SYSTEM_PROMPT = """You are GD360, an expert data analyst copilot embedded in a no-code analytics product.
 You are given one or more pandas DataFrames, already loaded (never re-load or fabricate data), and the user
 natural-language request. When exactly one table was selected it is called `df`. When more than one table was
@@ -81,20 +89,27 @@ schema:
   "title": string | null,
   "x_label": string | null,
   "y_label": string | null,
-  "code": string | null,  // python using pandas (pd), numpy (np), scipy.stats (stats), `df` (the primary
-                            // table), and `tables` (dict of every selected table, when more than one is
-                            // available - see above). No imports, no file/network access, no printing needed.
-                            // Keep it simple and robust to NaNs.
+  "code": string | null,  // python using pandas (pd), numpy (np), scipy.stats (stats), `df`, and `tables`. No
+                            // imports, no file/network access, no printing needed. Keep it simple and robust
+                            // to NaNs.
                             //
-                            // If action == "transform": the request is about cleaning, preparing, fixing,
-                            // filtering, deduplicating, standardizing types, handling missing values, removing
-                            // outliers from the data ITSELF, or - when more than one table is selected -
-                            // merging/joining/reconciling them into one table. The code MUST assign the FULL
-                            // resulting table to `result` as a pandas DataFrame (not reduced to a chart-ready
-                            // summary). Never drop columns the user did not ask you to drop.
+                            // If action == "transform": `tables` here is every originally selected table, by
+                            // exact name (see above) - use it freely for a merge/join/reconcile across tables.
+                            // The code MUST assign the FULL resulting table to `result` as a pandas DataFrame
+                            // (not reduced to a chart-ready summary). Never drop columns the user did not ask
+                            // you to drop.
                             //
-                            // If action == "analyze": the request is about exploring, summarizing,
-                            // visualizing, finding patterns in, or categorizing the data for a chart/insight.
+                            // If action == "analyze" AND you also set prep_code (the normal case - see
+                            // "Preparing the data before every analyze answer" below): by the time this code
+                            // runs, prep_code has ALREADY run for real and its `result` (the one, single,
+                            // fully prepared/merged table - already containing every column and every table's
+                            // data this question needs) is what `df` is bound to here. Every OTHER originally
+                            // selected table is also still present in `tables` by its original exact name, but
+                            // holds that table's RAW, unprepared/unmerged data - never re-read from it here,
+                            // since anything it had that mattered was already pulled into the merge inside
+                            // prep_code. Write this code entirely in terms of `df` alone (never `tables[...]`)
+                            // whenever prep_code ran - reaching back into `tables` here for a table you already
+                            // merged is always a mistake, never a valid reason for a KeyError-driven retry.
                             // The code MUST assign the final chart-ready data to `result` (a pandas Series or
                             // a 2-column-or-fewer DataFrame; a square numeric DataFrame for chart_type
                             // "heatmap"; or, ONLY for chart_type "faceted_bar", a 3-column DataFrame in this
@@ -1928,7 +1943,10 @@ def analyze(
             f"\n\nMore than one table was selected for this request: {all_names}. "
             f"They are all available in the `tables` dict by exact name (e.g. tables[{names[1]!r}]); "
             f"\"{names[0]}\" is also available as `df`. If the request implies comparing, combining, merging, "
-            f"or reconciling tables, actually use {other_names} together with `df`, not just `df` alone."
+            f"or reconciling tables, actually use {other_names} together with `df`, not just `df` alone. "
+            f"If action==\"analyze\": do this combining INSIDE prep_code only, assigning the merged result to "
+            f"`result` there - then write the `code` field entirely in terms of `df` (which by then IS that "
+            f"merged table), never referencing tables[...] again inside code. See the schema note on this above."
         )
     if fallback_note:
         user_content += fallback_note
@@ -1951,17 +1969,34 @@ def analyze(
     plan = _plan_with_retry(messages)
     result = _execute_plan(prompt, tables, profile, plan, chart_override, guided)
 
-    if result.pop("_retry_needed", False):
-        # Give the model one chance to see exactly what went wrong with its
-        # own plan/code and either fix it or recognize it genuinely needs
-        # more information from the person - so a shaky first attempt (a
-        # coding slip, or a request that turns out to be ambiguous once it
-        # is actually run) quietly recovers instead of surfacing a
-        # technical failure right away.
+    # Self-healing retry loop. Give the model up to _MAX_EXECUTION_RETRIES
+    # extra chances to see exactly what went wrong with its own plan/code
+    # and either fix it or recognize it genuinely needs more information
+    # from the person - so a shaky attempt (a coding slip, or a request
+    # that turns out to be ambiguous once it is actually run) quietly
+    # recovers instead of surfacing a technical failure right away.
+    #
+    # 2026-09-22: raised from a single retry (2 attempts total) to
+    # _MAX_EXECUTION_RETRIES (3 attempts total, by default) after real
+    # production logs showed genuinely recoverable mistakes (e.g. writing
+    # `df[(colA, colB)]` instead of `df[[colA, colB]]`, which pandas reports
+    # as a plain KeyError on the tuple) that the model reliably corrects
+    # once shown the error, but that sometimes needed a second correction
+    # attempt on top of the first - especially for a multi-table
+    # merge-then-analyze request, which is more code for one shot to get
+    # exactly right than a plain single-table question. Every retry still
+    # runs through the exact same validated JSON-plan + sandboxed-execution
+    # path as attempt 1 - this only gives that same safe pipeline more
+    # chances, it does not relax anything about it.
+    retry_messages = messages
+    current_plan = plan
+    attempt = 1
+    needs_retry = result.pop("_retry_needed", False)
+    while needs_retry and attempt <= _MAX_EXECUTION_RETRIES:
         retry_detail = result.pop("_retry_detail", "unknown error")
-        print(f"[ai_engine] first attempt failed for prompt={prompt!r}: {retry_detail}")
-        retry_messages = messages + [
-            {"role": "assistant", "content": json.dumps(plan)},
+        print(f"[ai_engine] attempt {attempt} failed for prompt={prompt!r}: {retry_detail}")
+        retry_messages = retry_messages + [
+            {"role": "assistant", "content": json.dumps(current_plan)},
             {
                 "role": "user",
                 "content": (
@@ -1974,16 +2009,20 @@ def analyze(
                 ),
             },
         ]
+        attempt += 1
         try:
-            fixed_plan = _plan_with_retry(retry_messages)
-            result = _execute_plan(prompt, tables, profile, fixed_plan, chart_override, guided)
+            current_plan = _plan_with_retry(retry_messages)
+            result = _execute_plan(prompt, tables, profile, current_plan, chart_override, guided)
+            needs_retry = result.pop("_retry_needed", False)
         except Exception as e:
             print(f"[ai_engine] retry call itself raised for prompt={prompt!r}: {e}")
-            pass  # keep the first attempt friendly failure message already in `result`
-        if result.get("_retry_needed"):
-            print(f"[ai_engine] retry ALSO failed for prompt={prompt!r}: {result.get('_retry_detail')}")
-        result.pop("_retry_needed", None)
-        result.pop("_retry_detail", None)
+            needs_retry = False  # keep the last attempt's friendly failure message, stop retrying
+            break
+
+    if needs_retry:
+        print(f"[ai_engine] all {attempt} attempts failed for prompt={prompt!r}: {result.get('_retry_detail')}")
+    result.pop("_retry_needed", None)
+    result.pop("_retry_detail", None)
 
     return result
 
@@ -2177,7 +2216,26 @@ def _run_analyze_with_prep(
 
     primary_name = next(iter(tables.keys()))
     chart_code = plan.get("code") or ""
-    result, error = run_sandboxed(chart_code, {primary_name: prepped}, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
+    # 2026-09-22 root-cause fix: this used to pass ONLY {primary_name: prepped}
+    # here, silently dropping every other originally selected table out of
+    # `tables` for this step. SYSTEM_PROMPT tells the model, while it is
+    # writing prep_code AND code in the same response, that every selected
+    # table is available in `tables` by exact name - it has no way to know,
+    # at that moment, that this second step would later see a `tables` dict
+    # collapsed down to one entry. When the model's `code` still referenced
+    # a second table by name (a genuinely reasonable thing to do given what
+    # it was told), that raised a real production KeyError (e.g.
+    # `KeyError: 'employees performance rating'`) on an otherwise-correct
+    # merge-then-analyze request - confirmed from Render logs 2026-09-22.
+    # Keeping every originally selected table available here (with only the
+    # primary slot swapped for the prepared/merged result `df` is bound to)
+    # means a leftover `tables[...]` reference in `code` still resolves
+    # instead of crashing - a second, defense-in-depth layer alongside the
+    # corrected SYSTEM_PROMPT instructions above that should stop the model
+    # from writing that reference in the first place.
+    chart_tables = dict(tables)
+    chart_tables[primary_name] = prepped
+    result, error = run_sandboxed(chart_code, chart_tables, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
 
     if error:
         out = _no_result(profile, _ANALYZE_FAILURE_NARRATIVE)
