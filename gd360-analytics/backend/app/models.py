@@ -5,7 +5,8 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    Column, String, DateTime, ForeignKey, Text, JSON, Boolean, Integer, LargeBinary, BigInteger
+    Column, String, DateTime, ForeignKey, Text, JSON, Boolean, Integer, LargeBinary, BigInteger,
+    UniqueConstraint, Index,
 )
 from sqlalchemy.orm import relationship
 
@@ -33,6 +34,7 @@ class User(Base):
     datasources = relationship("DataSource", back_populates="owner", cascade="all, delete-orphan")
     conversations = relationship("Conversation", back_populates="owner", cascade="all, delete-orphan")
     dashboards = relationship("Dashboard", back_populates="owner", cascade="all, delete-orphan")
+    learned_answers = relationship("LearnedAnswer", cascade="all, delete-orphan")
 
 
 class DataSource(Base):
@@ -338,3 +340,61 @@ class PushdownQueryLog(Base):
     status = Column(String, nullable=False)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class LearnedAnswer(Base):
+    """
+    2026-09-22: the app's permanent, growing memory of exactly-correct
+    answers. Whenever a real question (action "analyze" or "transform" -
+    never a clarifying question) is answered successfully, the exact
+    question text together with a fingerprint of the exact table/column
+    shape it ran against is remembered alongside the exact pandas code
+    that produced it (see services/learned_answers.py). The next time -
+    even in a brand new conversation, even weeks later - that SAME person
+    asks that SAME question against a still-matching schema, the app
+    replays this already-proven code directly instead of asking the AI to
+    write it again: instant, free, and just as correct as the first time,
+    since the code runs fresh against whatever the data actually is right
+    now rather than replaying a stored answer. This is what "the app
+    learns and gets faster over time" honestly means here - not a custom-
+    trained model (a much bigger, different undertaking - see the
+    services/learned_answers.py module docstring), but a durable version
+    of the exact-repeat shortcut ai_engine._find_repeated_prompt_code
+    already does within a single conversation from chat history alone.
+
+    Deliberately scoped to one owner_id - never shared across different
+    people's accounts, even if two unrelated schemas happen to look
+    identical - so this can never blur one customer's naming/structure
+    into another's results. A schema change (a column renamed, added,
+    removed, or retyped) simply produces a different schema_fingerprint,
+    so an old row for the previous shape is just never looked up again -
+    nothing here needs to be actively invalidated, and nothing here can
+    silently go stale and return a wrong answer for a changed dataset.
+    """
+    __tablename__ = "learned_answers"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "schema_fingerprint", "normalized_prompt", name="uq_learned_answer_key"),
+        Index("ix_learned_answer_lookup", "owner_id", "schema_fingerprint", "normalized_prompt"),
+    )
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    # sha256 of the exact table name(s) + column name(s) + dtype(s) this
+    # question ran against, in selection order - see
+    # services/learned_answers.schema_fingerprint for exactly how this is
+    # built and why it is what keeps a stored answer schema-safe.
+    schema_fingerprint = Column(String, nullable=False)
+    # Whitespace/case-normalized prompt text - see
+    # services/learned_answers.normalize_prompt.
+    normalized_prompt = Column(String, nullable=False)
+    action = Column(String, nullable=False)  # "analyze" | "transform"
+    narrative = Column(Text, nullable=True)
+    code = Column(Text, nullable=False)
+    chart_type = Column(String, nullable=True)
+    # How many times this exact memory has been replayed since it was
+    # first learned - purely informational (worth surfacing on an admin/
+    # usage view later as "questions answered from memory"), not read by
+    # any lookup/eviction logic itself.
+    hit_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_used_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
