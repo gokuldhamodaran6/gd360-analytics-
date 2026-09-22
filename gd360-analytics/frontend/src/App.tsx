@@ -10,6 +10,7 @@ import DashboardView from "./pages/DashboardView";
 import AdminDashboard from "./pages/AdminDashboard";
 import Profile from "./pages/Profile";
 import HelpBigQuery from "./pages/HelpBigQuery";
+import ConnectResourcePicker from "./pages/ConnectResourcePicker";
 
 function Protected({ children }: { children: JSX.Element }) {
   const { user, loading } = useAuth();
@@ -43,6 +44,15 @@ export default function App() {
           browser tab from the BigQuery connect popout, so it needs to work
           even in a fresh tab that may not carry an existing session yet. */}
       <Route path="/help/connect-bigquery" element={<HelpBigQuery />} />
+      {/* Where the browser lands after the Google/Microsoft OAuth redirect
+          (see DataSourceForm.tsx's "Connect" tab) - genuinely protected
+          (not a fresh, session-less tab like the BigQuery guide above),
+          since it calls authenticated endpoints to list/finish a
+          connection. A real browser redirect from Google/Microsoft always
+          carries this app's normal cookie-less localStorage session along
+          with it (same origin, same tab), so <Protected> here behaves
+          exactly as it does on every other in-app route. */}
+      <Route path="/connect/:provider" element={<Protected><ConnectResourcePicker /></Protected>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
