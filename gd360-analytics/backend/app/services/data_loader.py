@@ -14,6 +14,7 @@ exists, otherwise falls back to the original.
 """
 from __future__ import annotations
 
+import json
 import threading
 from collections import OrderedDict
 from datetime import datetime
@@ -24,7 +25,7 @@ from sqlalchemy.orm import Session
 from .. import models, security
 from . import oauth_tokens
 from .connectors import (
-    SQLConnector, MongoConnector, FileConnector, BigQueryConnector,
+    SQLConnector, MongoConnector, FileConnector, BigQueryConnector, SnowflakeConnector,
     GoogleSheetsConnector, MicrosoftExcelConnector,
 )
 
@@ -228,6 +229,17 @@ def _load_original(
         service_account_json = security.decrypt_secret(ds.encrypted_secret)
         info = ds.connection_info
         connector = BigQueryConnector(info["project_id"], info["dataset_id"], service_account_json)
+        table = table or _pick_single(ds.schema_cache)
+        return connector.load_dataframe(table, is_raw_sql=False, row_limit=row_limit)
+
+    if ds.kind == "snowflake":
+        creds = json.loads(security.decrypt_secret(ds.encrypted_secret))
+        info = ds.connection_info
+        connector = SnowflakeConnector(
+            account=info["account"], warehouse=info["warehouse"], database=info["database"],
+            db_schema=info.get("db_schema"), role=info.get("role"),
+            username=creds["username"], password=creds["password"],
+        )
         table = table or _pick_single(ds.schema_cache)
         return connector.load_dataframe(table, is_raw_sql=False, row_limit=row_limit)
 
