@@ -140,6 +140,15 @@ def get_conversation_messages(
                 "role": m.role,
                 "content": m.content,
                 "chart_spec": m.chart_spec,
+                # The chart type + tidy underlying rows this chart was built
+                # from (see chart_builder.result_to_tidy) - resuming a saved
+                # conversation needs these too, not just a live turn, so the
+                # Explore panel keeps working (instant, client-side chart
+                # type/axis/filter changes) after a page reload.
+                "chart_type": m.chart_type,
+                "result_columns": m.result_columns,
+                "result_rows": m.result_rows,
+                "result_truncated": m.result_truncated,
                 "insight": m.insight,
                 "suggestions": m.suggestions,
                 "needs_clarification": m.needs_clarification,
