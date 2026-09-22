@@ -120,14 +120,19 @@ export default function Workspace() {
   // always relevant to what is on screen right now.
   const [recentConversations, setRecentConversations] = useState<ConversationSummary[]>([]);
 
-  // Which saved tables were actually built during THIS visit to the
-  // workspace, as opposed to ones that already existed from an earlier
-  // session. A brand-new "Start new analysis" should not look like it is
-  // already mid-way through old work just because earlier tables still
-  // exist for this data source - they are not deleted, just not the first
-  // thing shown; see `visibleVersions` and the reset effect below.
-  const [sessionVersionIds, setSessionVersionIds] = useState<string[]>([]);
-  const [olderVersionsRevealed, setOlderVersionsRevealed] = useState(!!resumeConversationId);
+  // Which saved/AI-built tables the Data tab's tab strip (and the WORKING
+  // ON picker, which reads the same `visibleVersions` below) actually
+  // shows: "conversation" (the default) keeps it to just tables built in
+  // THIS chat, using each version's real conversation_id from the backend
+  // (see api/client.ts DatasetVersion and _conversation_id_by_version in
+  // routers/datasources.py) - the same ground truth the Flow tab's own
+  // "This conversation / All conversations" toggle already uses (see
+  // DataFlowMap.tsx), so this behaves identically whether a person is
+  // mid-chat or has just reopened one from Recent conversations. A version
+  // with no creating conversation on record (conversation_id: null - one
+  // predating this attribution, or the legacy-migration's own first
+  // version) always shows either way, same as Original data.
+  const [versionScope, setVersionScope] = useState<"conversation" | "all">("conversation");
 
   const [centerTab, setCenterTab] = useState<"data" | "chart" | "flow">("data");
   const [dataRefreshKey, setDataRefreshKey] = useState(0);
@@ -436,8 +441,7 @@ export default function Workspace() {
     setSaveMsg("");
     setFlow(null);
     setFlowError("");
-    setSessionVersionIds([]);
-    setOlderVersionsRevealed(!!resumeConversationId);
+    setVersionScope("conversation");
     // Forces the versions-loading effect below to re-pick a starting tab
     // for this "new" session instead of leaving whatever was active before.
     versionsInitRef.current = null;
@@ -481,13 +485,18 @@ export default function Workspace() {
   };
 
   // What the saved-table tab strip (and the chat's WORKING ON picker)
-  // actually shows: every table on a resumed conversation (its full real
-  // history), but only the ones built during this visit on a fresh start -
-  // "Show N earlier tables" below reveals the rest without hiding anything
-  // permanently or deleting it.
+  // actually shows: every table built in THIS conversation, plus any
+  // version not tied to one chat at all (conversation_id: null - see
+  // DatasetVersion above), by default - never a table from some other past
+  // chat about this same data source, which is exactly what used to
+  // confuse people (see the toggle below). "All conversations" reveals the
+  // rest without hiding or deleting anything.
   const visibleVersions = useMemo(
-    () => (olderVersionsRevealed ? versions : versions.filter((v) => sessionVersionIds.includes(v.id))),
-    [versions, olderVersionsRevealed, sessionVersionIds]
+    () =>
+      versionScope === "all" || !conversationId
+        ? versions
+        : versions.filter((v) => v.conversation_id == null || v.conversation_id === conversationId),
+    [versions, versionScope, conversationId]
   );
   const hiddenVersionsCount = versions.length - visibleVersions.length;
 
@@ -648,11 +657,11 @@ export default function Workspace() {
       }
       setCenterTab("data");
       // The Flow map deliberately covers every table ever built for this
-      // data source, not just this session's - so a table it jumps to must
-      // always be visible in the Data tab's tab strip right away, even one
-      // from a much older conversation that "Show N earlier tables" would
-      // otherwise still be hiding.
-      setOlderVersionsRevealed(true);
+      // data source, not just the current conversation's - so a table it
+      // jumps to must always be visible in the Data tab's tab strip right
+      // away, even one from a different conversation that the "this
+      // conversation only" default would otherwise still be hiding.
+      setVersionScope("all");
       setActiveVersionId(target.versionId);
       setSourceIds([target.versionId]);
       return;
@@ -734,7 +743,6 @@ export default function Workspace() {
         if (data.new_version_id) {
           setActiveVersionId(data.new_version_id);
           setSourceIds([data.new_version_id]);
-          setSessionVersionIds((ids) => [...ids, data.new_version_id]);
         }
         setCenterTab("data");
       }
@@ -748,7 +756,6 @@ export default function Workspace() {
         // next; that stays whatever it already was.
         if (data.action === "analyze" && data.new_version_id) {
           setDataRefreshKey((k) => k + 1);
-          setSessionVersionIds((ids) => [...ids, data.new_version_id]);
         }
         if (chartOverride && activeChartId) {
           // A chart-type/style redraw that needed a real AI rebuild (see
@@ -953,7 +960,6 @@ export default function Workspace() {
           setDataRefreshKey((k) => k + 1);
           setActiveVersionId(data.new_version_id);
           setSourceIds([data.new_version_id]);
-          setSessionVersionIds((ids) => [...ids, data.new_version_id]);
         }
       }
     } catch (err: any) {
@@ -1109,13 +1115,38 @@ export default function Workspace() {
               </button>
             </div>
             <div className="flex items-center gap-3 shrink-0">
-              {centerTab === "data" && hiddenVersionsCount > 0 && (
-                <button
-                  className="text-xs text-accent underline shrink-0"
-                  onClick={() => setOlderVersionsRevealed(true)}
+              {centerTab === "data" && (
+                // Same "this chat / everywhere" scope idea as the Flow
+                // tab's own toggle (DataFlowMap.tsx) - kept here instead of
+                // a one-off "Show N earlier tables" link so it reads as one
+                // consistent app-wide behavior rather than two different
+                // mechanisms that happen to do similar things.
+                <div
+                  className="flex items-center gap-0.5 shrink-0 bg-surface2 border border-border rounded-lg p-0.5"
+                  role="group"
+                  aria-label="Table tab scope"
                 >
-                  Show {hiddenVersionsCount} earlier table{hiddenVersionsCount === 1 ? "" : "s"}
-                </button>
+                  <button
+                    type="button"
+                    className={`text-xs px-2.5 py-1 rounded-md font-medium transition ${
+                      versionScope === "conversation" ? "bg-primary text-white" : "text-muted hover:text-text"
+                    }`}
+                    onClick={() => setVersionScope("conversation")}
+                    title="Only show tables built in this chat"
+                  >
+                    This chat
+                  </button>
+                  <button
+                    type="button"
+                    className={`text-xs px-2.5 py-1 rounded-md font-medium transition ${
+                      versionScope === "all" ? "bg-primary text-white" : "text-muted hover:text-text"
+                    }`}
+                    onClick={() => setVersionScope("all")}
+                    title="Show tables built in every chat about this data"
+                  >
+                    All chats{hiddenVersionsCount > 0 ? ` (+${hiddenVersionsCount})` : ""}
+                  </button>
+                </div>
               )}
               <button
                 className="text-sm px-4 py-2 rounded-lg font-medium btn-secondary flex items-center gap-1.5"
