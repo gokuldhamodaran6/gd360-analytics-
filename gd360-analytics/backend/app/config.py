@@ -48,6 +48,38 @@ class Settings(BaseSettings):
     # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     CREDENTIAL_ENCRYPTION_KEY: str = ""
 
+    # --- Live connector OAuth (Google Sheets, Microsoft Excel/OneDrive) ---
+    # This backend's own public base URL, used to build the OAuth redirect
+    # URIs Google/Microsoft send the browser back to after the person signs
+    # in and grants access (e.g. https://gd360-backend.onrender.com). Must
+    # exactly match a redirect URI registered in that provider's own app
+    # console/registration, or the provider will refuse the callback.
+    BACKEND_BASE_URL: str = "http://localhost:8000"
+
+    # Google Cloud Console -> APIs & Services -> Credentials -> OAuth client
+    # ID (Web application). Redirect URI to register there:
+    # {BACKEND_BASE_URL}/connections/google/callback. The connected Google
+    # Cloud project also needs the Google Sheets API and Google Drive API
+    # enabled (APIs & Services -> Library).
+    GOOGLE_OAUTH_CLIENT_ID: str = ""
+    GOOGLE_OAUTH_CLIENT_SECRET: str = ""
+
+    # Azure Portal -> App registrations -> New registration. Redirect URI to
+    # register there (as a "Web" platform): {BACKEND_BASE_URL}/connections/
+    # microsoft/callback. Needs the delegated Microsoft Graph permissions
+    # Files.Read.All and offline_access (for a refresh token).
+    MS_OAUTH_CLIENT_ID: str = ""
+    MS_OAUTH_CLIENT_SECRET: str = ""
+    # "common" accepts both personal Microsoft accounts and any work/school
+    # (Azure AD) account - the right default unless a specific organization
+    # ever needs to restrict this to its own tenant only.
+    MS_OAUTH_TENANT: str = "common"
+
+    # How long the signed "state" token that round-trips through the
+    # provider's consent screen stays valid for - just long enough for a
+    # person to actually look at and approve the consent screen.
+    OAUTH_STATE_EXPIRE_MINUTES: int = 15
+
     # --- AI provider ---
     # Google Gemini (https://aistudio.google.com/apikey) is the app default -
     # its paid rate past the free allowance is a small fraction of a cent
