@@ -122,6 +122,61 @@ export type DatasetVersion = {
   created_at: string;
 };
 
+// One table this datasource's data flow through - exactly what
+// Message.sources holds server-side (see backend models.py), returned
+// verbatim as part of each FlowNode below. "kind" is what the box on the
+// Flow map should look like: "original"/"sheet" are the raw incoming
+// data (this datasource's own, or - when datasource_id differs from the
+// datasource the map was opened for - another, separately-connected one
+// pulled in via "+ Add more data"); "version" is a saved/prepared table,
+// identified by version_id.
+export type FlowSource = {
+  kind: "original" | "sheet" | "version";
+  label: string;
+  datasource_id: string;
+  version_id: string | null;
+  sheet: string | null;
+};
+
+// A saved table, with its full lineage - which table(s) it was built
+// from within THIS datasource (parent_version_ids can be several, e.g. a
+// prompt that merged two saved tables together). A version predating this
+// column may have parent_version_ids: null even though it does have a
+// single parent_version_id - DataFlowMap treats that the same as [id].
+export type FlowVersion = {
+  id: string;
+  name: string;
+  parent_version_id: string | null;
+  parent_version_ids: string[] | null;
+  step_count: number;
+  created_at: string;
+};
+
+// One chart-producing or table-producing chat turn, anywhere in this data
+// source's history (every past conversation, not just the one currently
+// open) - the other half of the Flow map, alongside FlowVersion above.
+// `sources` is null for a turn saved before this feature existed; the map
+// falls back to treating those as sourced from "Original data".
+export type FlowNode = {
+  message_id: string;
+  conversation_id: string;
+  conversation_title: string;
+  prompt: string;
+  action: "analyze" | "transform" | string;
+  chart_type: string | null;
+  has_chart: boolean;
+  created_at: string;
+  sources: FlowSource[] | null;
+  new_version_id: string | null;
+};
+
+export type DataFlow = {
+  datasource_id: string;
+  datasource_name: string;
+  versions: FlowVersion[];
+  nodes: FlowNode[];
+};
+
 export type DataPreview = {
   columns: string[];
   dtypes: Record<string, string>;
@@ -190,6 +245,13 @@ export const datasourceApi = {
       .then((r) => r.data),
 
   listVersions: (id: string) => api.get<DatasetVersion[]>(`/datasources/${id}/versions`).then((r) => r.data),
+
+  // Every saved table and every chart/analysis ever built for this data
+  // source, across every past conversation - the raw material for the
+  // Flow tab's data-lineage map (components/DataFlowMap.tsx). See
+  // backend routers/datasources.py get_data_flow for exactly what this
+  // reads back (nothing is computed fresh server-side either).
+  getFlow: (id: string) => api.get<DataFlow>(`/datasources/${id}/flow`).then((r) => r.data),
 
   rename: (id: string, name: string) =>
     api.patch<{ id: string; name: string }>(`/datasources/${id}`, { name }).then((r) => r.data),
