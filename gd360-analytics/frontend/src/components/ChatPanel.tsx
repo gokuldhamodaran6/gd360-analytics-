@@ -227,9 +227,12 @@ export default function ChatPanel({
   datasourceKind?: string;
   datasourceSchema?: Record<string, unknown> | null;
   // Every OTHER data source this person has connected (never including the
-  // one this chat panel is open on) - powers the "+ Add more data" section
-  // of the WORKING ON picker, which is how a single prompt can pull in and
-  // combine a separate, independently-connected data source.
+  // one this chat panel is open on). WORKING ON no longer offers its own
+  // "browse and add" section (that duplicated the header-level "+ Add
+  // data" popup and got unreadable once someone had many sources - see
+  // AddDataPicker.tsx) - this list is only used here to label/resolve a
+  // cross-datasource table that "+ Add data" has already added to
+  // `sourceIds`, so WORKING ON can still show and toggle it.
   otherDataSources?: DataSourceSummary[];
 }) {
   const [text, setText] = useState("");
@@ -325,22 +328,6 @@ export default function ChatPanel({
     if (labels.length === 1) return labels[0];
     if (labels.length === 2) return labels.join(" + ");
     return `${labels[0]} + ${labels.length - 1} more`;
-  };
-
-  // "+ Add more data": pulls another, separately-connected data source
-  // into this picker and pre-selects a sensible default from it (its first
-  // sheet, for a multi-sheet workbook, otherwise its original data) so
-  // adding a source is immediately useful in one click - the person can
-  // still refine exactly which of its tables/sheets to use with the
-  // checkboxes this reveals.
-  const addOtherDs = (ds: DataSourceSummary) => {
-    setExpandedOtherDs((s) => new Set(s).add(ds.id));
-    fetchOtherVersions(ds.id);
-    const multiSheet = hasMultipleTables(ds.kind, ds.schema_cache);
-    const defaultId = multiSheet
-      ? otherDsSourceId(ds.id, Object.keys(ds.schema_cache || {})[0])
-      : otherDsSourceId(ds.id);
-    if (!sourceIds.includes(defaultId)) onSourceIdsChange([...sourceIds, defaultId]);
   };
 
   // Collapses an added data source and drops every one of its tables
@@ -671,80 +658,73 @@ export default function ChatPanel({
               </label>
             ))}
 
-            {otherSources.length > 0 && (
-              <div className="pt-3 mt-2 border-t border-border">
-                <div className="text-[11px] font-semibold tracking-wide text-muted px-2 pb-1">
-                  ADD MORE DATA
-                </div>
-                {otherSources.map((ds) => {
-                  const expanded = expandedOtherDs.has(ds.id);
-                  const dsMultiSheet = hasMultipleTables(ds.kind, ds.schema_cache);
-                  const dsSheets = dsMultiSheet ? Object.keys(ds.schema_cache || {}) : [];
-                  const dsVersions = otherVersionsById[ds.id] || [];
-                  if (!expanded) {
-                    return (
-                      <button
-                        key={ds.id}
-                        type="button"
-                        className="w-full flex items-center gap-2 text-sm px-2 py-2.5 rounded-lg hover:bg-surface2 text-left text-muted hover:text-text transition"
-                        onClick={() => addOtherDs(ds)}
-                      >
-                        <span className="text-accent font-semibold">+</span>
-                        <span className="truncate">Add "{ds.name}"</span>
-                      </button>
-                    );
-                  }
-                  return (
-                    <div key={ds.id} className="rounded-lg bg-surface2/60 my-1 py-1.5">
-                      <div className="flex items-center justify-between px-2 pb-1">
-                        <span className="text-xs font-semibold truncate">{ds.name}</span>
-                        <button
-                          type="button"
-                          className="text-[11px] text-muted hover:text-text transition shrink-0 ml-2"
-                          onClick={() => removeOtherDs(ds.id)}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                      {dsMultiSheet ? (
-                        dsSheets.map((sheet) => {
-                          const id = otherDsSourceId(ds.id, sheet);
-                          return (
-                            <label key={id} className="flex items-center gap-2 text-sm px-2 py-2 rounded-lg hover:bg-surface2 cursor-pointer">
-                              <input type="checkbox" checked={sourceIds.includes(id)} onChange={() => toggleSource(id)} />
-                              <SourceDot generated={false} />
-                              {sheet}
-                            </label>
-                          );
-                        })
-                      ) : (
-                        <label className="flex items-center gap-2 text-sm px-2 py-2 rounded-lg hover:bg-surface2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={sourceIds.includes(otherDsSourceId(ds.id))}
-                            onChange={() => toggleSource(otherDsSourceId(ds.id))}
-                          />
+            {/* Only data sources ALREADY part of this question's selection
+                (added earlier via the header-level "+ Add data" popup, or
+                inherited from a restored conversation) show up here, each
+                with its own tables still toggleable and a "Remove" to drop
+                it from the mix - this is WORKING ON's whole job: showing
+                and adjusting exactly what you're working on right now, not
+                a second place to go browse and add a source you haven't
+                touched yet. That belongs to the "+ Add data" button up top
+                (see the hint below when nothing else is added). */}
+            {otherSources.filter((ds) => expandedOtherDs.has(ds.id)).map((ds) => {
+              const dsMultiSheet = hasMultipleTables(ds.kind, ds.schema_cache);
+              const dsSheets = dsMultiSheet ? Object.keys(ds.schema_cache || {}) : [];
+              const dsVersions = otherVersionsById[ds.id] || [];
+              return (
+                <div key={ds.id} className="rounded-lg bg-surface2/60 my-1 py-1.5">
+                  <div className="flex items-center justify-between px-2 pb-1">
+                    <span className="text-xs font-semibold truncate">{ds.name}</span>
+                    <button
+                      type="button"
+                      className="text-[11px] text-muted hover:text-text transition shrink-0 ml-2"
+                      onClick={() => removeOtherDs(ds.id)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  {dsMultiSheet ? (
+                    dsSheets.map((sheet) => {
+                      const id = otherDsSourceId(ds.id, sheet);
+                      return (
+                        <label key={id} className="flex items-center gap-2 text-sm px-2 py-2 rounded-lg hover:bg-surface2 cursor-pointer">
+                          <input type="checkbox" checked={sourceIds.includes(id)} onChange={() => toggleSource(id)} />
                           <SourceDot generated={false} />
-                          Original data
+                          {sheet}
                         </label>
-                      )}
-                      {loadingOtherDs.has(ds.id) && (
-                        <div className="text-[11px] text-muted px-2 py-1">Loading saved tables…</div>
-                      )}
-                      {dsVersions.map((v) => (
-                        <label key={v.id} className="flex items-center gap-2 text-sm px-2 py-2 rounded-lg hover:bg-surface2 cursor-pointer">
-                          <input type="checkbox" checked={sourceIds.includes(v.id)} onChange={() => toggleSource(v.id)} />
-                          <SourceDot generated={true} />
-                          {v.name}
-                        </label>
-                      ))}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+                      );
+                    })
+                  ) : (
+                    <label className="flex items-center gap-2 text-sm px-2 py-2 rounded-lg hover:bg-surface2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={sourceIds.includes(otherDsSourceId(ds.id))}
+                        onChange={() => toggleSource(otherDsSourceId(ds.id))}
+                      />
+                      <SourceDot generated={false} />
+                      Original data
+                    </label>
+                  )}
+                  {loadingOtherDs.has(ds.id) && (
+                    <div className="text-[11px] text-muted px-2 py-1">Loading saved tables…</div>
+                  )}
+                  {dsVersions.map((v) => (
+                    <label key={v.id} className="flex items-center gap-2 text-sm px-2 py-2 rounded-lg hover:bg-surface2 cursor-pointer">
+                      <input type="checkbox" checked={sourceIds.includes(v.id)} onChange={() => toggleSource(v.id)} />
+                      <SourceDot generated={true} />
+                      {v.name}
+                    </label>
+                  ))}
+                </div>
+              );
+            })}
           </div>
-          <div className="p-3 border-t border-border shrink-0">
+          <div className="px-4 pt-3 pb-1 shrink-0 border-t border-border">
+            <div className="text-[11px] text-muted text-center">
+              Want to bring in another data source? Use <span className="font-semibold text-text">+ Add data</span> up top.
+            </div>
+          </div>
+          <div className="p-3 pt-2 shrink-0">
             <button type="button" className="btn-primary w-full text-sm" onClick={() => setWorkingOnOpen(false)}>
               Done
             </button>
