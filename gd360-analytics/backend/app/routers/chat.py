@@ -26,7 +26,7 @@ from ..database import get_db
 from ..deps import get_current_user
 from ..schemas_extra import ChatRequestFull, VerifyRequest
 from ..services import ai_engine
-from ..services.connectors import BigQueryConnector, SnowflakeConnector, SQLConnector, QueryTooExpensive, ReadOnlyViolation
+from ..services.connectors import BigQueryConnector, SnowflakeConnector, SQLConnector, MongoConnector, QueryTooExpensive, ReadOnlyViolation
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, dataframe_to_csv_bytes, ensure_legacy_migrated, NeedsTableSelection,
     purpose_label,
@@ -72,6 +72,22 @@ def _multi_table_schema_text(schema_cache: dict) -> str:
         lines.append(f"Table `{table_name}`:")
         for col in columns or []:
             lines.append(f"  - {col.get('name')} ({col.get('type')})")
+    return "\n".join(lines)
+
+
+def _mongo_schema_text(schema_cache: dict) -> str:
+    """MongoDB's introspect_schema shape is different from every warehouse/
+    SQL database above - {collection_name: [field_name, ...]}, no column
+    types, since a document database has no fixed schema; the field list
+    itself is inferred from a single sample document per collection (see
+    MongoConnector.introspect_schema), so it may not include every field
+    that appears elsewhere in the same collection. Formatted for
+    ai_engine.generate_mongo_pipeline."""
+    lines = []
+    for coll_name, fields in (schema_cache or {}).items():
+        lines.append(f"Collection `{coll_name}` (fields seen in one sample document - others may exist):")
+        for f in fields or []:
+            lines.append(f"  - {f}")
     return "\n".join(lines)
 
 
@@ -279,6 +295,64 @@ def _try_sql_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt: 
         return None
 
 
+def _try_mongo_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt: str):
+    """Tries to answer `prompt` with one governed MongoDB aggregation
+    pipeline run directly inside the person's own MongoDB database,
+    instead of pulling documents into memory - the MongoDB counterpart to
+    _try_sql_pushdown above, same idea with a different query language
+    (an aggregation pipeline instead of SQL) since MongoDB has no SQL
+    dialect to speak. No metered cost to guard here either (a customer's
+    own MongoDB server), so this skips the byte/time cost checks and
+    shared daily budget entirely, exactly like _try_sql_pushdown - it's
+    purely a speed and memory-safety upgrade. Reuses MongoConnector.
+    run_pushdown_query for the actual execution (the read-only stage
+    check, automatic $limit cap, and maxTimeMS runtime safety net all
+    live there). Still logs to the same audit table as every other
+    provider, with bytes_scanned always None. Returns the small result as
+    a DataFrame on success, or None on ANY failure, matching every other
+    pushdown helper's exact fallback contract."""
+    schema_text = _mongo_schema_text(ds.schema_cache)
+    if not schema_text.strip():
+        return None
+
+    try:
+        raw = ai_engine.generate_mongo_pipeline(prompt, schema_text)
+    except Exception as e:
+        print(f"[chat] Mongo pushdown pipeline generation failed, falling back: {e}")
+        return None
+
+    if not raw or raw.strip().upper() == "NOT_POSSIBLE":
+        return None
+
+    try:
+        parsed = json.loads(raw)
+        collection = parsed["collection"]
+        pipeline = parsed["pipeline"]
+    except Exception as e:
+        print(f"[chat] Mongo pushdown pipeline was not valid JSON, falling back: {e}")
+        _log_pushdown(db, user_id, ds.id, "mongodb", raw, None, "error", f"invalid pipeline JSON: {e}")
+        return None
+
+    log_text = json.dumps({"collection": collection, "pipeline": pipeline})
+    try:
+        username, password = security.decrypt_secret(ds.encrypted_secret).split("␟")
+        info = ds.connection_info
+        connector = MongoConnector(info["host"], info["port"], info["database"], username, password, info.get("ssl", True))
+        df = connector.run_pushdown_query(
+            collection, pipeline, timeout_seconds=settings.MONGO_AGGREGATION_TIMEOUT_SECONDS
+        )
+        _log_pushdown(db, user_id, ds.id, "mongodb", log_text, None, "ok")
+        return df
+    except ReadOnlyViolation as e:
+        print(f"[chat] Mongo pushdown pipeline rejected (unsafe), falling back: {e}")
+        _log_pushdown(db, user_id, ds.id, "mongodb", log_text, None, "rejected_unsafe", str(e))
+        return None
+    except Exception as e:
+        print(f"[chat] Mongo pushdown query failed, falling back: {e}")
+        _log_pushdown(db, user_id, ds.id, "mongodb", log_text, None, "error", str(e))
+        return None
+
+
 @router.post("", response_model=schemas.ChatResponse)
 def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     _check_rate_limit(user.id)
@@ -312,12 +386,13 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
 
     # Warehouse/database pushdown (see the Enterprise Scale Roadmap doc):
     # only the plain "ask about my data" case - a single source, its own
-    # original data, no forced sub-table - tries running SQL directly
-    # inside the source before falling back to the normal path below. See
-    # _try_bigquery_pushdown/_try_snowflake_pushdown/_try_sql_pushdown's
-    # own docstrings for the full fallback contract (the plain-database
-    # path skips the cost/budget checks the two warehouses have, since a
-    # customer's own database has no metered per-query billing to guard).
+    # original data, no forced sub-table - tries running a real query
+    # directly inside the source before falling back to the normal path
+    # below. See _try_bigquery_pushdown/_try_snowflake_pushdown/
+    # _try_sql_pushdown/_try_mongo_pushdown's own docstrings for the full
+    # fallback contract (the plain-database and MongoDB paths skip the
+    # cost/budget checks the two warehouses have, since a customer's own
+    # database/Mongo server has no metered per-query billing to guard).
     pushdown_df = None
     if requested_ids == ["original"] and not payload.table:
         if ds.kind == "bigquery":
@@ -326,6 +401,8 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
             pushdown_df = _try_snowflake_pushdown(db, ds, user.id, payload.prompt)
         elif ds.kind in ("postgres", "mysql", "sqlserver", "supabase"):
             pushdown_df = _try_sql_pushdown(db, ds, user.id, payload.prompt)
+        elif ds.kind == "mongodb":
+            pushdown_df = _try_mongo_pushdown(db, ds, user.id, payload.prompt)
 
     if pushdown_df is not None:
         tables = {"Original data": pushdown_df}
