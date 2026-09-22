@@ -518,6 +518,131 @@ def _column_stats(df: pd.DataFrame) -> dict:
     return stats
 
 
+def _apply_column_filter(df: pd.DataFrame, col: str, spec) -> pd.DataFrame:
+    """Applies one column's filter - whatever the Data tab's Excel-style
+    filter panel built for it (DataTable.tsx's ColumnFilterSpec) - to df.
+    Four shapes, matching the panel's two tabs plus its per-dtype condition
+    branches:
+      - {"type": "values", "include": [...]} - a checkbox value list; keeps
+        only rows whose value (stringified) is one of `include`, treating a
+        literal `null` entry as "(Blanks)".
+      - {"type": "text", "op": ..., "value": ...} - contains/equals/starts
+        with/etc, case-insensitive.
+      - {"type": "number", "op": ..., "value": ..., "value2": ...} - a
+        numeric comparison (value2 only for "between"); the column is
+        coerced with pd.to_numeric first so this also works on a numeric
+        column that loaded as text.
+      - {"type": "date", "from": ..., "to": ...} - an inclusive date range;
+        either end can be omitted for an open-ended range.
+      - {"type": "boolean", "value": "true"|"false"}.
+    A bare string is also accepted and treated as the old simple "contains"
+    filter this endpoint used to be the only kind of - covers the brief
+    window during a rolling deploy where an older frontend build (still
+    sending plain strings) talks to this already-updated backend, or vice
+    versa. Anything unrecognized is a no-op rather than an error, so one
+    malformed filter never breaks the whole preview."""
+    if isinstance(spec, str):
+        needle = spec
+        if needle:
+            return df[df[col].astype(str).str.contains(str(needle), case=False, na=False, regex=False)]
+        return df
+    if not isinstance(spec, dict):
+        return df
+    kind = spec.get("type")
+
+    if kind == "values":
+        include = spec.get("include") or []
+        if not include:
+            return df
+        wants_null = any(v is None for v in include)
+        want_strs = {str(v) for v in include if v is not None}
+        as_str = df[col].astype(str)
+        mask = as_str.isin(want_strs) if want_strs else pd.Series(False, index=df.index)
+        if wants_null:
+            mask = mask | df[col].isna()
+        return df[mask]
+
+    if kind == "text":
+        op = spec.get("op")
+        value = str(spec.get("value") or "")
+        as_str = df[col].astype(str)
+        if op == "contains":
+            return df[as_str.str.contains(value, case=False, na=False, regex=False)]
+        if op == "not_contains":
+            return df[~as_str.str.contains(value, case=False, na=False, regex=False)]
+        if op == "equals":
+            return df[as_str.str.lower() == value.lower()]
+        if op == "not_equals":
+            return df[as_str.str.lower() != value.lower()]
+        if op == "starts_with":
+            return df[as_str.str.lower().str.startswith(value.lower())]
+        if op == "ends_with":
+            return df[as_str.str.lower().str.endswith(value.lower())]
+        if op == "is_empty":
+            return df[df[col].isna() | (as_str.str.strip() == "")]
+        if op == "is_not_empty":
+            return df[~(df[col].isna() | (as_str.str.strip() == ""))]
+        return df
+
+    if kind == "number":
+        op = spec.get("op")
+        numeric = pd.to_numeric(df[col], errors="coerce")
+
+        def _num(key):
+            raw = spec.get(key)
+            if raw in (None, ""):
+                return None
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return None
+
+        value = _num("value")
+        value2 = _num("value2")
+        if op == "between":
+            if value is None or value2 is None:
+                return df
+            lo, hi = min(value, value2), max(value, value2)
+            return df[(numeric >= lo) & (numeric <= hi)]
+        if value is None:
+            return df
+        if op == "eq": return df[numeric == value]
+        if op == "neq": return df[numeric != value]
+        if op == "gt": return df[numeric > value]
+        if op == "gte": return df[numeric >= value]
+        if op == "lt": return df[numeric < value]
+        if op == "lte": return df[numeric <= value]
+        return df
+
+    if kind == "date":
+        dt = pd.to_datetime(df[col], errors="coerce")
+        mask = pd.Series(True, index=df.index)
+        from_str, to_str = spec.get("from"), spec.get("to")
+        if from_str:
+            try:
+                mask &= dt >= pd.Timestamp(from_str)
+            except Exception:
+                pass
+        if to_str:
+            try:
+                # Inclusive of the entire "to" day, not just midnight of it.
+                end = pd.Timestamp(to_str) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+                mask &= dt <= end
+            except Exception:
+                pass
+        return df[mask]
+
+    if kind == "boolean":
+        value = spec.get("value")
+        if value == "true":
+            return df[df[col] == True]  # noqa: E712
+        if value == "false":
+            return df[df[col] == False]  # noqa: E712
+        return df
+
+    return df
+
+
 @router.get("/{datasource_id}/preview")
 def preview_datasource(
     datasource_id: str,
@@ -563,18 +688,24 @@ def preview_datasource(
     # since its full file is already in memory - see data_loader.py).
     loaded_row_count = len(df)
 
-    # Per-column text filter, applied before pagination so it always
-    # searches the full dataset, not just whatever page happens to be
-    # showing. A simple case-insensitive "contains" match reads naturally
-    # for both text and numbers (typing "39" finds 39 and 39.5 alike).
+    # Per-column filter (the Data tab's Excel-style filter panel - a values
+    # checklist or a type-aware condition, see _apply_column_filter above),
+    # applied before pagination so it always searches the full dataset, not
+    # just whatever page happens to be showing.
     if filters:
         try:
             filter_map = json.loads(filters)
         except Exception:
             filter_map = {}
-        for col, needle in (filter_map or {}).items():
-            if col in df.columns and needle not in (None, ""):
-                df = df[df[col].astype(str).str.contains(str(needle), case=False, na=False, regex=False)]
+        for col, spec in (filter_map or {}).items():
+            if col in df.columns and spec not in (None, ""):
+                try:
+                    df = _apply_column_filter(df, col, spec)
+                except Exception as e:
+                    # A malformed filter spec (e.g. a stray shape from a
+                    # client mid-deploy) should never break the whole
+                    # preview - just skip that one column's filter.
+                    print(f"[datasources] skipping unreadable filter on column {col!r}: {e}")
 
     # Column sort, also applied before pagination for the same reason -
     # sorting only the current page would look broken to the person using it.
@@ -607,6 +738,97 @@ def preview_datasource(
         "cleaning_log": (active_version.cleaning_log if active_version else None) or [],
         "column_stats": column_stats,
         "stats_capped": stats_capped,
+    }
+
+
+def _jsonify_scalar(v):
+    """Turns one pandas/numpy scalar into something json.dumps can handle
+    as-is, for the distinct-values endpoint below. Timestamps become ISO
+    strings (matching how preview_datasource's df.to_json already renders
+    dates), NaN/NaT become None, and anything else that's already
+    JSON-safe (str/int/float/bool) passes through untouched; a stray
+    exotic type falls back to str() rather than ever raising."""
+    if v is None:
+        return None
+    if isinstance(v, pd.Timestamp):
+        if pd.isna(v):
+            return None
+        return v.isoformat()
+    if isinstance(v, float) and pd.isna(v):
+        return None
+    try:
+        json.dumps(v)
+        return v
+    except TypeError:
+        return str(v)
+
+
+@router.get("/{datasource_id}/columns/{column}/distinct-values")
+def get_column_distinct_values(
+    datasource_id: str,
+    column: str,
+    version_id: str | None = None,
+    table: str | None = None,
+    search: str | None = None,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Real distinct values (with row counts), for exactly ONE column, computed
+    on demand - powers the Data tab's Excel-style filter panel when someone
+    opens the checkbox value list for a column. Deliberately its own endpoint
+    rather than something preview_datasource always returns: computing every
+    column's full distinct-value list on every page load/sort/filter is
+    real memory and CPU work multiplied by column count, which is exactly
+    the kind of unbounded per-request cost the 2026-09-22 OOM incident (see
+    config.py's MAX_ROWS_LOADED_PER_QUERY/PREVIEW_ROW_LIMIT comments) taught
+    this app to avoid - so it only happens for the one column someone is
+    actually about to filter on, the moment they open that panel.
+
+    `search` narrows to values containing that text (the filter panel's own
+    search-within-values box) before counting/truncating, so searching a
+    500-distinct-value column for "cali" still returns quickly instead of
+    the full list. `limit` caps how many distinct values come back
+    (default 200, hard-capped at 1000); `truncated` tells the frontend
+    whether more exist than were returned, so it can say so rather than
+    silently looking complete."""
+    ds = _get_owned_datasource(db, user, datasource_id)
+    ensure_legacy_migrated(db, ds)
+
+    active_version = _get_owned_version(db, ds, version_id) if version_id else None
+    try:
+        df = (
+            load_version_dataframe(active_version)
+            if active_version
+            else load_dataframe(
+                ds, table=table or default_table_for_preview(ds), version="original",
+                row_limit=settings.PREVIEW_ROW_LIMIT,
+            )
+        )
+    except Exception as e:
+        raise HTTPException(400, f"Could not load data: {e}")
+
+    if column not in df.columns:
+        raise HTTPException(404, f"Column '{column}' not found.")
+
+    series = df[column]
+    null_count = int(series.isna().sum())
+    if search:
+        series = series[series.astype(str).str.contains(str(search), case=False, na=False, regex=False)]
+
+    counts = series.value_counts(dropna=True)
+    limit = max(1, min(limit, 1000))
+    truncated = bool(len(counts) > limit)
+    top = counts.iloc[:limit]
+
+    values = [{"value": _jsonify_scalar(idx), "count": int(cnt)} for idx, cnt in top.items()]
+
+    return {
+        "column": column,
+        "values": values,
+        "null_count": null_count,
+        "distinct_total": int(counts.shape[0]),
+        "truncated": truncated,
     }
 
 
