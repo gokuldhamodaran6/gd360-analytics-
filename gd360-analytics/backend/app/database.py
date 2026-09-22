@@ -43,6 +43,9 @@ _NEW_COLUMNS = [
     ("messages", "chart_type", "TEXT"),
     ("messages", "verified_count", "INTEGER DEFAULT 0"),
     ("conversations", "pinned", "BOOLEAN DEFAULT FALSE"),
+    ("messages", "result_columns", "JSON"),
+    ("messages", "result_rows", "JSON"),
+    ("messages", "result_truncated", "BOOLEAN DEFAULT FALSE"),
 ]
 
 
