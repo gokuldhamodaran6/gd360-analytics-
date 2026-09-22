@@ -15,10 +15,11 @@ export default {
         muted: "rgb(var(--color-muted) / <alpha-value>)",
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "sans-serif"],
+        sans: ["Geist", "system-ui", "sans-serif"],
+        mono: ["Geist Mono", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
       boxShadow: {
-        glow: "0 0 40px rgba(108,92,231,0.25)",
+        glow: "0 0 40px rgba(20,122,92,0.2)",
       },
     },
   },
