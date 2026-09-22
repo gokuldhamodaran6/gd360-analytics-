@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { datasourceApi, DataPreview, DatasetVersion, ColumnStat, ColumnDistinctValues, SavedView } from "../api/client";
 
 // Rows-per-page choices for the numbered pagination footer below. Capped at
@@ -462,6 +463,18 @@ export default function DataTable({
   const columnsPanelRef = useRef<HTMLDivElement | null>(null);
   const viewsPanelRef = useRef<HTMLDivElement | null>(null);
   const thRefs = useRef<Record<string, HTMLTableCellElement | null>>({});
+  const dtScrollRef = useRef<HTMLDivElement | null>(null);
+
+  // The column header popover (rename/filter/format/pin/etc.) is portaled
+  // to document.body and positioned with fixed pixel coordinates - see
+  // toggleColumnMenu. Without this, the popover renders as a normal child
+  // of its <th>, which sits inside several ancestors with overflow-hidden
+  // / overflow-auto (the header cell itself, the scrollable table body,
+  // the card that wraps the whole table) - any of those silently clips
+  // the popover to nothing, which is exactly the "I click the filter and
+  // nothing shows up" bug: the menu is still there in the DOM, just
+  // invisible, because it renders outside its clipped ancestor's box.
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   const hasActiveFilters = Object.keys(debouncedFilters).length > 0;
 
   // Typing into a filter box should not fire a request on every keystroke -
@@ -552,6 +565,36 @@ export default function DataTable({
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, [openFilterCol, showColumnsPanel, showViewsPanel]);
 
+  // The column popover is portaled to document.body with a fixed pixel
+  // position computed once, on open (see toggleColumnMenu). If the table
+  // genuinely scrolls further while it's open, that position goes stale
+  // and the menu would visually drift away from its column - so close it,
+  // matching how a spreadsheet's own column menu behaves.
+  //
+  // This has to compare actual scroll offsets rather than just reacting to
+  // a "scroll" event firing at all: opening the menu on a column that's
+  // only partly in view makes the browser (and Playwright, when driving
+  // this) auto-scroll it into view as part of handling that same click,
+  // and the resulting "scroll" event can be delivered a moment *after*
+  // this effect has already attached its listener - which, without the
+  // position check, closed the menu we'd just opened almost immediately.
+  useEffect(() => {
+    if (!openFilterCol) return;
+    const scrollEl = dtScrollRef.current;
+    const baseline = scrollEl ? { left: scrollEl.scrollLeft, top: scrollEl.scrollTop } : null;
+    const closeIfActuallyMoved = () => {
+      if (!scrollEl || !baseline) { setOpenFilterCol(null); return; }
+      const moved = Math.abs(scrollEl.scrollLeft - baseline.left) > 4 || Math.abs(scrollEl.scrollTop - baseline.top) > 4;
+      if (moved) setOpenFilterCol(null);
+    };
+    scrollEl?.addEventListener("scroll", closeIfActuallyMoved);
+    window.addEventListener("resize", closeIfActuallyMoved);
+    return () => {
+      scrollEl?.removeEventListener("scroll", closeIfActuallyMoved);
+      window.removeEventListener("resize", closeIfActuallyMoved);
+    };
+  }, [openFilterCol]);
+
   // Lazily fetches this column's real distinct values (with counts) the
   // moment its filter panel is open AND the Values tab is showing - never
   // eagerly for every column, matching the backend endpoint's own design
@@ -579,6 +622,11 @@ export default function DataTable({
 
   const displayLabel = (col: string) => colLabels[col] || col;
 
+  // How far in from each viewport edge the portaled popover is kept, and
+  // its fixed width (must match the "w-80" on the popover itself below).
+  const MENU_MARGIN = 8;
+  const MENU_WIDTH = 320;
+
   const toggleColumnMenu = (col: string) => {
     setOpenFilterCol((c) => {
       const next = c === col ? null : col;
@@ -604,6 +652,22 @@ export default function DataTable({
         setHighlightSectionOpen(false);
         setRenamingColKey(null);
         setInsertComposer(null);
+
+        // Anchor the portaled popover to this column's actual screen
+        // position, clamped so it never runs off the right edge (the
+        // rightmost columns - like the one that reported this bug -
+        // would otherwise place most of a 320px-wide panel off-screen).
+        const el = thRefs.current[col];
+        if (el) {
+          const rect = el.getBoundingClientRect();
+          const left = Math.min(Math.max(rect.left, MENU_MARGIN), window.innerWidth - MENU_WIDTH - MENU_MARGIN);
+          const top = rect.bottom + 4;
+          setMenuPos({ top, left });
+        } else {
+          setMenuPos(null);
+        }
+      } else {
+        setMenuPos(null);
       }
       return next;
     });
@@ -1367,7 +1431,7 @@ export default function DataTable({
         </div>
       )}
 
-      <div className="flex-1 overflow-auto dt-scroll">
+      <div className="flex-1 overflow-auto dt-scroll" ref={dtScrollRef}>
         {preview.rows.length === 0 ? (
           <div className="h-full flex items-center justify-center text-muted text-sm p-10 text-center">
             {hasActiveFilters ? "No rows match your column filters." : "No rows to show."}
@@ -1426,10 +1490,15 @@ export default function DataTable({
                         </span>
                       </div>
 
-                      {openFilterCol === col && (
+                      {openFilterCol === col && menuPos && createPortal(
                         <div
                           ref={menuRef}
-                          className="absolute z-20 top-full left-0 mt-1 w-80 card p-2 space-y-1 shadow-xl font-normal normal-case max-h-[32rem] overflow-y-auto"
+                          className="fixed z-50 w-80 card p-2 space-y-1 shadow-xl font-normal normal-case overflow-y-auto"
+                          style={{
+                            top: menuPos.top,
+                            left: menuPos.left,
+                            maxHeight: Math.min(512, window.innerHeight - menuPos.top - MENU_MARGIN),
+                          }}
                         >
                           {/* Rename / copy name */}
                           {renamingColKey === col ? (
@@ -1922,7 +1991,8 @@ export default function DataTable({
                           >
                             {pinned ? "Unpin column" : "Pin column"}
                           </button>
-                        </div>
+                        </div>,
+                        document.body
                       )}
 
                       <div
