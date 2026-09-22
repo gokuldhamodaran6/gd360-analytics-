@@ -36,6 +36,23 @@ SAFE_BUILTINS = {
     "bool": bool, "abs": abs, "round": round, "zip": zip, "map": map,
     "filter": filter, "True": True, "False": False, "None": None,
     "isinstance": isinstance, "any": any, "all": all,
+    # 2026-09-22 root-cause fix: added after a real production failure -
+    # `next`/`iter` are ordinary, extremely common pandas/python idioms
+    # (e.g. `next(iter(some_dict.values()))`, walking a groupby/itertuples
+    # result) that generated code reaches for constantly, especially for
+    # multi-table merge requests. They were missing from this list, so any
+    # generated code that used them failed with a raw `NameError: name
+    # 'next' is not defined` - a crash caused by an incomplete allowlist,
+    # not by anything wrong with the code itself. The rest below this line
+    # are the same kind of ordinary, pure-computation builtins (no file,
+    # network, process, or interpreter access - nothing here can read,
+    # write, import, or introspect anything outside the values already
+    # passed in) added proactively for the same reason, so the next common,
+    # safe idiom does not have to fail in production first to be noticed.
+    "next": next, "iter": iter, "reversed": reversed, "divmod": divmod,
+    "pow": pow, "frozenset": frozenset, "format": format, "repr": repr,
+    "hash": hash, "complex": complex, "bin": bin, "hex": hex, "oct": oct,
+    "chr": chr, "ord": ord, "slice": slice,
     # Exception TYPES only (not any I/O-capable builtin) - generated code
     # very commonly wraps a risky step in try/except as a defensive habit,
     # and without these names even in scope that raises NameError the
