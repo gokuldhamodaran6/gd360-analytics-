@@ -7,6 +7,7 @@ Security primitives:
 No customer database credential is ever stored in plaintext, logged, or
 returned to the frontend once saved.
 """
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -50,6 +51,41 @@ def decode_access_token(token: str) -> Optional[str]:
         return payload.get("sub")
     except JWTError:
         return None
+
+
+def create_oauth_state(user_id: str, provider: str) -> str:
+    """A short-lived, signed token that round-trips through a third-party
+    OAuth consent screen (Google/Microsoft - see routers/connections.py) and
+    comes back on the callback as the `state` query param. This is what
+    lets an otherwise-anonymous browser redirect back into the app be
+    trusted to belong to a specific already-logged-in user, without ever
+    needing a cookie or Authorization header on that unauthenticated
+    callback request - the provider itself is trusted to echo `state` back
+    unmodified, and the signature here means nobody else can forge one for
+    a different user_id. `nonce` makes each state token unique even when
+    the same user starts the same provider's flow twice in a row."""
+    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.OAUTH_STATE_EXPIRE_MINUTES)
+    payload = {
+        "sub": user_id,
+        "provider": provider,
+        "typ": "oauth_state",
+        "nonce": secrets.token_urlsafe(12),
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+
+def decode_oauth_state(token: str, expected_provider: str) -> Optional[str]:
+    """Returns the user_id a create_oauth_state token was minted for, or
+    None if the token is missing, expired, tampered with, or was minted for
+    a different provider than the callback that received it."""
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+    except JWTError:
+        return None
+    if payload.get("typ") != "oauth_state" or payload.get("provider") != expected_provider:
+        return None
+    return payload.get("sub")
 
 
 def _fernet() -> Fernet:
