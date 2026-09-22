@@ -1,9 +1,9 @@
 """
 Datasource management: connect a database (Postgres/MySQL/SQL Server/
-MongoDB/Supabase), a data warehouse (BigQuery), or upload a file
-(CSV/Excel). Credentials are encrypted before storage and never returned
-to the client after creation. Every connection is tested and introspected
-(read-only) before being saved.
+MongoDB/Supabase), a data warehouse (BigQuery, Snowflake), or upload a
+file (CSV/Excel). Credentials are encrypted before storage and never
+returned to the client after creation. Every connection is tested and
+introspected (read-only) before being saved.
 
 Also exposes the data-preparation surface: a paginated table preview of the
 original data or any saved/named table, listing/renaming/deleting those
@@ -26,7 +26,7 @@ from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
 from ..services import ai_engine
-from ..services.connectors import SQLConnector, MongoConnector, FileConnector, BigQueryConnector
+from ..services.connectors import SQLConnector, MongoConnector, FileConnector, BigQueryConnector, SnowflakeConnector
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, ensure_legacy_migrated, warm_cache, default_table_for_preview,
 )
@@ -182,35 +182,72 @@ def connect_warehouse(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    """Connects a data warehouse - BigQuery today, more can be added later
-    the same way this app's other connectors were: a new kind here, a new
-    class in services/connectors.py, and a matching branch in
-    services/data_loader.py, without touching anything else. Authenticates
-    with a pasted service-account key rather than host/port/username/
-    password, so it is a separate endpoint and request shape from
-    /datasources/database above, not a variant of it."""
-    if payload.kind not in ("bigquery",):
-        raise HTTPException(400, "kind must be one of: bigquery")
+    """Connects a data warehouse - BigQuery or Snowflake today, more can be
+    added later the same way this app's other connectors were: a new kind
+    here, a new class in services/connectors.py, and a matching branch in
+    services/data_loader.py, without touching anything else. A warehouse
+    authenticates completely differently from a plain database connection
+    (BigQuery: a pasted service-account key; Snowflake: a username/
+    password against an account, but still no host/port), so this stays
+    its own endpoint and request shape rather than a variant of
+    /datasources/database above."""
+    if payload.kind not in ("bigquery", "snowflake"):
+        raise HTTPException(400, "kind must be one of: bigquery, snowflake")
 
-    try:
-        connector = BigQueryConnector(payload.project_id, payload.dataset_id, payload.service_account_json)
-        connector.test_connection()
-        schema = connector.introspect_schema()
-    except Exception as e:
-        raise HTTPException(400, f"Could not connect: {e}")
+    if payload.kind == "bigquery":
+        if not (payload.project_id and payload.dataset_id and payload.service_account_json):
+            raise HTTPException(400, "project_id, dataset_id, and service_account_json are all required for BigQuery.")
+        try:
+            connector = BigQueryConnector(payload.project_id, payload.dataset_id, payload.service_account_json)
+            connector.test_connection()
+            schema = connector.introspect_schema()
+        except Exception as e:
+            raise HTTPException(400, f"Could not connect: {e}")
 
-    ds = models.DataSource(
-        owner_id=user.id,
-        name=payload.name,
-        kind=payload.kind,
-        connection_info={"project_id": payload.project_id, "dataset_id": payload.dataset_id},
-        # The whole service-account key JSON is the secret here - there is
-        # no separate username/password to join with the "␟" delimiter the
-        # way connect_database does above.
-        encrypted_secret=security.encrypt_secret(payload.service_account_json),
-        read_only=True,
-        schema_cache=schema,
-    )
+        ds = models.DataSource(
+            owner_id=user.id,
+            name=payload.name,
+            kind=payload.kind,
+            connection_info={"project_id": payload.project_id, "dataset_id": payload.dataset_id},
+            # The whole service-account key JSON is the secret here -
+            # there is no separate username/password to join with the "␟"
+            # delimiter the way connect_database does above.
+            encrypted_secret=security.encrypt_secret(payload.service_account_json),
+            read_only=True,
+            schema_cache=schema,
+        )
+    else:  # snowflake
+        if not (payload.account and payload.snowflake_warehouse and payload.database and payload.username and payload.password):
+            raise HTTPException(400, "account, snowflake_warehouse, database, username, and password are all required for Snowflake.")
+        try:
+            connector = SnowflakeConnector(
+                account=payload.account, warehouse=payload.snowflake_warehouse, database=payload.database,
+                username=payload.username, password=payload.password,
+                db_schema=payload.db_schema or None, role=payload.role or None,
+            )
+            connector.test_connection()
+            schema = connector.introspect_schema()
+        except Exception as e:
+            raise HTTPException(400, f"Could not connect: {e}")
+
+        ds = models.DataSource(
+            owner_id=user.id,
+            name=payload.name,
+            kind=payload.kind,
+            connection_info={
+                "account": payload.account, "warehouse": payload.snowflake_warehouse,
+                "database": payload.database, "db_schema": payload.db_schema or None,
+                "role": payload.role or None,
+            },
+            # Username + password together as one small JSON blob, the
+            # same way connectors that need more than a single secret
+            # string keep it - see data_loader.py's snowflake branch for
+            # how this gets decrypted and parsed back.
+            encrypted_secret=security.encrypt_secret(json.dumps({"username": payload.username, "password": payload.password})),
+            read_only=True,
+            schema_cache=schema,
+        )
+
     db.add(ds)
     db.commit()
     db.refresh(ds)
