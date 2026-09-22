@@ -36,6 +36,8 @@ from urllib.parse import quote
 import pandas as pd
 import requests
 import sqlparse
+from google.cloud import bigquery as bq
+from google.oauth2 import service_account as bq_service_account
 from sqlalchemy import create_engine, inspect, text
 
 from ..config import get_settings
@@ -51,6 +53,12 @@ FORBIDDEN_SQL_KEYWORDS = {
 
 class ReadOnlyViolation(Exception):
     pass
+
+
+class QueryTooExpensive(Exception):
+    """Raised by BigQueryConnector.run_pushdown_query when a BigQuery dry
+    run shows a query would scan more data than the caller's byte budget
+    allows - raised BEFORE the query is ever actually run or billed for."""
 
 
 def assert_read_only_sql(raw_sql: str) -> None:
@@ -260,6 +268,56 @@ class BigQueryConnector:
             return pd.read_sql(text(sql), engine)
         finally:
             engine.dispose()
+
+    # -----------------------------------------------------------------
+    # Pushdown querying (Enterprise Scale Roadmap, Phase 1) - runs ONE
+    # AI-written SQL query directly inside BigQuery itself, instead of
+    # pulling rows out via load_dataframe above and analyzing them in
+    # pandas. Uses the native google-cloud-bigquery client rather than the
+    # SQLAlchemy engine above, specifically so a real BigQuery dry run
+    # (Google's own free, instant "how much data would this scan" check)
+    # is available before anything is ever actually run or billed for.
+    # Read-only scope (bigquery.readonly) as defense-in-depth on top of
+    # assert_read_only_sql below, matching this file's stated design
+    # principle at the top.
+    # -----------------------------------------------------------------
+
+    def _bq_client(self) -> "bq.Client":
+        credentials = bq_service_account.Credentials.from_service_account_info(
+            self.credentials_info, scopes=["https://www.googleapis.com/auth/bigquery.readonly"],
+        )
+        return bq.Client(project=self.project_id, credentials=credentials)
+
+    def estimate_query_bytes(self, sql: str) -> int:
+        """A BigQuery dry run - tells you how much data a query would scan
+        without running it or being billed for it. This is the number
+        run_pushdown_query checks against its byte budget before the real
+        query ever touches anything."""
+        client = self._bq_client()
+        job = client.query(sql, job_config=bq.QueryJobConfig(dry_run=True, use_query_cache=False))
+        return job.total_bytes_processed or 0
+
+    def run_pushdown_query(self, sql: str, max_bytes: int) -> pd.DataFrame:
+        """Runs one AI-written SQL query directly inside BigQuery. Two
+        guards before any real data is touched: assert_read_only_sql (a
+        single plain SELECT, no writes - the same check load_dataframe's
+        is_raw_sql path above already uses) and a dry-run cost estimate
+        against max_bytes, so an over-budget query is rejected before
+        BigQuery is ever billed for it. The result is expected to already
+        be small - filtered/aggregated/limited by the query itself - since
+        the entire point of pushdown is that the warehouse does that work,
+        not GD360's own server."""
+        assert_read_only_sql(sql)
+        estimated = self.estimate_query_bytes(sql)
+        if estimated > max_bytes:
+            raise QueryTooExpensive(
+                f"This question would need to scan about {estimated / (1024 ** 3):.1f} GB of data, over this "
+                f"connection's {max_bytes / (1024 ** 3):.1f} GB per-question limit. Try narrowing the date range "
+                f"or asking about a smaller slice of the data."
+            )
+        client = self._bq_client()
+        job = client.query(sql, job_config=bq.QueryJobConfig(use_query_cache=True))
+        return job.result().to_dataframe()
 
 
 class FileConnector:
