@@ -1161,6 +1161,7 @@ export default function Workspace() {
                 loading={flowLoading}
                 error={flowError}
                 currentDatasourceId={datasourceId}
+                currentConversationId={conversationId}
                 onJump={handleFlowJump}
               />
             ) : (
