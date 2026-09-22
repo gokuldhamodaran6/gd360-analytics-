@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { api, conversationApi, ConversationSummary } from "../api/client";
 import TopNav from "../components/TopNav";
@@ -13,90 +14,10 @@ import ConversationRow from "../components/ConversationRow";
 type DataSource = { id: string; name: string; kind: string; created_at: string; schema_cache?: Record<string, unknown> | null };
 type DashboardSummary = { id: string; name: string; chart_count: number; created_at: string };
 
-// A curated, representative slice of the chart types GD360 can actually
-// render (the full engine supports many more specialized ones - see
-// chart_builder.py) - kept to a number that reads as impressive on the
-// landing page without turning the strip into visual noise. The count
-// shown in the badge/heading is always this array's real length, so it
-// can never drift out of sync with what is actually displayed.
-const CHART_TYPES = [
-  "Bar", "Horizontal Bar", "Grouped Bar", "Stacked Bar",
-  "Line", "Step Line", "Area", "Stacked Area",
-  "Pie", "Donut", "Scatter", "Bubble",
-  "Histogram", "Box", "Violin", "Heatmap",
-  "Waterfall", "Funnel", "Sankey", "Treemap",
-  "Sunburst", "Radar", "Gauge", "Candlestick",
-];
-
-function SparkIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
-      <path d="M12 2l1.8 5.6L19.5 9l-5.7 1.4L12 16l-1.8-5.6L4.5 9l5.7-1.4L12 2z" />
-    </svg>
-  );
-}
-
-function PromptToChartIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-      <path d="M8 12l2-2 2 2 4-4" />
-    </svg>
-  );
-}
-
-function CleanPrepIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 5h16M7 12h10M10 19h4" />
-    </svg>
-  );
-}
-
-function VerifiedIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z" />
-      <path d="M9 12l2 2 4-4" />
-    </svg>
-  );
-}
-
-function GuidedIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M15 9l-2 5-5 2 2-5z" />
-    </svg>
-  );
-}
-
-const FEATURES = [
-  {
-    title: "Prompt to chart",
-    body: "Describe what you want in plain English. GD360 picks the right chart from 24+ types, transforms the data, and renders it live.",
-    Icon: PromptToChartIcon,
-  },
-  {
-    title: "AI cleaning, fully explained",
-    body: "Every prep step - duplicates removed, missing values handled, types fixed - is explained in plain English with real row counts. Never a black box.",
-    Icon: CleanPrepIcon,
-  },
-  {
-    title: "Verified, not guessed",
-    body: "Every number in an insight traces back to a real computation. Hit “Double-check this” and an independent AI audit re-checks the answer before you trust it.",
-    Icon: VerifiedIcon,
-  },
-  {
-    title: "Guided by Goku",
-    body: "New to data analysis? Goku walks you through what to clean, what to explore, and what to ask next - one clear step at a time.",
-    Icon: GuidedIcon,
-  },
-];
-
-// "Saved dashboards" caps its own height and scrolls internally (it sits
-// below the connect form, so it shouldn't push that column even taller).
-const DASHBOARDS_MAX_HEIGHT = "360px";
+// "Saved dashboards" caps its own height and scrolls internally, same idea
+// as "Recent conversations" below it - neither panel should grow the page
+// without bound as work accumulates.
+const PANEL_MAX_HEIGHT = "26rem";
 
 function timeAgo(dateStr: string): string {
   const diffMs = Date.now() - new Date(dateStr).getTime();
@@ -146,40 +67,48 @@ function ChartTypeIcon({ chartType }: { chartType: string | null }) {
   );
 }
 
+function PlusIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function ArrowRightIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 12h14M13 6l6 6-6 6" />
+    </svg>
+  );
+}
+
+// A small, real-numbers-only status tile - no marketing copy, just what's
+// actually true right now, in the same "verification mark" visual language
+// (thin left accent bar, monospace figure) used on the public landing page.
+function StatTile({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="verify-bar card px-5 py-4 pl-6">
+      <div className="mono-figure text-2xl sm:text-3xl font-bold leading-none">{value}</div>
+      <div className="text-xs text-muted mt-1.5">{label}</div>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [datasources, setDatasources] = useState<DataSource[]>([]);
   const [dashboards, setDashboards] = useState<DashboardSummary[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const formRef = useRef<HTMLDivElement>(null);
 
-  // Measures the real rendered height of "Add a data source" (title +
-  // intro line + the connect form, ending right at its "Test & connect" /
-  // "Upload" button - NOT including "Saved dashboards" below it) so
-  // "Recent conversations" on the right can be given that exact height and
-  // scroll internally within it, the way it used to, instead of either a
-  // guessed fixed px value (drifts out of sync the moment the form's
-  // content changes) or stretching to fill the grid row (which leaves an
-  // empty gap under a short conversation list). A ResizeObserver keeps this
-  // in sync live - e.g. when the "Show IPs to whitelist" panel is expanded,
-  // which changes the form's height on the fly.
-  const addDataSourceRef = useRef<HTMLDivElement>(null);
-  const [addDataSourceHeight, setAddDataSourceHeight] = useState<number | null>(null);
-
-  useEffect(() => {
-    const el = addDataSourceRef.current;
-    if (!el) return;
-    const measure = () => setAddDataSourceHeight(el.getBoundingClientRect().height);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    window.addEventListener("resize", measure);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", measure);
-    };
-  }, []);
+  // "Add a data source" now lives in a focused popup instead of an
+  // always-open, page-length form - the home page's job is to show what's
+  // already here (your data, your recent work), not to keep the connect
+  // form permanently on screen. Same DataSourceForm component as always,
+  // just presented as a portaled overlay (see AddDataPicker.tsx for the
+  // identical pattern already used inside the workspace).
+  const [showConnectModal, setShowConnectModal] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -196,23 +125,19 @@ export default function Dashboard() {
 
   useEffect(() => { load(); }, []);
 
-  // Still needed even without a datasets grid on screen: "Start analyzing"
-  // (below) jumps straight into the most recently added data source when
-  // one already exists.
+  useEffect(() => {
+    if (!showConnectModal) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setShowConnectModal(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showConnectModal]);
+
   const sortedDatasources = useMemo(
     () => [...datasources].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
     [datasources]
   );
 
-  const scrollToForm = () => {
-    setTimeout(() => formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 30);
-  };
-
-  // The "Add a data source" panel is always on-screen now (no more
-  // click-to-reveal), so "connecting data" just means scrolling to it.
-  const openConnectFlow = () => {
-    scrollToForm();
-  };
+  const openConnectFlow = () => setShowConnectModal(true);
 
   const startAnalyzing = () => {
     if (sortedDatasources.length > 0) {
@@ -250,19 +175,19 @@ export default function Dashboard() {
     setConversations((cs) => cs.filter((c) => c.id !== id));
   };
 
-  // There is no dataset grid to click into any more, so once a data source
-  // is added and the person confirms it in DataSourceForm's "Connected"
-  // panel, jump straight into its workspace the same way clicking a card
-  // used to - otherwise a brand new data source (with no conversation yet)
-  // would have no way to be opened at all.
+  // Once a data source is added and the person confirms it in
+  // DataSourceForm's own "Connected" panel, close this modal and jump
+  // straight into its workspace - otherwise a brand new data source (with
+  // no conversation yet) would have no way to be opened at all.
   const handleDataSourceCreated = (ds: { id: string }) => {
+    setShowConnectModal(false);
     if (ds?.id) navigate(`/workspace/${ds.id}`);
   };
 
   // Fires as soon as a connect/upload actually succeeds, before the person
   // has clicked "Try it out" in the confirmation panel - refreshes this
   // page's own lists quietly in the background so they're already current
-  // if the person closes the panel and stays here instead of proceeding.
+  // if the person closes the modal and stays here instead of proceeding.
   const handleDataSourceConnected = () => {
     load();
   };
@@ -271,122 +196,59 @@ export default function Dashboard() {
     <div>
       <TopNav onConnectData={openConnectFlow} />
 
-      {/* ---- Hero ---- */}
-      <div className="relative overflow-hidden">
-        <div className="pointer-events-none absolute -top-24 -left-24 w-96 h-96 rounded-full bg-primary/20 blur-3xl" aria-hidden />
-        <div className="pointer-events-none absolute -top-10 -right-24 w-96 h-96 rounded-full bg-accent/15 blur-3xl" aria-hidden />
-
-        <div className="relative max-w-5xl mx-auto px-6 pt-16 pb-14 text-center">
-          <div className="pill mx-auto mb-6 w-fit">
-            <SparkIcon className="w-3.5 h-3.5 text-accent" /> AI-native analytics, verified every step
-          </div>
-          <h1 className="text-4xl sm:text-5xl md:text-6xl font-extrabold leading-tight tracking-tight">
-            Ask your data anything.
-            <br />
-            <span className="gradient-text">Get analyst-grade answers you can trust.</span>
-          </h1>
-          <p className="text-muted text-base sm:text-lg mt-6 max-w-2xl mx-auto leading-relaxed">
-            GD360 connects straight to your databases and files, cleans and prepares the data with a
-            plain-English explanation of every step, picks the right chart for what you asked, and writes
-            the insight from real computed numbers - never a guess. No SQL. No Python. No code.
-          </p>
-          <div className="flex items-center justify-center gap-3 mt-8 flex-wrap">
-            <button className="btn-primary text-base px-6 py-3" onClick={startAnalyzing}>
-              Start analyzing &rarr;
-            </button>
-            <button className="btn-secondary text-base px-6 py-3" onClick={openConnectFlow}>
-              Open studio
-            </button>
-          </div>
-          <div className="flex items-center justify-center gap-6 mt-8 text-sm text-muted flex-wrap">
-            <span className="flex items-center gap-1.5">
-              <span className="text-accent">🛡</span> Read-only. Your data is never modified.
-            </span>
-            <span className="hidden sm:inline text-border">|</span>
-            <span className="flex items-center gap-1.5">
-              <span className="text-accent">✓</span> Every answer independently verified
-            </span>
-            <span className="hidden sm:inline text-border">|</span>
-            <span className="flex items-center gap-1.5">
-              <span>🗄</span> Postgres &middot; MySQL &middot; SQL Server &middot; MongoDB &middot; Supabase &middot; BigQuery &middot; CSV &middot; Excel &middot; JSON
-            </span>
-            <span className="hidden sm:inline text-border">|</span>
-            <span className="flex items-center gap-1.5">
-              <span>📈</span> {CHART_TYPES.length} chart types
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <div className="max-w-6xl mx-auto px-6 pb-16">
-        {/* ---- Feature cards ---- */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-          {FEATURES.map((f) => (
-            <div key={f.title} className="card p-6">
-              <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center text-primary mb-4">
-                <f.Icon />
-              </div>
-              <div className="font-semibold mb-1.5">{f.title}</div>
-              <div className="text-sm text-muted leading-relaxed">{f.body}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* ---- Chart type chip strip ---- */}
-        <div className="card p-6 mb-10 text-center">
-          <div className="text-xs font-semibold tracking-wide text-muted mb-4">
-            {CHART_TYPES.length}+ WAYS TO SEE YOUR DATA
-          </div>
-          <div className="flex flex-wrap justify-center gap-2.5">
-            {CHART_TYPES.map((c) => (
-              <span key={c} className="pill">
-                <ChartTypeIcon chartType={c} /> {c}
-              </span>
-            ))}
-          </div>
-        </div>
-
-        {/* ---- Add a data source + Recent conversations ---- */}
-        <div ref={formRef} className="grid grid-cols-1 lg:grid-cols-[1fr_1.3fr] gap-8">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-10">
+        {/* ---- Welcome strip: no marketing copy, just the two things a
+            returning person actually wants to do next. ---- */}
+        <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-8">
           <div>
-            <div ref={addDataSourceRef}>
-              <h2 className="text-xl font-bold mb-1">Add a data source</h2>
-              <p className="text-xs text-muted mb-4 leading-relaxed">
-                Connect a database or upload a file — it'll appear in Recent conversations once you ask something.
-              </p>
-
-              <DataSourceForm onCreated={handleDataSourceCreated} onConnected={handleDataSourceConnected} />
-            </div>
-
-            {dashboards.length > 0 && (
-              <>
-                <h2 className="text-xl font-bold mt-8 mb-4">Saved dashboards</h2>
-                <div className="space-y-3 pr-1 overflow-y-auto" style={{ maxHeight: DASHBOARDS_MAX_HEIGHT }}>
-                  {dashboards.map((d) => (
-                    <div key={d.id} className="card p-4 hover:shadow-glow transition cursor-pointer" onClick={() => navigate(`/dashboards/${d.id}`)}>
-                      <div className="font-semibold">{d.name}</div>
-                      <div className="text-sm text-muted mt-1">{d.chart_count} chart{d.chart_count === 1 ? "" : "s"}</div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
+            <div className="text-sm text-muted mb-1">Welcome back</div>
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Your workspace</h1>
           </div>
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <button className="btn-secondary text-sm px-4 py-2.5 inline-flex items-center gap-1.5" onClick={openConnectFlow}>
+              <PlusIcon className="w-4 h-4" /> Connect data
+            </button>
+            <button className="btn-primary text-sm px-4 py-2.5 inline-flex items-center gap-1.5" onClick={startAnalyzing}>
+              Start analyzing <ArrowRightIcon className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
 
-          {/* Height comes from the live measurement above, so this box's
-              bottom edge lines up with "Add a data source"'s "Test &
-              connect" button - the list scrolls internally past that
-              (`flex-1 min-h-0` + `overflow-y-auto`), same scrolling
-              behavior as before rather than growing the page. */}
-          <div className="flex flex-col" style={{ height: addDataSourceHeight ?? undefined }}>
-            <h2 className="text-xl font-bold mb-4">Recent conversations</h2>
+        {/* ---- Real-numbers status strip ---- */}
+        <div className="grid grid-cols-3 gap-3 mb-10">
+          <StatTile label={`Data source${datasources.length === 1 ? "" : "s"}`} value={datasources.length} />
+          <StatTile label={`Conversation${conversations.length === 1 ? "" : "s"}`} value={conversations.length} />
+          <StatTile label={`Saved dashboard${dashboards.length === 1 ? "" : "s"}`} value={dashboards.length} />
+        </div>
+
+        {/* ---- Your data sources: the primary panel - everything already
+            connected/uploaded, searchable and sortable, click-through to
+            resume a conversation or start a new one. ---- */}
+        <StoredDataSection
+          datasources={datasources}
+          conversations={conversations}
+          loading={loading}
+          onOpenConversation={openConversation}
+          onAddNew={openConnectFlow}
+          onConversationRenamed={renameConversation}
+          onConversationPinned={pinConversation}
+          onConversationDeleted={deleteConversation}
+        />
+
+        {/* ---- Recent conversations + Saved dashboards: secondary,
+            side-by-side panels below the data - each capped and internally
+            scrollable so neither grows the page without bound. ---- */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-10">
+          <div>
+            <h2 className="text-lg font-bold mb-4">Recent conversations</h2>
             {!loading && conversations.length === 0 && (
               <div className="card p-8 text-center text-muted text-sm leading-relaxed">
-                Your recent chats and analyses will show up here once you start asking GD360 questions about your data.
+                Your recent chats and analyses will show up here once you start asking GD360 questions
+                about your data.
               </div>
             )}
             {conversations.length > 0 && (
-              <div className="space-y-3 pr-1 overflow-y-auto flex-1 min-h-0">
+              <div className="space-y-3 pr-1 overflow-y-auto" style={{ maxHeight: PANEL_MAX_HEIGHT }}>
                 {conversations.map((c) => (
                   <ConversationRow
                     key={c.id}
@@ -403,25 +265,66 @@ export default function Dashboard() {
               </div>
             )}
           </div>
-        </div>
 
-        {/* ---- Your data sources: everything already connected/uploaded,
-            searchable and sortable, click-through to resume a conversation
-            or start a new one. Shown below "Add a data source" / "Recent
-            conversations" per Gokul's layout feedback (2026-09-19). ---- */}
-        <div className="mt-10">
-          <StoredDataSection
-            datasources={datasources}
-            conversations={conversations}
-            loading={loading}
-            onOpenConversation={openConversation}
-            onAddNew={openConnectFlow}
-            onConversationRenamed={renameConversation}
-            onConversationPinned={pinConversation}
-            onConversationDeleted={deleteConversation}
-          />
+          <div>
+            <h2 className="text-lg font-bold mb-4">Saved dashboards</h2>
+            {!loading && dashboards.length === 0 && (
+              <div className="card p-8 text-center text-muted text-sm leading-relaxed">
+                Save any chart from a conversation to a dashboard, and it'll show up here for quick
+                access later.
+              </div>
+            )}
+            {dashboards.length > 0 && (
+              <div className="space-y-3 pr-1 overflow-y-auto" style={{ maxHeight: PANEL_MAX_HEIGHT }}>
+                {dashboards.map((d) => (
+                  <div
+                    key={d.id}
+                    className="card p-4 hover:shadow-glow transition cursor-pointer"
+                    onClick={() => navigate(`/dashboards/${d.id}`)}
+                  >
+                    <div className="font-semibold">{d.name}</div>
+                    <div className="text-sm text-muted mt-1">
+                      <span className="mono-figure">{d.chart_count}</span> chart{d.chart_count === 1 ? "" : "s"}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
+
+      {/* ---- "Connect data" popup ----
+          Portaled straight to document.body (same pattern as
+          AddDataPicker.tsx / DataSourceForm.tsx's own internal modals) so
+          it always covers the real viewport regardless of where it's
+          mounted in the tree. */}
+      {showConnectModal &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/60 p-4 overflow-y-auto"
+            onClick={(e) => { if (e.target === e.currentTarget) setShowConnectModal(false); }}
+          >
+            <div className="card w-full max-w-lg my-8 sm:my-0 p-6 relative">
+              <button
+                className="absolute top-4 right-4 text-muted hover:text-text transition"
+                onClick={() => setShowConnectModal(false)}
+                aria-label="Close"
+              >
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+              <h2 className="text-lg font-bold mb-1">Connect a data source</h2>
+              <p className="text-xs text-muted mb-5 leading-relaxed">
+                A database, a warehouse, or a file — it'll appear here and in Recent conversations once
+                you ask something.
+              </p>
+              <DataSourceForm onCreated={handleDataSourceCreated} onConnected={handleDataSourceConnected} />
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
