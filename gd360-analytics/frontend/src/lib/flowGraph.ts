@@ -20,6 +20,13 @@ export type FlowCardData = {
   subtitle: string;
   detail?: string;
   meta?: string;
+  // Which step of the story this card is, counting from 1 at the raw data
+  // this chain started from (see assignStepNumbers below). Purely
+  // mechanical - the longest chain of real recorded edges leading into
+  // this card, nothing inferred or guessed - so a person can tell "first,
+  // then second, then third" at a glance instead of having to read the
+  // left-to-right layout as a proxy for order.
+  step: number;
   isCurrentDatasource: boolean;
   // What clicking this card should do - Workspace.tsx supplies the actual
   // handlers; this is just the payload describing the target.
@@ -116,6 +123,7 @@ export function buildFlowGraph(
         kind: "source",
         title: label,
         subtitle: isCurrent ? "Original data" : "Connected data source",
+        step: 1,
         isCurrentDatasource: isCurrent,
         onClick: { type: "jump-source", datasourceId, sheet },
       },
@@ -137,6 +145,7 @@ export function buildFlowGraph(
         kind: "external",
         title: s.label,
         subtitle: "Saved table, another data source",
+        step: 1,
         isCurrentDatasource: false,
         onClick: s.version_id ? { type: "jump-version", datasourceId: s.datasource_id, versionId: s.version_id } : null,
       },
@@ -199,6 +208,7 @@ export function buildFlowGraph(
         subtitle: `${v.step_count} cleaning step${v.step_count === 1 ? "" : "s"}`,
         detail: creator?.prompt ? `Asked: "${creator.prompt}"` : undefined,
         meta: relativeDate(v.created_at),
+        step: 1,
         isCurrentDatasource: true,
         onClick: { type: "jump-version", datasourceId: currentDatasourceId, versionId: v.id },
       },
@@ -220,6 +230,7 @@ export function buildFlowGraph(
         title: n.prompt || "Untitled question",
         subtitle: CHART_TYPE_LABELS[n.chart_type || ""] || (n.chart_type ? n.chart_type : "Chart"),
         meta: `${relativeDate(n.created_at)} · ${n.conversation_title}`,
+        step: 1,
         isCurrentDatasource: true,
         onClick: { type: "jump-chart", conversationId: n.conversation_id, messageId: n.message_id },
       },
@@ -241,8 +252,59 @@ export function buildFlowGraph(
     }
   }
 
+  assignStepNumbers(nodes, edges);
+
   const isEmpty = flow.versions.length === 0 && flow.nodes.every((n) => !n.has_chart);
   return { nodes: layoutNodes(nodes, edges), edges, isEmpty };
+}
+
+// Labels every card "Step 1", "Step 2", "Step 3"... purely from the real
+// edges already drawn above (which themselves come straight from recorded
+// Message.sources / new_version_id / parent_version_ids - never guessed).
+// A raw-data card that nothing points into is always Step 1. Anything else
+// is one more than the LONGEST chain of real edges leading into it, so a
+// chart built from a table that was itself built from another table reads
+// as Step 3, not Step 2 - the count always matches how many real hops back
+// to raw data that specific card actually took, even when a shorter path
+// into the same card also exists (e.g. it also lists the untouched
+// original data as one of several sources alongside a prepared table).
+// This is a plain topological (Kahn's-algorithm) longest-path pass - no AI
+// involved, no heuristics, just counting real recorded hops - so the
+// number on screen is always something the underlying data can prove.
+function assignStepNumbers(nodes: FlowCardNode[], edges: Edge[]) {
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  const children = new Map<string, string[]>();
+  const indegree = new Map<string, number>();
+  for (const n of nodes) { children.set(n.id, []); indegree.set(n.id, 0); }
+  for (const e of edges) {
+    if (!nodeById.has(e.source) || !nodeById.has(String(e.target))) continue;
+    children.get(e.source)!.push(String(e.target));
+    indegree.set(String(e.target), (indegree.get(String(e.target)) || 0) + 1);
+  }
+
+  const queue: string[] = [];
+  for (const n of nodes) {
+    n.data.step = 1;
+    if ((indegree.get(n.id) || 0) === 0) queue.push(n.id);
+  }
+
+  // Kahn's algorithm: only ever visits a node once every one of its
+  // incoming edges has already been relaxed, so by the time it is
+  // processed its step already reflects the longest chain into it -
+  // immune to cycles too (a card simply keeps its default Step 1 if one
+  // ever slipped through, rather than looping forever).
+  let head = 0;
+  while (head < queue.length) {
+    const id = queue[head++];
+    const fromStep = nodeById.get(id)!.data.step;
+    for (const childId of children.get(id) || []) {
+      const child = nodeById.get(childId)!;
+      child.data.step = Math.max(child.data.step, fromStep + 1);
+      const remaining = (indegree.get(childId) || 0) - 1;
+      indegree.set(childId, remaining);
+      if (remaining === 0) queue.push(childId);
+    }
+  }
 }
 
 export function layoutNodes(nodes: FlowCardNode[], edges: Edge[]): FlowCardNode[] {
