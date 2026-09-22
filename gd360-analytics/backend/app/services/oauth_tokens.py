@@ -40,7 +40,21 @@ _TIMEOUT = 20
 # already in flight never gets a token that goes stale mid-call.
 _EXPIRY_MARGIN_SECONDS = 120
 
-GOOGLE_SCOPES = "https://www.googleapis.com/auth/spreadsheets.readonly https://www.googleapis.com/auth/drive.readonly"
+
+# drive.file (not drive.readonly) is deliberate: drive.readonly is a
+# Google "restricted" scope, which requires GD360 to pass Google's full
+# CASA security assessment (weeks, renewed annually, real cost) before
+# ANY Google user besides a manually-approved tester could connect a
+# sheet. drive.file is "non-sensitive" - it only ever grants access to
+# the one file a person explicitly selects through Google's own picker
+# widget (see ConnectResourcePicker.tsx's GooglePicker + the
+# /connections/{id}/picker-token endpoint below), so it skips that
+# assessment entirely and only needs Google's much lighter standard
+# review to go public. The tradeoff: unlike drive.readonly, this scope
+# CANNOT list/search a person's Drive on our own (see the removed
+# list_google_spreadsheets, below) - picking a file only ever happens
+# through Google's picker, never our own search list.
+GOOGLE_SCOPES = "https://www.googleapis.com/auth/spreadsheets.readonly https://www.googleapis.com/auth/drive.file"
 MS_SCOPES = "offline_access Files.Read"
 
 
@@ -149,30 +163,17 @@ def google_refresh(refresh_token: str) -> dict:
     return _make_blob(resp.json(), existing_refresh_token=refresh_token)
 
 
-def list_google_spreadsheets(access_token: str, search: str | None = None) -> list[dict]:
-    """Every Google Sheets spreadsheet this person owns or has access to,
-    newest-edited first - the picker list shown after they approve the
-    Google consent screen, so they choose a real spreadsheet by name
-    instead of pasting a spreadsheet id."""
-    q = "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false"
-    if search:
-        safe = search.replace("'", "\\'")
-        q += f" and name contains '{safe}'"
-    resp = requests.get(
-        "https://www.googleapis.com/drive/v3/files",
-        headers={"Authorization": f"Bearer {access_token}"},
-        params={
-            "q": q,
-            "fields": "files(id,name,modifiedTime)",
-            "orderBy": "modifiedTime desc",
-            "pageSize": 50,
-        },
-        timeout=_TIMEOUT,
-    )
-    if not resp.ok:
-        raise OAuthError(f"Could not list your Google Sheets: {resp.text[:300]}")
-    files = resp.json().get("files", [])
-    return [{"id": f["id"], "name": f["name"], "modified_at": f.get("modifiedTime")} for f in files]
+
+# There used to be a list_google_spreadsheets() here that searched Drive's
+# files.list the same way list_ms_workbooks() below still does for
+# Microsoft. It's gone on purpose: that search required the drive.readonly
+# scope, and GOOGLE_SCOPES above deliberately dropped that in favor of
+# drive.file (see the comment on GOOGLE_SCOPES) so the app can go public
+# without Google's restricted-scope security assessment. drive.file
+# cannot list/search a person's Drive at all - the only way to pick a
+# file under it is Google's own picker widget, which is why Google Sheets
+# gets its own GET /connections/{id}/picker-token endpoint (routers/
+# connections.py) instead of GET /connections/{id}/resources.
 
 
 # ---------------------------------------------------------------------------
