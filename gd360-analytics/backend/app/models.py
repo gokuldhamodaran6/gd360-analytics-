@@ -106,6 +106,46 @@ class DatasetVersion(Base):
     datasource = relationship("DataSource", back_populates="versions")
 
 
+class SavedView(Base):
+    """
+    A named snapshot of the Data tab's own per-viewer display state - sort,
+    filters (including the values-checklist/condition filters and anything
+    the natural-language filter bar built), column order/widths/hidden
+    set, pinned columns, wrap-text set, per-column display format and
+    conditional formatting, totals-row selection, row density, and page
+    size. Everything DataTable.tsx already keeps in React state for "how
+    this table currently looks/is filtered", bundled into one JSON blob so
+    it can be named and come back exactly as it was, the way a saved view
+    works in a spreadsheet or BI tool.
+
+    `config` is intentionally opaque to the backend: it is whatever shape
+    DataTable.tsx's own state serializes to today, and the frontend is
+    free to add new fields to it later (a new pro-table feature) without
+    ever needing a migration here - this table only stores and returns the
+    blob, never reads inside it. Scoped to (datasource, table/version,
+    owner) rather than to one conversation, since a display preference
+    like "always show Sales as currency, pinned to the left" is a property
+    of how a person likes to look at this table, not of any one chat about it.
+    """
+    __tablename__ = "saved_views"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    datasource_id = Column(String, ForeignKey("datasources.id"), nullable=False)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False)
+    name = Column(String, nullable=False)
+    # Which specific table this view applies to: a DatasetVersion.id for a
+    # saved/AI-built table, or the original table/sheet name (None for a
+    # single-table source's one and only original table). Never both -
+    # exactly one of version_id/table_name is meaningful for a given row,
+    # mirroring how the Data tab itself addresses "which table" everywhere
+    # else (see datasources.py's preview_datasource `version_id`/`table`).
+    version_id = Column(String, nullable=True)
+    table_name = Column(String, nullable=True)
+    config = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
 
