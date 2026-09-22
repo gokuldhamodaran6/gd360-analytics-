@@ -15,6 +15,7 @@ import os
 import time
 from collections import defaultdict
 
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -303,6 +304,30 @@ def get_schema(datasource_id: str, db: Session = Depends(get_db), user: models.U
     return ds.schema_cache or {}
 
 
+def _conversation_id_by_version(db: Session, user: models.User, version_ids: list[str]) -> dict[str, str]:
+    """Which conversation's chat prompt actually created each of these
+    saved/AI-built tables, keyed by DatasetVersion.id - the same
+    Message.new_version_id lookup get_data_flow below already does for the
+    Flow tab's lineage map, reused here so the Data tab's own table strip
+    (and the chat panel's WORKING ON picker, which reads this same list -
+    see Workspace.tsx) can be scoped to "this conversation" by default
+    instead of showing every table ever built for this data source, no
+    matter which past chat built it. A version with no matching message
+    (created before this attribution existed, or the legacy-migration's own
+    first version - see ensure_legacy_migrated) is simply absent from the
+    returned dict; the caller treats that as "not tied to one chat" and
+    always shows it, the same as Original data."""
+    if not version_ids:
+        return {}
+    creator_msgs = (
+        db.query(models.Message)
+        .join(models.Conversation, models.Message.conversation_id == models.Conversation.id)
+        .filter(models.Message.new_version_id.in_(version_ids), models.Conversation.owner_id == user.id)
+        .all()
+    )
+    return {m.new_version_id: m.conversation_id for m in creator_msgs}
+
+
 @router.get("/{datasource_id}/versions")
 def list_versions(datasource_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     ds = _get_owned_datasource(db, user, datasource_id)
@@ -313,6 +338,7 @@ def list_versions(datasource_id: str, db: Session = Depends(get_db), user: model
         .order_by(models.DatasetVersion.position, models.DatasetVersion.created_at)
         .all()
     )
+    conv_by_version = _conversation_id_by_version(db, user, [v.id for v in versions])
     return [
         {
             "id": v.id,
@@ -320,6 +346,7 @@ def list_versions(datasource_id: str, db: Session = Depends(get_db), user: model
             "parent_version_id": v.parent_version_id,
             "step_count": len(v.cleaning_log or []),
             "created_at": v.created_at,
+            "conversation_id": conv_by_version.get(v.id),
         }
         for v in versions
     ]
@@ -449,6 +476,48 @@ def delete_version(
     return None
 
 
+def _column_stats(df: pd.DataFrame) -> dict:
+    """Per-column aggregates for the Data tab's Totals row - computed once,
+    server-side, over the full already-loaded/filtered/sorted `df` (before
+    it gets sliced down to just the current page below), so switching pages
+    never changes what a total reads and a filter narrows it exactly the
+    way it narrows the rows themselves. A numeric column gets the usual
+    sum/mean/min/max on top of the count every column gets; anything else
+    (text, dates, booleans) gets a distinct-value count instead, since sum/
+    mean have no meaning there - the frontend's per-column picker only ever
+    offers the aggregates that are actually present here."""
+    stats: dict = {}
+    for col in df.columns:
+        s = df[col]
+        non_null = int(s.notna().sum())
+        entry: dict = {
+            "count": int(len(s)), "non_null": non_null,
+            "sum": None, "mean": None, "min": None, "max": None, "distinct": None,
+        }
+        if pd.api.types.is_bool_dtype(s):
+            entry["distinct"] = int(s.nunique(dropna=True))
+        elif pd.api.types.is_numeric_dtype(s):
+            if non_null:
+                numeric = pd.to_numeric(s, errors="coerce")
+                entry["sum"] = float(numeric.sum())
+                entry["mean"] = float(numeric.mean())
+                entry["min"] = float(numeric.min())
+                entry["max"] = float(numeric.max())
+        else:
+            try:
+                entry["distinct"] = int(s.nunique(dropna=True))
+            except Exception:
+                entry["distinct"] = None
+            if non_null:
+                try:
+                    entry["min"] = str(s.dropna().min())
+                    entry["max"] = str(s.dropna().max())
+                except Exception:
+                    pass
+        stats[str(col)] = entry
+    return stats
+
+
 @router.get("/{datasource_id}/preview")
 def preview_datasource(
     datasource_id: str,
@@ -487,6 +556,13 @@ def preview_datasource(
     except Exception as e:
         raise HTTPException(400, f"Could not load data: {e}")
 
+    # How many rows actually got loaded before any filter/sort - used just
+    # below to tell a Totals row honestly whether it's summing the WHOLE
+    # table or only however much of a big live-connector table
+    # PREVIEW_ROW_LIMIT allowed in (a CSV/Excel upload never hits this,
+    # since its full file is already in memory - see data_loader.py).
+    loaded_row_count = len(df)
+
     # Per-column text filter, applied before pagination so it always
     # searches the full dataset, not just whatever page happens to be
     # showing. A simple case-insensitive "contains" match reads naturally
@@ -506,6 +582,14 @@ def preview_datasource(
         df = df.sort_values(by=sort_by, ascending=(sort_dir != "desc"), na_position="last", kind="mergesort")
 
     total_rows = int(len(df))
+    column_stats = _column_stats(df)
+    # Only a live-connector datasource (Postgres/MySQL/SQL Server/Supabase/
+    # MongoDB/BigQuery) can actually be short of its own true row count -
+    # see data_loader.py's row_limit plumbing. loaded_row_count hitting the
+    # cap exactly is the only signal available without a separate COUNT(*)
+    # query against the real source; a CSV/Excel upload's full file is
+    # always already in memory, so it is never capped here.
+    stats_capped = ds.kind not in ("csv", "excel") and loaded_row_count >= settings.PREVIEW_ROW_LIMIT
     limit = max(1, min(limit, 5000))
     offset = max(0, offset)
     page = df.iloc[offset: offset + limit]
@@ -521,6 +605,8 @@ def preview_datasource(
         "version_id": active_version.id if active_version else None,
         "version_name": active_version.name if active_version else "Original data",
         "cleaning_log": (active_version.cleaning_log if active_version else None) or [],
+        "column_stats": column_stats,
+        "stats_capped": stats_capped,
     }
 
 
