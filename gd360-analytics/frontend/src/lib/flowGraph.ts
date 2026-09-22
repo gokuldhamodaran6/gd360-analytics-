@@ -224,7 +224,21 @@ export function buildFlowGraph(
         onClick: { type: "jump-chart", conversationId: n.conversation_id, messageId: n.message_id },
       },
     });
-    drawSourcesInto(n.sources, targetId, []);
+    // An "analyze" question often preps its OWN small table first (see
+    // backend ai_engine._run_analyze_with_prep) before charting from it -
+    // that prepped table is already drawn above (in the versions loop,
+    // with its own correct incoming edges from n.sources). When that
+    // happened, the chart must connect FROM that table, not bypass it and
+    // duplicate a second edge straight back to the raw original/selected
+    // sources - otherwise the map looks like every chart came directly
+    // from the raw data even when it was really built from a cleaned
+    // table one step earlier, which is exactly the "loop through the
+    // table it was created from" flow this map is supposed to show.
+    if (n.new_version_id && versionIds.has(n.new_version_id)) {
+      addEdge(`ver:${n.new_version_id}`, targetId);
+    } else {
+      drawSourcesInto(n.sources, targetId, []);
+    }
   }
 
   const isEmpty = flow.versions.length === 0 && flow.nodes.every((n) => !n.has_chart);
