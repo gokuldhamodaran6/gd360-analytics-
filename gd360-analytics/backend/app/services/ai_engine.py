@@ -445,6 +445,64 @@ def generate_bigquery_sql(prompt: str, schema_text: str) -> str:
     return sql
 
 
+# --- Snowflake pushdown (Enterprise Scale Roadmap, Phase 2) --------------
+# Same idea as BIGQUERY_SQL_SYSTEM_PROMPT/generate_bigquery_sql just above -
+# one real SQL SELECT that runs directly inside the person's own Snowflake
+# warehouse instead of pulling rows into pandas - with the dialect notes
+# swapped for Snowflake's own (double-quoted identifiers rather than
+# backticks, no wildcard-table syntax). See routers/chat.py's
+# _try_snowflake_pushdown for where this fits into a real request, and
+# connectors.SnowflakeConnector.run_pushdown_query for the safety/cost
+# checks the SQL this writes still has to pass before it ever runs.
+SNOWFLAKE_SQL_SYSTEM_PROMPT = """You are the GD360 Snowflake pushdown module - the part of the analytics engine that
+answers a question by writing ONE real SQL query that runs directly inside the person's own Snowflake warehouse,
+instead of downloading rows and analyzing them in Python. You are given the user's question and the schema of
+every table in this Snowflake database (table name, then each column's name and type). Respond with ONLY the raw
+SQL query text - no markdown code fences, no explanation, nothing before or after the SQL itself.
+
+Strict rules:
+- Exactly one SELECT statement. Never anything else - no INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/MERGE, no
+  multiple statements separated by semicolons, no DDL of any kind. This runs against a real production warehouse
+  and must only ever read.
+- Reference only the real table and column names given in the schema - never invent one. If the question needs a
+  join across two tables, use a real shared column visible in both tables' schemas; with no genuinely matching
+  column, answer the closest real thing the schema actually supports instead of guessing at a join key.
+- Always aggregate, filter, or limit the result so it comes back small - a GROUP BY with real aggregate
+  functions for a summary question, a WHERE clause for a filtered question, an ORDER BY plus LIMIT for a "top N"
+  or "which is highest/lowest" question. Never a bare `SELECT *` with no WHERE/LIMIT against what could be a huge
+  table - the whole point of this path is that the warehouse summarizes the data, not GD360. This matters even
+  more here than it would elsewhere: unlike some warehouses, Snowflake is billed by how long its compute cluster
+  runs, not by how much data one query happens to scan, so a slow, unfiltered query costs real money for every
+  extra second it runs.
+- Standard Snowflake SQL. Double-quote an identifier only when its exact case or characters actually need
+  preserving - Snowflake treats an unquoted identifier as uppercase by default.
+- If the question genuinely cannot be answered from the given schema (it needs a column or table that does not
+  exist), respond with exactly: NOT_POSSIBLE"""
+
+
+def generate_snowflake_sql(prompt: str, schema_text: str) -> str:
+    """The Snowflake pushdown path (Phase 2): writes one governed SQL
+    SELECT that runs inside Snowflake itself, instead of the usual
+    pull-rows-then-pandas path every other connector uses. Returns raw
+    SQL text, or the literal string "NOT_POSSIBLE" if the model could not
+    answer from the given schema. Callers must treat both an exception
+    from this function and a "NOT_POSSIBLE" result the same way: fall
+    back to the normal analysis path, never as a hard error the person
+    sees - mirrors generate_bigquery_sql above exactly."""
+    messages = [
+        {"role": "system", "content": SNOWFLAKE_SQL_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"},
+    ]
+    raw = _call_llm_resilient(messages, max_tokens=600)
+    sql = raw.strip()
+    if sql.startswith("```"):
+        sql = sql.strip("`")
+        if sql[:3].lower() == "sql":
+            sql = sql[3:]
+        sql = sql.strip()
+    return sql
+
+
 GOKU_SYSTEM_PROMPT = """You are Goku, a friendly, world-class data analyst assistant embedded inside the GD360
 Analytics workspace. Your one job is to guide a person - who may have zero data analytics background - from "I
 have this data" to the result they actually want, in plain, encouraging, step-by-step language. You never run
