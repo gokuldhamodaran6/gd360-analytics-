@@ -671,6 +671,65 @@ def build_cleaning_summary_chart(
     return json.loads(fig.to_json())
 
 
+def result_to_tidy(result: Any, max_rows: int = 4000) -> dict | None:
+    """Serializes an analysis result (DataFrame/Series) into tidy JSON rows
+    plus per-column metadata (name, dtype, dimension/measure role).
+
+    This is what makes the frontend's "Explore" panel possible: instead of
+    only ever receiving the one, already-built Plotly figure for whatever
+    chart_type the AI picked, the client also gets the real underlying
+    numbers this answer was computed from, so a person can switch chart
+    type, remap X/Y/series/facet fields, or add a filter and see it
+    re-plotted INSTANTLY in the browser - no new AI/pandas round trip - the
+    same way Hex's own Explore panel re-plots a result cell.
+
+    Returns None for anything that isn't meaningfully tabular (a bare
+    scalar, or an empty/columnless frame) - those results have nothing for
+    an Explore panel to remap, and the frontend falls back to the existing
+    fixed-chart behavior for them.
+    """
+    if isinstance(result, pd.Series):
+        df = result.reset_index()
+        if df.shape[1] == 2:
+            df.columns = ["label", "value"]
+    elif isinstance(result, pd.DataFrame):
+        # A named index (e.g. the result of a groupby) carries real
+        # dimension data a person would want to plot by - pull it back into
+        # an ordinary column rather than losing it. An unnamed default
+        # RangeIndex carries nothing worth keeping.
+        df = result.reset_index() if result.index.name else result.copy()
+    else:
+        return None
+
+    if df.empty or df.shape[1] == 0:
+        return None
+
+    df.columns = [str(c) for c in df.columns]
+    row_count = int(len(df))
+    truncated = row_count > max_rows
+    sample = df.head(max_rows)
+
+    columns = []
+    for col in df.columns:
+        series = df[col]
+        if pd.api.types.is_datetime64_any_dtype(series):
+            dtype, role = "date", "dimension"
+        elif pd.api.types.is_bool_dtype(series):
+            dtype, role = "boolean", "dimension"
+        elif pd.api.types.is_numeric_dtype(series):
+            dtype, role = "number", "measure"
+        else:
+            dtype, role = "string", "dimension"
+        columns.append({"name": col, "dtype": dtype, "role": role})
+
+    try:
+        rows = json.loads(sample.to_json(orient="records", date_format="iso"))
+    except Exception:
+        return None
+
+    return {"columns": columns, "rows": rows, "row_count": row_count, "truncated": truncated}
+
+
 def result_to_summary(result: Any, max_rows: int = 15) -> dict:
     """Compact, LLM-friendly summary of an analysis result, used for insight generation."""
     if isinstance(result, pd.Series):
