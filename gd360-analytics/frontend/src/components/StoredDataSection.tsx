@@ -52,19 +52,27 @@ function timeAgo(dateStr: string): string {
 const isDbKind = (k: string) => k === "postgres" || k === "mysql" || k === "sqlserver" || k === "mongodb" || k === "supabase";
 const isWarehouseKind = (k: string) => k === "bigquery";
 
+// A workbook/spreadsheet-shaped kind - an uploaded Excel file, or either
+// live OAuth connector (Google Sheets, Microsoft Excel/OneDrive) - all
+// three use the exact same "sheet" noun and single-sheet-shows-columns
+// convention, since they all produce the same schema_cache shape (see
+// connectors.py's GoogleSheetsConnector/MicrosoftExcelConnector, which
+// deliberately mirror FileConnector's own multi-sheet convention).
+const isSheetKind = (k: string) => k === "excel" || k === "google_sheets" || k === "microsoft_excel";
+
 // "4 tables" / "1 collection" / "12 columns" / "3 sheets" (a single-table
-// file - a CSV, or an Excel workbook with only one sheet - has no
+// file - a CSV, or a workbook/spreadsheet with only one sheet - has no
 // meaningful table count of its own, so its column count is shown
-// instead; a genuinely multi-sheet Excel workbook shows its sheet count,
-// same as a database shows its table count).
+// instead; a genuinely multi-sheet workbook shows its sheet count, same as
+// a database shows its table count).
 function dataSummaryLabel(ds: CreatedDataSource): string {
   const entries = getTableEntries(ds.kind, ds.schema_cache, ds.name);
-  if (ds.kind === "csv" || (ds.kind === "excel" && entries.length <= 1)) {
+  if (ds.kind === "csv" || (isSheetKind(ds.kind) && entries.length <= 1)) {
     const cols = entries[0]?.columns.length || 0;
     return `${cols} column${cols === 1 ? "" : "s"}`;
   }
   const n = entries.length;
-  const noun = ds.kind === "mongodb" ? "collection" : ds.kind === "excel" ? "sheet" : "table";
+  const noun = ds.kind === "mongodb" ? "collection" : isSheetKind(ds.kind) ? "sheet" : "table";
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
@@ -277,7 +285,7 @@ export default function StoredDataSection({
               ["all", `All (${totalCount})`],
               ["database", `Databases (${dbCount})`],
               ["warehouse", `Data warehouses (${warehouseCount})`],
-              ["file", `Files (${fileCount})`],
+              ["file", `Files & live sheets (${fileCount})`],
             ] as [KindFilter, string][]).map(([key, label]) => (
               <button
                 key={key}
@@ -345,7 +353,7 @@ export default function StoredDataSection({
                 <div>
                   <div className="flex items-center gap-2 mb-3">
                     <FileSpreadsheetIcon className="w-4 h-4 text-muted" />
-                    <h3 className="text-sm font-semibold">Files</h3>
+                    <h3 className="text-sm font-semibold">Files &amp; live sheets</h3>
                     <span className="text-xs text-muted">{fileItems.length}</span>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
