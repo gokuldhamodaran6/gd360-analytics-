@@ -10,7 +10,6 @@ import ChartCanvas from "../components/ChartCanvas";
 import ConversationRow from "../components/ConversationRow";
 import ExplorePanel from "../components/ExplorePanel";
 import DataTable from "../components/DataTable";
-import StepFlow, { WorkflowStep } from "../components/StepFlow";
 import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
 import {
   CLIENT_PIVOTABLE_TYPES, ExploreConfig, ResultColumn, buildExploreFigure, defaultExploreConfig,
@@ -125,8 +124,6 @@ export default function Workspace() {
 
   const [centerTab, setCenterTab] = useState<"data" | "chart">("data");
   const [dataRefreshKey, setDataRefreshKey] = useState(0);
-  const [guidedMode, setGuidedMode] = useState(true);
-  const [activeStep, setActiveStep] = useState<WorkflowStep>("clean");
   const [resuming, setResuming] = useState(!!resumeConversationId);
   const [styleOpen, setStyleOpen] = useState(false);
   const [customizeSeed, setCustomizeSeed] = useState<CustomizeSeed | null>(null);
@@ -424,7 +421,6 @@ export default function Workspace() {
     setSaveMsg("");
     setSessionVersionIds([]);
     setOlderVersionsRevealed(!!resumeConversationId);
-    setGuidedMode(!resumeConversationId);
     // Forces the versions-loading effect below to re-pick a starting tab
     // for this "new" session instead of leaving whatever was active before.
     versionsInitRef.current = null;
@@ -520,7 +516,6 @@ export default function Workspace() {
       .getMessages(resumeConversationId)
       .then((data) => {
         setConversationId(data.id);
-        setGuidedMode(false);
 
         const restored: ChatTurn[] = data.messages.map((m) => ({
           role: m.role === "user" ? "user" : "assistant",
@@ -608,7 +603,7 @@ export default function Workspace() {
         datasource_id: datasourceId,
         prompt,
         chart_override: chartOverride,
-        intent: guidedMode ? activeStep : null,
+        intent: null,
         source_version_ids: requestSourceIds,
         analysis_mode: analysisMode,
         skip_prep: !!opts?.skipPrep,
@@ -964,17 +959,6 @@ export default function Workspace() {
       />
 
       {error && <div className="mx-4 sm:mx-6 mt-3 text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
-
-      <div className="px-4 pt-4">
-        <StepFlow
-          activeStep={activeStep}
-          onStepChange={setActiveStep}
-          guided={guidedMode}
-          onToggleGuided={() => setGuidedMode((g) => !g)}
-          onSend={(prompt) => runPrompt(prompt)}
-          busy={busy}
-        />
-      </div>
 
       {/* overflow-visible below lg lets these 3 panels take their natural,
           possibly-tall content height and the page scroll to reach all of
