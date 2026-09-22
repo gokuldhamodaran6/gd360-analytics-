@@ -18,9 +18,17 @@ The flow, for either provider:
      yet a usable data source - see list_datasources's own filter for
      pending rows), and redirects the browser into the frontend's own
      picker page.
-  3. GET /connections/<id>/resources - now back in the app, signed in as
-     normal - lists the person's own spreadsheets/workbooks so they can
-     pick one instead of pasting a file id.
+  3. Picking which resource to connect - two different ways per provider,
+     because they use different OAuth scopes (see oauth_tokens.GOOGLE_
+     SCOPES for why):
+       - Microsoft: GET /connections/<id>/resources lists the person's own
+         workbooks (Graph's Files.Read scope allows searching their
+         OneDrive), so they pick one from a plain search list.
+       - Google: GET /connections/<id>/picker-token hands the browser a
+         short-lived access token, which the frontend uses to open
+         Google's own file-picker widget (drive.file scope cannot list/
+         search Drive on our own - only a file explicitly chosen through
+         Google's picker is ever visible to us).
   4. POST /connections/<id>/finish - saves which one was picked, tests the
      connection for real, introspects its schema exactly like every other
      connector in datasources.py, and turns the pending row into a genuine,
@@ -161,22 +169,45 @@ def list_pending(db: Session = Depends(get_db), user: models.User = Depends(get_
 
 @router.get("/{connection_id}/resources", response_model=schemas.OAuthResourcesOut)
 def list_resources(connection_id: str, search: str | None = None, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Microsoft Excel only - Graph's Files.Read scope can search a
+    person's OneDrive directly, so this powers the plain search list in
+    ConnectResourcePicker.tsx's ResourcePicker. Google Sheets uses
+    GET /{connection_id}/picker-token + Google's own file-picker widget
+    instead (see this file's module docstring for why)."""
     ds = db.query(models.DataSource).filter(
         models.DataSource.id == connection_id, models.DataSource.owner_id == user.id,
     ).first()
-    if not ds or ds.kind not in ("google_sheets", "microsoft_excel"):
+    if not ds or ds.kind != "microsoft_excel":
         raise HTTPException(404, "Connection not found.")
 
     try:
         access_token = oauth_tokens.get_valid_access_token(ds, db=db)
-        if ds.kind == "google_sheets":
-            resources = oauth_tokens.list_google_spreadsheets(access_token, search=search)
-        else:
-            resources = oauth_tokens.list_ms_workbooks(access_token, search=(search or ".xlsx"))
+        resources = oauth_tokens.list_ms_workbooks(access_token, search=(search or ".xlsx"))
     except oauth_tokens.OAuthError as e:
         raise HTTPException(400, str(e))
 
     return {"provider": ds.kind, "resources": resources}
+
+
+@router.get("/{connection_id}/picker-token", response_model=schemas.PickerTokenOut)
+def picker_token(connection_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Google Sheets only - a short-lived access token handed to the
+    browser just long enough to open Google's own file-picker widget
+    (see GooglePicker in ConnectResourcePicker.tsx). Never logged, never
+    stored client side; the widget itself is the only thing that ever
+    uses it."""
+    ds = db.query(models.DataSource).filter(
+        models.DataSource.id == connection_id, models.DataSource.owner_id == user.id,
+    ).first()
+    if not ds or ds.kind != "google_sheets":
+        raise HTTPException(404, "Connection not found.")
+
+    try:
+        access_token = oauth_tokens.get_valid_access_token(ds, db=db)
+    except oauth_tokens.OAuthError as e:
+        raise HTTPException(400, str(e))
+
+    return {"access_token": access_token}
 
 
 @router.post("/{connection_id}/finish", response_model=schemas.DataSourceOut, status_code=201)
