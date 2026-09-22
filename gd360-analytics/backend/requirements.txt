@@ -5,7 +5,11 @@ pydantic==2.9.2
 pydantic-settings==2.5.2
 python-jose[cryptography]==3.3.0
 bcrypt==4.0.1
-cryptography==43.0.1
+# Bumped from 43.0.1 to satisfy snowflake-connector-python's own
+# dependency floor (see below) - re-verified the existing JWT (python-
+# jose) and password-hashing (bcrypt) code, which also depend on this
+# package, still work unchanged at this version.
+cryptography==50.0.1
 python-multipart==0.0.9
 pandas==2.2.3
 numpy==1.26.4
@@ -18,6 +22,10 @@ pymssql==2.3.2
 pymongo==4.9.1
 sqlalchemy-bigquery==1.17.2
 google-cloud-bigquery==3.45.2
+# Snowflake data-warehouse connector (Enterprise Scale Roadmap, Phase 2) -
+# the [pandas] extra pulls in pyarrow, needed for cur.fetch_pandas_all()
+# in services/connectors.py SnowflakeConnector.
+snowflake-connector-python[pandas]==4.7.5
 openpyxl==3.1.5
 python-calamine==0.8.2
 requests==2.32.3
