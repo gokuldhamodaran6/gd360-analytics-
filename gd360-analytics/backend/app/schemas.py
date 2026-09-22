@@ -109,6 +109,16 @@ class OAuthFinishRequest(BaseModel):
     drive_id: Optional[str] = None
 
 
+# Google Sheets picks its spreadsheet through Google's own file-picker
+# widget (see ConnectResourcePicker.tsx) rather than our own search list,
+# so the browser needs to hold this connection's own access token just
+# long enough to open that widget - never logged, never stored client
+# side, and only ever handed to Google's picker.js, the same discipline
+# oauth_tokens.py already documents for every other use of this token.
+class PickerTokenOut(BaseModel):
+    access_token: str
+
+
 class DataSourceOut(BaseModel):
     id: str
     name: str
