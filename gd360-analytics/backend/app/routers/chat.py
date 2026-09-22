@@ -169,6 +169,9 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         code=persisted_code,
         chart_type=result.get("chart_type"),
         continue_action=continue_action,
+        result_columns=result.get("result_columns"),
+        result_rows=result.get("result_rows"),
+        result_truncated=result.get("result_truncated", False),
     )
 
 
@@ -407,6 +410,9 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
     msg.insight = result.get("insight")
     msg.code = result.get("code")
     msg.chart_type = result.get("chart_type")
+    msg.result_columns = result.get("result_columns")
+    msg.result_rows = result.get("result_rows")
+    msg.result_truncated = result.get("result_truncated", False)
     db.commit()
     db.refresh(msg)
 
@@ -416,6 +422,10 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
         message_id=msg.id,
         reply_text=reply_text,
         chart_spec=msg.chart_spec,
+        chart_type=msg.chart_type,
+        result_columns=msg.result_columns,
+        result_rows=msg.result_rows,
+        result_truncated=msg.result_truncated or False,
         insight=msg.insight,
         new_version_id=new_version.id if new_version else None,
         new_version_name=new_version.name if new_version else None,
@@ -526,7 +536,7 @@ def _persist_and_respond(
     chart_spec=None, insight=None, suggestions=None, needs_clarification=False,
     rows_before=None, rows_after=None, nulls_before=None, nulls_after=None,
     new_version_id=None, new_version_name=None, code=None, chart_type=None,
-    continue_action=None,
+    continue_action=None, result_columns=None, result_rows=None, result_truncated=False,
 ) -> schemas.ChatResponse:
     msg = models.Message(
         conversation_id=conversation_id,
@@ -539,6 +549,9 @@ def _persist_and_respond(
         code=code,
         action=action,
         chart_type=chart_type,
+        result_columns=result_columns,
+        result_rows=result_rows,
+        result_truncated=result_truncated,
     )
     db.add(msg)
     db.commit()
@@ -550,6 +563,10 @@ def _persist_and_respond(
         action=action,
         reply_text=reply_text,
         chart_spec=chart_spec,
+        chart_type=chart_type,
+        result_columns=result_columns,
+        result_rows=result_rows,
+        result_truncated=result_truncated,
         insight=insight,
         suggested_charts=(suggestions or {}).get("charts"),
         suggested_stats=(suggestions or {}).get("stats"),
