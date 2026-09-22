@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, chatApi, conversationApi, datasourceApi, ConversationSummary, DatasetVersion, DataSourceSummary } from "../api/client";
+import { api, chatApi, conversationApi, datasourceApi, ConversationSummary, DatasetVersion, DataSourceSummary, DataFlow } from "../api/client";
 import TopNav from "../components/TopNav";
 import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID } from "../components/ChatPanel";
 import { hasMultipleTables, CreatedDataSource } from "../components/DataSourceForm";
@@ -10,6 +10,7 @@ import ChartCanvas from "../components/ChartCanvas";
 import ConversationRow from "../components/ConversationRow";
 import ExplorePanel from "../components/ExplorePanel";
 import DataTable from "../components/DataTable";
+import DataFlowMap, { FlowJumpTarget } from "../components/DataFlowMap";
 import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
 import {
   CLIENT_PIVOTABLE_TYPES, ExploreConfig, ResultColumn, buildExploreFigure, defaultExploreConfig,
@@ -67,6 +68,12 @@ export default function Workspace() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const resumeConversationId = searchParams.get("conversation");
+  // Set only when arriving from a Flow-map "jump-chart" click on a chart
+  // that lives in a DIFFERENT conversation than the one already open - see
+  // handleFlowJump below and the restore effect further down, which uses
+  // this to pick that one chart tab as active instead of defaulting to the
+  // conversation's last chart.
+  const chartParam = searchParams.get("chart");
 
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -122,8 +129,16 @@ export default function Workspace() {
   const [sessionVersionIds, setSessionVersionIds] = useState<string[]>([]);
   const [olderVersionsRevealed, setOlderVersionsRevealed] = useState(!!resumeConversationId);
 
-  const [centerTab, setCenterTab] = useState<"data" | "chart">("data");
+  const [centerTab, setCenterTab] = useState<"data" | "chart" | "flow">("data");
   const [dataRefreshKey, setDataRefreshKey] = useState(0);
+
+  // The Flow tab's own data - the full lineage map across EVERY
+  // conversation ever run against this data source (see
+  // GET /datasources/:id/flow), fetched lazily the first time that tab is
+  // opened rather than up front, since most visits never open it.
+  const [flow, setFlow] = useState<DataFlow | null>(null);
+  const [flowLoading, setFlowLoading] = useState(false);
+  const [flowError, setFlowError] = useState("");
   const [resuming, setResuming] = useState(!!resumeConversationId);
   const [styleOpen, setStyleOpen] = useState(false);
   const [customizeSeed, setCustomizeSeed] = useState<CustomizeSeed | null>(null);
@@ -419,6 +434,8 @@ export default function Workspace() {
     setCenterTab("data");
     setError("");
     setSaveMsg("");
+    setFlow(null);
+    setFlowError("");
     setSessionVersionIds([]);
     setOlderVersionsRevealed(!!resumeConversationId);
     // Forces the versions-loading effect below to re-pick a starting tab
@@ -558,7 +575,12 @@ export default function Workspace() {
         }
         if (restoredCharts.length) {
           setCharts(restoredCharts);
-          setActiveChartId(restoredCharts[restoredCharts.length - 1].id);
+          // A Flow-map "jump-chart" click into a chart from a different
+          // conversation lands here via a `?chart=<messageId>` query param -
+          // pick that one chart's tab instead of always defaulting to the
+          // conversation's most recent one.
+          const targetChart = chartParam ? restoredCharts.find((c) => c.messageId === chartParam) : null;
+          setActiveChartId((targetChart || restoredCharts[restoredCharts.length - 1]).id);
           setCenterTab("chart");
         }
 
@@ -569,6 +591,83 @@ export default function Workspace() {
       .finally(() => setResuming(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resumeConversationId]);
+
+  // The Flow tab's data - fetched the first time it is opened for this data
+  // source, and re-fetched whenever a transform/analyze prompt changes what
+  // exists (dataRefreshKey) while that tab happens to be open, so the map
+  // never goes stale mid-session. Cheap enough (one query, grouped/shaped
+  // server-side) that refetching on every dataRefreshKey bump while the tab
+  // is active is simpler than trying to patch the graph in place.
+  useEffect(() => {
+    if (centerTab !== "flow" || !datasourceId) return;
+    let cancelled = false;
+    setFlowLoading(true);
+    setFlowError("");
+    datasourceApi
+      .getFlow(datasourceId)
+      .then((data) => {
+        if (!cancelled) setFlow(data);
+      })
+      .catch(() => {
+        if (!cancelled) setFlowError("Could not load the data flow map. Please try again.");
+      })
+      .finally(() => {
+        if (!cancelled) setFlowLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [centerTab, datasourceId, dataRefreshKey]);
+
+  // What clicking a card on the Flow map does - a live shortcut back to
+  // wherever that origin, table, or chart actually lives (see the
+  // engagement's own scoping answer: the map is click-to-jump only, editing
+  // always stays exactly where it already happens). A target datasource
+  // different from the one open right now (an "+ Add more data" source, or
+  // one of ITS own saved tables) always navigates there fresh; a target
+  // chart in a conversation that is not the one currently open navigates
+  // via the `?conversation=&chart=` query params the restore effect above
+  // reads, rather than trying to splice another conversation's turns into
+  // whatever is already on screen.
+  const handleFlowJump = (target: FlowJumpTarget) => {
+    if (target.type === "jump-source") {
+      if (target.datasourceId !== datasourceId) {
+        navigate(`/workspace/${target.datasourceId}`);
+        return;
+      }
+      setCenterTab("data");
+      setActiveVersionId(null);
+      setSourceIds([target.sheet ? `sheet:${target.sheet}` : ORIGINAL_SOURCE_ID]);
+      if (target.sheet) setActiveOriginalTable(target.sheet);
+      return;
+    }
+    if (target.type === "jump-version") {
+      if (target.datasourceId !== datasourceId) {
+        navigate(`/workspace/${target.datasourceId}`);
+        return;
+      }
+      setCenterTab("data");
+      // The Flow map deliberately covers every table ever built for this
+      // data source, not just this session's - so a table it jumps to must
+      // always be visible in the Data tab's tab strip right away, even one
+      // from a much older conversation that "Show N earlier tables" would
+      // otherwise still be hiding.
+      setOlderVersionsRevealed(true);
+      setActiveVersionId(target.versionId);
+      setSourceIds([target.versionId]);
+      return;
+    }
+    // jump-chart
+    if (target.conversationId === conversationId) {
+      const match = charts.find((c) => c.messageId === target.messageId);
+      if (match) {
+        setActiveChartId(match.id);
+        setCenterTab("chart");
+        return;
+      }
+    }
+    navigate(`/workspace/${datasourceId}?conversation=${target.conversationId}&chart=${target.messageId}`);
+  };
 
   // Returns true on a genuinely successful run, false on failure - so a
   // caller that needs to know whether it is safe to move on (for example
@@ -1002,6 +1101,12 @@ export default function Workspace() {
               >
                 Chart
               </button>
+              <button
+                className={`text-sm px-4 py-2 rounded-lg font-medium transition ${centerTab === "flow" ? "bg-primary text-white" : "btn-secondary"}`}
+                onClick={() => setCenterTab("flow")}
+              >
+                Flow
+              </button>
             </div>
             <div className="flex items-center gap-3 shrink-0">
               {centerTab === "data" && hiddenVersionsCount > 0 && (
@@ -1049,6 +1154,14 @@ export default function Workspace() {
                   setActiveOriginalTable(t);
                   setSourceIds([t ? `sheet:${t}` : ORIGINAL_SOURCE_ID]);
                 }}
+              />
+            ) : centerTab === "flow" && datasourceId ? (
+              <DataFlowMap
+                flow={flow}
+                loading={flowLoading}
+                error={flowError}
+                currentDatasourceId={datasourceId}
+                onJump={handleFlowJump}
               />
             ) : (
               <div className="h-full flex flex-col gap-2 overflow-hidden">
