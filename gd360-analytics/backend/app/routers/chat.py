@@ -80,7 +80,9 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     # once; each entry is only loaded once even if listed twice.
     requested_ids = payload.source_version_ids or ["original"]
     try:
-        tables, source_versions, original_df = _load_selected_tables(db, user, ds, requested_ids, table=payload.table)
+        tables, source_versions, original_df, sources_manifest = _load_selected_tables(
+            db, user, ds, requested_ids, table=payload.table
+        )
     except NeedsTableSelection as e:
         available_list = ", ".join(e.available)
         reply = f"This datasource has multiple tables/collections: {available_list}. Which one would you like to analyze?"
@@ -172,12 +174,13 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         result_columns=result.get("result_columns"),
         result_rows=result.get("result_rows"),
         result_truncated=result.get("result_truncated", False),
+        sources=sources_manifest,
     )
 
 
 def _load_selected_tables(
     db: Session, user: models.User, ds: models.DataSource, requested_ids: list[str], table: str | None = None
-) -> tuple[dict[str, object], list[models.DatasetVersion], object]:
+) -> tuple[dict[str, object], list[models.DatasetVersion], object, list[dict]]:
     """Loads every table a WORKING ON selection points at, shared by the
     live /chat endpoint, /chat/verify (which re-checks a prior answer
     against the same kind of selection it originally ran against), and
@@ -206,7 +209,17 @@ def _load_selected_tables(
     whenever it was part of this selection (None otherwise - loading it
     when it was not asked for is the caller's job, see the "original data
     as a merge fallback" note in both endpoints below and
-    ai_engine._schema_with_fallback)."""
+    ai_engine._schema_with_fallback), and - as the 4th value - an ordered
+    "sources manifest": one small dict per entry in `requested_ids`, shaped
+    {"kind": "original" | "sheet" | "version", "label": the exact display
+    label just resolved for it, "datasource_id": which datasource it
+    belongs to, "version_id": set only for kind "version", "sheet": set
+    only for kind "sheet"}. A caller that goes on to save this turn as a
+    Message stores this verbatim on Message.sources - it is the one place
+    precise enough to later draw an accurate lineage diagram of exactly
+    which table(s) fed which chart/table (see routers/datasources.py
+    get_data_flow), including a merge across separately-connected data
+    sources, which parent_version_id alone cannot represent."""
     ordered_ids: list[str] = []
     for raw_id in requested_ids:
         key = raw_id or "original"
@@ -216,6 +229,7 @@ def _load_selected_tables(
     tables: dict[str, object] = {}
     used_names: set[str] = set()
     source_versions: list[models.DatasetVersion] = []
+    sources_manifest: list[dict] = []
     original_df = None
     # Another datasource this same selection already pulled in - fetched at
     # most once each even if more than one of its sheets/tables is picked.
@@ -249,6 +263,10 @@ def _load_selected_tables(
             except Exception as e:
                 raise HTTPException(400, f"Could not load data: {e}")
             tables[_unique_key("Original data")] = original_df
+            sources_manifest.append({
+                "kind": "original", "label": "Original data", "datasource_id": ds.id,
+                "version_id": None, "sheet": None,
+            })
             continue
 
         if source_id.startswith("sheet:"):
@@ -258,6 +276,10 @@ def _load_selected_tables(
             except Exception as e:
                 raise HTTPException(400, f"Could not load data: {e}")
             tables[_unique_key(sheet_name)] = sheet_df
+            sources_manifest.append({
+                "kind": "sheet", "label": sheet_name, "datasource_id": ds.id,
+                "version_id": None, "sheet": sheet_name,
+            })
             continue
 
         if source_id.startswith("ds:"):
@@ -274,6 +296,10 @@ def _load_selected_tables(
                 raise HTTPException(400, f"Could not load data from {other_ds.name}: {e}")
             label = f"{other_ds.name} — {other_sheet}" if other_sheet else f"{other_ds.name} (original)"
             tables[_unique_key(label)] = other_df
+            sources_manifest.append({
+                "kind": "sheet" if other_sheet else "original", "label": label, "datasource_id": other_id,
+                "version_id": None, "sheet": other_sheet,
+            })
             continue
 
         # A bare id is a saved table (DatasetVersion) - looked up globally
@@ -297,6 +323,10 @@ def _load_selected_tables(
             tables[_unique_key(label)] = load_version_dataframe(version)
         except Exception as e:
             raise HTTPException(400, f"Could not load data: {e}")
+        sources_manifest.append({
+            "kind": "version", "label": label, "datasource_id": version.datasource_id,
+            "version_id": version.id, "sheet": None,
+        })
         # `source_versions` becomes the `parent_version_ids`/cleaning-log
         # lineage of whatever new table this prompt might save (see
         # _save_cleaning_result) - that lineage only makes sense within
@@ -309,7 +339,7 @@ def _load_selected_tables(
         if version.datasource_id == ds.id:
             source_versions.append(version)
 
-    return tables, source_versions, original_df
+    return tables, source_versions, original_df, sources_manifest
 
 
 @router.post("/verify", response_model=schemas.VerifyResponse)
@@ -357,7 +387,9 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
 
     requested_ids = payload.source_version_ids or ["original"]
     try:
-        tables, source_versions, original_df = _load_selected_tables(db, user, ds, requested_ids, table=None)
+        tables, source_versions, original_df, sources_manifest = _load_selected_tables(
+            db, user, ds, requested_ids, table=None
+        )
     except NeedsTableSelection as e:
         available_list = ", ".join(e.available)
         raise HTTPException(400, f"This datasource has multiple tables/collections ({available_list}); please pick one before verifying.")
@@ -413,6 +445,15 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
     msg.result_columns = result.get("result_columns")
     msg.result_rows = result.get("result_rows")
     msg.result_truncated = result.get("result_truncated", False)
+    # A re-verify can run against a different WORKING ON selection than the
+    # turn originally used (the person may have changed it since) - refresh
+    # the recorded sources to match what THIS check actually ran against,
+    # so the lineage diagram (get_data_flow) always reflects the truth.
+    # The table this correction created (if any) replaces the old one the
+    # same way; if this check made no new table, the old link is kept.
+    msg.sources = sources_manifest
+    if new_version:
+        msg.new_version_id = new_version.id
     db.commit()
     db.refresh(msg)
 
@@ -537,6 +578,7 @@ def _persist_and_respond(
     rows_before=None, rows_after=None, nulls_before=None, nulls_after=None,
     new_version_id=None, new_version_name=None, code=None, chart_type=None,
     continue_action=None, result_columns=None, result_rows=None, result_truncated=False,
+    sources=None,
 ) -> schemas.ChatResponse:
     msg = models.Message(
         conversation_id=conversation_id,
@@ -552,6 +594,14 @@ def _persist_and_respond(
         result_columns=result_columns,
         result_rows=result_rows,
         result_truncated=result_truncated,
+        # Persisted here (not just returned in the response below) so a
+        # LATER visit - opening this data source's Flow tab, possibly in a
+        # different conversation entirely - can still show exactly which
+        # table(s) this turn ran against and which table it created. See
+        # Message.sources/new_version_id and routers/datasources.py
+        # get_data_flow.
+        sources=sources,
+        new_version_id=new_version_id,
     )
     db.add(msg)
     db.commit()
