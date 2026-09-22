@@ -73,10 +73,24 @@ class DataSourceCreateDB(BaseModel):
 # DataSourceCreateDB.
 class DataSourceCreateWarehouse(BaseModel):
     name: str
-    kind: str  # bigquery (more warehouse kinds may be added later)
-    project_id: str
-    dataset_id: str
-    service_account_json: str
+    kind: str  # bigquery | snowflake (more warehouse kinds may be added later)
+    # --- BigQuery fields ---
+    project_id: str = ""
+    dataset_id: str = ""
+    service_account_json: str = ""
+    # --- Snowflake fields (Enterprise Scale Roadmap, Phase 2) ---
+    # Snowflake authenticates completely differently from BigQuery (a
+    # username/password against an account, never a service-account key),
+    # so it gets its own set of fields here rather than reusing the
+    # BigQuery ones above - each kind's handler in routers/datasources.py
+    # connect_warehouse only ever reads the fields that apply to it.
+    account: str = ""  # e.g. "xy12345.us-east-1" - the account identifier from the Snowflake URL
+    snowflake_warehouse: str = ""  # Snowflake's own compute cluster name (unrelated to "kind: warehouse" above)
+    database: str = ""
+    db_schema: str = ""  # optional - the user's default schema is used when left blank
+    role: str = ""  # optional - the user's default role is used when left blank
+    username: str = ""
+    password: str = ""
 
 
 # ---------- Live OAuth connectors (Google Sheets, Microsoft Excel) ----------
