@@ -386,6 +386,65 @@ do not simply confirm out of politeness. But also do not invent a problem that i
 and the insight genuinely do match what was asked and the numbers shown, set verified to true. Respond with raw
 JSON only."""
 
+# --- BigQuery pushdown (Enterprise Scale Roadmap, Phase 1) ---------------
+# Everywhere else in this file, the AI writes pandas code that runs
+# against a table already pulled into memory (see analyze() below). This
+# prompt is different on purpose: it writes ONE real SQL query that runs
+# directly inside the person's own BigQuery warehouse, so a question
+# against a table with a billion rows costs about the same to answer as
+# one against a thousand rows - BigQuery does the heavy counting/
+# filtering/grouping on its own hardware, and only the small, already-
+# summarized answer ever comes back to GD360. See routers/chat.py's
+# _try_bigquery_pushdown for where this fits into a real request, and
+# connectors.BigQueryConnector.run_pushdown_query for the safety/cost
+# checks the SQL this writes still has to pass before it ever runs.
+BIGQUERY_SQL_SYSTEM_PROMPT = """You are the GD360 BigQuery pushdown module - the part of the analytics engine that
+answers a question by writing ONE real SQL query that runs directly inside the person's own BigQuery warehouse,
+instead of downloading rows and analyzing them in Python. You are given the user's question and the schema of
+every table in this BigQuery dataset (table name, then each column's name and type). Respond with ONLY the raw
+SQL query text - no markdown code fences, no explanation, nothing before or after the SQL itself.
+
+Strict rules:
+- Exactly one SELECT statement. Never anything else - no INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/MERGE, no
+  multiple statements separated by semicolons, no DDL of any kind. This runs against a real production warehouse
+  and must only ever read.
+- Reference only the real table and column names given in the schema - never invent one. If the question needs a
+  join across two tables, use a real shared column visible in both tables' schemas; with no genuinely matching
+  column, answer the closest real thing the schema actually supports instead of guessing at a join key.
+- Always aggregate, filter, or limit the result so it comes back small - a GROUP BY with real aggregate
+  functions for a summary question, a WHERE clause for a filtered question, an ORDER BY plus LIMIT for a "top N"
+  or "which is highest/lowest" question. Never a bare `SELECT *` with no WHERE/LIMIT against what could be a huge
+  table - the whole point of this path is that the warehouse summarizes the data, not GD360.
+- Standard BigQuery SQL. Backtick-quote an identifier only when its name actually needs escaping.
+- If the question genuinely cannot be answered from the given schema (it needs a column or table that does not
+  exist), respond with exactly: NOT_POSSIBLE"""
+
+
+def generate_bigquery_sql(prompt: str, schema_text: str) -> str:
+    """The Phase-1 pushdown path: writes one governed SQL SELECT that runs
+    inside BigQuery itself, instead of the usual pull-rows-then-pandas
+    path every other connector uses. Returns raw SQL text, or the literal
+    string "NOT_POSSIBLE" if the model could not answer from the given
+    schema. Callers must treat both an exception from this function and a
+    "NOT_POSSIBLE" result the same way: fall back to the normal analysis
+    path, never as a hard error the person sees."""
+    messages = [
+        {"role": "system", "content": BIGQUERY_SQL_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"},
+    ]
+    raw = _call_llm_resilient(messages, max_tokens=600)
+    sql = raw.strip()
+    # Cheap insurance against the model adding a code fence anyway, despite
+    # being told not to - mirrors how _extract_json tolerates the same
+    # habit elsewhere in this file.
+    if sql.startswith("```"):
+        sql = sql.strip("`")
+        if sql[:3].lower() == "sql":
+            sql = sql[3:]
+        sql = sql.strip()
+    return sql
+
+
 GOKU_SYSTEM_PROMPT = """You are Goku, a friendly, world-class data analyst assistant embedded inside the GD360
 Analytics workspace. Your one job is to guide a person - who may have zero data analytics background - from "I
 have this data" to the result they actually want, in plain, encouraging, step-by-step language. You never run
