@@ -108,6 +108,19 @@ class ChatResponse(BaseModel):
     reply_text: str
     action: str = "analyze"
     chart_spec: Optional[dict] = None
+    # The chart type actually rendered (e.g. "bar", "scatter") - the
+    # Explore panel's chart-type picker needs this as its starting
+    # selection, since chart_spec itself doesn't reliably name its own type.
+    chart_type: Optional[str] = None
+    # Tidy, row-level numbers behind this chart (see
+    # chart_builder.result_to_tidy) plus per-column dtype/role metadata -
+    # what lets the frontend's Explore panel remap axes/chart type/filters
+    # instantly, client-side, against the real numbers instead of only ever
+    # having the one fixed chart_spec above. None when the result wasn't
+    # tabular (e.g. a bare scalar answer).
+    result_columns: Optional[list] = None
+    result_rows: Optional[list] = None
+    result_truncated: bool = False
     insight: Optional[str] = None
     suggested_charts: Optional[list] = None
     suggested_stats: Optional[list] = None
@@ -146,6 +159,10 @@ class VerifyResponse(BaseModel):
     message_id: str
     reply_text: Optional[str] = None
     chart_spec: Optional[dict] = None
+    chart_type: Optional[str] = None
+    result_columns: Optional[list] = None
+    result_rows: Optional[list] = None
+    result_truncated: bool = False
     insight: Optional[str] = None
     new_version_id: Optional[str] = None
     new_version_name: Optional[str] = None
