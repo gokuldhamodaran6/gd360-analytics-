@@ -129,6 +129,19 @@ class Settings(BaseSettings):
     # usage patterns are known.
     PUSHDOWN_MAX_BYTES_SCANNED_PER_DAY_PER_USER: int = 50 * 1024 * 1024 * 1024  # 50 GiB
 
+    # --- MongoDB pushdown (Enterprise Scale Roadmap, Phase 2) ---
+    # Like the plain SQL databases (Postgres/MySQL/SQL Server/Supabase),
+    # a customer's own MongoDB server has no per-query metered billing to
+    # guard against, so this isn't a cost cap - it's a runtime safety net,
+    # passed as the aggregation's maxTimeMS so a slow, unindexed pipeline
+    # (an unbounded $lookup "join," say) can't hang against the customer's
+    # own database indefinitely. See connectors.MongoConnector.
+    # run_pushdown_query. Same 30s default as Snowflake's per-query
+    # timeout above, chosen for the same reason (comfortably longer than
+    # any real interactive question should take, short enough to fail
+    # fast and fall back to the normal path otherwise).
+    MONGO_AGGREGATION_TIMEOUT_SECONDS: int = 30
+
     # --- AI provider ---
     # Google Gemini (https://aistudio.google.com/apikey) is the app default -
     # its paid rate past the free allowance is a small fraction of a cent
