@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api, conversationApi, ConversationSummary } from "../api/client";
 import TopNav from "../components/TopNav";
 import DataSourceForm from "../components/DataSourceForm";
@@ -291,6 +291,20 @@ export default function Dashboard() {
               </div>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* ---- Footer ----
+          Dashboard (not Landing) is what a signed-in person actually sees
+          at "/" (see App.tsx's Home()), so the Privacy Policy link needs
+          to live here too - a footer only on the signed-out Landing page
+          is invisible to anyone already logged in. */}
+      <div className="border-t border-border mt-4">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 flex flex-wrap items-center justify-between gap-3 text-sm text-muted">
+          <div>&copy; {new Date().getFullYear()} GD360 Analytics. All rights reserved.</div>
+          <Link to="/privacy" className="hover:text-text hover:underline">
+            Privacy Policy
+          </Link>
         </div>
       </div>
 
