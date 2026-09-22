@@ -34,7 +34,7 @@ import pandas as pd
 import requests
 
 from ..config import get_settings
-from .chart_builder import build_figure, result_to_summary
+from .chart_builder import build_figure, result_to_summary, result_to_tidy
 from .chart_suggester import profile_dataframe, suggest_charts, suggest_stats
 from .sandbox import run_sandboxed
 
@@ -1298,10 +1298,14 @@ def _try_deterministic_crosstab(prompt: str, df: pd.DataFrame, profile: dict) ->
     # the SYSTEM_PROMPT heatmap rule uses for the AI-planned fallback path,
     # so both paths agree on when to switch.
     use_facets = n_cat2 <= 8
+    # Built once, regardless of which chart shape gets drawn below, so the
+    # Explore panel always has a genuinely tidy (one row per cat1/cat2/metric
+    # combination) frame to remap - the heatmap branch's own `pivot` is a
+    # wide matrix, not tidy, so it isn't usable for that directly.
+    melted = pivot.reset_index().melt(id_vars=cat1_col, var_name=cat2_col, value_name=metric_col)
+    facet_frame = melted[[cat2_col, cat1_col, metric_col]]
     try:
         if use_facets:
-            melted = pivot.reset_index().melt(id_vars=cat1_col, var_name=cat2_col, value_name=metric_col)
-            facet_frame = melted[[cat2_col, cat1_col, metric_col]]
             chart_spec = build_figure(
                 facet_frame, "faceted_bar", title,
                 x_label=_display_name(metric_col), y_label=_display_name(cat1_col),
@@ -1316,6 +1320,8 @@ def _try_deterministic_crosstab(prompt: str, df: pd.DataFrame, profile: dict) ->
     except Exception as e:
         print(f"[ai_engine] deterministic crosstab chart build failed for prompt={prompt!r}, falling back to AI: {e}")
         return None
+
+    tidy = result_to_tidy(facet_frame)
 
     narrative, insight = _crosstab_narrative(pivot, metric_col, cat1_col, cat2_col, date_note)
 
@@ -1421,6 +1427,10 @@ def _try_deterministic_crosstab(prompt: str, df: pd.DataFrame, profile: dict) ->
         "chart_spec": chart_spec,
         "chart_type": chosen_chart_type,
         "insight": insight,
+        "result_columns": tidy["columns"] if tidy else None,
+        "result_rows": tidy["rows"] if tidy else None,
+        "result_row_count": tidy["row_count"] if tidy else None,
+        "result_truncated": tidy["truncated"] if tidy else False,
         # cleaned_df being set is what tells routers/chat.py a real,
         # executed table exists to persist as a new saved version (see
         # _save_cleaning_result) - the exact same contract an ordinary
@@ -1447,9 +1457,7 @@ def _try_deterministic_crosstab(prompt: str, df: pd.DataFrame, profile: dict) ->
         ],
         "code": code,
     }
-
-
-def analyze(
+  def analyze(
     prompt: str,
     tables: dict[str, pd.DataFrame],
     history: list[dict] | None = None,
@@ -1905,6 +1913,12 @@ def _run_analyze_with_prep(
         out["_retry_detail"] = f"Could not render the result as a {chart_type} chart: {e}"
         return out
 
+    # The same underlying rows this chart was built from, serialized tidy -
+    # lets the frontend's Explore panel remap axes/chart type/filters
+    # client-side against the real numbers, instead of only ever having the
+    # one fixed Plotly figure above. See result_to_tidy's own docstring.
+    tidy = result_to_tidy(result)
+
     summary = result_to_summary(result)
     summary["source_row_count"] = rows_after
     insight = _generate_insight(prompt, summary)
@@ -1941,6 +1955,10 @@ def _run_analyze_with_prep(
         "suggested_stats": suggest_stats(prepped_profile),
         "follow_up_suggestions": _sanitize_follow_ups(plan.get("follow_up_suggestions")),
         "code": combined_code,
+        "result_columns": tidy["columns"] if tidy else None,
+        "result_rows": tidy["rows"] if tidy else None,
+        "result_row_count": tidy["row_count"] if tidy else None,
+        "result_truncated": tidy["truncated"] if tidy else False,
     }
 
 
@@ -1971,6 +1989,9 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
         out["_retry_detail"] = f"Could not render the result as a {chart_type} chart: {e}"
         return out
 
+    # See the identical call in _run_analyze_with_prep above.
+    tidy = result_to_tidy(result)
+
     summary = result_to_summary(result)
     # The real row count of the table this was computed from, so the
     # insight can cite an actual sample size (n) instead of leaving it
@@ -1997,6 +2018,10 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
         "suggested_stats": suggest_stats(profile),
         "follow_up_suggestions": _sanitize_follow_ups(plan.get("follow_up_suggestions")),
         "code": code,
+        "result_columns": tidy["columns"] if tidy else None,
+        "result_rows": tidy["rows"] if tidy else None,
+        "result_row_count": tidy["row_count"] if tidy else None,
+        "result_truncated": tidy["truncated"] if tidy else False,
     }
 
 
