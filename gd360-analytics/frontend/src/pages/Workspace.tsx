@@ -1185,6 +1185,25 @@ export default function Workspace() {
                   setActiveOriginalTable(t);
                   setSourceIds([t ? `sheet:${t}` : ORIGINAL_SOURCE_ID]);
                 }}
+                onInsertColumn={(afterColumn, side, description) => {
+                  // "Insert column left/right" in the Data tab's column
+                  // menu - runs through the exact same AI transform
+                  // pipeline as any other data-prep chat prompt (real
+                  // version, real cleaning-log entry, shows up on the Flow
+                  // map), scoped with forceSourceIds to the EXACT table
+                  // currently open in the Data tab - not whatever WORKING
+                  // ON happens to be set to, which the person may not even
+                  // be looking at right now.
+                  const forceSourceIds = activeVersionId
+                    ? [activeVersionId]
+                    : [activeOriginalTable ? `sheet:${activeOriginalTable}` : ORIGINAL_SOURCE_ID];
+                  const placement = side === "left" ? "before" : "after";
+                  runPrompt(
+                    `Add a new column ${placement} the "${afterColumn}" column: ${description}`,
+                    undefined,
+                    { forceSourceIds }
+                  );
+                }}
               />
             ) : centerTab === "flow" && datasourceId ? (
               <DataFlowMap
