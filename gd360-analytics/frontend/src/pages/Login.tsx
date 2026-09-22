@@ -100,6 +100,9 @@ export default function Login() {
           <p className="text-sm text-muted text-center">
             New here? <Link to="/register" className="text-primary hover:underline">Create a free account</Link>
           </p>
+          <p className="text-xs text-muted text-center">
+            <Link to="/privacy" className="hover:text-text hover:underline">Privacy Policy</Link>
+          </p>
         </form>
       </div>
     </div>
