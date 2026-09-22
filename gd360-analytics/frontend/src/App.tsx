@@ -11,6 +11,7 @@ import AdminDashboard from "./pages/AdminDashboard";
 import Profile from "./pages/Profile";
 import HelpBigQuery from "./pages/HelpBigQuery";
 import ConnectResourcePicker from "./pages/ConnectResourcePicker";
+import PrivacyPolicy from "./pages/PrivacyPolicy";
 
 function Protected({ children }: { children: JSX.Element }) {
   const { user, loading } = useAuth();
@@ -44,6 +45,12 @@ export default function App() {
           browser tab from the BigQuery connect popout, so it needs to work
           even in a fresh tab that may not carry an existing session yet. */}
       <Route path="/help/connect-bigquery" element={<HelpBigQuery />} />
+      {/* Public and standalone: read before someone ever creates an
+          account, and it's also what Google/Microsoft's OAuth verification
+          reviewers check when this app requests Sheets/Excel/Drive/
+          OneDrive access. Linked from the Landing footer and the
+          Login/Register cards below. */}
+      <Route path="/privacy" element={<PrivacyPolicy />} />
       {/* Where the browser lands after the Google/Microsoft OAuth redirect
           (see DataSourceForm.tsx's "Connect" tab) - genuinely protected
           (not a fresh, session-less tab like the BigQuery guide above),
