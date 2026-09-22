@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from datetime import date
 from typing import Any
 
 import pandas as pd
@@ -2489,3 +2490,58 @@ def goku_chat(
     action_prompts = _sanitize_follow_ups(parsed.get("action_prompts"))
     action_prompts = _strip_self_echo_action_prompts(action_prompts, user_message)
     return {"reply": reply, "action_prompts": action_prompts}
+
+
+def parse_filter_prompt(prompt: str, columns: list[str], dtypes: dict[str, str]) -> dict:
+    """Turns a plain-English filter request ("orders over $500 in
+    California") into the same structured per-column filter shape the Data
+    tab's manual Excel-style filter panel already builds
+    (DataTable.tsx's ColumnFilterSpec) and routers/datasources.py's
+    _apply_column_filter already knows how to apply - this is the whole
+    trick that lets the natural-language filter bar reuse every bit of
+    filtering machinery the Values/Condition panel already has, rather
+    than needing its own separate execution path. Returns
+    {"filters": {"<column>": {...spec...}, ...}, "note": "<...>"} - `note`
+    is one short, plain-language sentence the filter bar shows back,
+    confirming what got filtered (or explaining briefly why nothing did).
+
+    Deliberately conservative: only ever proposes a filter on a column
+    that both actually exists on this table AND that the model named
+    itself (a hallucinated column name is silently dropped, never passed
+    through to the query layer), so a misunderstood request narrows to
+    nothing rather than filtering on the wrong thing."""
+    columns_text = "\n".join(f"  - {c} ({dtypes.get(c, 'object')})" for c in columns)
+    system = (
+        "You turn a short, plain-English data-filtering request into structured JSON "
+        "filters for a table with exactly these columns:\n" + columns_text + "\n\n"
+        "Respond with ONLY a single JSON object of this exact shape, nothing else:\n"
+        '{"filters": {"<column name, spelled exactly as listed above>": <spec>, ...}, "note": "<short sentence>"}\n\n'
+        "Each <spec> must be one of:\n"
+        '  {"type": "text", "op": "contains"|"not_contains"|"equals"|"not_equals"|"starts_with"|"ends_with"|"is_empty"|"is_not_empty", "value": "..."}\n'
+        '  {"type": "number", "op": "eq"|"neq"|"gt"|"gte"|"lt"|"lte"|"between", "value": "123.45", "value2": "678.9"}  ("value2" only for "between")\n'
+        '  {"type": "date", "from": "YYYY-MM-DD" or null, "to": "YYYY-MM-DD" or null}\n'
+        '  {"type": "boolean", "value": "true" or "false"}\n'
+        '  {"type": "values", "include": ["<exact value1>", "<exact value2>", ...]}  (for a short, specific list of category values, e.g. two or three named states or products)\n\n'
+        "Rules:\n"
+        "- Only ever use a column name from the list above, spelled exactly as given there. Never invent a column.\n"
+        "- Only include a column in \"filters\" if the request clearly says something about it - never add a filter on a column the person did not mention.\n"
+        "- Use the \"number\" type for a numeric column (money amounts, counts, quantities): strip currency symbols and thousands separators from the value (\"$500\" -> \"500\").\n"
+        "- Use the \"date\" type for a date/time column, resolving any relative phrase (\"last month\", \"this year\", \"last 7 days\") into actual YYYY-MM-DD bounds using today's date, which is " + date.today().isoformat() + ".\n"
+        "- \"note\" is exactly one short, friendly, non-technical sentence confirming what was filtered (e.g. \"Showing orders over $500 in California.\"). If no column in the request matches anything on this table, return {\"filters\": {}, \"note\": \"<a brief, friendly explanation of what could not be understood>\"}.\n"
+    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": prompt},
+    ]
+    result = _plan_with_retry(messages)
+    filters = result.get("filters") if isinstance(result, dict) else None
+    if not isinstance(filters, dict):
+        filters = {}
+    # A hallucinated or misspelled column name should never silently reach
+    # the filter layer - drop anything that isn't a real column on this
+    # table, and anything that isn't itself a proper filter object.
+    filters = {col: spec for col, spec in filters.items() if col in columns and isinstance(spec, dict)}
+    note = result.get("note") if isinstance(result, dict) else None
+    if not isinstance(note, str):
+        note = ""
+    return {"filters": filters, "note": note.strip()}
