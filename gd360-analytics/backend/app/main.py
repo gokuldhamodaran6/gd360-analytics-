@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .database import init_db
-from .routers import auth, datasources, chat, dashboards, admin, conversations, goku
+from .routers import auth, datasources, chat, dashboards, admin, conversations, goku, connections
 
 settings = get_settings()
 
@@ -47,6 +47,7 @@ app.include_router(dashboards.router)
 app.include_router(admin.router)
 app.include_router(conversations.router)
 app.include_router(goku.router)
+app.include_router(connections.router)
 
 
 @app.on_event("startup")
