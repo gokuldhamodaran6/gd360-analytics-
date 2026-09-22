@@ -25,7 +25,7 @@ from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
 from ..schemas_extra import ChatRequestFull, VerifyRequest
-from ..services import ai_engine
+from ..services import ai_engine, learned_answers
 from ..services.connectors import BigQueryConnector, SnowflakeConnector, SQLConnector, MongoConnector, QueryTooExpensive, ReadOnlyViolation
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, dataframe_to_csv_bytes, ensure_legacy_migrated, NeedsTableSelection,
@@ -437,14 +437,51 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
 
     history = _recent_history(db, conversation.id)
 
+    # Permanent, per-account memory (2026-09-22 - see services/
+    # learned_answers.py for the full rationale): if this SAME person has
+    # already answered this SAME question correctly before - in this
+    # conversation or any earlier one - against a schema that still
+    # matches exactly, hand that proven (action, narrative, code,
+    # chart_type) to analyze() so it replays it directly instead of
+    # asking the AI to write new code. Skipped on a skip_prep continuation
+    # call (the "Continue -> run the analysis" click after a guided
+    # pause) for the same reason the in-conversation version of this
+    # already excludes it - see the persisted_code note further below:
+    # that call's prompt text is the ORIGINAL question, not a fresh one,
+    # and it must go straight into the paused analysis step, never get
+    # rerouted into replaying a past turn instead.
+    durable_repeat = None
+    if not payload.skip_prep:
+        durable_repeat = learned_answers.find_learned_answer(db, user.id, tables, payload.prompt)
+
     try:
         result = ai_engine.analyze(
             payload.prompt, tables, history=history, chart_override=payload.chart_override, intent=payload.intent,
             guided=(payload.analysis_mode == "guided"), skip_prep=payload.skip_prep, original_df=original_df,
+            durable_repeat=durable_repeat,
         )
     except Exception as e:
         print(f"[chat] AI analysis failed: {e}")
         raise HTTPException(502, ai_engine.friendly_ai_error(e))
+
+    # Learn from this turn for next time - only when it was a genuine,
+    # freshly AI-planned success (never a clarifying question, never a
+    # paused step-by-step prep-only turn, and never a turn that was ITSELF
+    # already answered from memory - see ai_engine.analyze's
+    # _answered_from_memory marker - since there is nothing new to learn
+    # from replaying something already learned). save_learned_answer is a
+    # no-op for anything that is not a real analyze/transform result with
+    # real code, and never raises - a failure here can never break the
+    # response the person is waiting on.
+    if (
+        not result.get("needs_clarification")
+        and not result.get("paused_for_continue")
+        and not result.get("_answered_from_memory")
+    ):
+        learned_answers.save_learned_answer(
+            db, user.id, tables, payload.prompt,
+            result.get("action"), result.get("narrative"), result.get("code"), result.get("chart_type"),
+        )
 
     # A "transform" always persists its result as a new saved table; so
     # does an "analyze" that had to prepare its own table first (see
