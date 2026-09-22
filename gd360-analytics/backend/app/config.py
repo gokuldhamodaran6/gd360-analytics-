@@ -88,6 +88,16 @@ class Settings(BaseSettings):
     # person to actually look at and approve the consent screen.
     OAUTH_STATE_EXPIRE_MINUTES: int = 15
 
+    # --- BigQuery pushdown (Enterprise Scale Roadmap, Phase 1) ---
+    # The most data a single pushdown question is allowed to make
+    # BigQuery scan, checked with a free BigQuery dry run before anything
+    # is actually run or billed for (see connectors.BigQueryConnector.
+    # run_pushdown_query). Default is generous for real use while staying
+    # cheap: at BigQuery's on-demand $6.25/TiB list price, 5 GiB costs a
+    # small fraction of a cent. Raise this once real usage patterns are
+    # known, or make it configurable per customer later.
+    BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY: int = 5 * 1024 * 1024 * 1024  # 5 GiB
+
     # --- AI provider ---
     # Google Gemini (https://aistudio.google.com/apikey) is the app default -
     # its paid rate past the free allowance is a small fraction of a cent
