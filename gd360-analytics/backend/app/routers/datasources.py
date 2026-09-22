@@ -479,7 +479,10 @@ def preview_datasource(
         df = (
             load_version_dataframe(active_version)
             if active_version
-            else load_dataframe(ds, table=table or default_table_for_preview(ds), version="original")
+            else load_dataframe(
+                ds, table=table or default_table_for_preview(ds), version="original",
+                row_limit=settings.PREVIEW_ROW_LIMIT,
+            )
         )
     except Exception as e:
         raise HTTPException(400, f"Could not load data: {e}")
