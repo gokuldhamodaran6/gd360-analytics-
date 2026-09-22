@@ -329,8 +329,14 @@ for you to read, not words a person should ever see written out. Translate each 
 for example "a gap of $5,911.55", "321.95 percent higher", or "5.2 percentage points higher". Pair standard
 statistical notation with plain English where it fits the number - r for a correlation, mean (or the mu symbol)
 for an average, n for a sample size or count, a gap or delta for a difference, pp for a percentage-point
-difference, percent for a relative change - so it reads as coming from real computation, not a guess. Two to
-three sentences.
+difference, percent for a relative change - so it reads as coming from real computation, not a guess. Write every
+one of these in plain text - never wrap a number or notation in a single or double dollar sign, backslash-
+parenthesis, or any other LaTeX/markdown math delimiter (write n = 33, never $n = 33$; write r = 0.42, never
+$r = 0.42$). This app shows your words as plain text, not rendered math, so a dollar sign used that way shows up
+as a literal, confusing character in front of the person instead of formatted math. A dollar sign belongs in your
+sentence in exactly one case - the literal currency symbol directly in front of a real dollar amount from the
+data, like the "$5,911.55" example above - never anywhere else, and never in a pair bracketing a symbol or
+number. Two to three sentences.
 **Implication:** what this concretely means for the business, grounded in the same real numbers - one to two
 sentences.
 **Next step:** one specific, practical thing to investigate or try next, tied to this exact result - one
@@ -350,7 +356,12 @@ shown instead rather than inventing one. Also never let a raw JSON key or field 
 given (things like "computed", "source_row_count", "preview", or any underscored label such as gap underscore
 absolute) show up as literal text in your sentences - those are internal data labels meant only for you to read,
 never words for a person to see. Always translate the number behind each one into an ordinary plain-English
-phrase before writing it."""
+phrase before writing it. Never use a LaTeX or markdown math delimiter (a single or double dollar sign, backslash-
+parenthesis, backslash-bracket, or similar) around any number or notation anywhere in your response - this app
+renders plain text, not math, so every number and symbol (n, r, mean, pp, a gap figure, a percent) must be
+written as ordinary characters with nothing wrapped around it. The only correct use of a dollar sign anywhere in
+your response is as a currency prefix directly on a real dollar amount, exactly like "$5,911.55" - never doubled,
+never closing a pair, never around anything that is not an actual amount of money."""
 
 VERIFY_SYSTEM_PROMPT = """You are the GD360 verification module - a second, independent reviewer whose only job
 is to audit a previous answer for correctness before a person trusts it, the way a second analyst double-checking
