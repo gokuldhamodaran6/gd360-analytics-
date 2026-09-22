@@ -250,6 +250,32 @@ export type ColumnDistinctValues = {
   truncated: boolean;
 };
 
+// What the natural-language filter bar gets back - `filters` is keyed by
+// real column name, each value already the same structured shape the
+// manual Values/Condition filter panel builds (DataTable.tsx's
+// ColumnFilterSpec), ready to merge straight into that same filter state.
+// `note` is one short, friendly sentence to show back ("Showing orders
+// over $500 in California."), or a brief explanation when nothing in the
+// request matched a real column.
+export type ParseFilterResult = {
+  filters: Record<string, any>;
+  note: string;
+};
+
+// A named snapshot of the whole Data tab display for one table - see
+// backend models.SavedView. `config` is intentionally untyped here (a
+// plain object) - it is whatever DataTable.tsx's own view-state serializer
+// produces, and only that same code ever reads it back apart.
+export type SavedView = {
+  id: string;
+  name: string;
+  table: string | null;
+  version_id: string | null;
+  config: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+};
+
 // The same shape the backend's DataSourceOut returns - kept here (rather
 // than only as DataSourceForm.tsx's CreatedDataSource, which this mirrors)
 // so the API client itself can be typed without importing a component
@@ -329,6 +355,42 @@ export const datasourceApi = {
   // backend routers/datasources.py get_data_flow for exactly what this
   // reads back (nothing is computed fresh server-side either).
   getFlow: (id: string) => api.get<DataFlow>(`/datasources/${id}/flow`).then((r) => r.data),
+
+  // The natural-language filter bar: turns a plain-English request into
+  // the same structured filters the manual filter panel produces - see
+  // backend routers/datasources.py parse_filter and
+  // services/ai_engine.py parse_filter_prompt.
+  parseFilter: (id: string, prompt: string, versionId: string | null, table?: string | null) =>
+    api
+      .post<ParseFilterResult>(`/datasources/${id}/parse-filter`, {
+        prompt,
+        version_id: versionId || undefined,
+        table: versionId ? undefined : table || undefined,
+      })
+      .then((r) => r.data),
+
+  // Saved Views - a named snapshot of the whole Data tab display for one
+  // table (see models.SavedView). Scoped to exactly one of versionId/table,
+  // mirroring how every other per-table call here already addresses "which
+  // table" (preview, distinct-values, parse-filter, export).
+  listViews: (id: string, versionId: string | null, table?: string | null) =>
+    api
+      .get<SavedView[]>(`/datasources/${id}/views`, {
+        params: { version_id: versionId || undefined, table: versionId ? undefined : table || undefined },
+      })
+      .then((r) => r.data),
+
+  createView: (id: string, name: string, versionId: string | null, table: string | null | undefined, config: Record<string, any>) =>
+    api
+      .post<SavedView>(`/datasources/${id}/views`, {
+        name,
+        version_id: versionId || undefined,
+        table: versionId ? undefined : table || undefined,
+        config,
+      })
+      .then((r) => r.data),
+
+  deleteView: (id: string, viewId: string) => api.delete(`/datasources/${id}/views/${viewId}`),
 
   rename: (id: string, name: string) =>
     api.patch<{ id: string; name: string }>(`/datasources/${id}`, { name }).then((r) => r.data),
