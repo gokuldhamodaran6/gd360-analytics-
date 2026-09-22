@@ -79,6 +79,36 @@ class DataSourceCreateWarehouse(BaseModel):
     service_account_json: str
 
 
+# ---------- Live OAuth connectors (Google Sheets, Microsoft Excel) ----------
+# See routers/connections.py for the full authorize -> callback -> pick a
+# resource -> finish flow these support.
+class OAuthAuthorizeOut(BaseModel):
+    authorize_url: str
+
+
+class OAuthResourceOut(BaseModel):
+    id: str
+    name: str
+    modified_at: Optional[str] = None
+    # Microsoft only: which drive this item lives in (None for the
+    # person's own OneDrive, set for a SharePoint/shared library item) -
+    # round-tripped back on OAuthFinishRequest so the workbook can be
+    # addressed the same way again on every later live load.
+    drive_id: Optional[str] = None
+
+
+class OAuthResourcesOut(BaseModel):
+    provider: str
+    resources: list[OAuthResourceOut]
+
+
+class OAuthFinishRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    resource_id: str
+    resource_name: str
+    drive_id: Optional[str] = None
+
+
 class DataSourceOut(BaseModel):
     id: str
     name: str
