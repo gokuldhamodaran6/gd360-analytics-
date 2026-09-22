@@ -120,6 +120,14 @@ export type DatasetVersion = {
   parent_version_id: string | null;
   step_count: number;
   created_at: string;
+  // Which conversation's chat prompt actually built this table - null for
+  // one predating this attribution, or the legacy-migration's own first
+  // version (see backend ensure_legacy_migrated), in which case it is not
+  // tied to any one chat and always shows regardless of scope. Used to
+  // scope the Data tab's table strip (and the WORKING ON picker, which
+  // reads this same list) to just the currently open conversation by
+  // default - see Workspace.tsx's versionScope.
+  conversation_id: string | null;
 };
 
 // One table this datasource's data flow through - exactly what
@@ -177,6 +185,23 @@ export type DataFlow = {
   nodes: FlowNode[];
 };
 
+// One column's aggregate, computed server-side over the full
+// filtered/sorted table (not just the current page) - see backend
+// routers/datasources.py _column_stats. sum/mean/min/max are only ever
+// set for a numeric column; a text/date/boolean column gets `distinct`
+// instead (min/max are also set for a comparable non-numeric column, as
+// its raw string form). The Data tab's Totals row lets a person pick
+// whichever of these is actually present for a given column.
+export type ColumnStat = {
+  count: number;
+  non_null: number;
+  sum: number | null;
+  mean: number | null;
+  min: number | string | null;
+  max: number | string | null;
+  distinct: number | null;
+};
+
 export type DataPreview = {
   columns: string[];
   dtypes: Record<string, string>;
@@ -187,6 +212,11 @@ export type DataPreview = {
   version_id: string | null;
   version_name: string;
   cleaning_log: CleaningLogEntry[];
+  column_stats: Record<string, ColumnStat>;
+  // True only for a live-connector datasource whose true row count may be
+  // bigger than what PREVIEW_ROW_LIMIT let this preview load - the Totals
+  // row shows a small caveat instead of silently understating a sum.
+  stats_capped: boolean;
 };
 
 export type PreviewOptions = {
