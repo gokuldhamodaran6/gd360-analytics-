@@ -19,12 +19,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from .. import models, schemas
+from .. import models, schemas, security
 from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
 from ..schemas_extra import ChatRequestFull, VerifyRequest
 from ..services import ai_engine
+from ..services.connectors import BigQueryConnector, QueryTooExpensive, ReadOnlyViolation
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, dataframe_to_csv_bytes, ensure_legacy_migrated, NeedsTableSelection,
     purpose_label,
@@ -47,6 +48,68 @@ def _check_rate_limit(user_id: str):
     if len(window) >= settings.RATE_LIMIT_PER_MINUTE:
         raise HTTPException(429, "You are sending requests a bit fast for the free AI tier - please wait a few seconds and try again.")
     window.append(now)
+
+
+# --- BigQuery pushdown (Enterprise Scale Roadmap, Phase 1) -----------------
+# Scoped narrowly on purpose: only the plain "ask a question about my
+# BigQuery data" case below (requested_ids == ["original"], no extra
+# tables merged in, no specific sub-table forced) tries this path. Merging
+# in other sources/saved versions still uses the general multi-table path
+# a few lines down - broadening pushdown to that case is real future work,
+# not this first slice. See the roadmap doc's own "Where to start" section
+# for why this is deliberately the narrowest useful first step.
+
+def _bigquery_schema_text(schema_cache: dict) -> str:
+    """Every table in a BigQuery dataset, formatted for ai_engine.
+    generate_bigquery_sql. schema_cache is always the multi-table
+    {table_name: [{"name","type"}, ...]} shape for a BigQuery datasource -
+    see BigQueryConnector.introspect_schema."""
+    lines = []
+    for table_name, columns in (schema_cache or {}).items():
+        lines.append(f"Table `{table_name}`:")
+        for col in columns or []:
+            lines.append(f"  - {col.get('name')} ({col.get('type')})")
+    return "\n".join(lines)
+
+
+def _try_bigquery_pushdown(ds: models.DataSource, prompt: str):
+    """Tries to answer `prompt` with one governed SQL query run directly
+    inside BigQuery, instead of pulling rows into memory. Returns the
+    small result as a DataFrame on success, or None on ANY failure -
+    schema too sparse, the model couldn't write safe SQL, the query would
+    scan more than this connection's byte budget, or BigQuery rejected it
+    outright. A None here must be treated exactly like "pushdown was
+    never attempted": the caller falls through to the ordinary pull-and-
+    pandas path, so a BigQuery question can only ever get faster/cheaper
+    from this, never worse - nothing in this function is allowed to raise
+    past it."""
+    schema_text = _bigquery_schema_text(ds.schema_cache)
+    if not schema_text.strip():
+        return None
+
+    try:
+        sql = ai_engine.generate_bigquery_sql(prompt, schema_text)
+    except Exception as e:
+        print(f"[chat] BigQuery pushdown SQL generation failed, falling back: {e}")
+        return None
+
+    if not sql or sql.strip().upper() == "NOT_POSSIBLE":
+        return None
+
+    try:
+        service_account_json = security.decrypt_secret(ds.encrypted_secret)
+        info = ds.connection_info
+        connector = BigQueryConnector(info["project_id"], info["dataset_id"], service_account_json)
+        return connector.run_pushdown_query(sql, max_bytes=settings.BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY)
+    except (ReadOnlyViolation, QueryTooExpensive) as e:
+        # The AI wrote something unsafe or too expensive to run - don't
+        # retry with a worse query, just fall back this one time like any
+        # other pushdown failure.
+        print(f"[chat] BigQuery pushdown query rejected, falling back: {e}")
+        return None
+    except Exception as e:
+        print(f"[chat] BigQuery pushdown query failed, falling back: {e}")
+        return None
 
 
 @router.post("", response_model=schemas.ChatResponse)
@@ -79,14 +142,33 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     # compare or combine several tables (from one datasource or several) at
     # once; each entry is only loaded once even if listed twice.
     requested_ids = payload.source_version_ids or ["original"]
-    try:
-        tables, source_versions, original_df, sources_manifest = _load_selected_tables(
-            db, user, ds, requested_ids, table=payload.table
-        )
-    except NeedsTableSelection as e:
-        available_list = ", ".join(e.available)
-        reply = f"This datasource has multiple tables/collections: {available_list}. Which one would you like to analyze?"
-        return _persist_and_respond(db, conversation.id, reply, needs_clarification=True)
+
+    # Phase 1 pushdown (see the Enterprise Scale Roadmap doc): only the
+    # plain "ask about my BigQuery data" case - a single source, its own
+    # original data, no forced sub-table - tries running SQL directly
+    # inside BigQuery before falling back to the normal path below. See
+    # _try_bigquery_pushdown's own docstring for the full fallback contract.
+    pushdown_df = None
+    if ds.kind == "bigquery" and requested_ids == ["original"] and not payload.table:
+        pushdown_df = _try_bigquery_pushdown(ds, payload.prompt)
+
+    if pushdown_df is not None:
+        tables = {"Original data": pushdown_df}
+        source_versions = []
+        original_df = pushdown_df
+        sources_manifest = [{
+            "kind": "original", "label": "Original data", "datasource_id": ds.id,
+            "version_id": None, "sheet": None,
+        }]
+    else:
+        try:
+            tables, source_versions, original_df, sources_manifest = _load_selected_tables(
+                db, user, ds, requested_ids, table=payload.table
+            )
+        except NeedsTableSelection as e:
+            available_list = ", ".join(e.available)
+            reply = f"This datasource has multiple tables/collections: {available_list}. Which one would you like to analyze?"
+            return _persist_and_respond(db, conversation.id, reply, needs_clarification=True)
 
     if original_df is None:
         # The person is working on a derived table, not the original data -
