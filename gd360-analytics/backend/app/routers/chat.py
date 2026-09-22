@@ -11,6 +11,7 @@ The core AI analytics endpoint. Given a prompt + a datasource, it:
   5. Returns chart spec + insight + follow-up suggestions, or a
      clarifying question if the AI/system needs more info.
 """
+import json
 import time
 from collections import defaultdict, deque
 from datetime import datetime
@@ -25,7 +26,7 @@ from ..database import get_db
 from ..deps import get_current_user
 from ..schemas_extra import ChatRequestFull, VerifyRequest
 from ..services import ai_engine
-from ..services.connectors import BigQueryConnector, QueryTooExpensive, ReadOnlyViolation
+from ..services.connectors import BigQueryConnector, SnowflakeConnector, QueryTooExpensive, ReadOnlyViolation
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, dataframe_to_csv_bytes, ensure_legacy_migrated, NeedsTableSelection,
     purpose_label,
@@ -50,20 +51,22 @@ def _check_rate_limit(user_id: str):
     window.append(now)
 
 
-# --- BigQuery pushdown (Enterprise Scale Roadmap, Phase 1) -----------------
+# --- Warehouse pushdown (Enterprise Scale Roadmap, Phase 1 + 2) ------------
 # Scoped narrowly on purpose: only the plain "ask a question about my
-# BigQuery data" case below (requested_ids == ["original"], no extra
-# tables merged in, no specific sub-table forced) tries this path. Merging
-# in other sources/saved versions still uses the general multi-table path
-# a few lines down - broadening pushdown to that case is real future work,
-# not this first slice. See the roadmap doc's own "Where to start" section
-# for why this is deliberately the narrowest useful first step.
+# BigQuery/Snowflake data" case below (requested_ids == ["original"], no
+# extra tables merged in, no specific sub-table forced) tries this path.
+# Merging in other sources/saved versions still uses the general
+# multi-table path a few lines down - broadening pushdown to that case is
+# real future work, not this first slice. See the roadmap doc's own
+# "Where to start" section for why this is deliberately the narrowest
+# useful first step.
 
-def _bigquery_schema_text(schema_cache: dict) -> str:
-    """Every table in a BigQuery dataset, formatted for ai_engine.
-    generate_bigquery_sql. schema_cache is always the multi-table
-    {table_name: [{"name","type"}, ...]} shape for a BigQuery datasource -
-    see BigQueryConnector.introspect_schema."""
+def _multi_table_schema_text(schema_cache: dict) -> str:
+    """Every table in a warehouse dataset (BigQuery or Snowflake - both
+    use the exact same multi-table {table_name: [{"name","type"}, ...]}
+    schema_cache shape, see BigQueryConnector/SnowflakeConnector.
+    introspect_schema), formatted for ai_engine.generate_bigquery_sql /
+    generate_snowflake_sql."""
     lines = []
     for table_name, columns in (schema_cache or {}).items():
         lines.append(f"Table `{table_name}`:")
@@ -72,19 +75,66 @@ def _bigquery_schema_text(schema_cache: dict) -> str:
     return "\n".join(lines)
 
 
-def _try_bigquery_pushdown(ds: models.DataSource, prompt: str):
+def _log_pushdown(db: Session, user_id: str, datasource_id: str, provider: str, sql_text: str,
+                   bytes_scanned, status: str, error_message: str = None):
+    """Records one pushdown attempt (BigQuery, Snowflake - any future
+    warehouse the same way) to the audit log, success or not - see
+    models.PushdownQueryLog. Best-effort only: a logging failure must
+    never break the actual chat request, so any error here is swallowed
+    (after being printed) rather than raised. Committed on its own right
+    away rather than left pending on the shared session, so the audit row
+    is durable even if something later in this same request has to roll
+    back."""
+    try:
+        db.add(models.PushdownQueryLog(
+            owner_id=user_id, datasource_id=datasource_id, provider=provider,
+            sql_text=sql_text or "", bytes_scanned=bytes_scanned, status=status,
+            error_message=error_message,
+        ))
+        db.commit()
+    except Exception as e:
+        print(f"[chat] Failed to write pushdown audit log (non-fatal): {e}")
+        db.rollback()
+
+
+def _todays_pushdown_bytes(db: Session, user_id: str) -> int:
+    """Total bytes this person's pushdown queries (any provider - BigQuery
+    and Snowflake share one combined daily cap) have made a warehouse scan
+    since midnight UTC today - the running total the daily per-customer
+    cost budget below is checked against. Read straight off the audit log
+    rather than a separate running-totals table, so there is nothing else
+    to keep in sync."""
+    start_of_day = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    total = db.query(func.sum(models.PushdownQueryLog.bytes_scanned)).filter(
+        models.PushdownQueryLog.owner_id == user_id,
+        models.PushdownQueryLog.created_at >= start_of_day,
+        models.PushdownQueryLog.status == "ok",
+    ).scalar()
+    return total or 0
+
+
+def _try_bigquery_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt: str):
     """Tries to answer `prompt` with one governed SQL query run directly
     inside BigQuery, instead of pulling rows into memory. Returns the
     small result as a DataFrame on success, or None on ANY failure -
-    schema too sparse, the model couldn't write safe SQL, the query would
-    scan more than this connection's byte budget, or BigQuery rejected it
+    schema too sparse, this user's daily pushdown cost budget is already
+    used up, the model couldn't write safe SQL, the query would scan more
+    than this connection's per-query byte budget, or BigQuery rejected it
     outright. A None here must be treated exactly like "pushdown was
     never attempted": the caller falls through to the ordinary pull-and-
     pandas path, so a BigQuery question can only ever get faster/cheaper
     from this, never worse - nothing in this function is allowed to raise
-    past it."""
-    schema_text = _bigquery_schema_text(ds.schema_cache)
+    past it. Every real attempt (one that got far enough to have actual
+    SQL) is written to the audit log via _log_pushdown, regardless of
+    outcome - see models.PushdownQueryLog."""
+    schema_text = _multi_table_schema_text(ds.schema_cache)
     if not schema_text.strip():
+        return None
+
+    already_scanned_today = _todays_pushdown_bytes(db, user_id)
+    if already_scanned_today >= settings.PUSHDOWN_MAX_BYTES_SCANNED_PER_DAY_PER_USER:
+        print(f"[chat] BigQuery pushdown skipped, daily cost budget already used: {already_scanned_today} bytes")
+        _log_pushdown(db, user_id, ds.id, "bigquery", "", None, "rejected_daily_budget")
         return None
 
     try:
@@ -100,15 +150,82 @@ def _try_bigquery_pushdown(ds: models.DataSource, prompt: str):
         service_account_json = security.decrypt_secret(ds.encrypted_secret)
         info = ds.connection_info
         connector = BigQueryConnector(info["project_id"], info["dataset_id"], service_account_json)
-        return connector.run_pushdown_query(sql, max_bytes=settings.BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY)
-    except (ReadOnlyViolation, QueryTooExpensive) as e:
-        # The AI wrote something unsafe or too expensive to run - don't
-        # retry with a worse query, just fall back this one time like any
-        # other pushdown failure.
-        print(f"[chat] BigQuery pushdown query rejected, falling back: {e}")
+        df, bytes_scanned = connector.run_pushdown_query(sql, max_bytes=settings.BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY)
+        _log_pushdown(db, user_id, ds.id, "bigquery", sql, bytes_scanned, "ok")
+        return df
+    except ReadOnlyViolation as e:
+        # The AI wrote something unsafe - don't retry with a worse query,
+        # just fall back this one time like any other pushdown failure.
+        print(f"[chat] BigQuery pushdown query rejected (unsafe), falling back: {e}")
+        _log_pushdown(db, user_id, ds.id, "bigquery", sql, None, "rejected_unsafe", str(e))
+        return None
+    except QueryTooExpensive as e:
+        print(f"[chat] BigQuery pushdown query rejected (too expensive), falling back: {e}")
+        _log_pushdown(db, user_id, ds.id, "bigquery", sql, e.estimated_bytes, "rejected_too_expensive", str(e))
         return None
     except Exception as e:
         print(f"[chat] BigQuery pushdown query failed, falling back: {e}")
+        _log_pushdown(db, user_id, ds.id, "bigquery", sql, None, "error", str(e))
+        return None
+
+
+def _try_snowflake_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt: str):
+    """Tries to answer `prompt` with one governed SQL query run directly
+    inside Snowflake, instead of pulling rows into memory - the same idea
+    as _try_bigquery_pushdown above, with one real difference: Snowflake
+    bills by warehouse compute-time, not bytes scanned, so there is no
+    free pre-flight "how much would this cost" check the way BigQuery's
+    dry run gives. Safety instead comes from a strict per-query statement
+    timeout (settings.SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS - Snowflake
+    itself cancels the query once it's hit, capping the worst case) plus
+    the same daily cumulative byte budget every pushdown provider shares
+    (see _todays_pushdown_bytes): Snowflake's own actual bytes_scanned for
+    a completed query (read back from its QUERY_HISTORY_BY_SESSION, see
+    SnowflakeConnector.run_pushdown_query) still counts toward that budget
+    - just recorded after the query runs rather than estimated before it
+    does. Returns the small result as a DataFrame on success, or None on
+    ANY failure, matching _try_bigquery_pushdown's exact fallback
+    contract - see that function's docstring for the full list of ways
+    this can (harmlessly) fail through to the normal pull-and-pandas path."""
+    schema_text = _multi_table_schema_text(ds.schema_cache)
+    if not schema_text.strip():
+        return None
+
+    already_scanned_today = _todays_pushdown_bytes(db, user_id)
+    if already_scanned_today >= settings.PUSHDOWN_MAX_BYTES_SCANNED_PER_DAY_PER_USER:
+        print(f"[chat] Snowflake pushdown skipped, daily cost budget already used: {already_scanned_today} bytes")
+        _log_pushdown(db, user_id, ds.id, "snowflake", "", None, "rejected_daily_budget")
+        return None
+
+    try:
+        sql = ai_engine.generate_snowflake_sql(prompt, schema_text)
+    except Exception as e:
+        print(f"[chat] Snowflake pushdown SQL generation failed, falling back: {e}")
+        return None
+
+    if not sql or sql.strip().upper() == "NOT_POSSIBLE":
+        return None
+
+    try:
+        creds = json.loads(security.decrypt_secret(ds.encrypted_secret))
+        info = ds.connection_info
+        connector = SnowflakeConnector(
+            account=info["account"], warehouse=info["warehouse"], database=info["database"],
+            db_schema=info.get("db_schema"), role=info.get("role"),
+            username=creds["username"], password=creds["password"],
+        )
+        df, bytes_scanned = connector.run_pushdown_query(
+            sql, statement_timeout_seconds=settings.SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS
+        )
+        _log_pushdown(db, user_id, ds.id, "snowflake", sql, bytes_scanned, "ok")
+        return df
+    except ReadOnlyViolation as e:
+        print(f"[chat] Snowflake pushdown query rejected (unsafe), falling back: {e}")
+        _log_pushdown(db, user_id, ds.id, "snowflake", sql, None, "rejected_unsafe", str(e))
+        return None
+    except Exception as e:
+        print(f"[chat] Snowflake pushdown query failed, falling back: {e}")
+        _log_pushdown(db, user_id, ds.id, "snowflake", sql, None, "error", str(e))
         return None
 
 
@@ -143,14 +260,18 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     # once; each entry is only loaded once even if listed twice.
     requested_ids = payload.source_version_ids or ["original"]
 
-    # Phase 1 pushdown (see the Enterprise Scale Roadmap doc): only the
-    # plain "ask about my BigQuery data" case - a single source, its own
+    # Warehouse pushdown (see the Enterprise Scale Roadmap doc): only the
+    # plain "ask about my warehouse data" case - a single source, its own
     # original data, no forced sub-table - tries running SQL directly
-    # inside BigQuery before falling back to the normal path below. See
-    # _try_bigquery_pushdown's own docstring for the full fallback contract.
+    # inside the warehouse before falling back to the normal path below.
+    # See _try_bigquery_pushdown/_try_snowflake_pushdown's own docstrings
+    # for the full fallback contract.
     pushdown_df = None
-    if ds.kind == "bigquery" and requested_ids == ["original"] and not payload.table:
-        pushdown_df = _try_bigquery_pushdown(ds, payload.prompt)
+    if requested_ids == ["original"] and not payload.table:
+        if ds.kind == "bigquery":
+            pushdown_df = _try_bigquery_pushdown(db, ds, user.id, payload.prompt)
+        elif ds.kind == "snowflake":
+            pushdown_df = _try_snowflake_pushdown(db, ds, user.id, payload.prompt)
 
     if pushdown_df is not None:
         tables = {"Original data": pushdown_df}
