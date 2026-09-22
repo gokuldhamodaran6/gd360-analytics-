@@ -10,11 +10,67 @@ import { connectionsApi, datasourceApi, OAuthResource } from "../api/client";
 // spreadsheet/workbook GD360 should actually read, then hands off into the
 // normal Workspace the same way every other connect flow does.
 //
+// Google and Microsoft pick a resource two different ways, because they
+// use different OAuth scopes (see backend oauth_tokens.GOOGLE_SCOPES for
+// the full reasoning): Microsoft's Files.Read scope can search a
+// person's OneDrive directly (ResourcePicker, a plain search list), while
+// Google's drive.file scope can't list/search Drive at all - the only
+// way to pick a file under it is Google's own picker widget
+// (GooglePicker, below), which the backend hands a short-lived access
+// token to via GET /connections/{id}/picker-token.
+//
 // Reached two different ways, both via a real browser redirect (never SPA
 // navigation) so both need to work from a cold page load:
 //   /connect/google_sheets?connection_id=... or /connect/microsoft_excel?connection_id=...
 //   /connect/error?provider=...&reason=...  (consent was denied, or the
 //     token exchange itself failed - see connections.py's callback)
+
+// Google's picker.js (loaded lazily, only when GooglePicker actually
+// mounts) attaches itself to the window as an untyped global - there is
+// no official first-party TS type package for it, so it's treated as any
+// at the boundary here, same as every other `err: any` catch already in
+// this file.
+declare global {
+  interface Window {
+    gapi?: any;
+    google?: any;
+  }
+}
+
+// Set in Render as a frontend build-time env var (VITE_ prefix -> baked
+// into the bundle by Vite at build time, same as VITE_API_URL in
+// api/client.ts) - a Google Cloud Console API key restricted to the
+// Picker API and this app's own domain. Safe to ship to the browser (it's
+// not a secret the way the OAuth Client Secret is - restricting it by API
+// and domain in Cloud Console is what keeps it safe), but until it's set,
+// GooglePicker shows a clear "not set up yet" message instead of a
+// broken button.
+const PICKER_API_KEY: string | undefined = (import.meta as any).env?.VITE_GOOGLE_PICKER_API_KEY;
+
+function loadScriptOnce(src: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) {
+      resolve();
+      return;
+    }
+    const el = document.createElement("script");
+    el.src = src;
+    el.async = true;
+    el.onload = () => resolve();
+    el.onerror = () => reject(new Error("Could not load Google's picker script - check your connection and try again."));
+    document.head.appendChild(el);
+  });
+}
+
+async function loadGooglePickerLibrary(): Promise<void> {
+  await loadScriptOnce("https://apis.google.com/js/api.js");
+  await new Promise<void>((resolve, reject) => {
+    window.gapi.load("picker", {
+      callback: () => resolve(),
+      onerror: () => reject(new Error("Could not load Google's picker library - please try again.")),
+    });
+  });
+}
 
 const PROVIDER_LABEL: Record<string, string> = {
   google_sheets: "Google Sheets",
@@ -58,16 +114,20 @@ function Shell({ children }: { children: React.ReactNode }) {
 }
 
 // Top level: only ever reads the route/query params and picks which of the
-// two panels below to render - it holds no state and calls no other hooks
-// itself, so branching between an "error" URL and a real connection_id
-// here (rather than inside ResourcePicker, which DOES hold state) never
-// runs into React's "hooks must run in the same order every render" rule.
+// three panels below to render - it holds no state and calls no other
+// hooks itself, so branching between an "error" URL, Google's picker
+// flow, and Microsoft's search-list flow here (rather than inside one of
+// those, which DO hold state) never runs into React's "hooks must run in
+// the same order every render" rule.
 export default function ConnectResourcePicker() {
   const { provider } = useParams<{ provider: string }>();
   const [params] = useSearchParams();
 
   if (provider === "error") {
     return <ErrorPanel failedProvider={params.get("provider") || ""} reason={params.get("reason") || ""} />;
+  }
+  if (provider === "google_sheets") {
+    return <GooglePicker connectionId={params.get("connection_id") || ""} />;
   }
   return <ResourcePicker provider={provider || ""} connectionId={params.get("connection_id") || ""} />;
 }
@@ -93,6 +153,133 @@ function ErrorPanel({ failedProvider, reason }: { failedProvider: string; reason
   );
 }
 
+// Google Sheets only. Unlike Microsoft's ResourcePicker below, there is no
+// search list here - drive.file (the scope this connection was granted
+// with) can only ever see a file the person explicitly selects through
+// Google's own picker widget, so this component's job is just: get a
+// token, load Google's picker library, and hand off to Google's own UI
+// for the actual choosing.
+function GooglePicker({ connectionId }: { connectionId: string }) {
+  const navigate = useNavigate();
+  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [pickerReady, setPickerReady] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [finishing, setFinishing] = useState(false);
+  const [finishError, setFinishError] = useState("");
+
+  useEffect(() => {
+    if (!connectionId) {
+      setLoadError("Missing connection - please start the connect flow again.");
+      return;
+    }
+    if (!PICKER_API_KEY) {
+      setLoadError("Google Sheets picker isn't fully set up yet - ask GD360's admin to finish the Google Picker setup.");
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const [token] = await Promise.all([connectionsApi.pickerToken(connectionId), loadGooglePickerLibrary()]);
+        if (cancelled) return;
+        setAccessToken(token);
+        setPickerReady(true);
+      } catch (err: any) {
+        if (cancelled) return;
+        setLoadError(err?.response?.data?.detail || err?.message || "Could not get ready to pick a spreadsheet - please try again.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionId]);
+
+  const finish = async (resourceId: string, resourceName: string) => {
+    setFinishing(true);
+    setFinishError("");
+    try {
+      const ds = await connectionsApi.finish(connectionId, {
+        name: resourceName,
+        resource_id: resourceId,
+        resource_name: resourceName,
+      });
+      navigate(`/workspace/${ds.id}`);
+    } catch (err: any) {
+      setFinishError(err?.response?.data?.detail || "Could not finish connecting - please try again.");
+      setFinishing(false);
+    }
+  };
+
+  const openPicker = () => {
+    if (!accessToken || !PICKER_API_KEY || !window.google) return;
+    const google = window.google;
+    const picker = new google.picker.PickerBuilder()
+      .addView(google.picker.ViewId.SPREADSHEETS)
+      .setOAuthToken(accessToken)
+      .setDeveloperKey(PICKER_API_KEY)
+      .setCallback((data: any) => {
+        if (data.action === google.picker.Action.PICKED) {
+          const doc = data.docs[0];
+          finish(doc.id, doc.name);
+        }
+      })
+      .build();
+    picker.setVisible(true);
+  };
+
+  const cancel = async () => {
+    if (connectionId) {
+      try {
+        await datasourceApi.delete(connectionId);
+      } catch {
+        // Best-effort cleanup only - see ResourcePicker's identical cancel().
+      }
+    }
+    navigate("/");
+  };
+
+  return (
+    <Shell>
+      <div className="mb-6">
+        <div className="text-xs font-semibold uppercase tracking-wide text-primary mb-2">Live connection</div>
+        <h1 className="text-2xl font-bold leading-tight mb-2">Pick a Google Sheet to connect</h1>
+        <p className="text-sm text-muted leading-relaxed">
+          GD360 will read this live - any edits you make show up here automatically, with nothing to re-upload.
+        </p>
+      </div>
+
+      <div className="card p-6 text-center">
+        {loadError ? (
+          <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{loadError}</div>
+        ) : finishing ? (
+          <div className="text-sm text-muted py-4">Connecting...</div>
+        ) : (
+          <>
+            <p className="text-sm text-muted mb-4">
+              Google will open its own window so you can choose the exact spreadsheet you want GD360 to read.
+            </p>
+            <button type="button" className="btn-primary w-full" onClick={openPicker} disabled={!pickerReady}>
+              {pickerReady ? "Choose a spreadsheet" : "Getting ready..."}
+            </button>
+          </>
+        )}
+        {finishError && (
+          <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mt-3">{finishError}</div>
+        )}
+      </div>
+
+      <div className="mt-6 text-center">
+        <button type="button" onClick={cancel} className="text-sm font-medium text-muted hover:text-text">
+          Cancel
+        </button>
+      </div>
+    </Shell>
+  );
+}
+
+// Microsoft Excel only - Graph's Files.Read scope can search a person's
+// OneDrive directly (see backend list_resources), so this stays the
+// plain search-and-pick list it always was.
 function ResourcePicker({ provider, connectionId }: { provider: string; connectionId: string }) {
   const navigate = useNavigate();
   const providerLabel = PROVIDER_LABEL[provider] || "your data";
