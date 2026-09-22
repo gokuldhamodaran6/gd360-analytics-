@@ -77,7 +77,28 @@ class Settings(BaseSettings):
     ANTHROPIC_MODEL: str = "claude-sonnet-4-5"
 
     # --- Safety limits (generous defaults; raise/lower as you like) ---
-    MAX_ROWS_LOADED_PER_QUERY: int = 200_000
+    # 2026-09-22 incident: the backend runs on a single 512MB instance, and
+    # this used to default to 200_000. A live-connector query (Postgres/
+    # MySQL/SQL Server/Supabase/MongoDB/BigQuery) pulls this many rows into
+    # one in-memory pandas DataFrame per request - for a realistically wide
+    # table that alone can be several hundred MB, and a normal handful of
+    # people loading their workspace at the same moment (each one firing a
+    # preview + a chat load) was enough concurrent DataFrames in memory at
+    # once to hit the container's memory ceiling, get OOM-killed, and
+    # restart - which is what made every user's requests fail with 502s for
+    # a few minutes, twice in a row, regardless of which datasource or
+    # account they were on. Lowered to a much safer default; still generous
+    # for real analysis on the vast majority of tables.
+    MAX_ROWS_LOADED_PER_QUERY: int = 75_000
+    # The Data tab's preview/export only ever displays a `limit`-sized page
+    # (50-5000 rows, see datasources.py) of whatever gets loaded, so it has
+    # no need to pull anywhere near MAX_ROWS_LOADED_PER_QUERY rows just to
+    # show 50 of them - that mismatch (load 200k rows to show 50) was the
+    # single biggest avoidable contributor to the incident above, since
+    # preview is by far the most frequently hit of the two. Capped
+    # separately and much lower here; chat/AI analysis (which genuinely can
+    # need more rows to be accurate) keeps using the higher limit above.
+    PREVIEW_ROW_LIMIT: int = 20_000
     SANDBOX_TIMEOUT_SECONDS: int = 20
     MAX_UPLOAD_MB: int = 50
     RATE_LIMIT_PER_MINUTE: int = 30  # per-user AI calls/minute, protects the free AI tier
