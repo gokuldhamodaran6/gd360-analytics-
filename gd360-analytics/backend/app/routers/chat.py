@@ -26,7 +26,7 @@ from ..database import get_db
 from ..deps import get_current_user
 from ..schemas_extra import ChatRequestFull, VerifyRequest
 from ..services import ai_engine
-from ..services.connectors import BigQueryConnector, SnowflakeConnector, QueryTooExpensive, ReadOnlyViolation
+from ..services.connectors import BigQueryConnector, SnowflakeConnector, SQLConnector, QueryTooExpensive, ReadOnlyViolation
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, dataframe_to_csv_bytes, ensure_legacy_migrated, NeedsTableSelection,
     purpose_label,
@@ -229,6 +229,56 @@ def _try_snowflake_pushdown(db: Session, ds: models.DataSource, user_id: str, pr
         return None
 
 
+def _try_sql_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt: str):
+    """Tries to answer `prompt` with one governed SQL query run directly
+    inside the person's own Postgres/MySQL/SQL Server/Supabase database,
+    instead of pulling rows into memory - the plain-database counterpart to
+    _try_bigquery_pushdown/_try_snowflake_pushdown above. Unlike those two,
+    there is no per-query metered cost to guard here (a customer's own
+    database server has no pay-per-scan billing the way a cloud warehouse
+    does), so this skips the byte/time cost checks and the shared daily
+    budget entirely - it is purely a speed and memory-safety upgrade,
+    reusing SQLConnector.load_dataframe's existing is_raw_sql path
+    (assert_read_only_sql plus an automatic, now dialect-aware row cap -
+    see that method's own comments for the SQL Server TOP-vs-LIMIT fix)
+    completely unchanged. Still logs to the same audit table as the other
+    two providers, with bytes_scanned always None, so the audit trail
+    stays consistent across every pushdown provider even though this one
+    has nothing to meter. Returns the small result as a DataFrame on
+    success, or None on ANY failure, matching the other two pushdown
+    helpers' exact fallback contract."""
+    schema_text = _multi_table_schema_text(ds.schema_cache)
+    if not schema_text.strip():
+        return None
+
+    try:
+        sql = ai_engine.generate_sql_pushdown_sql(prompt, schema_text, ds.kind)
+    except Exception as e:
+        print(f"[chat] SQL pushdown SQL generation failed, falling back: {e}")
+        return None
+
+    if not sql or sql.strip().upper() == "NOT_POSSIBLE":
+        return None
+
+    try:
+        username, password = security.decrypt_secret(ds.encrypted_secret).split("␟")
+        info = ds.connection_info
+        connector = SQLConnector(
+            ds.kind, info["host"], info["port"], info["database"], username, password, info.get("ssl", True)
+        )
+        df = connector.load_dataframe(sql, is_raw_sql=True)
+        _log_pushdown(db, user_id, ds.id, ds.kind, sql, None, "ok")
+        return df
+    except ReadOnlyViolation as e:
+        print(f"[chat] SQL pushdown query rejected (unsafe), falling back: {e}")
+        _log_pushdown(db, user_id, ds.id, ds.kind, sql, None, "rejected_unsafe", str(e))
+        return None
+    except Exception as e:
+        print(f"[chat] SQL pushdown query failed, falling back: {e}")
+        _log_pushdown(db, user_id, ds.id, ds.kind, sql, None, "error", str(e))
+        return None
+
+
 @router.post("", response_model=schemas.ChatResponse)
 def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     _check_rate_limit(user.id)
@@ -260,18 +310,22 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     # once; each entry is only loaded once even if listed twice.
     requested_ids = payload.source_version_ids or ["original"]
 
-    # Warehouse pushdown (see the Enterprise Scale Roadmap doc): only the
-    # plain "ask about my warehouse data" case - a single source, its own
+    # Warehouse/database pushdown (see the Enterprise Scale Roadmap doc):
+    # only the plain "ask about my data" case - a single source, its own
     # original data, no forced sub-table - tries running SQL directly
-    # inside the warehouse before falling back to the normal path below.
-    # See _try_bigquery_pushdown/_try_snowflake_pushdown's own docstrings
-    # for the full fallback contract.
+    # inside the source before falling back to the normal path below. See
+    # _try_bigquery_pushdown/_try_snowflake_pushdown/_try_sql_pushdown's
+    # own docstrings for the full fallback contract (the plain-database
+    # path skips the cost/budget checks the two warehouses have, since a
+    # customer's own database has no metered per-query billing to guard).
     pushdown_df = None
     if requested_ids == ["original"] and not payload.table:
         if ds.kind == "bigquery":
             pushdown_df = _try_bigquery_pushdown(db, ds, user.id, payload.prompt)
         elif ds.kind == "snowflake":
             pushdown_df = _try_snowflake_pushdown(db, ds, user.id, payload.prompt)
+        elif ds.kind in ("postgres", "mysql", "sqlserver", "supabase"):
+            pushdown_df = _try_sql_pushdown(db, ds, user.id, payload.prompt)
 
     if pushdown_df is not None:
         tables = {"Original data": pushdown_df}
