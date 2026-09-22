@@ -86,7 +86,17 @@ const CHART_TYPE_LABELS: Record<string, string> = {
 };
 
 export function buildFlowGraph(
-  flow: DataFlow, currentDatasourceId: string
+  flow: DataFlow, currentDatasourceId: string,
+  // When set, the map only shows this conversation's own tables/charts,
+  // plus - walking backward through the real recorded edges - whatever
+  // upstream raw data/tables actually fed them, even if THAT upstream
+  // table happened to be built in a different conversation (you still
+  // need to see what you built on top of). It deliberately does NOT walk
+  // forward: a table this conversation built that some OTHER, later
+  // conversation went on to use is left out, since that is not this
+  // conversation's own story. Omit/null to see every conversation ever
+  // run against this datasource, exactly as before.
+  scopeConversationId?: string | null
 ): { nodes: FlowCardNode[]; edges: Edge[]; isEmpty: boolean } {
   const versionIds = new Set(flow.versions.map((v) => v.id));
   const versionById = new Map(flow.versions.map((v) => [v.id, v]));
@@ -252,10 +262,62 @@ export function buildFlowGraph(
     }
   }
 
-  assignStepNumbers(nodes, edges);
+  let scopedNodes = nodes;
+  let scopedEdges = edges;
+  if (scopeConversationId) {
+    const keep = conversationAncestorScope(flow, creatorByVersionId, scopeConversationId, edges);
+    scopedNodes = nodes.filter((n) => keep.has(n.id));
+    scopedEdges = edges.filter((e) => keep.has(e.source) && keep.has(String(e.target)));
+  }
 
-  const isEmpty = flow.versions.length === 0 && flow.nodes.every((n) => !n.has_chart);
-  return { nodes: layoutNodes(nodes, edges), edges, isEmpty };
+  assignStepNumbers(scopedNodes, scopedEdges);
+
+  const isEmpty = scopeConversationId
+    ? !flow.nodes.some((n) => n.has_chart && n.conversation_id === scopeConversationId)
+      && !flow.versions.some((v) => creatorByVersionId.get(v.id)?.conversation_id === scopeConversationId)
+    : flow.versions.length === 0 && flow.nodes.every((n) => !n.has_chart);
+
+  return { nodes: layoutNodes(scopedNodes, scopedEdges), edges: scopedEdges, isEmpty };
+}
+
+// Every card that is genuinely part of THIS conversation's own story: any
+// chart it produced, any table it built (charted or not), plus - by
+// walking real edges backward - everything those actually came from. A
+// plain graph reachability walk over the exact same edges the rest of
+// this file already drew from recorded Message.sources/new_version_id, so
+// scoping to one conversation never invents or guesses a connection; it
+// only ever hides cards that truly have no recorded path into this
+// conversation's own work.
+function conversationAncestorScope(
+  flow: DataFlow,
+  creatorByVersionId: Map<string, FlowNode>,
+  scopeConversationId: string,
+  edges: Edge[],
+): Set<string> {
+  const keep = new Set<string>();
+  for (const n of flow.nodes) {
+    if (n.has_chart && n.conversation_id === scopeConversationId) keep.add(`msg:${n.message_id}`);
+  }
+  for (const v of flow.versions) {
+    if (creatorByVersionId.get(v.id)?.conversation_id === scopeConversationId) keep.add(`ver:${v.id}`);
+  }
+
+  const parentsOf = new Map<string, string[]>();
+  for (const e of edges) {
+    const target = String(e.target);
+    if (!parentsOf.has(target)) parentsOf.set(target, []);
+    parentsOf.get(target)!.push(e.source);
+  }
+
+  const queue = Array.from(keep);
+  let head = 0;
+  while (head < queue.length) {
+    const id = queue[head++];
+    for (const parentId of parentsOf.get(id) || []) {
+      if (!keep.has(parentId)) { keep.add(parentId); queue.push(parentId); }
+    }
+  }
+  return keep;
 }
 
 // Labels every card "Step 1", "Step 2", "Step 3"... purely from the real
