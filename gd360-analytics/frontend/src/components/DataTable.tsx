@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { datasourceApi, DataPreview, DatasetVersion, ColumnStat } from "../api/client";
+import { datasourceApi, DataPreview, DatasetVersion, ColumnStat, ColumnDistinctValues } from "../api/client";
 
 // Rows-per-page choices for the numbered pagination footer below. Capped at
 // 250 (and no more "1000"/"All" option) on purpose - see config.py's
@@ -43,6 +43,161 @@ const STAT_LABELS: Record<StatKey, string> = {
   none: "—", sum: "Sum", mean: "Average", min: "Min", max: "Max",
   count: "Count", non_null: "Filled", distinct: "Distinct",
 };
+
+// --- Excel-style column filters -------------------------------------------
+//
+// Every column's filter panel now has two tabs, exactly the way Excel's and
+// Google Sheets' own column filter dropdowns do: "Values" (a searchable
+// checkbox list of the column's actual distinct values, fetched on demand -
+// see backend get_column_distinct_values) and "Condition" (a type-aware
+// operator: text contains/equals/etc, a number comparison, a date range, or
+// a true/false toggle - whichever fits the column's dtype). Both tabs write
+// into the same `filters` map the backend already understood as JSON;
+// _apply_column_filter on the backend is what actually reads this shape.
+type TextOp = "contains" | "not_contains" | "equals" | "not_equals" | "starts_with" | "ends_with" | "is_empty" | "is_not_empty";
+type NumberOp = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "between";
+type ColumnFilterSpec =
+  | { type: "values"; include: (string | number | boolean | null)[] }
+  | { type: "text"; op: TextOp; value: string }
+  | { type: "number"; op: NumberOp; value: string; value2?: string }
+  | { type: "date"; from: string | null; to: string | null }
+  | { type: "boolean"; value: "true" | "false" };
+
+const TEXT_OP_LABELS: Record<TextOp, string> = {
+  contains: "contains", not_contains: "does not contain", equals: "is exactly",
+  not_equals: "is not", starts_with: "starts with", ends_with: "ends with",
+  is_empty: "is blank", is_not_empty: "is not blank",
+};
+const NUMBER_OP_LABELS: Record<NumberOp, string> = {
+  eq: "=", neq: "≠", gt: ">", gte: "≥", lt: "<", lte: "≤", between: "is between",
+};
+
+// A stand-in key for "(Blanks)" in the values checklist - real column
+// values are stringified for the checkbox `checked` lookup, and no real
+// value can ever collide with this one.
+const NULL_KEY = "\u0000__NULL__";
+
+function dtypeGroup(dtype: string): "number" | "date" | "boolean" | "text" {
+  const d = (dtype || "").toLowerCase();
+  if (d.startsWith("bool")) return "boolean";
+  if (d.startsWith("int") || d.startsWith("float") || d.startsWith("uint") || d.startsWith("double")) return "number";
+  if (d.startsWith("datetime") || d.startsWith("date")) return "date";
+  return "text";
+}
+
+function defaultConditionForGroup(group: "number" | "date" | "boolean" | "text"): ColumnFilterSpec {
+  if (group === "number") return { type: "number", op: "eq", value: "" };
+  if (group === "date") return { type: "date", from: null, to: null };
+  if (group === "boolean") return { type: "boolean", value: "true" };
+  return { type: "text", op: "contains", value: "" };
+}
+
+function isConditionActive(d: ColumnFilterSpec): boolean {
+  if (d.type === "text") return d.op === "is_empty" || d.op === "is_not_empty" || !!d.value;
+  if (d.type === "number") return d.op === "between" ? !!(d.value && d.value2) : !!d.value;
+  if (d.type === "date") return !!d.from || !!d.to;
+  if (d.type === "boolean") return d.value === "true" || d.value === "false";
+  return false;
+}
+
+function isFilterActive(spec: ColumnFilterSpec | undefined): boolean {
+  if (!spec) return false;
+  if (spec.type === "values") return (spec.include || []).length > 0;
+  return isConditionActive(spec);
+}
+
+function describeFilter(spec: ColumnFilterSpec, label: string): string {
+  if (spec.type === "values") {
+    const n = (spec.include || []).length;
+    return `${label}: ${n} value${n === 1 ? "" : "s"} selected`;
+  }
+  if (spec.type === "text") {
+    const opLabel = TEXT_OP_LABELS[spec.op];
+    return spec.op === "is_empty" || spec.op === "is_not_empty" ? `${label} ${opLabel}` : `${label} ${opLabel} "${spec.value}"`;
+  }
+  if (spec.type === "number") {
+    if (spec.op === "between") return `${label} between ${spec.value} and ${spec.value2}`;
+    return `${label} ${NUMBER_OP_LABELS[spec.op]} ${spec.value}`;
+  }
+  if (spec.type === "date") {
+    if (spec.from && spec.to) return `${label}: ${spec.from} → ${spec.to}`;
+    if (spec.from) return `${label} on/after ${spec.from}`;
+    if (spec.to) return `${label} on/before ${spec.to}`;
+    return label;
+  }
+  return `${label} is ${spec.value}`;
+}
+
+function isoDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+const DATE_PRESETS: { label: string; range: () => { from: string; to: string } }[] = [
+  { label: "Today", range: () => { const t = isoDate(new Date()); return { from: t, to: t }; } },
+  {
+    label: "Last 7 days",
+    range: () => {
+      const to = new Date();
+      const from = new Date();
+      from.setDate(from.getDate() - 6);
+      return { from: isoDate(from), to: isoDate(to) };
+    },
+  },
+  {
+    label: "This month",
+    range: () => {
+      const now = new Date();
+      const from = new Date(now.getFullYear(), now.getMonth(), 1);
+      const to = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      return { from: isoDate(from), to: isoDate(to) };
+    },
+  },
+  {
+    label: "This year",
+    range: () => {
+      const now = new Date();
+      return { from: `${now.getFullYear()}-01-01`, to: `${now.getFullYear()}-12-31` };
+    },
+  },
+];
+
+// --- Type-aware display formatting (Format... in the reference menu) -----
+// Purely a rendering transform - never touches the underlying value, the
+// filter/sort/total math, or what gets exported, so it is always safe to
+// flip on and off.
+type NumberDisplayMode = "automatic" | "number" | "currency" | "percent" | "date";
+type DateStyle = "iso" | "us" | "long";
+type NumberDisplayFormat = { mode: NumberDisplayMode; decimals: number; currency: string; dateStyle: DateStyle };
+const DEFAULT_DISPLAY_FORMAT: NumberDisplayFormat = { mode: "automatic", decimals: 2, currency: "USD", dateStyle: "iso" };
+const FORMAT_MODE_LABELS: Record<NumberDisplayMode, string> = {
+  automatic: "Automatic", number: "Number", currency: "Currency", percent: "Percent", date: "Date",
+};
+const CURRENCY_OPTIONS = ["USD", "EUR", "GBP", "INR", "JPY", "CAD"];
+
+function formatCellValue(raw: any, fmt: NumberDisplayFormat | undefined): string | null {
+  if (raw === null || raw === undefined || raw === "") return null;
+  if (!fmt || fmt.mode === "automatic") return null; // caller falls back to the plain String(raw) it always used.
+  const num = Number(raw);
+  if (fmt.mode === "number") {
+    return Number.isNaN(num) ? String(raw) : num.toLocaleString(undefined, { minimumFractionDigits: fmt.decimals, maximumFractionDigits: fmt.decimals });
+  }
+  if (fmt.mode === "currency") {
+    return Number.isNaN(num)
+      ? String(raw)
+      : num.toLocaleString(undefined, { style: "currency", currency: fmt.currency, minimumFractionDigits: fmt.decimals, maximumFractionDigits: fmt.decimals });
+  }
+  if (fmt.mode === "percent") {
+    return Number.isNaN(num) ? String(raw) : num.toLocaleString(undefined, { style: "percent", minimumFractionDigits: fmt.decimals, maximumFractionDigits: fmt.decimals });
+  }
+  if (fmt.mode === "date") {
+    const d = new Date(raw);
+    if (Number.isNaN(d.getTime())) return String(raw);
+    if (fmt.dateStyle === "us") return d.toLocaleDateString("en-US");
+    if (fmt.dateStyle === "long") return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    return isoDate(d);
+  }
+  return null;
+}
 
 function clamp01(n: number): number {
   return n < 0 ? 0 : n > 1 ? 1 : n;
@@ -132,23 +287,22 @@ function FilterIcon({ active }: { active: boolean }) {
 // spreadsheet/database grid gives, using the dtype the backend already
 // returns (preview.dtypes) rather than re-sniffing it client-side.
 function ColumnTypeIcon({ dtype }: { dtype: string }) {
-  const d = dtype.toLowerCase();
-  let label = "Abc";
-  let cls = "text-muted";
-  if (d.startsWith("bool")) {
-    label = "✓︎";
-    cls = "text-emerald-400";
-  } else if (d.startsWith("int") || d.startsWith("float") || d.startsWith("uint") || d.startsWith("double")) {
-    label = "#";
-    cls = "text-sky-400";
-  } else if (d.startsWith("datetime") || d.startsWith("date")) {
-    label = "\u{1F4C5}";
-    cls = "text-amber-400";
-  }
+  const group = dtypeGroup(dtype);
+  const label = group === "boolean" ? "✓︎" : group === "number" ? "#" : group === "date" ? "\u{1F4C5}" : "Abc";
+  const cls = group === "boolean" ? "text-emerald-400" : group === "number" ? "text-sky-400" : group === "date" ? "text-amber-400" : "text-muted";
   return (
     <span className={`text-[10px] font-semibold shrink-0 ${cls}`} title={dtype} aria-hidden>
       {label}
     </span>
+  );
+}
+
+// A small pin glyph shown next to a pinned column's name.
+function PinIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 16 16" className="text-primary shrink-0" fill="currentColor" aria-hidden>
+      <path d="M9.5 1.5 14.5 6.5 12 9l-1 4-1.5-1.5L6 15l-1-1 3.5-3.5L7 9 4.5 11 3 9.5l4.5-4.5L9.5 1.5z" />
+    </svg>
   );
 }
 
@@ -229,8 +383,8 @@ export default function DataTable({
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const [sortBy, setSortBy] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  const [filters, setFilters] = useState<Record<string, string>>({});
-  const [debouncedFilters, setDebouncedFilters] = useState<Record<string, string>>({});
+  const [filters, setFilters] = useState<Record<string, ColumnFilterSpec>>({});
+  const [debouncedFilters, setDebouncedFilters] = useState<Record<string, ColumnFilterSpec>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busyAction, setBusyAction] = useState("");
@@ -252,13 +406,37 @@ export default function DataTable({
   const [totalsSelection, setTotalsSelection] = useState<Record<string, StatKey>>({});
   const [density, setDensity] = useState<Density>("comfortable");
 
+  // --- Excel-parity additions: rename, wrap text, pin, and type-aware
+  // display format - all per-viewer/per-table, same reset lifecycle. ---
+  const [colLabels, setColLabels] = useState<Record<string, string>>({});
+  const [renamingColKey, setRenamingColKey] = useState<string | null>(null);
+  const [colRenameDraft, setColRenameDraft] = useState("");
+  const [wrapCols, setWrapCols] = useState<Set<string>>(new Set());
+  const [pinnedCols, setPinnedCols] = useState<string[]>([]);
+  const [numberFormats, setNumberFormats] = useState<Record<string, NumberDisplayFormat>>({});
+
+  // --- Excel-style filter panel: values-checklist vs. condition tab,
+  // scoped to whichever one column's panel is currently open (only one
+  // can be open at a time - see toggleColumnMenu, which seeds all of
+  // these fresh every time a different column's menu opens). ---
+  const [filterTab, setFilterTab] = useState<"values" | "condition">("values");
+  const [conditionDraft, setConditionDraft] = useState<ColumnFilterSpec>({ type: "text", op: "contains", value: "" });
+  const [selectedValueKeys, setSelectedValueKeys] = useState<Set<string>>(new Set());
+  const [valuesQuery, setValuesQuery] = useState("");
+  const [valuesResult, setValuesResult] = useState<ColumnDistinctValues | null>(null);
+  const [valuesLoading, setValuesLoading] = useState(false);
+  const [formatSectionOpen, setFormatSectionOpen] = useState(false);
+  const [highlightSectionOpen, setHighlightSectionOpen] = useState(false);
+
   const menuRef = useRef<HTMLDivElement | null>(null);
   const columnsPanelRef = useRef<HTMLDivElement | null>(null);
   const thRefs = useRef<Record<string, HTMLTableCellElement | null>>({});
-  const hasActiveFilters = Object.values(debouncedFilters).some((v) => !!v);
+  const hasActiveFilters = Object.keys(debouncedFilters).length > 0;
 
   // Typing into a filter box should not fire a request on every keystroke -
-  // wait for a short pause before actually re-querying the server.
+  // wait for a short pause before actually re-querying the server. Kept as
+  // a safety buffer even though the new Values/Condition panel now commits
+  // through an explicit Apply click rather than live typing.
   useEffect(() => {
     const t = setTimeout(() => setDebouncedFilters(filters), 350);
     return () => clearTimeout(t);
@@ -289,8 +467,8 @@ export default function DataTable({
 
   // Switching tables (a different tab, a different original table/sheet, or
   // a different data source entirely) starts every view control fresh - a
-  // sort column, filter, column order/width, highlight rule or totals pick
-  // from a previous table would not make sense here.
+  // sort column, filter, column order/width, rename, pin, format, highlight
+  // rule or totals pick from a previous table would not make sense here.
   useEffect(() => {
     setSortBy(null);
     setSortDir("asc");
@@ -306,6 +484,11 @@ export default function DataTable({
     setShowTotals(false);
     setTotalsSelection({});
     setShowColumnsPanel(false);
+    setColLabels({});
+    setRenamingColKey(null);
+    setWrapCols(new Set());
+    setPinnedCols([]);
+    setNumberFormats({});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [datasourceId, activeVersionId, activeTable]);
 
@@ -326,8 +509,60 @@ export default function DataTable({
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, [openFilterCol, showColumnsPanel]);
 
+  // Lazily fetches this column's real distinct values (with counts) the
+  // moment its filter panel is open AND the Values tab is showing - never
+  // eagerly for every column, matching the backend endpoint's own design
+  // (see get_column_distinct_values). Re-fetches, debounced, as the
+  // search-within-values box changes.
+  useEffect(() => {
+    if (!openFilterCol || filterTab !== "values" || !preview) return;
+    let cancelled = false;
+    setValuesLoading(true);
+    const t = setTimeout(async () => {
+      try {
+        const res = await datasourceApi.getColumnDistinctValues(
+          datasourceId, openFilterCol, activeVersionId,
+          { table: activeVersionId ? null : activeTable, search: valuesQuery || undefined, limit: 200 }
+        );
+        if (!cancelled) setValuesResult(res);
+      } catch {
+        if (!cancelled) setValuesResult(null);
+      } finally {
+        if (!cancelled) setValuesLoading(false);
+      }
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [openFilterCol, filterTab, valuesQuery, datasourceId, activeVersionId, activeTable, preview]);
+
+  const displayLabel = (col: string) => colLabels[col] || col;
+
   const toggleColumnMenu = (col: string) => {
-    setOpenFilterCol((c) => (c === col ? null : col));
+    setOpenFilterCol((c) => {
+      const next = c === col ? null : col;
+      if (next) {
+        const existing = filters[col];
+        const group = dtypeGroup(preview?.dtypes[col] || "");
+        if (existing && existing.type === "values") {
+          setSelectedValueKeys(new Set((existing.include || []).map((v) => (v === null ? NULL_KEY : String(v)))));
+          setFilterTab("values");
+          setConditionDraft(defaultConditionForGroup(group));
+        } else if (existing) {
+          setSelectedValueKeys(new Set());
+          setConditionDraft(existing);
+          setFilterTab("condition");
+        } else {
+          setSelectedValueKeys(new Set());
+          setConditionDraft(defaultConditionForGroup(group));
+          setFilterTab("values");
+        }
+        setValuesQuery("");
+        setValuesResult(null);
+        setFormatSectionOpen(false);
+        setHighlightSectionOpen(false);
+        setRenamingColKey(null);
+      }
+      return next;
+    });
   };
 
   const applySort = (col: string, dir: "asc" | "desc") => {
@@ -340,11 +575,6 @@ export default function DataTable({
     setOffset(0);
     setSortBy(null);
     setSortDir("asc");
-  };
-
-  const setColumnFilter = (col: string, value: string) => {
-    setOffset(0);
-    setFilters((f) => ({ ...f, [col]: value }));
   };
 
   const clearColumnFilter = (col: string) => {
@@ -360,6 +590,46 @@ export default function DataTable({
     setOffset(0);
     setFilters({});
     setDebouncedFilters({});
+  };
+
+  const toggleValueKey = (key: string) => {
+    setSelectedValueKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const selectAllLoadedValues = () => {
+    const keys = (valuesResult?.values || []).map((v) => (v.value === null ? NULL_KEY : String(v.value)));
+    if (valuesResult && valuesResult.null_count > 0 && !valuesQuery) keys.push(NULL_KEY);
+    setSelectedValueKeys(new Set(keys));
+  };
+
+  const clearSelectedValues = () => setSelectedValueKeys(new Set());
+
+  const applyFilter = (col: string) => {
+    if (filterTab === "values") {
+      const values = valuesResult?.values || [];
+      const include: (string | number | boolean | null)[] = [];
+      if (selectedValueKeys.has(NULL_KEY)) include.push(null);
+      for (const v of values) {
+        const key = v.value === null ? NULL_KEY : String(v.value);
+        if (key !== NULL_KEY && selectedValueKeys.has(key)) include.push(v.value);
+      }
+      if (include.length === 0) clearColumnFilter(col);
+      else {
+        setOffset(0);
+        setFilters((f) => ({ ...f, [col]: { type: "values", include } }));
+      }
+    } else {
+      if (!isConditionActive(conditionDraft)) clearColumnFilter(col);
+      else {
+        setOffset(0);
+        setFilters((f) => ({ ...f, [col]: conditionDraft }));
+      }
+    }
+    setOpenFilterCol(null);
   };
 
   const changePageSize = (v: number) => {
@@ -414,7 +684,7 @@ export default function DataTable({
     }
   };
 
-  // --- Column order / visibility / width helpers ---
+  // --- Column order / visibility / width / rename / wrap / pin helpers ---
 
   const orderedColumns = useMemo(() => {
     if (!preview) return [];
@@ -425,6 +695,16 @@ export default function DataTable({
   const visibleColumns = useMemo(
     () => orderedColumns.filter((c) => !hiddenCols.has(c)),
     [orderedColumns, hiddenCols]
+  );
+
+  // Pinned columns always render first (right after the row-number column),
+  // in the order they were pinned - the same "frozen columns slide to the
+  // edge" behavior Excel/Sheets use, rather than pinning in place wherever
+  // they happened to be in colOrder.
+  const pinnedVisible = useMemo(() => pinnedCols.filter((c) => visibleColumns.includes(c)), [pinnedCols, visibleColumns]);
+  const renderColumns = useMemo(
+    () => [...pinnedVisible, ...visibleColumns.filter((c) => !pinnedCols.includes(c))],
+    [pinnedVisible, visibleColumns, pinnedCols]
   );
 
   const reorderColumn = (from: string | null, to: string) => {
@@ -462,6 +742,55 @@ export default function DataTable({
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+  };
+
+  const commitColumnRename = (col: string) => {
+    const name = colRenameDraft.trim();
+    setRenamingColKey(null);
+    setColLabels((prev) => {
+      if (!name || name === col) {
+        if (!(col in prev)) return prev;
+        const next = { ...prev };
+        delete next[col];
+        return next;
+      }
+      return { ...prev, [col]: name };
+    });
+  };
+
+  const copyColumnName = async (col: string) => {
+    try {
+      await navigator.clipboard.writeText(displayLabel(col));
+    } catch {
+      // Clipboard permission denied or unavailable - nothing to recover,
+      // silently ignore rather than show an alarming error for a
+      // convenience action.
+    }
+  };
+
+  const toggleWrap = (col: string) => {
+    setWrapCols((prev) => {
+      const next = new Set(prev);
+      if (next.has(col)) next.delete(col);
+      else next.add(col);
+      return next;
+    });
+  };
+
+  const togglePin = (col: string) => {
+    setPinnedCols((prev) => (prev.includes(col) ? prev.filter((c) => c !== col) : [...prev, col]));
+    setOpenFilterCol(null);
+  };
+
+  const getNumberFormat = (col: string): NumberDisplayFormat => numberFormats[col] || DEFAULT_DISPLAY_FORMAT;
+  const setNumberFormatPatch = (col: string, patch: Partial<NumberDisplayFormat>) => {
+    setNumberFormats((prev) => ({ ...prev, [col]: { ...getNumberFormat(col), ...patch } }));
+  };
+
+  const addTotalForColumn = (col: string) => {
+    setShowTotals(true);
+    setTotalsSelection((prev) => ({ ...prev, [col]: defaultStat(preview?.column_stats[col]) }));
+    setOpenFilterCol(null);
   };
 
   // --- Conditional formatting helpers ---
@@ -535,7 +864,7 @@ export default function DataTable({
   const pageList = buildPageList(currentPage, totalPages);
   const rowPad = density === "compact" ? "py-1" : "py-1.5";
   const rowNumWidth = 46;
-  const activeFilterCount = Object.values(debouncedFilters).filter((v) => !!v).length;
+  const activeFilterEntries = Object.entries(filters);
 
   // The table's own real total width - every column's explicit width, row
   // number column included. Handed to the <table> itself (not just its
@@ -550,6 +879,19 @@ export default function DataTable({
   // needs more room than the panel has.
   const totalTableWidth =
     rowNumWidth + visibleColumns.reduce((sum, c) => sum + (colWidths[c] || 170), 0);
+
+  // Left offsets for every pinned column, in their render order - what
+  // makes "Pin column" actually freeze them in place while the rest of the
+  // table scrolls underneath, the same way Excel's freeze panes work.
+  const pinnedLeftOffset: Record<string, number> = {};
+  {
+    let cum = rowNumWidth;
+    for (const c of pinnedVisible) {
+      pinnedLeftOffset[c] = cum;
+      cum += colWidths[c] || 170;
+    }
+  }
+  const lastPinnedCol = pinnedVisible.length > 0 ? pinnedVisible[pinnedVisible.length - 1] : null;
 
   return (
     <div className="card h-full flex flex-col overflow-hidden">
@@ -642,11 +984,10 @@ export default function DataTable({
       </div>
 
       {/* The table's own toolbar - column visibility, per-column totals,
-          row density, active-filter summary, and page size. Everything
-          here is a per-viewer preference (never sent to the server, never
-          affects anyone else looking at the same table), reset fresh
-          whenever a different table is opened - see the reset effect
-          above. */}
+          row density, and page size. Everything here is a per-viewer
+          preference (never sent to the server, never affects anyone else
+          looking at the same table), reset fresh whenever a different
+          table is opened - see the reset effect above. */}
       <div className="px-3 py-2 border-b border-border flex items-center justify-between gap-3 flex-wrap shrink-0">
         <div className="flex items-center gap-2">
           <div className="relative">
@@ -679,7 +1020,8 @@ export default function DataTable({
                       onChange={() => toggleColumnHidden(col)}
                       className="accent-primary"
                     />
-                    <span className="truncate">{col}</span>
+                    <span className="truncate">{displayLabel(col)}</span>
+                    {pinnedCols.includes(col) && <PinIcon />}
                   </label>
                 ))}
               </div>
@@ -716,16 +1058,6 @@ export default function DataTable({
               Compact
             </button>
           </div>
-
-          {activeFilterCount > 0 && (
-            <button
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-accent/10 text-accent border border-accent/30 flex items-center gap-1.5"
-              onClick={clearAllFilters}
-              title="Clear all column filters"
-            >
-              {activeFilterCount} filter{activeFilterCount === 1 ? "" : "s"} active &middot; Clear
-            </button>
-          )}
         </div>
 
         <div className="flex items-center gap-2 text-xs text-muted">
@@ -745,6 +1077,30 @@ export default function DataTable({
           </div>
         </div>
       </div>
+
+      {/* Active-filters chip bar - every column filter currently applied,
+          in plain language, each removable on its own, plus "Clear all".
+          Shown whenever at least one filter (of any kind: values checklist
+          or a type-aware condition) is set. */}
+      {activeFilterEntries.length > 0 && (
+        <div className="px-3 py-2 border-b border-border flex items-center gap-1.5 flex-wrap shrink-0">
+          <span className="text-[10px] uppercase tracking-wide text-muted mr-0.5">Filters:</span>
+          {activeFilterEntries.map(([col, spec]) => (
+            <span
+              key={col}
+              className="text-[11px] pl-2.5 pr-1.5 py-1 rounded-full bg-accent/10 text-accent border border-accent/30 flex items-center gap-1.5"
+            >
+              {describeFilter(spec, displayLabel(col))}
+              <button className="hover:text-red-400 leading-none" onClick={() => clearColumnFilter(col)} title="Remove this filter">
+                &times;
+              </button>
+            </span>
+          ))}
+          <button className="text-[11px] text-muted underline ml-1" onClick={clearAllFilters}>
+            Clear all
+          </button>
+        </div>
+      )}
 
       {error && <div className="mx-3 mt-2 text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
 
@@ -780,7 +1136,7 @@ export default function DataTable({
           >
             <colgroup>
               <col style={{ width: rowNumWidth }} />
-              {visibleColumns.map((col) => (
+              {renderColumns.map((col) => (
                 <col key={col} style={{ width: colWidths[col] || 170 }} />
               ))}
             </colgroup>
@@ -789,201 +1145,555 @@ export default function DataTable({
                 <th className="sticky left-0 z-20 bg-surface2 text-right px-2 py-2 font-semibold border-b border-r border-border text-muted">
                   #
                 </th>
-                {visibleColumns.map((col) => (
-                  <th
-                    key={col}
-                    ref={(el) => { thRefs.current[col] = el; }}
-                    draggable
-                    onDragStart={() => setDragColKey(col)}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => { e.preventDefault(); reorderColumn(dragColKey, col); setDragColKey(null); }}
-                    onDragEnd={() => setDragColKey(null)}
-                    className={`relative text-left px-3 py-2 font-semibold border-b border-border whitespace-nowrap overflow-hidden ${
-                      dragColKey === col ? "opacity-50" : ""
-                    }`}
-                    title="Drag to reorder • click to sort/filter"
-                  >
-                    <div
-                      className="flex items-center gap-1.5 cursor-pointer select-none hover:text-primary transition overflow-hidden"
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onClick={() => toggleColumnMenu(col)}
+                {renderColumns.map((col) => {
+                  const pinned = pinnedVisible.includes(col);
+                  const isLastPinned = pinned && col === lastPinnedCol;
+                  return (
+                    <th
+                      key={col}
+                      ref={(el) => { thRefs.current[col] = el; }}
+                      draggable
+                      onDragStart={() => setDragColKey(col)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => { e.preventDefault(); reorderColumn(dragColKey, col); setDragColKey(null); }}
+                      onDragEnd={() => setDragColKey(null)}
+                      className={`relative text-left px-3 py-2 font-semibold border-b border-border whitespace-nowrap overflow-hidden ${
+                        dragColKey === col ? "opacity-50" : ""
+                      } ${pinned ? "bg-surface2" : ""} ${isLastPinned ? "border-r-2 border-r-primary/40" : ""}`}
+                      style={pinned ? { position: "sticky", left: pinnedLeftOffset[col], zIndex: 15 } : undefined}
+                      title="Drag to reorder • click to sort/filter"
                     >
-                      <span className="text-muted/50 shrink-0 cursor-grab" aria-hidden>&#8942;&#8942;</span>
-                      <ColumnTypeIcon dtype={preview.dtypes[col]} />
-                      <span className="truncate">
-                        {col}
-                        {sortBy === col && <span className="ml-1 text-primary">{sortDir === "asc" ? "▲" : "▼"}</span>}
-                        {formatRules[col] && formatRules[col].mode !== "none" && (
-                          <span className="ml-1" title="Conditional formatting on" aria-hidden>&#9679;</span>
-                        )}
-                      </span>
-                      <span className="ml-auto shrink-0">
-                        <FilterIcon active={sortBy === col || !!filters[col]} />
-                      </span>
-                    </div>
-
-                    {openFilterCol === col && (
                       <div
-                        ref={menuRef}
-                        className="absolute z-20 top-full left-0 mt-1 w-72 card p-2 space-y-1 shadow-xl font-normal normal-case"
+                        className="flex items-center gap-1.5 cursor-pointer select-none hover:text-primary transition overflow-hidden"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={() => toggleColumnMenu(col)}
                       >
-                        <button
-                          className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2 flex items-center gap-1.5"
-                          onClick={() => applySort(col, "asc")}
+                        <span className="text-muted/50 shrink-0 cursor-grab" aria-hidden>&#8942;&#8942;</span>
+                        <ColumnTypeIcon dtype={preview.dtypes[col]} />
+                        {pinned && <PinIcon />}
+                        <span className="truncate">
+                          {displayLabel(col)}
+                          {sortBy === col && <span className="ml-1 text-primary">{sortDir === "asc" ? "▲" : "▼"}</span>}
+                          {formatRules[col] && formatRules[col].mode !== "none" && (
+                            <span className="ml-1" title="Conditional formatting on" aria-hidden>&#9679;</span>
+                          )}
+                        </span>
+                        <span className="ml-auto shrink-0">
+                          <FilterIcon active={sortBy === col || isFilterActive(filters[col])} />
+                        </span>
+                      </div>
+
+                      {openFilterCol === col && (
+                        <div
+                          ref={menuRef}
+                          className="absolute z-20 top-full left-0 mt-1 w-80 card p-2 space-y-1 shadow-xl font-normal normal-case max-h-[32rem] overflow-y-auto"
                         >
-                          <span>{"▲"}</span> Sort ascending
-                        </button>
-                        <button
-                          className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2 flex items-center gap-1.5"
-                          onClick={() => applySort(col, "desc")}
-                        >
-                          <span>{"▼"}</span> Sort descending
-                        </button>
-                        {sortBy === col && (
-                          <button
-                            className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2 text-muted"
-                            onClick={clearSort}
-                          >
-                            Clear sort
-                          </button>
-                        )}
-                        <div className="border-t border-border my-1" />
-                        <div className="px-2 pb-1">
-                          <label className="text-[10px] uppercase tracking-wide text-muted block mb-1">Filter</label>
-                          <input
-                            autoFocus
-                            className="input text-xs py-1 px-2"
-                            placeholder={`Search ${col}...`}
-                            value={filters[col] || ""}
-                            onChange={(e) => setColumnFilter(col, e.target.value)}
-                          />
-                          {filters[col] && (
-                            <button className="text-[11px] text-accent underline mt-1" onClick={() => clearColumnFilter(col)}>
-                              Clear filter
+                          {/* Rename / copy name */}
+                          {renamingColKey === col ? (
+                            <div className="px-2 pb-1.5 flex items-center gap-1">
+                              <input
+                                autoFocus
+                                className="input text-xs py-1 px-2 flex-1"
+                                value={colRenameDraft}
+                                onChange={(e) => setColRenameDraft(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") commitColumnRename(col);
+                                  if (e.key === "Escape") setRenamingColKey(null);
+                                }}
+                              />
+                              <button className="text-[11px] text-primary font-medium px-1" onClick={() => commitColumnRename(col)}>
+                                Save
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2"
+                              onClick={() => { setRenamingColKey(col); setColRenameDraft(displayLabel(col)); }}
+                            >
+                              Rename column&hellip;
                             </button>
                           )}
-                        </div>
-                        <div className="border-t border-border my-1" />
-                        <div className="px-2 pb-1">
-                          <label className="text-[10px] uppercase tracking-wide text-muted block mb-1.5">
-                            Highlight this column
-                          </label>
-                          <div className="flex gap-1 mb-2">
-                            {(["none", "scale", "rules"] as FormatMode[]).map((mode) => (
-                              <button
-                                key={mode}
-                                className={`text-[11px] px-2 py-1 rounded-md flex-1 transition ${
-                                  getColumnFormat(col).mode === mode ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"
-                                }`}
-                                onClick={() => setColumnFormatMode(col, mode)}
-                              >
-                                {mode === "none" ? "Off" : mode === "scale" ? "Color scale" : "Rules"}
-                              </button>
-                            ))}
-                          </div>
-                          {getColumnFormat(col).mode === "scale" && (
-                            <div>
-                              <div className="flex gap-1.5 mb-1">
-                                {(Object.keys(SWATCH_CLASS) as ScaleColor[]).map((c) => (
-                                  <button
-                                    key={c}
-                                    className={`w-5 h-5 rounded-full ${SWATCH_CLASS[c]} ${
-                                      getColumnFormat(col).scaleColor === c ? "ring-2 ring-offset-1 ring-primary" : ""
-                                    }`}
-                                    onClick={() => setColumnScaleColor(col, c)}
-                                    title={c}
-                                  />
-                                ))}
-                              </div>
-                              {preview.column_stats[col]?.min === null && (
-                                <div className="text-[10px] text-muted">Only works on a numeric column.</div>
-                              )}
-                            </div>
+                          <button
+                            className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2"
+                            onClick={() => copyColumnName(col)}
+                          >
+                            Copy column name
+                          </button>
+
+                          <div className="border-t border-border my-1" />
+                          <button
+                            className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2 flex items-center gap-1.5"
+                            onClick={() => applySort(col, "asc")}
+                          >
+                            <span>{"▲"}</span> Sort ascending
+                          </button>
+                          <button
+                            className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2 flex items-center gap-1.5"
+                            onClick={() => applySort(col, "desc")}
+                          >
+                            <span>{"▼"}</span> Sort descending
+                          </button>
+                          {sortBy === col && (
+                            <button
+                              className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2 text-muted"
+                              onClick={clearSort}
+                            >
+                              Clear sort
+                            </button>
                           )}
-                          {getColumnFormat(col).mode === "rules" && (
-                            <div className="space-y-1.5">
-                              {getColumnFormat(col).rules.map((rule) => (
-                                <div key={rule.id} className="flex items-center gap-1">
-                                  <select
-                                    className="input text-[11px] py-1 px-1 flex-1"
-                                    value={rule.op}
-                                    onChange={(e) => updateFormatRule(col, rule.id, { op: e.target.value as RuleOp })}
-                                  >
-                                    {(Object.keys(OP_LABELS) as RuleOp[]).map((op) => (
-                                      <option key={op} value={op}>{OP_LABELS[op]}</option>
-                                    ))}
-                                  </select>
-                                  <input
-                                    className="input text-[11px] py-1 px-1.5 w-16"
-                                    value={rule.value}
-                                    onChange={(e) => updateFormatRule(col, rule.id, { value: e.target.value })}
-                                    placeholder="value"
-                                  />
-                                  <button
-                                    className={`w-4 h-4 rounded-full shrink-0 ${SWATCH_CLASS[rule.color]}`}
-                                    onClick={() => {
-                                      const colors = Object.keys(SWATCH_CLASS) as ScaleColor[];
-                                      const next = colors[(colors.indexOf(rule.color) + 1) % colors.length];
-                                      updateFormatRule(col, rule.id, { color: next });
-                                    }}
-                                    title="Click to change color"
-                                  />
-                                  <button
-                                    className="text-muted hover:text-red-400 px-0.5"
-                                    onClick={() => removeFormatRule(col, rule.id)}
-                                    title="Remove rule"
-                                  >
-                                    &times;
-                                  </button>
+
+                          <div className="border-t border-border my-1" />
+                          <div className="px-2 pb-1">
+                            <label className="text-[10px] uppercase tracking-wide text-muted block mb-1.5">Filter</label>
+                            <div className="flex gap-1 mb-1.5">
+                              <button
+                                className={`text-[11px] px-2 py-1 rounded-md flex-1 transition ${
+                                  filterTab === "values" ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"
+                                }`}
+                                onClick={() => setFilterTab("values")}
+                              >
+                                Values
+                              </button>
+                              <button
+                                className={`text-[11px] px-2 py-1 rounded-md flex-1 transition ${
+                                  filterTab === "condition" ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"
+                                }`}
+                                onClick={() => setFilterTab("condition")}
+                              >
+                                Condition
+                              </button>
+                            </div>
+
+                            {filterTab === "values" && (
+                              <div className="space-y-1.5">
+                                <input
+                                  className="input text-xs py-1 px-2"
+                                  placeholder={`Search ${displayLabel(col)} values...`}
+                                  value={valuesQuery}
+                                  onChange={(e) => setValuesQuery(e.target.value)}
+                                />
+                                <div className="flex items-center justify-between text-[11px] text-muted">
+                                  <button className="underline" onClick={selectAllLoadedValues}>Select all</button>
+                                  <button className="underline" onClick={clearSelectedValues}>Clear</button>
                                 </div>
-                              ))}
-                              {getColumnFormat(col).rules.length < 4 && (
-                                <button className="text-[11px] text-accent underline" onClick={() => addFormatRule(col)}>
-                                  + Add rule
+                                <div className="max-h-40 overflow-y-auto border border-border rounded-lg divide-y divide-border/50">
+                                  {valuesLoading && <div className="px-2 py-2 text-[11px] text-muted">Loading values...</div>}
+                                  {!valuesLoading && valuesResult && !valuesQuery && valuesResult.null_count > 0 && (
+                                    <label className="flex items-center gap-2 px-2 py-1 text-xs hover:bg-surface2 cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        className="accent-primary"
+                                        checked={selectedValueKeys.has(NULL_KEY)}
+                                        onChange={() => toggleValueKey(NULL_KEY)}
+                                      />
+                                      <span className="italic text-muted flex-1">(Blanks)</span>
+                                      <span className="text-[10px] text-muted">{valuesResult.null_count.toLocaleString()}</span>
+                                    </label>
+                                  )}
+                                  {!valuesLoading && valuesResult && valuesResult.values.map((v) => {
+                                    const key = v.value === null ? NULL_KEY : String(v.value);
+                                    return (
+                                      <label key={key} className="flex items-center gap-2 px-2 py-1 text-xs hover:bg-surface2 cursor-pointer">
+                                        <input
+                                          type="checkbox"
+                                          className="accent-primary"
+                                          checked={selectedValueKeys.has(key)}
+                                          onChange={() => toggleValueKey(key)}
+                                        />
+                                        <span className="truncate flex-1">
+                                          {v.value === null || v.value === "" ? <span className="italic text-muted">(empty)</span> : String(v.value)}
+                                        </span>
+                                        <span className="text-[10px] text-muted">{v.count.toLocaleString()}</span>
+                                      </label>
+                                    );
+                                  })}
+                                  {!valuesLoading && valuesResult && valuesResult.values.length === 0 && (
+                                    <div className="px-2 py-2 text-[11px] text-muted">No matching values.</div>
+                                  )}
+                                </div>
+                                {valuesResult?.truncated && (
+                                  <div className="text-[10px] text-amber-400">
+                                    Showing the top {valuesResult.values.length.toLocaleString()} of {valuesResult.distinct_total.toLocaleString()} values — search to narrow down.
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {filterTab === "condition" && (
+                              <div className="space-y-1.5">
+                                {conditionDraft.type === "text" && (
+                                  <>
+                                    <select
+                                      className="input text-xs py-1 px-2"
+                                      value={conditionDraft.op}
+                                      onChange={(e) => setConditionDraft({ ...conditionDraft, op: e.target.value as TextOp })}
+                                    >
+                                      {(Object.keys(TEXT_OP_LABELS) as TextOp[]).map((op) => (
+                                        <option key={op} value={op}>{TEXT_OP_LABELS[op]}</option>
+                                      ))}
+                                    </select>
+                                    {conditionDraft.op !== "is_empty" && conditionDraft.op !== "is_not_empty" && (
+                                      <input
+                                        className="input text-xs py-1 px-2"
+                                        placeholder="value"
+                                        value={conditionDraft.value}
+                                        onChange={(e) => setConditionDraft({ ...conditionDraft, value: e.target.value })}
+                                      />
+                                    )}
+                                  </>
+                                )}
+                                {conditionDraft.type === "number" && (
+                                  <>
+                                    <select
+                                      className="input text-xs py-1 px-2"
+                                      value={conditionDraft.op}
+                                      onChange={(e) => setConditionDraft({ ...conditionDraft, op: e.target.value as NumberOp })}
+                                    >
+                                      {(Object.keys(NUMBER_OP_LABELS) as NumberOp[]).map((op) => (
+                                        <option key={op} value={op}>{NUMBER_OP_LABELS[op]}</option>
+                                      ))}
+                                    </select>
+                                    <div className="flex items-center gap-1">
+                                      <input
+                                        type="number"
+                                        className="input text-xs py-1 px-2 flex-1 min-w-0"
+                                        placeholder="value"
+                                        value={conditionDraft.value}
+                                        onChange={(e) => setConditionDraft({ ...conditionDraft, value: e.target.value })}
+                                      />
+                                      {conditionDraft.op === "between" && (
+                                        <>
+                                          <span className="text-muted text-[11px] shrink-0">and</span>
+                                          <input
+                                            type="number"
+                                            className="input text-xs py-1 px-2 flex-1 min-w-0"
+                                            placeholder="value"
+                                            value={conditionDraft.value2 || ""}
+                                            onChange={(e) => setConditionDraft({ ...conditionDraft, value2: e.target.value })}
+                                          />
+                                        </>
+                                      )}
+                                    </div>
+                                  </>
+                                )}
+                                {conditionDraft.type === "date" && (
+                                  <>
+                                    <div className="flex flex-wrap gap-1">
+                                      {DATE_PRESETS.map((p) => (
+                                        <button
+                                          key={p.label}
+                                          className="text-[10px] px-2 py-1 rounded-md bg-surface2 hover:bg-surface2/70 text-muted hover:text-text"
+                                          onClick={() => setConditionDraft({ type: "date", ...p.range() })}
+                                        >
+                                          {p.label}
+                                        </button>
+                                      ))}
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                      <input
+                                        type="date"
+                                        className="input text-xs py-1 px-2 flex-1 min-w-0"
+                                        value={conditionDraft.from || ""}
+                                        onChange={(e) => setConditionDraft({ ...conditionDraft, from: e.target.value || null })}
+                                      />
+                                      <span className="text-muted text-[11px] shrink-0">to</span>
+                                      <input
+                                        type="date"
+                                        className="input text-xs py-1 px-2 flex-1 min-w-0"
+                                        value={conditionDraft.to || ""}
+                                        onChange={(e) => setConditionDraft({ ...conditionDraft, to: e.target.value || null })}
+                                      />
+                                    </div>
+                                  </>
+                                )}
+                                {conditionDraft.type === "boolean" && (
+                                  <div className="flex gap-1.5">
+                                    {(["true", "false"] as const).map((v) => (
+                                      <button
+                                        key={v}
+                                        className={`text-[11px] px-2.5 py-1 rounded-md flex-1 ${
+                                          conditionDraft.value === v ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"
+                                        }`}
+                                        onClick={() => setConditionDraft({ type: "boolean", value: v })}
+                                      >
+                                        {v === "true" ? "True" : "False"}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            <div className="flex items-center justify-end gap-2 pt-1.5">
+                              {isFilterActive(filters[col]) && (
+                                <button className="text-[11px] text-muted mr-auto" onClick={() => clearColumnFilter(col)}>
+                                  Clear filter
                                 </button>
                               )}
+                              <button className="text-[11px] text-muted" onClick={() => setOpenFilterCol(null)}>Cancel</button>
+                              <button
+                                className="text-[11px] px-2.5 py-1 rounded-md bg-primary text-white font-medium"
+                                onClick={() => applyFilter(col)}
+                              >
+                                Apply
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="border-t border-border my-1" />
+                          <button
+                            className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2"
+                            onClick={() => addTotalForColumn(col)}
+                          >
+                            Add total&hellip;
+                          </button>
+
+                          <div className="border-t border-border my-1" />
+                          <button
+                            className="w-full flex items-center justify-between text-xs px-2 py-1.5 rounded-lg hover:bg-surface2"
+                            onClick={() => setFormatSectionOpen((v) => !v)}
+                          >
+                            <span>
+                              Format
+                              {getNumberFormat(col).mode !== "automatic" && (
+                                <span className="text-accent ml-1">({FORMAT_MODE_LABELS[getNumberFormat(col).mode]})</span>
+                              )}
+                            </span>
+                            <span className="text-muted">{formatSectionOpen ? "▾" : "▸"}</span>
+                          </button>
+                          {formatSectionOpen && (
+                            <div className="px-2 pb-1 space-y-1.5">
+                              <div className="grid grid-cols-3 gap-1">
+                                {(Object.keys(FORMAT_MODE_LABELS) as NumberDisplayMode[]).map((m) => (
+                                  <button
+                                    key={m}
+                                    className={`text-[10px] px-1.5 py-1 rounded-md transition ${
+                                      getNumberFormat(col).mode === m ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"
+                                    }`}
+                                    onClick={() => setNumberFormatPatch(col, { mode: m })}
+                                  >
+                                    {FORMAT_MODE_LABELS[m]}
+                                  </button>
+                                ))}
+                              </div>
+                              {(getNumberFormat(col).mode === "number" || getNumberFormat(col).mode === "currency" || getNumberFormat(col).mode === "percent") && (
+                                <div className="flex items-center gap-1.5 text-[11px] text-muted">
+                                  <span>Decimals</span>
+                                  <select
+                                    className="input text-[11px] py-0.5 px-1"
+                                    value={getNumberFormat(col).decimals}
+                                    onChange={(e) => setNumberFormatPatch(col, { decimals: Number(e.target.value) })}
+                                  >
+                                    {[0, 1, 2, 3, 4].map((n) => <option key={n} value={n}>{n}</option>)}
+                                  </select>
+                                </div>
+                              )}
+                              {getNumberFormat(col).mode === "currency" && (
+                                <select
+                                  className="input text-[11px] py-1 px-2"
+                                  value={getNumberFormat(col).currency}
+                                  onChange={(e) => setNumberFormatPatch(col, { currency: e.target.value })}
+                                >
+                                  {CURRENCY_OPTIONS.map((c) => <option key={c} value={c}>{c}</option>)}
+                                </select>
+                              )}
+                              {getNumberFormat(col).mode === "percent" && (
+                                <div className="text-[10px] text-muted">Multiplies the value by 100 automatically (0.42 becomes 42%).</div>
+                              )}
+                              {getNumberFormat(col).mode === "date" && (
+                                <div className="flex gap-1">
+                                  {([["iso", "2024-01-05"], ["us", "01/05/2024"], ["long", "Jan 5, 2024"]] as [DateStyle, string][]).map(([style, example]) => (
+                                    <button
+                                      key={style}
+                                      className={`text-[10px] px-1.5 py-1 rounded-md flex-1 transition ${
+                                        getNumberFormat(col).dateStyle === style ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"
+                                      }`}
+                                      onClick={() => setNumberFormatPatch(col, { dateStyle: style })}
+                                    >
+                                      {example}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           )}
-                        </div>
-                      </div>
-                    )}
 
-                    <div
-                      className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-primary/40"
-                      onMouseDown={(e) => startResize(e, col)}
-                      onClick={(e) => e.stopPropagation()}
-                      title="Drag to resize"
-                    />
-                  </th>
-                ))}
+                          <div className="border-t border-border my-1" />
+                          <button
+                            className="w-full flex items-center justify-between text-xs px-2 py-1.5 rounded-lg hover:bg-surface2"
+                            onClick={() => setHighlightSectionOpen((v) => !v)}
+                          >
+                            <span>
+                              Conditional formatting
+                              {getColumnFormat(col).mode !== "none" && <span className="text-accent ml-1">(on)</span>}
+                            </span>
+                            <span className="text-muted">{highlightSectionOpen ? "▾" : "▸"}</span>
+                          </button>
+                          {highlightSectionOpen && (
+                            <div className="px-2 pb-1">
+                              <div className="flex gap-1 mb-2">
+                                {(["none", "scale", "rules"] as FormatMode[]).map((mode) => (
+                                  <button
+                                    key={mode}
+                                    className={`text-[11px] px-2 py-1 rounded-md flex-1 transition ${
+                                      getColumnFormat(col).mode === mode ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"
+                                    }`}
+                                    onClick={() => setColumnFormatMode(col, mode)}
+                                  >
+                                    {mode === "none" ? "Off" : mode === "scale" ? "Color scale" : "Rules"}
+                                  </button>
+                                ))}
+                              </div>
+                              {getColumnFormat(col).mode === "scale" && (
+                                <div>
+                                  <div className="flex gap-1.5 mb-1">
+                                    {(Object.keys(SWATCH_CLASS) as ScaleColor[]).map((c) => (
+                                      <button
+                                        key={c}
+                                        className={`w-5 h-5 rounded-full ${SWATCH_CLASS[c]} ${
+                                          getColumnFormat(col).scaleColor === c ? "ring-2 ring-offset-1 ring-primary" : ""
+                                        }`}
+                                        onClick={() => setColumnScaleColor(col, c)}
+                                        title={c}
+                                      />
+                                    ))}
+                                  </div>
+                                  {preview.column_stats[col]?.min === null && (
+                                    <div className="text-[10px] text-muted">Only works on a numeric column.</div>
+                                  )}
+                                </div>
+                              )}
+                              {getColumnFormat(col).mode === "rules" && (
+                                <div className="space-y-1.5">
+                                  {getColumnFormat(col).rules.map((rule) => (
+                                    <div key={rule.id} className="flex items-center gap-1">
+                                      <select
+                                        className="input text-[11px] py-1 px-1 flex-1"
+                                        value={rule.op}
+                                        onChange={(e) => updateFormatRule(col, rule.id, { op: e.target.value as RuleOp })}
+                                      >
+                                        {(Object.keys(OP_LABELS) as RuleOp[]).map((op) => (
+                                          <option key={op} value={op}>{OP_LABELS[op]}</option>
+                                        ))}
+                                      </select>
+                                      <input
+                                        className="input text-[11px] py-1 px-1.5 w-16"
+                                        value={rule.value}
+                                        onChange={(e) => updateFormatRule(col, rule.id, { value: e.target.value })}
+                                        placeholder="value"
+                                      />
+                                      <button
+                                        className={`w-4 h-4 rounded-full shrink-0 ${SWATCH_CLASS[rule.color]}`}
+                                        onClick={() => {
+                                          const colors = Object.keys(SWATCH_CLASS) as ScaleColor[];
+                                          const next = colors[(colors.indexOf(rule.color) + 1) % colors.length];
+                                          updateFormatRule(col, rule.id, { color: next });
+                                        }}
+                                        title="Click to change color"
+                                      />
+                                      <button
+                                        className="text-muted hover:text-red-400 px-0.5"
+                                        onClick={() => removeFormatRule(col, rule.id)}
+                                        title="Remove rule"
+                                      >
+                                        &times;
+                                      </button>
+                                    </div>
+                                  ))}
+                                  {getColumnFormat(col).rules.length < 4 && (
+                                    <button className="text-[11px] text-accent underline" onClick={() => addFormatRule(col)}>
+                                      + Add rule
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          <div className="border-t border-border my-1" />
+                          <button
+                            className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2 flex items-center justify-between"
+                            onClick={() => toggleWrap(col)}
+                          >
+                            <span>Wrap text</span>
+                            <span className={wrapCols.has(col) ? "text-primary" : "text-muted"}>{wrapCols.has(col) ? "On" : "Off"}</span>
+                          </button>
+                          <button
+                            className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2"
+                            onClick={() => { toggleColumnHidden(col); setOpenFilterCol(null); }}
+                          >
+                            Hide column
+                          </button>
+                          <button
+                            className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2"
+                            onClick={() => togglePin(col)}
+                          >
+                            {pinned ? "Unpin column" : "Pin column"}
+                          </button>
+                        </div>
+                      )}
+
+                      <div
+                        className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-primary/40"
+                        onMouseDown={(e) => startResize(e, col)}
+                        onClick={(e) => e.stopPropagation()}
+                        title="Drag to resize"
+                      />
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
-              {preview.rows.map((row, i) => (
-                <tr key={i} className="hover:bg-surface2/60 border-b border-border/50 even:bg-surface2/20">
-                  <td className="sticky left-0 bg-inherit text-right px-2 text-muted border-r border-border/50 tabular-nums">
+              {preview.rows.map((row, i) => {
+                // Tailwind's `even:` striping targets nth-child(even) - the
+                // 2nd, 4th, ... row, 1-indexed - which is odd `i` here
+                // (0-indexed). A sticky column (the row-number cell, or any
+                // pinned column) needs an opaque background matching that
+                // same stripe rather than `bg-inherit`: it sits on top of
+                // whatever scrolls underneath it once the table actually
+                // scrolls horizontally, and the ordinary translucent
+                // striping (`even:bg-surface2/20`) let that scrolled
+                // content visibly bleed through - a real bug caught while
+                // screenshot-testing the new Pin column feature.
+                const stripeClass = i % 2 === 1 ? "bg-surface2" : "bg-surface";
+                return (
+                <tr key={i} className="group hover:bg-surface2/60 border-b border-border/50 even:bg-surface2/20">
+                  <td
+                    className={`sticky left-0 z-[6] ${stripeClass} group-hover:bg-surface2/60 text-right px-2 align-top text-muted border-r border-border/50 tabular-nums`}
+                  >
                     {offset + i + 1}
                   </td>
-                  {visibleColumns.map((col) => {
+                  {renderColumns.map((col) => {
                     const value = row[col];
                     const bg = cellBackground(col, value);
+                    const pinned = pinnedVisible.includes(col);
+                    const isLastPinned = pinned && col === lastPinnedCol;
+                    const formatted = formatCellValue(value, numberFormats[col]);
+                    const wrap = wrapCols.has(col);
                     return (
                       <td
                         key={col}
-                        className={`px-3 ${rowPad} overflow-hidden text-ellipsis whitespace-nowrap`}
-                        style={bg ? { backgroundColor: bg } : undefined}
+                        className={`px-3 ${rowPad} overflow-hidden align-top ${
+                          wrap ? "whitespace-normal break-words" : "text-ellipsis whitespace-nowrap"
+                        } ${pinned ? `${stripeClass} group-hover:bg-surface2/60 z-[5]` : ""} ${isLastPinned ? "border-r-2 border-r-primary/40" : ""}`}
+                        style={{
+                          ...(bg ? { backgroundColor: bg } : {}),
+                          ...(pinned ? { position: "sticky", left: pinnedLeftOffset[col] } : {}),
+                        }}
                         title={value === null || value === undefined ? "" : String(value)}
                       >
                         {value === null || value === undefined || value === "" ? (
                           <span className="text-muted">&mdash;</span>
                         ) : (
-                          String(value)
+                          formatted ?? String(value)
                         )}
                       </td>
                     );
                   })}
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
             {showTotals && (
               <tfoot className="sticky bottom-0 bg-surface2 z-10 border-t-2 border-border">
@@ -991,11 +1701,16 @@ export default function DataTable({
                   <td className="sticky left-0 bg-surface2 px-2 py-1.5 text-[10px] uppercase tracking-wide text-muted border-r border-border">
                     &Sigma;
                   </td>
-                  {visibleColumns.map((col) => {
+                  {renderColumns.map((col) => {
                     const stat = preview.column_stats[col];
                     const key = statFor(col);
+                    const pinned = pinnedVisible.includes(col);
                     return (
-                      <td key={col} className="px-2 py-1 border-l border-border/40">
+                      <td
+                        key={col}
+                        className={`px-2 py-1 border-l border-border/40 ${pinned ? "bg-surface2" : ""}`}
+                        style={pinned ? { position: "sticky", left: pinnedLeftOffset[col] } : undefined}
+                      >
                         <div className="flex items-center gap-1">
                           <select
                             className="bg-transparent text-[10px] text-muted border-none outline-none cursor-pointer"
