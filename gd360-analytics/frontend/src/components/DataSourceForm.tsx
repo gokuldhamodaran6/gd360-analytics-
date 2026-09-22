@@ -1,6 +1,6 @@
 import { FormEvent, useState } from "react";
 import { createPortal } from "react-dom";
-import { api } from "../api/client";
+import { api, connectionsApi, OAuthProvider } from "../api/client";
 
 // Real brand marks (path data + official color from the Simple Icons
 // project, MIT licensed - simpleicons.org), shown purely so a database
@@ -48,6 +48,28 @@ function BigQueryLogo({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="currentColor" xmlns="http://www.w3.org/2000/svg">
       <path d="M5.676 10.595h2.052v5.244a5.892 5.892 0 0 1-2.052-2.088v-3.156zm18.179 10.836a.504.504 0 0 1 0 .708l-1.716 1.716a.504.504 0 0 1-.708 0l-4.248-4.248a.206.206 0 0 1-.007-.007c-.02-.02-.028-.045-.043-.066a10.736 10.736 0 0 1-6.334 2.065C4.835 21.599 0 16.764 0 10.799S4.835 0 10.8 0s10.799 4.835 10.799 10.8c0 2.369-.772 4.553-2.066 6.333.025.017.052.028.074.05l4.248 4.248zm-5.028-10.632a8.015 8.015 0 1 0-8.028 8.028h.024a8.016 8.016 0 0 0 8.004-8.028zm-4.86 4.98a6.002 6.002 0 0 0 2.04-2.184v-1.764h-2.04v3.948zm-4.5.948c.442.057.887.08 1.332.072.4.025.8.025 1.2 0V7.692H9.468v9.035z" />
+    </svg>
+  );
+}
+
+// Real official Google Sheets + Microsoft Excel marks (Simple Icons
+// project, MIT licensed - simpleicons.org), same provenance as the marks
+// above - for the two OAuth "live" connectors (see the "Connect" picker
+// below), which authenticate by signing into Google/Microsoft rather than
+// a pasted password or key.
+function GoogleSheetsLogo({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+      <path d="M14.087 0H4.216C3.032 0 2.069.987 2.069 2.194v19.612C2.069 23.013 3.032 24 4.216 24h15.568c1.184 0 2.147-.987 2.147-2.194V7.376zm.157 1.548 5.42 5.537h-4.702a.72.72 0 0 1-.718-.719zm-9.744.523a.61.61 0 0 1 .609-.61h7.918v4.997c0 1.253 1.005 2.277 2.238 2.277h4.945v11.505a.61.61 0 0 1-.609.61H5.109a.61.61 0 0 1-.609-.61zm2.752 6.96v2.14h1.983v-2.14zm2.859 0v2.14h4.968v-2.14zm5.844 0v2.14h1.983v-2.14zm-8.703 3.016v2.14h1.983v-2.14zm2.859 0v2.14h4.968v-2.14zm5.844 0v2.14h1.983v-2.14zm-8.703 3.015v2.14h1.983v-2.14zm2.859 0v2.14h4.968v-2.14zm5.844 0v2.14h1.983v-2.14z" />
+    </svg>
+  );
+}
+
+function ExcelLogo({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+      <path d="M21.207 3.481 14.523.313a.734.734 0 0 0-.65.007L2.435 5.559A.738.738 0 0 0 2 6.226v11.548a.737.737 0 0 0 .435.667l11.438 5.239a.727.727 0 0 0 .65.007l6.684-3.168A.738.738 0 0 0 22 19.79V4.21a.738.738 0 0 0-.793-.729zM14.5 1.85l5.89 2.79-5.89 2.635zm-1.475.04v4.11H8.23zM3.475 6.61h9.55v.015H3.475zm0 10.78V7.85h16.05v9.54zm10.55 4.72v-4.075h5.89z" />
+      <path d="M9.34 9.9h-1.5L6.5 12.02 5.16 9.9H3.66l1.98 3.02-2.1 3.15h1.51l1.45-2.24 1.44 2.24h1.52l-2.1-3.17z" />
     </svg>
   );
 }
@@ -185,6 +207,30 @@ const WAREHOUSE_KINDS = [
   { value: "bigquery", label: "Google BigQuery", color: "#669DF6", Logo: BigQueryLogo },
 ];
 
+// The "Connect" tiles: OAuth-based live connectors, where GD360 never sees
+// a password at all - clicking one sends the whole browser tab to that
+// provider's own sign-in/consent page (see openOAuthConnect below), not an
+// inline form the way DB_KINDS/WAREHOUSE_KINDS tiles do. `provider` is the
+// exact OAuthProvider value connectionsApi.authorize expects, and doubles
+// as the resulting DataSource's own `kind` once connected - kept as its
+// own list (rather than folded into DB_KINDS/WAREHOUSE_KINDS) since "click
+// this tile" here means "leave the app for a moment", never "open a
+// popout form".
+const CONNECT_KINDS: { value: OAuthProvider; label: string; blurb: string; color: string; Logo: (p: { className?: string }) => JSX.Element }[] = [
+  { value: "google_sheets", label: "Google Sheets", blurb: "Sign in with Google, pick a spreadsheet, done.", color: "#0F9D58", Logo: GoogleSheetsLogo },
+  { value: "microsoft_excel", label: "Excel (OneDrive)", blurb: "Sign in with Microsoft, pick a workbook, done.", color: "#217346", Logo: ExcelLogo },
+];
+
+// Live gating, separate from CONNECT_KINDS above: Gokul asked to launch
+// with only Google Sheets turned on in the UI (Microsoft's app
+// registration/credentials aren't set up yet - see the roadmap doc's
+// setup section) - CONNECT_KINDS itself stays the full list (so
+// connectionKindMeta keeps recognizing "microsoft_excel" everywhere else
+// in the app, and this bar is a one-line change to bring Excel back
+// whenever it's ready), and this constant alone controls what actually
+// renders as a clickable tile here.
+const VISIBLE_CONNECT_KINDS: OAuthProvider[] = ["google_sheets"];
+
 // Same shape the backend's DataSourceOut returns. Exported so other
 // components (e.g. the "Your data sources" homepage section) that also
 // render a connected datasource share this one definition instead of
@@ -203,7 +249,10 @@ export type CreatedDataSource = {
 // the app that displays a data source's kind (currently: the "Connected"
 // confirmation panel below, and the "Your data sources" homepage section).
 export function connectionKindMeta(kind: string) {
-  const found = DB_KINDS.find((d) => d.value === kind) || WAREHOUSE_KINDS.find((w) => w.value === kind);
+  const found =
+    DB_KINDS.find((d) => d.value === kind) ||
+    WAREHOUSE_KINDS.find((w) => w.value === kind) ||
+    CONNECT_KINDS.find((c) => c.value === kind);
   if (found) return { label: found.label, color: found.color, Logo: found.Logo };
   if (kind === "excel") return { label: "Excel file", color: "#1D6F42", Logo: FileSpreadsheetIcon };
   return { label: "CSV file", color: "#64748b", Logo: FileSpreadsheetIcon };
@@ -225,11 +274,16 @@ export function getTableEntries(
 ): { name: string; columns: { name: string; type?: string }[] }[] {
   if (!schemaCache) return [];
   // The old flat single-table shape: a plain CSV always has it, and so
-  // does an Excel upload with only one sheet (or one uploaded before
-  // multi-sheet support existed) - the "columns" key only ever appears in
-  // this exact shape, never as a real sheet/table name, so its presence
-  // reliably tells the two shapes apart.
-  if (kind === "csv" || (kind === "excel" && Array.isArray((schemaCache as any).columns))) {
+  // does an Excel upload (or a Google Sheets/Excel-OneDrive live
+  // connection - see backend connectors.py's GoogleSheetsConnector/
+  // MicrosoftExcelConnector, which mirror FileConnector's own multi-sheet
+  // convention exactly) with only one sheet - the "columns" key only ever
+  // appears in this exact shape, never as a real sheet/table name, so its
+  // presence reliably tells the two shapes apart regardless of kind. (Kept
+  // kind-agnostic rather than listing every single-or-multi-sheet kind
+  // here by name - a multi-table SQL/Mongo/BigQuery schema_cache is never
+  // shaped like this, so nothing else can be mistaken for it.)
+  if (Array.isArray((schemaCache as any).columns)) {
     const cols = Array.isArray((schemaCache as any).columns) ? (schemaCache as any).columns : [];
     return [{ name: fallbackName, columns: cols }];
   }
@@ -280,9 +334,15 @@ export default function DataSourceForm({
   onCreated: (ds: { id: string; name: string; kind: string; created_at: string }) => void;
   onConnected?: (ds: CreatedDataSource) => void;
 }) {
-  const [mode, setMode] = useState<"db" | "warehouse" | "file">("db");
+  const [mode, setMode] = useState<"db" | "warehouse" | "connect" | "file">("db");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Which OAuth tile ("Connect" mode) is mid-redirect, if any - only ever
+  // true for the brief moment between clicking the tile and the browser
+  // actually leaving for Google's/Microsoft's own sign-in page, so the
+  // tile can show a spinner instead of looking unresponsive.
+  const [connectBusyProvider, setConnectBusyProvider] = useState<OAuthProvider | null>(null);
+  const [connectError, setConnectError] = useState("");
 
   // DB form state
   const [kind, setKind] = useState("postgres");
@@ -476,6 +536,29 @@ export default function DataSourceForm({
     }
   };
 
+  // Unlike every other tile in this form, clicking a "Connect" tile never
+  // opens a popout form here at all - it sends the whole browser tab to
+  // that provider's own sign-in/consent page (Google or Microsoft), which
+  // eventually redirects back into a dedicated picker page
+  // (pages/ConnectResourcePicker.tsx) rather than back into this modal, so
+  // there is no local "connected" state to hand off for this mode the way
+  // submitDb/submitWarehouse/submitFile do.
+  const openOAuthConnect = async (provider: OAuthProvider) => {
+    setConnectError("");
+    setConnectBusyProvider(provider);
+    try {
+      const url = await connectionsApi.authorize(provider);
+      window.location.href = url;
+    } catch (err: any) {
+      setConnectBusyProvider(null);
+      setConnectError(
+        err?.response?.status === 503
+          ? "This connector isn't set up yet - ask whoever manages GD360 to finish its setup."
+          : err?.response?.data?.detail || "Could not start the sign-in - please try again."
+      );
+    }
+  };
+
   const closeConnectedPanel = () => setConnectedDs(null);
 
   const proceedToWorkspace = () => {
@@ -497,11 +580,12 @@ export default function DataSourceForm({
           slots, the active one lifted onto its own pill - instead of three
           independently-sized buttons that used to wrap unevenly and never
           lined up with each other. */}
-      <div className="grid grid-cols-3 gap-1 p-1 mb-6 rounded-xl bg-surface2 border border-border">
+      <div className="grid grid-cols-4 gap-1 p-1 mb-6 rounded-xl bg-surface2 border border-border">
         {(
           [
             { key: "db" as const, label: "Database", Icon: DatabaseIcon },
             { key: "warehouse" as const, label: "Warehouse", Icon: WarehouseIcon },
+            { key: "connect" as const, label: "Connect", Icon: GoogleSheetsLogo },
             { key: "file" as const, label: "Upload file", Icon: FileSpreadsheetIcon },
           ]
         ).map((m) => (
@@ -576,6 +660,50 @@ export default function DataSourceForm({
               </button>
             ))}
           </div>
+        </div>
+      ) : mode === "connect" ? (
+        <div>
+          {/* A row-card per live connector, not the icon-tile grid the
+              database/warehouse pickers above use - that grid layout is
+              built for a wall of equally-terse options (a logo and a one-
+              or-two-word name is all a DB kind needs); a "Connect" tile
+              is a much bigger decision (leaving the app for Google's/
+              Microsoft's own sign-in page, then picking a real
+              spreadsheet/workbook once back), so it earns a fuller row
+              with its own one-line description - and reads as a
+              deliberate, considered short list rather than a sparse grid
+              with empty slots while only Google Sheets is turned on (see
+              VISIBLE_CONNECT_KINDS above). */}
+          <div className="text-xs text-muted mb-4 leading-relaxed">
+            Sign in once, and GD360 keeps reading the live spreadsheet itself - no re-uploading when it changes.
+          </div>
+          {connectError && (
+            <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-4">{connectError}</div>
+          )}
+          <div className="space-y-2.5">
+            {CONNECT_KINDS.filter((c) => VISIBLE_CONNECT_KINDS.includes(c.value)).map((c) => (
+              <button
+                type="button"
+                key={c.value}
+                onClick={() => openOAuthConnect(c.value)}
+                disabled={connectBusyProvider !== null}
+                className="w-full flex items-center gap-4 p-4 rounded-xl border border-border hover:border-primary/40 hover:bg-surface2 transition disabled:opacity-60 text-left"
+              >
+                <div
+                  className="w-12 h-12 rounded-lg flex items-center justify-center shrink-0"
+                  style={{ backgroundColor: `${c.color}1a`, color: c.color }}
+                >
+                  {connectBusyProvider === c.value ? <SpinnerIcon className="w-6 h-6 animate-spin" /> : <c.Logo className="w-7 h-7" />}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-sm">{c.label}</div>
+                  <div className="text-xs text-muted mt-0.5">{c.blurb}</div>
+                </div>
+                <ChevronRightIcon className="w-4 h-4 text-muted shrink-0" />
+              </button>
+            ))}
+          </div>
+          <div className="text-[11px] text-muted mt-4 text-center">More live connectors are coming soon.</div>
         </div>
       ) : (
         <form onSubmit={submitFile} className="space-y-4">
