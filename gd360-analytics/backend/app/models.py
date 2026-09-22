@@ -167,6 +167,32 @@ class Message(Base):
     result_columns = Column(JSON, nullable=True)
     result_rows = Column(JSON, nullable=True)
     result_truncated = Column(Boolean, default=False)
+    # Exactly which table(s) this turn ran against, in the order they were
+    # selected - a list of small dicts, one per source: {"kind": "original"
+    # | "sheet" | "version", "label": the human-readable name shown at the
+    # time (e.g. "Original data", "SalesDB — Customers", "Cleaned Orders"),
+    # "datasource_id": which datasource that source belongs to (this one,
+    # or another separately-connected one pulled in via "+ Add more data"),
+    # "version_id": the DatasetVersion id when kind == "version", else
+    # null, "sheet": the sheet name when kind == "sheet", else null}. This
+    # is the one place the app records "this chart/table was built FROM
+    # these tables" precisely enough to draw an accurate lineage diagram
+    # later (see routers/datasources.py get_data_flow) - parent_version_id
+    # on DatasetVersion alone cannot do this, since it only chains one
+    # saved table to another and has no way to represent "built from the
+    # untouched original data" or "merged in a table from a different,
+    # separately-connected data source". None for turns saved before this
+    # column existed, and for turns with nothing to record (e.g. a
+    # clarifying question never loaded any table).
+    sources = Column(JSON, nullable=True)
+    # The DatasetVersion this turn's own cleaning/prep work created, if
+    # any (both a "transform" and an "analyze" that had to prepare its own
+    # table first can create one - see ai_engine._run_analyze_with_prep).
+    # Kept as a plain id (not a ForeignKey) for the same "simple display,
+    # not a hard reference" reason DatasetVersion.parent_version_id
+    # already is - this is what lets the lineage diagram draw "this
+    # question produced that exact table" without re-deriving it.
+    new_version_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     # How many times "Double-check this" has been run on this message (see
     # routers/chat.py verify_message, which increments this on every
