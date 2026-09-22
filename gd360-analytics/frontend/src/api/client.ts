@@ -459,10 +459,17 @@ export const connectionsApi = {
       .get<{ authorize_url: string }>(`/connections/${provider === "google_sheets" ? "google" : "microsoft"}/authorize`)
       .then((r) => r.data.authorize_url),
 
+  // Microsoft Excel only - see backend routers/connections.py's
+  // list_resources docstring for why Google Sheets doesn't use this.
   listResources: (connectionId: string, search?: string) =>
     api
       .get<OAuthResourcesResult>(`/connections/${connectionId}/resources`, { params: { search: search || undefined } })
       .then((r) => r.data),
+
+  // Google Sheets only - a short-lived token to open Google's own
+  // file-picker widget with (see GooglePicker in ConnectResourcePicker.tsx).
+  pickerToken: (connectionId: string) =>
+    api.get<{ access_token: string }>(`/connections/${connectionId}/picker-token`).then((r) => r.data.access_token),
 
   finish: (connectionId: string, payload: { name: string; resource_id: string; resource_name: string; drive_id?: string | null }) =>
     api.post<DataSourceSummary>(`/connections/${connectionId}/finish`, payload).then((r) => r.data),
