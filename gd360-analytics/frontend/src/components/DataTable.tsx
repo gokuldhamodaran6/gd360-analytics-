@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { datasourceApi, DataPreview, DatasetVersion, ColumnStat, ColumnDistinctValues } from "../api/client";
+import { datasourceApi, DataPreview, DatasetVersion, ColumnStat, ColumnDistinctValues, SavedView } from "../api/client";
 
 // Rows-per-page choices for the numbered pagination footer below. Capped at
 // 250 (and no more "1000"/"All" option) on purpose - see config.py's
@@ -357,6 +357,7 @@ export default function DataTable({
   originalTables,
   activeTable,
   onActiveTableChange,
+  onInsertColumn,
 }: {
   datasourceId: string;
   refreshKey: number;
@@ -377,6 +378,16 @@ export default function DataTable({
   // single-table source.
   activeTable?: string | null;
   onActiveTableChange?: (table: string | null) => void;
+  // "Insert column left/right" in a column's menu: hands off to Workspace,
+  // which crafts a natural-language prompt from `description` and runs it
+  // through the SAME AI transform pipeline every other data-prep prompt
+  // uses (see Workspace.tsx's runPrompt) - so an AI-generated calculated
+  // column gets a real new table version, a cleaning-log entry, and shows
+  // up on the Flow map exactly like any other prep step, rather than being
+  // a separate one-off mutation path. Left undefined, the menu simply
+  // omits "Insert column" entirely rather than showing something that
+  // does nothing.
+  onInsertColumn?: (afterColumn: string, side: "left" | "right", description: string) => void;
 }) {
   const [preview, setPreview] = useState<DataPreview | null>(null);
   const [offset, setOffset] = useState(0);
@@ -428,8 +439,28 @@ export default function DataTable({
   const [formatSectionOpen, setFormatSectionOpen] = useState(false);
   const [highlightSectionOpen, setHighlightSectionOpen] = useState(false);
 
+  // --- Round 2: AI-native extras - the natural-language filter bar,
+  // "Insert column" (an AI calculated column, via onInsertColumn), and
+  // Saved Views (a named snapshot of everything above, persisted
+  // server-side per table - see models.SavedView). ---
+  const [nlFilterPrompt, setNlFilterPrompt] = useState("");
+  const [nlFilterBusy, setNlFilterBusy] = useState(false);
+  const [nlFilterNote, setNlFilterNote] = useState<string | null>(null);
+  const [nlFilterError, setNlFilterError] = useState<string | null>(null);
+
+  const [insertComposer, setInsertComposer] = useState<{ col: string; side: "left" | "right" } | null>(null);
+  const [insertDraft, setInsertDraft] = useState("");
+
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+  const [showViewsPanel, setShowViewsPanel] = useState(false);
+  const [viewsLoading, setViewsLoading] = useState(false);
+  const [savingView, setSavingView] = useState(false);
+  const [newViewName, setNewViewName] = useState("");
+  const [viewsError, setViewsError] = useState<string | null>(null);
+
   const menuRef = useRef<HTMLDivElement | null>(null);
   const columnsPanelRef = useRef<HTMLDivElement | null>(null);
+  const viewsPanelRef = useRef<HTMLDivElement | null>(null);
   const thRefs = useRef<Record<string, HTMLTableCellElement | null>>({});
   const hasActiveFilters = Object.keys(debouncedFilters).length > 0;
 
@@ -489,6 +520,15 @@ export default function DataTable({
     setWrapCols(new Set());
     setPinnedCols([]);
     setNumberFormats({});
+    setNlFilterPrompt("");
+    setNlFilterNote(null);
+    setNlFilterError(null);
+    setInsertComposer(null);
+    setInsertDraft("");
+    setShowViewsPanel(false);
+    setSavedViews([]);
+    setNewViewName("");
+    setViewsError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [datasourceId, activeVersionId, activeTable]);
 
@@ -496,7 +536,7 @@ export default function DataTable({
   // click inside the panel itself never reaches here, because its own
   // trigger stops its mousedown from bubbling.
   useEffect(() => {
-    if (!openFilterCol && !showColumnsPanel) return;
+    if (!openFilterCol && !showColumnsPanel && !showViewsPanel) return;
     const onClickOutside = (e: MouseEvent) => {
       if (openFilterCol && menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setOpenFilterCol(null);
@@ -504,10 +544,13 @@ export default function DataTable({
       if (showColumnsPanel && columnsPanelRef.current && !columnsPanelRef.current.contains(e.target as Node)) {
         setShowColumnsPanel(false);
       }
+      if (showViewsPanel && viewsPanelRef.current && !viewsPanelRef.current.contains(e.target as Node)) {
+        setShowViewsPanel(false);
+      }
     };
     document.addEventListener("mousedown", onClickOutside);
     return () => document.removeEventListener("mousedown", onClickOutside);
-  }, [openFilterCol, showColumnsPanel]);
+  }, [openFilterCol, showColumnsPanel, showViewsPanel]);
 
   // Lazily fetches this column's real distinct values (with counts) the
   // moment its filter panel is open AND the Values tab is showing - never
@@ -560,6 +603,7 @@ export default function DataTable({
         setFormatSectionOpen(false);
         setHighlightSectionOpen(false);
         setRenamingColKey(null);
+        setInsertComposer(null);
       }
       return next;
     });
@@ -791,6 +835,128 @@ export default function DataTable({
     setShowTotals(true);
     setTotalsSelection((prev) => ({ ...prev, [col]: defaultStat(preview?.column_stats[col]) }));
     setOpenFilterCol(null);
+  };
+
+  // --- Round 2: natural-language filter bar ---
+
+  const runNlFilter = async () => {
+    const prompt = nlFilterPrompt.trim();
+    if (!prompt) return;
+    setNlFilterBusy(true);
+    setNlFilterError(null);
+    setNlFilterNote(null);
+    try {
+      const result = await datasourceApi.parseFilter(datasourceId, prompt, activeVersionId, activeVersionId ? null : activeTable);
+      const found = Object.keys(result.filters || {}).length > 0;
+      if (found) {
+        setOffset(0);
+        setFilters((f) => ({ ...f, ...result.filters }));
+      }
+      setNlFilterNote(result.note || (found ? null : "Couldn't find a matching filter for that - try naming a column directly."));
+    } catch (err: any) {
+      setNlFilterError(err?.response?.data?.detail || "Could not understand that filter request. Please try rephrasing it.");
+    } finally {
+      setNlFilterBusy(false);
+    }
+  };
+
+  // --- Round 2: "Insert column" - opens a small composer for what the new
+  // AI-generated column should be, then hands off to Workspace (via
+  // onInsertColumn) to actually run it through the real chat/transform
+  // pipeline - see the prop's own comment for why. ---
+
+  const openInsertComposer = (col: string, side: "left" | "right") => {
+    setInsertComposer({ col, side });
+    setInsertDraft("");
+  };
+
+  const submitInsertComposer = () => {
+    if (!insertComposer) return;
+    const description = insertDraft.trim();
+    if (!description) return;
+    onInsertColumn?.(insertComposer.col, insertComposer.side, description);
+    setInsertComposer(null);
+    setInsertDraft("");
+    setOpenFilterCol(null);
+  };
+
+  // --- Round 2: Saved Views - a named snapshot of every per-viewer control
+  // above (sort, filters, columns, pin, wrap, format, totals, density,
+  // page size), persisted server-side per table so it comes back exactly
+  // as it was, on this device or any other. ---
+
+  const currentViewConfig = () => ({
+    sortBy, sortDir, filters,
+    colOrder, hiddenCols: Array.from(hiddenCols), colWidths,
+    pinnedCols, wrapCols: Array.from(wrapCols),
+    numberFormats, formatRules,
+    showTotals, totalsSelection, density, colLabels, pageSize,
+  });
+
+  const toggleViewsPanel = async () => {
+    const opening = !showViewsPanel;
+    setShowViewsPanel(opening);
+    if (opening) {
+      setViewsLoading(true);
+      setViewsError(null);
+      try {
+        const views = await datasourceApi.listViews(datasourceId, activeVersionId, activeVersionId ? null : activeTable);
+        setSavedViews(views);
+      } catch {
+        setViewsError("Could not load saved views.");
+      } finally {
+        setViewsLoading(false);
+      }
+    }
+  };
+
+  const saveCurrentView = async () => {
+    const name = newViewName.trim();
+    if (!name) return;
+    setSavingView(true);
+    setViewsError(null);
+    try {
+      const view = await datasourceApi.createView(
+        datasourceId, name, activeVersionId, activeVersionId ? null : activeTable, currentViewConfig()
+      );
+      setSavedViews((v) => [...v, view]);
+      setNewViewName("");
+    } catch {
+      setViewsError("Could not save this view. Please try again.");
+    } finally {
+      setSavingView(false);
+    }
+  };
+
+  const applyView = (view: SavedView) => {
+    const c = view.config || {};
+    setOffset(0);
+    if (c.sortBy !== undefined) setSortBy(c.sortBy);
+    if (c.sortDir !== undefined) setSortDir(c.sortDir);
+    if (c.filters !== undefined) setFilters(c.filters);
+    if (c.colOrder !== undefined) setColOrder(c.colOrder);
+    if (c.hiddenCols !== undefined) setHiddenCols(new Set(c.hiddenCols));
+    if (c.colWidths !== undefined) setColWidths(c.colWidths);
+    if (c.pinnedCols !== undefined) setPinnedCols(c.pinnedCols);
+    if (c.wrapCols !== undefined) setWrapCols(new Set(c.wrapCols));
+    if (c.numberFormats !== undefined) setNumberFormats(c.numberFormats);
+    if (c.formatRules !== undefined) setFormatRules(c.formatRules);
+    if (c.showTotals !== undefined) setShowTotals(c.showTotals);
+    if (c.totalsSelection !== undefined) setTotalsSelection(c.totalsSelection);
+    if (c.density !== undefined) setDensity(c.density);
+    if (c.colLabels !== undefined) setColLabels(c.colLabels);
+    if (c.pageSize !== undefined) setPageSize(c.pageSize);
+    setShowViewsPanel(false);
+  };
+
+  const removeView = async (view: SavedView) => {
+    if (!confirm(`Delete the saved view "${view.name}"?`)) return;
+    try {
+      await datasourceApi.deleteView(datasourceId, view.id);
+      setSavedViews((v) => v.filter((x) => x.id !== view.id));
+    } catch {
+      setViewsError("Could not delete that view. Please try again.");
+    }
   };
 
   // --- Conditional formatting helpers ---
@@ -1058,6 +1224,56 @@ export default function DataTable({
               Compact
             </button>
           </div>
+
+          <div className="relative">
+            <button
+              className="btn-secondary text-xs px-2.5 py-1.5 flex items-center gap-1.5"
+              onClick={(e) => { e.stopPropagation(); toggleViewsPanel(); }}
+              title="Save or reapply a named snapshot of this table's sort, filters, columns and formatting"
+            >
+              <span aria-hidden>&#128190;</span> Views
+            </button>
+            {showViewsPanel && (
+              <div
+                ref={viewsPanelRef}
+                className="absolute z-30 top-full left-0 mt-1 w-72 card p-2 shadow-xl max-h-80 overflow-y-auto space-y-2"
+              >
+                <div className="text-[10px] uppercase tracking-wide text-muted px-1">Saved views for this table</div>
+                <div className="flex items-center gap-1 px-1">
+                  <input
+                    className="input text-xs py-1 px-2 flex-1"
+                    placeholder="Name this view..."
+                    value={newViewName}
+                    onChange={(e) => setNewViewName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") saveCurrentView(); }}
+                  />
+                  <button
+                    className="text-[11px] px-2.5 py-1 rounded-md bg-primary text-white font-medium disabled:opacity-50"
+                    disabled={!newViewName.trim() || savingView}
+                    onClick={saveCurrentView}
+                  >
+                    {savingView ? "Saving..." : "Save"}
+                  </button>
+                </div>
+                {viewsError && <div className="text-[11px] text-red-400 px-1">{viewsError}</div>}
+                <div className="border-t border-border" />
+                {viewsLoading && <div className="text-[11px] text-muted px-1 py-1">Loading views...</div>}
+                {!viewsLoading && savedViews.length === 0 && (
+                  <div className="text-[11px] text-muted px-1 py-1">No saved views yet for this table.</div>
+                )}
+                {!viewsLoading && savedViews.map((v) => (
+                  <div key={v.id} className="flex items-center gap-1 px-1 py-1 rounded-lg hover:bg-surface2">
+                    <button className="text-xs text-left flex-1 truncate" onClick={() => applyView(v)} title="Apply this view">
+                      {v.name}
+                    </button>
+                    <button className="text-muted hover:text-red-400 text-xs px-1" onClick={() => removeView(v)} title="Delete this view">
+                      &times;
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-2 text-xs text-muted">
@@ -1077,6 +1293,33 @@ export default function DataTable({
           </div>
         </div>
       </div>
+
+      {/* Natural-language filter bar - describe a filter in plain English
+          and the AI turns it into the same structured filters the manual
+          Values/Condition panel builds (see runNlFilter / parse_filter on
+          the backend), merged straight into the same `filters` state. */}
+      <div className="px-3 py-2 border-b border-border flex items-center gap-2 shrink-0">
+        <span className="text-accent shrink-0" aria-hidden>&#10024;</span>
+        <input
+          className="input text-xs py-1.5 px-2.5 flex-1"
+          placeholder='Ask for a filter in plain English, e.g. "orders over $500 in California"'
+          value={nlFilterPrompt}
+          onChange={(e) => setNlFilterPrompt(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") runNlFilter(); }}
+        />
+        <button
+          className="text-xs px-3 py-1.5 rounded-lg bg-primary text-white font-medium disabled:opacity-50 shrink-0"
+          disabled={!nlFilterPrompt.trim() || nlFilterBusy}
+          onClick={runNlFilter}
+        >
+          {nlFilterBusy ? "Thinking..." : "Ask"}
+        </button>
+      </div>
+      {(nlFilterNote || nlFilterError) && (
+        <div className={`px-3 pb-2 text-[11px] shrink-0 ${nlFilterError ? "text-red-400" : "text-accent"}`}>
+          {nlFilterError || nlFilterNote}
+        </div>
+      )}
 
       {/* Active-filters chip bar - every column filter currently applied,
           in plain language, each removable on its own, plus "Clear all".
@@ -1439,6 +1682,55 @@ export default function DataTable({
                               </button>
                             </div>
                           </div>
+
+                          {onInsertColumn && (
+                            <>
+                              <div className="border-t border-border my-1" />
+                              {insertComposer?.col === col ? (
+                                <div className="px-2 pb-1.5 space-y-1.5">
+                                  <label className="text-[10px] uppercase tracking-wide text-muted block">
+                                    New column {insertComposer.side === "left" ? "before" : "after"} "{displayLabel(col)}"
+                                  </label>
+                                  <textarea
+                                    autoFocus
+                                    className="input text-xs py-1.5 px-2 w-full resize-none"
+                                    rows={2}
+                                    placeholder='Describe it, e.g. "profit margin as (Sales - Cost) / Sales"'
+                                    value={insertDraft}
+                                    onChange={(e) => setInsertDraft(e.target.value)}
+                                  />
+                                  <div className="text-[10px] text-muted">
+                                    GD360 will build this as a new AI step in the chat, so you can see exactly what it did.
+                                  </div>
+                                  <div className="flex items-center justify-end gap-2">
+                                    <button className="text-[11px] text-muted" onClick={() => setInsertComposer(null)}>Cancel</button>
+                                    <button
+                                      className="text-[11px] px-2.5 py-1 rounded-md bg-primary text-white font-medium disabled:opacity-50"
+                                      disabled={!insertDraft.trim()}
+                                      onClick={submitInsertComposer}
+                                    >
+                                      Generate column
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <>
+                                  <button
+                                    className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2"
+                                    onClick={() => openInsertComposer(col, "left")}
+                                  >
+                                    &#8592; Insert column left&hellip;
+                                  </button>
+                                  <button
+                                    className="w-full text-left text-xs px-2 py-1.5 rounded-lg hover:bg-surface2"
+                                    onClick={() => openInsertComposer(col, "right")}
+                                  >
+                                    Insert column right&hellip; &#8594;
+                                  </button>
+                                </>
+                              )}
+                            </>
+                          )}
 
                           <div className="border-t border-border my-1" />
                           <button
