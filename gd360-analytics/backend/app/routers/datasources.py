@@ -25,6 +25,7 @@ from .. import models, schemas, security
 from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
+from ..services import ai_engine
 from ..services.connectors import SQLConnector, MongoConnector, FileConnector, BigQueryConnector
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, ensure_legacy_migrated, warm_cache, default_table_for_preview,
@@ -830,6 +831,125 @@ def get_column_distinct_values(
         "distinct_total": int(counts.shape[0]),
         "truncated": truncated,
     }
+
+
+@router.post("/{datasource_id}/parse-filter")
+def parse_filter(
+    datasource_id: str,
+    payload: schemas.ParseFilterRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """The Data tab's natural-language filter bar: turns a plain-English
+    request like "orders over $500 in California" into the exact same
+    structured per-column filter shape the manual Values/Condition filter
+    panel already produces - see ai_engine.parse_filter_prompt for how,
+    and _apply_column_filter above for what actually reads it. Returns the
+    filters to apply plus a short confirmation sentence; the frontend is
+    what merges them into its own filter state and re-queries the preview
+    - this endpoint never touches or returns any actual row data itself,
+    only the column/dtype shape it needs to ground the AI's answer."""
+    ds = _get_owned_datasource(db, user, datasource_id)
+    ensure_legacy_migrated(db, ds)
+
+    active_version = _get_owned_version(db, ds, payload.version_id) if payload.version_id else None
+    try:
+        df = (
+            load_version_dataframe(active_version)
+            if active_version
+            else load_dataframe(
+                ds, table=payload.table or default_table_for_preview(ds), version="original",
+                row_limit=settings.PREVIEW_ROW_LIMIT,
+            )
+        )
+    except Exception as e:
+        raise HTTPException(400, f"Could not load data: {e}")
+
+    columns = [str(c) for c in df.columns]
+    dtypes = {str(c): str(df[c].dtype) for c in df.columns}
+    try:
+        result = ai_engine.parse_filter_prompt(payload.prompt, columns, dtypes)
+    except Exception as e:
+        raise HTTPException(400, ai_engine.friendly_ai_error(e))
+    return result
+
+
+@router.get("/{datasource_id}/views", response_model=list[schemas.SavedViewOut])
+def list_saved_views(
+    datasource_id: str,
+    table: str | None = None,
+    version_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Every Saved View this person has for this exact table (the original
+    table/sheet named by `table`, or the saved/AI-built table named by
+    `version_id` - never both) - the Data tab's own "Views" dropdown reads
+    this list to offer them for one click to reapply. See models.SavedView
+    for what a view actually holds."""
+    ds = _get_owned_datasource(db, user, datasource_id)
+    views = (
+        db.query(models.SavedView)
+        .filter(
+            models.SavedView.datasource_id == ds.id,
+            models.SavedView.owner_id == user.id,
+            models.SavedView.version_id == version_id,
+            models.SavedView.table_name == (table if not version_id else None),
+        )
+        .order_by(models.SavedView.created_at)
+        .all()
+    )
+    return [
+        {
+            "id": v.id, "name": v.name, "table": v.table_name, "version_id": v.version_id,
+            "config": v.config, "created_at": v.created_at, "updated_at": v.updated_at,
+        }
+        for v in views
+    ]
+
+
+@router.post("/{datasource_id}/views", response_model=schemas.SavedViewOut, status_code=201)
+def create_saved_view(
+    datasource_id: str,
+    payload: schemas.SavedViewCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    ds = _get_owned_datasource(db, user, datasource_id)
+    if payload.version_id:
+        _get_owned_version(db, ds, payload.version_id)  # 404s if not this person's
+    view = models.SavedView(
+        datasource_id=ds.id,
+        owner_id=user.id,
+        name=payload.name.strip()[:80] or "Untitled view",
+        version_id=payload.version_id,
+        table_name=payload.table if not payload.version_id else None,
+        config=payload.config,
+    )
+    db.add(view)
+    db.commit()
+    db.refresh(view)
+    return {
+        "id": view.id, "name": view.name, "table": view.table_name, "version_id": view.version_id,
+        "config": view.config, "created_at": view.created_at, "updated_at": view.updated_at,
+    }
+
+
+@router.delete("/{datasource_id}/views/{view_id}", status_code=204)
+def delete_saved_view(
+    datasource_id: str, view_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
+):
+    ds = _get_owned_datasource(db, user, datasource_id)
+    view = (
+        db.query(models.SavedView)
+        .filter(models.SavedView.id == view_id, models.SavedView.datasource_id == ds.id, models.SavedView.owner_id == user.id)
+        .first()
+    )
+    if not view:
+        raise HTTPException(404, "That saved view no longer exists.")
+    db.delete(view)
+    db.commit()
+    return None
 
 
 @router.get("/{datasource_id}/export")
