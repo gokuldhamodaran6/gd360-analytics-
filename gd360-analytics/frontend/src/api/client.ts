@@ -241,6 +241,17 @@ export type ConversationMessage = {
   role: "user" | "assistant" | "system";
   content: string;
   chart_spec: any;
+  // The chart type actually rendered, plus the tidy row-level numbers it
+  // was built from (see backend chart_builder.result_to_tidy) - what lets
+  // the Explore panel keep working (instant client-side axis/type/filter
+  // changes) after reopening a saved conversation. Loosely typed here
+  // (matching chart_spec above); Workspace.tsx narrows to the real
+  // ResultColumn[]/rows shape from lib/exploreEngine when building a
+  // ChartEntry from these.
+  chart_type: string | null;
+  result_columns: any;
+  result_rows: any;
+  result_truncated: boolean;
   insight: string | null;
   suggestions: { charts?: any[]; stats?: any[]; follow_up?: { label: string; prompt: string }[] } | null;
   needs_clarification: boolean;
@@ -275,6 +286,10 @@ export type VerifyResult = {
   message_id: string;
   reply_text?: string | null;
   chart_spec?: any;
+  chart_type?: string | null;
+  result_columns?: any;
+  result_rows?: any;
+  result_truncated?: boolean;
   insight?: string | null;
   new_version_id?: string | null;
   new_version_name?: string | null;
