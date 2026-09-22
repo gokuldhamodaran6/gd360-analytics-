@@ -7,7 +7,7 @@
 // answer on this): every card is a live shortcut back to wherever that
 // table or chart actually lives, so renaming/editing always happens in
 // exactly one place and can never drift out of sync with this map.
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   Background, BackgroundVariant, Controls, Handle, MiniMap, Node, NodeProps,
   Panel, Position, ReactFlow, ReactFlowProvider,
@@ -111,17 +111,27 @@ export type FlowJumpTarget =
   | { type: "jump-chart"; conversationId: string; messageId: string };
 
 export default function DataFlowMap({
-  flow, loading, error, currentDatasourceId, onJump,
+  flow, loading, error, currentDatasourceId, currentConversationId, onJump,
 }: {
   flow: DataFlow | null;
   loading: boolean;
   error: string;
   currentDatasourceId: string;
+  // The conversation currently open in the chat panel next to this map -
+  // null only in the brief moment before a brand-new conversation's first
+  // message has been sent. Defaulting the map to just this conversation
+  // (see `scope` below) is what keeps someone from feeling lost in every
+  // other chat's history the moment they open the Flow tab; the toggle
+  // lets them deliberately ask for the full picture when they want it.
+  currentConversationId: string | null;
   onJump: (target: FlowJumpTarget) => void;
 }) {
+  const [scope, setScope] = useState<"conversation" | "all">("conversation");
+  const effectiveScope = scope === "conversation" && currentConversationId ? currentConversationId : null;
+
   const graph = useMemo(
-    () => (flow ? buildFlowGraph(flow, currentDatasourceId) : null),
-    [flow, currentDatasourceId]
+    () => (flow ? buildFlowGraph(flow, currentDatasourceId, effectiveScope) : null),
+    [flow, currentDatasourceId, effectiveScope]
   );
 
   const handleNodeClick = (_: unknown, node: Node<FlowCardData>) => {
@@ -131,6 +141,23 @@ export default function DataFlowMap({
   return (
     <div className="flow-map-root h-full w-full relative rounded-2xl border border-border overflow-hidden">
       <style>{FLOW_CSS}</style>
+
+      <div className="flow-scope-toggle" role="group" aria-label="Flow map scope">
+        <button
+          type="button"
+          className={scope === "conversation" ? "flow-scope-toggle__btn flow-scope-toggle__btn--active" : "flow-scope-toggle__btn"}
+          onClick={() => setScope("conversation")}
+        >
+          This conversation
+        </button>
+        <button
+          type="button"
+          className={scope === "all" ? "flow-scope-toggle__btn flow-scope-toggle__btn--active" : "flow-scope-toggle__btn"}
+          onClick={() => setScope("all")}
+        >
+          All conversations
+        </button>
+      </div>
 
       {loading && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-surface/70 backdrop-blur-sm">
@@ -158,10 +185,19 @@ export default function DataFlowMap({
                 <path d="M3.5 5v10c0 1.38 2.91 2.5 6.5 2.5s6.5-1.12 6.5-2.5V5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
               </svg>
             </div>
-            <div className="text-sm font-semibold text-text mb-1">Nothing to map yet</div>
-            <div className="text-xs text-muted leading-relaxed">
-              Ask a question or clean this data in the chat, and every table and chart it creates will show up here, connected to exactly what it came from.
+            <div className="text-sm font-semibold text-text mb-1">
+              {effectiveScope ? "Nothing in this conversation yet" : "Nothing to map yet"}
             </div>
+            <div className="text-xs text-muted leading-relaxed">
+              {effectiveScope
+                ? "This conversation hasn't built a table or chart yet. Ask a question or clean this data in the chat and it'll show up here."
+                : "Ask a question or clean this data in the chat, and every table and chart it creates will show up here, connected to exactly what it came from."}
+            </div>
+            {effectiveScope && (
+              <button type="button" className="flow-empty__all-link" onClick={() => setScope("all")}>
+                View all conversations on this data instead
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -339,6 +375,49 @@ const FLOW_CSS = `
 .flow-legend__row { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: rgb(var(--color-muted)); }
 .flow-legend__swatch { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
 .flow-legend__row--hint { padding-top: 4px; margin-top: 1px; border-top: 1px solid rgb(var(--color-border)); }
+
+.flow-scope-toggle {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 20;
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  background: rgb(var(--color-surface2) / 0.95);
+  border: 1px solid rgb(var(--color-border));
+  border-radius: 10px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.2);
+  backdrop-filter: blur(6px);
+}
+.flow-scope-toggle__btn {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: rgb(var(--color-muted));
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.flow-scope-toggle__btn:hover { color: rgb(var(--color-text)); }
+.flow-scope-toggle__btn--active {
+  color: rgb(var(--color-surface));
+  background: rgb(var(--color-primary));
+}
+.flow-empty__all-link {
+  display: inline-block;
+  margin-top: 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: rgb(var(--color-primary));
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .flow-legend__step-sample {
   width: 14px; height: 14px; border-radius: 999px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
