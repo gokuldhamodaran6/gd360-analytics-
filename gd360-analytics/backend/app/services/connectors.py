@@ -10,21 +10,26 @@ Job User IAM roles) as defense-in-depth on top of this application-level
 check.
 
 Supported now: Postgres, MySQL, SQL Server, MongoDB, Supabase (which is
-just Postgres under the hood - see _sql_engine_url), CSV, Excel, the
-BigQuery data warehouse, and two OAuth "live" connectors - Google Sheets
-and Microsoft Excel (OneDrive/SharePoint). The connector interface is
-intentionally generic (`load_dataframe`, `introspect_schema`) so new
-backends (Snowflake, a generic REST ERP/CRM connector, etc.) can be added
-as additional classes without touching the rest of the app -
+just Postgres under the hood - see _sql_engine_url), CSV, Excel, two data
+warehouses (BigQuery, Snowflake), and two OAuth "live" connectors -
+Google Sheets and Microsoft Excel (OneDrive/SharePoint). The connector
+interface is intentionally generic (`load_dataframe`, `introspect_schema`)
+so new backends (a generic REST ERP/CRM connector, etc.) can be added as
+additional classes without touching the rest of the app -
 BigQueryConnector was the first connector to actually exercise that
 promise (a service-account JSON key instead of host/port/username/
-password); GoogleSheetsConnector/MicrosoftExcelConnector below extend it
-again, authenticating with a short-lived OAuth access token instead
-(refreshed by services/oauth_tokens.py before either is constructed) and
-reading a live spreadsheet/workbook straight over HTTP rather than SQL -
-still the exact same `load_dataframe`/`introspect_schema` shape, so
-data_loader.py's dispatch and every downstream feature (preview, chat
-analysis, exports) needs no special-casing for them.
+password), and SnowflakeConnector reuses it again with its own
+username/password + account/warehouse shape; GoogleSheetsConnector/
+MicrosoftExcelConnector below extend it once more, authenticating with a
+short-lived OAuth access token instead (refreshed by
+services/oauth_tokens.py before either is constructed) and reading a live
+spreadsheet/workbook straight over HTTP rather than SQL - still the exact
+same `load_dataframe`/`introspect_schema` shape, so data_loader.py's
+dispatch and every downstream feature (preview, chat analysis, exports)
+needs no special-casing for them. BigQueryConnector and SnowflakeConnector
+additionally support a `run_pushdown_query` fast path - see the Enterprise
+Scale Roadmap doc and each class's own docstring for how that differs
+between the two.
 """
 from __future__ import annotations
 
@@ -58,7 +63,14 @@ class ReadOnlyViolation(Exception):
 class QueryTooExpensive(Exception):
     """Raised by BigQueryConnector.run_pushdown_query when a BigQuery dry
     run shows a query would scan more data than the caller's byte budget
-    allows - raised BEFORE the query is ever actually run or billed for."""
+    allows - raised BEFORE the query is ever actually run or billed for.
+    Carries the dry run's own estimate (estimated_bytes) so a caller that
+    wants to log/audit the rejection (see routers/chat.py) doesn't have to
+    re-parse it back out of the message text."""
+
+    def __init__(self, message: str, estimated_bytes: int = 0):
+        super().__init__(message)
+        self.estimated_bytes = estimated_bytes
 
 
 def assert_read_only_sql(raw_sql: str) -> None:
@@ -297,7 +309,7 @@ class BigQueryConnector:
         job = client.query(sql, job_config=bq.QueryJobConfig(dry_run=True, use_query_cache=False))
         return job.total_bytes_processed or 0
 
-    def run_pushdown_query(self, sql: str, max_bytes: int) -> pd.DataFrame:
+    def run_pushdown_query(self, sql: str, max_bytes: int) -> tuple[pd.DataFrame, int]:
         """Runs one AI-written SQL query directly inside BigQuery. Two
         guards before any real data is touched: assert_read_only_sql (a
         single plain SELECT, no writes - the same check load_dataframe's
@@ -306,18 +318,196 @@ class BigQueryConnector:
         BigQuery is ever billed for it. The result is expected to already
         be small - filtered/aggregated/limited by the query itself - since
         the entire point of pushdown is that the warehouse does that work,
-        not GD360's own server."""
+        not GD360's own server. Returns (dataframe, bytes_scanned) - the
+        caller (routers/chat.py) writes bytes_scanned into the pushdown
+        audit log and the per-user daily cost budget, on top of the
+        per-query ceiling enforced right here."""
         assert_read_only_sql(sql)
         estimated = self.estimate_query_bytes(sql)
         if estimated > max_bytes:
             raise QueryTooExpensive(
                 f"This question would need to scan about {estimated / (1024 ** 3):.1f} GB of data, over this "
                 f"connection's {max_bytes / (1024 ** 3):.1f} GB per-question limit. Try narrowing the date range "
-                f"or asking about a smaller slice of the data."
+                f"or asking about a smaller slice of the data.",
+                estimated_bytes=estimated,
             )
         client = self._bq_client()
         job = client.query(sql, job_config=bq.QueryJobConfig(use_query_cache=True))
-        return job.result().to_dataframe()
+        df = job.result().to_dataframe()
+        return df, estimated
+
+
+class SnowflakeConnector:
+    """Snowflake, GD360's second data-warehouse connector (Enterprise
+    Scale Roadmap, Phase 2). Follows the exact same shape
+    BigQueryConnector established above: test_connection/
+    introspect_schema/load_dataframe for the ordinary pull-and-pandas
+    path every other connector here supports, plus a run_pushdown_query
+    fast path that runs one AI-written SQL query directly inside the
+    warehouse instead.
+
+    Authenticates with a username/password - its own dedicated credential
+    shape (see routers/datasources.py connect_warehouse and
+    services/data_loader.py) - rather than a service-account key the way
+    BigQuery does; account/warehouse/database/schema/role are all
+    non-secret connection_info, matching how every other connector in
+    this file splits secret vs non-secret fields. `warehouse` here is
+    Snowflake's own term for a compute cluster (unrelated to this app's
+    "data warehouse" datasource kind - the two just happen to share a
+    name); `db_schema`/`role` are optional - a Snowflake user's default
+    schema/role are used when either is left unset.
+
+    Unlike BigQuery, Snowflake has no free pre-flight "how much would
+    this cost" dry run - it bills by warehouse compute-time, not bytes
+    scanned - so its pushdown safety net is different: a strict
+    STATEMENT_TIMEOUT_IN_SECONDS session parameter caps the worst-case
+    runtime (and therefore cost) of any single query, and the query's
+    real bytes_scanned is read back afterward from Snowflake's own
+    QUERY_HISTORY_BY_SESSION (needs no special privilege - any role can
+    see its own session's query history) for accurate audit logging and
+    the shared daily cost budget - see routers/chat.py
+    _try_snowflake_pushdown.
+    """
+
+    def __init__(self, account: str, warehouse: str, database: str, username: str, password: str,
+                 db_schema: str | None = None, role: str | None = None):
+        self.account = account
+        self.warehouse = warehouse
+        self.database = database
+        self.db_schema = db_schema or None
+        self.role = role or None
+        self.username = username
+        self.password = password
+
+    def _connect(self, statement_timeout_seconds: int | None = None):
+        import snowflake.connector
+        kwargs: dict[str, Any] = dict(
+            account=self.account, user=self.username, password=self.password,
+            warehouse=self.warehouse, database=self.database,
+            login_timeout=15, network_timeout=20,
+        )
+        if self.db_schema:
+            kwargs["schema"] = self.db_schema
+        if self.role:
+            kwargs["role"] = self.role
+        if statement_timeout_seconds:
+            # Snowflake itself cancels a query once it has run this long -
+            # see the class docstring above for why this, rather than a
+            # pre-flight byte estimate, is this connector's cost safety
+            # net.
+            kwargs["session_parameters"] = {"STATEMENT_TIMEOUT_IN_SECONDS": statement_timeout_seconds}
+        return snowflake.connector.connect(**kwargs)
+
+    def test_connection(self) -> None:
+        conn = self._connect()
+        try:
+            conn.cursor().execute("SELECT 1")
+        finally:
+            conn.close()
+
+    def introspect_schema(self, max_tables: int = 50) -> dict:
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            # information_schema.columns lists every column of every table
+            # this role can see in the connected database (optionally
+            # narrowed to one schema), in one round trip - far cheaper
+            # than a SHOW TABLES followed by a DESCRIBE per table.
+            if self.db_schema:
+                cur.execute(
+                    "SELECT table_name, column_name, data_type FROM information_schema.columns "
+                    "WHERE table_catalog = CURRENT_DATABASE() AND table_schema = %s "
+                    "ORDER BY table_name, ordinal_position",
+                    (self.db_schema,),
+                )
+            else:
+                cur.execute(
+                    "SELECT table_name, column_name, data_type FROM information_schema.columns "
+                    "WHERE table_catalog = CURRENT_DATABASE() "
+                    "ORDER BY table_name, ordinal_position"
+                )
+            schema: dict = {}
+            for table_name, column_name, data_type in cur.fetchall():
+                if table_name not in schema and len(schema) >= max_tables:
+                    continue
+                schema.setdefault(table_name, []).append({"name": column_name, "type": data_type})
+            return schema
+        finally:
+            conn.close()
+
+    def load_dataframe(self, query_or_table: str, is_raw_sql: bool = False, row_limit: int | None = None) -> pd.DataFrame:
+        row_limit = row_limit or settings.MAX_ROWS_LOADED_PER_QUERY
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            if is_raw_sql:
+                assert_read_only_sql(query_or_table)
+                sql = query_or_table
+                if "limit" not in sql.lower():
+                    trimmed_sql = sql.rstrip(";")
+                    sql = f"SELECT * FROM ({trimmed_sql}) AS gd360_sub LIMIT {row_limit}"
+            else:
+                # Table name only - double-quote it the same defensive way
+                # every other connector here quotes a bare identifier,
+                # rather than ever string-formatting a raw name into SQL.
+                quoted = '"' + query_or_table.replace('"', '""') + '"'
+                sql = f'SELECT * FROM {quoted} LIMIT {row_limit}'
+            cur.execute(sql)
+            return cur.fetch_pandas_all()
+        finally:
+            conn.close()
+
+    # -----------------------------------------------------------------
+    # Pushdown querying (Enterprise Scale Roadmap, Phase 2) - see the
+    # class docstring above for how this differs from BigQuery's pushdown.
+    # -----------------------------------------------------------------
+
+    def _bytes_scanned_for_query(self, conn, query_id: str) -> int | None:
+        """Snowflake's own record of how much data a just-run query
+        actually scanned, read back after the fact (QUERY_HISTORY_BY_
+        SESSION needs no special privilege beyond an ordinary role, unlike
+        the account-wide ACCOUNT_USAGE.QUERY_HISTORY view). Best-effort:
+        returns None on any failure rather than raising, since the
+        pushdown query itself already succeeded by the time this runs -
+        not knowing its exact cost afterward should never turn a working
+        answer into a failure."""
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT bytes_scanned FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION()) "
+                "WHERE query_id = %s",
+                (query_id,),
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] is not None else None
+        except Exception as e:
+            print(f"[connectors] Snowflake bytes_scanned lookup failed (non-fatal): {e}")
+            return None
+
+    def run_pushdown_query(self, sql: str, statement_timeout_seconds: int) -> tuple[pd.DataFrame, int | None]:
+        """Runs one AI-written SQL query directly inside Snowflake. One
+        guard before any real data is touched: assert_read_only_sql (a
+        single plain SELECT, no writes - the same check load_dataframe's
+        is_raw_sql path above already uses); statement_timeout_seconds is
+        set as a session parameter so Snowflake itself cancels the query
+        if it runs long, capping the worst-case compute-time/cost of any
+        single question regardless of how much data it touches (see the
+        class docstring for why this replaces BigQuery's pre-flight byte
+        estimate here). Returns (dataframe, bytes_scanned) - bytes_scanned
+        is Snowflake's own real number for this exact query, looked up
+        afterward, or None if that lookup itself failed; the caller
+        (routers/chat.py) writes it into the pushdown audit log and the
+        per-user daily cost budget."""
+        assert_read_only_sql(sql)
+        conn = self._connect(statement_timeout_seconds=statement_timeout_seconds)
+        try:
+            cur = conn.cursor()
+            cur.execute(sql)
+            df = cur.fetch_pandas_all()
+            bytes_scanned = self._bytes_scanned_for_query(conn, cur.sfqid)
+            return df, bytes_scanned
+        finally:
+            conn.close()
 
 
 class FileConnector:
