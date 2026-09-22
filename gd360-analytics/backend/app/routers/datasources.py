@@ -125,7 +125,17 @@ def get_outbound_ips(refresh: bool = False):
 
 @router.get("", response_model=list[schemas.DataSourceOut])
 def list_datasources(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    return db.query(models.DataSource).filter(models.DataSource.owner_id == user.id).all()
+    rows = db.query(models.DataSource).filter(models.DataSource.owner_id == user.id).all()
+    # A Google Sheets/Microsoft Excel connection exists as a real row from
+    # the moment the OAuth callback lands (it has to, in order to hold the
+    # tokens between "approved on Google/Microsoft's site" and "picked a
+    # spreadsheet/workbook" - see routers/connections.py), but isn't a real,
+    # usable data source until a resource is actually picked. Filtered out
+    # here so an abandoned connect flow (closed the tab before finishing)
+    # never shows up as a broken/empty entry anywhere in the app; it can
+    # still be found and deleted via GET /connections/pending if it needs
+    # cleaning up.
+    return [ds for ds in rows if not (ds.connection_info or {}).get("pending")]
 
 
 @router.post("/database", response_model=schemas.DataSourceOut, status_code=201)
@@ -676,7 +686,7 @@ def preview_datasource(
             if active_version
             else load_dataframe(
                 ds, table=table or default_table_for_preview(ds), version="original",
-                row_limit=settings.PREVIEW_ROW_LIMIT,
+                row_limit=settings.PREVIEW_ROW_LIMIT, db=db,
             )
         )
     except Exception as e:
@@ -803,7 +813,7 @@ def get_column_distinct_values(
             if active_version
             else load_dataframe(
                 ds, table=table or default_table_for_preview(ds), version="original",
-                row_limit=settings.PREVIEW_ROW_LIMIT,
+                row_limit=settings.PREVIEW_ROW_LIMIT, db=db,
             )
         )
     except Exception as e:
@@ -859,7 +869,7 @@ def parse_filter(
             if active_version
             else load_dataframe(
                 ds, table=payload.table or default_table_for_preview(ds), version="original",
-                row_limit=settings.PREVIEW_ROW_LIMIT,
+                row_limit=settings.PREVIEW_ROW_LIMIT, db=db,
             )
         )
     except Exception as e:
@@ -969,7 +979,7 @@ def export_datasource(
         df = (
             load_version_dataframe(active_version)
             if active_version
-            else load_dataframe(ds, table=table or default_table_for_preview(ds), version="original")
+            else load_dataframe(ds, table=table or default_table_for_preview(ds), version="original", db=db)
         )
     except Exception as e:
         raise HTTPException(400, f"Could not load data: {e}")
