@@ -95,6 +95,9 @@ export default function Register() {
           <p className="text-sm text-muted text-center">
             Already have an account? <Link to="/login" className="text-primary hover:underline">Sign in</Link>
           </p>
+          <p className="text-xs text-muted text-center">
+            <Link to="/privacy" className="hover:text-text hover:underline">Privacy Policy</Link>
+          </p>
         </form>
       </div>
     </div>
