@@ -12,12 +12,16 @@ import { otherDsSourceId } from "./ChatPanel";
 // up in WORKING ON immediately and vice versa - one selection, two doors
 // into it.
 //
-// Two things the popup lets someone do, picked with a first click:
-//   - "Existing data": browse the OTHER data sources already connected (one
-//     logo tile each, using the exact same brand logo/color every connector
-//     picker in the app already uses - see connectionKindMeta), click one
-//     to see its real tables/sheets and saved tables, and check off
-//     whichever to pull into this analysis.
+// Two things the popup lets someone do, picked with a first click - just
+// two big buttons on open, nothing else (a grid of one tile per connected
+// source got unreadable once someone had more than a handful of them, since
+// most file uploads share the same generic icon and similar names - "em
+// tesst", "emberash", "emberash-1.xlsx" - so the tiles told them nothing
+// they could scan at a glance; a plain searchable list reads far better
+// once you're actually choosing which one, see the "existing" view below):
+//   - "Existing data": browse/search the OTHER data sources already
+//     connected, click one to see its real tables/sheets and saved tables,
+//     and check off whichever to pull into this analysis.
 //   - "New data": connect a brand-new data source on the spot (the same
 //     DataSourceForm used everywhere else in the app - a database, a
 //     warehouse, or a file upload), which then becomes immediately
@@ -42,18 +46,21 @@ export default function AddDataPicker({
   // refetch.
   onDataSourceCreated: (ds: CreatedDataSource) => void;
 }) {
-  // null = the logo grid; "new" = the connect-a-new-source form; any other
-  // string = a specific other data source's id, showing its detail view.
+  // null = the two-button landing; "existing" = the searchable list of
+  // already-connected sources; "new" = the connect-a-new-source form; any
+  // other string = a specific other data source's id, showing its detail
+  // view (one level deeper than "existing", reached by picking a row there).
   const [view, setView] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const [versionsById, setVersionsById] = useState<Record<string, DatasetVersion[]>>({});
   const [loadingVersions, setLoadingVersions] = useState<Set<string>>(new Set());
 
-  // Every time the popup opens fresh, start back on the logo grid rather
-  // than wherever it was left last time - a person reopening this a minute
-  // later almost always wants to see the whole picture again, not resume a
+  // Every time the popup opens fresh, start back on the two-button landing
+  // rather than wherever it was left last time - a person reopening this a
+  // minute later almost always wants to choose again, not resume a
   // half-finished detail view they may not even remember opening.
   useEffect(() => {
-    if (open) setView(null);
+    if (open) { setView(null); setQuery(""); }
   }, [open]);
 
   useEffect(() => {
@@ -108,7 +115,24 @@ export default function AddDataPicker({
 
   if (!open) return null;
 
-  const activeDs = view && view !== "new" ? otherDataSources.find((d) => d.id === view) || null : null;
+  const activeDs = view && view !== "new" && view !== "existing" ? otherDataSources.find((d) => d.id === view) || null : null;
+  // Detail drills down FROM the existing-sources list, so its back arrow
+  // returns there, not all the way to the two-button landing - "new" and
+  // "existing" are both one level below the landing, so they go straight
+  // back to it.
+  const goBack = () => setView(activeDs ? "existing" : null);
+  const filteredSources = query.trim()
+    ? otherDataSources.filter((ds) => ds.name.toLowerCase().includes(query.trim().toLowerCase()))
+    : otherDataSources;
+
+  const title = activeDs ? activeDs.name
+    : view === "new" ? "Connect new data"
+    : view === "existing" ? "Existing data sources"
+    : "Add data for analysis";
+  const subtitle = activeDs ? null
+    : view === "new" ? null
+    : view === "existing" ? "Pick a source to see its tables"
+    : "Pick an existing source, or connect a new one";
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60" onClick={onClose}>
@@ -118,21 +142,19 @@ export default function AddDataPicker({
       >
         <div className="p-4 border-b border-border flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2 min-w-0">
-            {(view === "new" || activeDs) && (
+            {!!view && (
               <button
                 type="button"
                 className="text-muted hover:text-text shrink-0 text-lg leading-none"
                 title="Back"
-                onClick={() => setView(null)}
+                onClick={goBack}
               >
                 &#8592;
               </button>
             )}
             <div className="min-w-0">
-              <div className="font-semibold text-sm truncate">
-                {activeDs ? activeDs.name : view === "new" ? "Connect new data" : "Add data for analysis"}
-              </div>
-              {!view && <div className="text-xs text-muted mt-0.5">Pick an existing source, or connect a new one</div>}
+              <div className="font-semibold text-sm truncate">{title}</div>
+              {subtitle && <div className="text-xs text-muted mt-0.5">{subtitle}</div>}
             </div>
           </div>
           <button type="button" className="text-muted hover:text-text text-xl leading-none px-1 shrink-0" onClick={onClose}>
@@ -151,51 +173,90 @@ export default function AddDataPicker({
               versions={versionsById[activeDs.id] || []}
               loadingVersions={loadingVersions.has(activeDs.id)}
             />
-          ) : (
-            <div className="grid grid-cols-3 gap-3">
-              {otherDataSources.map((ds) => {
-                const meta = connectionKindMeta(ds.kind);
-                const selectedCount = sourceIds.filter(
-                  (id) => id === otherDsSourceId(ds.id) || id.startsWith(`ds:${ds.id}:`)
-                ).length;
-                return (
-                  <button
-                    key={ds.id}
-                    type="button"
-                    className="flex flex-col items-center gap-1.5 p-3 rounded-xl border border-border hover:border-primary/60 hover:bg-surface2 transition relative"
-                    onClick={() => openDetail(ds)}
-                    title={ds.name}
-                  >
-                    {selectedCount > 0 && (
-                      <span className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-primary text-white text-[9px] font-bold flex items-center justify-center">
-                        {selectedCount}
-                      </span>
-                    )}
-                    <span
-                      className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
-                      style={{ backgroundColor: `${meta.color}22`, color: meta.color }}
-                    >
-                      <meta.Logo className="w-5 h-5" />
-                    </span>
-                    <span className="text-[11px] font-medium truncate w-full text-center">{ds.name}</span>
+          ) : view === "existing" ? (
+            <div className="space-y-3">
+              {otherDataSources.length > 3 && (
+                <input
+                  type="text"
+                  autoFocus
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search your data sources…"
+                  className="input w-full text-sm"
+                />
+              )}
+              {otherDataSources.length === 0 ? (
+                <div className="text-center py-6">
+                  <div className="text-xs text-muted mb-3">No other data sources connected yet.</div>
+                  <button type="button" className="btn-primary text-sm px-4 py-2" onClick={() => setView("new")}>
+                    + Connect new data
                   </button>
-                );
-              })}
-              <button
-                type="button"
-                className="flex flex-col items-center justify-center gap-1.5 p-3 rounded-xl border border-dashed border-border hover:border-primary/60 hover:bg-surface2 transition text-muted hover:text-text"
-                onClick={() => setView("new")}
-              >
-                <span className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 border border-dashed border-current text-lg font-semibold">
-                  +
-                </span>
-                <span className="text-[11px] font-medium">New data</span>
-              </button>
-              {otherDataSources.length === 0 && (
-                <div className="col-span-3 text-xs text-muted text-center py-2">
-                  No other data sources connected yet - click "New data" to connect one.
+                </div>
+              ) : filteredSources.length === 0 ? (
+                <div className="text-xs text-muted text-center py-6">No sources match "{query}".</div>
+              ) : (
+                <div className="space-y-1">
+                  {filteredSources.map((ds) => {
+                    const meta = connectionKindMeta(ds.kind);
+                    const selectedCount = sourceIds.filter(
+                      (id) => id === otherDsSourceId(ds.id) || id.startsWith(`ds:${ds.id}:`)
+                    ).length;
+                    return (
+                      <button
+                        key={ds.id}
+                        type="button"
+                        className="w-full flex items-center gap-3 p-2.5 rounded-xl border border-border hover:border-primary/60 hover:bg-surface2 transition text-left"
+                        onClick={() => openDetail(ds)}
+                      >
+                        <span
+                          className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+                          style={{ backgroundColor: `${meta.color}22`, color: meta.color }}
+                        >
+                          <meta.Logo className="w-4.5 h-4.5" />
+                        </span>
+                        <span className="text-sm font-medium truncate flex-1">{ds.name}</span>
+                        {selectedCount > 0 && (
+                          <span className="shrink-0 w-5 h-5 rounded-full bg-primary text-white text-[10px] font-bold flex items-center justify-center">
+                            {selectedCount}
+                          </span>
+                        )}
+                        <span className="text-muted shrink-0 text-sm">&#8250;</span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <button
+                type="button"
+                className="w-full flex items-center gap-3 p-4 rounded-xl border border-border hover:border-primary/60 hover:bg-surface2 transition text-left"
+                onClick={() => setView("existing")}
+              >
+                <span className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 bg-primary/10 text-primary">
+                  <ExistingDataIcon className="w-5 h-5" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold">Existing data</span>
+                  <span className="block text-xs text-muted mt-0.5">
+                    Use a source you've already connected{otherDataSources.length > 0 ? ` (${otherDataSources.length})` : ""}
+                  </span>
+                </span>
+              </button>
+              <button
+                type="button"
+                className="w-full flex items-center gap-3 p-4 rounded-xl border border-border hover:border-primary/60 hover:bg-surface2 transition text-left"
+                onClick={() => setView("new")}
+              >
+                <span className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 bg-primary/10 text-primary">
+                  <NewDataIcon className="w-5 h-5" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold">New data</span>
+                  <span className="block text-xs text-muted mt-0.5">Connect a database, warehouse, or upload a file</span>
+                </span>
+              </button>
             </div>
           )}
         </div>
@@ -207,6 +268,25 @@ export default function AddDataPicker({
         </div>
       </div>
     </div>
+  );
+}
+
+function ExistingDataIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 20 20" width="20" height="20" className={className} fill="none">
+      <ellipse cx="10" cy="5" rx="6.5" ry="2.5" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M3.5 5v10c0 1.38 2.91 2.5 6.5 2.5s6.5-1.12 6.5-2.5V5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      <path d="M3.5 10c0 1.38 2.91 2.5 6.5 2.5s6.5-1.12 6.5-2.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function NewDataIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 20 20" width="20" height="20" className={className} fill="none">
+      <rect x="2.5" y="3.5" width="15" height="13" rx="2" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M10 7v6M7 10h6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
   );
 }
 
