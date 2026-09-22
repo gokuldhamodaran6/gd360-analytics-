@@ -13,6 +13,7 @@ import io
 import json
 import os
 import time
+from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
@@ -322,6 +323,93 @@ def list_versions(datasource_id: str, db: Session = Depends(get_db), user: model
         }
         for v in versions
     ]
+
+
+@router.get("/{datasource_id}/flow")
+def get_data_flow(datasource_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Every saved table and every chart/analysis ever built for this data
+    source, across every past conversation - the raw material for the
+    Flow tab's data-lineage map (frontend components/DataFlowMap.tsx).
+    Nothing here is computed fresh: it only reads back what chat.py's
+    _persist_and_respond already recorded on each assistant Message
+    (Message.sources / Message.new_version_id - see models.py for what
+    those hold) and what each DatasetVersion already carries
+    (parent_version_id/parent_version_ids), so this stays cheap to call
+    even for a data source with a long history."""
+    ds = _get_owned_datasource(db, user, datasource_id)
+    ensure_legacy_migrated(db, ds)
+
+    versions = (
+        db.query(models.DatasetVersion)
+        .filter(models.DatasetVersion.datasource_id == ds.id)
+        .order_by(models.DatasetVersion.position, models.DatasetVersion.created_at)
+        .all()
+    )
+    version_out = [
+        {
+            "id": v.id,
+            "name": v.name,
+            "parent_version_id": v.parent_version_id,
+            "parent_version_ids": v.parent_version_ids,
+            "step_count": len(v.cleaning_log or []),
+            "created_at": v.created_at,
+        }
+        for v in versions
+    ]
+
+    conversations = (
+        db.query(models.Conversation)
+        .filter(models.Conversation.datasource_id == ds.id, models.Conversation.owner_id == user.id)
+        .all()
+    )
+    if not conversations:
+        return {"datasource_id": ds.id, "datasource_name": ds.name, "versions": version_out, "nodes": []}
+
+    conv_by_id = {c.id: c for c in conversations}
+    all_msgs = (
+        db.query(models.Message)
+        .filter(models.Message.conversation_id.in_(list(conv_by_id.keys())))
+        .order_by(models.Message.created_at)
+        .all()
+    )
+    # Grouped by conversation, in chronological order, so each assistant
+    # turn can find the nearest preceding user turn as its own question
+    # text - the same walk-backwards logic Workspace.tsx already does
+    # client-side when resuming one conversation, just across all of them
+    # here at once.
+    by_conv: dict[str, list[models.Message]] = defaultdict(list)
+    for m in all_msgs:
+        by_conv[m.conversation_id].append(m)
+
+    nodes = []
+    for conv_id, msgs in by_conv.items():
+        conv = conv_by_id[conv_id]
+        last_user_text = ""
+        for m in msgs:
+            if m.role == "user":
+                last_user_text = m.content
+                continue
+            if m.role != "assistant":
+                continue
+            # Only a turn that actually produced something belongs on the
+            # map - a clarifying question or a plain explain answer has
+            # nothing to draw.
+            if not m.chart_spec and not m.new_version_id:
+                continue
+            nodes.append({
+                "message_id": m.id,
+                "conversation_id": conv_id,
+                "conversation_title": conv.title,
+                "prompt": last_user_text,
+                "action": m.action,
+                "chart_type": m.chart_type,
+                "has_chart": bool(m.chart_spec),
+                "created_at": m.created_at,
+                "sources": m.sources,
+                "new_version_id": m.new_version_id,
+            })
+
+    return {"datasource_id": ds.id, "datasource_name": ds.name, "versions": version_out, "nodes": nodes}
 
 
 @router.patch("/{datasource_id}/versions/{version_id}")
