@@ -432,7 +432,7 @@ def generate_bigquery_sql(prompt: str, schema_text: str) -> str:
         {"role": "system", "content": BIGQUERY_SQL_SYSTEM_PROMPT},
         {"role": "user", "content": f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"},
     ]
-    raw = _call_llm_resilient(messages, max_tokens=600)
+    raw = _call_llm_resilient(messages, max_tokens=600, model_override=_light_tier_model())
     sql = raw.strip()
     # Cheap insurance against the model adding a code fence anyway, despite
     # being told not to - mirrors how _extract_json tolerates the same
@@ -493,7 +493,7 @@ def generate_snowflake_sql(prompt: str, schema_text: str) -> str:
         {"role": "system", "content": SNOWFLAKE_SQL_SYSTEM_PROMPT},
         {"role": "user", "content": f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"},
     ]
-    raw = _call_llm_resilient(messages, max_tokens=600)
+    raw = _call_llm_resilient(messages, max_tokens=600, model_override=_light_tier_model())
     sql = raw.strip()
     if sql.startswith("```"):
         sql = sql.strip("`")
@@ -578,7 +578,7 @@ Strict rules:
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"},
     ]
-    raw = _call_llm_resilient(messages, max_tokens=600)
+    raw = _call_llm_resilient(messages, max_tokens=600, model_override=_light_tier_model())
     sql = raw.strip()
     if sql.startswith("```"):
         sql = sql.strip("`")
@@ -648,7 +648,7 @@ def generate_mongo_pipeline(prompt: str, schema_text: str) -> str:
         {"role": "system", "content": MONGO_PIPELINE_SYSTEM_PROMPT},
         {"role": "user", "content": f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"},
     ]
-    raw = _call_llm_resilient(messages, max_tokens=800)
+    raw = _call_llm_resilient(messages, max_tokens=800, model_override=_light_tier_model())
     pipeline_text = raw.strip()
     if pipeline_text.startswith("```"):
         pipeline_text = pipeline_text.strip("`")
@@ -2434,6 +2434,15 @@ def _generate_insight(prompt: str, summary: dict) -> str:
         {"role": "system", "content": INSIGHT_SYSTEM_PROMPT},
         {"role": "user", "content": f"The user asked: {prompt}\n\nResult data summary (JSON): {json.dumps(summary)[:4000]}"},
     ]
+    # Deliberately stays on the full model, NOT the light tier - tried on
+    # the light tier briefly, but the resulting insight text was
+    # noticeably less clear, so this reverted back to the full model on
+    # 2026-09-22 per direct feedback. Every other narrow, rote task
+    # (writing a pushdown query, Goku's guidance chat) still runs on the
+    # light tier via _light_tier_model - this is the one exception, since
+    # the actual written words here are the deliverable itself, not a
+    # means to an end the way a query or a chat reply is.
+    #
     # A real, model-written insight is noticeably richer than the plain
     # template _fallback_insight below falls back to (it cites the sample
     # size, phrases the gap in natural language, and reads like an analyst
@@ -2661,13 +2670,31 @@ def _goku_profile_text(tables: dict[str, pd.DataFrame], max_cols: int = 40) -> s
     return "\n\n".join(blocks)
 
 
-def _goku_model_override() -> str | None:
-    """Which model override, if any, Goku should use instead of the current
-    provider default model (see GEMINI_GOKU_MODEL / GOKU_MODEL in config.py
-    for why: Goku only ever writes plain guidance chat, never pandas code,
-    so it can run on a lighter, cheaper model of its own). Returns None for
-    a provider with no separate Goku model configured, in which case Goku
-    simply uses that provider default model like every other caller does."""
+def _light_tier_model() -> str | None:
+    """Which lighter, cheaper model to use instead of the current
+    provider's default model, for a task that does not need the full
+    model's extra capability. Originally added just for Goku (see
+    GEMINI_GOKU_MODEL / GOKU_MODEL in config.py - those settings are still
+    named after Goku since they are also the names of environment
+    variables already configured on Render, and renaming them here would
+    silently revert that deploy to this file's default instead of
+    Render's configured value), now also used by the pushdown query
+    writers (generate_bigquery_sql/generate_snowflake_sql/generate_sql_
+    pushdown_sql/generate_mongo_pipeline) - each writes one narrow,
+    strictly-formatted query, and any bad output safely falls back to the
+    normal analysis path rather than ever reaching the person, so a
+    lighter model here only risks losing the speed win occasionally,
+    never a wrong answer. Deliberately NOT used for _generate_insight
+    (tried briefly, reverted 2026-09-22 - the written words there are the
+    actual deliverable, and a lighter model's version read noticeably
+    less clear), the real analysis code generation (_plan_with_retry,
+    called from analyze()), or the correctness-auditing "Double-check
+    this" path (verify_answer) - those either produce the words/answer
+    the person directly judges, or decide/judge what that answer is, so
+    they all stay on the full model. Returns None for a provider with no
+    separate light-tier model configured (openai/anthropic today), in
+    which case the caller simply uses that provider's one default model
+    instead."""
     if settings.AI_PROVIDER == "gemini":
         return settings.GEMINI_GOKU_MODEL
     if settings.AI_PROVIDER == "groq":
@@ -2740,7 +2767,7 @@ def goku_chat(
     messages.append({"role": "user", "content": "\n\n".join(context_parts)})
 
     # Goku uses a lighter, cheaper model than the main analysis chat (see
-    # _goku_model_override above). A second attempt is worth it here for
+    # _light_tier_model above). A second attempt is worth it here for
     # the same reason it is in _generate_insight below: an empty/malformed
     # first response is usually a transient hiccup, not evidence the
     # request itself is unanswerable, and Goku guidance quality matters
@@ -2752,7 +2779,7 @@ def goku_chat(
     last_error_text = ""
     for attempt in (1, 2):
         try:
-            raw = _call_llm(messages, max_tokens=900, model_override=_goku_model_override())
+            raw = _call_llm(messages, max_tokens=900, model_override=_light_tier_model())
             parsed = _extract_json(raw)
             break
         except Exception as e:
