@@ -503,6 +503,91 @@ def generate_snowflake_sql(prompt: str, schema_text: str) -> str:
     return sql
 
 
+# --- Plain-database pushdown: Postgres/MySQL/SQL Server/Supabase ---------
+# (Enterprise Scale Roadmap, Phase 2). Same idea as generate_bigquery_sql/
+# generate_snowflake_sql above - one real SQL SELECT that runs directly
+# inside the person's own database instead of pulling rows into pandas -
+# but unlike those two warehouses, none of these have per-query metered
+# billing (a customer's own database server, fixed capacity), so there is
+# no cost-model warning to write into the prompt here; this path exists
+# purely for speed and to avoid pulling large result sets into GD360's own
+# memory (the exact failure mode behind the 2026-09-22 OOM incident noted
+# in config.py's MAX_ROWS_LOADED_PER_QUERY comment). See routers/chat.py's
+# _try_sql_pushdown for where this fits into a real request, and
+# connectors.SQLConnector.load_dataframe's is_raw_sql path (now
+# dialect-aware, see that method's own comments) for the safety check and
+# row cap the SQL this writes still has to pass before it ever runs.
+_SQL_DIALECT_INFO = {
+    "postgres": (
+        "PostgreSQL",
+        'Double-quote an identifier only when its exact case or characters actually need preserving '
+        '(e.g. "Order Date"). Use LIMIT for a "top N" question.',
+    ),
+    "supabase": (
+        "PostgreSQL",
+        'Double-quote an identifier only when its exact case or characters actually need preserving '
+        '(e.g. "Order Date"). Use LIMIT for a "top N" question.',
+    ),
+    "mysql": (
+        "MySQL",
+        'Backtick-quote an identifier only when its name actually needs escaping (e.g. `order date`). '
+        'Use LIMIT for a "top N" question.',
+    ),
+    "sqlserver": (
+        "Microsoft SQL Server",
+        "Square-bracket an identifier only when its name actually needs escaping (e.g. [Order Date]). "
+        'This dialect has no LIMIT keyword - use TOP N instead for a "top N" question '
+        "(e.g. SELECT TOP 10 ...).",
+    ),
+}
+
+
+def generate_sql_pushdown_sql(prompt: str, schema_text: str, db_kind: str) -> str:
+    """The Postgres/MySQL/SQL Server/Supabase pushdown path (Phase 2):
+    writes one governed SQL SELECT that runs inside the person's own
+    database, instead of the usual pull-rows-then-pandas path. db_kind is
+    the DataSource.kind ("postgres" | "mysql" | "sqlserver" | "supabase"),
+    used only to pick the right dialect notes below. Returns raw SQL text,
+    or the literal string "NOT_POSSIBLE" if the model could not answer
+    from the given schema - callers must treat both an exception from this
+    function and a "NOT_POSSIBLE" result the same way: fall back to the
+    normal analysis path, exactly like generate_bigquery_sql/
+    generate_snowflake_sql above."""
+    dialect_label, dialect_notes = _SQL_DIALECT_INFO.get(db_kind, ("standard SQL", ""))
+    system_prompt = f"""You are the GD360 database pushdown module - the part of the analytics engine that answers a
+question by writing ONE real SQL query that runs directly inside the person's own {dialect_label} database,
+instead of downloading rows and analyzing them in Python. You are given the user's question and the schema of
+every table in this database (table name, then each column's name and type). Respond with ONLY the raw SQL query
+text - no markdown code fences, no explanation, nothing before or after the SQL itself.
+
+Strict rules:
+- Exactly one SELECT statement. Never anything else - no INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/MERGE, no
+  multiple statements separated by semicolons, no DDL of any kind. This runs against a real production database
+  and must only ever read.
+- Reference only the real table and column names given in the schema - never invent one. If the question needs a
+  join across two tables, use a real shared column visible in both tables' schemas; with no genuinely matching
+  column, answer the closest real thing the schema actually supports instead of guessing at a join key.
+- Always aggregate, filter, or limit the result so it comes back small - a GROUP BY with real aggregate functions
+  for a summary question, a WHERE clause for a filtered question, an ORDER BY plus a row cap for a "top N" or
+  "which is highest/lowest" question. Never a bare `SELECT *` with no WHERE/row cap against what could be a huge
+  table - the whole point of this path is that the database summarizes the data, not GD360.
+- {dialect_notes}
+- If the question genuinely cannot be answered from the given schema (it needs a column or table that does not
+  exist), respond with exactly: NOT_POSSIBLE"""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"},
+    ]
+    raw = _call_llm_resilient(messages, max_tokens=600)
+    sql = raw.strip()
+    if sql.startswith("```"):
+        sql = sql.strip("`")
+        if sql[:3].lower() == "sql":
+            sql = sql[3:]
+        sql = sql.strip()
+    return sql
+
+
 GOKU_SYSTEM_PROMPT = """You are Goku, a friendly, world-class data analyst assistant embedded inside the GD360
 Analytics workspace. Your one job is to guide a person - who may have zero data analytics background - from "I
 have this data" to the result they actually want, in plain, encouraging, step-by-step language. You never run
