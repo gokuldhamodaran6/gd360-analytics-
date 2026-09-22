@@ -46,6 +46,8 @@ _NEW_COLUMNS = [
     ("messages", "result_columns", "JSON"),
     ("messages", "result_rows", "JSON"),
     ("messages", "result_truncated", "BOOLEAN DEFAULT FALSE"),
+    ("messages", "sources", "JSON"),
+    ("messages", "new_version_id", "TEXT"),
 ]
 
 
