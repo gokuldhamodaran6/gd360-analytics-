@@ -96,7 +96,7 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         # having to notice the gap, switch WORKING ON by hand, and ask
         # again from scratch - see ai_engine._schema_with_fallback.
         try:
-            original_df = load_dataframe(ds, table=payload.table, version="original")
+            original_df = load_dataframe(ds, table=payload.table, version="original", db=db)
         except Exception as e:
             print(f"[chat] Could not load original data as a merge fallback: {e}")
             original_df = None
@@ -257,7 +257,7 @@ def _load_selected_tables(
     for source_id in ordered_ids:
         if source_id == "original":
             try:
-                original_df = load_dataframe(ds, table=table, version="original")
+                original_df = load_dataframe(ds, table=table, version="original", db=db)
             except NeedsTableSelection:
                 raise
             except Exception as e:
@@ -272,7 +272,7 @@ def _load_selected_tables(
         if source_id.startswith("sheet:"):
             sheet_name = source_id[len("sheet:"):]
             try:
-                sheet_df = load_dataframe(ds, table=sheet_name, version="original")
+                sheet_df = load_dataframe(ds, table=sheet_name, version="original", db=db)
             except Exception as e:
                 raise HTTPException(400, f"Could not load data: {e}")
             tables[_unique_key(sheet_name)] = sheet_df
@@ -291,7 +291,7 @@ def _load_selected_tables(
             other_ds = _get_other_ds(other_id)
             other_sheet = selector[len("sheet:"):] if selector.startswith("sheet:") else None
             try:
-                other_df = load_dataframe(other_ds, table=other_sheet, version="original")
+                other_df = load_dataframe(other_ds, table=other_sheet, version="original", db=db)
             except Exception as e:
                 raise HTTPException(400, f"Could not load data from {other_ds.name}: {e}")
             label = f"{other_ds.name} — {other_sheet}" if other_sheet else f"{other_ds.name} (original)"
@@ -396,7 +396,7 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
 
     if original_df is None:
         try:
-            original_df = load_dataframe(ds, table=None, version="original")
+            original_df = load_dataframe(ds, table=None, version="original", db=db)
         except Exception as e:
             print(f"[chat] Could not load original data as a merge fallback for verify: {e}")
             original_df = None
