@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    Column, String, DateTime, ForeignKey, Text, JSON, Boolean, Integer, LargeBinary
+    Column, String, DateTime, ForeignKey, Text, JSON, Boolean, Integer, LargeBinary, BigInteger
 )
 from sqlalchemy.orm import relationship
 
@@ -302,3 +302,39 @@ class SavedChart(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     dashboard = relationship("Dashboard", back_populates="charts")
+
+
+class PushdownQueryLog(Base):
+    """
+    Enterprise Scale Roadmap, Phase 2: an audit trail of every governed SQL
+    query GD360 has run directly inside a customer's own warehouse (see
+    services/connectors.py BigQueryConnector.run_pushdown_query, and the
+    same pattern any future warehouse connector - Snowflake, Databricks,
+    Redshift - will follow). One row per attempt that actually produced a
+    real SQL query, success or not, so there is always a real record of
+    what SQL ran against a customer's data, when, whether it was allowed
+    to run, and roughly what it cost - the kind of audit log an enterprise
+    security review expects to see.
+
+    Also doubles as the source of truth for the per-user daily pushdown
+    cost budget (see routers/chat.py _todays_pushdown_bytes) - summing
+    bytes_scanned for "ok" rows since midnight needs no separate
+    running-totals table to keep in sync.
+    """
+    __tablename__ = "pushdown_query_logs"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    datasource_id = Column(String, ForeignKey("datasources.id"), nullable=False, index=True)
+    # "bigquery" today; "snowflake" | "databricks" | "redshift" once those
+    # connectors exist - this table's shape does not need to change then.
+    provider = Column(String, nullable=False)
+    sql_text = Column(Text, nullable=False)
+    # What the warehouse's own dry run estimated this query would scan, in
+    # bytes. Null when a dry run never ran (e.g. rejected by the daily
+    # budget check, or by the read-only safety check, before that point).
+    bytes_scanned = Column(BigInteger, nullable=True)
+    # "ok" | "rejected_unsafe" | "rejected_too_expensive" | "rejected_daily_budget" | "error"
+    status = Column(String, nullable=False)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
