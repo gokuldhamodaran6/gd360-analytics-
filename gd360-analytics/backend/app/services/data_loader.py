@@ -22,7 +22,11 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from .. import models, security
-from .connectors import SQLConnector, MongoConnector, FileConnector, BigQueryConnector
+from . import oauth_tokens
+from .connectors import (
+    SQLConnector, MongoConnector, FileConnector, BigQueryConnector,
+    GoogleSheetsConnector, MicrosoftExcelConnector,
+)
 
 
 class NeedsTableSelection(Exception):
@@ -134,19 +138,30 @@ def purpose_label(prompt: str | None, fallback: str = "Prepared data") -> str:
 
 
 def load_dataframe(
-    ds: models.DataSource, table: str | None = None, version: str = "auto", row_limit: int | None = None
+    ds: models.DataSource, table: str | None = None, version: str = "auto", row_limit: int | None = None,
+    db: Session | None = None,
 ) -> pd.DataFrame:
     """`row_limit` only matters for a live-connector datasource (Postgres/
-    MySQL/SQL Server/Supabase/MongoDB/BigQuery) loading its always-live
-    original data - it overrides settings.MAX_ROWS_LOADED_PER_QUERY for just
-    this call (see connectors.py), so a caller that only needs a small page
-    (the Data tab preview/export - see datasources.py, which passes
+    MySQL/SQL Server/Supabase/MongoDB/BigQuery/Google Sheets/Microsoft
+    Excel) loading its always-live original data - it overrides
+    settings.MAX_ROWS_LOADED_PER_QUERY for just this call (see
+    connectors.py), so a caller that only needs a small page (the Data tab
+    preview/export - see datasources.py, which passes
     settings.PREVIEW_ROW_LIMIT) doesn't have to pull as many rows into
     memory as a caller doing real AI analysis (chat.py, which leaves this
     None and gets the higher default). Left as None everywhere else,
     matching the old behavior exactly. A CSV/Excel upload or a cleaned/
     saved-table snapshot is unaffected either way - those are already
-    bounded at upload/save time, not by this per-query limit."""
+    bounded at upload/save time, not by this per-query limit.
+
+    `db` is only used for the two OAuth connectors (google_sheets/
+    microsoft_excel) - passing the current request's Session lets a
+    rotated access token (refreshed just-in-time by oauth_tokens.py) be
+    persisted back to this datasource's encrypted_secret immediately,
+    instead of every single request re-refreshing it again. Safe to leave
+    None (every non-OAuth kind ignores it entirely); an OAuth datasource
+    still works with db=None, it just refreshes its token more often than
+    it strictly needs to."""
     use_cleaned = version == "cleaned" or (version == "auto" and ds.cleaned_data is not None)
     if version == "original":
         use_cleaned = False
@@ -158,10 +173,12 @@ def load_dataframe(
             f"cleaned:{ds.id}", lambda: FileConnector(ds.cleaned_data, ".csv").load_dataframe()
         )
 
-    return _load_original(ds, table, row_limit)
+    return _load_original(ds, table, row_limit, db=db)
 
 
-def _load_original(ds: models.DataSource, table: str | None = None, row_limit: int | None = None) -> pd.DataFrame:
+def _load_original(
+    ds: models.DataSource, table: str | None = None, row_limit: int | None = None, db: Session | None = None,
+) -> pd.DataFrame:
     if ds.kind in ("csv", "excel"):
         if not ds.file_data:
             raise ValueError(
@@ -213,6 +230,26 @@ def _load_original(ds: models.DataSource, table: str | None = None, row_limit: i
         connector = BigQueryConnector(info["project_id"], info["dataset_id"], service_account_json)
         table = table or _pick_single(ds.schema_cache)
         return connector.load_dataframe(table, is_raw_sql=False, row_limit=row_limit)
+
+    if ds.kind == "google_sheets":
+        access_token = oauth_tokens.get_valid_access_token(ds, db=db)
+        info = ds.connection_info
+        connector = GoogleSheetsConnector(access_token, info["spreadsheet_id"])
+        # A single-tab spreadsheet's schema_cache is the flat {"columns":
+        # [...]} shape (see GoogleSheetsConnector.introspect_schema) - the
+        # same "nothing to pick" convention as a single-sheet Excel upload,
+        # so `table` stays None (meaning "the sheet's own default/first
+        # tab") rather than forcing a lookup against a schema_cache that
+        # was never keyed by sheet name in the first place.
+        sheet = table or (_pick_single(ds.schema_cache) if _is_multi_sheet_schema(ds.schema_cache) else None)
+        return connector.load_dataframe(sheet_name=sheet, row_limit=row_limit)
+
+    if ds.kind == "microsoft_excel":
+        access_token = oauth_tokens.get_valid_access_token(ds, db=db)
+        info = ds.connection_info
+        connector = MicrosoftExcelConnector(access_token, info["item_id"], info.get("drive_id"))
+        sheet = table or (_pick_single(ds.schema_cache) if _is_multi_sheet_schema(ds.schema_cache) else None)
+        return connector.load_dataframe(sheet_name=sheet, row_limit=row_limit)
 
     raise ValueError(f"Unsupported datasource kind: {ds.kind}")
 
