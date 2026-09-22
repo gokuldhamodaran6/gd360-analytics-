@@ -173,6 +173,32 @@ class RenameVersionRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
 
 
+# ---------- Data tab: natural-language filter bar ----------
+class ParseFilterRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=500)
+    table: Optional[str] = None
+    version_id: Optional[str] = None
+
+
+# ---------- Data tab: Saved Views (a named snapshot of the whole Data tab
+# display - sort/filter/columns/format - see models.SavedView) ----------
+class SavedViewCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    table: Optional[str] = None
+    version_id: Optional[str] = None
+    config: dict
+
+
+class SavedViewOut(BaseModel):
+    id: str
+    name: str
+    table: Optional[str] = None
+    version_id: Optional[str] = None
+    config: dict
+    created_at: datetime
+    updated_at: datetime
+
+
 # ---------- Rename a data source (the file/connection name shown as
 # "Analyzing: <name>" at the top of the Workspace page, and everywhere else
 # that name is displayed) ----------
