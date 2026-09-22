@@ -52,6 +52,18 @@ function BigQueryLogo({ className }: { className?: string }) {
   );
 }
 
+// Real official Snowflake mark (Simple Icons project, MIT licensed -
+// simpleicons.org), same provenance as every other brand logo in this
+// file - Snowflake, GD360's second data-warehouse connector (Enterprise
+// Scale Roadmap, Phase 2).
+function SnowflakeLogo({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+      <path d="M24 3.459c0 .646-.418 1.18-1.141 1.18-.723 0-1.142-.534-1.142-1.18 0-.647.419-1.18 1.142-1.18.723 0 1.141.533 1.141 1.18zm-.228 0c0-.533-.38-.951-.913-.951s-.913.38-.913.95c0 .533.38.952.913.952.57 0 .913-.419.913-.951zm-1.37-.533h.495c.266 0 .456.152.456.38 0 .153-.076.229-.19.305l.19.266v.038h-.266l-.19-.266h-.229v.266h-.266zm.495.228h-.229v.267h.229c.114 0 .152-.038.152-.114.038-.077-.038-.153-.152-.153zM7.602 12.4c.038-.151.076-.304.076-.456 0-.114-.038-.228-.038-.342-.114-.343-.304-.647-.646-.838l-4.87-2.777c-.685-.38-1.56-.152-1.94.533-.381.685-.153 1.56.532 1.94l2.701 1.56-2.701 1.56c-.685.38-.913 1.256-.533 1.94.38.685 1.256.914 1.94.533l4.832-2.777c.343-.267.571-.533.647-.876zm1.332 2.626c-.266-.038-.57.038-.837.19l-4.832 2.777c-.685.38-.913 1.256-.532 1.94.38.686 1.255.914 1.94.533l2.701-1.56v3.12c0 .8.647 1.408 1.446 1.408.799 0 1.407-.647 1.407-1.408v-5.592c0-.761-.57-1.37-1.293-1.408zm4.946-6.088c.266.038.57-.038.837-.19l4.832-2.777c.685-.38.913-1.256.532-1.94-.38-.686-1.255-.914-1.94-.533l-2.701 1.56V1.975c0-.799-.647-1.408-1.446-1.408-.799 0-1.446.609-1.446 1.408V7.53c0 .76.609 1.37 1.332 1.407zM3.265 5.97l4.832 2.777c.266.152.533.19.837.19.723-.038 1.331-.684 1.331-1.407V1.975c0-.799-.646-1.408-1.407-1.408-.799 0-1.446.647-1.446 1.408v3.12l-2.701-1.56c-.685-.38-1.56-.152-1.94.533-.419.646-.19 1.521.494 1.902zm9.093 6.011a.412.412 0 00-.114-.266l-.57-.571a.346.346 0 00-.267-.114.412.412 0 00-.266.114l-.571.57a.411.411 0 00-.114.267c0 .076.038.19.114.267l.57.57a.345.345 0 00.267.114c.076 0 .19-.038.266-.114l.571-.57a.412.412 0 00.114-.267zm1.598.533L11.94 14.53c-.039.038-.153.114-.229.114h-.608a.411.411 0 01-.267-.114L8.82 12.514a.408.408 0 01-.076-.229v-.608c0-.076.038-.19.114-.267l2.016-2.016a.41.41 0 01.267-.114h.608a.41.41 0 01.267.114l2.016 2.016a.347.347 0 01.114.267v.608c-.076.077-.114.19-.19.229zm5.593 5.44l-4.832-2.777c-.266-.152-.57-.19-.837-.152-.723.038-1.332.684-1.332 1.408v5.554c0 .8.647 1.408 1.408 1.408.799 0 1.446-.647 1.446-1.408v-3.12l2.7 1.56c.686.38 1.561.152 1.941-.533.419-.646.19-1.521-.494-1.94zm2.549-7.533l-2.701 1.56 2.7 1.56c.686.38.914 1.256.533 1.94-.38.685-1.255.913-1.94.533l-4.832-2.778a1.644 1.644 0 01-.647-.798c-.037-.153-.076-.305-.076-.457 0-.114.039-.228.039-.342.114-.343.342-.647.646-.837l4.832-2.778c.685-.38 1.56-.152 1.94.533.457.609.19 1.484-.494 1.864" />
+    </svg>
+  );
+}
+
 // Real official Google Sheets + Microsoft Excel marks (Simple Icons
 // project, MIT licensed - simpleicons.org), same provenance as the marks
 // above - for the two OAuth "live" connectors (see the "Connect" picker
@@ -200,11 +212,12 @@ const DB_KINDS = [
   { value: "supabase", label: "Supabase", defaultPort: 6543, color: "#3FCF8E", Logo: SupabaseLogo },
 ];
 
-// The one warehouse kind today; structured as a list (like DB_KINDS) so
-// more can be added later (Snowflake, Redshift, ...) without reshaping
-// anything that reads from it.
+// The warehouse kinds; structured as a list (like DB_KINDS) so more can
+// be added later (Databricks, Redshift, ...) without reshaping anything
+// that reads from it.
 const WAREHOUSE_KINDS = [
   { value: "bigquery", label: "Google BigQuery", color: "#669DF6", Logo: BigQueryLogo },
+  { value: "snowflake", label: "Snowflake", color: "#29B5E8", Logo: SnowflakeLogo },
 ];
 
 // The "Connect" tiles: OAuth-based live connectors, where GD360 never sees
@@ -373,6 +386,19 @@ export default function DataSourceForm({
   const [datasetId, setDatasetId] = useState("");
   const [serviceAccountJson, setServiceAccountJson] = useState("");
 
+  // Snowflake's own fields - a completely different credential shape from
+  // BigQuery's above (username/password against an account, never a
+  // service-account key), so it gets its own set of form state rather
+  // than reusing whName/projectId/etc field-for-field. Prefixed `sf` to
+  // avoid colliding with the database form's own `database` field above.
+  const [sfAccount, setSfAccount] = useState("");
+  const [sfWarehouse, setSfWarehouse] = useState("");
+  const [sfDatabase, setSfDatabase] = useState("");
+  const [sfSchema, setSfSchema] = useState("");
+  const [sfRole, setSfRole] = useState("");
+  const [sfUsername, setSfUsername] = useState("");
+  const [sfPassword, setSfPassword] = useState("");
+
   // File form state
   const [fileName, setFileName] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -486,6 +512,13 @@ export default function DataSourceForm({
     setProjectId("");
     setDatasetId("");
     setServiceAccountJson("");
+    setSfAccount("");
+    setSfWarehouse("");
+    setSfDatabase("");
+    setSfSchema("");
+    setSfRole("");
+    setSfUsername("");
+    setSfPassword("");
     setError("");
   };
 
@@ -500,18 +533,37 @@ export default function DataSourceForm({
     setBusy(true);
     setError("");
     try {
-      const { data } = await api.post("/datasources/warehouse", {
-        name: whName,
-        kind: warehouseModalKind,
-        project_id: projectId,
-        dataset_id: datasetId,
-        service_account_json: serviceAccountJson,
-      });
+      const payload =
+        warehouseModalKind === "snowflake"
+          ? {
+              name: whName,
+              kind: warehouseModalKind,
+              account: sfAccount,
+              snowflake_warehouse: sfWarehouse,
+              database: sfDatabase,
+              db_schema: sfSchema,
+              role: sfRole,
+              username: sfUsername,
+              password: sfPassword,
+            }
+          : {
+              name: whName,
+              kind: warehouseModalKind,
+              project_id: projectId,
+              dataset_id: datasetId,
+              service_account_json: serviceAccountJson,
+            };
+      const { data } = await api.post("/datasources/warehouse", payload);
       setWhName(""); setProjectId(""); setDatasetId(""); setServiceAccountJson("");
+      setSfAccount(""); setSfWarehouse(""); setSfDatabase(""); setSfSchema(""); setSfRole(""); setSfUsername(""); setSfPassword("");
       setWarehouseModalKind(null);
       showConnectedPanel(data);
     } catch (err: any) {
-      setError(err?.response?.data?.detail || "Could not connect. Check your project ID, dataset, and service account key.");
+      const fallback =
+        warehouseModalKind === "snowflake"
+          ? "Could not connect. Check your account identifier, warehouse, database, and login."
+          : "Could not connect. Check your project ID, dataset, and service account key.";
+      setError(err?.response?.data?.detail || fallback);
     } finally {
       setBusy(false);
     }
@@ -903,13 +955,14 @@ export default function DataSourceForm({
     )}
 
     {/* ---- Data warehouse popout: the picker tile above only ever opens
-        this - a small, self-contained form for that one warehouse kind's
-        very different credential shape (project/dataset/service-account
-        key, not host/port/username/password), plus a link to a dedicated
-        step-by-step guide for actually getting those values, since nothing
-        else in this app walks someone through a GCP console. Portaled to
-        document.body for the same reason the database popout above is -
-        see that block's comment. ---- */}
+        this - a small, self-contained form that branches its fields by
+        warehouseModalKind, since each warehouse kind's credential shape
+        is completely different (BigQuery: project/dataset/service-account
+        key; Snowflake: account/warehouse/database/username/password) -
+        plus a link to a dedicated step-by-step guide for actually getting
+        those values, since nothing else in this app walks someone through
+        a GCP/Snowflake console. Portaled to document.body for the same
+        reason the database popout above is - see that block's comment. ---- */}
     {warehouseModalKind && createPortal(
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={closeWarehouseForm} aria-hidden />
@@ -944,13 +997,13 @@ export default function DataSourceForm({
           {/* The "side" link the person asked for - opens the dedicated
               step-by-step guide in a new browser tab, so filling this form
               out never means losing their place in it. */}
-          
-            <a href="/help/connect-bigquery"
+          <a
+            href={warehouseModalKind === "snowflake" ? "/help/connect-snowflake" : "/help/connect-bigquery"}
             target="_blank"
             rel="noopener noreferrer"
             className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
           >
-            How to connect BigQuery to GD360
+            How to connect {connectionKindMeta(warehouseModalKind).label} to GD360
             <ChevronRightIcon className="w-3 h-3" />
           </a>
 
@@ -961,32 +1014,80 @@ export default function DataSourceForm({
           <form onSubmit={submitWarehouse} className="grid grid-cols-1 gap-4 mt-4">
             <div>
               <label className="text-sm text-muted mb-1 block">Connection name</label>
-              <input className="input" required value={whName} onChange={(e) => setWhName(e.target.value)} placeholder="Production BigQuery" />
-            </div>
-            <div>
-              <label className="text-sm text-muted mb-1 block">Project ID</label>
-              <input className="input" required value={projectId} onChange={(e) => setProjectId(e.target.value)} placeholder="my-gcp-project-123" />
-            </div>
-            <div>
-              <label className="text-sm text-muted mb-1 block">Dataset ID</label>
-              <input className="input" required value={datasetId} onChange={(e) => setDatasetId(e.target.value)} placeholder="analytics" />
-            </div>
-            <div>
-              <label className="text-sm text-muted mb-1 block">Service account key (JSON)</label>
-              <textarea
-                className="input font-mono text-xs"
-                rows={6}
+              <input
+                className="input"
                 required
-                value={serviceAccountJson}
-                onChange={(e) => setServiceAccountJson(e.target.value)}
-                placeholder='{ "type": "service_account", "project_id": "...", ... }'
+                value={whName}
+                onChange={(e) => setWhName(e.target.value)}
+                placeholder={warehouseModalKind === "snowflake" ? "Production Snowflake" : "Production BigQuery"}
               />
             </div>
-            <div className="text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
-              Read-only, always. GD360 only ever runs SELECT queries against BigQuery, and your service account
-              key is encrypted at rest. Tip: create a service account with only the <strong>BigQuery Data
-              Viewer</strong> and <strong>BigQuery Job User</strong> roles for extra safety.
-            </div>
+            {warehouseModalKind === "snowflake" ? (
+              <>
+                <div>
+                  <label className="text-sm text-muted mb-1 block">Account identifier</label>
+                  <input className="input" required value={sfAccount} onChange={(e) => setSfAccount(e.target.value)} placeholder="xy12345.us-east-1" />
+                </div>
+                <div>
+                  <label className="text-sm text-muted mb-1 block">Warehouse</label>
+                  <input className="input" required value={sfWarehouse} onChange={(e) => setSfWarehouse(e.target.value)} placeholder="COMPUTE_WH" />
+                </div>
+                <div>
+                  <label className="text-sm text-muted mb-1 block">Database</label>
+                  <input className="input" required value={sfDatabase} onChange={(e) => setSfDatabase(e.target.value)} placeholder="ANALYTICS" />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-sm text-muted mb-1 block">Schema (optional)</label>
+                    <input className="input" value={sfSchema} onChange={(e) => setSfSchema(e.target.value)} placeholder="PUBLIC" />
+                  </div>
+                  <div>
+                    <label className="text-sm text-muted mb-1 block">Role (optional)</label>
+                    <input className="input" value={sfRole} onChange={(e) => setSfRole(e.target.value)} placeholder="GD360_READONLY" />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-sm text-muted mb-1 block">Username</label>
+                  <input className="input" required value={sfUsername} onChange={(e) => setSfUsername(e.target.value)} placeholder="gd360_service_user" />
+                </div>
+                <div>
+                  <label className="text-sm text-muted mb-1 block">Password</label>
+                  <input className="input" type="password" required value={sfPassword} onChange={(e) => setSfPassword(e.target.value)} />
+                </div>
+                <div className="text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
+                  Read-only, always. GD360 only ever runs SELECT queries against Snowflake, and your password is
+                  encrypted at rest. Tip: use the <strong>How to connect Snowflake</strong> guide above to create a
+                  dedicated read-only role and user in a couple of minutes, instead of your own login.
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <label className="text-sm text-muted mb-1 block">Project ID</label>
+                  <input className="input" required value={projectId} onChange={(e) => setProjectId(e.target.value)} placeholder="my-gcp-project-123" />
+                </div>
+                <div>
+                  <label className="text-sm text-muted mb-1 block">Dataset ID</label>
+                  <input className="input" required value={datasetId} onChange={(e) => setDatasetId(e.target.value)} placeholder="analytics" />
+                </div>
+                <div>
+                  <label className="text-sm text-muted mb-1 block">Service account key (JSON)</label>
+                  <textarea
+                    className="input font-mono text-xs"
+                    rows={6}
+                    required
+                    value={serviceAccountJson}
+                    onChange={(e) => setServiceAccountJson(e.target.value)}
+                    placeholder='{ "type": "service_account", "project_id": "...", ... }'
+                  />
+                </div>
+                <div className="text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
+                  Read-only, always. GD360 only ever runs SELECT queries against BigQuery, and your service account
+                  key is encrypted at rest. Tip: create a service account with only the <strong>BigQuery Data
+                  Viewer</strong> and <strong>BigQuery Job User</strong> roles for extra safety.
+                </div>
+              </>
+            )}
             <div className="flex items-center gap-3">
               <button type="button" className="btn-secondary flex-1" onClick={closeWarehouseForm}>
                 Cancel
