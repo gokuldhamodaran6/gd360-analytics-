@@ -98,6 +98,37 @@ class Settings(BaseSettings):
     # known, or make it configurable per customer later.
     BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY: int = 5 * 1024 * 1024 * 1024  # 5 GiB
 
+    # --- Snowflake pushdown (Enterprise Scale Roadmap, Phase 2) ---
+    # Snowflake has no free "dry run" cost estimate the way BigQuery does
+    # (BigQuery bills by bytes scanned; Snowflake bills by warehouse
+    # compute-time instead, so a bytes estimate up front isn't a natural
+    # fit for it the way it is for BigQuery). Instead, a Snowflake
+    # pushdown query is capped by wall-clock time: this many seconds
+    # after it starts, Snowflake itself cancels it, which directly caps
+    # the worst-case compute-time (and therefore cost) any single
+    # question can run up, regardless of how much data it touches. See
+    # connectors.SnowflakeConnector.run_pushdown_query. The query's real
+    # bytes_scanned is still recorded afterward (from Snowflake's own
+    # QUERY_HISTORY_BY_SESSION) for the audit log and the daily budget
+    # below - just measured after the fact rather than estimated first.
+    SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS: int = 30
+
+    # --- Pushdown audit log + per-customer daily cost budget (Enterprise
+    # Scale Roadmap, Phase 2) ---
+    # The most data one person's pushdown questions (BigQuery, Snowflake -
+    # any future warehouse the same way) are allowed to make their
+    # warehouse scan in a rolling day, added across every question they
+    # ask and every warehouse they use - on top of BigQuery's per-query
+    # ceiling above and Snowflake's per-query timeout above. Enforced by
+    # summing today's PushdownQueryLog.bytes_scanned for that person
+    # before a new pushdown query is even attempted (see routers/chat.py
+    # _todays_pushdown_bytes). This is what keeps one very chatty user
+    # from running up a real warehouse bill across many small questions,
+    # the way a single per-query safeguard alone cannot. Generous by
+    # default; make it configurable per customer once real enterprise
+    # usage patterns are known.
+    PUSHDOWN_MAX_BYTES_SCANNED_PER_DAY_PER_USER: int = 50 * 1024 * 1024 * 1024  # 50 GiB
+
     # --- AI provider ---
     # Google Gemini (https://aistudio.google.com/apikey) is the app default -
     # its paid rate past the free allowance is a small fraction of a cent
