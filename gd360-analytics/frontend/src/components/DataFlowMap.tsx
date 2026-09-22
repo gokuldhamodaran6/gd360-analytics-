@@ -80,6 +80,12 @@ function FlowCard({ data, selected }: NodeProps<Node<FlowCardData, "card">>) {
     >
       <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
       <div className="flow-card__bar" />
+      <div
+        className="flow-card__step"
+        title={`Step ${data.step} of this chain, counting from the raw data it started from`}
+      >
+        {data.step}
+      </div>
       <div className="flow-card__body">
         <div className="flow-card__top">
           <span className="flow-card__icon">{style.icon}</span>
@@ -200,6 +206,10 @@ export default function DataFlowMap({
                     <span>{KIND_STYLE[k].label}</span>
                   </div>
                 ))}
+              <div className="flow-legend__row flow-legend__row--hint">
+                <span className="flow-legend__step-sample">1</span>
+                <span>Build order - 1 is the earliest step in that chain</span>
+              </div>
             </Panel>
           </ReactFlow>
         </ReactFlowProvider>
@@ -233,16 +243,21 @@ const FLOW_CSS = `
 .flow-map-root .react-flow__background-pattern { fill: rgb(var(--color-border)); }
 
 .flow-card {
+  position: relative;
   width: 258px;
   min-height: 90px;
   display: flex;
   background: rgb(var(--color-surface2));
   border: 1px solid rgb(var(--color-border));
   border-radius: 12px;
-  overflow: hidden;
+  overflow: visible;
   box-shadow: 0 1px 2px rgba(0,0,0,0.15);
   transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
 }
+.flow-card__bar,
+.flow-card__body { overflow: hidden; }
+.flow-card__bar { border-radius: 12px 0 0 12px; }
+.flow-card__body { border-radius: 0 12px 12px 0; }
 .flow-card--clickable { cursor: pointer; }
 .flow-card--clickable:hover {
   transform: translateY(-2px);
@@ -251,6 +266,24 @@ const FLOW_CSS = `
 }
 .flow-card--selected { border-color: var(--card-hue); box-shadow: 0 0 0 2px var(--card-hue); }
 .flow-card__bar { width: 4px; flex-shrink: 0; background: var(--card-hue); }
+.flow-card__step {
+  position: absolute;
+  top: -7px;
+  left: -7px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: rgb(var(--color-surface));
+  background: var(--card-hue);
+  border: 1.5px solid rgb(var(--color-surface));
+  box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+  z-index: 1;
+}
 .flow-card__body { padding: 10px 12px; min-width: 0; flex: 1; }
 .flow-card__top { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; color: var(--card-hue); }
 .flow-card__title {
@@ -305,6 +338,13 @@ const FLOW_CSS = `
 }
 .flow-legend__row { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: rgb(var(--color-muted)); }
 .flow-legend__swatch { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+.flow-legend__row--hint { padding-top: 4px; margin-top: 1px; border-top: 1px solid rgb(var(--color-border)); }
+.flow-legend__step-sample {
+  width: 14px; height: 14px; border-radius: 999px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 700; color: rgb(var(--color-surface));
+  background: rgb(var(--color-muted));
+}
 
 .flow-map-root .react-flow__attribution {
   background: transparent; font-size: 9px; opacity: 0.5;
