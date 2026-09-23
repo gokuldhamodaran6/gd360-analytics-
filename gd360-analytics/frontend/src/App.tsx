@@ -6,6 +6,7 @@ import AdminLogin from "./pages/AdminLogin";
 import Landing from "./pages/Landing";
 import Dashboard from "./pages/Dashboard";
 import Workspace from "./pages/Workspace";
+import Dashboards from "./pages/Dashboards";
 import DashboardView from "./pages/DashboardView";
 import AdminDashboard from "./pages/AdminDashboard";
 import Profile from "./pages/Profile";
@@ -45,6 +46,7 @@ export default function App() {
       <Route path="/admin-login" element={<AdminLogin />} />
       <Route path="/" element={<Home />} />
       <Route path="/workspace/:datasourceId" element={<Protected><Workspace /></Protected>} />
+      <Route path="/dashboards" element={<Protected><Dashboards /></Protected>} />
       <Route path="/dashboards/:dashboardId" element={<Protected><DashboardView /></Protected>} />
       <Route path="/admin" element={<Protected><AdminDashboard /></Protected>} />
       <Route path="/profile" element={<Protected><Profile /></Protected>} />
