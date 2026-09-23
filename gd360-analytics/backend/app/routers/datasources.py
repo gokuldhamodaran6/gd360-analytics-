@@ -182,7 +182,10 @@ def assign_datasource_workspace(
     workspace was active at the time, and available anywhere else a
     "move to workspace" action is added later. Membership is checked both
     ways: the data source must already be the caller's own, and the target
-    workspace must be one the caller actually belongs to."""
+    workspace must be one the caller actually belongs to with editable-
+    tier access - a workspace "viewer" (2026-09-23) can't bring their own
+    data sources into a workspace they only have read access to, same as
+    every other write action there."""
     ds = db.query(models.DataSource).filter(
         models.DataSource.id == datasource_id, models.DataSource.owner_id == user.id
     ).first()
@@ -195,6 +198,8 @@ def assign_datasource_workspace(
     )
     if not member:
         raise HTTPException(404, "Workspace not found.")
+    if member.role == "viewer":
+        raise HTTPException(403, "You have view-only access to this workspace.")
     ds.workspace_id = payload.workspace_id
     db.commit()
     db.refresh(ds)
@@ -566,7 +571,7 @@ def rename_version(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    ds = _get_accessible_datasource(db, user, datasource_id)
+    ds = _get_editable_datasource(db, user, datasource_id)
     v = _get_owned_version(db, ds, version_id)
     v.name = payload.name.strip()[:80] or v.name
     db.commit()
@@ -577,7 +582,7 @@ def rename_version(
 def delete_version(
     datasource_id: str, version_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
 ):
-    ds = _get_accessible_datasource(db, user, datasource_id)
+    ds = _get_editable_datasource(db, user, datasource_id)
     v = _get_owned_version(db, ds, version_id)
     # A table can now be built from more than one source table at once, so
     # checking "does anything depend on this?" means scanning the full
@@ -1009,11 +1014,15 @@ def list_saved_views(
     Shared with the whole team once the data source itself is (2026-09-23):
     no longer scoped to `owner_id == this caller` - a saved view is a
     reusable piece of team prep work (like a shared spreadsheet's saved
-    filter), so anyone who can access this data source sees every saved
-    view on it, not just the ones they personally created."""
+    filter), so anyone who can access this data source (view tier is
+    enough - even a workspace "viewer" can see and apply a saved view, just
+    not create/rename/delete one) sees every saved view on it, not just the
+    ones they personally created. Each one now says who made it
+    (created_by_*), so a shared list doesn't look anonymous."""
     ds = _get_accessible_datasource(db, user, datasource_id)
-    views = (
-        db.query(models.SavedView)
+    rows = (
+        db.query(models.SavedView, models.User)
+        .join(models.User, models.User.id == models.SavedView.owner_id)
         .filter(
             models.SavedView.datasource_id == ds.id,
             models.SavedView.version_id == version_id,
@@ -1026,8 +1035,9 @@ def list_saved_views(
         {
             "id": v.id, "name": v.name, "table": v.table_name, "version_id": v.version_id,
             "config": v.config, "created_at": v.created_at, "updated_at": v.updated_at,
+            "created_by_id": u.id, "created_by_name": u.full_name, "created_by_email": u.email,
         }
-        for v in views
+        for v, u in rows
     ]
 
 
@@ -1038,7 +1048,9 @@ def create_saved_view(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    ds = _get_accessible_datasource(db, user, datasource_id)
+    # Editable tier: a workspace "viewer" can see saved views (view tier,
+    # above) but not create one of their own.
+    ds = _get_editable_datasource(db, user, datasource_id)
     if payload.version_id:
         _get_owned_version(db, ds, payload.version_id)  # 404s if it isn't a table on this datasource
     view = models.SavedView(
@@ -1055,6 +1067,7 @@ def create_saved_view(
     return {
         "id": view.id, "name": view.name, "table": view.table_name, "version_id": view.version_id,
         "config": view.config, "created_at": view.created_at, "updated_at": view.updated_at,
+        "created_by_id": user.id, "created_by_name": user.full_name, "created_by_email": user.email,
     }
 
 
@@ -1063,9 +1076,10 @@ def delete_saved_view(
     datasource_id: str, view_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
 ):
     # Shared once the data source itself is (see list_saved_views above):
-    # anyone who can access this data source can delete any saved view on
-    # it, not just one they personally created themselves.
-    ds = _get_accessible_datasource(db, user, datasource_id)
+    # anyone with editable-tier access can delete any saved view on it, not
+    # just one they personally created themselves - a workspace "viewer"
+    # can't delete any of them.
+    ds = _get_editable_datasource(db, user, datasource_id)
     view = (
         db.query(models.SavedView)
         .filter(models.SavedView.id == view_id, models.SavedView.datasource_id == ds.id)
@@ -1160,19 +1174,36 @@ def _get_owned_datasource(db: Session, user: models.User, datasource_id: str) ->
 
 
 def _get_accessible_datasource(db: Session, user: models.User, datasource_id: str) -> models.DataSource:
-    """The "collaborate" tier: the data source's own owner, OR any member
-    of the workspace it's been shared into (see services/workspace_access.
-    py for the full two-tier model this implements). Used by every
-    view/preview/analyze-adjacent endpoint below - schema, versions, flow,
-    preview, distinct-values, parse-filter, saved views, export, rename/
-    delete a saved table - so a teammate who's been added to a shared
-    workspace can actually see and work with what's in it, not just see
-    its name on the roster. 404s either way a non-owner can't reach it
-    (never found, or found but not shared with them), so there's nothing
-    for a non-member to distinguish."""
+    """The "view" tier: the data source's own owner, OR ANY member of the
+    workspace it's been shared into - a workspace "viewer" included (see
+    services/workspace_access.py for the full role model). Used by every
+    read-only endpoint below - schema, versions, flow, preview, distinct-
+    values, parse-filter, list saved views, export - so a teammate (of any
+    role) can actually see what's in a shared workspace, not just see its
+    name on the roster. 404s either way a non-member can't reach it (never
+    found, or found but not shared with them), so there's nothing for a
+    non-member to distinguish."""
     ds = db.query(models.DataSource).filter(models.DataSource.id == datasource_id).first()
     if not ds or not workspace_access.can_access_datasource(db, ds, user):
         raise HTTPException(404, "Datasource not found.")
+    return ds
+
+
+def _get_editable_datasource(db: Session, user: models.User, datasource_id: str) -> models.DataSource:
+    """The "editable" tier: the data source's own owner, OR a workspace
+    member whose role is "owner"/"member" - a workspace "viewer" is
+    excluded. Used by every WRITE endpoint below that mutates something
+    built on the data source without being the handful of truly
+    administrative actions on the row itself: rename/delete a saved table
+    version, create/rename/delete a saved view. A viewer who CAN see the
+    data source (they pass _get_accessible_datasource above) but tries one
+    of these gets a 403, not a 404 - unlike a stranger with no access at
+    all, there's nothing left to hide by pretending it doesn't exist."""
+    ds = db.query(models.DataSource).filter(models.DataSource.id == datasource_id).first()
+    if not ds or not workspace_access.can_access_datasource(db, ds, user):
+        raise HTTPException(404, "Datasource not found.")
+    if not workspace_access.can_edit_datasource(db, ds, user):
+        raise HTTPException(403, "You have view-only access to this data source.")
     return ds
 
 
