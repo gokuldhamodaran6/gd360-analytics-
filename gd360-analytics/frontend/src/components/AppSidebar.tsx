@@ -61,14 +61,6 @@ function DataSourcesIcon({ className = "w-[18px] h-[18px]" }: { className?: stri
   );
 }
 
-function ConnectIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  );
-}
-
 function SearchIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -596,10 +588,10 @@ export function ConnectDataPopup({
             <>
               {sources.length > 5 && (
                 <div className="relative mb-3">
-                  <SearchIcon className="w-3.5 h-3.5 text-muted absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <SearchIcon className="w-3.5 h-3.5 text-muted absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     autoFocus
-                    className="input pl-8 text-sm w-full py-1.5"
+                    className="input input-icon-sm text-sm w-full py-1.5"
                     placeholder="Search your data..."
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
@@ -666,14 +658,8 @@ export default function AppSidebar({
   const { user } = useAuth();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
-  const [showConnectData, setShowConnectData] = useState(false);
 
   const onProjects = location.pathname === "/";
-  // A workspace "viewer" (2026-09-23) can see this workspace's data
-  // sources but can't add their own into it - same restriction Dashboard.tsx
-  // applies to its "+ New Project" button, mirrored here since this is a
-  // second entry point to the same connect flow.
-  const isViewerHere = workspaces.find((w) => w.id === activeWorkspaceId)?.role === "viewer";
 
   return (
     // Hidden below the `lg` breakpoint rather than becoming a hamburger/
@@ -721,30 +707,14 @@ export default function AppSidebar({
         </Link>
       </div>
 
-      {/* 2026-09-23 (sidebar redesign round): one obvious button instead of
-          an always-expanded, unsorted list of every connected source -
-          browsing what's already connected (grouped by category) and
-          connecting something new both live one click away in
-          ConnectDataPopup above, and the full browsable/filterable list now
-          has its own real destination at /data. */}
-      <div className="px-3 mt-4 pb-4">
-        <button
-          type="button"
-          onClick={() => setShowConnectData(true)}
-          disabled={isViewerHere}
-          title={isViewerHere ? "You have view-only access to this workspace." : undefined}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold bg-primary/10 text-primary hover:bg-primary/15 transition border border-primary/25 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-primary/10"
-        >
-          <ConnectIcon />
-          Connect data
-        </button>
-      </div>
-
+      {/* 2026-09-23, round three (Gokul's own explicit ask): the sidebar's
+          own "+ Connect data" shortcut is gone - adding data now happens in
+          exactly one place, the Data Sources page (/data), instead of two
+          different entry points that could drift out of sync. The Data
+          Sources link two lines up is how a person gets there.
+          ConnectDataPopup itself stays exported from this file - it's still
+          used by pages/NewProject.tsx's own "Connect data" button. */}
       <div className="flex-1" />
-
-      {showConnectData && (
-        <ConnectDataPopup activeWorkspaceId={activeWorkspaceId} onClose={() => setShowConnectData(false)} />
-      )}
 
       {showCreateModal && (
         <CreateWorkspaceModal
