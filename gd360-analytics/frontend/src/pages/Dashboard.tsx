@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
 import { conversationApi, ConversationSummary, datasourceApi, DataSourceSummary, WorkspaceSummary } from "../api/client";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
-import DataSourceForm from "../components/DataSourceForm";
 import ConversationRow from "../components/ConversationRow";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import ViewToggle, { ViewMode, useViewMode } from "../components/ViewToggle";
@@ -104,14 +102,6 @@ export default function Dashboard() {
 
   const [viewMode, setViewMode] = useViewMode("gd360_view_projects");
 
-  // "Start a new project" now lives in a focused popup instead of an
-  // always-open, page-length form - clicking "+ New Project" opens this,
-  // and picking or connecting a data source there drops the person
-  // straight into a fresh, empty chat ready to analyze it (see
-  // handleDataSourceCreated below). Same DataSourceForm component as
-  // always, just presented as a portaled overlay.
-  const [showConnectModal, setShowConnectModal] = useState(false);
-
   // Loads this page's Projects/data sources for one specific workspace -
   // split out from the initial workspace-resolving load below so switching
   // workspaces (or creating a new one) can re-run just this part.
@@ -156,14 +146,10 @@ export default function Dashboard() {
     createWorkspace(ws);
   };
 
-  useEffect(() => {
-    if (!showConnectModal) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setShowConnectModal(false); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [showConnectModal]);
-
-  const openConnectFlow = () => setShowConnectModal(true);
+  // "+ New Project" now lands straight on a blank chat page - see
+  // pages/NewProject.tsx - instead of opening a connect-data popup first;
+  // connecting data happens from inside that page instead.
+  const openConnectFlow = () => navigate("/project/new");
 
   const openConversation = (c: ConversationSummary) => {
     if (!c.datasource_id) return;
@@ -190,33 +176,6 @@ export default function Dashboard() {
   };
   const deleteConversation = (id: string) => {
     setConversations((cs) => cs.filter((c) => c.id !== id));
-  };
-
-  // Once a data source is added and the person confirms it in
-  // DataSourceForm's own "Connected" panel, tag it with whichever
-  // workspace is active right now (a brand new source has no workspace of
-  // its own yet - see routers/datasources.py assign_datasource_workspace),
-  // close this modal, and jump straight into its workspace - a brand new
-  // project, now open on an empty chat ready to ask GD360 something. (A
-  // "type first, attach data mid-conversation" flow is a deeper change to
-  // how Workspace.tsx works - this is the fast, solid version of "new
-  // project" for this round: pick/connect the data, land straight in the
-  // empty chat for it.)
-  const handleDataSourceCreated = async (ds: { id: string }) => {
-    setShowConnectModal(false);
-    if (!ds?.id) return;
-    if (activeWorkspaceId) {
-      try { await datasourceApi.assignWorkspace(ds.id, activeWorkspaceId); } catch { /* still usable, just unfiled */ }
-    }
-    navigate(`/workspace/${ds.id}`);
-  };
-
-  // Fires as soon as a connect/upload actually succeeds, before the person
-  // has clicked "Try it out" in the confirmation panel - refreshes this
-  // page's own lists quietly in the background so they're already current
-  // if the person closes the modal and stays here instead of proceeding.
-  const handleDataSourceConnected = () => {
-    if (activeWorkspaceId) loadForWorkspace(activeWorkspaceId);
   };
 
   // Every existing chat/analysis is a "Project" now - no separate concept
@@ -409,38 +368,6 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
-
-      {/* ---- "New Project" / connect-data popup ----
-          Portaled straight to document.body (same pattern as
-          AddDataPicker.tsx / DataSourceForm.tsx's own internal modals) so
-          it always covers the real viewport regardless of where it's
-          mounted in the tree. */}
-      {showConnectModal &&
-        createPortal(
-          <div
-            className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/60 p-4 overflow-y-auto"
-            onClick={(e) => { if (e.target === e.currentTarget) setShowConnectModal(false); }}
-          >
-            <div className="card w-full max-w-lg my-8 sm:my-0 p-6 relative">
-              <button
-                className="absolute top-4 right-4 text-muted hover:text-text transition"
-                onClick={() => setShowConnectModal(false)}
-                aria-label="Close"
-              >
-                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 6L6 18M6 6l12 12" />
-                </svg>
-              </button>
-              <h2 className="text-lg font-bold mb-1">New project</h2>
-              <p className="text-xs text-muted mb-5 leading-relaxed">
-                Connect a database, a warehouse, or a file - once it's ready you'll land straight in a
-                new project to start analyzing it.
-              </p>
-              <DataSourceForm onCreated={handleDataSourceCreated} onConnected={handleDataSourceConnected} />
-            </div>
-          </div>,
-          document.body
-        )}
     </div>
   );
 }
