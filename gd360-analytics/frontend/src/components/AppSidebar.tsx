@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
 import { datasourceApi, DataSourceSummary, WorkspaceDetail, WorkspaceSummary, workspaceApi } from "../api/client";
 import DataSourceForm, { connectionKindMeta, dataSourceCategory, DATA_SOURCE_CATEGORIES } from "./DataSourceForm";
+import { ChipCloseIcon, SourceDot } from "./ChatPanel";
 
 // 2026-09-23: the persistent left nav rail from the workspace-structure
 // revamp, modeled on the reference screenshots Gokul shared (a "Data
@@ -608,15 +609,26 @@ function InviteMembersModal({
 }
 
 // The sidebar's own "Connect data" popup (2026-09-23, sidebar redesign
-// round) - replaces the old always-expanded flat list at the bottom of the
-// sidebar. Two tabs: every source already connected in the active
+// round). Two tabs: every source already connected in the active
 // workspace, grouped by category (Files / Databases / Warehouses, see
 // DataSourceForm.dataSourceCategory) instead of one flat unsorted scroll,
 // or connect a brand-new one (the same DataSourceForm used everywhere
-// else). Picking an existing source or finishing a new connection always
-// navigates straight into it, so this never needs to hand a "refresh your
-// list" signal back to whichever page happened to be open underneath it -
-// that page is being left either way.
+// else).
+//
+// 2026-09-23, round three: genuine multi-select at connect time, the same
+// "pick several, see them as chips, then continue" pattern ChatGPT uses for
+// attachments (and the same one the mid-conversation "+ Add data" popup,
+// AddDataPicker.tsx, already used for adding sources to a live chat).
+// Clicking a row toggles it into a running `selected` list instead of
+// navigating immediately - existing rows AND a brand-new connection both
+// land in that same list, so someone can tick two already-connected
+// sources, then switch to "Upload / connect new" and add a third, all
+// before ever leaving this popup. "Continue" carries the whole selection
+// into Workspace.tsx as one primary datasourceId plus a `?extra=id,id`
+// query param (see otherDsSourceId's callers in Workspace.tsx), which seeds
+// the chat's WORKING ON selection with every source picked here already
+// checked - never a plain single-source landing when more than one was
+// chosen.
 export function ConnectDataPopup({
   activeWorkspaceId,
   onClose,
@@ -625,12 +637,11 @@ export function ConnectDataPopup({
   activeWorkspaceId: string;
   onClose: () => void;
   // A pending, not-yet-sent chat prompt this popup was opened on top of
-  // (see pages/NewProject.tsx) - when set, picking or connecting a source
-  // here carries it along in the URL instead of landing on a plain empty
-  // workspace, so Workspace.tsx can auto-run it the moment that data source
-  // is ready (see its own draft-param effect). Omitted everywhere else
-  // (the sidebar's own "Connect data" button below has no pending prompt),
-  // in which case this behaves exactly as before.
+  // (see pages/NewProject.tsx) - when set, continuing carries it along in
+  // the URL instead of landing on a plain empty workspace, so Workspace.tsx
+  // can auto-run it the moment the primary data source is ready (see its
+  // own draft-param effect). Omitted everywhere else (the sidebar's own
+  // "Connect data" button below has no pending prompt).
   draft?: string;
 }) {
   const navigate = useNavigate();
@@ -639,14 +650,23 @@ export function ConnectDataPopup({
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<"all" | "Files" | "Databases" | "Warehouses">("all");
   const [page, setPage] = useState(1);
+  // Every source picked so far this popup session, in click order - the
+  // first one becomes the URL's :datasourceId, the rest ride along as
+  // ?extra=. A plain array (not a Set) because order matters (first-picked
+  // stays primary even if someone deselects and reselects a different one
+  // first) and the list is always small enough that an .some()/.filter()
+  // scan per click is unnoticeable.
+  const [selected, setSelected] = useState<DataSourceSummary[]>([]);
 
-  useEffect(() => {
+  const loadSources = () => {
     if (!activeWorkspaceId) return;
     datasourceApi
       .list(activeWorkspaceId)
       .then((list) => setSources([...list].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())))
       .catch(() => setSources([]));
-  }, [activeWorkspaceId]);
+  };
+
+  useEffect(loadSources, [activeWorkspaceId]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -659,17 +679,31 @@ export function ConnectDataPopup({
   // leave the pager pointed at a page that just emptied out from under it.
   useEffect(() => { setPage(1); }, [query, category, sources]);
 
-  const destination = (dsId: string) =>
-    draft && draft.trim() ? `/workspace/${dsId}?draft=${encodeURIComponent(draft.trim())}` : `/workspace/${dsId}`;
+  const isSelected = (dsId: string) => selected.some((s) => s.id === dsId);
 
-  const openSource = (ds: DataSourceSummary) => {
-    onClose();
-    navigate(destination(ds.id));
+  const toggleSource = (ds: DataSourceSummary) => {
+    setSelected((prev) => (prev.some((s) => s.id === ds.id) ? prev.filter((s) => s.id !== ds.id) : [...prev, ds]));
   };
 
-  const handleCreated = (ds: { id: string }) => {
+  // A brand-new connection is added to the running selection exactly like
+  // an existing-row click, then this hops back to "Your data" so the fresh
+  // chip is visible and another source can be added right away - it never
+  // navigates away on its own the way it used to.
+  const handleCreated = (ds: { id: string; name: string; kind: string; created_at: string }) => {
+    setSelected((prev) => (prev.some((s) => s.id === ds.id) ? prev : [...prev, ds]));
+    loadSources();
+    setTab("existing");
+  };
+
+  const continueWithSelection = () => {
+    if (selected.length === 0) return;
+    const [primary, ...rest] = selected;
+    const params = new URLSearchParams();
+    if (draft && draft.trim()) params.set("draft", draft.trim());
+    if (rest.length) params.set("extra", rest.map((s) => s.id).join(","));
+    const qs = params.toString();
     onClose();
-    navigate(destination(ds.id));
+    navigate(`/workspace/${primary.id}${qs ? `?${qs}` : ""}`);
   };
 
   const filtered = (sources || []).filter((ds) => {
@@ -807,12 +841,18 @@ export function ConnectDataPopup({
                     <div className="space-y-1">
                       {g.sources.map((ds) => {
                         const meta = connectionKindMeta(ds.kind);
+                        const picked = isSelected(ds.id);
                         return (
                           <button
                             key={ds.id}
                             type="button"
-                            onClick={() => openSource(ds)}
-                            className="w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-lg text-left hover:bg-surface2 transition group"
+                            aria-pressed={picked}
+                            onClick={() => toggleSource(ds)}
+                            className={`w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-lg text-left transition group border ${
+                              picked
+                                ? "bg-primary/10 border-primary/40"
+                                : "border-transparent hover:bg-surface2"
+                            }`}
                           >
                             <span
                               className="w-7 h-7 rounded-md flex items-center justify-center shrink-0"
@@ -821,6 +861,14 @@ export function ConnectDataPopup({
                               <meta.Logo className="w-3.5 h-3.5" />
                             </span>
                             <span className="text-sm truncate flex-1 text-text/90 group-hover:text-text">{ds.name}</span>
+                            <span
+                              className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 border transition ${
+                                picked ? "bg-primary border-primary text-white" : "border-border text-transparent"
+                              }`}
+                              aria-hidden
+                            >
+                              <CheckIcon className="w-3 h-3" />
+                            </span>
                           </button>
                         );
                       })}
@@ -833,6 +881,41 @@ export function ConnectDataPopup({
             </>
           )}
         </div>
+
+        {/* The running selection, shown as the same chip pattern as the
+            in-chat WORKING ON control (ChatPanel.tsx) - a colored dot,
+            truncated name, and a remove x per source - plus one "Continue"
+            action that carries every picked source into the new workspace
+            at once. Only rendered once something is actually selected, so
+            the popup looks exactly as before until someone picks a first
+            source. */}
+        {selected.length > 0 && (
+          <div className="p-4 border-t border-border shrink-0 bg-surface1/60">
+            <div className="flex flex-wrap items-center gap-1.5 mb-3">
+              {selected.map((ds) => (
+                <span
+                  key={ds.id}
+                  className="inline-flex items-center gap-1.5 max-w-[200px] pl-2 pr-1 py-1 rounded-lg border border-border bg-surface2 text-xs"
+                  title={ds.name}
+                >
+                  <SourceDot generated={false} />
+                  <span className="truncate">{ds.name}</span>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded p-0.5 text-muted hover:text-text hover:bg-border/60 transition"
+                    onClick={() => toggleSource(ds)}
+                    aria-label={`Remove ${ds.name}`}
+                  >
+                    <ChipCloseIcon />
+                  </button>
+                </span>
+              ))}
+            </div>
+            <button type="button" className="btn-primary w-full text-sm py-2.5 font-semibold" onClick={continueWithSelection}>
+              Continue with {selected.length} {selected.length === 1 ? "source" : "sources"} &rarr;
+            </button>
+          </div>
+        )}
       </div>
     </div>,
     document.body
