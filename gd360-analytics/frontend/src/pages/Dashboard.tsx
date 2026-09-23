@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
-import { conversationApi, ConversationSummary, datasourceApi, DataSourceSummary, WorkspaceSummary } from "../api/client";
+import {
+  conversationApi, ConversationSummary, datasourceApi, DataSourceSummary, folderApi, FolderSummary, WorkspaceSummary,
+} from "../api/client";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
 import ConversationRow from "../components/ConversationRow";
@@ -8,6 +11,10 @@ import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import ViewToggle, { ViewMode, useViewMode } from "../components/ViewToggle";
 
 type SortKey = "newest" | "oldest" | "title";
+// A folder's real id, or one of the two built-in pseudo-tabs: "all" (every
+// Project regardless of folder) and "unfiled" (folder_id is null) - the
+// Projects page's own default view.
+type FolderFilter = "all" | "unfiled" | string;
 
 function ChartTypeIcon({ chartType }: { chartType: string | null }) {
   const t = (chartType || "").toLowerCase();
@@ -69,6 +76,50 @@ function PinIcon({ className = "w-3.5 h-3.5", filled = false }: { className?: st
   );
 }
 
+function FolderIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+    </svg>
+  );
+}
+
+function CheckSquareIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="3" />
+      <path d="M8 12l2.5 2.5L16 9" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  );
+}
+
+function PencilIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+function TrashIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 6h18" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+    </svg>
+  );
+}
+
 function timeAgo(dateStr: string): string {
   const diffMs = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diffMs / 60000);
@@ -83,16 +134,98 @@ function timeAgo(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString();
 }
 
+// The select-all bar's "Move to folder" action - a small popover listing
+// every folder plus "No folder" (unfiles whatever's selected), same
+// click-outside/Escape pattern as Workspace.tsx's own SaveChartMenu.
+function MoveToFolderMenu({
+  folders,
+  disabled,
+  busy,
+  onMove,
+  onNewFolder,
+}: {
+  folders: FolderSummary[];
+  disabled: boolean;
+  busy: boolean;
+  onMove: (folderId: string | null) => void;
+  onNewFolder: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (!boxRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative shrink-0" ref={boxRef}>
+      <button
+        type="button"
+        className="btn-primary text-sm px-3.5 py-2 inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+        onClick={() => setOpen((v) => !v)}
+        disabled={disabled || busy}
+      >
+        <FolderIcon className="w-3.5 h-3.5" /> {busy ? "Moving…" : "Move to folder"} <ChevronDownIcon />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1.5 z-20 w-56 rounded-xl border border-border bg-surface2/95 backdrop-blur-xl shadow-2xl p-1.5">
+          <button
+            type="button"
+            className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left hover:bg-surface2 rounded-lg transition"
+            onClick={() => { onMove(null); setOpen(false); }}
+          >
+            No folder <span className="text-muted text-xs">(unfile)</span>
+          </button>
+          {folders.length > 0 && <div className="my-1 border-t border-border" />}
+          <div className="max-h-56 overflow-y-auto">
+            {folders.map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left hover:bg-surface2 rounded-lg transition truncate"
+                onClick={() => { onMove(f.id); setOpen(false); }}
+              >
+                <FolderIcon className="w-3.5 h-3.5 text-muted shrink-0" />
+                <span className="truncate">{f.name}</span>
+              </button>
+            ))}
+          </div>
+          <div className="my-1 border-t border-border" />
+          <button
+            type="button"
+            className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left text-primary hover:bg-surface2 rounded-lg transition"
+            onClick={() => { setOpen(false); onNewFolder(); }}
+          >
+            <PlusIcon className="w-3.5 h-3.5" /> New folder
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [datasources, setDatasources] = useState<DataSourceSummary[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [folders, setFolders] = useState<FolderSummary[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState<SortKey>("newest");
   const [datasourceFilter, setDatasourceFilter] = useState<string>("all");
   const [pinnedOnly, setPinnedOnly] = useState(false);
+  const [folderFilter, setFolderFilter] = useState<FolderFilter>("all");
 
   // The account's real workspaces and which one is active - the shared
   // hook (used by every page with a persistent AppSidebar) owns the
@@ -102,17 +235,43 @@ export default function Dashboard() {
 
   const [viewMode, setViewMode] = useViewMode("gd360_view_projects");
 
-  // Loads this page's Projects/data sources for one specific workspace -
-  // split out from the initial workspace-resolving load below so switching
-  // workspaces (or creating a new one) can re-run just this part.
+  // Select-all/bulk-move mode (2026-09-23, folders round) - Gokul's own
+  // explicit ask: "add a select all option too so i can select some or all
+  // to move to folder at once".
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [moving, setMoving] = useState(false);
+  const [moveMsg, setMoveMsg] = useState("");
+
+  // "+ New folder" - a plain name prompt, same lightweight portaled-card
+  // pattern as the old "+ New Project" modal this page used to have.
+  const [showNewFolder, setShowNewFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
+
+  // Inline rename/delete for whichever folder tab is currently active -
+  // kept to just the active one rather than a menu on every chip, so
+  // managing a folder never competes for space with the (usually much more
+  // frequently clicked) filter chips themselves.
+  const [renamingFolder, setRenamingFolder] = useState(false);
+  const [folderNameDraft, setFolderNameDraft] = useState("");
+  const [folderBusy, setFolderBusy] = useState(false);
+  const [confirmDeleteFolder, setConfirmDeleteFolder] = useState(false);
+
+  // Loads this page's Projects/data sources/folders for one specific
+  // workspace - split out from the initial workspace-resolving load below
+  // so switching workspaces (or creating a new one) can re-run just this
+  // part.
   const loadForWorkspace = async (workspaceId: string) => {
     setLoading(true);
-    const [ds, convos] = await Promise.all([
+    const [ds, convos, fs] = await Promise.all([
       datasourceApi.list(workspaceId),
       conversationApi.list(workspaceId).catch(() => []),
+      folderApi.list(workspaceId).catch(() => []),
     ]);
     setDatasources(ds);
     setConversations(convos);
+    setFolders(fs);
     setLoading(false);
   };
 
@@ -132,17 +291,22 @@ export default function Dashboard() {
     }
   }, [activeWorkspaceId, loadingWorkspaces]);
 
-  const switchWorkspace = (id: string) => {
+  const resetPageState = () => {
     setSearch("");
     setDatasourceFilter("all");
     setPinnedOnly(false);
+    setFolderFilter("all");
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  };
+
+  const switchWorkspace = (id: string) => {
+    resetPageState();
     switchWorkspaceId(id);
   };
 
   const handleWorkspaceCreated = (ws: WorkspaceSummary) => {
-    setSearch("");
-    setDatasourceFilter("all");
-    setPinnedOnly(false);
+    resetPageState();
     createWorkspace(ws);
   };
 
@@ -178,6 +342,15 @@ export default function Dashboard() {
     setConversations((cs) => cs.filter((c) => c.id !== id));
   };
 
+  // A single row's own "Move to folder" menu item (see ConversationRow)
+  // already made the API call by the time this fires - just reflect the
+  // new folder_id locally and refresh folder counts, same as the bulk
+  // version below.
+  const singleMoved = (id: string, folderId: string | null) => {
+    setConversations((cs) => cs.map((c) => (c.id === id ? { ...c, folder_id: folderId } : c)));
+    if (activeWorkspaceId) folderApi.list(activeWorkspaceId).then(setFolders).catch(() => {});
+  };
+
   // Every existing chat/analysis is a "Project" now - no separate concept
   // left to reconcile. Filters below operate on this same list Gokul
   // already had (conversationApi.list()); nothing server-side changed,
@@ -199,6 +372,11 @@ export default function Dashboard() {
     if (pinnedOnly) {
       list = list.filter((c) => c.pinned);
     }
+    if (folderFilter === "unfiled") {
+      list = list.filter((c) => !c.folder_id);
+    } else if (folderFilter !== "all") {
+      list = list.filter((c) => c.folder_id === folderFilter);
+    }
     const sorted = [...list];
     if (sortBy === "newest") sorted.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
     else if (sortBy === "oldest") sorted.sort((a, b) => new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime());
@@ -206,17 +384,121 @@ export default function Dashboard() {
     // Pinned projects still float to the top within whichever sort is active.
     sorted.sort((a, b) => Number(b.pinned) - Number(a.pinned));
     return sorted;
-  }, [conversations, search, datasourceFilter, pinnedOnly, sortBy]);
+  }, [conversations, search, datasourceFilter, pinnedOnly, folderFilter, sortBy]);
 
   const hasAnyProjects = conversations.length > 0;
-  const hasFiltersApplied = search.trim() !== "" || datasourceFilter !== "all" || pinnedOnly;
+  const hasFiltersApplied = search.trim() !== "" || datasourceFilter !== "all" || pinnedOnly || folderFilter !== "all";
+  const clearFilters = () => { setSearch(""); setDatasourceFilter("all"); setPinnedOnly(false); setFolderFilter("all"); };
 
   // A workspace "viewer" (2026-09-23, roles & attribution round) can see
   // everything in the active workspace but can't bring in new data or
   // start new analysis there - "+ New Project" is disabled rather than
   // hidden, with a tooltip explaining why, so it's clear this is a
-  // deliberate permission rather than a missing feature.
+  // deliberate permission rather than a missing feature. Folders follow
+  // the same rule (services/workspace_access.py's "editable" tier).
   const isViewerHere = workspaces.find((w) => w.id === activeWorkspaceId)?.role === "viewer";
+
+  const activeFolder = folderFilter !== "all" && folderFilter !== "unfiled" ? folders.find((f) => f.id === folderFilter) || null : null;
+
+  // ---- Select-all / bulk-move ----
+  const toggleSelectMode = () => {
+    setSelectMode((v) => !v);
+    setSelectedIds(new Set());
+  };
+  const toggleSelect = (id: string) => {
+    setSelectedIds((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const visibleIds = filteredProjects.map((c) => c.id);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+  const toggleSelectAll = () => {
+    setSelectedIds(allVisibleSelected ? new Set() : new Set(visibleIds));
+  };
+
+  const moveSelectedTo = async (folderId: string | null) => {
+    if (selectedIds.size === 0 || !activeWorkspaceId) return;
+    setMoving(true);
+    try {
+      const ids = Array.from(selectedIds);
+      const res = await conversationApi.bulkMove(ids, folderId);
+      const movedSet = new Set(res.moved);
+      setConversations((cs) => cs.map((c) => (movedSet.has(c.id) ? { ...c, folder_id: folderId } : c)));
+      folderApi.list(activeWorkspaceId).then(setFolders).catch(() => {});
+      setSelectedIds(new Set());
+      setSelectMode(false);
+      setMoveMsg(
+        res.skipped.length > 0
+          ? `Moved ${res.moved.length}, skipped ${res.skipped.length} (no permission).`
+          : `Moved ${res.moved.length} project${res.moved.length === 1 ? "" : "s"}.`
+      );
+    } catch {
+      setMoveMsg("Could not move those projects.");
+    } finally {
+      setMoving(false);
+      setTimeout(() => setMoveMsg(""), 4000);
+    }
+  };
+
+  // ---- Folder create/rename/delete ----
+  const createFolder = async () => {
+    const name = newFolderName.trim();
+    if (!name || !activeWorkspaceId) return;
+    setCreatingFolder(true);
+    try {
+      const f = await folderApi.create(activeWorkspaceId, name);
+      setFolders((fs) => [...fs, f]);
+      setFolderFilter(f.id);
+      setShowNewFolder(false);
+      setNewFolderName("");
+    } catch {
+      // Modal stays open with what they typed so they can just try again.
+    } finally {
+      setCreatingFolder(false);
+    }
+  };
+
+  const startRenameFolder = () => {
+    if (!activeFolder) return;
+    setFolderNameDraft(activeFolder.name);
+    setRenamingFolder(true);
+  };
+  const commitRenameFolder = async () => {
+    if (!activeFolder) { setRenamingFolder(false); return; }
+    const name = folderNameDraft.trim();
+    setRenamingFolder(false);
+    if (!name || name === activeFolder.name) return;
+    setFolderBusy(true);
+    try {
+      const updated = await folderApi.rename(activeFolder.id, name);
+      setFolders((fs) => fs.map((f) => (f.id === updated.id ? updated : f)));
+    } catch {
+      // Name just stays as it was - nothing lost.
+    } finally {
+      setFolderBusy(false);
+    }
+  };
+  const deleteActiveFolder = async () => {
+    if (!activeFolder) return;
+    setFolderBusy(true);
+    try {
+      await folderApi.remove(activeFolder.id);
+      const removedId = activeFolder.id;
+      setFolders((fs) => fs.filter((f) => f.id !== removedId));
+      // Every Project that was filed into it is unfiled server-side, not
+      // deleted (see routers/folders.py delete_folder) - mirror that here.
+      setConversations((cs) => cs.map((c) => (c.folder_id === removedId ? { ...c, folder_id: null } : c)));
+      setFolderFilter("all");
+    } catch {
+      // Leaves the folder in place - the Delete button is right there to
+      // try again.
+    } finally {
+      setFolderBusy(false);
+      setConfirmDeleteFolder(false);
+    }
+  };
 
   return (
     // 2026-09-23: the workspace-structure revamp, round two - Gokul asked
@@ -229,6 +511,11 @@ export default function Dashboard() {
     // as a Project - same conversations the app already had, just the
     // page's whole name, shape and filters built around that word instead
     // of "conversations".
+    //
+    // 2026-09-23, folders round: Projects can now be filed into folders
+    // (scoped to this workspace, purely an organizing label - see
+    // models.Folder) and multi-selected for a bulk move, per Gokul's own
+    // request.
     <div className="flex">
       <AppSidebar
         workspaces={workspaces}
@@ -258,9 +545,98 @@ export default function Dashboard() {
             </button>
           </div>
 
-          {/* ---- Filters: search, data source, sort, pinned ---- */}
+          {/* ---- Folder tabs ---- */}
+          {!loading && (
+            <div className="mb-4">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setFolderFilter("all")}
+                  className={`text-xs font-medium px-3 py-1.5 rounded-full border transition ${
+                    folderFilter === "all" ? "bg-primary text-white border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
+                  }`}
+                >
+                  All
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFolderFilter("unfiled")}
+                  className={`text-xs font-medium px-3 py-1.5 rounded-full border transition ${
+                    folderFilter === "unfiled" ? "bg-primary text-white border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
+                  }`}
+                >
+                  Unfiled
+                </button>
+                {folders.map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => setFolderFilter(f.id)}
+                    className={`inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
+                      folderFilter === f.id ? "bg-primary text-white border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
+                    }`}
+                  >
+                    <FolderIcon className="w-3 h-3" /> {f.name}
+                    <span className={folderFilter === f.id ? "text-white/80" : "text-muted"}>{f.project_count}</span>
+                  </button>
+                ))}
+                {!isViewerHere && (
+                  <button
+                    type="button"
+                    onClick={() => { setNewFolderName(""); setShowNewFolder(true); }}
+                    className="inline-flex items-center gap-1 text-xs font-medium px-3 py-1.5 rounded-full border border-dashed border-border text-muted hover:text-text hover:border-primary/50 transition"
+                  >
+                    <PlusIcon className="w-3 h-3" /> New folder
+                  </button>
+                )}
+              </div>
+
+              {/* Manage the currently-active folder tab - rename/delete.
+                  Kept to just this one folder rather than a menu on every
+                  chip (see state comment above). */}
+              {activeFolder && !isViewerHere && (
+                <div className="flex items-center gap-3 mt-2 text-xs text-muted">
+                  {renamingFolder ? (
+                    <input
+                      autoFocus
+                      className="input py-1 text-xs w-48"
+                      value={folderNameDraft}
+                      onChange={(e) => setFolderNameDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") commitRenameFolder();
+                        if (e.key === "Escape") setRenamingFolder(false);
+                      }}
+                      onBlur={commitRenameFolder}
+                      maxLength={80}
+                    />
+                  ) : confirmDeleteFolder ? (
+                    <>
+                      <span>Delete &ldquo;{activeFolder.name}&rdquo;? Its projects stay - they'll just be unfiled.</span>
+                      <button type="button" className="text-muted hover:text-text" onClick={() => setConfirmDeleteFolder(false)} disabled={folderBusy}>
+                        Cancel
+                      </button>
+                      <button type="button" className="text-red-400 font-medium hover:underline" onClick={deleteActiveFolder} disabled={folderBusy}>
+                        {folderBusy ? "Deleting…" : "Delete"}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" className="inline-flex items-center gap-1 hover:text-text transition" onClick={startRenameFolder}>
+                        <PencilIcon className="w-3 h-3" /> Rename folder
+                      </button>
+                      <button type="button" className="inline-flex items-center gap-1 hover:text-red-400 transition" onClick={() => setConfirmDeleteFolder(true)}>
+                        <TrashIcon className="w-3 h-3" /> Delete folder
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ---- Filters: search, data source, sort, pinned, select ---- */}
           {hasAnyProjects && (
-            <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 mb-6">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 mb-3">
               <div className="relative flex-1 min-w-0 sm:max-w-xs">
                 <SearchIcon className="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
@@ -300,7 +676,39 @@ export default function Dashboard() {
               >
                 <PinIcon className="w-3.5 h-3.5" filled={pinnedOnly} /> Pinned
               </button>
+              <button
+                type="button"
+                onClick={toggleSelectMode}
+                className={`inline-flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border transition shrink-0 ${
+                  selectMode
+                    ? "bg-primary/15 border-primary/40 text-primary"
+                    : "border-border text-muted hover:text-text hover:bg-surface2"
+                }`}
+              >
+                <CheckSquareIcon className="w-3.5 h-3.5" /> {selectMode ? "Cancel" : "Select"}
+              </button>
               <ViewToggle mode={viewMode} onChange={setViewMode} />
+            </div>
+          )}
+
+          {/* ---- Select-all / bulk-move bar ---- */}
+          {selectMode && hasAnyProjects && (
+            <div className="flex flex-wrap items-center gap-3 mb-6 p-3 rounded-xl border border-primary/30 bg-primary/5">
+              <label className="flex items-center gap-2 text-sm font-medium cursor-pointer select-none">
+                <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAll} className="w-4 h-4 rounded accent-primary" />
+                Select all {filteredProjects.length > 0 ? `(${filteredProjects.length})` : ""}
+              </label>
+              <span className="text-sm text-muted">{selectedIds.size} selected</span>
+              <div className="ml-auto flex items-center gap-2">
+                {moveMsg && <span className="text-xs text-accent">{moveMsg}</span>}
+                <MoveToFolderMenu
+                  folders={folders}
+                  disabled={selectedIds.size === 0}
+                  busy={moving}
+                  onMove={moveSelectedTo}
+                  onNewFolder={() => { setNewFolderName(""); setShowNewFolder(true); }}
+                />
+              </div>
             </div>
           )}
 
@@ -325,10 +733,7 @@ export default function Dashboard() {
             <div className="card p-10 text-center text-sm text-muted">
               No projects match your filters.{" "}
               {hasFiltersApplied && (
-                <button
-                  className="text-primary font-medium hover:underline"
-                  onClick={() => { setSearch(""); setDatasourceFilter("all"); setPinnedOnly(false); }}
-                >
+                <button className="text-primary font-medium hover:underline" onClick={clearFilters}>
                   Clear filters
                 </button>
               )}
@@ -348,6 +753,11 @@ export default function Dashboard() {
                   onRenamed={renameConversation}
                   onPinned={pinConversation}
                   onDeleted={deleteConversation}
+                  folders={folders}
+                  onMoved={singleMoved}
+                  selectMode={selectMode}
+                  selected={selectedIds.has(c.id)}
+                  onToggleSelect={toggleSelect}
                 />
               ))}
             </div>
@@ -368,6 +778,53 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* ---- "New folder" popup ----
+          Portaled straight to document.body (same pattern as the old
+          "New Project" modal this page used to have) so it always covers
+          the real viewport regardless of where it's mounted in the tree. */}
+      {showNewFolder &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/60 p-4 overflow-y-auto"
+            onClick={(e) => { if (e.target === e.currentTarget && !creatingFolder) setShowNewFolder(false); }}
+          >
+            <div className="card w-full max-w-sm my-8 sm:my-0 p-6 relative">
+              <button
+                className="absolute top-4 right-4 text-muted hover:text-text transition disabled:opacity-50"
+                onClick={() => setShowNewFolder(false)}
+                disabled={creatingFolder}
+                aria-label="Close"
+              >
+                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+              <h2 className="text-lg font-bold mb-1">New folder</h2>
+              <p className="text-xs text-muted mb-4 leading-relaxed">
+                Give it a name - you can move projects into it right after, or any time later.
+              </p>
+              <input
+                autoFocus
+                className="input w-full text-sm mb-4"
+                placeholder="e.g. Q3 marketing"
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") createFolder(); }}
+                maxLength={80}
+              />
+              <button
+                type="button"
+                className="btn-primary w-full text-sm px-4 py-2.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={createFolder}
+                disabled={!newFolderName.trim() || creatingFolder}
+              >
+                {creatingFolder ? "Creating…" : "Create folder"}
+              </button>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
