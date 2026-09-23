@@ -490,12 +490,21 @@ function InviteMembersModal({
 // navigates straight into it, so this never needs to hand a "refresh your
 // list" signal back to whichever page happened to be open underneath it -
 // that page is being left either way.
-function ConnectDataPopup({
+export function ConnectDataPopup({
   activeWorkspaceId,
   onClose,
+  draft,
 }: {
   activeWorkspaceId: string;
   onClose: () => void;
+  // A pending, not-yet-sent chat prompt this popup was opened on top of
+  // (see pages/NewProject.tsx) - when set, picking or connecting a source
+  // here carries it along in the URL instead of landing on a plain empty
+  // workspace, so Workspace.tsx can auto-run it the moment that data source
+  // is ready (see its own draft-param effect). Omitted everywhere else
+  // (the sidebar's own "Connect data" button below has no pending prompt),
+  // in which case this behaves exactly as before.
+  draft?: string;
 }) {
   const navigate = useNavigate();
   const [tab, setTab] = useState<"existing" | "new">("existing");
@@ -516,14 +525,17 @@ function ConnectDataPopup({
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  const destination = (dsId: string) =>
+    draft && draft.trim() ? `/workspace/${dsId}?draft=${encodeURIComponent(draft.trim())}` : `/workspace/${dsId}`;
+
   const openSource = (ds: DataSourceSummary) => {
     onClose();
-    navigate(`/workspace/${ds.id}`);
+    navigate(destination(ds.id));
   };
 
   const handleCreated = (ds: { id: string }) => {
     onClose();
-    navigate(`/workspace/${ds.id}`);
+    navigate(destination(ds.id));
   };
 
   const filtered = (sources || []).filter(
