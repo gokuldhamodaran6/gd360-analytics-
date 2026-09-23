@@ -78,12 +78,20 @@ class WorkspaceMemberOut(BaseModel):
     user_id: str
     email: EmailStr
     full_name: Optional[str] = None
-    role: str
+    role: str  # "owner" | "member" | "viewer"
     created_at: datetime
 
 
 class WorkspaceDetailOut(WorkspaceOut):
     members: list[WorkspaceMemberOut]
+
+
+class WorkspaceMemberRoleUpdate(BaseModel):
+    # Only ever "member" (full collaborate access) or "viewer" (read-only)
+    # - a workspace's "owner" role is set once at creation and never
+    # changed through this endpoint; see routers/workspaces.py
+    # update_member_role for the actual validation.
+    role: str
 
 
 class InvitePreviewOut(BaseModel):
@@ -294,6 +302,14 @@ class SavedViewOut(BaseModel):
     config: dict
     created_at: datetime
     updated_at: datetime
+    # Who actually created this view (2026-09-23, workspace roles &
+    # attribution round) - saved views are shared team-wide once their data
+    # source is, so the Views dropdown can now show "by <name>" instead of
+    # every teammate's views looking like they came from whoever's looking
+    # at them.
+    created_by_id: Optional[str] = None
+    created_by_name: Optional[str] = None
+    created_by_email: Optional[str] = None
 
 
 # ---------- Rename a data source (the file/connection name shown as
