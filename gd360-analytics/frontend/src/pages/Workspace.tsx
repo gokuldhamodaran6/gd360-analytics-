@@ -666,6 +666,52 @@ export default function Workspace() {
     if (firstTable) setSourceIds([`sheet:${firstTable}`]);
   }, [dsInfo, datasourceId, sourceIds]);
 
+  // 2026-09-23, round twelve (Gokul's own bug report, right after round
+  // ten's Data-tab switcher shipped: connecting 3 sources correctly showed
+  // all 3 as pills, but opening WORKING ON showed only ONE of them actually
+  // checked for the analysis - the other two looked "connected" everywhere
+  // yet contributed nothing, and he had to go check them by hand anyway,
+  // exactly the manual step this was supposed to remove). Root cause: the
+  // multi-source seed above (`extraDatasourceIds`) has no way to know yet,
+  // at the moment it runs, whether an OTHER connected source is itself a
+  // multi-table warehouse/database like this round's BigQuery example - the
+  // full source list (`otherDataSources`, from the separate `/datasources`
+  // fetch above) has not necessarily loaded yet - so it always seeds the
+  // bare "ds:<id>:original" form. For an ordinary single-table source
+  // that's already the right, final answer (there is only one table to
+  // mean). For a MULTI-table one it is not: WORKING ON's own picker below
+  // never renders a checkbox for that bare form once a source turns out
+  // multi-table (only one checkbox per real table - see its dsMultiSheet
+  // branch), so it can never show as checked there, and worse, sending it
+  // to the backend as-is 400s outright (_load_selected_tables asks that
+  // source to load its "original" data with no table specified, which only
+  // means something for a single-table source - see routers/chat.py). This
+  // mirrors the primary source's own correction effect immediately above:
+  // the instant `otherDataSources` reveals a connected source is
+  // multi-table, its still-bare "original" entry (if any) is corrected to
+  // that source's real first table - the same zero-ambiguity default used
+  // everywhere else in this app - so every connected source ends up
+  // equally and genuinely part of the analysis the moment it's connected,
+  // never a half-connected pill that quietly does nothing until someone
+  // opens WORKING ON and picks a real table by hand. Only ever touches an
+  // untouched bare id (never a specific sheet/table someone, or a prior run
+  // of this same effect, already picked).
+  useEffect(() => {
+    if (!otherDataSources.length) return;
+    let changed = false;
+    const next = sourceIds.map((id) => {
+      const otherId = otherDsIdFromSourceId(id);
+      if (!otherId || id !== otherDsSourceId(otherId)) return id;
+      const d = otherDataSources.find((x) => x.id === otherId);
+      if (!d || !hasMultipleTables(d.kind, d.schema_cache)) return id;
+      const firstTable = Object.keys(d.schema_cache || {})[0];
+      if (!firstTable) return id;
+      changed = true;
+      return otherDsSourceId(otherId, firstTable);
+    });
+    if (changed) setSourceIds(next);
+  }, [otherDataSources, sourceIds]);
+
   // The Data tab's own per-table tab strip (independent of the chat's
   // WORKING ON selection - someone can be previewing one table on the Data
   // tab while chatting against a completely different combination) -
