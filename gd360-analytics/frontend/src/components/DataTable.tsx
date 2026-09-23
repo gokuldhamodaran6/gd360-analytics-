@@ -1327,10 +1327,22 @@ export default function DataTable({
                 )}
                 {!viewsLoading && savedViews.map((v) => (
                   <div key={v.id} className="flex items-center gap-1 px-1 py-1 rounded-lg hover:bg-surface2">
-                    <button className="text-xs text-left flex-1 truncate" onClick={() => applyView(v)} title="Apply this view">
+                    <button
+                      className="text-xs text-left flex-1 min-w-0 truncate"
+                      onClick={() => applyView(v)}
+                      title={v.created_by_email ? `Apply this view · saved by ${v.created_by_name || v.created_by_email}` : "Apply this view"}
+                    >
                       {v.name}
+                      {/* Attribution (2026-09-23, roles & attribution round) -
+                          shared views can come from any teammate now, so this
+                          says whose it is instead of looking anonymous. */}
+                      {v.created_by_name || v.created_by_email ? (
+                        <span className="text-[10px] text-muted ml-1.5">
+                          &middot; {v.created_by_name || v.created_by_email}
+                        </span>
+                      ) : null}
                     </button>
-                    <button className="text-muted hover:text-red-400 text-xs px-1" onClick={() => removeView(v)} title="Delete this view">
+                    <button className="text-muted hover:text-red-400 text-xs px-1 shrink-0" onClick={() => removeView(v)} title="Delete this view">
                       &times;
                     </button>
                   </div>
