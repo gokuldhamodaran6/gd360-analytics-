@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { DatasetVersion, DataSourceSummary, datasourceApi } from "../api/client";
-import { hasMultipleTables } from "./DataSourceForm";
+import { hasMultipleTables, connectionKindMeta } from "./DataSourceForm";
 
 // The literal id used, on both the client and the server, to mean "the
 // original, untouched data" inside a WORKING ON selection - every other
@@ -20,6 +20,22 @@ const OTHER_DS_PREFIX = "ds:";
 
 export function otherDsSourceId(datasourceId: string, table?: string | null): string {
   return table ? `${OTHER_DS_PREFIX}${datasourceId}:sheet:${table}` : `${OTHER_DS_PREFIX}${datasourceId}:original`;
+}
+
+// The inverse of otherDsSourceId: given any sourceId, returns which OTHER
+// data source it points at (never THIS chat's own datasource), or null for
+// every id that means "a table of this chat's own datasource" (the plain
+// ORIGINAL_SOURCE_ID, a "sheet:<name>", or a bare DatasetVersion.id built
+// from this datasource's own data). Exported so anything outside this file
+// that needs "which connected data sources does the current selection
+// actually touch right now" - Workspace.tsx's Data-tab source switcher, so
+// far the only caller - can read it straight off `sourceIds` instead of
+// re-parsing the "ds:<id>:..." wire format a second time.
+export function otherDsIdFromSourceId(id: string): string | null {
+  if (!id.startsWith(OTHER_DS_PREFIX)) return null;
+  const rest = id.slice(OTHER_DS_PREFIX.length);
+  const sep = rest.indexOf(":");
+  return sep === -1 ? rest : rest.slice(0, sep);
 }
 
 // A small colored dot shown before every WORKING ON row - teal for a real,
@@ -220,7 +236,7 @@ function renderMessageContent(content: string) {
 export default function ChatPanel({
   turns, onSend, busy, onApproveTransform, onRejectTransform, onCustomizeTransform, onContinueAnalysis, customizeSeed,
   versions, sourceIds, onSourceIdsChange, onVerify, verifyingIndex, analysisMode, onAnalysisModeChange,
-  datasourceKind, datasourceSchema, otherDataSources,
+  datasourceKind, datasourceSchema, otherDataSources, conversationId,
 }: {
   turns: ChatTurn[];
   onSend: (prompt: string) => void;
@@ -261,6 +277,17 @@ export default function ChatPanel({
   // cross-datasource table that "+ Add data" has already added to
   // `sourceIds`, so WORKING ON can still show and toggle it.
   otherDataSources?: DataSourceSummary[];
+  // This Project's own conversation id (null before its first message) -
+  // used only to scope which of an OTHER connected data source's saved
+  // tables the picker offers to add (see the otherSources render block
+  // below). Mirrors the exact filter Workspace.tsx already applies to
+  // THIS datasource's own `versions` before they ever reach this
+  // component (see its visibleVersions) - without it, picking a second
+  // data source here used to dump every AI-built table anyone has EVER
+  // saved against it, from every unrelated Project that happened to touch
+  // it, into one flat list - precisely the confusion visibleVersions was
+  // already built to prevent for this chat's own primary data source.
+  conversationId?: string | null;
 }) {
   const [text, setText] = useState("");
   const [workingOnOpen, setWorkingOnOpen] = useState(false);
@@ -304,11 +331,8 @@ export default function ChatPanel({
   useEffect(() => {
     const directIds = new Set<string>();
     for (const id of sourceIds) {
-      if (id.startsWith(OTHER_DS_PREFIX)) {
-        const rest = id.slice(OTHER_DS_PREFIX.length);
-        const otherId = rest.includes(":") ? rest.slice(0, rest.indexOf(":")) : rest;
-        directIds.add(otherId);
-      }
+      const otherId = otherDsIdFromSourceId(id);
+      if (otherId) directIds.add(otherId);
     }
     const ownVersionIds = new Set(versions.map((v) => v.id));
     const hasUnresolvedBareId = sourceIds.some(
@@ -726,11 +750,33 @@ export default function ChatPanel({
             {otherSources.filter((ds) => expandedOtherDs.has(ds.id)).map((ds) => {
               const dsMultiSheet = hasMultipleTables(ds.kind, ds.schema_cache);
               const dsSheets = dsMultiSheet ? Object.keys(ds.schema_cache || {}) : [];
-              const dsVersions = otherVersionsById[ds.id] || [];
+              // Only THIS Project's own saved tables for this other source
+              // (or one never tied to any conversation at all) are offered
+              // here to add - the exact same conversation-scoped rule
+              // Workspace.tsx already applies to this chat's own primary
+              // data source (see its visibleVersions), now applied to an
+              // OTHER connected source too. Without this, picking a second
+              // data source dumped every AI-built table anyone had EVER
+              // saved against it - from every unrelated past Project - into
+              // one flat, ever-growing list: real confusion once a person
+              // has used this app for a while. An already-selected table is
+              // always kept visible regardless (so resuming an old combined
+              // conversation never makes its own active pick silently
+              // vanish from the list), even on the rare chance it came from
+              // a genuinely different Project.
+              const dsVersions = (otherVersionsById[ds.id] || []).filter(
+                (v) => v.conversation_id == null || v.conversation_id === conversationId || sourceIds.includes(v.id)
+              );
+              const meta = connectionKindMeta(ds.kind);
               return (
                 <div key={ds.id} className="rounded-lg bg-surface2/60 my-1 py-1.5">
                   <div className="flex items-center justify-between px-2 pb-1">
-                    <span className="text-xs font-semibold truncate">{ds.name}</span>
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <span className="shrink-0" style={{ color: meta.color }}>
+                        <meta.Logo className="w-3.5 h-3.5" />
+                      </span>
+                      <span className="text-xs font-semibold truncate">{ds.name}</span>
+                    </span>
                     <button
                       type="button"
                       className="text-[11px] text-muted hover:text-text transition shrink-0 ml-2"
