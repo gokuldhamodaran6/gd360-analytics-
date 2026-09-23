@@ -33,6 +33,7 @@ def init_db():
     from . import models  # noqa: F401  (ensure models are registered)
     Base.metadata.create_all(bind=engine)
     _ensure_new_columns()
+    _ensure_personal_workspaces()
 
 
 # Every column added to an existing model after it first went live needs an
@@ -48,6 +49,7 @@ _NEW_COLUMNS = [
     ("messages", "result_truncated", "BOOLEAN DEFAULT FALSE"),
     ("messages", "sources", "JSON"),
     ("messages", "new_version_id", "TEXT"),
+    ("datasources", "workspace_id", "TEXT"),
 ]
 
 
@@ -70,3 +72,48 @@ def _ensure_new_columns():
             continue
         with engine.begin() as conn:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
+
+
+def _ensure_personal_workspaces():
+    """One-time-per-row (idempotent, safe to run every startup) backfill
+    for accounts that existed before workspaces did: gives every user
+    without one a real "Personal Workspace" (with themselves as its owner
+    member), then assigns every still-unassigned data source to its
+    owner's personal workspace. A brand new signup doesn't need this -
+    routers/auth.py register() creates the personal workspace immediately
+    - this only ever does work for rows that predate that change, and does
+    nothing once every user/data source already has one."""
+    from . import models  # local import - keeps database.py import-order-safe
+
+    db = SessionLocal()
+    try:
+        users_without_workspace = (
+            db.query(models.User)
+            .outerjoin(
+                models.Workspace,
+                (models.Workspace.owner_id == models.User.id) & (models.Workspace.is_personal.is_(True)),
+            )
+            .filter(models.Workspace.id.is_(None))
+            .all()
+        )
+        for user in users_without_workspace:
+            ws = models.Workspace(name="Personal Workspace", owner_id=user.id, is_personal=True)
+            db.add(ws)
+            db.flush()
+            db.add(models.WorkspaceMember(workspace_id=ws.id, user_id=user.id, role="owner"))
+        if users_without_workspace:
+            db.commit()
+
+        unassigned = db.query(models.DataSource).filter(models.DataSource.workspace_id.is_(None)).all()
+        if unassigned:
+            personal_by_owner = {
+                ws.owner_id: ws.id
+                for ws in db.query(models.Workspace).filter(models.Workspace.is_personal.is_(True)).all()
+            }
+            for ds in unassigned:
+                personal_id = personal_by_owner.get(ds.owner_id)
+                if personal_id:
+                    ds.workspace_id = personal_id
+            db.commit()
+    finally:
+        db.close()
