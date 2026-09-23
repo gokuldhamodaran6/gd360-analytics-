@@ -30,12 +30,39 @@ export function otherDsSourceId(datasourceId: string, table?: string | null): st
 // from a cleaning/prep prompt. Lets a mixed selection - some original
 // tables, some AI-built ones - read at a glance which is which, the same
 // distinction the Data tab's own tab strip now makes (see DataTable.tsx).
-function SourceDot({ generated }: { generated: boolean }) {
+export function SourceDot({ generated }: { generated: boolean }) {
   return (
     <span
       className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${generated ? "bg-primary" : "bg-sky-400"}`}
       aria-hidden
     />
+  );
+}
+
+// Mirrors the exact generated-vs-original distinction every WORKING ON row
+// already renders with its own explicit `generated={...}` prop (see every
+// SourceDot call site below) - a bare id that is none of the three
+// ORIGINAL/TABLE_PREFIX/OTHER_DS_PREFIX forms can only be a real
+// DatasetVersion.id, i.e. a saved table GD360 built. Used by the chip row
+// (2026-09-23, round nine) to color each chip's own dot the same way
+// without duplicating that three-way check inline at the render site.
+function isGeneratedSourceId(id: string): boolean {
+  return !(id === ORIGINAL_SOURCE_ID || id.startsWith(TABLE_PREFIX) || id.startsWith(OTHER_DS_PREFIX));
+}
+
+function PlusIcon({ className = "w-3 h-3" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+export function ChipCloseIcon({ className = "w-3 h-3" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 6L6 18M6 6l12 12" />
+    </svg>
   );
 }
 
@@ -322,14 +349,6 @@ export default function ChatPanel({
     }
   };
 
-  const workingOnSummary = () => {
-    const labels = sourceIds.map((id) => labelForSource(id, versions, otherSources, otherVersionsById));
-    if (labels.length === 0) return "Original data";
-    if (labels.length === 1) return labels[0];
-    if (labels.length === 2) return labels.join(" + ");
-    return `${labels[0]} + ${labels.length - 1} more`;
-  };
-
   // Collapses an added data source and drops every one of its tables
   // (original data, any sheet, any saved version) out of the current
   // selection - a clean, single "undo" for the "+ Add" click above, rather
@@ -567,19 +586,56 @@ export default function ChatPanel({
       </div>
 
       <div className="border-t border-border">
+        {/* ---- WORKING ON: one chip per selected table, not a single
+            cramped, truncated text summary (Gokul's own explicit bug
+            report, round nine: "it has to show properly like how it will
+            show in chat gpt" - referencing the row of attached-file chips
+            a chat interface shows above its input). Every table already
+            in the mix is its own small removable card here; "+ Add" opens
+            the exact same full picker as before (unchanged - it already
+            supports checking off any number of tables across any number
+            of data sources at once) to browse and add more. Wraps onto a
+            second line rather than scrolling sideways once there are
+            enough chips to need it - nothing gets clipped or hidden. ---- */}
         <div className="px-4 pt-3">
-          <label className="text-[11px] font-semibold tracking-wide text-muted block mb-1">
+          <label className="text-[11px] font-semibold tracking-wide text-muted block mb-1.5">
             WORKING ON
           </label>
-          <button
-            type="button"
-            className="input text-sm py-1.5 w-full flex items-center justify-between gap-2 text-left"
-            disabled={busy}
-            onClick={() => setWorkingOnOpen(true)}
-          >
-            <span className="truncate">{workingOnSummary()}</span>
-            <span className="text-muted shrink-0 text-xs">▼</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {sourceIds.map((id) => {
+              const label = labelForSource(id, versions, otherSources, otherVersionsById);
+              const removable = sourceIds.length > 1;
+              return (
+                <span
+                  key={id}
+                  className="inline-flex items-center gap-1.5 max-w-[180px] pl-2 pr-1 py-1 rounded-lg border border-border bg-surface2 text-xs"
+                  title={label}
+                >
+                  <SourceDot generated={isGeneratedSourceId(id)} />
+                  <span className="truncate">{label}</span>
+                  <button
+                    type="button"
+                    className={`shrink-0 rounded p-0.5 transition ${
+                      removable ? "text-muted hover:text-text hover:bg-border/60" : "text-muted/30 cursor-not-allowed"
+                    }`}
+                    disabled={busy || !removable}
+                    title={removable ? "Remove from this analysis" : "At least one table must stay selected"}
+                    onClick={() => toggleSource(id)}
+                  >
+                    <ChipCloseIcon />
+                  </button>
+                </span>
+              );
+            })}
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-dashed border-border text-xs font-medium text-muted hover:text-text hover:border-primary/50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={busy}
+              onClick={() => setWorkingOnOpen(true)}
+            >
+              <PlusIcon /> Add
+            </button>
+          </div>
         </div>
 
         <div className="p-4 pt-3 flex gap-2">
