@@ -24,7 +24,23 @@ type SortKey = "newest" | "oldest" | "title";
 // folder also showed up loose in "All" - the exact confusion Gokul flagged.
 // It now means "the root view", same mental model as any file explorer.
 const PAGE_SIZE = 12;
-type FolderFilter = "all" | "files" | string;
+// 2026-09-23, round thirteen: folder cards used to render every one of them
+// at once, no limit - fine with a single folder, but Gokul's own explicit
+// ask once a workspace has more than a handful is the same capped-rows-plus-
+// page-numbers pattern this page already gives Projects (see PAGE_SIZE/
+// Pager above). Deliberately smaller than PAGE_SIZE: a folder tile carries
+// far less information than a Project card, and a workspace typically has
+// far fewer folders than Projects, so a shorter page reads as "a tidy first
+// screen" rather than "arbitrarily cut off".
+const FOLDER_PAGE_SIZE = 6;
+// "all" - the root view (folder tiles, then unfiled Projects).
+// "files" - only the unfiled Projects, no folder tiles.
+// "folders" - only the folder tiles (a real browsing view in its own right
+// now - see the round-thirteen comment on the chip row below - not merely
+// this page's root view minus its Projects half).
+// any other string - one specific folder's own id: just that folder's
+// Projects.
+type FolderFilter = "all" | "files" | "folders" | string;
 
 function ChartTypeIcon({ chartType }: { chartType: string | null }) {
   const t = (chartType || "").toLowerCase();
@@ -101,6 +117,16 @@ function NewFolderIcon({ className = "w-4 h-4" }: { className?: string }) {
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
       <path d="M12 11v4M10 13h4" />
+    </svg>
+  );
+}
+
+function MoreIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+      <circle cx="12" cy="5" r="1.9" />
+      <circle cx="12" cy="12" r="1.9" />
+      <circle cx="12" cy="19" r="1.9" />
     </svg>
   );
 }
@@ -310,6 +336,217 @@ function MoveToFolderMenu({
   );
 }
 
+// 2026-09-23, round thirteen (Gokul's own bug report: the top filter bar
+// listed every folder as its own chip - "Sample testing 38" - which reads
+// fine with exactly one folder and stops scaling the moment there's more
+// than a handful; he asked for a single generic "Folders" entry instead,
+// same as "All"/"Files" above it, with the real folders reachable by
+// browsing INTO it). One card (grid view) or row (list view) for one
+// folder, mirroring ConversationRow's own card/row split and per-item
+// "..." menu exactly - a folder now behaves like any other browsable item
+// in this app, with its own Rename/Delete reachable straight from the
+// index instead of needing it made the active filter first.
+function FolderCard({
+  folder,
+  variant,
+  canEdit,
+  onOpen,
+  onRenamed,
+  onDeleted,
+}: {
+  folder: FolderSummary;
+  variant: "card" | "row";
+  canEdit: boolean;
+  onOpen: () => void;
+  onRenamed: (id: string, name: string) => void;
+  onDeleted: (id: string) => void;
+}) {
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(folder.name);
+  const [busy, setBusy] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+        setConfirmingDelete(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setMenuOpen(false); setConfirmingDelete(false); }
+    };
+    document.addEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
+
+  const startRename = () => {
+    setDraft(folder.name);
+    setMenuOpen(false);
+    setRenaming(true);
+  };
+  const commitRename = async () => {
+    const name = draft.trim();
+    setRenaming(false);
+    if (!name || name === folder.name) return;
+    setBusy(true);
+    try {
+      const updated = await folderApi.rename(folder.id, name);
+      onRenamed(updated.id, updated.name);
+    } catch {
+      // Name just stays as it was - nothing lost.
+    } finally {
+      setBusy(false);
+    }
+  };
+  const confirmDelete = async () => {
+    setBusy(true);
+    try {
+      await folderApi.remove(folder.id);
+      onDeleted(folder.id);
+    } catch {
+      setBusy(false);
+      setConfirmingDelete(false);
+    }
+  };
+
+  const menu = canEdit && (
+    <div className="relative shrink-0" ref={menuRef} onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className={`p-1.5 rounded-lg transition ${
+          menuOpen
+            ? "opacity-100 bg-surface2 text-text"
+            : "opacity-0 group-hover:opacity-70 hover:!opacity-100 hover:bg-surface2 text-muted hover:text-text"
+        }`}
+        title="Folder options"
+        onClick={() => setMenuOpen((v) => !v)}
+      >
+        <MoreIcon className="w-4 h-4" />
+      </button>
+      <div
+        className={`absolute right-0 top-full mt-1.5 z-20 origin-top-right rounded-xl border border-border bg-surface2/95 backdrop-blur-xl shadow-2xl transition duration-150 ease-out ${
+          menuOpen ? "opacity-100 scale-100 pointer-events-auto" : "opacity-0 scale-95 pointer-events-none"
+        }`}
+      >
+        {confirmingDelete ? (
+          <div className="p-3 w-56">
+            <div className="text-xs text-text leading-relaxed mb-3">
+              Delete &ldquo;{folder.name}&rdquo;? Its projects stay - they&rsquo;ll just be unfiled.
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="flex-1 text-xs font-medium px-2.5 py-1.5 rounded-lg border border-border hover:bg-surface2 transition"
+                onClick={() => setConfirmingDelete(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                className="flex-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-red-500/15 text-red-400 border border-red-500/30 hover:bg-red-500/25 transition disabled:opacity-50"
+                onClick={confirmDelete}
+              >
+                {busy ? "Deleting…" : "Delete"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="p-1.5 w-48">
+            <button type="button" className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left hover:bg-surface2 transition rounded-lg" onClick={startRename}>
+              <PencilIcon className="w-3.5 h-3.5 text-muted shrink-0" /> Rename
+            </button>
+            <div className="my-1 border-t border-border" />
+            <button
+              type="button"
+              className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left text-red-400 hover:bg-red-500/10 transition rounded-lg"
+              onClick={() => setConfirmingDelete(true)}
+            >
+              <TrashIcon className="w-3.5 h-3.5 shrink-0" /> Delete
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const nameBlock = renaming ? (
+    <input
+      autoFocus
+      className="input py-1 text-sm font-semibold w-full"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commitRename();
+        if (e.key === "Escape") setRenaming(false);
+      }}
+      onBlur={commitRename}
+      maxLength={80}
+    />
+  ) : (
+    <span className={variant === "card" ? "text-sm font-semibold truncate block" : "text-sm font-medium truncate block"}>
+      {folder.name}
+    </span>
+  );
+
+  const meta = `${folder.project_count} project${folder.project_count === 1 ? "" : "s"}`;
+  const handleClick = () => { if (!renaming) onOpen(); };
+
+  if (variant === "row") {
+    return (
+      <div
+        className={`relative w-full flex items-center justify-between gap-3 py-2.5 px-3 rounded-lg border border-border text-left transition group cursor-pointer hover:bg-surface2 hover:border-primary/40 ${
+          menuOpen ? "z-30" : "z-0"
+        }`}
+        onClick={handleClick}
+      >
+        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+          <span className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+            <FolderIcon className="w-4 h-4" />
+          </span>
+          <div className="min-w-0">
+            {nameBlock}
+            <div className="text-xs text-muted mt-0.5">{meta}</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="hidden sm:inline-flex text-xs font-medium text-muted px-3 py-1.5 rounded-lg border border-border group-hover:text-text group-hover:border-primary/40 transition">
+            View
+          </span>
+          {menu}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`relative card p-4 flex flex-col gap-2.5 text-left transition group cursor-pointer hover:border-primary/50 hover:shadow-glow ${
+        menuOpen ? "z-30" : "z-0"
+      }`}
+      onClick={handleClick}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <span className="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+          <FolderIcon className="w-4 h-4" />
+        </span>
+        {menu}
+      </div>
+      {nameBlock}
+      <span className="text-[11px] text-muted mt-auto">{meta}</span>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [datasources, setDatasources] = useState<DataSourceSummary[]>([]);
@@ -322,6 +559,7 @@ export default function Dashboard() {
   const [pinnedOnly, setPinnedOnly] = useState(false);
   const [folderFilter, setFolderFilter] = useState<FolderFilter>("all");
   const [page, setPage] = useState(1);
+  const [folderPage, setFolderPage] = useState(1);
 
   // The account's real workspaces and which one is active - the shared
   // hook (used by every page with a persistent AppSidebar) owns the
@@ -390,7 +628,7 @@ export default function Dashboard() {
   // A fresh search/sort/pinned/folder choice always lands back on page 1 -
   // same reasoning as DataSources.tsx's own pager - never leave it pointed
   // at a page that just emptied out from under it.
-  useEffect(() => { setPage(1); }, [search, pinnedOnly, folderFilter, sortBy]);
+  useEffect(() => { setPage(1); setFolderPage(1); }, [search, pinnedOnly, folderFilter, sortBy]);
 
   const resetPageState = () => {
     setSearch("");
@@ -399,6 +637,7 @@ export default function Dashboard() {
     setSelectMode(false);
     setSelectedIds(new Set());
     setPage(1);
+    setFolderPage(1);
   };
 
   const switchWorkspace = (id: string) => {
@@ -474,8 +713,12 @@ export default function Dashboard() {
     // Project is represented by its folder's own card instead (rendered
     // separately, above this list, only in "All"). Picking a specific
     // folder still shows just that folder's own Projects, unchanged.
+    // "Folders" is a pure browsing view of the folders themselves (see the
+    // FolderCard grid below) - it never has a Projects list of its own.
     if (folderFilter === "all" || folderFilter === "files") {
       list = list.filter((c) => c.folder_id == null);
+    } else if (folderFilter === "folders") {
+      list = [];
     } else {
       list = list.filter((c) => c.folder_id === folderFilter);
     }
@@ -510,13 +753,31 @@ export default function Dashboard() {
   // the same rule (services/workspace_access.py's "editable" tier).
   const isViewerHere = workspaces.find((w) => w.id === activeWorkspaceId)?.role === "viewer";
 
-  const activeFolder = folderFilter !== "all" && folderFilter !== "files" ? folders.find((f) => f.id === folderFilter) || null : null;
+  const activeFolder =
+    folderFilter !== "all" && folderFilter !== "files" && folderFilter !== "folders"
+      ? folders.find((f) => f.id === folderFilter) || null
+      : null;
 
-  // Folder cards for the "All" root view - only rendered there, never in
-  // "Files" (which deliberately skips folders) or inside a specific folder
-  // (already just showing that one folder's own contents).
-  const showFolderCards = folderFilter === "all" && folders.length > 0;
+  // Folder tiles render in two places: the "All" root view (folders, then
+  // unfiled Projects below them) and the dedicated "Folders" browsing view
+  // (folders only, nothing else - see the chip row's own comment). Neither
+  // renders inside "Files" (which deliberately skips folders) or inside one
+  // specific folder (already just showing that folder's own contents).
+  const showFolderIndex = (folderFilter === "all" || folderFilter === "folders") && folders.length > 0;
+  // The Projects grid only ever belongs in "All"/"Files"/a specific folder -
+  // "Folders" is a pure navigation view with nothing of its own to list.
+  const showFilesSection = folderFilter !== "folders";
   const unfiledCount = useMemo(() => conversations.filter((c) => c.folder_id == null).length, [conversations]);
+
+  // Folder pagination (2026-09-23, round thirteen) - same capped-rows-plus-
+  // page-numbers pattern as the Projects grid below, just independently
+  // paged since the two sections can both be on screen at once in "All".
+  const folderTotalPages = Math.max(1, Math.ceil(folders.length / FOLDER_PAGE_SIZE));
+  const folderCurrentPage = Math.min(folderPage, folderTotalPages);
+  const folderPageSlice = useMemo(
+    () => folders.slice((folderCurrentPage - 1) * FOLDER_PAGE_SIZE, folderCurrentPage * FOLDER_PAGE_SIZE),
+    [folders, folderCurrentPage]
+  );
 
   // ---- Select-all / bulk-move ----
   // Scoped to the CURRENT PAGE's own items, not every filtered Project -
@@ -622,6 +883,24 @@ export default function Dashboard() {
     }
   };
 
+  // FolderCard's own Rename/Delete (2026-09-23, round thirteen) - reflects
+  // an edit made straight from the folders index (grid or row) into this
+  // page's own `folders` state, same as `singleMoved` does for a
+  // conversation moved from ConversationRow's own menu. FolderCard already
+  // made the API call by the time either of these fires.
+  const folderRenamedInline = (id: string, name: string) => {
+    setFolders((fs) => fs.map((f) => (f.id === id ? { ...f, name } : f)));
+  };
+  const folderDeletedInline = (id: string) => {
+    setFolders((fs) => fs.filter((f) => f.id !== id));
+    setConversations((cs) => cs.map((c) => (c.folder_id === id ? { ...c, folder_id: null } : c)));
+    // Only relevant if this exact folder was somehow the active filter
+    // already (unreachable from the index itself, which never renders a
+    // folder's own card while it's the active filter - but resuming a
+    // stale filter, e.g. the back/forward buttons, is cheap to guard).
+    if (folderFilter === id) setFolderFilter("folders");
+  };
+
   return (
     // 2026-09-23: the workspace-structure revamp, round two - Gokul asked
     // for the "Your workspace" stats strip and the duplicate "Your data
@@ -681,8 +960,16 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* ---- Folder tabs ----
-              Only rendered once folders actually exist - an empty tab
+          {/* ---- Root chips + folder breadcrumb ----
+              2026-09-23, round thirteen (Gokul's own bug report): this used
+              to list every folder as its OWN chip next to "All"/"Files" -
+              reads fine with exactly one folder, but stops scaling almost
+              immediately ("Sample testing 38" was already crowding the bar
+              with just one). "Folders" is now a third root-level chip, same
+              family as "All"/"Files", that opens a real browsing view of
+              every folder (the FolderCard grid/list below) instead of
+              needing its own permanent slot in this bar per folder created.
+              Only rendered once folders actually exist - an empty chip
               strip with nothing but "All" is just noise (the header's own
               "+ New Folder" button above is already the entry point to
               create the first one). */}
@@ -709,58 +996,75 @@ export default function Dashboard() {
                   Files
                   <span className={folderFilter === "files" ? "text-white/80" : "text-muted"}>{unfiledCount}</span>
                 </button>
-                {folders.map((f) => (
-                  <button
-                    key={f.id}
-                    type="button"
-                    onClick={() => setFolderFilter(f.id)}
-                    className={`inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
-                      folderFilter === f.id ? "bg-primary text-white border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
-                    }`}
-                  >
-                    <FolderIcon className="w-3 h-3" /> {f.name}
-                    <span className={folderFilter === f.id ? "text-white/80" : "text-muted"}>{f.project_count}</span>
-                  </button>
-                ))}
+                <button
+                  type="button"
+                  onClick={() => setFolderFilter("folders")}
+                  className={`inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
+                    folderFilter === "folders" || !!activeFolder
+                      ? "bg-primary text-white border-primary"
+                      : "border-border text-muted hover:text-text hover:bg-surface2"
+                  }`}
+                  title="Browse every folder"
+                >
+                  <FolderIcon className="w-3 h-3" /> Folders
+                  <span className={folderFilter === "folders" || !!activeFolder ? "text-white/80" : "text-muted"}>{folders.length}</span>
+                </button>
               </div>
 
-              {/* Manage the currently-active folder tab - rename/delete.
-                  Kept to just this one folder rather than a menu on every
-                  chip (see state comment above). */}
-              {activeFolder && !isViewerHere && (
-                <div className="flex items-center gap-3 mt-2 pt-2 border-t border-border text-xs text-muted">
-                  {renamingFolder ? (
-                    <input
-                      autoFocus
-                      className="input py-1 text-xs w-48"
-                      value={folderNameDraft}
-                      onChange={(e) => setFolderNameDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") commitRenameFolder();
-                        if (e.key === "Escape") setRenamingFolder(false);
-                      }}
-                      onBlur={commitRenameFolder}
-                      maxLength={80}
-                    />
-                  ) : confirmDeleteFolder ? (
-                    <>
-                      <span>Delete &ldquo;{activeFolder.name}&rdquo;? Its projects stay - they'll just be unfiled.</span>
-                      <button type="button" className="text-muted hover:text-text" onClick={() => setConfirmDeleteFolder(false)} disabled={folderBusy}>
-                        Cancel
-                      </button>
-                      <button type="button" className="text-red-400 font-medium hover:underline" onClick={deleteActiveFolder} disabled={folderBusy}>
-                        {folderBusy ? "Deleting…" : "Delete"}
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button type="button" className="inline-flex items-center gap-1 hover:text-text transition" onClick={startRenameFolder}>
-                        <PencilIcon className="w-3 h-3" /> Rename folder
-                      </button>
-                      <button type="button" className="inline-flex items-center gap-1 hover:text-red-400 transition" onClick={() => setConfirmDeleteFolder(true)}>
-                        <TrashIcon className="w-3 h-3" /> Delete folder
-                      </button>
-                    </>
+              {/* Breadcrumb + manage, shown only once a specific folder's
+                  own contents are open - "Folders" itself needs none of
+                  this (each tile already carries its own Rename/Delete via
+                  FolderCard's own menu, see below). */}
+              {activeFolder && (
+                <div className="flex items-center gap-2 mt-2 pt-2 border-t border-border text-xs">
+                  <button
+                    type="button"
+                    className="text-muted hover:text-text transition inline-flex items-center gap-1"
+                    onClick={() => setFolderFilter("folders")}
+                  >
+                    <ChevronLeftIcon className="w-3 h-3" /> All folders
+                  </button>
+                  <span className="text-border">/</span>
+                  <span className="text-text font-medium inline-flex items-center gap-1 truncate">
+                    <FolderIcon className="w-3 h-3 text-muted shrink-0" /> {activeFolder.name}
+                  </span>
+
+                  {!isViewerHere && (
+                    <div className="ml-auto flex items-center gap-3 text-muted shrink-0">
+                      {renamingFolder ? (
+                        <input
+                          autoFocus
+                          className="input py-1 text-xs w-48"
+                          value={folderNameDraft}
+                          onChange={(e) => setFolderNameDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") commitRenameFolder();
+                            if (e.key === "Escape") setRenamingFolder(false);
+                          }}
+                          onBlur={commitRenameFolder}
+                          maxLength={80}
+                        />
+                      ) : confirmDeleteFolder ? (
+                        <>
+                          <span>Delete &ldquo;{activeFolder.name}&rdquo;? Its projects stay - they'll just be unfiled.</span>
+                          <button type="button" className="text-muted hover:text-text" onClick={() => setConfirmDeleteFolder(false)} disabled={folderBusy}>
+                            Cancel
+                          </button>
+                          <button type="button" className="text-red-400 font-medium hover:underline" onClick={deleteActiveFolder} disabled={folderBusy}>
+                            {folderBusy ? "Deleting…" : "Delete"}
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button type="button" className="inline-flex items-center gap-1 hover:text-text transition" onClick={startRenameFolder}>
+                            <PencilIcon className="w-3 h-3" /> Rename
+                          </button>
+                          <button type="button" className="inline-flex items-center gap-1 hover:text-red-400 transition" onClick={() => setConfirmDeleteFolder(true)}>
+                            <TrashIcon className="w-3 h-3" /> Delete
+                          </button>
+                        </>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
@@ -867,11 +1171,13 @@ export default function Dashboard() {
           )}
 
           {/* Suppressed in the plain "All" root view with folders present
-              and no search/pin filter active - the folder cards below
+              and no search/pin filter active - the folder tiles below
               already explain why there's nothing loose to show; a "no
               match" message there would just be confusing noise next to
-              them. */}
-          {!loading && hasAnyProjects && filteredProjects.length === 0 && !(showFolderCards && !hasFiltersApplied) && (
+              them. Also suppressed in the "Folders" browsing view itself,
+              which has its own empty state below instead (that view has no
+              Projects list of its own to be "empty" about). */}
+          {!loading && hasAnyProjects && showFilesSection && filteredProjects.length === 0 && !(showFolderIndex && !hasFiltersApplied) && (
             <div className="card p-10 text-center text-sm text-muted">
               {folderFilter === "files"
                 ? "No unfiled projects."
@@ -886,44 +1192,66 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* ---- Folder cards ----
-              File-explorer-style root view (2026-09-23, round four, per
-              Gokul's own confirmed design choice): every folder shown as
-              its own card here, ahead of the loose/unfiled Projects below -
-              clicking one still opens just that folder's own contents
-              (same as its chip above always did). Not paginated - a
-              workspace typically has far fewer folders than Projects, and
-              these are lightweight summary tiles, not the "rows" Gokul
-              asked to have capped. */}
-          {!loading && showFolderCards && (
+          {/* ---- Folder tiles ----
+              File-explorer-style: every folder shown as its own tile here,
+              ahead of the loose/unfiled Projects below in "All" - clicking
+              one still opens just that folder's own contents (same as its
+              chip above always did). 2026-09-23, round thirteen: now
+              respects the grid/list toggle exactly like the Projects grid
+              below it (a folder tile used to stay a fixed card no matter
+              what the toggle was set to), and is capped at FOLDER_PAGE_SIZE
+              with its own page numbers, independent of the Projects
+              pager - Gokul's own explicit ask once a workspace has more
+              than a handful of folders. */}
+          {!loading && showFolderIndex && (
             <div className="mb-6">
               <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2.5 px-0.5">
                 Folders
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-                {folders.map((f) => (
-                  <button
-                    key={f.id}
-                    type="button"
-                    onClick={() => setFolderFilter(f.id)}
-                    className="card p-4 flex flex-col gap-2.5 text-left hover:border-primary/50 hover:shadow-glow transition"
-                  >
-                    <span className="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
-                      <FolderIcon className="w-4 h-4" />
-                    </span>
-                    <span className="text-sm font-semibold truncate">{f.name}</span>
-                    <span className="text-[11px] text-muted mt-auto">
-                      {f.project_count} project{f.project_count === 1 ? "" : "s"}
-                    </span>
-                  </button>
-                ))}
-              </div>
+              {viewMode === "grid" ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {folderPageSlice.map((f) => (
+                    <FolderCard
+                      key={f.id}
+                      folder={f}
+                      variant="card"
+                      canEdit={f.can_edit && !isViewerHere}
+                      onOpen={() => setFolderFilter(f.id)}
+                      onRenamed={folderRenamedInline}
+                      onDeleted={folderDeletedInline}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-2">
+                  {folderPageSlice.map((f) => (
+                    <FolderCard
+                      key={f.id}
+                      folder={f}
+                      variant="row"
+                      canEdit={f.can_edit && !isViewerHere}
+                      onOpen={() => setFolderFilter(f.id)}
+                      onRenamed={folderRenamedInline}
+                      onDeleted={folderDeletedInline}
+                    />
+                  ))}
+                </div>
+              )}
+              <Pager page={folderCurrentPage} totalPages={folderTotalPages} onChange={setFolderPage} />
             </div>
           )}
 
-          {filteredProjects.length > 0 && (
+          {/* The "Folders" browsing view has no Projects list of its own -
+              this is its empty state (unreachable in practice since the
+              chip itself is hidden with zero folders, but a stale filter
+              from the back/forward buttons is cheap to guard). */}
+          {!loading && folderFilter === "folders" && folders.length === 0 && (
+            <div className="card p-10 text-center text-sm text-muted">No folders yet.</div>
+          )}
+
+          {showFilesSection && filteredProjects.length > 0 && (
             <>
-              {showFolderCards && (
+              {showFolderIndex && (
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2.5 px-0.5">
                   Files
                 </div>
