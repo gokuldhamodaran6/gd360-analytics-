@@ -10,11 +10,14 @@ List and resume past chat conversations. Powers two things:
 Since 2026-09-23, a Project (Conversation) built on a data source that's
 been shared into a team workspace is visible to every member of that
 workspace, not just whoever started it - see services/workspace_access.py
-for the shared two-tier access model this file, routers/datasources.py and
-routers/chat.py all now use. Deleting a Project stays narrower than
-viewing/renaming/pinning it: only its own creator, or the data source's
-owner, can do that (workspace_access.can_delete_conversation) - never just
-any teammate who happens to share the workspace.
+for the shared access model this file, routers/datasources.py and
+routers/chat.py all now use. Renaming/pinning it needs editable-tier
+access (any role except a workspace "viewer"); deleting it is narrower
+still - only its own creator, or the data source's owner
+(workspace_access.can_delete_conversation), independent of role. Every
+Project returned here also carries created_by_*/is_own/can_edit/can_delete
+so the frontend can show who made it and which actions to offer without
+re-deriving the role logic itself.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -59,6 +62,16 @@ def list_conversations(
         rows = db.query(models.DataSource).filter(models.DataSource.id.in_(ds_ids)).all()
         datasource_names = {row.id: row.name for row in rows}
 
+    # Who created each Project - batched into one lookup rather than a
+    # query per row (2026-09-23, roles & attribution round) - so a shared
+    # workspace's Projects list can show "by <name>" instead of every
+    # teammate's Projects looking anonymous/like they came from whoever's
+    # looking at the list right now.
+    creator_ids = {c.owner_id for c in conversations}
+    creators = {
+        u.id: u for u in db.query(models.User).filter(models.User.id.in_(creator_ids)).all()
+    } if creator_ids else {}
+
     out = []
     for c in conversations:
         messages = sorted(c.messages, key=lambda m: m.created_at)
@@ -75,6 +88,7 @@ def list_conversations(
                     last_chart_type = data[0].get("type")
                 break
 
+        creator = creators.get(c.owner_id)
         out.append({
             "id": c.id,
             "title": c.title or "Untitled analysis",
@@ -86,6 +100,16 @@ def list_conversations(
             "pinned": bool(c.pinned),
             "created_at": c.created_at,
             "updated_at": last.created_at,
+            "created_by_id": c.owner_id,
+            "created_by_name": creator.full_name if creator else None,
+            "created_by_email": creator.email if creator else None,
+            "is_own": c.owner_id == user.id,
+            # Server-computed, so the frontend never has to re-derive the
+            # role logic itself: a workspace "viewer" (or anyone else
+            # without editable-tier access) gets both flags false here and
+            # simply doesn't render the rename/pin/delete affordances.
+            "can_edit": workspace_access.can_edit_conversation(db, c, user),
+            "can_delete": workspace_access.can_delete_conversation(db, c, user),
         })
 
     # Pinned conversations always float to the top (the same convention as
@@ -112,11 +136,14 @@ def update_conversation(
     conversation list, and the Workspace page's own Recent conversations
     panel. All three read the same row from here, so a change made in any
     one of them is instantly reflected everywhere else too, the next time
-    each is loaded. Anyone who can access this Project's data source can
-    rename/pin it (collaborate tier) - not just whoever started it."""
+    each is loaded. Editable-tier: the data source's owner, or a workspace
+    member whose role isn't "viewer", can rename/pin it - not just whoever
+    started it, but a read-only workspace member cannot (2026-09-23)."""
     conv = db.query(models.Conversation).filter(models.Conversation.id == conversation_id).first()
     if not conv or not workspace_access.can_access_conversation(db, conv, user):
         raise HTTPException(404, "Conversation not found.")
+    if not workspace_access.can_edit_conversation(db, conv, user):
+        raise HTTPException(403, "You have view-only access to this Project.")
     if payload.title is not None:
         conv.title = payload.title.strip()[:80] or conv.title
     if payload.pinned is not None:
@@ -158,10 +185,17 @@ def get_conversation_messages(
         raise HTTPException(404, "Conversation not found.")
 
     messages = sorted(conv.messages, key=lambda m: m.created_at)
+    creator = db.query(models.User).filter(models.User.id == conv.owner_id).first()
     return {
         "id": conv.id,
         "title": conv.title,
         "datasource_id": conv.datasource_id,
+        "created_by_id": conv.owner_id,
+        "created_by_name": creator.full_name if creator else None,
+        "created_by_email": creator.email if creator else None,
+        "is_own": conv.owner_id == user.id,
+        "can_edit": workspace_access.can_edit_conversation(db, conv, user),
+        "can_delete": workspace_access.can_delete_conversation(db, conv, user),
         "messages": [
             {
                 "id": m.id,
