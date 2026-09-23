@@ -360,6 +360,12 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     ds = db.query(models.DataSource).filter(models.DataSource.id == payload.datasource_id).first()
     if not ds or not workspace_access.can_access_datasource(db, ds, user):
         raise HTTPException(404, "Datasource not found.")
+    # Running an analysis is a write action (it can save a new table,
+    # persists a conversation/message) - editable tier, so a workspace
+    # "viewer" (2026-09-23) sees this data source everywhere else but can't
+    # chat/analyze against it.
+    if not workspace_access.can_edit_datasource(db, ds, user):
+        raise HTTPException(403, "You have view-only access to this data source.")
     ensure_legacy_migrated(db, ds)
 
     conversation = _get_or_create_conversation(db, user, payload.conversation_id, ds.id, payload.prompt)
@@ -725,6 +731,11 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
     conversation = db.query(models.Conversation).filter(models.Conversation.id == msg.conversation_id).first()
     if not conversation or not workspace_access.can_access_conversation(db, conversation, user):
         raise HTTPException(404, "Message not found.")
+    # Re-running/correcting a result is a write action, same as chatting -
+    # editable tier, so a workspace "viewer" can read a verified answer but
+    # not trigger a re-verify themselves.
+    if not workspace_access.can_edit_conversation(db, conversation, user):
+        raise HTTPException(403, "You have view-only access to this Project.")
 
     if msg.role != "assistant" or not msg.code or msg.action not in ("analyze", "transform"):
         raise HTTPException(400, "There is no computed result attached to this message to verify.")
@@ -887,13 +898,20 @@ def _get_or_create_conversation(
     db: Session, user: models.User, conversation_id: str | None, datasource_id: str, first_prompt: str
 ) -> models.Conversation:
     if conversation_id:
-        # Resuming an existing Project - a teammate can continue one
-        # someone else on the shared workspace started (collaborate tier),
-        # not just their own; falling through to create a brand-new
-        # conversation here for an inaccessible id would otherwise silently
-        # start a duplicate instead of raising.
+        # Resuming an existing Project to keep chatting in it is a write
+        # action, so this needs editable tier (2026-09-23) - a workspace
+        # "viewer" can read a teammate's Project but not continue it, and
+        # this also closes a narrower gap: gating on the CONVERSATION's own
+        # access, not just the caller's already-checked access to the
+        # `datasource_id` argument, means a mismatched/crafted
+        # conversation_id from a workspace where the caller only has
+        # view-tier (or no) access can never be resumed just because the
+        # request's OTHER datasource_id happens to be one they can edit.
+        # Falling through to create a brand-new conversation for an
+        # inaccessible id would otherwise silently start a duplicate
+        # instead of raising.
         conv = db.query(models.Conversation).filter(models.Conversation.id == conversation_id).first()
-        if conv and workspace_access.can_access_conversation(db, conv, user):
+        if conv and workspace_access.can_edit_conversation(db, conv, user):
             return conv
     title = (first_prompt or "").strip()
     if len(title) > 60:
