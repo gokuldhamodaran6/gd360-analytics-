@@ -193,7 +193,25 @@ class Settings(BaseSettings):
     # separately and much lower here; chat/AI analysis (which genuinely can
     # need more rows to be accurate) keeps using the higher limit above.
     PREVIEW_ROW_LIMIT: int = 20_000
-    SANDBOX_TIMEOUT_SECONDS: int = 20
+    # 2026-09-23: raised from 20 after real production logs showed
+    # "Analysis code timed out" firing repeatedly for ordinary requests
+    # (a plain groupby, a two-table merge) against tables of only tens of
+    # thousands of rows - work that should be near-instant for genuinely
+    # vectorized pandas. This app's backend runs on a shared 0.5 CPU /
+    # 512MB Render instance (confirmed via the Render API, not a guess),
+    # so real CPU contention under load is a real, live constraint here,
+    # not a theoretical one. This is paired with two real fixes, not a
+    # band-aid on its own: SYSTEM_PROMPT now explicitly forbids the slow
+    # per-row Python patterns (`.apply(axis=1)`, `.iterrows()`, manual row
+    # loops) that are the other common cause of an unexpectedly slow run,
+    # and a genuine timeout now gets a specific, actionable retry message
+    # instead of a generic one (see ai_engine.analyze's retry loop) - so
+    # this higher ceiling is there to let legitimately-fine work finish
+    # under real CPU pressure, not to wait longer on code that was always
+    # going to be slow. Kept well short of a full minute given the 512MB
+    # memory ceiling - a sandboxed child process held alive longer under
+    # real traffic is memory held longer too.
+    SANDBOX_TIMEOUT_SECONDS: int = 30
     MAX_UPLOAD_MB: int = 50
     RATE_LIMIT_PER_MINUTE: int = 30  # per-user AI calls/minute, protects the free AI tier
 
