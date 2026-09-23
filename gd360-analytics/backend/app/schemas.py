@@ -335,14 +335,63 @@ class UpdateConversationRequest(BaseModel):
 RenameConversationRequest = UpdateConversationRequest
 
 
-# ---------- Dashboards ----------
+# ---------- Dashboards (2026-09-23: can optionally be shared into a
+# workspace instead of staying personal - see models.Dashboard and
+# routers/dashboards.py) ----------
 class DashboardCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=80)
+    # Share this brand-new dashboard with a team workspace right away
+    # instead of keeping it personal. Omitted/None = personal, same as
+    # before shared dashboards existed.
+    workspace_id: Optional[str] = None
+
+
+class DashboardRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class DashboardShareRequest(BaseModel):
+    # Sets which workspace this dashboard is shared with - None un-shares
+    # it back to personal (visible only to its creator again).
+    workspace_id: Optional[str] = None
 
 
 class SaveChartRequest(BaseModel):
     dashboard_id: Optional[str] = None
     dashboard_name: Optional[str] = None
+    # Only used when dashboard_id is omitted (a brand-new dashboard is
+    # being created by this save) and the person wants it shared with a
+    # workspace right away rather than staying personal.
+    workspace_id: Optional[str] = None
     title: str
     chart_spec: dict
     insight: Optional[str] = None
+
+
+class DashboardOut(BaseModel):
+    id: str
+    name: str
+    workspace_id: Optional[str] = None
+    workspace_name: Optional[str] = None
+    created_at: datetime
+    chart_count: int
+    # Whether the CURRENT signed-in user created this dashboard themselves
+    # (vs. seeing it because a teammate shared it into a workspace they're
+    # both in).
+    is_own: bool
+    created_by_name: Optional[str] = None
+    created_by_email: Optional[str] = None
+    can_edit: bool
+    can_delete: bool
+
+
+class SavedChartOut(BaseModel):
+    id: str
+    title: str
+    chart_spec: dict
+    insight: Optional[str] = None
+    position: int
+
+
+class DashboardDetailOut(DashboardOut):
+    charts: list[SavedChartOut]
