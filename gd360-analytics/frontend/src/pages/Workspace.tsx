@@ -723,7 +723,6 @@ export default function Workspace() {
         : versions.filter((v) => v.conversation_id == null || v.conversation_id === conversationId),
     [versions, versionScope, conversationId]
   );
-  const hiddenVersionsCount = versions.length - visibleVersions.length;
 
   // Loads the list of saved tables for this data source. The very first
   // time this runs for a given data source, it also picks a starting tab.
@@ -1447,39 +1446,19 @@ export default function Workspace() {
               </button>
             </div>
             <div className="flex items-center gap-3 shrink-0">
-              {centerTab === "data" && (
-                // Same "this chat / everywhere" scope idea as the Flow
-                // tab's own toggle (DataFlowMap.tsx) - kept here instead of
-                // a one-off "Show N earlier tables" link so it reads as one
-                // consistent app-wide behavior rather than two different
-                // mechanisms that happen to do similar things.
-                <div
-                  className="flex items-center gap-0.5 shrink-0 bg-surface2 border border-border rounded-lg p-0.5"
-                  role="group"
-                  aria-label="Table tab scope"
-                >
-                  <button
-                    type="button"
-                    className={`text-xs px-2.5 py-1 rounded-md font-medium transition ${
-                      versionScope === "conversation" ? "bg-primary text-white" : "text-muted hover:text-text"
-                    }`}
-                    onClick={() => setVersionScope("conversation")}
-                    title="Only show tables built in this chat"
-                  >
-                    This chat
-                  </button>
-                  <button
-                    type="button"
-                    className={`text-xs px-2.5 py-1 rounded-md font-medium transition ${
-                      versionScope === "all" ? "bg-primary text-white" : "text-muted hover:text-text"
-                    }`}
-                    onClick={() => setVersionScope("all")}
-                    title="Show tables built in every chat about this data"
-                  >
-                    All chats{hiddenVersionsCount > 0 ? ` (+${hiddenVersionsCount})` : ""}
-                  </button>
-                </div>
-              )}
+              {/* 2026-09-23, round four (Gokul's own explicit ask: "in chat
+                  analysis i can still see all chat option so remove that
+                  options entirely"): the visible "This chat / All chats"
+                  scope toggle is gone - each analysis is its own standalone
+                  Project now (see the header above), so a control that
+                  surfaces OTHER chats' tables here no longer belongs.
+                  `versionScope` itself, its "conversation" default, and
+                  `visibleVersions`'s filter by it all stay exactly as they
+                  were - only this toggle UI is removed. The Flow tab's own
+                  "jump to a table from another chat" mechanism still needs
+                  `setVersionScope("all")` internally so the Data tab can
+                  actually show what was jumped to - see the "jump-version"
+                  handler below, deliberately left untouched. */}
               <button
                 className="text-sm px-4 py-2 rounded-lg font-medium btn-secondary flex items-center gap-1.5"
                 onClick={() => { ensureExploreConfig(); setStyleOpen(true); }}
