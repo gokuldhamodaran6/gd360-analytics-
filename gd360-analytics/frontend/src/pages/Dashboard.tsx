@@ -271,6 +271,13 @@ export default function Dashboard() {
   const hasAnyProjects = conversations.length > 0;
   const hasFiltersApplied = search.trim() !== "" || datasourceFilter !== "all" || pinnedOnly;
 
+  // A workspace "viewer" (2026-09-23, roles & attribution round) can see
+  // everything in the active workspace but can't bring in new data or
+  // start new analysis there - "+ New Project" is disabled rather than
+  // hidden, with a tooltip explaining why, so it's clear this is a
+  // deliberate permission rather than a missing feature.
+  const isViewerHere = workspaces.find((w) => w.id === activeWorkspaceId)?.role === "viewer";
+
   return (
     // 2026-09-23: the workspace-structure revamp, round two - Gokul asked
     // for the "Your workspace" stats strip and the duplicate "Your data
@@ -304,8 +311,10 @@ export default function Dashboard() {
               </p>
             </div>
             <button
-              className="btn-primary text-sm px-4 py-2.5 inline-flex items-center gap-1.5 shrink-0"
+              className="btn-primary text-sm px-4 py-2.5 inline-flex items-center gap-1.5 shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={openConnectFlow}
+              disabled={isViewerHere}
+              title={isViewerHere ? "You have view-only access to this workspace." : undefined}
             >
               <PlusIcon className="w-4 h-4" /> New Project
             </button>
@@ -361,12 +370,15 @@ export default function Dashboard() {
             <div className="card p-10 text-center">
               <div className="text-lg font-semibold mb-1.5">No projects yet</div>
               <p className="text-sm text-muted max-w-sm mx-auto leading-relaxed mb-5">
-                A project is one analysis - connect a data source and start asking GD360 questions
-                about it to create your first one.
+                {isViewerHere
+                  ? "Nothing's been shared into this workspace yet. You have view-only access here, so ask the workspace owner to add a data source."
+                  : "A project is one analysis - connect a data source and start asking GD360 questions about it to create your first one."}
               </p>
-              <button className="btn-primary text-sm px-4 py-2.5 inline-flex items-center gap-1.5" onClick={openConnectFlow}>
-                <PlusIcon className="w-4 h-4" /> New Project
-              </button>
+              {!isViewerHere && (
+                <button className="btn-primary text-sm px-4 py-2.5 inline-flex items-center gap-1.5" onClick={openConnectFlow}>
+                  <PlusIcon className="w-4 h-4" /> New Project
+                </button>
+              )}
             </div>
           )}
 
