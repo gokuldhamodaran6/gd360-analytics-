@@ -198,6 +198,30 @@ class SavedView(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class Folder(Base):
+    """A Project (Conversation) organizer, 2026-09-23 (folders round) -
+    purely a grouping label scoped to one workspace, same as Dashboard's
+    own workspace_id. Deliberately NOT nullable here (unlike DataSource/
+    Dashboard.workspace_id, which stayed nullable to cover rows that
+    predate workspaces existing at all) - this is a brand-new table with no
+    legacy rows to backfill, so every Folder is created with a real
+    workspace_id from day one (see routers/folders.py create_folder,
+    which always writes the caller's currently-active workspace).
+
+    Deleting a folder never deletes the Projects inside it - see
+    routers/folders.py delete_folder, which unfiles them (sets
+    Conversation.folder_id back to NULL) before removing the folder row
+    itself. A folder is purely an organizing label, never a container
+    whose removal should take anyone's chat history down with it."""
+    __tablename__ = "folders"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False)
+    name = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
 
@@ -210,6 +234,11 @@ class Conversation(Base):
     # list (the homepage, a data source's own popup, and the Workspace
     # page's panel all read this same column) - see routers/conversations.py.
     pinned = Column(Boolean, default=False)
+    # Which Folder (see above) this Project has been filed into on the
+    # Projects home page - NULL means "not in any folder" (the default,
+    # and also where a Project lands again if its folder is ever deleted).
+    # 2026-09-23 (folders round).
+    folder_id = Column(String, ForeignKey("folders.id"), nullable=True)
 
     owner = relationship("User", back_populates="conversations")
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
