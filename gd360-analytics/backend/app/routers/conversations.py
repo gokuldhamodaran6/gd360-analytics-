@@ -18,12 +18,34 @@ router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 
 @router.get("")
-def list_conversations(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    conversations = (
-        db.query(models.Conversation)
-        .filter(models.Conversation.owner_id == user.id)
-        .all()
-    )
+def list_conversations(
+    workspace_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    query = db.query(models.Conversation).filter(models.Conversation.owner_id == user.id)
+    if workspace_id:
+        # A Project's workspace is its data source's workspace - there is
+        # no separate workspace_id on Conversation itself, so this is
+        # exactly the same NULL-means-personal-workspace rule
+        # routers/datasources.py list_datasources uses, applied through the
+        # join instead of directly.
+        member = (
+            db.query(models.WorkspaceMember)
+            .filter(models.WorkspaceMember.workspace_id == workspace_id, models.WorkspaceMember.user_id == user.id)
+            .first()
+        )
+        ws = db.query(models.Workspace).filter(models.Workspace.id == workspace_id).first() if member else None
+        ds_query = db.query(models.DataSource.id).filter(models.DataSource.owner_id == user.id)
+        if ws and ws.is_personal:
+            ds_query = ds_query.filter(
+                (models.DataSource.workspace_id == workspace_id) | (models.DataSource.workspace_id.is_(None))
+            )
+        else:
+            ds_query = ds_query.filter(models.DataSource.workspace_id == workspace_id)
+        ds_ids_in_workspace = {row[0] for row in ds_query.all()}
+        query = query.filter(models.Conversation.datasource_id.in_(ds_ids_in_workspace))
+    conversations = query.all()
 
     datasource_names: dict[str, str] = {}
     ds_ids = {c.datasource_id for c in conversations if c.datasource_id}
