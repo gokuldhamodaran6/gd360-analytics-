@@ -34,6 +34,7 @@ export default function AddDataPicker({
   onSourceIdsChange,
   otherDataSources,
   onDataSourceCreated,
+  conversationId,
 }: {
   open: boolean;
   onClose: () => void;
@@ -45,6 +46,15 @@ export default function AddDataPicker({
   // otherwise it would only show up here the next time that list happens to
   // refetch.
   onDataSourceCreated: (ds: CreatedDataSource) => void;
+  // This Project's own conversation id (null before its first message) -
+  // scopes which of another connected source's saved tables SourceDetail
+  // offers to add (see its own filter below). Mirrors the exact rule
+  // Workspace.tsx already applies to this datasource's own versions, and
+  // the same fix applied to the WORKING ON picker in ChatPanel.tsx - this
+  // is the header-level door into the identical picker, so it needs the
+  // identical scoping or the same "every table ever built, from every
+  // unrelated past Project" confusion just walks back in through here.
+  conversationId?: string | null;
 }) {
   // null = the two-button landing; "existing" = the searchable list of
   // already-connected sources; "new" = the connect-a-new-source form; any
@@ -172,6 +182,7 @@ export default function AddDataPicker({
               onToggle={toggleSource}
               versions={versionsById[activeDs.id] || []}
               loadingVersions={loadingVersions.has(activeDs.id)}
+              conversationId={conversationId}
             />
           ) : view === "existing" ? (
             <div className="space-y-3">
@@ -300,15 +311,25 @@ function SourceDetail({
   onToggle,
   versions,
   loadingVersions,
+  conversationId,
 }: {
   ds: DataSourceSummary;
   sourceIds: string[];
   onToggle: (id: string) => void;
   versions: DatasetVersion[];
   loadingVersions: boolean;
+  conversationId?: string | null;
 }) {
   const entries = getTableEntries(ds.kind, ds.schema_cache, ds.name);
   const multi = hasMultipleTables(ds.kind, ds.schema_cache);
+  // Only THIS Project's own saved tables for this other source (or one
+  // never tied to any conversation at all) are offered here to add - see
+  // the conversationId prop's own comment above for why. An already-
+  // selected table stays visible regardless, so resuming an old combined
+  // conversation never makes its own active pick silently disappear.
+  const visibleVersions = versions.filter(
+    (v) => v.conversation_id == null || v.conversation_id === conversationId || sourceIds.includes(v.id)
+  );
 
   return (
     <div className="space-y-0.5">
@@ -338,9 +359,9 @@ function SourceDetail({
       )}
 
       {loadingVersions && <div className="text-[11px] text-muted px-2 py-2">Loading saved tables…</div>}
-      {versions.length > 0 && (
+      {visibleVersions.length > 0 && (
         <div className="pt-2 mt-1 border-t border-border">
-          {versions.map((v) => (
+          {visibleVersions.map((v) => (
             <label key={v.id} className="flex items-center gap-2 text-sm px-2 py-2 rounded-lg hover:bg-surface2 cursor-pointer">
               <input type="checkbox" checked={sourceIds.includes(v.id)} onChange={() => onToggle(v.id)} />
               <span className="inline-block w-1.5 h-1.5 rounded-full shrink-0 bg-primary" aria-hidden />
