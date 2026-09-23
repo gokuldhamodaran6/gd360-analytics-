@@ -2,11 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { InvitePreview, workspaceApi } from "../api/client";
 import ThemeToggle from "../components/ThemeToggle";
-
-// Where the sidebar's WorkspaceSwitcher (AppSidebar.tsx) remembers which
-// workspace is active - the same key it reads/writes, so joining here and
-// switching there stay in sync without any extra plumbing.
-const ACTIVE_WORKSPACE_KEY = "gd360_active_workspace";
+import { ACTIVE_WORKSPACE_KEY } from "../lib/useWorkspaceNav";
 
 function UsersIcon({ className = "w-5 h-5" }: { className?: string }) {
   return (
