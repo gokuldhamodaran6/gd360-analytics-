@@ -9,6 +9,7 @@ import Workspace from "./pages/Workspace";
 import Dashboards from "./pages/Dashboards";
 import DashboardView from "./pages/DashboardView";
 import DataSources from "./pages/DataSources";
+import NewProject from "./pages/NewProject";
 import AdminDashboard from "./pages/AdminDashboard";
 import Profile from "./pages/Profile";
 import HelpBigQuery from "./pages/HelpBigQuery";
@@ -46,6 +47,11 @@ export default function App() {
       <Route path="/register" element={<Register />} />
       <Route path="/admin-login" element={<AdminLogin />} />
       <Route path="/" element={<Home />} />
+      {/* Must be registered before "/workspace/:datasourceId" below would
+          otherwise be ambiguous with it if this ever moved under
+          /workspace - kept as its own top-level path instead so there's no
+          risk of "new" ever being parsed as a real :datasourceId. */}
+      <Route path="/project/new" element={<Protected><NewProject /></Protected>} />
       <Route path="/workspace/:datasourceId" element={<Protected><Workspace /></Protected>} />
       <Route path="/dashboards" element={<Protected><Dashboards /></Protected>} />
       <Route path="/dashboards/:dashboardId" element={<Protected><DashboardView /></Protected>} />
