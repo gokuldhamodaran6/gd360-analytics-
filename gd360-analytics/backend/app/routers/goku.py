@@ -15,6 +15,16 @@ There is only ever ONE Goku conversation per (datasource, owner) - unlike
 the main analysis chat, which can have several separate conversations for
 the same data source, reopening Goku always picks back up exactly where
 the person left off on that data source.
+
+Since 2026-09-23: opening Goku on a data source uses the same collaborate-
+tier access check as the main chat/datasources endpoints (see services/
+workspace_access.py) - a workspace member can open Goku on a shared data
+source, not just its owner. Its actual message HISTORY stays deliberately
+per-person (GokuMessage.owner_id == the signed-in user, untouched below):
+Goku is a personal, guided walkthrough for whoever is looking at the data
+right now, not a shared team thread, so two teammates each get their own
+"ONE Goku conversation per (datasource, owner)" on the very same shared
+data source rather than reading each other's beginner Q&A.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -23,7 +33,7 @@ from .. import models
 from ..database import get_db
 from ..deps import get_current_user
 from ..schemas_extra import GokuChatRequest
-from ..services import ai_engine
+from ..services import ai_engine, workspace_access
 from ..services.data_loader import ensure_legacy_migrated, NeedsTableSelection
 from .chat import _load_selected_tables
 
@@ -35,11 +45,9 @@ router = APIRouter(prefix="/goku", tags=["goku"])
 _GOKU_GREETING = "Hi, I am Goku! How can I help you with this data today?"
 
 
-def _get_owned_datasource(db: Session, datasource_id: str, user: models.User) -> models.DataSource:
-    ds = db.query(models.DataSource).filter(
-        models.DataSource.id == datasource_id, models.DataSource.owner_id == user.id
-    ).first()
-    if not ds:
+def _get_accessible_datasource(db: Session, datasource_id: str, user: models.User) -> models.DataSource:
+    ds = db.query(models.DataSource).filter(models.DataSource.id == datasource_id).first()
+    if not ds or not workspace_access.can_access_datasource(db, ds, user):
         raise HTTPException(404, "Datasource not found.")
     return ds
 
@@ -58,7 +66,7 @@ def _serialize(m: models.GokuMessage) -> dict:
 def get_goku_messages(
     datasource_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
 ):
-    _get_owned_datasource(db, datasource_id, user)
+    _get_accessible_datasource(db, datasource_id, user)
 
     messages = (
         db.query(models.GokuMessage)
@@ -83,7 +91,7 @@ def get_goku_messages(
 def goku_chat(
     payload: GokuChatRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
 ):
-    ds = _get_owned_datasource(db, payload.datasource_id, user)
+    ds = _get_accessible_datasource(db, payload.datasource_id, user)
     ensure_legacy_migrated(db, ds)
 
     message = (payload.message or "").strip()
