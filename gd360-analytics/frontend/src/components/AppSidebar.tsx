@@ -1,23 +1,28 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
-import { datasourceApi, DataSourceSummary } from "../api/client";
+import { datasourceApi, DataSourceSummary, WorkspaceDetail, WorkspaceSummary, workspaceApi } from "../api/client";
 import { connectionKindMeta } from "./DataSourceForm";
 
-// 2026-09-23: the first piece of the workspace-structure revamp Gokul asked
-// for, modeled directly on the two reference screenshots he shared (a
-// persistent left nav rail; a "Data sources" area styled like a settings/
-// integrations list - one row per connected source, its real logo, a click
-// straight through to it). This replaces the app's old top-bar-only
-// navigation with a real, always-visible left rail, the same shape as
-// every serious SaaS product's own app shell.
+// 2026-09-23: the persistent left nav rail from the workspace-structure
+// revamp, modeled on the reference screenshots Gokul shared (a "Data
+// sources" area styled like a settings/integrations list; a workspace
+// switcher at the top).
 //
-// Scope note for this round: wired into the home page (Dashboard.tsx) only
-// for now - Workspace.tsx, Profile.tsx and the admin pages keep their
-// current top-bar-only layout until the next round, so this ships as one
-// contained, fully-testable step rather than changing every page's chrome
-// at once. The plan (confirmed with Gokul) is to roll this out everywhere
-// once this round is live and proven.
+// 2026-09-23, round two: the workspace switcher is now real - real
+// workspaces, real membership, a real shareable invite link (see
+// backend routers/workspaces.py). There is still no transactional email
+// sending in this app, so "inviting" someone works by copying a link and
+// sending it yourself, not by an emailed invite - and a workspace's other
+// members can't yet see or open each other's data sources/Projects (every
+// data source/conversation is still scoped to its own owner) - that's the
+// next, security-sensitive piece, called out in workspaces.py's own
+// module docstring rather than silently left half-done.
+//
+// Scope note: still wired into the home page (Dashboard.tsx) only -
+// Workspace.tsx, Profile.tsx and the admin pages keep their current
+// top-bar-only layout until a later round.
 
 function ProjectsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
   return (
@@ -64,17 +69,58 @@ function UserPlusIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   );
 }
 
-// The workspace switcher, styled after the reference screenshots Gokul
-// shared: click the current workspace's name to open a small dropdown.
-// Today every account has exactly one, real "Personal Workspace" - there is
-// no multi-tenant team-workspace backend yet (that needs its own data
-// model, membership roles, and a real transactional email provider for
-// invites, none of which exist in this app yet). Rather than build a
-// switcher that pretends to switch between workspaces that don't exist,
-// this shows the one real workspace plus two clearly-labeled "coming soon"
-// actions - the same shape as the reference UI, honestly filled in.
-function WorkspaceSwitcher() {
-  const { user } = useAuth();
+function CopyIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="9" width="13" height="13" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+function TrashIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 6h18" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+    </svg>
+  );
+}
+
+function CloseIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 6L6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
+function initials(nameOrEmail: string): string {
+  const trimmed = (nameOrEmail || "").trim();
+  if (!trimmed) return "?";
+  const parts = trimmed.split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return trimmed.slice(0, 2).toUpperCase();
+}
+
+// The workspace switcher: click the current workspace's name/logo to open
+// a dropdown listing every real workspace the account belongs to (its own
+// personal one, plus any team workspace it created or joined), switch
+// between them, create a new one, or invite people to the active one.
+function WorkspaceSwitcher({
+  workspaces,
+  activeWorkspaceId,
+  onSwitch,
+  onOpenCreate,
+  onOpenInvite,
+}: {
+  workspaces: WorkspaceSummary[];
+  activeWorkspaceId: string;
+  onSwitch: (id: string) => void;
+  onOpenCreate: () => void;
+  onOpenInvite: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -94,7 +140,8 @@ function WorkspaceSwitcher() {
     };
   }, [open]);
 
-  const workspaceName = user?.company ? `${user.company}` : "Personal Workspace";
+  const active = workspaces.find((w) => w.id === activeWorkspaceId) || workspaces[0];
+  const activeName = active?.name || "Personal Workspace";
 
   return (
     <div className="relative px-3 pt-4 pb-2 shrink-0">
@@ -110,7 +157,7 @@ function WorkspaceSwitcher() {
         </span>
         <span className="min-w-0 flex-1 text-left">
           <span className="block text-sm font-bold gradient-text truncate">GD360 Analytics</span>
-          <span className="block text-[11px] text-muted truncate">{workspaceName}</span>
+          <span className="block text-[11px] text-muted truncate">{activeName}</span>
         </span>
         <ChevronsUpDownIcon className="w-3.5 h-3.5 text-muted shrink-0" />
       </button>
@@ -124,39 +171,40 @@ function WorkspaceSwitcher() {
           <div className="px-3.5 pt-1 pb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
             Your workspaces
           </div>
-          <div className="w-full flex items-center gap-2.5 px-3.5 py-2 text-sm">
-            <span className="w-6 h-6 rounded-md bg-primary flex items-center justify-center text-white font-bold text-[11px] shrink-0">
-              G
-            </span>
-            <span className="flex-1 truncate text-left">{workspaceName}</span>
-            <CheckIcon className="w-3.5 h-3.5 text-primary shrink-0" />
+          <div className="max-h-56 overflow-y-auto">
+            {workspaces.map((ws) => (
+              <button
+                key={ws.id}
+                type="button"
+                onClick={() => { onSwitch(ws.id); setOpen(false); }}
+                className="w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-left hover:bg-surface2 transition"
+              >
+                <span className="w-6 h-6 rounded-md bg-primary flex items-center justify-center text-white font-bold text-[11px] shrink-0">
+                  {ws.is_personal ? "G" : ws.name.charAt(0).toUpperCase()}
+                </span>
+                <span className="flex-1 truncate">{ws.name}</span>
+                {ws.id === activeWorkspaceId && <CheckIcon className="w-3.5 h-3.5 text-primary shrink-0" />}
+              </button>
+            ))}
           </div>
           <div className="border-t border-border my-1.5" />
           <button
             type="button"
-            disabled
-            title="Team workspaces are coming soon"
-            className="w-full flex items-center justify-between gap-2.5 px-3.5 py-2 text-sm text-left text-muted cursor-not-allowed"
+            onClick={() => { setOpen(false); onOpenCreate(); }}
+            className="w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-left hover:bg-surface2 transition"
           >
-            <span className="flex items-center gap-2.5">
-              <PlusIcon className="w-3.5 h-3.5 text-muted" /> Create workspace
-            </span>
-            <span className="text-[10px] font-semibold uppercase tracking-wide bg-surface2 rounded-full px-2 py-0.5">
-              Soon
-            </span>
+            <PlusIcon className="w-3.5 h-3.5 text-muted" /> Create workspace
           </button>
           <button
             type="button"
-            disabled
-            title="Inviting teammates is coming soon"
-            className="w-full flex items-center justify-between gap-2.5 px-3.5 py-2 text-sm text-left text-muted cursor-not-allowed"
+            disabled={!!active?.is_personal}
+            title={active?.is_personal ? "Personal Workspace is just for you - create or switch to a team workspace to invite people" : "Invite teammates"}
+            onClick={() => { setOpen(false); onOpenInvite(); }}
+            className={`w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-left transition ${
+              active?.is_personal ? "text-muted cursor-not-allowed" : "hover:bg-surface2"
+            }`}
           >
-            <span className="flex items-center gap-2.5">
-              <UserPlusIcon className="w-3.5 h-3.5 text-muted" /> Invite teammates
-            </span>
-            <span className="text-[10px] font-semibold uppercase tracking-wide bg-surface2 rounded-full px-2 py-0.5">
-              Soon
-            </span>
+            <UserPlusIcon className="w-3.5 h-3.5 text-muted" /> Invite teammates
           </button>
         </div>
       )}
@@ -164,12 +212,202 @@ function WorkspaceSwitcher() {
   );
 }
 
+function CreateWorkspaceModal({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void;
+  onCreated: (ws: WorkspaceSummary) => void;
+}) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setBusy(true);
+    setError("");
+    try {
+      const ws = await workspaceApi.create(trimmed);
+      onCreated(ws);
+    } catch {
+      setError("Couldn't create that workspace. Please try again.");
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="card w-full max-w-sm p-6 relative">
+        <button className="absolute top-4 right-4 text-muted hover:text-text transition" onClick={onClose} aria-label="Close">
+          <CloseIcon className="w-5 h-5" />
+        </button>
+        <h2 className="text-lg font-bold mb-1">New workspace</h2>
+        <p className="text-xs text-muted mb-5 leading-relaxed">
+          A separate space for a team or project - its own Projects and data sources, kept apart from
+          your personal workspace and anything else you create.
+        </p>
+        <form onSubmit={submit} className="space-y-3">
+          {error && <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
+          <input
+            autoFocus
+            className="input text-sm w-full"
+            placeholder="e.g. Marketing Team, Client X"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={80}
+          />
+          <button className="btn-primary w-full text-sm" type="submit" disabled={busy || !name.trim()}>
+            {busy ? "Creating…" : "Create workspace"}
+          </button>
+        </form>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function InviteMembersModal({
+  workspaceId,
+  currentUserId,
+  onClose,
+}: {
+  workspaceId: string;
+  currentUserId: string;
+  onClose: () => void;
+}) {
+  const [detail, setDetail] = useState<WorkspaceDetail | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = () => {
+    workspaceApi.get(workspaceId).then(setDetail).catch(() => setError("Couldn't load this workspace."));
+  };
+  useEffect(load, [workspaceId]);
+
+  const inviteUrl = detail ? `${window.location.origin}/invite/${detail.invite_token}` : "";
+  const isOwner = detail?.role === "owner";
+
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError("Couldn't copy automatically - select and copy the link above instead.");
+    }
+  };
+
+  const regenerate = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await workspaceApi.regenerateInvite(workspaceId);
+      load();
+    } catch {
+      setError("Couldn't reset the link. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeMember = async (userId: string) => {
+    setBusy(true);
+    setError("");
+    try {
+      await workspaceApi.removeMember(workspaceId, userId);
+      load();
+    } catch {
+      setError("Couldn't remove that person. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/60 p-4 overflow-y-auto"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="card w-full max-w-md my-8 sm:my-0 p-6 relative">
+        <button className="absolute top-4 right-4 text-muted hover:text-text transition" onClick={onClose} aria-label="Close">
+          <CloseIcon className="w-5 h-5" />
+        </button>
+        <h2 className="text-lg font-bold mb-1">{detail ? `Invite to ${detail.name}` : "Invite teammates"}</h2>
+        <p className="text-xs text-muted mb-5 leading-relaxed">
+          Share this link with anyone you want in this workspace - they'll join as soon as they open it
+          and sign in. There's no emailed invite yet, so send it however you'd like.
+        </p>
+
+        {error && <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-3">{error}</div>}
+
+        {detail && (
+          <>
+            <div className="flex items-center gap-2 mb-2">
+              <input readOnly className="input text-xs flex-1 font-mono" value={inviteUrl} onFocus={(e) => e.target.select()} />
+              <button type="button" className="btn-secondary text-xs px-3 py-2.5 shrink-0 inline-flex items-center gap-1.5" onClick={copyLink}>
+                <CopyIcon className="w-3.5 h-3.5" /> {copied ? "Copied!" : "Copy"}
+              </button>
+            </div>
+            {isOwner && (
+              <button type="button" disabled={busy} className="text-xs text-muted hover:text-text transition mb-5" onClick={regenerate}>
+                Reset link (old link stops working)
+              </button>
+            )}
+            {!isOwner && <div className="mb-5" />}
+
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2">
+              Members &middot; {detail.member_count}
+            </div>
+            <div className="space-y-1 max-h-48 overflow-y-auto">
+              {detail.members.map((m) => (
+                <div key={m.user_id} className="flex items-center gap-2.5 px-1 py-1.5">
+                  <span className="w-7 h-7 rounded-full bg-primary/20 text-primary text-[11px] font-bold flex items-center justify-center shrink-0">
+                    {initials(m.full_name || m.email)}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm truncate">{m.full_name || m.email}</span>
+                    {m.full_name && <span className="block text-[11px] text-muted truncate">{m.email}</span>}
+                  </span>
+                  <span className="text-[10px] uppercase tracking-wide text-muted shrink-0">{m.role}</span>
+                  {isOwner && m.user_id !== currentUserId && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      title="Remove from workspace"
+                      className="p-1.5 rounded-lg text-muted hover:text-red-400 hover:bg-red-500/10 transition shrink-0"
+                      onClick={() => removeMember(m.user_id)}
+                    >
+                      <TrashIcon className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 export default function AppSidebar({
   onConnectNew,
   refreshKey,
+  workspaces,
+  activeWorkspaceId,
+  onWorkspaceSwitch,
+  onWorkspaceCreated,
 }: {
   // Opens the same "Connect a data source" flow the home page's own
-  // "+ Connect data" button already uses (DataSourceForm inside a portaled
+  // "+ New Project" button already uses (DataSourceForm inside a portaled
   // modal, owned by whichever page renders this sidebar) - kept as a
   // callback rather than owning that modal itself, so there is exactly one
   // connect flow in the app, not a second copy living in the sidebar.
@@ -177,17 +415,29 @@ export default function AppSidebar({
   // Bumped by the parent page whenever a new source is connected, so the
   // sidebar's own list refetches without needing its own polling.
   refreshKey?: number;
+  // The account's real workspaces and which one is active right now - both
+  // owned by the parent page (Dashboard.tsx), since switching workspace
+  // also has to refetch that page's own Projects/data sources, not just
+  // this sidebar's list.
+  workspaces: WorkspaceSummary[];
+  activeWorkspaceId: string;
+  onWorkspaceSwitch: (id: string) => void;
+  onWorkspaceCreated: (ws: WorkspaceSummary) => void;
 }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [sources, setSources] = useState<DataSourceSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
 
   useEffect(() => {
+    if (!activeWorkspaceId) return;
     let cancelled = false;
     setLoading(true);
     datasourceApi
-      .list()
+      .list(activeWorkspaceId)
       .then((list) => {
         if (cancelled) return;
         // Newest first - matches every other "your data" list in the app.
@@ -196,7 +446,7 @@ export default function AppSidebar({
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [refreshKey]);
+  }, [refreshKey, activeWorkspaceId]);
 
   const onProjects = location.pathname === "/";
 
@@ -206,11 +456,15 @@ export default function AppSidebar({
     // established mobile pattern (stack full-width, no fixed side rail),
     // so hiding it here keeps mobile exactly as good as it was before this
     // round rather than half-building a second, different mobile nav
-    // pattern under time pressure. A real mobile drawer version of this
-    // sidebar is a reasonable next step, not done in this round - caught by
-    // an actual 390px-width Playwright check before delivery, not assumed.
+    // pattern under time pressure.
     <div className="hidden lg:flex w-60 shrink-0 h-screen sticky top-0 border-r border-border bg-surface flex-col">
-      <WorkspaceSwitcher />
+      <WorkspaceSwitcher
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
+        onSwitch={onWorkspaceSwitch}
+        onOpenCreate={() => setShowCreateModal(true)}
+        onOpenInvite={() => setShowInviteModal(true)}
+      />
 
       <div className="px-3 mt-1">
         <Link
@@ -235,7 +489,7 @@ export default function AppSidebar({
           )}
           {!loading && sources.length === 0 && (
             <div className="text-xs text-muted px-2 py-2 leading-relaxed">
-              Nothing connected yet.
+              Nothing connected in this workspace yet.
             </div>
           )}
           {sources.map((ds) => {
@@ -269,6 +523,23 @@ export default function AppSidebar({
           Connect new
         </button>
       </div>
+
+      {showCreateModal && (
+        <CreateWorkspaceModal
+          onClose={() => setShowCreateModal(false)}
+          onCreated={(ws) => {
+            setShowCreateModal(false);
+            onWorkspaceCreated(ws);
+          }}
+        />
+      )}
+      {showInviteModal && user && (
+        <InviteMembersModal
+          workspaceId={activeWorkspaceId}
+          currentUserId={user.id}
+          onClose={() => setShowInviteModal(false)}
+        />
+      )}
     </div>
   );
 }
