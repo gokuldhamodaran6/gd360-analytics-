@@ -8,6 +8,7 @@ import Dashboard from "./pages/Dashboard";
 import Workspace from "./pages/Workspace";
 import Dashboards from "./pages/Dashboards";
 import DashboardView from "./pages/DashboardView";
+import DataSources from "./pages/DataSources";
 import AdminDashboard from "./pages/AdminDashboard";
 import Profile from "./pages/Profile";
 import HelpBigQuery from "./pages/HelpBigQuery";
@@ -48,6 +49,7 @@ export default function App() {
       <Route path="/workspace/:datasourceId" element={<Protected><Workspace /></Protected>} />
       <Route path="/dashboards" element={<Protected><Dashboards /></Protected>} />
       <Route path="/dashboards/:dashboardId" element={<Protected><DashboardView /></Protected>} />
+      <Route path="/data" element={<Protected><DataSources /></Protected>} />
       <Route path="/admin" element={<Protected><AdminDashboard /></Protected>} />
       <Route path="/profile" element={<Protected><Profile /></Protected>} />
       {/* Public and standalone (no <Protected> wrapper): opened in a new
