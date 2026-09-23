@@ -9,7 +9,6 @@ import AppSidebar from "../components/AppSidebar";
 import ConversationRow from "../components/ConversationRow";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import ViewToggle, { ViewMode, useViewMode } from "../components/ViewToggle";
-import { dataSourceCategory, DATA_SOURCE_CATEGORIES } from "../components/DataSourceForm";
 
 type SortKey = "newest" | "oldest" | "title";
 // A folder's real id, or the built-in "all" tab (every Project, filed or
@@ -236,7 +235,6 @@ export default function Dashboard() {
 
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState<SortKey>("newest");
-  const [datasourceFilter, setDatasourceFilter] = useState<string>("all");
   const [pinnedOnly, setPinnedOnly] = useState(false);
   const [folderFilter, setFolderFilter] = useState<FolderFilter>("all");
 
@@ -306,7 +304,6 @@ export default function Dashboard() {
 
   const resetPageState = () => {
     setSearch("");
-    setDatasourceFilter("all");
     setPinnedOnly(false);
     setFolderFilter("all");
     setSelectMode(false);
@@ -379,9 +376,6 @@ export default function Dashboard() {
           (c.last_message || "").toLowerCase().includes(q)
       );
     }
-    if (datasourceFilter !== "all") {
-      list = list.filter((c) => c.datasource_id === datasourceFilter);
-    }
     if (pinnedOnly) {
       list = list.filter((c) => c.pinned);
     }
@@ -395,25 +389,11 @@ export default function Dashboard() {
     // Pinned projects still float to the top within whichever sort is active.
     sorted.sort((a, b) => Number(b.pinned) - Number(a.pinned));
     return sorted;
-  }, [conversations, search, datasourceFilter, pinnedOnly, folderFilter, sortBy]);
-
-  // Groups the data-source filter dropdown's options by category (Files /
-  // Databases / Warehouses) instead of one flat alphabetical-ish list of
-  // file names - the same organizing principle used everywhere else data
-  // sources are shown in this app (the sidebar's Connect popup, the Data
-  // Sources page itself).
-  const datasourcesByCategory = useMemo(
-    () =>
-      DATA_SOURCE_CATEGORIES.map((cat) => ({
-        category: cat,
-        sources: datasources.filter((ds) => dataSourceCategory(ds.kind) === cat),
-      })).filter((g) => g.sources.length > 0),
-    [datasources]
-  );
+  }, [conversations, search, pinnedOnly, folderFilter, sortBy]);
 
   const hasAnyProjects = conversations.length > 0;
-  const hasFiltersApplied = search.trim() !== "" || datasourceFilter !== "all" || pinnedOnly || folderFilter !== "all";
-  const clearFilters = () => { setSearch(""); setDatasourceFilter("all"); setPinnedOnly(false); setFolderFilter("all"); };
+  const hasFiltersApplied = search.trim() !== "" || pinnedOnly || folderFilter !== "all";
+  const clearFilters = () => { setSearch(""); setPinnedOnly(false); setFolderFilter("all"); };
 
   // A workspace "viewer" (2026-09-23, roles & attribution round) can see
   // everything in the active workspace but can't bring in new data or
@@ -669,28 +649,14 @@ export default function Dashboard() {
             <div className="flex flex-col lg:flex-row lg:items-center gap-2.5 lg:gap-2 mb-3 p-2 rounded-xl border border-border bg-surface/60">
               <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 flex-1 min-w-0">
                 <div className="relative flex-1 min-w-0 sm:max-w-xs">
-                  <SearchIcon className="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2" />
+                  <SearchIcon className="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
-                    className="input h-10 pl-9 text-sm w-full"
+                    className="input input-icon h-10 text-sm w-full"
                     placeholder="Search projects..."
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                   />
                 </div>
-                <select
-                  className="input h-10 text-sm w-full sm:w-auto"
-                  value={datasourceFilter}
-                  onChange={(e) => setDatasourceFilter(e.target.value)}
-                >
-                  <option value="all">All data sources</option>
-                  {datasourcesByCategory.map((g) => (
-                    <optgroup key={g.category} label={g.category}>
-                      {g.sources.map((ds) => (
-                        <option key={ds.id} value={ds.id}>{ds.name}</option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </select>
                 <select
                   className="input h-10 text-sm w-full sm:w-auto"
                   value={sortBy}
