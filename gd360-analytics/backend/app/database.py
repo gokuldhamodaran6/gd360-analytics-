@@ -50,6 +50,7 @@ _NEW_COLUMNS = [
     ("messages", "sources", "JSON"),
     ("messages", "new_version_id", "TEXT"),
     ("datasources", "workspace_id", "TEXT"),
+    ("dashboards", "workspace_id", "TEXT"),
 ]
 
 
