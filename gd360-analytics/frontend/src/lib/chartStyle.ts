@@ -754,6 +754,21 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
   const legendWidthPx = legendWillShow
     ? Math.min(190, Math.max(84, 30 + Math.round(longestLegendLabel * baseSize * 0.58)))
     : 0;
+  // 2026-09-23, round eight (Gokul's own explicit bug report: an opened
+  // legend was "touching xaxis words or yaxis words"): the legend used to
+  // be vertically CENTERED in the figure's own paper coordinates (y: 0.5,
+  // yanchor: "middle"), which - Plotly's paper space spans the whole
+  // figure, margins included, not just the inner plot rectangle - let a
+  // tall, many-entry legend grow both upward past the title AND downward
+  // past the x-axis tick labels on a shorter chart. It's now always
+  // top-anchored (grows downward only, starting just under the title), and
+  // this estimates how tall that legend column will actually be so the
+  // plot area itself can be given enough real vertical room for it - never
+  // just a fixed 380px regardless of how many rows the legend needs. See
+  // suggestedChartMinHeight below, which ChartCanvas.tsx reads to size the
+  // chart's own container instead of a single hardcoded minHeight.
+  const legendRowPx = Math.max(18, Math.round(baseSize * 1.55));
+  const legendHeightPx = legendWillShow ? legendEntryCount * legendRowPx + 24 : 0;
   // A tilted (diagonal/vertical) x-axis needs its own extra room below the
   // plot for the slanted tick labels - unconditional now, since the legend
   // never competes for that band anymore (it lives on the right instead).
@@ -832,8 +847,14 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
     x: 1,
     xanchor: "left",
     xref: "paper",
-    y: 0.5,
-    yanchor: "middle",
+    // Top-anchored, not vertically centered - see the legendHeightPx note
+    // above. Growing downward from just under the title is the only
+    // direction that can never collide with either the title (above) or
+    // the x-axis tick labels (below): a centered legend could grow both
+    // ways at once, which is exactly what let a many-entry legend reach
+    // past the plot's own edges and land on top of axis text.
+    y: 0.98,
+    yanchor: "top",
     yref: "paper",
     bgcolor: "rgba(0,0,0,0)",
     bordercolor: "rgba(0,0,0,0)",
@@ -841,6 +862,16 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
     tracegroupgap: 4,
     itemwidth: 30,
   };
+
+  // Exposed so ChartCanvas.tsx can give the chart's own container enough
+  // real height to fit a top-anchored legend with many entries end to end -
+  // never just a fixed 380px regardless of how tall the legend actually
+  // needs to be. See suggestedChartMinHeight below, the only reader of
+  // this. Lives on the spec itself (a sibling of data/layout), never
+  // inside layout - Plotly is only ever handed chartSpec.data and a
+  // themed copy of chartSpec.layout (see ChartCanvas.tsx), so this can
+  // never reach Plotly or affect rendering.
+  spec._gd360SuggestedMinHeight = Math.max(380, layout.margin.t + legendHeightPx + layout.margin.b);
  
   // ---- Hover: one clean readout per mark, value bolded and leading, the
   // series name only shown when there is more than one series to tell
@@ -916,5 +947,14 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
  
   return spec;
 }
- 
 
+/** How tall a chart's own container should be so its (possibly many-entry)
+ * legend always has real room to finish growing downward from the title
+ * without ever reaching into the x-axis tick-label band below the plot -
+ * see the legendHeightPx note inside applyChartStyle, which computes and
+ * stashes this. Call it on the STYLED spec (applyChartStyle's return
+ * value), not the raw AI spec. Always at least 380px, this app's original
+ * default for a plain chart with no legend or a short one. */
+export function suggestedChartMinHeight(styledSpec: any): number {
+  return styledSpec?._gd360SuggestedMinHeight || 380;
+}
