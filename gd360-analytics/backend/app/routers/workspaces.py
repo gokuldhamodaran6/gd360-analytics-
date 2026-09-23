@@ -9,17 +9,38 @@ Every account gets one non-deletable "Personal Workspace" automatically
 pre-existing accounts by database._ensure_personal_workspaces). Anything
 else here is a workspace the account owner created on request.
 
-Scope note (2026-09-23): this round makes workspace membership and
-shareable-link joining fully real, and lets each account organize ITS OWN
-data sources/projects by workspace. It deliberately does not yet let a
-workspace's OTHER members see or open each other's data sources/projects -
-every read/write on a data source or conversation is still scoped to
-`owner_id == the signed-in user`, exactly as before. Opening that up is a
-security-sensitive change (who can see which customer's data) that touches
-the access checks in routers/datasources.py, routers/conversations.py and
-routers/chat.py, and deserves its own careful, audited pass rather than
-being folded into this one - flagged clearly rather than silently left
-half-done.
+Scope history:
+  - 2026-09-23 (workspaces v1): workspace membership and shareable-link
+    joining made fully real, and each account can organize its own data
+    sources/projects by workspace. At that point, a workspace's OTHER
+    members could NOT yet see or open each other's data sources/projects -
+    every read/write on a data source or conversation was still scoped to
+    `owner_id == the signed-in user`, regardless of workspace roster.
+  - 2026-09-23 (sharing v1, same day, later round): that gap closed. A
+    data source assigned into a shared (non-personal) workspace - see
+    routers/datasources.py assign_datasource_workspace and the
+    DataSource.workspace_id column - is now visible and usable by every
+    member of that workspace, on a two-tier model (see services/
+    workspace_access.py for the full contract):
+      - "collaborate" tier (the data source's owner OR any workspace
+        member): view schema/preview/versions/flow/distinct-values/export,
+        run chat/analysis, create/continue conversations (including
+        resuming a teammate's), view/rename/pin any conversation on the
+        shared data source, create/rename/delete saved views, rename/
+        delete saved table versions.
+      - "admin" tier (owner_id-only, unchanged): rename/delete the data
+        source row itself, reassign which workspace it lives in.
+      - Conversation DELETION is its own special case, narrower than the
+        rest of collaborate tier: only the conversation's own creator or
+        the data source's owner, so one teammate can never wipe another's
+        chat history.
+    Goku (routers/goku.py) broadened the same way for which data sources
+    it can be opened on, but its message history stays intentionally
+    per-person (a personal guided walkthrough, not a shared team thread).
+    routers/connections.py (the OAuth connect-a-new-source flow) and
+    routers/dashboards.py (saved dashboards) were left unchanged - neither
+    is a "viewing something already shared" concern, and dashboards are
+    not yet tied to a workspace or data source in the schema at all.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
