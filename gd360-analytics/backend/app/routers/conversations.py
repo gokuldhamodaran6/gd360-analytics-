@@ -6,6 +6,15 @@ List and resume past chat conversations. Powers two things:
   2. The workspace resuming a prior conversation (via a `conversation`
      query param) with its full message + chart history restored, instead
      of always starting from a blank chat.
+
+Since 2026-09-23, a Project (Conversation) built on a data source that's
+been shared into a team workspace is visible to every member of that
+workspace, not just whoever started it - see services/workspace_access.py
+for the shared two-tier access model this file, routers/datasources.py and
+routers/chat.py all now use. Deleting a Project stays narrower than
+viewing/renaming/pinning it: only its own creator, or the data source's
+owner, can do that (workspace_access.can_delete_conversation) - never just
+any teammate who happens to share the workspace.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -13,6 +22,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_user
+from ..services import workspace_access
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -23,28 +33,24 @@ def list_conversations(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    query = db.query(models.Conversation).filter(models.Conversation.owner_id == user.id)
     if workspace_id:
         # A Project's workspace is its data source's workspace - there is
         # no separate workspace_id on Conversation itself, so this is
         # exactly the same NULL-means-personal-workspace rule
         # routers/datasources.py list_datasources uses, applied through the
-        # join instead of directly.
+        # join instead of directly. Must actually belong to the requested
+        # workspace to see anything in it.
         member = (
             db.query(models.WorkspaceMember)
             .filter(models.WorkspaceMember.workspace_id == workspace_id, models.WorkspaceMember.user_id == user.id)
             .first()
         )
-        ws = db.query(models.Workspace).filter(models.Workspace.id == workspace_id).first() if member else None
-        ds_query = db.query(models.DataSource.id).filter(models.DataSource.owner_id == user.id)
-        if ws and ws.is_personal:
-            ds_query = ds_query.filter(
-                (models.DataSource.workspace_id == workspace_id) | (models.DataSource.workspace_id.is_(None))
-            )
-        else:
-            ds_query = ds_query.filter(models.DataSource.workspace_id == workspace_id)
-        ds_ids_in_workspace = {row[0] for row in ds_query.all()}
-        query = query.filter(models.Conversation.datasource_id.in_(ds_ids_in_workspace))
+        if not member:
+            return []
+        ds_ids_in_workspace = workspace_access.accessible_datasource_ids_in_workspace(db, user, workspace_id)
+        query = db.query(models.Conversation).filter(models.Conversation.datasource_id.in_(ds_ids_in_workspace))
+    else:
+        query = db.query(models.Conversation).filter(workspace_access.conversation_access_filter(db, user))
     conversations = query.all()
 
     datasource_names: dict[str, str] = {}
@@ -106,11 +112,10 @@ def update_conversation(
     conversation list, and the Workspace page's own Recent conversations
     panel. All three read the same row from here, so a change made in any
     one of them is instantly reflected everywhere else too, the next time
-    each is loaded."""
-    conv = db.query(models.Conversation).filter(
-        models.Conversation.id == conversation_id, models.Conversation.owner_id == user.id
-    ).first()
-    if not conv:
+    each is loaded. Anyone who can access this Project's data source can
+    rename/pin it (collaborate tier) - not just whoever started it."""
+    conv = db.query(models.Conversation).filter(models.Conversation.id == conversation_id).first()
+    if not conv or not workspace_access.can_access_conversation(db, conv, user):
         raise HTTPException(404, "Conversation not found.")
     if payload.title is not None:
         conv.title = payload.title.strip()[:80] or conv.title
@@ -130,11 +135,14 @@ def delete_conversation(
     never leaves orphaned rows behind). This only ever deletes the saved
     chat/analysis history itself - any table version it produced along the
     way stays in the data source's Data tab exactly as it would if the
-    conversation had simply been left alone."""
-    conv = db.query(models.Conversation).filter(
-        models.Conversation.id == conversation_id, models.Conversation.owner_id == user.id
-    ).first()
-    if not conv:
+    conversation had simply been left alone.
+
+    Narrower than viewing/renaming (see workspace_access.
+    can_delete_conversation): only this Project's own creator, or the data
+    source's owner, can delete it - a shared workspace lets teammates work
+    together on a Project, not wipe out each other's chat history."""
+    conv = db.query(models.Conversation).filter(models.Conversation.id == conversation_id).first()
+    if not conv or not workspace_access.can_delete_conversation(db, conv, user):
         raise HTTPException(404, "Conversation not found.")
     db.delete(conv)
     db.commit()
@@ -145,10 +153,8 @@ def delete_conversation(
 def get_conversation_messages(
     conversation_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
 ):
-    conv = db.query(models.Conversation).filter(
-        models.Conversation.id == conversation_id, models.Conversation.owner_id == user.id
-    ).first()
-    if not conv:
+    conv = db.query(models.Conversation).filter(models.Conversation.id == conversation_id).first()
+    if not conv or not workspace_access.can_access_conversation(db, conv, user):
         raise HTTPException(404, "Conversation not found.")
 
     messages = sorted(conv.messages, key=lambda m: m.created_at)
