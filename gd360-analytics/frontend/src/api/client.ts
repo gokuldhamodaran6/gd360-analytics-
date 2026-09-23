@@ -501,6 +501,9 @@ export type ConversationSummary = {
   last_message: string;
   last_chart_type: string | null;
   pinned: boolean;
+  // 2026-09-23 (folders round): which Folder this Project is filed into,
+  // if any - null means "unfiled" (the Projects page's default view).
+  folder_id: string | null;
   created_at: string;
   updated_at: string;
   // Who started this Project, and what the CURRENT signed-in person can do
@@ -564,6 +567,41 @@ export const conversationApi = {
   pin: (id: string, pinned: boolean) =>
     api.patch<{ id: string; title: string; pinned: boolean }>(`/conversations/${id}`, { pinned }).then((r) => r.data),
   remove: (id: string) => api.delete<{ id: string; deleted: boolean }>(`/conversations/${id}`).then((r) => r.data),
+  // Files (folderId set) or unfiles (folderId null) several Projects into
+  // a folder at once - the Projects page's select-all bulk-move action
+  // (2026-09-23, folders round). Anything the caller can't actually edit
+  // is silently skipped server-side rather than failing the whole batch -
+  // see routers/conversations.py bulk_move_conversations for exactly what
+  // "moved" vs "skipped" means.
+  bulkMove: (conversationIds: string[], folderId: string | null) =>
+    api
+      .patch<{ moved: string[]; skipped: string[]; folder_id: string | null }>("/conversations/bulk-move", {
+        conversation_ids: conversationIds,
+        folder_id: folderId,
+      })
+      .then((r) => r.data),
+};
+
+// ---- Folders: purely an organizing label for Projects, scoped to one
+// workspace - see backend models.Folder / routers/folders.py. Deleting a
+// folder never deletes the Projects in it, only unfiles them back to
+// folder_id: null. ----
+export type FolderSummary = {
+  id: string;
+  name: string;
+  workspace_id: string;
+  created_at: string;
+  project_count: number;
+  can_edit: boolean;
+};
+
+export const folderApi = {
+  list: (workspaceId: string) =>
+    api.get<FolderSummary[]>("/folders", { params: { workspace_id: workspaceId } }).then((r) => r.data),
+  create: (workspaceId: string, name: string) =>
+    api.post<FolderSummary>("/folders", { workspace_id: workspaceId, name }).then((r) => r.data),
+  rename: (id: string, name: string) => api.patch<FolderSummary>(`/folders/${id}`, { name }).then((r) => r.data),
+  remove: (id: string) => api.delete<{ id: string; deleted: boolean }>(`/folders/${id}`).then((r) => r.data),
 };
 
 // ---- Workspaces: real, persisted workspaces with real members - see
