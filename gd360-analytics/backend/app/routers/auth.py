@@ -89,6 +89,16 @@ def register(payload: schemas.UserCreate, request: Request, db: Session = Depend
     db.commit()
     db.refresh(user)
 
+    # Every account gets one real, non-deletable "Personal Workspace" from
+    # the moment it exists - see models.Workspace and routers/workspaces.py.
+    # Pre-existing accounts get the same thing via
+    # database._ensure_personal_workspaces, run once at startup.
+    personal_ws = models.Workspace(name="Personal Workspace", owner_id=user.id, is_personal=True)
+    db.add(personal_ws)
+    db.flush()
+    db.add(models.WorkspaceMember(workspace_id=personal_ws.id, user_id=user.id, role="owner"))
+    db.commit()
+
     token = security.create_access_token(subject=user.id)
     return schemas.Token(access_token=token, user=schemas.UserOut.model_validate(user))
 
