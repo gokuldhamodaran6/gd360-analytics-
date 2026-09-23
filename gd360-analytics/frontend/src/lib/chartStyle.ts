@@ -814,7 +814,54 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
     layout.xaxis.zeroline = false;
     layout.yaxis.zeroline = false;
   }
- 
+
+  // ---- Value-axis range padding for "outside" bar labels ----
+  // 2026-09-23, round nine (Gokul's own bug report, with a screenshot: on a
+  // horizontal bar chart mixing a few huge-magnitude negative bars with
+  // several tiny-magnitude positive ones, "one legend is still touching the
+  // x axis line"). This was never actually a legend problem - it's an
+  // "outside" bar VALUE LABEL (see the Data labels block below,
+  // textposition: "outside") getting crushed against the plot's own
+  // edge/zeroline. An outside label is text Plotly draws just past the end
+  // of its bar mark, but Plotly's autorange only ever fits the MARKS
+  // themselves - it has no idea that text is about to be drawn past them -
+  // so a bar whose value sits right at the current axis edge (exactly what
+  // a small positive bar next to towering negative ones does: the axis
+  // range is set by the huge bars, leaving the small ones' tips, and their
+  // labels, right on top of the zero line) gets its label rendered with
+  // nowhere real to sit. Padding the value axis's range a further ~12%
+  // past both the largest positive and most negative real bar value - only
+  // when labels are actually being drawn outside the bars - gives every one
+  // of them real room, on any chart shape, not just the one in the
+  // screenshot. Deliberately scoped to real `bar` traces only: a
+  // waterfall/funnel also draws outside labels but off Plotly's own
+  // cumulative running-total layout, not a simple x/y array read here, and
+  // a histogram's t.x/t.y are the raw, unbinned input data rather than
+  // final bar heights, so reading either for this range math would produce
+  // a range with nothing to do with what's actually drawn.
+  if (isCartesian && hasBarLike && style.dataLabels) {
+    const valueAxisKey = horizontal ? "xaxis" : "yaxis";
+    const values: number[] = [];
+    data.forEach((t) => {
+      if (isDecorativeTrace(t) || t?.type !== "bar") return;
+      const arr = horizontal ? t.x : t.y;
+      (Array.isArray(arr) ? arr : []).forEach((v: any) => {
+        const n = typeof v === "number" ? v : parseFloat(v);
+        if (Number.isFinite(n)) values.push(n);
+      });
+    });
+    if (values.length) {
+      const dataMin = Math.min(0, ...values);
+      const dataMax = Math.max(0, ...values);
+      const span = Math.max(1, dataMax - dataMin);
+      const pad = span * 0.12;
+      layout[valueAxisKey] = {
+        ...(layout[valueAxisKey] || {}),
+        range: [dataMin - (dataMin < 0 ? pad : 0), dataMax + (dataMax > 0 ? pad : 0)],
+      };
+    }
+  }
+
   // ---- Legend: a name for every real trace (never left blank, which is
   // what makes Plotly fall back to its own generic "trace 0"/"trace 1" -
   // the second half of the original bug report, alongside the legend
