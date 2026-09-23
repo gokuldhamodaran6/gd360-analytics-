@@ -35,6 +35,19 @@ function ProjectsIcon({ className = "w-[18px] h-[18px]" }: { className?: string 
   );
 }
 
+// 2026-09-23 (shared dashboards v1): a second top-level nav entry next to
+// Projects, for the new /dashboards list page.
+function DashboardsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 3v18h18" />
+      <rect x="7" y="12" width="3" height="6" rx="0.5" />
+      <rect x="13" y="8" width="3" height="10" rx="0.5" />
+      <rect x="18" y="5" width="3" height="13" rx="0.5" />
+    </svg>
+  );
+}
+
 function PlusIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -510,7 +523,7 @@ export default function AppSidebar({
         onOpenInvite={() => setShowInviteModal(true)}
       />
 
-      <div className="px-3 mt-1">
+      <div className="px-3 mt-1 space-y-0.5">
         <Link
           to="/"
           className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
@@ -519,6 +532,15 @@ export default function AppSidebar({
         >
           <ProjectsIcon />
           Projects
+        </Link>
+        <Link
+          to="/dashboards"
+          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
+            location.pathname.startsWith("/dashboards") ? "bg-primary text-white" : "text-text hover:bg-surface2"
+          }`}
+        >
+          <DashboardsIcon />
+          Dashboards
         </Link>
       </div>
 
