@@ -25,7 +25,7 @@ from .. import models, schemas, security
 from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
-from ..services import ai_engine
+from ..services import ai_engine, workspace_access
 from ..services.connectors import SQLConnector, MongoConnector, FileConnector, BigQueryConnector, SnowflakeConnector
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, ensure_legacy_migrated, warm_cache, default_table_for_preview,
@@ -129,25 +129,33 @@ def list_datasources(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    query = db.query(models.DataSource).filter(models.DataSource.owner_id == user.id)
     if workspace_id:
-        # A still-NULL workspace_id (a row that predates this column, not
-        # yet touched by database._ensure_personal_workspaces on this
-        # database) is only ever treated as "in" the caller's own personal
-        # workspace, never any other - so an old row can never appear to be
-        # shared before it's actually assigned anywhere.
+        # Must actually belong to the requested workspace to see anything
+        # in it - checked explicitly rather than relying on the id filter
+        # below alone, so a guessed/foreign workspace_id can never leak
+        # which data sources are in it.
         member = (
             db.query(models.WorkspaceMember)
             .filter(models.WorkspaceMember.workspace_id == workspace_id, models.WorkspaceMember.user_id == user.id)
             .first()
         )
-        ws = db.query(models.Workspace).filter(models.Workspace.id == workspace_id).first() if member else None
-        if ws and ws.is_personal:
-            query = query.filter(
-                (models.DataSource.workspace_id == workspace_id) | (models.DataSource.workspace_id.is_(None))
-            )
-        else:
-            query = query.filter(models.DataSource.workspace_id == workspace_id)
+        if not member:
+            return []
+        # Every data source actually shared into this workspace (2026-09-23:
+        # any owner's, not just the caller's own - this is the "next phase"
+        # that makes a shared workspace's data sources genuinely visible to
+        # its other members, not just their own copies within it), plus -
+        # only when this happens to be the caller's own personal workspace -
+        # their still-NULL/legacy rows, the same NULL-means-personal-
+        # workspace fallback every other list/filter in this app uses. See
+        # services/workspace_access.accessible_datasource_ids_in_workspace.
+        ds_ids = workspace_access.accessible_datasource_ids_in_workspace(db, user, workspace_id)
+        query = db.query(models.DataSource).filter(models.DataSource.id.in_(ds_ids))
+    else:
+        # No specific workspace requested: everything this person can see
+        # across every workspace they're in, own data plus anything shared
+        # with them.
+        query = db.query(models.DataSource).filter(workspace_access.datasource_access_filter(db, user))
     rows = query.all()
     # A Google Sheets/Microsoft Excel connection exists as a real row from
     # the moment the OAuth callback lands (it has to, in order to hold the
@@ -403,7 +411,7 @@ def rename_datasource(
 
 @router.get("/{datasource_id}/schema")
 def get_schema(datasource_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    ds = _get_owned_datasource(db, user, datasource_id)
+    ds = _get_accessible_datasource(db, user, datasource_id)
     return ds.schema_cache or {}
 
 
@@ -419,21 +427,24 @@ def _conversation_id_by_version(db: Session, user: models.User, version_ids: lis
     (created before this attribution existed, or the legacy-migration's own
     first version - see ensure_legacy_migrated) is simply absent from the
     returned dict; the caller treats that as "not tied to one chat" and
-    always shows it, the same as Original data."""
+    always shows it, the same as Original data.
+
+    `user` is no longer used to narrow this to "just my own conversations"
+    (2026-09-23): once the caller has already passed the data source's own
+    accessible-datasource check, every conversation built on it is fair
+    game to attribute a table to, including a teammate's - the same
+    "anyone with access sees the whole shared history" rule get_data_flow
+    below already applies to its own conversation lookup. Kept as a
+    parameter for a stable call signature even though it's now unused."""
     if not version_ids:
         return {}
-    creator_msgs = (
-        db.query(models.Message)
-        .join(models.Conversation, models.Message.conversation_id == models.Conversation.id)
-        .filter(models.Message.new_version_id.in_(version_ids), models.Conversation.owner_id == user.id)
-        .all()
-    )
+    creator_msgs = db.query(models.Message).filter(models.Message.new_version_id.in_(version_ids)).all()
     return {m.new_version_id: m.conversation_id for m in creator_msgs}
 
 
 @router.get("/{datasource_id}/versions")
 def list_versions(datasource_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    ds = _get_owned_datasource(db, user, datasource_id)
+    ds = _get_accessible_datasource(db, user, datasource_id)
     ensure_legacy_migrated(db, ds)
     versions = (
         db.query(models.DatasetVersion)
@@ -466,7 +477,7 @@ def get_data_flow(datasource_id: str, db: Session = Depends(get_db), user: model
     those hold) and what each DatasetVersion already carries
     (parent_version_id/parent_version_ids), so this stays cheap to call
     even for a data source with a long history."""
-    ds = _get_owned_datasource(db, user, datasource_id)
+    ds = _get_accessible_datasource(db, user, datasource_id)
     ensure_legacy_migrated(db, ds)
 
     versions = (
@@ -487,9 +498,14 @@ def get_data_flow(datasource_id: str, db: Session = Depends(get_db), user: model
         for v in versions
     ]
 
+    # Every conversation ever built on this data source, not just the
+    # caller's own - once ds itself has passed the accessible-datasource
+    # check above, the whole team's history on it belongs on the shared
+    # lineage map, the same way a shared spreadsheet's edit history isn't
+    # filtered to "only the parts I personally typed".
     conversations = (
         db.query(models.Conversation)
-        .filter(models.Conversation.datasource_id == ds.id, models.Conversation.owner_id == user.id)
+        .filter(models.Conversation.datasource_id == ds.id)
         .all()
     )
     if not conversations:
@@ -550,7 +566,7 @@ def rename_version(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    ds = _get_owned_datasource(db, user, datasource_id)
+    ds = _get_accessible_datasource(db, user, datasource_id)
     v = _get_owned_version(db, ds, version_id)
     v.name = payload.name.strip()[:80] or v.name
     db.commit()
@@ -561,7 +577,7 @@ def rename_version(
 def delete_version(
     datasource_id: str, version_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
 ):
-    ds = _get_owned_datasource(db, user, datasource_id)
+    ds = _get_accessible_datasource(db, user, datasource_id)
     v = _get_owned_version(db, ds, version_id)
     # A table can now be built from more than one source table at once, so
     # checking "does anything depend on this?" means scanning the full
@@ -759,7 +775,7 @@ def preview_datasource(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    ds = _get_owned_datasource(db, user, datasource_id)
+    ds = _get_accessible_datasource(db, user, datasource_id)
     ensure_legacy_migrated(db, ds)
 
     active_version = _get_owned_version(db, ds, version_id) if version_id else None
@@ -895,7 +911,7 @@ def get_column_distinct_values(
     (default 200, hard-capped at 1000); `truncated` tells the frontend
     whether more exist than were returned, so it can say so rather than
     silently looking complete."""
-    ds = _get_owned_datasource(db, user, datasource_id)
+    ds = _get_accessible_datasource(db, user, datasource_id)
     ensure_legacy_migrated(db, ds)
 
     active_version = _get_owned_version(db, ds, version_id) if version_id else None
@@ -951,7 +967,7 @@ def parse_filter(
     what merges them into its own filter state and re-queries the preview
     - this endpoint never touches or returns any actual row data itself,
     only the column/dtype shape it needs to ground the AI's answer."""
-    ds = _get_owned_datasource(db, user, datasource_id)
+    ds = _get_accessible_datasource(db, user, datasource_id)
     ensure_legacy_migrated(db, ds)
 
     active_version = _get_owned_version(db, ds, payload.version_id) if payload.version_id else None
@@ -984,17 +1000,22 @@ def list_saved_views(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    """Every Saved View this person has for this exact table (the original
-    table/sheet named by `table`, or the saved/AI-built table named by
-    `version_id` - never both) - the Data tab's own "Views" dropdown reads
-    this list to offer them for one click to reapply. See models.SavedView
-    for what a view actually holds."""
-    ds = _get_owned_datasource(db, user, datasource_id)
+    """Every Saved View for this exact table (the original table/sheet
+    named by `table`, or the saved/AI-built table named by `version_id` -
+    never both) - the Data tab's own "Views" dropdown reads this list to
+    offer them for one click to reapply. See models.SavedView for what a
+    view actually holds.
+
+    Shared with the whole team once the data source itself is (2026-09-23):
+    no longer scoped to `owner_id == this caller` - a saved view is a
+    reusable piece of team prep work (like a shared spreadsheet's saved
+    filter), so anyone who can access this data source sees every saved
+    view on it, not just the ones they personally created."""
+    ds = _get_accessible_datasource(db, user, datasource_id)
     views = (
         db.query(models.SavedView)
         .filter(
             models.SavedView.datasource_id == ds.id,
-            models.SavedView.owner_id == user.id,
             models.SavedView.version_id == version_id,
             models.SavedView.table_name == (table if not version_id else None),
         )
@@ -1017,9 +1038,9 @@ def create_saved_view(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    ds = _get_owned_datasource(db, user, datasource_id)
+    ds = _get_accessible_datasource(db, user, datasource_id)
     if payload.version_id:
-        _get_owned_version(db, ds, payload.version_id)  # 404s if not this person's
+        _get_owned_version(db, ds, payload.version_id)  # 404s if it isn't a table on this datasource
     view = models.SavedView(
         datasource_id=ds.id,
         owner_id=user.id,
@@ -1041,10 +1062,13 @@ def create_saved_view(
 def delete_saved_view(
     datasource_id: str, view_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
 ):
-    ds = _get_owned_datasource(db, user, datasource_id)
+    # Shared once the data source itself is (see list_saved_views above):
+    # anyone who can access this data source can delete any saved view on
+    # it, not just one they personally created themselves.
+    ds = _get_accessible_datasource(db, user, datasource_id)
     view = (
         db.query(models.SavedView)
-        .filter(models.SavedView.id == view_id, models.SavedView.datasource_id == ds.id, models.SavedView.owner_id == user.id)
+        .filter(models.SavedView.id == view_id, models.SavedView.datasource_id == ds.id)
         .first()
     )
     if not view:
@@ -1063,7 +1087,7 @@ def export_datasource(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    ds = _get_owned_datasource(db, user, datasource_id)
+    ds = _get_accessible_datasource(db, user, datasource_id)
     ensure_legacy_migrated(db, ds)
 
     active_version = _get_owned_version(db, ds, version_id) if version_id else None
@@ -1122,10 +1146,32 @@ def delete_datasource(datasource_id: str, db: Session = Depends(get_db), user: m
 
 
 def _get_owned_datasource(db: Session, user: models.User, datasource_id: str) -> models.DataSource:
+    """Strict owner-only access - reserved for the handful of truly
+    administrative actions on the data source ROW ITSELF: renaming it,
+    deleting it, reassigning which workspace it lives in. See
+    _get_accessible_datasource below for the much more common "can this
+    person view/use it" check every other endpoint in this file wants."""
     ds = db.query(models.DataSource).filter(
         models.DataSource.id == datasource_id, models.DataSource.owner_id == user.id
     ).first()
     if not ds:
+        raise HTTPException(404, "Datasource not found.")
+    return ds
+
+
+def _get_accessible_datasource(db: Session, user: models.User, datasource_id: str) -> models.DataSource:
+    """The "collaborate" tier: the data source's own owner, OR any member
+    of the workspace it's been shared into (see services/workspace_access.
+    py for the full two-tier model this implements). Used by every
+    view/preview/analyze-adjacent endpoint below - schema, versions, flow,
+    preview, distinct-values, parse-filter, saved views, export, rename/
+    delete a saved table - so a teammate who's been added to a shared
+    workspace can actually see and work with what's in it, not just see
+    its name on the roster. 404s either way a non-owner can't reach it
+    (never found, or found but not shared with them), so there's nothing
+    for a non-member to distinguish."""
+    ds = db.query(models.DataSource).filter(models.DataSource.id == datasource_id).first()
+    if not ds or not workspace_access.can_access_datasource(db, ds, user):
         raise HTTPException(404, "Datasource not found.")
     return ds
 
