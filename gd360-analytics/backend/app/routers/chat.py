@@ -25,7 +25,7 @@ from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
 from ..schemas_extra import ChatRequestFull, VerifyRequest
-from ..services import ai_engine, learned_answers
+from ..services import ai_engine, learned_answers, workspace_access
 from ..services.connectors import BigQueryConnector, SnowflakeConnector, SQLConnector, MongoConnector, QueryTooExpensive, ReadOnlyViolation
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, dataframe_to_csv_bytes, ensure_legacy_migrated, NeedsTableSelection,
@@ -357,10 +357,8 @@ def _try_mongo_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt
 def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     _check_rate_limit(user.id)
 
-    ds = db.query(models.DataSource).filter(
-        models.DataSource.id == payload.datasource_id, models.DataSource.owner_id == user.id
-    ).first()
-    if not ds:
+    ds = db.query(models.DataSource).filter(models.DataSource.id == payload.datasource_id).first()
+    if not ds or not workspace_access.can_access_datasource(db, ds, user):
         raise HTTPException(404, "Datasource not found.")
     ensure_legacy_migrated(db, ds)
 
@@ -617,11 +615,9 @@ def _load_selected_tables(
     def _get_other_ds(other_id: str) -> models.DataSource:
         if other_id in other_ds_cache:
             return other_ds_cache[other_id]
-        other_ds = db.query(models.DataSource).filter(
-            models.DataSource.id == other_id, models.DataSource.owner_id == user.id
-        ).first()
-        if not other_ds:
-            raise HTTPException(404, "One of the added data sources no longer exists or is not yours.")
+        other_ds = db.query(models.DataSource).filter(models.DataSource.id == other_id).first()
+        if not other_ds or not workspace_access.can_access_datasource(db, other_ds, user):
+            raise HTTPException(404, "One of the added data sources no longer exists or is not accessible to you.")
         other_ds_cache[other_id] = other_ds
         return other_ds
 
@@ -681,7 +677,7 @@ def _load_selected_tables(
         version = (
             db.query(models.DatasetVersion)
             .join(models.DataSource, models.DatasetVersion.datasource_id == models.DataSource.id)
-            .filter(models.DatasetVersion.id == source_id, models.DataSource.owner_id == user.id)
+            .filter(models.DatasetVersion.id == source_id, workspace_access.datasource_access_filter(db, user))
             .first()
         )
         if not version:
@@ -726,10 +722,8 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
     if not msg:
         raise HTTPException(404, "Message not found.")
 
-    conversation = db.query(models.Conversation).filter(
-        models.Conversation.id == msg.conversation_id, models.Conversation.owner_id == user.id
-    ).first()
-    if not conversation:
+    conversation = db.query(models.Conversation).filter(models.Conversation.id == msg.conversation_id).first()
+    if not conversation or not workspace_access.can_access_conversation(db, conversation, user):
         raise HTTPException(404, "Message not found.")
 
     if msg.role != "assistant" or not msg.code or msg.action not in ("analyze", "transform"):
@@ -893,10 +887,13 @@ def _get_or_create_conversation(
     db: Session, user: models.User, conversation_id: str | None, datasource_id: str, first_prompt: str
 ) -> models.Conversation:
     if conversation_id:
-        conv = db.query(models.Conversation).filter(
-            models.Conversation.id == conversation_id, models.Conversation.owner_id == user.id
-        ).first()
-        if conv:
+        # Resuming an existing Project - a teammate can continue one
+        # someone else on the shared workspace started (collaborate tier),
+        # not just their own; falling through to create a brand-new
+        # conversation here for an inaccessible id would otherwise silently
+        # start a duplicate instead of raising.
+        conv = db.query(models.Conversation).filter(models.Conversation.id == conversation_id).first()
+        if conv and workspace_access.can_access_conversation(db, conv, user):
             return conv
     title = (first_prompt or "").strip()
     if len(title) > 60:
