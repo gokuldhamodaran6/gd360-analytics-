@@ -298,7 +298,18 @@ export const datasourceApi = {
   // panel's "+ Add more data" picker to offer every OTHER already-
   // connected data source (not just the one the current Workspace page is
   // open on) as something to pull into the current analysis.
-  list: () => api.get<DataSourceSummary[]>("/datasources").then((r) => r.data),
+  // workspaceId narrows this to one workspace (see workspaceApi below) -
+  // omitted, this still returns everything, exactly as before workspaces
+  // existed, so every existing caller keeps working unchanged.
+  list: (workspaceId?: string) =>
+    api.get<DataSourceSummary[]>("/datasources", { params: { workspace_id: workspaceId || undefined } }).then((r) => r.data),
+
+  // Moves a data source into a different one of the caller's own
+  // workspaces - called right after a new data source is created so it's
+  // tagged with whichever workspace was active at the time (see
+  // Dashboard.tsx's "+ New Project" flow).
+  assignWorkspace: (id: string, workspaceId: string) =>
+    api.patch(`/datasources/${id}/workspace`, { workspace_id: workspaceId }).then((r) => r.data),
 
   // `table` (new) picks one specific original table/sheet by name - the
   // Data tab's own per-table tab strip for a multi-table datasource (see
@@ -519,13 +530,65 @@ export type ConversationDetail = {
 };
 
 export const conversationApi = {
-  list: () => api.get<ConversationSummary[]>("/conversations").then((r) => r.data),
+  // workspaceId narrows this to one workspace's Projects (see workspaceApi
+  // below) - omitted, this still returns everything, exactly as before
+  // workspaces existed.
+  list: (workspaceId?: string) =>
+    api.get<ConversationSummary[]>("/conversations", { params: { workspace_id: workspaceId || undefined } }).then((r) => r.data),
   getMessages: (id: string) => api.get<ConversationDetail>(`/conversations/${id}/messages`).then((r) => r.data),
   rename: (id: string, title: string) =>
     api.patch<{ id: string; title: string; pinned: boolean }>(`/conversations/${id}`, { title }).then((r) => r.data),
   pin: (id: string, pinned: boolean) =>
     api.patch<{ id: string; title: string; pinned: boolean }>(`/conversations/${id}`, { pinned }).then((r) => r.data),
   remove: (id: string) => api.delete<{ id: string; deleted: boolean }>(`/conversations/${id}`).then((r) => r.data),
+};
+
+// ---- Workspaces: real, persisted workspaces with real members - see
+// backend routers/workspaces.py for the full model. No transactional email
+// sending exists in this app yet, so inviting someone works by sharing a
+// link (POST .../invite/regenerate issues it, GET/POST /invites/:token
+// previews and accepts it), not by an emailed invite. ----
+
+export type WorkspaceSummary = {
+  id: string;
+  name: string;
+  is_personal: boolean;
+  role: "owner" | "member";
+  member_count: number;
+  datasource_count: number;
+  invite_token: string;
+  created_at: string;
+};
+
+export type WorkspaceMember = {
+  user_id: string;
+  email: string;
+  full_name: string | null;
+  role: "owner" | "member";
+  created_at: string;
+};
+
+export type WorkspaceDetail = WorkspaceSummary & { members: WorkspaceMember[] };
+
+export type InvitePreview = {
+  workspace_id: string;
+  workspace_name: string;
+  member_count: number;
+  already_member: boolean;
+};
+
+export const workspaceApi = {
+  list: () => api.get<WorkspaceSummary[]>("/workspaces").then((r) => r.data),
+  create: (name: string) => api.post<WorkspaceSummary>("/workspaces", { name }).then((r) => r.data),
+  get: (id: string) => api.get<WorkspaceDetail>(`/workspaces/${id}`).then((r) => r.data),
+  rename: (id: string, name: string) => api.patch<WorkspaceSummary>(`/workspaces/${id}`, { name }).then((r) => r.data),
+  remove: (id: string) => api.delete<{ id: string; deleted: boolean }>(`/workspaces/${id}`).then((r) => r.data),
+  regenerateInvite: (id: string) =>
+    api.post<WorkspaceSummary>(`/workspaces/${id}/invite/regenerate`).then((r) => r.data),
+  removeMember: (id: string, userId: string) =>
+    api.delete<{ user_id: string; removed: boolean }>(`/workspaces/${id}/members/${userId}`).then((r) => r.data),
+  previewInvite: (token: string) => api.get<InvitePreview>(`/invites/${token}`).then((r) => r.data),
+  joinInvite: (token: string) => api.post<WorkspaceSummary>(`/invites/${token}/join`).then((r) => r.data),
 };
 
 // The "Double-check this" action: re-checks a previously computed answer
