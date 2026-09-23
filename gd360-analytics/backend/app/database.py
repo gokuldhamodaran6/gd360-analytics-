@@ -51,6 +51,7 @@ _NEW_COLUMNS = [
     ("messages", "new_version_id", "TEXT"),
     ("datasources", "workspace_id", "TEXT"),
     ("dashboards", "workspace_id", "TEXT"),
+    ("conversations", "folder_id", "TEXT"),
 ]
 
 
