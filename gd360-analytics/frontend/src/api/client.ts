@@ -675,3 +675,61 @@ export const gokuApi = {
       })
       .then((r) => r.data),
 };
+
+// Dashboards: named boards of pinned charts. A dashboard can stay personal
+// (workspace_id null, visible only to whoever created it - the original
+// behavior) or be shared into a team workspace (2026-09-23, shared
+// dashboards round), where every member can see it and anyone but a
+// "viewer" can add to/rename it - see backend routers/dashboards.py for
+// the exact view/editable/delete split can_edit/can_delete are computed
+// from server-side.
+export type DashboardSummary = {
+  id: string;
+  name: string;
+  workspace_id: string | null;
+  workspace_name: string | null;
+  created_at: string;
+  chart_count: number;
+  is_own: boolean;
+  created_by_name: string | null;
+  created_by_email: string | null;
+  can_edit: boolean;
+  can_delete: boolean;
+};
+
+export type SavedChart = {
+  id: string;
+  title: string;
+  chart_spec: any;
+  insight: string | null;
+  position: number;
+};
+
+export type DashboardDetail = DashboardSummary & { charts: SavedChart[] };
+
+export const dashboardApi = {
+  list: () => api.get<DashboardSummary[]>("/dashboards").then((r) => r.data),
+  get: (id: string) => api.get<DashboardDetail>(`/dashboards/${id}`).then((r) => r.data),
+  create: (name: string, workspaceId?: string | null) =>
+    api.post<DashboardSummary>("/dashboards", { name, workspace_id: workspaceId || null }).then((r) => r.data),
+  rename: (id: string, name: string) =>
+    api.patch<DashboardSummary>(`/dashboards/${id}`, { name }).then((r) => r.data),
+  // Sharing/un-sharing (creator-only server-side) - pass null to move a
+  // dashboard back to personal.
+  setWorkspace: (id: string, workspaceId: string | null) =>
+    api.patch<DashboardSummary>(`/dashboards/${id}/workspace`, { workspace_id: workspaceId }).then((r) => r.data),
+  remove: (id: string) => api.delete(`/dashboards/${id}`).then(() => undefined),
+  saveChart: (payload: {
+    title: string;
+    chart_spec: any;
+    insight?: string | null;
+    dashboard_id?: string | null;
+    dashboard_name?: string | null;
+    workspace_id?: string | null;
+  }) =>
+    api
+      .post<{ dashboard_id: string; dashboard_name: string; chart_id: string }>("/dashboards/save-chart", payload)
+      .then((r) => r.data),
+  removeChart: (dashboardId: string, chartId: string) =>
+    api.delete(`/dashboards/${dashboardId}/charts/${chartId}`).then(() => undefined),
+};
