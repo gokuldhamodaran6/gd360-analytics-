@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
-import { dashboardApi, DashboardSummary, workspaceApi, WorkspaceSummary } from "../api/client";
+import { dashboardApi, DashboardSummary, WorkspaceSummary } from "../api/client";
 import TopNav from "../components/TopNav";
+import AppSidebar from "../components/AppSidebar";
+import { useWorkspaceNav } from "../lib/useWorkspaceNav";
+import ViewToggle, { useViewMode } from "../components/ViewToggle";
 
 // 2026-09-23 (shared dashboards v1): the "My dashboards" page this app
 // never actually had before - previously a dashboard could only be opened
@@ -230,13 +233,20 @@ function DashboardCard({ d, onDeleted }: { d: DashboardSummary; onDeleted: (id: 
 export default function Dashboards() {
   const navigate = useNavigate();
   const [dashboards, setDashboards] = useState<DashboardSummary[] | null>(null);
-  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [error, setError] = useState("");
+  const [viewMode, setViewMode] = useViewMode("gd360_view_dashboards");
+
+  // The sidebar's own workspace list/switcher - Dashboards itself isn't
+  // scoped to one active workspace (it shows every dashboard across all of
+  // them, grouped by section below), this is purely so the persistent
+  // AppSidebar behaves identically here as it does on every other page.
+  const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
 
   useEffect(() => {
-    Promise.all([dashboardApi.list(), workspaceApi.list()])
-      .then(([d, w]) => { setDashboards(d); setWorkspaces(w); })
+    dashboardApi
+      .list()
+      .then(setDashboards)
       .catch(() => setError("Couldn't load your dashboards. Please try refreshing."));
   }, []);
 
@@ -250,8 +260,15 @@ export default function Dashboards() {
   }
 
   return (
-    <div>
-      <TopNav />
+    <div className="flex">
+      <AppSidebar
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
+        onWorkspaceSwitch={switchWorkspace}
+        onWorkspaceCreated={handleWorkspaceCreated}
+      />
+      <div className="flex-1 min-w-0">
+      <TopNav hideLogo />
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8">
         <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
           <div>
@@ -260,9 +277,12 @@ export default function Dashboards() {
               Curated boards of pinned charts - keep one for yourself, or share one with a workspace.
             </p>
           </div>
-          <button type="button" className="btn-primary text-sm flex items-center gap-1.5" onClick={() => setShowCreate(true)}>
-            <PlusIcon /> New dashboard
-          </button>
+          <div className="flex items-center gap-2.5">
+            {dashboards && dashboards.length > 0 && <ViewToggle mode={viewMode} onChange={setViewMode} />}
+            <button type="button" className="btn-primary text-sm flex items-center gap-1.5" onClick={() => setShowCreate(true)}>
+              <PlusIcon /> New dashboard
+            </button>
+          </div>
         </div>
 
         {error && <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-4">{error}</div>}
@@ -284,7 +304,7 @@ export default function Dashboards() {
         {personal.length > 0 && (
           <div className="mb-8">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2">Personal</div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            <div className={viewMode === "grid" ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" : "grid grid-cols-1 gap-2"}>
               {personal.map((d) => (
                 <DashboardCard key={d.id} d={d} onDeleted={(id) => setDashboards((ds) => (ds || []).filter((x) => x.id !== id))} />
               ))}
@@ -297,13 +317,14 @@ export default function Dashboards() {
             <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2">
               Shared with {list[0].workspace_name || "workspace"}
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            <div className={viewMode === "grid" ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" : "grid grid-cols-1 gap-2"}>
               {list.map((d) => (
                 <DashboardCard key={d.id} d={d} onDeleted={(id) => setDashboards((ds) => (ds || []).filter((x) => x.id !== id))} />
               ))}
             </div>
           </div>
         ))}
+      </div>
       </div>
 
       {showCreate && (
