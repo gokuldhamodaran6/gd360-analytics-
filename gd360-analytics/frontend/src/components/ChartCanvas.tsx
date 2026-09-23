@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import Plot, { Plotly } from "../lib/plotly";
 import { useTheme } from "../api/ThemeContext";
+import { suggestedChartMinHeight } from "../lib/chartStyle";
 
 const EXPORT_FORMATS: { value: "png" | "jpeg" | "svg" | "webp"; label: string }[] = [
   { value: "png", label: "PNG" },
@@ -184,7 +185,12 @@ export default function ChartCanvas({ chartSpec, title }: { chartSpec: any; titl
         <Plot
           data={chartSpec.data}
           layout={{ ...themedLayout, autosize: true, title: resolvedTitle }}
-          style={{ width: "100%", height: "100%", minHeight: 380 }}
+          // A many-entry legend needs real vertical room to grow downward
+          // from the title without ever reaching the x-axis labels below it
+          // - see chartStyle.ts's suggestedChartMinHeight. A plain chart
+          // with no legend (or a short one) still gets the same 380px floor
+          // this always used, so nothing changes for the common case.
+          style={{ width: "100%", height: "100%", minHeight: suggestedChartMinHeight(chartSpec) }}
           useResizeHandler
           config={{ displaylogo: false, responsive: true }}
           onInitialized={(_figure: any, graphDiv: any) => {
