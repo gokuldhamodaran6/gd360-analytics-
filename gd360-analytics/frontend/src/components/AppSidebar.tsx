@@ -157,7 +157,10 @@ function WorkspaceSwitcher({
         </span>
         <span className="min-w-0 flex-1 text-left">
           <span className="block text-sm font-bold gradient-text truncate">GD360 Analytics</span>
-          <span className="block text-[11px] text-muted truncate">{activeName}</span>
+          <span className="block text-[11px] text-muted truncate">
+            {activeName}
+            {active?.role === "viewer" && " · View only"}
+          </span>
         </span>
         <ChevronsUpDownIcon className="w-3.5 h-3.5 text-muted shrink-0" />
       </button>
@@ -182,7 +185,10 @@ function WorkspaceSwitcher({
                 <span className="w-6 h-6 rounded-md bg-primary flex items-center justify-center text-white font-bold text-[11px] shrink-0">
                   {ws.is_personal ? "G" : ws.name.charAt(0).toUpperCase()}
                 </span>
-                <span className="flex-1 truncate">{ws.name}</span>
+                <span className="flex-1 truncate">
+                  {ws.name}
+                  {ws.role === "viewer" && <span className="text-muted"> · View only</span>}
+                </span>
                 {ws.id === activeWorkspaceId && <CheckIcon className="w-3.5 h-3.5 text-primary shrink-0" />}
               </button>
             ))}
@@ -330,6 +336,23 @@ function InviteMembersModal({
     }
   };
 
+  // "Can edit" (role="member") is everything a teammate could already do;
+  // "Can view" (role="viewer", 2026-09-23) sees the same data/Projects but
+  // can't chat/analyze, create or change anything - owner-only to change,
+  // same as removing someone.
+  const updateRole = async (userId: string, role: "member" | "viewer") => {
+    setBusy(true);
+    setError("");
+    try {
+      await workspaceApi.updateMemberRole(workspaceId, userId, role);
+      load();
+    } catch {
+      setError("Couldn't change that person's access. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/60 p-4 overflow-y-auto"
@@ -342,7 +365,8 @@ function InviteMembersModal({
         <h2 className="text-lg font-bold mb-1">{detail ? `Invite to ${detail.name}` : "Invite teammates"}</h2>
         <p className="text-xs text-muted mb-5 leading-relaxed">
           Share this link with anyone you want in this workspace - they'll join as soon as they open it
-          and sign in. There's no emailed invite yet, so send it however you'd like.
+          and sign in, with full access to everything in it. There's no emailed invite yet, so send it
+          however you'd like. You can switch anyone to view-only below at any time.
         </p>
 
         {error && <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-3">{error}</div>}
@@ -375,7 +399,22 @@ function InviteMembersModal({
                     <span className="block text-sm truncate">{m.full_name || m.email}</span>
                     {m.full_name && <span className="block text-[11px] text-muted truncate">{m.email}</span>}
                   </span>
-                  <span className="text-[10px] uppercase tracking-wide text-muted shrink-0">{m.role}</span>
+                  {isOwner && m.user_id !== currentUserId && m.role !== "owner" ? (
+                    <select
+                      className="text-[11px] bg-surface2 border border-border rounded-md px-1.5 py-1 shrink-0 cursor-pointer"
+                      value={m.role}
+                      disabled={busy}
+                      title="What this person can do in this workspace"
+                      onChange={(e) => updateRole(m.user_id, e.target.value as "member" | "viewer")}
+                    >
+                      <option value="member">Can edit</option>
+                      <option value="viewer">Can view</option>
+                    </select>
+                  ) : (
+                    <span className="text-[10px] uppercase tracking-wide text-muted shrink-0">
+                      {m.role === "owner" ? "Owner" : m.role === "viewer" ? "Can view" : "Can edit"}
+                    </span>
+                  )}
                   {isOwner && m.user_id !== currentUserId && (
                     <button
                       type="button"
@@ -449,6 +488,11 @@ export default function AppSidebar({
   }, [refreshKey, activeWorkspaceId]);
 
   const onProjects = location.pathname === "/";
+  // A workspace "viewer" (2026-09-23) can see this workspace's data
+  // sources but can't add their own into it - same restriction Dashboard.tsx
+  // applies to its "+ New Project" button, mirrored here since this is a
+  // second entry point to the same connect flow.
+  const isViewerHere = workspaces.find((w) => w.id === activeWorkspaceId)?.role === "viewer";
 
   return (
     // Hidden below the `lg` breakpoint rather than becoming a hamburger/
@@ -517,7 +561,9 @@ export default function AppSidebar({
         <button
           type="button"
           onClick={onConnectNew}
-          className="mt-2 shrink-0 w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-left text-sm font-medium text-muted hover:text-text hover:bg-surface2 transition border border-dashed border-border"
+          disabled={isViewerHere}
+          title={isViewerHere ? "You have view-only access to this workspace." : undefined}
+          className="mt-2 shrink-0 w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-left text-sm font-medium text-muted hover:text-text hover:bg-surface2 transition border border-dashed border-border disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
         >
           <PlusIcon className="w-3.5 h-3.5 text-muted" />
           Connect new
