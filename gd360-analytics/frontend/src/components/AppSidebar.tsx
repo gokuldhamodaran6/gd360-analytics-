@@ -70,6 +70,62 @@ function SearchIcon({ className = "w-4 h-4" }: { className?: string }) {
   );
 }
 
+// 2026-09-23, round two of Gokul's own explicit design feedback: this
+// popup's "Your data" tab used to just be a tiny muted "FILES" label over a
+// plain flat list - no way to filter by category at all, next to a "New
+// data" tab whose own DataSourceForm content already looks properly built
+// and aligned. These four icons back a segmented category picker for
+// "Your data" that matches that same graphic, icon-plus-label picker style
+// DataSourceForm's own Database/Warehouse/Connect/Upload file tabs use
+// (also mirrored on the /data page's own Existing data view) - one
+// consistent "pick a kind of thing" control everywhere in this app, not a
+// plain list with no way to narrow it down.
+function AllGlyph({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7" height="7" rx="1.5" />
+      <rect x="14" y="3" width="7" height="7" rx="1.5" />
+      <rect x="3" y="14" width="7" height="7" rx="1.5" />
+      <rect x="14" y="14" width="7" height="7" rx="1.5" />
+    </svg>
+  );
+}
+
+function DatabaseGlyph({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <ellipse cx="12" cy="5" rx="8" ry="3" />
+      <path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
+      <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" />
+    </svg>
+  );
+}
+
+function WarehouseGlyph({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 10.5 12 4l9 6.5" />
+      <path d="M5 9.5V20h14V9.5" />
+      <path d="M9 20v-6h6v6" />
+    </svg>
+  );
+}
+
+function FileGlyph({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 2h9l5 5v15H6z" />
+      <path d="M15 2v5h5" />
+    </svg>
+  );
+}
+
+function categoryGlyph(cat: "Files" | "Databases" | "Warehouses") {
+  if (cat === "Databases") return DatabaseGlyph;
+  if (cat === "Warehouses") return WarehouseGlyph;
+  return FileGlyph;
+}
+
 function PlusIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -502,6 +558,7 @@ export function ConnectDataPopup({
   const [tab, setTab] = useState<"existing" | "new">("existing");
   const [sources, setSources] = useState<DataSourceSummary[] | null>(null);
   const [query, setQuery] = useState("");
+  const [category, setCategory] = useState<"all" | "Files" | "Databases" | "Warehouses">("all");
 
   useEffect(() => {
     if (!activeWorkspaceId) return;
@@ -530,32 +587,35 @@ export function ConnectDataPopup({
     navigate(destination(ds.id));
   };
 
-  const filtered = (sources || []).filter(
-    (ds) => !query.trim() || ds.name.toLowerCase().includes(query.trim().toLowerCase())
-  );
-  const grouped = DATA_SOURCE_CATEGORIES.map((cat) => ({
-    category: cat,
-    sources: filtered.filter((ds) => dataSourceCategory(ds.kind) === cat),
-  })).filter((g) => g.sources.length > 0);
+  const filtered = (sources || []).filter((ds) => {
+    if (query.trim() && !ds.name.toLowerCase().includes(query.trim().toLowerCase())) return false;
+    if (category !== "all" && dataSourceCategory(ds.kind) !== category) return false;
+    return true;
+  });
+  const groupCats = category === "all" ? DATA_SOURCE_CATEGORIES : [category];
+  const grouped = groupCats
+    .map((cat) => ({ category: cat, sources: filtered.filter((ds) => dataSourceCategory(ds.kind) === cat) }))
+    .filter((g) => g.sources.length > 0);
+  const hasFiltersApplied = query.trim() !== "" || category !== "all";
 
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/60 p-4 overflow-y-auto"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="card w-full max-w-md my-8 sm:my-0 flex flex-col max-h-[85vh]">
-        <div className="p-4 border-b border-border flex items-center justify-between shrink-0">
+      <div className="card w-full max-w-lg my-8 sm:my-0 flex flex-col max-h-[85vh]">
+        <div className="p-4 border-b border-border flex items-center justify-between gap-3 shrink-0">
           <div className="font-bold text-base">Connect data</div>
-          <button type="button" className="text-muted hover:text-text transition" onClick={onClose} aria-label="Close">
+          <button type="button" className="text-muted hover:text-text transition shrink-0" onClick={onClose} aria-label="Close">
             <CloseIcon className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="px-4 pt-3 flex items-center gap-1 shrink-0 border-b border-border">
+        <div className="px-4 pt-3 flex items-center gap-4 shrink-0 border-b border-border">
           <button
             type="button"
             onClick={() => setTab("existing")}
-            className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition ${
+            className={`px-1 py-2 text-sm font-medium border-b-2 -mb-px transition ${
               tab === "existing" ? "border-primary text-primary" : "border-transparent text-muted hover:text-text"
             }`}
           >
@@ -564,7 +624,7 @@ export function ConnectDataPopup({
           <button
             type="button"
             onClick={() => setTab("new")}
-            className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition ${
+            className={`px-1 py-2 text-sm font-medium border-b-2 -mb-px transition ${
               tab === "new" ? "border-primary text-primary" : "border-transparent text-muted hover:text-text"
             }`}
           >
@@ -586,27 +646,73 @@ export function ConnectDataPopup({
             </div>
           ) : (
             <>
-              {sources.length > 5 && (
-                <div className="relative mb-3">
-                  <SearchIcon className="w-3.5 h-3.5 text-muted absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input
-                    autoFocus
-                    className="input input-icon-sm text-sm w-full py-1.5"
-                    placeholder="Search your data..."
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                  />
-                </div>
-              )}
+              {/* 2026-09-23, round two: search always shown (was hidden
+                  under 6 sources, which meant the category picker below was
+                  the only filter most people ever saw) - `.input-icon-sm`
+                  (see index.css) keeps its icon from sitting on top of the
+                  placeholder text, same fix as every other search box in
+                  this app. */}
+              <div className="relative mb-3">
+                <SearchIcon className="w-3.5 h-3.5 text-muted absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  autoFocus
+                  className="input input-icon-sm text-sm w-full py-2"
+                  placeholder="Search your data..."
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+              </div>
+
+              {/* Same segmented, icon-plus-label category picker as
+                  DataSourceForm's own Database/Warehouse/Connect/Upload
+                  file tabs (and the /data page's Existing data view) - not
+                  a plain list with no way to narrow it down. Each slot has
+                  its own generous padding so the four never crowd each
+                  other or the words inside them. */}
+              <div className="grid grid-cols-4 gap-1.5 p-1.5 mb-4 rounded-xl bg-surface2 border border-border">
+                {(
+                  [
+                    { key: "all" as const, label: "All", Icon: AllGlyph },
+                    { key: "Files" as const, label: "Files", Icon: categoryGlyph("Files") },
+                    { key: "Databases" as const, label: "Databases", Icon: categoryGlyph("Databases") },
+                    { key: "Warehouses" as const, label: "Warehouses", Icon: categoryGlyph("Warehouses") },
+                  ]
+                ).map((t) => (
+                  <button
+                    type="button"
+                    key={t.key}
+                    onClick={() => setCategory(t.key)}
+                    aria-pressed={category === t.key}
+                    className={`flex flex-col items-center justify-center gap-1 px-1 py-2.5 rounded-lg text-[11px] font-medium leading-tight transition ${
+                      category === t.key ? "bg-primary text-white shadow-sm" : "text-muted hover:text-text"
+                    }`}
+                  >
+                    <t.Icon className="w-4 h-4 shrink-0" />
+                    <span className="w-full text-center truncate">{t.label}</span>
+                  </button>
+                ))}
+              </div>
+
               {grouped.length === 0 ? (
-                <div className="text-xs text-muted text-center py-6">No sources match &ldquo;{query}&rdquo;.</div>
+                <div className="text-xs text-muted text-center py-6">
+                  No sources match your filters.{" "}
+                  {hasFiltersApplied && (
+                    <button
+                      type="button"
+                      className="text-primary font-medium hover:underline"
+                      onClick={() => { setQuery(""); setCategory("all"); }}
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </div>
               ) : (
                 grouped.map((g) => (
                   <div key={g.category} className="mb-4 last:mb-0">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-1.5 px-0.5">
                       {g.category}
                     </div>
-                    <div className="space-y-0.5">
+                    <div className="space-y-1">
                       {g.sources.map((ds) => {
                         const meta = connectionKindMeta(ds.kind);
                         return (
@@ -614,7 +720,7 @@ export function ConnectDataPopup({
                             key={ds.id}
                             type="button"
                             onClick={() => openSource(ds)}
-                            className="w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-left hover:bg-surface2 transition group"
+                            className="w-full flex items-center gap-2.5 px-2.5 py-2.5 rounded-lg text-left hover:bg-surface2 transition group"
                           >
                             <span
                               className="w-7 h-7 rounded-md flex items-center justify-center shrink-0"
