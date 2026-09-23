@@ -49,6 +49,8 @@ function TrashIcon({ className }: { className?: string }) {
 function RowMenu({
   pinned,
   busy,
+  canEdit,
+  canDelete,
   onClose,
   onRename,
   onTogglePin,
@@ -56,6 +58,12 @@ function RowMenu({
 }: {
   pinned: boolean;
   busy: boolean;
+  // Server-computed (2026-09-23, roles & attribution round) - a workspace
+  // "viewer" gets both false, so this menu only ever offers what they're
+  // actually allowed to do instead of showing an action that would just
+  // 403 when clicked.
+  canEdit: boolean;
+  canDelete: boolean;
   onClose: () => void;
   onRename: () => void;
   onTogglePin: () => void;
@@ -95,23 +103,29 @@ function RowMenu({
 
   return (
     <div className="p-1.5 w-52" onClick={(e) => e.stopPropagation()}>
-      <button type="button" className={itemClass} onClick={onRename}>
-        <PencilIcon className="w-4 h-4 text-muted shrink-0" />
-        <span>Rename</span>
-      </button>
-      <button type="button" className={itemClass} disabled={busy} onClick={onTogglePin}>
-        <PinIcon className="w-4 h-4 text-muted shrink-0" filled={pinned} />
-        <span>{pinned ? "Unpin chat" : "Pin chat"}</span>
-      </button>
-      <div className="my-1 border-t border-border" />
-      <button
-        type="button"
-        className={`${itemClass} text-red-400 hover:bg-red-500/10`}
-        onClick={() => setConfirmingDelete(true)}
-      >
-        <TrashIcon className="w-4 h-4 shrink-0" />
-        <span>Delete</span>
-      </button>
+      {canEdit && (
+        <>
+          <button type="button" className={itemClass} onClick={onRename}>
+            <PencilIcon className="w-4 h-4 text-muted shrink-0" />
+            <span>Rename</span>
+          </button>
+          <button type="button" className={itemClass} disabled={busy} onClick={onTogglePin}>
+            <PinIcon className="w-4 h-4 text-muted shrink-0" filled={pinned} />
+            <span>{pinned ? "Unpin chat" : "Pin chat"}</span>
+          </button>
+        </>
+      )}
+      {canEdit && canDelete && <div className="my-1 border-t border-border" />}
+      {canDelete && (
+        <button
+          type="button"
+          className={`${itemClass} text-red-400 hover:bg-red-500/10`}
+          onClick={() => setConfirmingDelete(true)}
+        >
+          <TrashIcon className="w-4 h-4 shrink-0" />
+          <span>Delete</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -230,7 +244,14 @@ export default function ConversationRow({
     }
   };
 
-  const menuButton = (
+  // Both false only for a workspace "viewer" looking at someone else's
+  // Project (own Projects are always at least deletable by their creator -
+  // see backend can_delete_conversation) - there's genuinely nothing this
+  // menu could offer them, so skip rendering it rather than showing an
+  // empty dropdown.
+  const canEdit = conversation.can_edit ?? true;
+  const canDelete = conversation.can_delete ?? true;
+  const menuButton = (canEdit || canDelete) && (
     <div className="relative shrink-0" ref={menuRef}>
       <button
         type="button"
@@ -255,6 +276,8 @@ export default function ConversationRow({
         <RowMenu
           pinned={conversation.pinned}
           busy={menuBusy}
+          canEdit={canEdit}
+          canDelete={canDelete}
           onClose={() => setMenuOpen(false)}
           onRename={startRename}
           onTogglePin={togglePin}
@@ -286,6 +309,17 @@ export default function ConversationRow({
       <span className={`truncate ${variant === "card" ? "font-medium text-sm" : "text-sm"} ${active ? "text-text font-semibold" : ""}`}>
         {conversation.title}
       </span>
+      {/* Attribution (2026-09-23, roles & attribution round): only shown
+          for a teammate's Project, never your own - "by You" everywhere
+          would just be noise in a mostly-personal-Projects list. */}
+      {conversation.is_own === false && (
+        <span
+          className="text-[10px] text-muted shrink-0 px-1.5 py-0.5 rounded-full bg-surface2 border border-border"
+          title={conversation.created_by_email}
+        >
+          {conversation.created_by_name || conversation.created_by_email}
+        </span>
+      )}
       {saving && <span className="text-[10px] text-accent shrink-0">Saving&hellip;</span>}
       {failed && <span className="text-[10px] text-red-400 shrink-0">Could not rename</span>}
     </div>
