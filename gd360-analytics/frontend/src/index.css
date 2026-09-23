@@ -113,6 +113,21 @@ body {
 }
 .input:focus { border-color: rgb(var(--color-primary)); box-shadow: 0 0 0 3px rgb(var(--color-primary) / 0.15); }
 
+/* 2026-09-23: every search box in the app pairs `.input` with a Tailwind
+   `pl-*` utility to clear room for a left-aligned icon (SearchIcon) - but
+   `.input`'s own `padding` shorthand above sets padding-left too, and since
+   this stylesheet's hand-written rules are compiled AFTER `@tailwind
+   utilities` (see the top of this file), `.input` wins the cascade over a
+   plain utility class at equal specificity. The icon was silently sitting
+   on top of the placeholder/typed text in every one of these boxes (e.g.
+   "Search" reading as "Qearch") because the intended left padding never
+   actually applied. These modifier classes are declared after `.input`
+   here on purpose, so they reliably win instead - pair `.input` with
+   `.input-icon` for a standard w-4 icon at left-3, or `.input-icon-sm` for
+   a smaller w-3.5 icon at left-2.5. */
+.input-icon { padding-left: 2.5rem; }
+.input-icon-sm { padding-left: 2rem; }
+
 /* Chrome/Edge autofill (an email or password box the browser recognizes)
    paints its own background and text color underneath ours, ignoring
    `color` above entirely - a long-standing browser quirk, not something
