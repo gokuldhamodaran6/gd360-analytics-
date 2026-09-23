@@ -63,6 +63,33 @@ const shortChartLabel = (text: string | null | undefined) => {
   return t.length > 28 ? `${t.slice(0, 28)}…` : t;
 };
 
+// 2026-09-23 design fix: this app has no icon library dependency (see
+// package.json - it's plain React + Tailwind, nothing else), and the
+// chart-tools button used a raw magnifying-glass emoji character as its
+// "icon" - the universal symbol for SEARCH, not for "open a
+// configuration panel", which is what the button actually does. That
+// mismatch was reported directly as looking unpolished/wrong. Real,
+// crisp SVGs (currentColor-based, so they inherit whatever text color
+// the surrounding button/header already uses) fix that without adding a
+// dependency - just two small, reusable components.
+function SlidersIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
+      <path d="M3 6h8M15 6h2M3 14h2M9 14h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <circle cx="12.5" cy="6" r="2" fill="currentColor" />
+      <circle cx="6" cy="14" r="2" fill="currentColor" />
+    </svg>
+  );
+}
+
+function CloseIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
+      <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export default function Workspace() {
   const { datasourceId } = useParams();
   const navigate = useNavigate();
@@ -491,9 +518,21 @@ export default function Workspace() {
   // chat about this same data source, which is exactly what used to
   // confuse people (see the toggle below). "All conversations" reveals the
   // rest without hiding or deleting anything.
+  // 2026-09-23 root-cause fix: this used to also bypass the filter
+  // (showing every table from every past chat, unfiltered) whenever
+  // `conversationId` was falsy - meant as a defensive no-op, but a
+  // BRAND-NEW chat that has not sent its first message yet ALSO has
+  // `conversationId === null`, so that "defensive" clause was exactly
+  // backwards: it made a fresh chat show every derived table ever built
+  // against this data source, in every other chat, which is the direct
+  // opposite of what this comment above already says the tab strip
+  // should do. Removing that clause: with no conversation yet, the
+  // filter correctly falls through to "only tables not tied to any
+  // conversation" (i.e. just the original data) - exactly nothing extra,
+  // until this chat's own first analysis actually creates one.
   const visibleVersions = useMemo(
     () =>
-      versionScope === "all" || !conversationId
+      versionScope === "all"
         ? versions
         : versions.filter((v) => v.conversation_id == null || v.conversation_id === conversationId),
     [versions, versionScope, conversationId]
@@ -717,6 +756,27 @@ export default function Workspace() {
         skip_prep: !!opts?.skipPrep,
       });
       setConversationId(data.conversation_id);
+      // 2026-09-23 root-cause fix: a brand-new chat's conversation id used
+      // to live ONLY in this in-memory state - never written into the
+      // URL. The restore effect above (and the reset effect right after
+      // it) both key entirely off the `?conversation=` URL param, so a
+      // refresh on a chat that had never sent more than its first message
+      // found nothing there to resume and reset everything back to
+      // blank - indistinguishable from opening a brand new chat, which is
+      // exactly what was reported. Writing the id into the URL now (no
+      // page reload - `navigate` with `replace` just swaps the query
+      // string) fixes that: a refresh from this point on re-reads this
+      // same id and actually restores the conversation. Only done the
+      // FIRST time (resumeConversationId was still null) - every later
+      // message in this same chat already has it in the URL. The reset
+      // effect above would otherwise treat this very URL change as
+      // "switched to a different conversation" and wipe the turns/charts
+      // this call just built, so its key is updated here too, in the same
+      // synchronous tick, marking this session as already current.
+      if (!resumeConversationId && datasourceId) {
+        sessionKeyRef.current = `${datasourceId}|${data.conversation_id}`;
+        navigate(`/workspace/${datasourceId}?conversation=${data.conversation_id}`, { replace: true });
+      }
       setTurns((t) => [...t, {
         role: "assistant",
         content: data.reply_text,
@@ -1152,8 +1212,16 @@ export default function Workspace() {
                 className="text-sm px-4 py-2 rounded-lg font-medium btn-secondary flex items-center gap-1.5"
                 onClick={() => { ensureExploreConfig(); setStyleOpen(true); }}
                 disabled={!chartSpec}
+                title="Change chart type, axes, styling, or view the underlying table"
               >
-                <span aria-hidden>&#128269;</span> Explore
+                {/* 2026-09-23: was a magnifying-glass emoji labeled "Explore" -
+                    a search icon on a button that opens chart configuration,
+                    and "Explore" reads as a near-duplicate of the unrelated
+                    "Customize further" action already in the chat transcript
+                    below. A sliders icon + an action-first label ("Edit
+                    chart") matches what the panel actually does and doesn't
+                    collide with that other feature's name. */}
+                <SlidersIcon className="w-4 h-4" /> Edit chart
               </button>
             </div>
           </div>
@@ -1322,17 +1390,45 @@ export default function Workspace() {
           onClick={() => setStyleOpen(false)}
         >
           <div
-            className="absolute inset-y-0 right-0 w-full sm:w-[460px] lg:w-[560px] max-w-full flex flex-col p-2 sm:p-3"
+            // 2026-09-23: this panel had no background of its own - only
+            // the scrollable tab content below the header did (see
+            // ExplorePanel.tsx). The header row sat directly on the
+            // semi-transparent black backdrop, so the page behind it (the
+            // top nav's plan badge, "Sign out", etc.) visibly showed
+            // through the title bar - exactly the glitch reported in the
+            // screenshot. `bg-surface` + a real shadow makes this an
+            // actual opaque panel, top to bottom.
+            className="absolute inset-y-0 right-0 w-full sm:w-[460px] lg:w-[560px] max-w-full flex flex-col p-2 sm:p-3 bg-surface border-l border-border shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between px-2 py-1.5 shrink-0">
-              <div className="text-sm font-bold">Explore{chartTitle ? ` — ${shortChartLabel(chartTitle)}` : ""}</div>
+            <div className="flex items-center justify-between px-2 py-1.5 shrink-0 gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="w-7 h-7 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                  <SlidersIcon className="w-3.5 h-3.5" />
+                </span>
+                {/* 2026-09-23: was a single truncated line, "Explore — <28
+                    chars of the raw prompt>…", which is what produced the
+                    garbled "Explore — Merge the '10' table and the..." in
+                    the screenshot - a mid-word cutoff with no visual
+                    separation from the panel's own name. A bold title plus
+                    a smaller, muted subtitle line reads as an actual
+                    heading instead of one run-on truncated sentence. */}
+                <div className="min-w-0">
+                  <div className="text-sm font-bold leading-tight">Edit chart</div>
+                  {chartTitle && (
+                    <div className="text-xs text-muted truncate leading-tight" title={chartTitle}>
+                      {shortChartLabel(chartTitle)}
+                    </div>
+                  )}
+                </div>
+              </div>
               <button
                 type="button"
-                className="text-muted hover:text-text text-xl leading-none w-8 h-8 flex items-center justify-center rounded-full bg-surface2 border border-border"
+                aria-label="Close"
+                className="text-muted hover:text-text hover:border-primary/40 transition w-8 h-8 flex items-center justify-center rounded-full bg-surface2 border border-border shrink-0"
                 onClick={() => setStyleOpen(false)}
               >
-                &times;
+                <CloseIcon className="w-4 h-4" />
               </button>
             </div>
             <div className="flex-1 min-h-0">
