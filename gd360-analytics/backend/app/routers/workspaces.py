@@ -56,6 +56,11 @@ Scope history:
     added creator attribution (SavedViewOut.created_by_* and the equivalent
     fields on a listed/opened conversation) so a shared Project or saved
     view shows who actually made it, not just whoever's looking at it now.
+  - 2026-09-23 (shared dashboards v1, same day, fourth round): dashboards
+    (routers/dashboards.py - previously called out above as left
+    untouched) can now be shared into a workspace the same way, on the
+    same view/editable split, so a team can pin a curated set of charts
+    onto one board everyone sees instead of only ever seeing their own.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
