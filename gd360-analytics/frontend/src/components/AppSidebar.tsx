@@ -656,7 +656,13 @@ export function ConnectDataPopup({
   // stays primary even if someone deselects and reselects a different one
   // first) and the list is always small enough that an .some()/.filter()
   // scan per click is unnoticeable.
-  const [selected, setSelected] = useState<DataSourceSummary[]>([]);
+  // Only the id (for the URL and de-duping) and name (for the chip label)
+  // are ever read off a selected entry - a lighter type than the full
+  // DataSourceSummary on purpose, so a brand-new connection (handleCreated
+  // below only ever gets id/name/kind/created_at back from the server, not
+  // a complete DataSourceSummary) can be pushed in directly rather than
+  // needing fabricated placeholder fields just to satisfy the type.
+  const [selected, setSelected] = useState<{ id: string; name: string }[]>([]);
 
   const loadSources = () => {
     if (!activeWorkspaceId) return;
@@ -681,7 +687,13 @@ export function ConnectDataPopup({
 
   const isSelected = (dsId: string) => selected.some((s) => s.id === dsId);
 
-  const toggleSource = (ds: DataSourceSummary) => {
+  // Typed to the same minimal { id, name } shape `selected` itself uses
+  // (see its own comment above) rather than the full DataSourceSummary -
+  // every real call site (an existing-data row below, and the chip row's
+  // own remove button) already passes something with at least those two
+  // fields, and this is also what lets the chip row remove a selection by
+  // handing back one of `selected`'s own already-lighter entries.
+  const toggleSource = (ds: { id: string; name: string }) => {
     setSelected((prev) => (prev.some((s) => s.id === ds.id) ? prev.filter((s) => s.id !== ds.id) : [...prev, ds]));
   };
 
