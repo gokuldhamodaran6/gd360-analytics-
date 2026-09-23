@@ -265,6 +265,16 @@ Rules:
   Never hand back a long/tidy 3-column table for heatmap (that is the faceted_bar shape, not this one) - an
   un-pivoted result raises an error here.
 - Prefer simple, correct pandas over clever one-liners.
+- Performance (this code runs against real, sometimes tens-of-thousands-of-rows tables on a small server, with a
+  real time limit - a slow approach genuinely fails the request, not just runs a bit longer): never use
+  `.apply(..., axis=1)`, `.iterrows()`, `.itertuples()`, or a Python `for`/`while` loop over rows for anything a
+  vectorized pandas operation can do directly - a groupby, a merge, a vectorized arithmetic/string/boolean
+  expression across a whole column, `np.where`/`np.select` for conditional logic, `pd.cut`/`pd.qcut` for
+  bucketing. These vectorized forms run in fast compiled code; a per-row Python callback re-enters the Python
+  interpreter once per row and can be 100x or slower on a table this size - concretely, code written this way
+  has actually timed out and failed in production before. If a genuinely row-by-row operation seems
+  unavoidable, look again for a vectorized equivalent first; it almost always exists for standard analytics
+  and cleaning tasks.
 - For transform requests with no further detail (e.g. "clean this data" / "prepare this for analysis"), use
   reasonable defaults: drop exact duplicate rows, fill or drop missing values sensibly per column type, fix
   obviously wrong types (e.g. numbers stored as text), and cap/remove statistical outliers (IQR method) in
@@ -324,6 +334,16 @@ Rules:
        ID: 4,102 rows in Orders matched 3,890 rows in Customers, giving 4,020 combined rows; 82 orders had no
        matching customer and were dropped.") - so a wrong or surprising join is visible immediately in the
        answer itself, never silently hidden inside code the person cannot see.
+    4. Before the merge runs, also think about whether the join key is unique on each side. A normal one-to-one
+       or many-to-one join (e.g. many orders each pointing at one customer id) is fine and expected. But if the
+       join key repeats on BOTH sides, pandas' merge multiplies rows for every matching pair - a key repeated 5
+       times on one side and 4 times on the other produces 20 output rows for it, not 4 or 5 - and on a real
+       table this can silently blow up a 50,000-row table into millions of rows, which both wrecks the answer
+       (double- and triple-counted values) and makes the merge itself run far slower than the person's actual
+       question warrants. If the request's own intent is genuinely one-to-one or many-to-one (the normal case),
+       and a key turns out to repeat on both sides, that is a sign the chosen key is wrong or the data needs
+       de-duplicating/aggregating on one side first (e.g. `.drop_duplicates()` on the id, or aggregate that
+       table down to one row per id) before joining - do that rather than merging as-is and hoping.
 - Respond with raw JSON only.
 """
 
@@ -2013,19 +2033,44 @@ def analyze(
     while needs_retry and attempt <= _MAX_EXECUTION_RETRIES:
         retry_detail = result.pop("_retry_detail", "unknown error")
         print(f"[ai_engine] attempt {attempt} failed for prompt={prompt!r}: {retry_detail}")
+        # 2026-09-23: a plain "reconsider" nudge does nothing useful for a
+        # TIMEOUT specifically - real production logs showed the model
+        # retrying with the same (or an equally slow) approach and timing
+        # out again, identically, on the very next attempt (confirmed for
+        # two different real prompts). A generic error message gives it no
+        # way to know WHY its code was slow, so it has nothing concrete to
+        # change. A timeout gets a different, actionable message instead:
+        # the two real causes of an unexpectedly slow pandas operation on a
+        # dataset this size, and the fix for each - so the retry has an
+        # actual chance of being faster, not just a repeat of attempt 1.
+        is_timeout = "timed out" in retry_detail.lower()
+        if is_timeout:
+            guidance = (
+                "Running that did not finish in time and was stopped. On a dataset this size, that almost "
+                "always means one of two things: (1) a row-by-row Python operation - `.apply(..., axis=1)`, "
+                "`.iterrows()`, or a Python `for` loop over rows - instead of a fast, vectorized pandas "
+                "operation (groupby/merge/vectorized arithmetic all run in fast compiled code; a per-row "
+                "Python callback does not and can be 100x+ slower on tens of thousands of rows), or (2) a "
+                "merge/join whose key is not unique on one or both sides, silently multiplying the row count "
+                "far past what was intended (e.g. a 50,000-row table merged on a non-unique key can balloon "
+                "into millions of rows). Rewrite the code to be genuinely fast: use only vectorized pandas "
+                "operations (never `.apply(axis=1)`, `.iterrows()`, or a manual loop over rows for something "
+                "groupby/merge/vectorized arithmetic can do directly), and before merging, make sure the join "
+                "key is actually unique on at least one side (drop_duplicates or aggregate first if not) so "
+                "the result cannot explode in size. Respond with corrected JSON (same schema as before)."
+            )
+        else:
+            guidance = (
+                "Running that did not work. The error was:\n"
+                f"{retry_detail}\n\n"
+                "Please reconsider the request. If your approach had a mistake, fix it and respond "
+                "with corrected JSON (same schema as before). If you genuinely cannot tell what the "
+                "person wants without more information, respond with action=\"clarify\" and ask ONE "
+                "short, specific question instead."
+            )
         retry_messages = retry_messages + [
             {"role": "assistant", "content": json.dumps(current_plan)},
-            {
-                "role": "user",
-                "content": (
-                    "Running that did not work. The error was:\n"
-                    f"{retry_detail}\n\n"
-                    "Please reconsider the request. If your approach had a mistake, fix it and respond "
-                    "with corrected JSON (same schema as before). If you genuinely cannot tell what the "
-                    "person wants without more information, respond with action=\"clarify\" and ask ONE "
-                    "short, specific question instead."
-                ),
-            },
+            {"role": "user", "content": guidance},
         ]
         attempt += 1
         try:
