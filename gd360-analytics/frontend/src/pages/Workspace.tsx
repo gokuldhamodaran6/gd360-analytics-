@@ -353,6 +353,88 @@ export default function Workspace() {
   const [centerTab, setCenterTab] = useState<"data" | "chart" | "flow">("data");
   const [dataRefreshKey, setDataRefreshKey] = useState(0);
 
+  // 2026-09-23, round eight (Gokul's own explicit ask: "i want our chart
+  // section and other section to swipe and resize like responsive slides"):
+  // the chat panel's width on desktop is now a real, drag-to-resize split -
+  // not the old fixed 380px column - remembered per-browser across visits.
+  // Only meaningful at the `lg` breakpoint and up (below it the two panels
+  // already stack full-width, same as before - nothing to resize there).
+  const CHAT_PANEL_DEFAULT_WIDTH = 380;
+  const CHAT_PANEL_MIN_WIDTH = 300;
+  const CHAT_PANEL_MAX_WIDTH = 720;
+  const CHAT_PANEL_WIDTH_KEY = "gd360_chat_panel_width";
+  const [chatPanelWidth, setChatPanelWidth] = useState<number>(() => {
+    try {
+      const saved = Number(localStorage.getItem(CHAT_PANEL_WIDTH_KEY));
+      return saved >= CHAT_PANEL_MIN_WIDTH && saved <= CHAT_PANEL_MAX_WIDTH ? saved : CHAT_PANEL_DEFAULT_WIDTH;
+    } catch {
+      return CHAT_PANEL_DEFAULT_WIDTH;
+    }
+  });
+  const [isDesktopLayout, setIsDesktopLayout] = useState(
+    () => typeof window !== "undefined" && window.innerWidth >= 1024
+  );
+  const [resizingPanels, setResizingPanels] = useState(false);
+  const splitRowRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onResize = () => setIsDesktopLayout(window.innerWidth >= 1024);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // Drag (mouse) or swipe (touch) the divider to resize - clamped so
+  // neither panel can ever be dragged down to an unusable sliver, and
+  // capped relative to the row's own current width so the chart/data side
+  // always keeps a sane minimum share of the screen too, not just a fixed
+  // pixel cap.
+  const beginPanelResize = (clientX: number) => {
+    const row = splitRowRef.current;
+    if (!row) return;
+    const rowLeft = row.getBoundingClientRect().left;
+    const rowWidth = row.getBoundingClientRect().width;
+    const maxWidth = Math.min(CHAT_PANEL_MAX_WIDTH, Math.round(rowWidth * 0.62));
+    const next = Math.min(maxWidth, Math.max(CHAT_PANEL_MIN_WIDTH, Math.round(clientX - rowLeft)));
+    setChatPanelWidth(next);
+  };
+  const onHandleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setResizingPanels(true);
+    const onMove = (ev: MouseEvent) => beginPanelResize(ev.clientX);
+    const onUp = () => {
+      setResizingPanels(false);
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      setChatPanelWidth((w) => {
+        try { localStorage.setItem(CHAT_PANEL_WIDTH_KEY, String(w)); } catch { /* ignore */ }
+        return w;
+      });
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
+  const onHandleTouchStart = (e: React.TouchEvent) => {
+    setResizingPanels(true);
+    const onMove = (ev: TouchEvent) => {
+      if (ev.touches[0]) beginPanelResize(ev.touches[0].clientX);
+    };
+    const onEnd = () => {
+      setResizingPanels(false);
+      document.removeEventListener("touchmove", onMove);
+      document.removeEventListener("touchend", onEnd);
+      setChatPanelWidth((w) => {
+        try { localStorage.setItem(CHAT_PANEL_WIDTH_KEY, String(w)); } catch { /* ignore */ }
+        return w;
+      });
+    };
+    document.addEventListener("touchmove", onMove, { passive: true });
+    document.addEventListener("touchend", onEnd);
+  };
+  const resetPanelWidths = () => {
+    setChatPanelWidth(CHAT_PANEL_DEFAULT_WIDTH);
+    try { localStorage.setItem(CHAT_PANEL_WIDTH_KEY, String(CHAT_PANEL_DEFAULT_WIDTH)); } catch { /* ignore */ }
+  };
+
   // The Flow tab's own data - the full lineage map across EVERY
   // conversation ever run against this data source (see
   // GET /datasources/:id/flow), fetched lazily the first time that tab is
@@ -1400,8 +1482,16 @@ export default function Workspace() {
           opposite of that: nothing about another Project belongs on this
           page anymore. The center panel (1fr) simply gets that freed
           width. */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-4 px-4 pb-4 overflow-visible lg:overflow-hidden">
-        <div className="min-h-[400px] lg:min-h-0">
+      <div
+        ref={splitRowRef}
+        className={`flex-1 flex flex-col lg:flex-row gap-4 lg:gap-0 px-4 pb-4 overflow-visible lg:overflow-hidden ${
+          resizingPanels ? "select-none" : ""
+        }`}
+      >
+        <div
+          className="min-h-[400px] lg:min-h-0 w-full lg:w-auto lg:shrink-0"
+          style={isDesktopLayout ? { width: chatPanelWidth } : undefined}
+        >
           <ChatPanel
             turns={turns}
             onSend={(p) => runPrompt(p)}
@@ -1423,7 +1513,32 @@ export default function Workspace() {
             otherDataSources={otherDataSources}
           />
         </div>
-        <div className="min-h-[400px] flex flex-col gap-4 overflow-visible lg:overflow-hidden">
+
+        {/* Drag (mouse) or swipe (touch) to resize the two panels - desktop
+            only, same breakpoint the two-pane layout itself turns on at.
+            Double-click/tap resets back to the default split. A wide hit
+            target (w-4) around a thin 2px visible bar, same "generous
+            invisible hit area, slim visible mark" pattern as a native OS
+            window-resize edge - easy to grab without a chart's own hover
+            targets right next to it fighting for the same pixels. */}
+        <div
+          className="hidden lg:flex w-4 shrink-0 cursor-col-resize items-center justify-center group relative"
+          onMouseDown={onHandleMouseDown}
+          onTouchStart={onHandleTouchStart}
+          onDoubleClick={resetPanelWidths}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize chat and chart panels"
+          title="Drag to resize - double-click to reset"
+        >
+          <div
+            className={`w-[3px] h-16 rounded-full transition-colors ${
+              resizingPanels ? "bg-primary" : "bg-border group-hover:bg-primary/60"
+            }`}
+          />
+        </div>
+
+        <div className="min-h-[400px] flex-1 min-w-0 flex flex-col gap-4 overflow-visible lg:overflow-hidden">
           <div className="flex items-center justify-between gap-1.5 shrink-0">
             <div className="flex gap-1.5">
               <button
