@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useAuth } from "./api/AuthContext";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
@@ -13,11 +13,17 @@ import HelpBigQuery from "./pages/HelpBigQuery";
 import HelpSnowflake from "./pages/HelpSnowflake";
 import ConnectResourcePicker from "./pages/ConnectResourcePicker";
 import PrivacyPolicy from "./pages/PrivacyPolicy";
+import InviteJoin from "./pages/InviteJoin";
 
 function Protected({ children }: { children: JSX.Element }) {
   const { user, loading } = useAuth();
+  const location = useLocation();
   if (loading) return null;
-  if (!user) return <Navigate to="/login" replace />;
+  // Carries the originally-requested path through login/register (read
+  // back by both - see their own onSubmit) so a signed-out person clicking
+  // a workspace invite link (or any other deep link) lands back on that
+  // exact page right after signing in, instead of always bouncing to "/".
+  if (!user) return <Navigate to="/login" state={{ from: location.pathname + location.search }} replace />;
   return children;
 }
 
@@ -63,6 +69,12 @@ export default function App() {
           with it (same origin, same tab), so <Protected> here behaves
           exactly as it does on every other in-app route. */}
       <Route path="/connect/:provider" element={<Protected><ConnectResourcePicker /></Protected>} />
+      {/* A workspace's shareable invite link - see routers/workspaces.py.
+          Protected like any other in-app page: a signed-out visitor is
+          bounced to /login first (state.from carries this exact URL back,
+          see Protected above) and lands here again right after signing in
+          or creating an account. */}
+      <Route path="/invite/:token" element={<Protected><InviteJoin /></Protected>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
