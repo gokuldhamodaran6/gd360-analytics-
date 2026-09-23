@@ -11,11 +11,20 @@ import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import ViewToggle, { ViewMode, useViewMode } from "../components/ViewToggle";
 
 type SortKey = "newest" | "oldest" | "title";
-// A folder's real id, or the built-in "all" tab (every Project, filed or
-// not - the Projects page's own default view). A separate "unfiled" tab
-// existed briefly but Gokul asked for it gone (2026-09-23) - "All" already
-// includes unfiled Projects, so nothing is actually unreachable without it.
-type FolderFilter = "all" | string;
+// A folder's real id, or one of the two built-in tabs:
+//   "all"   - the Projects page's default, file-explorer-style root view:
+//             every folder shown as its own card, followed by only the
+//             unfiled Projects (never a flat mix of everything).
+//   "files" - only the unfiled Projects, no folder cards - for someone who
+//             specifically wants to skip past folders straight to loose
+//             Projects.
+// 2026-09-23, round four (Gokul's own explicit ask, "if i click file will
+// not been in any folder and folder should come"): "All" used to mean "every
+// Project regardless of folder", which meant a Project already filed into a
+// folder also showed up loose in "All" - the exact confusion Gokul flagged.
+// It now means "the root view", same mental model as any file explorer.
+const PAGE_SIZE = 12;
+type FolderFilter = "all" | "files" | string;
 
 function ChartTypeIcon({ chartType }: { chartType: string | null }) {
   const t = (chartType || "").toLowerCase();
@@ -132,6 +141,81 @@ function TrashIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   );
 }
 
+// 2026-09-23, round four (Gokul's own explicit ask: "rows should be limited
+// ... after certain row it has to show pages"): the same Prev/Next-plus-
+// numbers pager DataSources.tsx and AppSidebar's ConnectDataPopup use,
+// duplicated here per this codebase's established per-file component
+// convention.
+function ChevronLeftIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M15 18l-6-6 6-6" />
+    </svg>
+  );
+}
+
+function ChevronRightIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 18l6-6-6-6" />
+    </svg>
+  );
+}
+
+function Pager({ page, totalPages, onChange }: { page: number; totalPages: number; onChange: (p: number) => void }) {
+  if (totalPages <= 1) return null;
+
+  const pages: (number | "gap")[] = [];
+  const push = (p: number) => { if (!pages.includes(p)) pages.push(p); };
+  push(1);
+  for (let p = page - 1; p <= page + 1; p++) if (p > 1 && p < totalPages) push(p);
+  push(totalPages);
+  const withGaps: (number | "gap")[] = [];
+  let prev = 0;
+  for (const p of pages) {
+    if (typeof p === "number" && p - prev > 1) withGaps.push("gap");
+    withGaps.push(p);
+    if (typeof p === "number") prev = p;
+  }
+
+  const btn = (active: boolean) =>
+    `min-w-[2rem] h-8 px-2 text-sm rounded-lg border transition ${
+      active ? "bg-primary text-white border-primary font-semibold" : "border-border text-muted hover:text-text hover:bg-surface2"
+    }`;
+
+  return (
+    <div className="flex items-center justify-center gap-1.5 mt-8">
+      <button
+        type="button"
+        className="h-8 px-2 rounded-lg border border-border text-muted hover:text-text hover:bg-surface2 transition disabled:opacity-40 disabled:cursor-not-allowed"
+        onClick={() => onChange(page - 1)}
+        disabled={page <= 1}
+        aria-label="Previous page"
+      >
+        <ChevronLeftIcon />
+      </button>
+      {withGaps.map((p, i) =>
+        p === "gap" ? (
+          <span key={`gap-${i}`} className="px-1 text-muted text-sm select-none">&hellip;</span>
+        ) : (
+          <button key={p} type="button" className={btn(p === page)} onClick={() => onChange(p)}>
+            {p}
+          </button>
+        )
+      )}
+      <button
+        type="button"
+        className="h-8 px-2 rounded-lg border border-border text-muted hover:text-text hover:bg-surface2 transition disabled:opacity-40 disabled:cursor-not-allowed"
+        onClick={() => onChange(page + 1)}
+        disabled={page >= totalPages}
+        aria-label="Next page"
+      >
+        <ChevronRightIcon />
+      </button>
+    </div>
+  );
+}
+
 function timeAgo(dateStr: string): string {
   const diffMs = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diffMs / 60000);
@@ -237,6 +321,7 @@ export default function Dashboard() {
   const [sortBy, setSortBy] = useState<SortKey>("newest");
   const [pinnedOnly, setPinnedOnly] = useState(false);
   const [folderFilter, setFolderFilter] = useState<FolderFilter>("all");
+  const [page, setPage] = useState(1);
 
   // The account's real workspaces and which one is active - the shared
   // hook (used by every page with a persistent AppSidebar) owns the
@@ -302,12 +387,18 @@ export default function Dashboard() {
     }
   }, [activeWorkspaceId, loadingWorkspaces]);
 
+  // A fresh search/sort/pinned/folder choice always lands back on page 1 -
+  // same reasoning as DataSources.tsx's own pager - never leave it pointed
+  // at a page that just emptied out from under it.
+  useEffect(() => { setPage(1); }, [search, pinnedOnly, folderFilter, sortBy]);
+
   const resetPageState = () => {
     setSearch("");
     setPinnedOnly(false);
     setFolderFilter("all");
     setSelectMode(false);
     setSelectedIds(new Set());
+    setPage(1);
   };
 
   const switchWorkspace = (id: string) => {
@@ -379,7 +470,13 @@ export default function Dashboard() {
     if (pinnedOnly) {
       list = list.filter((c) => c.pinned);
     }
-    if (folderFilter !== "all") {
+    // "All" and "Files" both show only the UNFILED Projects here - a filed
+    // Project is represented by its folder's own card instead (rendered
+    // separately, above this list, only in "All"). Picking a specific
+    // folder still shows just that folder's own Projects, unchanged.
+    if (folderFilter === "all" || folderFilter === "files") {
+      list = list.filter((c) => c.folder_id == null);
+    } else {
       list = list.filter((c) => c.folder_id === folderFilter);
     }
     const sorted = [...list];
@@ -395,6 +492,16 @@ export default function Dashboard() {
   const hasFiltersApplied = search.trim() !== "" || pinnedOnly || folderFilter !== "all";
   const clearFilters = () => { setSearch(""); setPinnedOnly(false); setFolderFilter("all"); };
 
+  // Pagination - PAGE_SIZE=12, same precedent as DataSources.tsx's own
+  // pager, applied to whichever scope is currently showing (unfiled-only in
+  // "All"/"Files", or one folder's own Projects).
+  const totalPages = Math.max(1, Math.ceil(filteredProjects.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageSlice = useMemo(
+    () => filteredProjects.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE),
+    [filteredProjects, currentPage]
+  );
+
   // A workspace "viewer" (2026-09-23, roles & attribution round) can see
   // everything in the active workspace but can't bring in new data or
   // start new analysis there - "+ New Project" is disabled rather than
@@ -403,9 +510,19 @@ export default function Dashboard() {
   // the same rule (services/workspace_access.py's "editable" tier).
   const isViewerHere = workspaces.find((w) => w.id === activeWorkspaceId)?.role === "viewer";
 
-  const activeFolder = folderFilter !== "all" ? folders.find((f) => f.id === folderFilter) || null : null;
+  const activeFolder = folderFilter !== "all" && folderFilter !== "files" ? folders.find((f) => f.id === folderFilter) || null : null;
+
+  // Folder cards for the "All" root view - only rendered there, never in
+  // "Files" (which deliberately skips folders) or inside a specific folder
+  // (already just showing that one folder's own contents).
+  const showFolderCards = folderFilter === "all" && folders.length > 0;
+  const unfiledCount = useMemo(() => conversations.filter((c) => c.folder_id == null).length, [conversations]);
 
   // ---- Select-all / bulk-move ----
+  // Scoped to the CURRENT PAGE's own items, not every filtered Project -
+  // "select all" on a huge, paginated list means "everything I can see
+  // right now", the same convention most file managers use, rather than an
+  // invisible cross-page selection someone could easily forget about.
   const toggleSelectMode = () => {
     setSelectMode((v) => !v);
     setSelectedIds(new Set());
@@ -417,7 +534,7 @@ export default function Dashboard() {
       return next;
     });
   };
-  const visibleIds = filteredProjects.map((c) => c.id);
+  const visibleIds = pageSlice.map((c) => c.id);
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
   const toggleSelectAll = () => {
     setSelectedIds(allVisibleSelected ? new Set() : new Set(visibleIds));
@@ -581,6 +698,17 @@ export default function Dashboard() {
                 >
                   All
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setFolderFilter("files")}
+                  className={`inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
+                    folderFilter === "files" ? "bg-primary text-white border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
+                  }`}
+                  title="Only Projects not filed into any folder"
+                >
+                  Files
+                  <span className={folderFilter === "files" ? "text-white/80" : "text-muted"}>{unfiledCount}</span>
+                </button>
                 {folders.map((f) => (
                   <button
                     key={f.id}
@@ -705,7 +833,7 @@ export default function Dashboard() {
             <div className="flex flex-wrap items-center gap-3 mb-6 p-3 rounded-xl border border-primary/30 bg-primary/5">
               <label className="flex items-center gap-2 text-sm font-medium cursor-pointer select-none">
                 <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAll} className="w-4 h-4 rounded accent-primary" />
-                Select all {filteredProjects.length > 0 ? `(${filteredProjects.length})` : ""}
+                {totalPages > 1 ? `Select all on this page (${pageSlice.length})` : `Select all ${pageSlice.length > 0 ? `(${pageSlice.length})` : ""}`}
               </label>
               <span className="text-sm text-muted">{selectedIds.size} selected</span>
               <div className="ml-auto flex items-center gap-2">
@@ -738,9 +866,18 @@ export default function Dashboard() {
             </div>
           )}
 
-          {!loading && hasAnyProjects && filteredProjects.length === 0 && (
+          {/* Suppressed in the plain "All" root view with folders present
+              and no search/pin filter active - the folder cards below
+              already explain why there's nothing loose to show; a "no
+              match" message there would just be confusing noise next to
+              them. */}
+          {!loading && hasAnyProjects && filteredProjects.length === 0 && !(showFolderCards && !hasFiltersApplied) && (
             <div className="card p-10 text-center text-sm text-muted">
-              No projects match your filters.{" "}
+              {folderFilter === "files"
+                ? "No unfiled projects."
+                : activeFolder
+                ? `No projects in "${activeFolder.name}" yet.`
+                : "No projects match your filters."}{" "}
               {hasFiltersApplied && (
                 <button className="text-primary font-medium hover:underline" onClick={clearFilters}>
                   Clear filters
@@ -749,27 +886,70 @@ export default function Dashboard() {
             </div>
           )}
 
-          {filteredProjects.length > 0 && (
-            <div className={viewMode === "grid" ? "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4" : "grid grid-cols-1 gap-2.5"}>
-              {filteredProjects.map((c) => (
-                <ConversationRow
-                  key={c.id}
-                  conversation={c}
-                  icon={<ChartTypeIcon chartType={c.last_chart_type} />}
-                  subtitle={`${c.datasource_name || "Removed data source"} · ${timeAgo(c.updated_at)}`}
-                  trailing={c.message_count}
-                  onOpen={() => openConversation(c)}
-                  onRenamed={renameConversation}
-                  onPinned={pinConversation}
-                  onDeleted={deleteConversation}
-                  folders={folders}
-                  onMoved={singleMoved}
-                  selectMode={selectMode}
-                  selected={selectedIds.has(c.id)}
-                  onToggleSelect={toggleSelect}
-                />
-              ))}
+          {/* ---- Folder cards ----
+              File-explorer-style root view (2026-09-23, round four, per
+              Gokul's own confirmed design choice): every folder shown as
+              its own card here, ahead of the loose/unfiled Projects below -
+              clicking one still opens just that folder's own contents
+              (same as its chip above always did). Not paginated - a
+              workspace typically has far fewer folders than Projects, and
+              these are lightweight summary tiles, not the "rows" Gokul
+              asked to have capped. */}
+          {!loading && showFolderCards && (
+            <div className="mb-6">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2.5 px-0.5">
+                Folders
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                {folders.map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => setFolderFilter(f.id)}
+                    className="card p-4 flex flex-col gap-2.5 text-left hover:border-primary/50 hover:shadow-glow transition"
+                  >
+                    <span className="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                      <FolderIcon className="w-4 h-4" />
+                    </span>
+                    <span className="text-sm font-semibold truncate">{f.name}</span>
+                    <span className="text-[11px] text-muted mt-auto">
+                      {f.project_count} project{f.project_count === 1 ? "" : "s"}
+                    </span>
+                  </button>
+                ))}
+              </div>
             </div>
+          )}
+
+          {filteredProjects.length > 0 && (
+            <>
+              {showFolderCards && (
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2.5 px-0.5">
+                  Files
+                </div>
+              )}
+              <div className={viewMode === "grid" ? "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4" : "grid grid-cols-1 gap-2.5"}>
+                {pageSlice.map((c) => (
+                  <ConversationRow
+                    key={c.id}
+                    conversation={c}
+                    icon={<ChartTypeIcon chartType={c.last_chart_type} />}
+                    subtitle={`${c.datasource_name || "Removed data source"} · ${timeAgo(c.updated_at)}`}
+                    trailing={c.message_count}
+                    onOpen={() => openConversation(c)}
+                    onRenamed={renameConversation}
+                    onPinned={pinConversation}
+                    onDeleted={deleteConversation}
+                    folders={folders}
+                    onMoved={singleMoved}
+                    selectMode={selectMode}
+                    selected={selectedIds.has(c.id)}
+                    onToggleSelect={toggleSelect}
+                  />
+                ))}
+              </div>
+              <Pager page={currentPage} totalPages={totalPages} onChange={setPage} />
+            </>
           )}
         </div>
 
