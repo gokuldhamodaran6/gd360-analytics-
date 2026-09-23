@@ -1,11 +1,16 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
 import ThemeToggle from "../components/ThemeToggle";
 
 export default function Register() {
   const { register, getCaptcha } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  // See Login.tsx - carried the same way, for the same reason (a
+  // signed-out visitor following a workspace invite link who doesn't have
+  // an account yet).
+  const from = (location.state as { from?: string } | null)?.from || "/";
   const [fullName, setFullName] = useState("");
   const [company, setCompany] = useState("");
   const [email, setEmail] = useState("");
@@ -37,7 +42,7 @@ export default function Register() {
     setBusy(true);
     try {
       await register(email, password, captchaId, captchaAnswer, fullName, company);
-      navigate("/");
+      navigate(from, { replace: true });
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Registration failed.");
       // The question is single-use either way, so line up a fresh one.
@@ -93,7 +98,10 @@ export default function Register() {
             {busy ? "Creating account..." : "Create free account"}
           </button>
           <p className="text-sm text-muted text-center">
-            Already have an account? <Link to="/login" className="text-primary hover:underline">Sign in</Link>
+            Already have an account?{" "}
+            <Link to="/login" state={{ from }} className="text-primary hover:underline">
+              Sign in
+            </Link>
           </p>
           <p className="text-xs text-muted text-center">
             <Link to="/privacy" className="hover:text-text hover:underline">Privacy Policy</Link>
