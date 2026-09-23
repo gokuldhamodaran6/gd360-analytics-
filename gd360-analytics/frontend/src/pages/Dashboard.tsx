@@ -1,18 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
-import { conversationApi, ConversationSummary, datasourceApi, DataSourceSummary, workspaceApi, WorkspaceSummary } from "../api/client";
+import { conversationApi, ConversationSummary, datasourceApi, DataSourceSummary, WorkspaceSummary } from "../api/client";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
 import DataSourceForm from "../components/DataSourceForm";
 import ConversationRow from "../components/ConversationRow";
+import { useWorkspaceNav } from "../lib/useWorkspaceNav";
+import ViewToggle, { ViewMode, useViewMode } from "../components/ViewToggle";
 
 type SortKey = "newest" | "oldest" | "title";
-
-// Where the sidebar's WorkspaceSwitcher (AppSidebar.tsx) and the invite-join
-// page (InviteJoin.tsx) both read/write which workspace is active - kept as
-// one shared constant so all three stay in sync without any extra plumbing.
-const ACTIVE_WORKSPACE_KEY = "gd360_active_workspace";
 
 function ChartTypeIcon({ chartType }: { chartType: string | null }) {
   const t = (chartType || "").toLowerCase();
@@ -99,12 +96,13 @@ export default function Dashboard() {
   const [datasourceFilter, setDatasourceFilter] = useState<string>("all");
   const [pinnedOnly, setPinnedOnly] = useState(false);
 
-  // The account's real workspaces (see AppSidebar.tsx's WorkspaceSwitcher)
-  // and which one is active - owned here, not in the sidebar, because
-  // switching workspace has to refetch THIS page's Projects/data sources
-  // too, not just the sidebar's own quick-jump list.
-  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>("");
+  // The account's real workspaces and which one is active - the shared
+  // hook (used by every page with a persistent AppSidebar) owns the
+  // selection itself; this page just reacts to it below to refetch its own
+  // Projects/data sources whenever it changes.
+  const { workspaces, activeWorkspaceId, loadingWorkspaces, switchWorkspace: switchWorkspaceId, handleWorkspaceCreated: createWorkspace } = useWorkspaceNav();
+
+  const [viewMode, setViewMode] = useViewMode("gd360_view_projects");
 
   // "Start a new project" now lives in a focused popup instead of an
   // always-open, page-length form - clicking "+ New Project" opens this,
@@ -113,10 +111,6 @@ export default function Dashboard() {
   // handleDataSourceCreated below). Same DataSourceForm component as
   // always, just presented as a portaled overlay.
   const [showConnectModal, setShowConnectModal] = useState(false);
-  // Bumped every time a new source is connected, so the sidebar's own
-  // independent data-sources fetch (AppSidebar.tsx) refreshes without this
-  // page needing to reach into its internals.
-  const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
 
   // Loads this page's Projects/data sources for one specific workspace -
   // split out from the initial workspace-resolving load below so switching
@@ -132,46 +126,34 @@ export default function Dashboard() {
     setLoading(false);
   };
 
-  // First load: fetch the account's real workspaces, figure out which one
-  // should be active (whichever was active last time, if it still exists -
-  // otherwise the personal workspace), then load that workspace's Projects.
+  // Whenever the active workspace resolves for the first time, or changes
+  // (a real switch, or a brand-new workspace just created), refetch this
+  // page's own Projects/data sources for it. Covers the very first load
+  // too - useWorkspaceNav resolves activeWorkspaceId from "" to a real id
+  // exactly once on mount, which this effect reacts to the same as any
+  // other change.
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-      const list = await workspaceApi.list().catch(() => []);
-      setWorkspaces(list);
-      let active = "";
-      try {
-        active = localStorage.getItem(ACTIVE_WORKSPACE_KEY) || "";
-      } catch {
-        // Falls through to the personal-workspace default below.
-      }
-      if (!active || !list.some((w) => w.id === active)) {
-        active = list.find((w) => w.is_personal)?.id || list[0]?.id || "";
-      }
-      setActiveWorkspaceId(active);
-      if (active) {
-        try { localStorage.setItem(ACTIVE_WORKSPACE_KEY, active); } catch { /* per-viewer convenience only */ }
-        await loadForWorkspace(active);
-      } else {
-        setLoading(false);
-      }
-    })();
-  }, []);
+    if (activeWorkspaceId) {
+      loadForWorkspace(activeWorkspaceId);
+    } else if (!loadingWorkspaces) {
+      // Workspace resolution finished and there's genuinely nothing to
+      // show (should only happen if the workspaces fetch itself failed).
+      setLoading(false);
+    }
+  }, [activeWorkspaceId, loadingWorkspaces]);
 
-  const switchWorkspace = async (id: string) => {
-    if (id === activeWorkspaceId) return;
-    setActiveWorkspaceId(id);
-    try { localStorage.setItem(ACTIVE_WORKSPACE_KEY, id); } catch { /* per-viewer convenience only */ }
+  const switchWorkspace = (id: string) => {
     setSearch("");
     setDatasourceFilter("all");
     setPinnedOnly(false);
-    await loadForWorkspace(id);
+    switchWorkspaceId(id);
   };
 
-  const handleWorkspaceCreated = async (ws: WorkspaceSummary) => {
-    setWorkspaces((ws_) => [ws, ...ws_]);
-    await switchWorkspace(ws.id);
+  const handleWorkspaceCreated = (ws: WorkspaceSummary) => {
+    setSearch("");
+    setDatasourceFilter("all");
+    setPinnedOnly(false);
+    createWorkspace(ws);
   };
 
   useEffect(() => {
@@ -235,7 +217,6 @@ export default function Dashboard() {
   // if the person closes the modal and stays here instead of proceeding.
   const handleDataSourceConnected = () => {
     if (activeWorkspaceId) loadForWorkspace(activeWorkspaceId);
-    setSidebarRefreshKey((k) => k + 1);
   };
 
   // Every existing chat/analysis is a "Project" now - no separate concept
@@ -291,8 +272,6 @@ export default function Dashboard() {
     // of "conversations".
     <div className="flex">
       <AppSidebar
-        onConnectNew={openConnectFlow}
-        refreshKey={sidebarRefreshKey}
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
         onWorkspaceSwitch={switchWorkspace}
@@ -362,6 +341,7 @@ export default function Dashboard() {
               >
                 <PinIcon className="w-3.5 h-3.5" filled={pinnedOnly} /> Pinned
               </button>
+              <ViewToggle mode={viewMode} onChange={setViewMode} />
             </div>
           )}
 
@@ -397,7 +377,7 @@ export default function Dashboard() {
           )}
 
           {filteredProjects.length > 0 && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+            <div className={viewMode === "grid" ? "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4" : "grid grid-cols-1 gap-2.5"}>
               {filteredProjects.map((c) => (
                 <ConversationRow
                   key={c.id}
