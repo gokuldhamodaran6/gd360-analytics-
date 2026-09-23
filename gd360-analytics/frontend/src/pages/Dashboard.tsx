@@ -924,10 +924,22 @@ export default function Dashboard() {
         onWorkspaceSwitch={switchWorkspace}
         onWorkspaceCreated={handleWorkspaceCreated}
       />
-      <div className="flex-1 min-w-0">
+      {/* 2026-09-23, round fourteen (Gokul's own bug report, with a
+          screenshot: on a short page - few enough Projects/folders that the
+          content doesn't fill the screen - the footer sat right under the
+          last card instead of at the bottom of the viewport, leaving a tall
+          dead gray gap below it before the actual bottom of the page). The
+          sidebar is a fixed `h-screen` column (see AppSidebar.tsx), so this
+          column needs the same `min-h-screen` plus a flex-column layout of
+          its own - with the content wrapper below taking `flex-1` to
+          absorb all the extra room - for the footer to be pinned to the
+          true bottom of the viewport on a short page while still flowing
+          naturally below a tall one (never `position: fixed`, which would
+          just overlap content on a page long enough to scroll). */}
+      <div className="flex-1 min-w-0 flex flex-col min-h-screen">
         <TopNav hideLogo />
 
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-10">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-10 flex-1 w-full">
           {/* ---- Header: page title + the one primary action ---- */}
           <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-6">
             <div>
