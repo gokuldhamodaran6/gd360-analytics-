@@ -9,12 +9,14 @@ import AppSidebar from "../components/AppSidebar";
 import ConversationRow from "../components/ConversationRow";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import ViewToggle, { ViewMode, useViewMode } from "../components/ViewToggle";
+import { dataSourceCategory, DATA_SOURCE_CATEGORIES } from "../components/DataSourceForm";
 
 type SortKey = "newest" | "oldest" | "title";
-// A folder's real id, or one of the two built-in pseudo-tabs: "all" (every
-// Project regardless of folder) and "unfiled" (folder_id is null) - the
-// Projects page's own default view.
-type FolderFilter = "all" | "unfiled" | string;
+// A folder's real id, or the built-in "all" tab (every Project, filed or
+// not - the Projects page's own default view). A separate "unfiled" tab
+// existed briefly but Gokul asked for it gone (2026-09-23) - "All" already
+// includes unfiled Projects, so nothing is actually unreachable without it.
+type FolderFilter = "all" | string;
 
 function ChartTypeIcon({ chartType }: { chartType: string | null }) {
   const t = (chartType || "").toLowerCase();
@@ -80,6 +82,17 @@ function FolderIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+    </svg>
+  );
+}
+
+// A folder with a small "+" instead of just an outline - the header's own
+// "+ New Folder" action, distinct at a glance from a plain folder chip.
+function NewFolderIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+      <path d="M12 11v4M10 13h4" />
     </svg>
   );
 }
@@ -372,9 +385,7 @@ export default function Dashboard() {
     if (pinnedOnly) {
       list = list.filter((c) => c.pinned);
     }
-    if (folderFilter === "unfiled") {
-      list = list.filter((c) => !c.folder_id);
-    } else if (folderFilter !== "all") {
+    if (folderFilter !== "all") {
       list = list.filter((c) => c.folder_id === folderFilter);
     }
     const sorted = [...list];
@@ -385,6 +396,20 @@ export default function Dashboard() {
     sorted.sort((a, b) => Number(b.pinned) - Number(a.pinned));
     return sorted;
   }, [conversations, search, datasourceFilter, pinnedOnly, folderFilter, sortBy]);
+
+  // Groups the data-source filter dropdown's options by category (Files /
+  // Databases / Warehouses) instead of one flat alphabetical-ish list of
+  // file names - the same organizing principle used everywhere else data
+  // sources are shown in this app (the sidebar's Connect popup, the Data
+  // Sources page itself).
+  const datasourcesByCategory = useMemo(
+    () =>
+      DATA_SOURCE_CATEGORIES.map((cat) => ({
+        category: cat,
+        sources: datasources.filter((ds) => dataSourceCategory(ds.kind) === cat),
+      })).filter((g) => g.sources.length > 0),
+    [datasources]
+  );
 
   const hasAnyProjects = conversations.length > 0;
   const hasFiltersApplied = search.trim() !== "" || datasourceFilter !== "all" || pinnedOnly || folderFilter !== "all";
@@ -398,7 +423,7 @@ export default function Dashboard() {
   // the same rule (services/workspace_access.py's "editable" tier).
   const isViewerHere = workspaces.find((w) => w.id === activeWorkspaceId)?.role === "viewer";
 
-  const activeFolder = folderFilter !== "all" && folderFilter !== "unfiled" ? folders.find((f) => f.id === folderFilter) || null : null;
+  const activeFolder = folderFilter !== "all" ? folders.find((f) => f.id === folderFilter) || null : null;
 
   // ---- Select-all / bulk-move ----
   const toggleSelectMode = () => {
@@ -535,19 +560,37 @@ export default function Dashboard() {
                 Every analysis you've started, in one place. Start a new one whenever you're ready.
               </p>
             </div>
-            <button
-              className="btn-primary text-sm px-4 py-2.5 inline-flex items-center gap-1.5 shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-              onClick={openConnectFlow}
-              disabled={isViewerHere}
-              title={isViewerHere ? "You have view-only access to this workspace." : undefined}
-            >
-              <PlusIcon className="w-4 h-4" /> New Project
-            </button>
+            <div className="flex items-center gap-2.5 shrink-0">
+              {/* Same two-button pattern Gokul asked to match everywhere:
+                  a plain outline action first, the primary filled action
+                  second - not the button's own color that carries meaning,
+                  the outline-vs-filled weight does. */}
+              <button
+                className="btn-secondary text-sm px-4 py-2.5 inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={() => { setNewFolderName(""); setShowNewFolder(true); }}
+                disabled={isViewerHere}
+                title={isViewerHere ? "You have view-only access to this workspace." : undefined}
+              >
+                <NewFolderIcon className="w-4 h-4" /> New Folder
+              </button>
+              <button
+                className="btn-primary text-sm px-4 py-2.5 inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={openConnectFlow}
+                disabled={isViewerHere}
+                title={isViewerHere ? "You have view-only access to this workspace." : undefined}
+              >
+                <PlusIcon className="w-4 h-4" /> New Project
+              </button>
+            </div>
           </div>
 
-          {/* ---- Folder tabs ---- */}
-          {!loading && (
-            <div className="mb-4">
+          {/* ---- Folder tabs ----
+              Only rendered once folders actually exist - an empty tab
+              strip with nothing but "All" is just noise (the header's own
+              "+ New Folder" button above is already the entry point to
+              create the first one). */}
+          {!loading && folders.length > 0 && (
+            <div className="mb-4 rounded-xl border border-border bg-surface/60 px-3 py-2.5">
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   type="button"
@@ -557,15 +600,6 @@ export default function Dashboard() {
                   }`}
                 >
                   All
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFolderFilter("unfiled")}
-                  className={`text-xs font-medium px-3 py-1.5 rounded-full border transition ${
-                    folderFilter === "unfiled" ? "bg-primary text-white border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
-                  }`}
-                >
-                  Unfiled
                 </button>
                 {folders.map((f) => (
                   <button
@@ -580,22 +614,13 @@ export default function Dashboard() {
                     <span className={folderFilter === f.id ? "text-white/80" : "text-muted"}>{f.project_count}</span>
                   </button>
                 ))}
-                {!isViewerHere && (
-                  <button
-                    type="button"
-                    onClick={() => { setNewFolderName(""); setShowNewFolder(true); }}
-                    className="inline-flex items-center gap-1 text-xs font-medium px-3 py-1.5 rounded-full border border-dashed border-border text-muted hover:text-text hover:border-primary/50 transition"
-                  >
-                    <PlusIcon className="w-3 h-3" /> New folder
-                  </button>
-                )}
               </div>
 
               {/* Manage the currently-active folder tab - rename/delete.
                   Kept to just this one folder rather than a menu on every
                   chip (see state comment above). */}
               {activeFolder && !isViewerHere && (
-                <div className="flex items-center gap-3 mt-2 text-xs text-muted">
+                <div className="flex items-center gap-3 mt-2 pt-2 border-t border-border text-xs text-muted">
                   {renamingFolder ? (
                     <input
                       autoFocus
@@ -634,60 +659,78 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* ---- Filters: search, data source, sort, pinned, select ---- */}
+          {/* ---- Filters: search, data source, sort, pinned, select ----
+              Grouped inside one toolbar surface (rather than loose controls
+              floating on the page background) with the search/browse
+              controls on the left and the view-affecting toggles on the
+              right, separated by a hairline divider - a single coherent
+              piece of UI instead of a row of unrelated-looking buttons. */}
           {hasAnyProjects && (
-            <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 mb-3">
-              <div className="relative flex-1 min-w-0 sm:max-w-xs">
-                <SearchIcon className="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  className="input pl-9 text-sm w-full"
-                  placeholder="Search projects..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
+            <div className="flex flex-col lg:flex-row lg:items-center gap-2.5 lg:gap-2 mb-3 p-2 rounded-xl border border-border bg-surface/60">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 flex-1 min-w-0">
+                <div className="relative flex-1 min-w-0 sm:max-w-xs">
+                  <SearchIcon className="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    className="input h-10 pl-9 text-sm w-full"
+                    placeholder="Search projects..."
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                </div>
+                <select
+                  className="input h-10 text-sm w-full sm:w-auto"
+                  value={datasourceFilter}
+                  onChange={(e) => setDatasourceFilter(e.target.value)}
+                >
+                  <option value="all">All data sources</option>
+                  {datasourcesByCategory.map((g) => (
+                    <optgroup key={g.category} label={g.category}>
+                      {g.sources.map((ds) => (
+                        <option key={ds.id} value={ds.id}>{ds.name}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <select
+                  className="input h-10 text-sm w-full sm:w-auto"
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as SortKey)}
+                >
+                  <option value="newest">Newest first</option>
+                  <option value="oldest">Oldest first</option>
+                  <option value="title">Title A-Z</option>
+                </select>
               </div>
-              <select
-                className="input text-sm w-full sm:w-auto"
-                value={datasourceFilter}
-                onChange={(e) => setDatasourceFilter(e.target.value)}
-              >
-                <option value="all">All data sources</option>
-                {datasources.map((ds) => (
-                  <option key={ds.id} value={ds.id}>{ds.name}</option>
-                ))}
-              </select>
-              <select
-                className="input text-sm w-full sm:w-auto"
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as SortKey)}
-              >
-                <option value="newest">Newest first</option>
-                <option value="oldest">Oldest first</option>
-                <option value="title">Title A-Z</option>
-              </select>
-              <button
-                type="button"
-                onClick={() => setPinnedOnly((v) => !v)}
-                className={`inline-flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border transition shrink-0 ${
-                  pinnedOnly
-                    ? "bg-primary/15 border-primary/40 text-primary"
-                    : "border-border text-muted hover:text-text hover:bg-surface2"
-                }`}
-              >
-                <PinIcon className="w-3.5 h-3.5" filled={pinnedOnly} /> Pinned
-              </button>
-              <button
-                type="button"
-                onClick={toggleSelectMode}
-                className={`inline-flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border transition shrink-0 ${
-                  selectMode
-                    ? "bg-primary/15 border-primary/40 text-primary"
-                    : "border-border text-muted hover:text-text hover:bg-surface2"
-                }`}
-              >
-                <CheckSquareIcon className="w-3.5 h-3.5" /> {selectMode ? "Cancel" : "Select"}
-              </button>
-              <ViewToggle mode={viewMode} onChange={setViewMode} />
+
+              <div className="hidden lg:block w-px self-stretch bg-border" />
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setPinnedOnly((v) => !v)}
+                  className={`inline-flex items-center gap-1.5 h-10 text-sm px-3 rounded-lg border transition shrink-0 ${
+                    pinnedOnly
+                      ? "bg-primary/15 border-primary/40 text-primary"
+                      : "border-border text-muted hover:text-text hover:bg-surface2"
+                  }`}
+                >
+                  <PinIcon className="w-3.5 h-3.5" filled={pinnedOnly} /> Pinned
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleSelectMode}
+                  className={`inline-flex items-center gap-1.5 h-10 text-sm px-3 rounded-lg border transition shrink-0 ${
+                    selectMode
+                      ? "bg-primary/15 border-primary/40 text-primary"
+                      : "border-border text-muted hover:text-text hover:bg-surface2"
+                  }`}
+                >
+                  <CheckSquareIcon className="w-3.5 h-3.5" /> {selectMode ? "Cancel" : "Select"}
+                </button>
+                <div className="h-10 flex items-center">
+                  <ViewToggle mode={viewMode} onChange={setViewMode} />
+                </div>
+              </div>
             </div>
           )}
 
