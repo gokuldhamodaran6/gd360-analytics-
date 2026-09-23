@@ -331,10 +331,25 @@ class GokuMessage(Base):
 
 
 class Dashboard(Base):
+    """
+    A named board of pinned charts, built by clicking "Save chart to
+    dashboard" from the AI workspace (see routers/dashboards.py).
+
+    owner_id is always who CREATED this dashboard - that never changes.
+    workspace_id (added 2026-09-23, shared dashboards v1) is optional and
+    separate: NULL keeps a dashboard exactly as it always worked, visible
+    and editable only by its creator; set, it shares the whole dashboard
+    with every member of that workspace on the same view/editable split
+    used everywhere else a workspace shares something (see
+    routers/dashboards.py for the exact rule) - so a team can build one
+    curated set of charts together instead of everyone re-saving the same
+    numbers into their own private dashboard.
+    """
     __tablename__ = "dashboards"
 
     id = Column(String, primary_key=True, default=gen_uuid)
     owner_id = Column(String, ForeignKey("users.id"), nullable=False)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True)
     name = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
