@@ -92,6 +92,11 @@ def goku_chat(
     payload: GokuChatRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
 ):
     ds = _get_accessible_datasource(db, payload.datasource_id, user)
+    # Sending a Goku message is a write action (persists messages, calls
+    # the AI) - editable tier, so a workspace "viewer" (2026-09-23) can
+    # open Goku on a shared data source but not chat with it.
+    if not workspace_access.can_edit_datasource(db, ds, user):
+        raise HTTPException(403, "You have view-only access to this data source.")
     ensure_legacy_migrated(db, ds)
 
     message = (payload.message or "").strip()
