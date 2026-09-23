@@ -41,6 +41,21 @@ Scope history:
     routers/dashboards.py (saved dashboards) were left unchanged - neither
     is a "viewing something already shared" concern, and dashboards are
     not yet tied to a workspace or data source in the schema at all.
+  - 2026-09-23 (roles & attribution v1, same day, third round): the flat
+    "collaborate" tier above split into "view" and "editable" (see
+    services/workspace_access.py's module docstring for the exact rule),
+    and WorkspaceMember.role gained a third value, "viewer", alongside the
+    existing "owner"/"member" - a viewer can see everything a member can
+    (schema/preview/versions/flow/conversations/messages/saved views) but
+    can't create or change any of it (no chat/analyze, no saved views, no
+    renaming/pinning a conversation, no saved-table edits). Set via the new
+    PATCH /workspaces/{id}/members/{user_id}/role (owner-only; a brand new
+    member who joins via invite link still defaults to full "member" access
+    exactly as before - downgrading to viewer is a deliberate action the
+    owner takes afterward, not a separate invite flow). This round also
+    added creator attribution (SavedViewOut.created_by_* and the equivalent
+    fields on a listed/opened conversation) so a shared Project or saved
+    view shows who actually made it, not just whoever's looking at it now.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -212,6 +227,46 @@ def remove_member(
     db.delete(target)
     db.commit()
     return {"user_id": member_user_id, "removed": True}
+
+
+@router.patch("/workspaces/{workspace_id}/members/{member_user_id}/role", response_model=schemas.WorkspaceMemberOut)
+def update_member_role(
+    workspace_id: str,
+    member_user_id: str,
+    payload: schemas.WorkspaceMemberRoleUpdate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Promotes/demotes an existing member between full access ("member")
+    and read-only ("viewer") - see services/workspace_access.py for
+    exactly what each can do. Owner-only, and the owner's own role (set
+    once at workspace creation) can never be changed here, including by
+    themselves - an owner who wants to stop being the owner transfers the
+    workspace a different way (not built yet) or just deletes it."""
+    acting_member = _get_membership(db, workspace_id, user.id)
+    if acting_member.role != "owner":
+        raise HTTPException(403, "Only the workspace owner can change a member's role.")
+    if payload.role not in ("member", "viewer"):
+        raise HTTPException(400, "role must be 'member' or 'viewer'.")
+    if member_user_id == user.id:
+        raise HTTPException(400, "You can't change your own role.")
+    target = (
+        db.query(models.WorkspaceMember)
+        .filter(models.WorkspaceMember.workspace_id == workspace_id, models.WorkspaceMember.user_id == member_user_id)
+        .first()
+    )
+    if not target:
+        raise HTTPException(404, "That person isn't in this workspace.")
+    if target.role == "owner":
+        raise HTTPException(400, "The workspace owner's role can't be changed.")
+    target.role = payload.role
+    db.commit()
+    db.refresh(target)
+    target_user = db.query(models.User).filter(models.User.id == member_user_id).first()
+    return schemas.WorkspaceMemberOut(
+        user_id=target_user.id, email=target_user.email, full_name=target_user.full_name,
+        role=target.role, created_at=target.created_at,
+    )
 
 
 @router.get("/invites/{token}", response_model=schemas.InvitePreviewOut)
