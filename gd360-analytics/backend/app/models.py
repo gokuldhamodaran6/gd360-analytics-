@@ -37,6 +37,48 @@ class User(Base):
     learned_answers = relationship("LearnedAnswer", cascade="all, delete-orphan")
 
 
+class Workspace(Base):
+    """
+    A workspace groups data sources/projects under one roof with a member
+    list - "Personal Workspace" (is_personal=True) vs. a team/project
+    workspace the account owner creates and invites people into (see
+    routers/workspaces.py). Every account gets exactly one personal
+    workspace automatically (created at registration - see routers/auth.py
+    - or backfilled for pre-existing accounts by
+    database._ensure_personal_workspaces); everything else is created on
+    request from the sidebar's workspace switcher.
+
+    Joining works by shareable link, not emailed invite - this app has no
+    transactional email sending set up yet (2026-09-23 build notes), so
+    invite_token is a single, regenerable token embedded in a
+    /invite/<token> link the workspace owner copies and sends themselves.
+    """
+    __tablename__ = "workspaces"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    name = Column(String, nullable=False)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False)
+    is_personal = Column(Boolean, default=False)
+    invite_token = Column(String, unique=True, index=True, nullable=False, default=gen_uuid)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    members = relationship("WorkspaceMember", back_populates="workspace", cascade="all, delete-orphan")
+
+
+class WorkspaceMember(Base):
+    __tablename__ = "workspace_members"
+    __table_args__ = (UniqueConstraint("workspace_id", "user_id", name="uq_workspace_member"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    role = Column(String, default="member")  # "owner" | "member"
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    workspace = relationship("Workspace", back_populates="members")
+    user = relationship("User")
+
+
 class DataSource(Base):
     """
     Metadata + encrypted credentials for a connection a user has added.
@@ -51,6 +93,14 @@ class DataSource(Base):
 
     id = Column(String, primary_key=True, default=gen_uuid)
     owner_id = Column(String, ForeignKey("users.id"), nullable=False)
+    # Which Workspace this data source (and every Project built on it, via
+    # Conversation.datasource_id) belongs to - nullable because this column
+    # was added after datasources already existed in production; every
+    # existing row is backfilled into its owner's personal workspace by
+    # database._ensure_personal_workspaces on startup, and every access
+    # path treats a still-NULL row as belonging to the owner's personal
+    # workspace too, so nothing is ever hidden by a missed backfill.
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True)
     name = Column(String, nullable=False)
     kind = Column(String, nullable=False)
     connection_info = Column(JSON, default=dict)
