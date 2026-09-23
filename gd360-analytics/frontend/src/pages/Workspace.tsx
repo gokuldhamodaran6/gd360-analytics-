@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, chatApi, conversationApi, datasourceApi, ConversationSummary, DatasetVersion, DataSourceSummary, DataFlow } from "../api/client";
+import {
+  api, chatApi, conversationApi, datasourceApi, dashboardApi, workspaceApi,
+  ConversationSummary, DatasetVersion, DataSourceSummary, DataFlow, DashboardSummary, WorkspaceSummary,
+} from "../api/client";
 import TopNav from "../components/TopNav";
 import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID } from "../components/ChatPanel";
 import { hasMultipleTables, CreatedDataSource } from "../components/DataSourceForm";
@@ -87,6 +90,163 @@ function CloseIcon({ className = "w-4 h-4" }: { className?: string }) {
     <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
       <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
+  );
+}
+
+// "Save chart to dashboard" - 2026-09-23 (shared dashboards round): this
+// used to be a single click that silently created a BRAND NEW dashboard
+// every single time (dashboard_id was never actually sent back), so
+// saving a second chart from the same page could never land on the first
+// one. Now a small popover lets the person add to an existing dashboard
+// they can edit (personal or shared), or start a new one - optionally
+// shared with a team workspace right away instead of always personal.
+function SaveChartMenu({
+  chartSpec,
+  title,
+  insight,
+  dsName,
+  onSaved,
+}: {
+  chartSpec: any;
+  title: string;
+  insight: string | null;
+  dsName: string;
+  onSaved: (message: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [dashboards, setDashboards] = useState<DashboardSummary[] | null>(null);
+  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [mode, setMode] = useState<"existing" | "new">("new");
+  const [selectedId, setSelectedId] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newWorkspaceId, setNewWorkspaceId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setNewName(`${dsName || "My"} dashboard`);
+    setDashboards(null);
+    Promise.all([dashboardApi.list(), workspaceApi.list()])
+      .then(([d, w]) => {
+        setDashboards(d);
+        setWorkspaces(w);
+        const editable = d.filter((x) => x.can_edit);
+        setMode(editable.length > 0 ? "existing" : "new");
+        setSelectedId(editable.length > 0 ? editable[0].id : "");
+      })
+      .catch(() => setDashboards([]));
+  }, [open, dsName]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (!boxRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  const editableDashboards = (dashboards || []).filter((d) => d.can_edit);
+  // Only a team workspace where this person can actually add to things
+  // (not "viewer") is offered - matches what the backend enforces anyway.
+  const shareOptions = workspaces.filter((w) => !w.is_personal && w.role !== "viewer");
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      const payload: Parameters<typeof dashboardApi.saveChart>[0] =
+        mode === "existing" && selectedId
+          ? { title, chart_spec: chartSpec, insight, dashboard_id: selectedId }
+          : {
+              title, chart_spec: chartSpec, insight,
+              dashboard_name: newName.trim() || "My dashboard",
+              workspace_id: newWorkspaceId || null,
+            };
+      const res = await dashboardApi.saveChart(payload);
+      onSaved(`Saved to "${res.dashboard_name}"`);
+      setOpen(false);
+    } catch {
+      onSaved("Could not save chart.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="relative" ref={boxRef}>
+      <button type="button" className="btn-secondary text-sm" onClick={() => setOpen((o) => !o)}>
+        Save chart to dashboard
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-2 w-72 card bg-surface shadow-2xl border border-border p-3 z-30">
+          {dashboards === null ? (
+            <div className="text-xs text-muted py-2">Loading&hellip;</div>
+          ) : (
+            <>
+              {editableDashboards.length > 0 && (
+                <div className="mb-2.5">
+                  <label className="flex items-center gap-2 text-xs mb-1.5 cursor-pointer">
+                    <input type="radio" checked={mode === "existing"} onChange={() => setMode("existing")} />
+                    Add to an existing dashboard
+                  </label>
+                  {mode === "existing" && (
+                    <select
+                      className="input text-xs w-full"
+                      value={selectedId}
+                      onChange={(e) => setSelectedId(e.target.value)}
+                    >
+                      {editableDashboards.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.name}{d.workspace_id ? ` (${d.workspace_name})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              )}
+              <div>
+                <label className="flex items-center gap-2 text-xs mb-1.5 cursor-pointer">
+                  <input type="radio" checked={mode === "new"} onChange={() => setMode("new")} />
+                  Create a new dashboard
+                </label>
+                {mode === "new" && (
+                  <div className="space-y-1.5">
+                    <input
+                      className="input text-xs w-full"
+                      value={newName}
+                      onChange={(e) => setNewName(e.target.value)}
+                      maxLength={80}
+                      placeholder="Dashboard name"
+                    />
+                    {shareOptions.length > 0 && (
+                      <select
+                        className="input text-xs w-full"
+                        value={newWorkspaceId}
+                        onChange={(e) => setNewWorkspaceId(e.target.value)}
+                      >
+                        <option value="">Personal (only me)</option>
+                        {shareOptions.map((w) => (
+                          <option key={w.id} value={w.id}>Shared with {w.name}</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                className="btn-primary text-xs w-full mt-3"
+                disabled={busy || (mode === "existing" ? !selectedId : !newName.trim())}
+                onClick={submit}
+              >
+                {busy ? "Saving…" : "Save"}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1033,22 +1193,6 @@ export default function Workspace() {
     }
   };
 
-  const saveChart = async () => {
-    if (!displaySpec) return;
-    setSaveMsg("");
-    try {
-      await api.post("/dashboards/save-chart", {
-        title: chartStyle.title || chartTitle || "Untitled chart",
-        chart_spec: displaySpec,
-        insight: lastInsight,
-        dashboard_name: `${dsName || "My"} dashboard`,
-      });
-      setSaveMsg("Saved to dashboard, styling included");
-    } catch {
-      setSaveMsg("Could not save chart.");
-    }
-  };
-
   return (
     // min-h-screen (not a hard h-screen) below lg lets the page grow to fit
     // its real content and scroll normally on a phone - only at lg+ does
@@ -1109,7 +1253,13 @@ export default function Workspace() {
         {chartSpec && centerTab === "chart" && (
           <div className="flex items-center gap-3">
             {saveMsg && <span className="text-xs text-accent">{saveMsg}</span>}
-            <button className="btn-secondary text-sm" onClick={saveChart}>Save chart to dashboard</button>
+            <SaveChartMenu
+              chartSpec={displaySpec}
+              title={chartStyle.title || chartTitle || "Untitled chart"}
+              insight={lastInsight}
+              dsName={dsName}
+              onSaved={setSaveMsg}
+            />
           </div>
         )}
       </div>
