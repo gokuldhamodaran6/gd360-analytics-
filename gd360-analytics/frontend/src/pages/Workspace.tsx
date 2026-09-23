@@ -920,6 +920,24 @@ export default function Workspace() {
     [versions, versionScope, conversationId]
   );
 
+  // 2026-09-23, round eleven: the SAME conversation-scoping filter as
+  // `visibleVersions` above, just applied to whichever OTHER connected
+  // source the Data-tab switcher is currently showing. Round ten scoped
+  // this everywhere a person picks a table to ADD to WORKING ON (the chat's
+  // own picker, the header's "+ Add data" popup) but missed the one place
+  // that actually renders an other source's saved-table tabs once it's
+  // open in the Data tab itself - so every AI-built table ever built
+  // against that data source, in every unrelated past project, was still
+  // showing up right here. The "already selected stays visible" carve-out
+  // matches those other two pickers exactly, so resuming an old
+  // cross-source conversation never silently hides an active pick.
+  const visibleOtherDsVersions = useMemo(() => {
+    const vs = otherDsVersions[activeDataTabSourceId] || [];
+    return versionScope === "all"
+      ? vs
+      : vs.filter((v) => v.conversation_id == null || v.conversation_id === conversationId || sourceIds.includes(v.id));
+  }, [otherDsVersions, activeDataTabSourceId, versionScope, conversationId, sourceIds]);
+
   // Loads the list of saved tables for this data source. The very first
   // time this runs for a given data source, it also picks a starting tab.
   // Resuming one specific past conversation from Recent conversations still
@@ -941,10 +959,28 @@ export default function Workspace() {
           versionsInitRef.current = datasourceId;
           const startId = resumeConversationId && vs.length ? vs[vs.length - 1].id : null;
           setActiveVersionId(startId);
-          setSourceIds([startId ?? ORIGINAL_SOURCE_ID]);
+          const base = startId ?? ORIGINAL_SOURCE_ID;
+          // 2026-09-23, round eleven (Gokul's own bug report: picking 3
+          // sources in the Connect-data popup and landing here with only
+          // the FIRST one ever showing - the other two existed only as
+          // WORKING ON chips he had to add back by hand). Root cause: this
+          // effect runs once on the very first load of ANY data source and
+          // unconditionally reset `sourceIds` down to a single id - which
+          // clobbered the exact multi-source seed `sourceIds`'s own lazy
+          // initial state (above) had just built from `extraDatasourceIds`
+          // a moment earlier. Preserve that seed here instead of stomping
+          // it: only when arriving fresh from the Connect-data popup (not
+          // resuming a saved conversation, which always has its own single
+          // real selection).
+          setSourceIds(
+            !resumeConversationId && extraDatasourceIds.length
+              ? [base, ...extraDatasourceIds.map((id) => otherDsSourceId(id))]
+              : [base]
+          );
         }
       })
       .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [datasourceId, dataRefreshKey, resumeConversationId]);
 
   // Runs a `?draft=` prompt handed off from the blank-chat "New Project"
@@ -1760,7 +1796,7 @@ export default function Workspace() {
                   <DataTable
                     datasourceId={activeDataTabSourceId}
                     refreshKey={dataRefreshKey}
-                    versions={isViewingPrimaryInDataTab ? visibleVersions : otherDsVersions[activeDataTabSourceId] || []}
+                    versions={isViewingPrimaryInDataTab ? visibleVersions : visibleOtherDsVersions}
                     activeVersionId={
                       isViewingPrimaryInDataTab ? activeVersionId : otherDsActiveVersionId[activeDataTabSourceId] ?? null
                     }
