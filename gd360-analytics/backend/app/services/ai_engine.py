@@ -86,7 +86,16 @@ schema:
                             // |"stacked_area"|"step_line"|"candlestick"|"ohlc"|"violin"|"dot_plot"
                             // |"density_heatmap"|"bubble"|"contour"|"scatter_3d"|"error_bar"|"donut"|"sunburst"
                             // |"icicle"|"funnel_area"|"sankey"|"gauge"|"parallel_coordinates"|"choropleth"|null,
-  "title": string | null,
+  "title": string | null,          // REQUIRED (a real, non-empty string) whenever chart_type is set - a
+                            // short, professional chart title, the way an enterprise BI tool would caption
+                            // this exact chart: a plain descriptive noun phrase naming the metric and its
+                            // breakdown (e.g. "Profit Loss by Sub-Category and Market", "Monthly Revenue
+                            // Trend", "Top 10 Customers by Order Volume"). NEVER a restatement or copy of the
+                            // person's own prompt text, NEVER phrased as a question, and NEVER starting with
+                            // "Which"/"What"/"How"/"Why"/"When"/"Where"/"Who" - a chart titled with the
+                            // person's literal question reads as an unfinished, unprofessional draft next to
+                            // every other chart in this app. Title Case, under roughly 9 words, no trailing
+                            // punctuation. null only when action != "analyze" (nothing is being charted).
   "x_label": string | null,
   "y_label": string | null,
   "code": string | null,  // python using pandas (pd), numpy (np), scipy.stats (stats), `df`, and `tables`. No
@@ -1286,6 +1295,45 @@ def _find_repeated_prompt_code(prompt: str, history: list[dict] | None) -> tuple
     return None
 
 
+_QUESTION_OPENERS = (
+    "which ", "what ", "how ", "why ", "when ", "where ", "who ",
+    "show me ", "can you ", "could you ", "please ", "give me ",
+)
+
+
+def _fallback_chart_title(x_label: str | None, y_label: str | None, prompt: str) -> str:
+    """A last-resort chart title for the rare case the model's own
+    plan["title"] comes back empty despite the schema now requiring one (see
+    the "title" field in SYSTEM_PROMPT) - deliberately NOT prompt[:80] any
+    more. Dumping the person's raw question onto a chart - "Which
+    Sub.Category and Market combination lost the most Profit, and why might
+    that be?" - read as unpolished and unprofessional next to every other
+    enterprise BI tool's clean, noun-phrase chart titles, which was exactly
+    Gokul's own bug report. Prefers a plain "<metric> by <breakdown>" built
+    from the plan's own axis labels (almost always available and already
+    clean column-derived text); only falls through to a lightly cleaned-up
+    version of the prompt - stripped of its question-opener and trailing
+    "?", so it reads at least as a statement rather than a question - when
+    neither axis label is present either.
+    """
+    if y_label and x_label:
+        return f"{y_label} by {x_label}"
+    if y_label:
+        return str(y_label)
+    if x_label:
+        return str(x_label)
+    cleaned = (prompt or "").strip().rstrip("?").strip()
+    lowered = cleaned.lower()
+    for opener in _QUESTION_OPENERS:
+        if lowered.startswith(opener):
+            cleaned = cleaned[len(opener):].strip()
+            break
+    cleaned = cleaned[:80].strip()
+    if not cleaned:
+        return "Analysis Results"
+    return cleaned[0].upper() + cleaned[1:]
+
+
 def _infer_chart_type(prompt: str, result: Any, chart_type: str | None) -> str:
     """A deterministic safety net on top of the model own chart_type choice.
     Smaller/free models sometimes write a narrative describing one chart
@@ -2310,7 +2358,11 @@ def _run_analyze_with_prep(
     chart_type = (chart_override or {}).get("chart_type") or plan.get("chart_type") or "bar"
     if not (chart_override or {}).get("chart_type"):
         chart_type = _infer_chart_type(prompt, result, chart_type)
-    title = (chart_override or {}).get("title") or plan.get("title") or prompt[:80]
+    title = (
+        (chart_override or {}).get("title")
+        or plan.get("title")
+        or _fallback_chart_title(plan.get("x_label"), plan.get("y_label"), prompt)
+    )
     try:
         chart_spec = build_figure(result, chart_type, title, plan.get("x_label"), plan.get("y_label"))
     except Exception as e:
@@ -2386,7 +2438,11 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
         # type the person explicitly picked, and never fights a deliberate,
         # specific choice the model already made.
         chart_type = _infer_chart_type(prompt, result, chart_type)
-    title = (chart_override or {}).get("title") or plan.get("title") or prompt[:80]
+    title = (
+        (chart_override or {}).get("title")
+        or plan.get("title")
+        or _fallback_chart_title(plan.get("x_label"), plan.get("y_label"), prompt)
+    )
     try:
         chart_spec = build_figure(result, chart_type, title, plan.get("x_label"), plan.get("y_label"))
     except Exception as e:
