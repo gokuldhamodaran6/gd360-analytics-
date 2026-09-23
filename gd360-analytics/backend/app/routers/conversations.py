@@ -98,6 +98,10 @@ def list_conversations(
             "last_message": last.content,
             "last_chart_type": last_chart_type,
             "pinned": bool(c.pinned),
+            # 2026-09-23 (folders round): which Folder this Project is
+            # filed into, if any - NULL/omitted means "unfiled", the
+            # Projects page's default view. See routers/folders.py.
+            "folder_id": c.folder_id,
             "created_at": c.created_at,
             "updated_at": last.created_at,
             "created_by_id": c.owner_id,
@@ -121,6 +125,56 @@ def list_conversations(
     out.sort(key=lambda row: row["updated_at"], reverse=True)
     out.sort(key=lambda row: row["pinned"], reverse=True)
     return out
+
+
+@router.patch("/bulk-move")
+def bulk_move_conversations(
+    payload: schemas.BulkMoveConversationsRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Files (or unfiles, if folder_id is None) several Projects into a
+    folder at once - the "select some or all, move to folder" bulk action
+    on the Projects page (2026-09-23, folders round). Registered ABOVE the
+    "/{conversation_id}" route below so "bulk-move" is never swallowed by
+    it as a literal conversation id - route order matters here.
+
+    Each conversation is moved only if this user has editable-tier access
+    to it (same check update_conversation uses below) - anything else in
+    the list is silently skipped rather than failing the whole batch, since
+    a stale selection (something deleted or re-shared out from under the
+    person a moment ago) shouldn't block moving everything else they
+    legitimately can. The response says exactly which ids landed and which
+    didn't, so the frontend can tell the person if anything was skipped."""
+    target_folder = None
+    if payload.folder_id is not None:
+        target_folder = db.query(models.Folder).filter(models.Folder.id == payload.folder_id).first()
+        if not target_folder:
+            raise HTTPException(404, "Folder not found.")
+        role = workspace_access.member_role(db, user.id, target_folder.workspace_id)
+        is_edit_role = role in {"owner", "member"} or target_folder.owner_id == user.id
+        if role is None and target_folder.owner_id != user.id:
+            raise HTTPException(404, "Folder not found.")
+        if not is_edit_role:
+            raise HTTPException(403, "You have view-only access to this workspace.")
+
+    moved: list[str] = []
+    skipped: list[str] = []
+    conversations = (
+        db.query(models.Conversation)
+        .filter(models.Conversation.id.in_(payload.conversation_ids))
+        .all()
+    )
+    found_by_id = {c.id: c for c in conversations}
+    for conv_id in payload.conversation_ids:
+        conv = found_by_id.get(conv_id)
+        if not conv or not workspace_access.can_edit_conversation(db, conv, user):
+            skipped.append(conv_id)
+            continue
+        conv.folder_id = target_folder.id if target_folder else None
+        moved.append(conv_id)
+    db.commit()
+    return {"moved": moved, "skipped": skipped, "folder_id": target_folder.id if target_folder else None}
 
 
 @router.patch("/{conversation_id}")
