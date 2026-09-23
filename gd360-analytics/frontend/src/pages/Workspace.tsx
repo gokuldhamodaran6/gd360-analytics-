@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   api, chatApi, conversationApi, datasourceApi, dashboardApi, workspaceApi,
-  ConversationSummary, DatasetVersion, DataSourceSummary, DataFlow, DashboardSummary, WorkspaceSummary,
+  DatasetVersion, DataSourceSummary, DataFlow, DashboardSummary, WorkspaceSummary,
 } from "../api/client";
 import TopNav from "../components/TopNav";
 import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID } from "../components/ChatPanel";
@@ -10,7 +10,6 @@ import { hasMultipleTables, CreatedDataSource } from "../components/DataSourceFo
 import AddDataPicker from "../components/AddDataPicker";
 import GokuChat from "../components/GokuChat";
 import ChartCanvas from "../components/ChartCanvas";
-import ConversationRow from "../components/ConversationRow";
 import ExplorePanel from "../components/ExplorePanel";
 import DataTable from "../components/DataTable";
 import DataFlowMap, { FlowJumpTarget } from "../components/DataFlowMap";
@@ -55,6 +54,22 @@ const makeChartId = () => {
     // Fall through to the manual id below.
   }
   return `chart-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+};
+
+// 2026-09-23 (Project identity round): a brand-new Project's title lives
+// only on the server, and only gets created there the moment its first
+// message actually runs (see backend routers/chat.py
+// _get_or_create_conversation) - so the header needs a title to show
+// immediately, in the same tick, without waiting on a round trip. This
+// mirrors that backend function's own truncation rule exactly (first
+// prompt, 60 chars, "..." past that) so what shows here the instant a
+// first message sends is already the same title a refresh - or the
+// Projects page - will show for this same Project afterward, never a
+// placeholder that then visibly changes underneath the person.
+const deriveConversationTitle = (prompt: string): string => {
+  const trimmed = (prompt || "").trim();
+  const short = trimmed.length > 60 ? `${trimmed.slice(0, 57)}...` : trimmed;
+  return short || "New analysis";
 };
 
 // A short, readable tab label derived from the question that produced the
@@ -306,12 +321,20 @@ export default function Workspace() {
   const [savingDsName, setSavingDsName] = useState(false);
   const [dsRenameFailed, setDsRenameFailed] = useState(false);
 
-  // This data source's own recent conversations - replaces the old
-  // "Ideas" panel, which kept repeating the same generic suggestions
-  // regardless of what was actually being analyzed. Scoped to just this
-  // data source (not every conversation the person has ever had) so it is
-  // always relevant to what is on screen right now.
-  const [recentConversations, setRecentConversations] = useState<ConversationSummary[]>([]);
+  // 2026-09-23 (Project identity round): this Project's own name, shown
+  // top-left - above "Analyzing: <data source>", not folded into it, since
+  // the Project (this one specific analysis) and the data source it runs
+  // against are two different things. `null` means no Project exists yet
+  // (a brand-new chat that hasn't sent its first message) - shown as a
+  // plain, not-yet-renameable "Untitled" until that first message actually
+  // creates one server-side (see deriveConversationTitle above and
+  // runPrompt below), exactly like every other Project already gets an
+  // auto-title from its first question on the Projects page.
+  const [conversationTitle, setConversationTitle] = useState<string | null>(null);
+  const [renamingConversation, setRenamingConversation] = useState(false);
+  const [conversationTitleDraft, setConversationTitleDraft] = useState("");
+  const [savingConversationTitle, setSavingConversationTitle] = useState(false);
+  const [conversationRenameFailed, setConversationRenameFailed] = useState(false);
 
   // Which saved/AI-built tables the Data tab's tab strip (and the WORKING
   // ON picker, which reads the same `visibleVersions` below) actually
@@ -630,6 +653,7 @@ export default function Workspace() {
     sessionKeyRef.current = key;
     setTurns([]);
     setConversationId(null);
+    setConversationTitle(null);
     setCharts([]);
     setActiveChartId(null);
     setRenamingChartId(null);
@@ -645,40 +669,31 @@ export default function Workspace() {
     versionsInitRef.current = null;
   }, [datasourceId, resumeConversationId]);
 
-  // This data source's own recent conversations, newest first - refetched
-  // whenever the data source changes, and again once a brand new
-  // conversation is actually created (conversationId flips from null to a
-  // real id) so it shows up here right away rather than only after a
-  // manual refresh.
-  useEffect(() => {
-    if (!datasourceId) return;
-    conversationApi
-      .list()
-      .then((all) => setRecentConversations(all.filter((c) => c.datasource_id === datasourceId)))
-      .catch(() => {});
-  }, [datasourceId, conversationId]);
-
-  const renameRecentConversation = (id: string, title: string) => {
-    setRecentConversations((cs) => cs.map((c) => (c.id === id ? { ...c, title } : c)));
+  // 2026-09-23 (Project identity round): rename THIS Project - same
+  // draft-input/pencil-icon pattern as startRenameDs/commitRenameDs above,
+  // just against conversationApi instead of datasourceApi. Only offered
+  // once conversationId is real (the Project actually exists server-side -
+  // see the header JSX) since there is nothing yet to persist a rename
+  // against before that.
+  const startRenameConversation = () => {
+    setConversationTitleDraft(conversationTitle || "");
+    setConversationRenameFailed(false);
+    setRenamingConversation(true);
   };
 
-  const pinRecentConversation = (id: string, pinned: boolean) => {
-    setRecentConversations((cs) => {
-      const next = cs.map((c) => (c.id === id ? { ...c, pinned } : c));
-      next.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
-      next.sort((a, b) => Number(b.pinned) - Number(a.pinned));
-      return next;
-    });
-  };
-
-  // Deleting the conversation currently open on screen leaves nothing left
-  // to show - land back on a fresh chat for this same data source, exactly
-  // like clicking "+ New" above this list already does, rather than
-  // showing a now-broken resumed session.
-  const deleteRecentConversation = (id: string) => {
-    setRecentConversations((cs) => cs.filter((c) => c.id !== id));
-    if (id === resumeConversationId && datasourceId) {
-      navigate(`/workspace/${datasourceId}`);
+  const commitRenameConversation = async () => {
+    const title = conversationTitleDraft.trim();
+    setRenamingConversation(false);
+    if (!conversationId || !title || title === conversationTitle) return;
+    setSavingConversationTitle(true);
+    setConversationRenameFailed(false);
+    try {
+      const updated = await conversationApi.rename(conversationId, title);
+      setConversationTitle(updated.title);
+    } catch {
+      setConversationRenameFailed(true);
+    } finally {
+      setSavingConversationTitle(false);
     }
   };
 
@@ -779,6 +794,7 @@ export default function Workspace() {
       .getMessages(resumeConversationId)
       .then((data) => {
         setConversationId(data.id);
+        setConversationTitle(data.title || null);
 
         const restored: ChatTurn[] = data.messages.map((m) => ({
           role: m.role === "user" ? "user" : "assistant",
@@ -954,6 +970,15 @@ export default function Workspace() {
         skip_prep: !!opts?.skipPrep,
       });
       setConversationId(data.conversation_id);
+      // The very first message of a brand-new chat is exactly what just
+      // created this Project server-side (see backend chat.py
+      // _get_or_create_conversation) - mirror its own title-deriving rule
+      // right here so the header shows the real title immediately instead
+      // of "Untitled" lingering for the length of one more round trip.
+      // `resumeConversationId` (this closure's value, captured at the
+      // start of this call) is only ever falsy on that first message - see
+      // deriveConversationTitle's own comment above.
+      if (!resumeConversationId) setConversationTitle(deriveConversationTitle(prompt));
       // 2026-09-23 root-cause fix: a brand-new chat's conversation id used
       // to live ONLY in this in-memory state - never written into the
       // URL. The restore effect above (and the reset effect right after
@@ -1235,58 +1260,110 @@ export default function Workspace() {
     // min-h-screen (not a hard h-screen) below lg lets the page grow to fit
     // its real content and scroll normally on a phone - only at lg+ does
     // this lock to the exact viewport height for the fixed, non-scrolling
-    // 3-pane desktop layout below. Without this, the 3 stacked panels'
+    // 2-pane desktop layout below. Without this, the stacked panels'
     // combined minimum heights on mobile exceeded what a fixed-height,
-    // overflow-hidden page had room for, and the bottom of the layout
-    // (typically the Recent conversations panel) was simply clipped
-    // off-screen with no way to scroll down to it.
+    // overflow-hidden page had room for, and the bottom of the layout was
+    // simply clipped off-screen with no way to scroll down to it.
     <div className="min-h-screen lg:h-screen flex flex-col">
       <TopNav />
       <div className="px-4 sm:px-6 py-3 border-b border-border flex flex-wrap items-center justify-between gap-2">
-        <div className="text-sm text-muted flex items-center gap-1.5 min-w-0">
-          <span className="shrink-0">Analyzing:</span>
-          {renamingDs ? (
-            <input
-              autoFocus
-              className="input py-1 text-sm font-medium max-w-xs"
-              value={dsNameDraft}
-              onChange={(e) => setDsNameDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") commitRenameDs();
-                if (e.key === "Escape") setRenamingDs(false);
-              }}
-              onBlur={commitRenameDs}
-              maxLength={120}
-            />
-          ) : (
-            <span className="flex items-center gap-1 min-w-0">
-              <span className="text-text font-medium truncate">{dsName}</span>
-              <button
-                type="button"
-                className="opacity-60 hover:opacity-100 transition shrink-0"
-                title="Rename this data source"
-                onClick={startRenameDs}
-              >
-                &#9998;
-              </button>
-            </span>
-          )}
-          {savingDsName && <span className="text-xs text-accent shrink-0">Saving&hellip;</span>}
-          {dsRenameFailed && <span className="text-xs text-red-400 shrink-0">Could not rename</span>}
-          {resuming && <span className="ml-2 text-xs text-accent shrink-0">Loading conversation...</span>}
-          {/* "+ Add data": the header-level entry point Gokul asked for,
-              directly opposite the datasource name - opens a popup of every
-              other connected source's logo (plus a "New data" tile) instead
-              of requiring a click into the chat panel's own WORKING ON
-              dropdown first. See AddDataPicker.tsx; both write into the
-              exact same `sourceIds` selection ChatPanel reads from. */}
-          <button
-            type="button"
-            className="ml-2 text-xs px-2.5 py-1 rounded-lg border border-primary/40 text-primary hover:bg-primary/10 transition font-medium shrink-0 flex items-center gap-1"
-            onClick={() => setAddDataOpen(true)}
-          >
-            <span aria-hidden>+</span> Add data
-          </button>
+        <div className="min-w-0 flex-1">
+          {/* 2026-09-23 (Project identity round): this Project's own name -
+              the first thing read on this page, above what it's built on.
+              Every analysis is now its own standalone Project (no more
+              "conversations" nested under a data source), so the person
+              needs to see, at a glance, WHICH Project this is - not just
+              what data it happens to run against. Renameable once it
+              actually exists (conversationId is real); before that first
+              message, there is nothing yet to persist a rename against, so
+              it shows as a plain, not-yet-clickable "Untitled" - exactly
+              what a person notices and then resolves simply by asking
+              their first question, which auto-titles it immediately (see
+              deriveConversationTitle above), the same as any other Project
+              already gets on the Projects page. */}
+          <div className="flex items-center gap-1.5 min-w-0">
+            {renamingConversation ? (
+              <input
+                autoFocus
+                className="input py-1 text-base font-bold max-w-sm"
+                value={conversationTitleDraft}
+                onChange={(e) => setConversationTitleDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitRenameConversation();
+                  if (e.key === "Escape") setRenamingConversation(false);
+                }}
+                onBlur={commitRenameConversation}
+                maxLength={80}
+              />
+            ) : (
+              <span className="flex items-center gap-1.5 min-w-0">
+                <span
+                  className={`text-base font-bold truncate ${conversationTitle ? "text-text" : "text-muted italic"}`}
+                  title={conversationTitle || "Untitled - ask your first question to name this Project automatically"}
+                >
+                  {conversationTitle || "Untitled"}
+                </span>
+                {conversationId && (
+                  <button
+                    type="button"
+                    className="opacity-60 hover:opacity-100 transition shrink-0"
+                    title="Rename this Project"
+                    onClick={startRenameConversation}
+                  >
+                    &#9998;
+                  </button>
+                )}
+              </span>
+            )}
+            {savingConversationTitle && <span className="text-xs text-accent shrink-0">Saving&hellip;</span>}
+            {conversationRenameFailed && <span className="text-xs text-red-400 shrink-0">Could not rename</span>}
+          </div>
+
+          <div className="text-sm text-muted flex items-center gap-1.5 min-w-0 mt-0.5">
+            <span className="shrink-0">Analyzing:</span>
+            {renamingDs ? (
+              <input
+                autoFocus
+                className="input py-1 text-sm font-medium max-w-xs"
+                value={dsNameDraft}
+                onChange={(e) => setDsNameDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitRenameDs();
+                  if (e.key === "Escape") setRenamingDs(false);
+                }}
+                onBlur={commitRenameDs}
+                maxLength={120}
+              />
+            ) : (
+              <span className="flex items-center gap-1 min-w-0">
+                <span className="text-text font-medium truncate">{dsName}</span>
+                <button
+                  type="button"
+                  className="opacity-60 hover:opacity-100 transition shrink-0"
+                  title="Rename this data source"
+                  onClick={startRenameDs}
+                >
+                  &#9998;
+                </button>
+              </span>
+            )}
+            {savingDsName && <span className="text-xs text-accent shrink-0">Saving&hellip;</span>}
+            {dsRenameFailed && <span className="text-xs text-red-400 shrink-0">Could not rename</span>}
+            {resuming && <span className="ml-2 text-xs text-accent shrink-0">Loading conversation...</span>}
+            {/* "+ Add data": the header-level entry point Gokul asked for,
+                directly opposite the datasource name - opens a popup of every
+                other connected source's logo (plus a "New data" tile) instead
+                of requiring a click into the chat panel's own WORKING ON
+                dropdown first. See AddDataPicker.tsx; both write into the
+                exact same `sourceIds` selection ChatPanel reads from. */}
+            <button
+              type="button"
+              className="ml-2 text-xs px-2.5 py-1 rounded-lg border border-primary/40 text-primary hover:bg-primary/10 transition font-medium shrink-0 flex items-center gap-1"
+              onClick={() => setAddDataOpen(true)}
+            >
+              <span aria-hidden>+</span> Add data
+            </button>
+          </div>
         </div>
         {chartSpec && centerTab === "chart" && (
           <div className="flex items-center gap-3">
@@ -1313,11 +1390,18 @@ export default function Workspace() {
 
       {error && <div className="mx-4 sm:mx-6 mt-3 text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
 
-      {/* overflow-visible below lg lets these 3 panels take their natural,
+      {/* overflow-visible below lg lets these 2 panels take their natural,
           possibly-tall content height and the page scroll to reach all of
           them; lg:overflow-hidden restores the original fixed, internally-
-          scrolling 3-pane desktop behavior unchanged. */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[380px_1fr_340px] gap-4 px-4 pb-4 overflow-visible lg:overflow-hidden">
+          scrolling 2-pane desktop behavior unchanged.
+          2026-09-23 (Project identity round): the third column - a
+          "Recent conversations" list of this data source's OTHER Projects -
+          is gone. Every analysis is its own standalone Project now, so
+          surfacing sibling Projects from inside one read as exactly the
+          opposite of that: nothing about another Project belongs on this
+          page anymore. The center panel (1fr) simply gets that freed
+          width. */}
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-4 px-4 pb-4 overflow-visible lg:overflow-hidden">
         <div className="min-h-[400px] lg:min-h-0">
           <ChatPanel
             turns={turns}
@@ -1525,43 +1609,6 @@ export default function Workspace() {
                   <ChartCanvas chartSpec={displaySpec} title={chartStyle.title || chartTitle} />
                 </div>
               </div>
-            )}
-          </div>
-        </div>
-        <div className="min-h-[200px] flex flex-col gap-3 overflow-visible lg:overflow-hidden">
-          <div className="flex items-center justify-between gap-2 px-1 shrink-0">
-            <div className="text-sm font-semibold">Recent conversations</div>
-            {(resumeConversationId || turns.length > 0) && datasourceId && (
-              <button
-                type="button"
-                className="text-xs text-accent underline"
-                onClick={() => navigate(`/workspace/${datasourceId}`)}
-              >
-                + New
-              </button>
-            )}
-          </div>
-          <div className="flex-1 overflow-visible lg:overflow-y-auto space-y-2">
-            {recentConversations.length === 0 ? (
-              <div className="card p-4 text-xs text-muted leading-relaxed">
-                Your conversations about this data source will show up here once you ask GD360 a question.
-              </div>
-            ) : (
-              recentConversations.map((c) => (
-                <ConversationRow
-                  key={c.id}
-                  conversation={c}
-                  variant="row"
-                  active={c.id === resumeConversationId}
-                  trailing={`${c.message_count}`}
-                  onOpen={() => {
-                    if (c.id !== resumeConversationId) navigate(`/workspace/${datasourceId}?conversation=${c.id}`);
-                  }}
-                  onRenamed={renameRecentConversation}
-                  onPinned={pinRecentConversation}
-                  onDeleted={deleteRecentConversation}
-                />
-              ))
             )}
           </div>
         </div>
