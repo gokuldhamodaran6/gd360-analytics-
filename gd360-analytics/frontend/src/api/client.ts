@@ -274,6 +274,12 @@ export type SavedView = {
   config: Record<string, any>;
   created_at: string;
   updated_at: string;
+  // Who saved this view - shared team-wide once its data source is (see
+  // backend routers/datasources.py list_saved_views), so a shared list
+  // doesn't look like it all came from whoever's looking at it right now.
+  created_by_id: string | null;
+  created_by_name: string | null;
+  created_by_email: string | null;
 };
 
 // The same shape the backend's DataSourceOut returns - kept here (rather
@@ -497,6 +503,17 @@ export type ConversationSummary = {
   pinned: boolean;
   created_at: string;
   updated_at: string;
+  // Who started this Project, and what the CURRENT signed-in person can do
+  // with it (2026-09-23, roles & attribution round) - server-computed so
+  // the UI never has to re-derive the owner/member/viewer role logic
+  // itself. created_by_name falls back to created_by_email when someone
+  // hasn't set a display name.
+  created_by_id: string;
+  created_by_name: string | null;
+  created_by_email: string;
+  is_own: boolean;
+  can_edit: boolean;
+  can_delete: boolean;
 };
 
 export type ConversationMessage = {
@@ -526,6 +543,12 @@ export type ConversationDetail = {
   id: string;
   title: string;
   datasource_id: string | null;
+  created_by_id: string;
+  created_by_name: string | null;
+  created_by_email: string;
+  is_own: boolean;
+  can_edit: boolean;
+  can_delete: boolean;
   messages: ConversationMessage[];
 };
 
@@ -549,11 +572,16 @@ export const conversationApi = {
 // link (POST .../invite/regenerate issues it, GET/POST /invites/:token
 // previews and accepts it), not by an emailed invite. ----
 
+// "viewer" added 2026-09-23 (roles & attribution round): full read access,
+// no create/edit/delete - see backend services/workspace_access.py for
+// exactly what that does and doesn't allow.
+export type WorkspaceRole = "owner" | "member" | "viewer";
+
 export type WorkspaceSummary = {
   id: string;
   name: string;
   is_personal: boolean;
-  role: "owner" | "member";
+  role: WorkspaceRole; // the CURRENT signed-in person's role in this workspace
   member_count: number;
   datasource_count: number;
   invite_token: string;
@@ -564,7 +592,7 @@ export type WorkspaceMember = {
   user_id: string;
   email: string;
   full_name: string | null;
-  role: "owner" | "member";
+  role: WorkspaceRole;
   created_at: string;
 };
 
@@ -587,6 +615,11 @@ export const workspaceApi = {
     api.post<WorkspaceSummary>(`/workspaces/${id}/invite/regenerate`).then((r) => r.data),
   removeMember: (id: string, userId: string) =>
     api.delete<{ user_id: string; removed: boolean }>(`/workspaces/${id}/members/${userId}`).then((r) => r.data),
+  // Promotes/demotes an existing member between full access ("member") and
+  // read-only ("viewer") - owner-only server-side, and the owner's own row
+  // is never a valid target (see backend update_member_role).
+  updateMemberRole: (id: string, userId: string, role: "member" | "viewer") =>
+    api.patch<WorkspaceMember>(`/workspaces/${id}/members/${userId}/role`, { role }).then((r) => r.data),
   previewInvite: (token: string) => api.get<InvitePreview>(`/invites/${token}`).then((r) => r.data),
   joinInvite: (token: string) => api.post<WorkspaceSummary>(`/invites/${token}/join`).then((r) => r.data),
 };
