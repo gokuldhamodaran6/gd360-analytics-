@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
 import ThemeToggle from "../components/ThemeToggle";
 
@@ -27,11 +27,18 @@ function EyeOffIcon({ className }: { className?: string }) {
 export default function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // Set by <Protected> (App.tsx) when this login was reached by being
+  // bounced off a page that needed to be signed in first - a workspace
+  // invite link, most commonly - so signing in lands back there instead of
+  // always going to "/".
+  const from = (location.state as { from?: string } | null)?.from || "/";
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -39,7 +46,7 @@ export default function Login() {
     setBusy(true);
     try {
       await login(email, password);
-      navigate("/");
+      navigate(from, { replace: true });
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Login failed.");
     } finally {
@@ -98,7 +105,10 @@ export default function Login() {
             {busy ? "Signing in..." : "Sign in"}
           </button>
           <p className="text-sm text-muted text-center">
-            New here? <Link to="/register" className="text-primary hover:underline">Create a free account</Link>
+            New here?{" "}
+            <Link to="/register" state={{ from }} className="text-primary hover:underline">
+              Create a free account
+            </Link>
           </p>
           <p className="text-xs text-muted text-center">
             <Link to="/privacy" className="hover:text-text hover:underline">Privacy Policy</Link>
