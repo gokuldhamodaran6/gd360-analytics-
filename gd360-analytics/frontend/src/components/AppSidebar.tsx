@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
 import { datasourceApi, DataSourceSummary, WorkspaceDetail, WorkspaceSummary, workspaceApi } from "../api/client";
-import { connectionKindMeta } from "./DataSourceForm";
+import DataSourceForm, { connectionKindMeta, dataSourceCategory, DATA_SOURCE_CATEGORIES } from "./DataSourceForm";
 
 // 2026-09-23: the persistent left nav rail from the workspace-structure
 // revamp, modeled on the reference screenshots Gokul shared (a "Data
@@ -44,6 +44,36 @@ function DashboardsIcon({ className = "w-[18px] h-[18px]" }: { className?: strin
       <rect x="7" y="12" width="3" height="6" rx="0.5" />
       <rect x="13" y="8" width="3" height="10" rx="0.5" />
       <rect x="18" y="5" width="3" height="13" rx="0.5" />
+    </svg>
+  );
+}
+
+// 2026-09-23 (sidebar redesign round): a third top-level nav entry, for the
+// new /data page - every connected source, browsable by category, replaces
+// this sidebar's old always-expanded flat list.
+function DataSourcesIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <ellipse cx="12" cy="5" rx="8" ry="3" />
+      <path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
+      <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" />
+    </svg>
+  );
+}
+
+function ConnectIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function SearchIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="11" cy="11" r="7" />
+      <path d="M21 21l-4.3-4.3" />
     </svg>
   );
 }
@@ -450,55 +480,181 @@ function InviteMembersModal({
   );
 }
 
+// The sidebar's own "Connect data" popup (2026-09-23, sidebar redesign
+// round) - replaces the old always-expanded flat list at the bottom of the
+// sidebar. Two tabs: every source already connected in the active
+// workspace, grouped by category (Files / Databases / Warehouses, see
+// DataSourceForm.dataSourceCategory) instead of one flat unsorted scroll,
+// or connect a brand-new one (the same DataSourceForm used everywhere
+// else). Picking an existing source or finishing a new connection always
+// navigates straight into it, so this never needs to hand a "refresh your
+// list" signal back to whichever page happened to be open underneath it -
+// that page is being left either way.
+function ConnectDataPopup({
+  activeWorkspaceId,
+  onClose,
+}: {
+  activeWorkspaceId: string;
+  onClose: () => void;
+}) {
+  const navigate = useNavigate();
+  const [tab, setTab] = useState<"existing" | "new">("existing");
+  const [sources, setSources] = useState<DataSourceSummary[] | null>(null);
+  const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    if (!activeWorkspaceId) return;
+    datasourceApi
+      .list(activeWorkspaceId)
+      .then((list) => setSources([...list].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())))
+      .catch(() => setSources([]));
+  }, [activeWorkspaceId]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const openSource = (ds: DataSourceSummary) => {
+    onClose();
+    navigate(`/workspace/${ds.id}`);
+  };
+
+  const handleCreated = (ds: { id: string }) => {
+    onClose();
+    navigate(`/workspace/${ds.id}`);
+  };
+
+  const filtered = (sources || []).filter(
+    (ds) => !query.trim() || ds.name.toLowerCase().includes(query.trim().toLowerCase())
+  );
+  const grouped = DATA_SOURCE_CATEGORIES.map((cat) => ({
+    category: cat,
+    sources: filtered.filter((ds) => dataSourceCategory(ds.kind) === cat),
+  })).filter((g) => g.sources.length > 0);
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/60 p-4 overflow-y-auto"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="card w-full max-w-md my-8 sm:my-0 flex flex-col max-h-[85vh]">
+        <div className="p-4 border-b border-border flex items-center justify-between shrink-0">
+          <div className="font-bold text-base">Connect data</div>
+          <button type="button" className="text-muted hover:text-text transition" onClick={onClose} aria-label="Close">
+            <CloseIcon className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="px-4 pt-3 flex items-center gap-1 shrink-0 border-b border-border">
+          <button
+            type="button"
+            onClick={() => setTab("existing")}
+            className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition ${
+              tab === "existing" ? "border-primary text-primary" : "border-transparent text-muted hover:text-text"
+            }`}
+          >
+            Your data{sources ? ` (${sources.length})` : ""}
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("new")}
+            className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition ${
+              tab === "new" ? "border-primary text-primary" : "border-transparent text-muted hover:text-text"
+            }`}
+          >
+            Upload / connect new
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4">
+          {tab === "new" ? (
+            <DataSourceForm onCreated={handleCreated} />
+          ) : sources === null ? (
+            <div className="text-xs text-muted py-4 text-center">Loading&hellip;</div>
+          ) : sources.length === 0 ? (
+            <div className="text-center py-6">
+              <div className="text-xs text-muted mb-3">Nothing connected in this workspace yet.</div>
+              <button type="button" className="btn-primary text-sm px-4 py-2" onClick={() => setTab("new")}>
+                + Connect your first data source
+              </button>
+            </div>
+          ) : (
+            <>
+              {sources.length > 5 && (
+                <div className="relative mb-3">
+                  <SearchIcon className="w-3.5 h-3.5 text-muted absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    autoFocus
+                    className="input pl-8 text-sm w-full py-1.5"
+                    placeholder="Search your data..."
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                  />
+                </div>
+              )}
+              {grouped.length === 0 ? (
+                <div className="text-xs text-muted text-center py-6">No sources match &ldquo;{query}&rdquo;.</div>
+              ) : (
+                grouped.map((g) => (
+                  <div key={g.category} className="mb-4 last:mb-0">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-1.5 px-0.5">
+                      {g.category}
+                    </div>
+                    <div className="space-y-0.5">
+                      {g.sources.map((ds) => {
+                        const meta = connectionKindMeta(ds.kind);
+                        return (
+                          <button
+                            key={ds.id}
+                            type="button"
+                            onClick={() => openSource(ds)}
+                            className="w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-left hover:bg-surface2 transition group"
+                          >
+                            <span
+                              className="w-7 h-7 rounded-md flex items-center justify-center shrink-0"
+                              style={{ backgroundColor: `${meta.color}1a`, color: meta.color }}
+                            >
+                              <meta.Logo className="w-3.5 h-3.5" />
+                            </span>
+                            <span className="text-sm truncate flex-1 text-text/90 group-hover:text-text">{ds.name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 export default function AppSidebar({
-  onConnectNew,
-  refreshKey,
   workspaces,
   activeWorkspaceId,
   onWorkspaceSwitch,
   onWorkspaceCreated,
 }: {
-  // Opens the same "Connect a data source" flow the home page's own
-  // "+ New Project" button already uses (DataSourceForm inside a portaled
-  // modal, owned by whichever page renders this sidebar) - kept as a
-  // callback rather than owning that modal itself, so there is exactly one
-  // connect flow in the app, not a second copy living in the sidebar.
-  onConnectNew: () => void;
-  // Bumped by the parent page whenever a new source is connected, so the
-  // sidebar's own list refetches without needing its own polling.
-  refreshKey?: number;
   // The account's real workspaces and which one is active right now - both
-  // owned by the parent page (Dashboard.tsx), since switching workspace
-  // also has to refetch that page's own Projects/data sources, not just
-  // this sidebar's list.
+  // owned by whichever page renders this sidebar (see lib/useWorkspaceNav),
+  // since switching workspace also has to refetch that page's own content,
+  // not just this sidebar.
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string;
   onWorkspaceSwitch: (id: string) => void;
   onWorkspaceCreated: (ws: WorkspaceSummary) => void;
 }) {
   const location = useLocation();
-  const navigate = useNavigate();
   const { user } = useAuth();
-  const [sources, setSources] = useState<DataSourceSummary[]>([]);
-  const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
-
-  useEffect(() => {
-    if (!activeWorkspaceId) return;
-    let cancelled = false;
-    setLoading(true);
-    datasourceApi
-      .list(activeWorkspaceId)
-      .then((list) => {
-        if (cancelled) return;
-        // Newest first - matches every other "your data" list in the app.
-        setSources([...list].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()));
-      })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [refreshKey, activeWorkspaceId]);
+  const [showConnectData, setShowConnectData] = useState(false);
 
   const onProjects = location.pathname === "/";
   // A workspace "viewer" (2026-09-23) can see this workspace's data
@@ -542,55 +698,41 @@ export default function AppSidebar({
           <DashboardsIcon />
           Dashboards
         </Link>
+        <Link
+          to="/data"
+          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
+            location.pathname.startsWith("/data") ? "bg-primary text-white" : "text-text hover:bg-surface2"
+          }`}
+        >
+          <DataSourcesIcon />
+          Data Sources
+        </Link>
       </div>
 
-      <div className="flex-1 min-h-0 flex flex-col mt-6 px-3 pb-4">
-        <div className="flex items-center justify-between px-1 mb-2 shrink-0">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted">Data sources</span>
-        </div>
-
-        <div className="flex-1 min-h-0 overflow-y-auto space-y-0.5 pr-0.5">
-          {loading && sources.length === 0 && (
-            <div className="text-xs text-muted px-2 py-2">Loading...</div>
-          )}
-          {!loading && sources.length === 0 && (
-            <div className="text-xs text-muted px-2 py-2 leading-relaxed">
-              Nothing connected in this workspace yet.
-            </div>
-          )}
-          {sources.map((ds) => {
-            const meta = connectionKindMeta(ds.kind);
-            return (
-              <button
-                key={ds.id}
-                type="button"
-                onClick={() => navigate(`/workspace/${ds.id}`)}
-                title={ds.name}
-                className="w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-left hover:bg-surface2 transition group"
-              >
-                <span
-                  className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
-                  style={{ backgroundColor: `${meta.color}1a`, color: meta.color }}
-                >
-                  <meta.Logo className="w-3.5 h-3.5" />
-                </span>
-                <span className="text-sm truncate flex-1 text-text/90 group-hover:text-text">{ds.name}</span>
-              </button>
-            );
-          })}
-        </div>
-
+      {/* 2026-09-23 (sidebar redesign round): one obvious button instead of
+          an always-expanded, unsorted list of every connected source -
+          browsing what's already connected (grouped by category) and
+          connecting something new both live one click away in
+          ConnectDataPopup above, and the full browsable/filterable list now
+          has its own real destination at /data. */}
+      <div className="px-3 mt-4 pb-4">
         <button
           type="button"
-          onClick={onConnectNew}
+          onClick={() => setShowConnectData(true)}
           disabled={isViewerHere}
           title={isViewerHere ? "You have view-only access to this workspace." : undefined}
-          className="mt-2 shrink-0 w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-left text-sm font-medium text-muted hover:text-text hover:bg-surface2 transition border border-dashed border-border disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
+          className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold bg-primary/10 text-primary hover:bg-primary/15 transition border border-primary/25 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-primary/10"
         >
-          <PlusIcon className="w-3.5 h-3.5 text-muted" />
-          Connect new
+          <ConnectIcon />
+          Connect data
         </button>
       </div>
+
+      <div className="flex-1" />
+
+      {showConnectData && (
+        <ConnectDataPopup activeWorkspaceId={activeWorkspaceId} onClose={() => setShowConnectData(false)} />
+      )}
 
       {showCreateModal && (
         <CreateWorkspaceModal
