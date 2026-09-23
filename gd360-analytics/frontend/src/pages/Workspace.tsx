@@ -255,6 +255,12 @@ export default function Workspace() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const resumeConversationId = searchParams.get("conversation");
+  // Set only when arriving straight from the new blank-chat "New Project"
+  // page (see pages/NewProject.tsx) with a prompt already typed in but not
+  // yet sent - the auto-send effect below runs it once this data source is
+  // actually ready, so picking/connecting data there and landing here feels
+  // like one continuous flow instead of a separate second step.
+  const draftPrompt = searchParams.get("draft");
   // Set only when arriving from a Flow-map "jump-chart" click on a chart
   // that lives in a DIFFERENT conversation than the one already open - see
   // handleFlowJump below and the restore effect further down, which uses
@@ -348,6 +354,11 @@ export default function Workspace() {
   const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
   const [sourceIds, setSourceIds] = useState<string[]>([ORIGINAL_SOURCE_ID]);
   const versionsInitRef = useRef<string | null>(null);
+  // Guards the draft-prompt auto-send effect below against firing twice for
+  // the same (datasourceId, draft) pair - re-renders happen several times
+  // while this page's data finishes loading, and the effect's own
+  // dependencies (versions, dsInfo, sourceIds) all change during that.
+  const autoSentDraftRef = useRef<string | null>(null);
 
   // How much control the person wants over an analysis question that needs
   // its own data-preparation step first (see ai_engine._run_analyze_with_prep):
@@ -725,6 +736,33 @@ export default function Workspace() {
       })
       .catch(() => {});
   }, [datasourceId, dataRefreshKey, resumeConversationId]);
+
+  // Runs a `?draft=` prompt handed off from the blank-chat "New Project"
+  // page exactly once, the moment this data source is genuinely ready to
+  // answer it - not on arrival, which would race both the versions load
+  // right above (sourceIds may still be the untouched ORIGINAL_SOURCE_ID
+  // default at that point) and the multi-table default-correction effect
+  // above it (a fresh multi-sheet/multi-table source needs that effect to
+  // pick its real first table before anything is asked, or the very first
+  // question would hit the same "which table?" gap that effect's own
+  // comment documents). `runPrompt` itself rewrites the URL to
+  // `?conversation=<id>` on success (see its own comment further below),
+  // which naturally drops `draft` from the URL too, so there is nothing
+  // extra to clean up here.
+  useEffect(() => {
+    if (!datasourceId || resumeConversationId || !draftPrompt) return;
+    if (versionsInitRef.current !== datasourceId) return;
+    if (!dsInfo || dsInfo.id !== datasourceId) return;
+    const stillDefaultingMultiTable =
+      hasMultipleTables(dsInfo.kind, dsInfo.schema_cache) &&
+      sourceIds.length === 1 &&
+      sourceIds[0] === ORIGINAL_SOURCE_ID;
+    if (stillDefaultingMultiTable) return;
+    const key = `${datasourceId}|${draftPrompt}`;
+    if (autoSentDraftRef.current === key) return;
+    autoSentDraftRef.current = key;
+    runPrompt(draftPrompt);
+  }, [datasourceId, resumeConversationId, draftPrompt, versions, dsInfo, sourceIds]);
 
   // Restore a prior chat session in full - messages, the FULL chart
   // history (one tab per answer that had a chart, not just the last one),
