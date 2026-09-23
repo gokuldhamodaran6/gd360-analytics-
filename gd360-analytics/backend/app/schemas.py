@@ -395,3 +395,32 @@ class SavedChartOut(BaseModel):
 
 class DashboardDetailOut(DashboardOut):
     charts: list[SavedChartOut]
+
+
+# ---------- Folders (2026-09-23, folders round: organizes Projects on the
+# home page - see models.Folder and routers/folders.py) ----------
+class FolderCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    workspace_id: str
+
+
+class FolderRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class FolderOut(BaseModel):
+    id: str
+    name: str
+    workspace_id: str
+    created_at: datetime
+    # How many Projects are filed into this folder right now - lets the
+    # frontend show a count without a second request per folder.
+    project_count: int
+    can_edit: bool
+
+
+class BulkMoveConversationsRequest(BaseModel):
+    conversation_ids: list[str] = Field(min_length=1, max_length=200)
+    # The folder to move every listed Project into - None files them back
+    # to "no folder" (the Projects page's default, unfiled view).
+    folder_id: Optional[str] = None
