@@ -124,8 +124,31 @@ def get_outbound_ips(refresh: bool = False):
 
 
 @router.get("", response_model=list[schemas.DataSourceOut])
-def list_datasources(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    rows = db.query(models.DataSource).filter(models.DataSource.owner_id == user.id).all()
+def list_datasources(
+    workspace_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    query = db.query(models.DataSource).filter(models.DataSource.owner_id == user.id)
+    if workspace_id:
+        # A still-NULL workspace_id (a row that predates this column, not
+        # yet touched by database._ensure_personal_workspaces on this
+        # database) is only ever treated as "in" the caller's own personal
+        # workspace, never any other - so an old row can never appear to be
+        # shared before it's actually assigned anywhere.
+        member = (
+            db.query(models.WorkspaceMember)
+            .filter(models.WorkspaceMember.workspace_id == workspace_id, models.WorkspaceMember.user_id == user.id)
+            .first()
+        )
+        ws = db.query(models.Workspace).filter(models.Workspace.id == workspace_id).first() if member else None
+        if ws and ws.is_personal:
+            query = query.filter(
+                (models.DataSource.workspace_id == workspace_id) | (models.DataSource.workspace_id.is_(None))
+            )
+        else:
+            query = query.filter(models.DataSource.workspace_id == workspace_id)
+    rows = query.all()
     # A Google Sheets/Microsoft Excel connection exists as a real row from
     # the moment the OAuth callback lands (it has to, in order to hold the
     # tokens between "approved on Google/Microsoft's site" and "picked a
@@ -136,6 +159,38 @@ def list_datasources(db: Session = Depends(get_db), user: models.User = Depends(
     # still be found and deleted via GET /connections/pending if it needs
     # cleaning up.
     return [ds for ds in rows if not (ds.connection_info or {}).get("pending")]
+
+
+@router.patch("/{datasource_id}/workspace", response_model=schemas.DataSourceOut)
+def assign_datasource_workspace(
+    datasource_id: str,
+    payload: schemas.AssignWorkspaceRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Moves a data source into a different one of the caller's own
+    workspaces - called right after a new data source is created (see
+    Dashboard.tsx's "+ New Project" flow) to tag it with whichever
+    workspace was active at the time, and available anywhere else a
+    "move to workspace" action is added later. Membership is checked both
+    ways: the data source must already be the caller's own, and the target
+    workspace must be one the caller actually belongs to."""
+    ds = db.query(models.DataSource).filter(
+        models.DataSource.id == datasource_id, models.DataSource.owner_id == user.id
+    ).first()
+    if not ds:
+        raise HTTPException(404, "Data source not found.")
+    member = (
+        db.query(models.WorkspaceMember)
+        .filter(models.WorkspaceMember.workspace_id == payload.workspace_id, models.WorkspaceMember.user_id == user.id)
+        .first()
+    )
+    if not member:
+        raise HTTPException(404, "Workspace not found.")
+    ds.workspace_id = payload.workspace_id
+    db.commit()
+    db.refresh(ds)
+    return ds
 
 
 @router.post("/database", response_model=schemas.DataSourceOut, status_code=201)
