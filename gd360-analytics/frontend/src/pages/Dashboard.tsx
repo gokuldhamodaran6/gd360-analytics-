@@ -1,18 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
-import { api, conversationApi, ConversationSummary } from "../api/client";
+import { conversationApi, ConversationSummary, datasourceApi, DataSourceSummary, workspaceApi, WorkspaceSummary } from "../api/client";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
 import DataSourceForm from "../components/DataSourceForm";
 import ConversationRow from "../components/ConversationRow";
 
-// Widened to include schema_cache (present on every real /datasources
-// response, since the backend's DataSourceOut always returns it) so it can
-// be handed straight to DataSourceForm/the sidebar, which need it.
-type DataSource = { id: string; name: string; kind: string; created_at: string; schema_cache?: Record<string, unknown> | null };
-
 type SortKey = "newest" | "oldest" | "title";
+
+// Where the sidebar's WorkspaceSwitcher (AppSidebar.tsx) and the invite-join
+// page (InviteJoin.tsx) both read/write which workspace is active - kept as
+// one shared constant so all three stay in sync without any extra plumbing.
+const ACTIVE_WORKSPACE_KEY = "gd360_active_workspace";
 
 function ChartTypeIcon({ chartType }: { chartType: string | null }) {
   const t = (chartType || "").toLowerCase();
@@ -90,7 +90,7 @@ function timeAgo(dateStr: string): string {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const [datasources, setDatasources] = useState<DataSource[]>([]);
+  const [datasources, setDatasources] = useState<DataSourceSummary[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -98,6 +98,13 @@ export default function Dashboard() {
   const [sortBy, setSortBy] = useState<SortKey>("newest");
   const [datasourceFilter, setDatasourceFilter] = useState<string>("all");
   const [pinnedOnly, setPinnedOnly] = useState(false);
+
+  // The account's real workspaces (see AppSidebar.tsx's WorkspaceSwitcher)
+  // and which one is active - owned here, not in the sidebar, because
+  // switching workspace has to refetch THIS page's Projects/data sources
+  // too, not just the sidebar's own quick-jump list.
+  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>("");
 
   // "Start a new project" now lives in a focused popup instead of an
   // always-open, page-length form - clicking "+ New Project" opens this,
@@ -111,18 +118,61 @@ export default function Dashboard() {
   // page needing to reach into its internals.
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
 
-  const load = async () => {
+  // Loads this page's Projects/data sources for one specific workspace -
+  // split out from the initial workspace-resolving load below so switching
+  // workspaces (or creating a new one) can re-run just this part.
+  const loadForWorkspace = async (workspaceId: string) => {
     setLoading(true);
     const [ds, convos] = await Promise.all([
-      api.get("/datasources"),
-      conversationApi.list().catch(() => []),
+      datasourceApi.list(workspaceId),
+      conversationApi.list(workspaceId).catch(() => []),
     ]);
-    setDatasources(ds.data);
-    setConversations(convos as ConversationSummary[]);
+    setDatasources(ds);
+    setConversations(convos);
     setLoading(false);
   };
 
-  useEffect(() => { load(); }, []);
+  // First load: fetch the account's real workspaces, figure out which one
+  // should be active (whichever was active last time, if it still exists -
+  // otherwise the personal workspace), then load that workspace's Projects.
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const list = await workspaceApi.list().catch(() => []);
+      setWorkspaces(list);
+      let active = "";
+      try {
+        active = localStorage.getItem(ACTIVE_WORKSPACE_KEY) || "";
+      } catch {
+        // Falls through to the personal-workspace default below.
+      }
+      if (!active || !list.some((w) => w.id === active)) {
+        active = list.find((w) => w.is_personal)?.id || list[0]?.id || "";
+      }
+      setActiveWorkspaceId(active);
+      if (active) {
+        try { localStorage.setItem(ACTIVE_WORKSPACE_KEY, active); } catch { /* per-viewer convenience only */ }
+        await loadForWorkspace(active);
+      } else {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const switchWorkspace = async (id: string) => {
+    if (id === activeWorkspaceId) return;
+    setActiveWorkspaceId(id);
+    try { localStorage.setItem(ACTIVE_WORKSPACE_KEY, id); } catch { /* per-viewer convenience only */ }
+    setSearch("");
+    setDatasourceFilter("all");
+    setPinnedOnly(false);
+    await loadForWorkspace(id);
+  };
+
+  const handleWorkspaceCreated = async (ws: WorkspaceSummary) => {
+    setWorkspaces((ws_) => [ws, ...ws_]);
+    await switchWorkspace(ws.id);
+  };
 
   useEffect(() => {
     if (!showConnectModal) return;
@@ -161,16 +211,22 @@ export default function Dashboard() {
   };
 
   // Once a data source is added and the person confirms it in
-  // DataSourceForm's own "Connected" panel, close this modal and jump
-  // straight into its workspace - a brand new project, with no data yet
-  // attached until this fires, now open on an empty chat ready to ask
-  // GD360 something. (A "type first, attach data mid-conversation" flow is
-  // a deeper change to how Workspace.tsx works - this is the fast, solid
-  // version of "new project" for this round: pick/connect the data, land
-  // straight in the empty chat for it.)
-  const handleDataSourceCreated = (ds: { id: string }) => {
+  // DataSourceForm's own "Connected" panel, tag it with whichever
+  // workspace is active right now (a brand new source has no workspace of
+  // its own yet - see routers/datasources.py assign_datasource_workspace),
+  // close this modal, and jump straight into its workspace - a brand new
+  // project, now open on an empty chat ready to ask GD360 something. (A
+  // "type first, attach data mid-conversation" flow is a deeper change to
+  // how Workspace.tsx works - this is the fast, solid version of "new
+  // project" for this round: pick/connect the data, land straight in the
+  // empty chat for it.)
+  const handleDataSourceCreated = async (ds: { id: string }) => {
     setShowConnectModal(false);
-    if (ds?.id) navigate(`/workspace/${ds.id}`);
+    if (!ds?.id) return;
+    if (activeWorkspaceId) {
+      try { await datasourceApi.assignWorkspace(ds.id, activeWorkspaceId); } catch { /* still usable, just unfiled */ }
+    }
+    navigate(`/workspace/${ds.id}`);
   };
 
   // Fires as soon as a connect/upload actually succeeds, before the person
@@ -178,7 +234,7 @@ export default function Dashboard() {
   // page's own lists quietly in the background so they're already current
   // if the person closes the modal and stays here instead of proceeding.
   const handleDataSourceConnected = () => {
-    load();
+    if (activeWorkspaceId) loadForWorkspace(activeWorkspaceId);
     setSidebarRefreshKey((k) => k + 1);
   };
 
@@ -227,7 +283,14 @@ export default function Dashboard() {
     // page's whole name, shape and filters built around that word instead
     // of "conversations".
     <div className="flex">
-      <AppSidebar onConnectNew={openConnectFlow} refreshKey={sidebarRefreshKey} />
+      <AppSidebar
+        onConnectNew={openConnectFlow}
+        refreshKey={sidebarRefreshKey}
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
+        onWorkspaceSwitch={switchWorkspace}
+        onWorkspaceCreated={handleWorkspaceCreated}
+      />
       <div className="flex-1 min-w-0">
         <TopNav hideLogo />
 
