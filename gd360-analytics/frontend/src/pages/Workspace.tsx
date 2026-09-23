@@ -5,8 +5,8 @@ import {
   DatasetVersion, DataSourceSummary, DataFlow, DashboardSummary, WorkspaceSummary,
 } from "../api/client";
 import TopNav from "../components/TopNav";
-import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID, otherDsSourceId } from "../components/ChatPanel";
-import { hasMultipleTables, CreatedDataSource } from "../components/DataSourceForm";
+import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID, otherDsSourceId, otherDsIdFromSourceId } from "../components/ChatPanel";
+import { hasMultipleTables, connectionKindMeta, CreatedDataSource } from "../components/DataSourceForm";
 import AddDataPicker from "../components/AddDataPicker";
 import GokuChat from "../components/GokuChat";
 import ChartCanvas from "../components/ChartCanvas";
@@ -686,6 +686,99 @@ export default function Workspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [originalTables.join("|")]);
 
+  // 2026-09-23, round ten (Gokul's own bug report: connecting several data
+  // sources at once and only ever seeing the FIRST one's table under a
+  // generic "Original data" label - the others existed only as WORKING ON
+  // chips, invisible anywhere in the Data tab itself, which read as "did
+  // this actually work?"). The Data tab now gets a source switcher of its
+  // own, one real-name-and-connector-icon pill per data source actually
+  // part of this analysis (this Project's own primary one, plus every
+  // other one WORKING ON currently includes - see connectedOtherDataSources
+  // below) - never just the primary, and never a bare "Original data"
+  // once more than one source is in play. `dataTabSourceId` is which of
+  // them the Data tab is currently showing; null means the primary (the
+  // overwhelmingly common single-source case stays exactly as it always
+  // was - this entire switcher row renders nothing at all then). Switching
+  // it is pure browsing - it never touches `sourceIds` (what the NEXT chat
+  // prompt runs against) by itself, the same way clicking into a workbook
+  // tab does not itself click a cell; picking one specific table/version
+  // INSIDE whichever source is showing still narrows sourceIds to exactly
+  // that table, precisely mirroring the primary source's own existing
+  // onActiveVersionChange/onActiveTableChange behavior below - one
+  // consistent rule everywhere in the Data tab, not a special case for a
+  // second source.
+  const [dataTabSourceId, setDataTabSourceId] = useState<string | null>(null);
+  const isViewingPrimaryInDataTab = !dataTabSourceId || dataTabSourceId === datasourceId;
+  const activeDataTabSourceId = dataTabSourceId || datasourceId || "";
+
+  // Every OTHER connected source currently touched by WORKING ON's real
+  // selection (sourceIds) - not merely "connected to this account somewhere"
+  // (otherDataSources is every data source the person owns) - so the
+  // switcher row only ever shows sources that genuinely belong to THIS
+  // analysis, and grows/shrinks live as sources are added or removed from
+  // WORKING ON, exactly like the chip row already does.
+  const connectedOtherDsIds = useMemo(() => {
+    const s = new Set<string>();
+    sourceIds.forEach((id) => {
+      const otherId = otherDsIdFromSourceId(id);
+      if (otherId) s.add(otherId);
+    });
+    return Array.from(s);
+  }, [sourceIds]);
+  const connectedOtherDataSources = useMemo(
+    () => otherDataSources.filter((d) => connectedOtherDsIds.includes(d.id)),
+    [otherDataSources, connectedOtherDsIds]
+  );
+
+  // Per-other-source Data-tab browsing state - populated lazily, only once
+  // a person actually switches the Data tab to look at that source (never
+  // fetched just because a source is part of WORKING ON - most visits to
+  // the Data tab never leave the primary source at all). Keyed by
+  // datasource id, entirely separate from this Project's own
+  // versions/activeVersionId/activeOriginalTable above, which keep working
+  // exactly as they always have for the primary source.
+  const [otherDsVersions, setOtherDsVersions] = useState<Record<string, DatasetVersion[]>>({});
+  const [otherDsActiveVersionId, setOtherDsActiveVersionId] = useState<Record<string, string | null>>({});
+  const [otherDsActiveTable, setOtherDsActiveTable] = useState<Record<string, string | null>>({});
+
+  const refreshOtherDsVersions = (dsId: string) => {
+    datasourceApi
+      .listVersions(dsId)
+      .then((vs) => setOtherDsVersions((m) => ({ ...m, [dsId]: vs })))
+      .catch(() => setOtherDsVersions((m) => (m[dsId] ? m : { ...m, [dsId]: [] })));
+  };
+
+  // Switches which connected source the Data tab is showing. The first
+  // time a given other source is opened this way, it also picks the same
+  // zero-ambiguity starting table the primary source's own effect above
+  // already uses (the first real table for a multi-table source, or plain
+  // "Original data" otherwise), and kicks off that source's own saved-
+  // tables fetch - both skipped on every later switch back to a source
+  // already opened once this session.
+  const switchDataTabSource = (id: string) => {
+    setDataTabSourceId(id === datasourceId ? null : id);
+    if (id === datasourceId) return;
+    if (!(id in otherDsVersions)) refreshOtherDsVersions(id);
+    if (!(id in otherDsActiveTable)) {
+      const d = otherDataSources.find((x) => x.id === id);
+      const tables = d && hasMultipleTables(d.kind, d.schema_cache) ? Object.keys(d.schema_cache || {}) : [];
+      setOtherDsActiveTable((m) => ({ ...m, [id]: tables[0] || null }));
+      setOtherDsActiveVersionId((m) => ({ ...m, [id]: null }));
+    }
+  };
+
+  // The currently-shown other source's own real table/sheet names (empty
+  // for an ordinary single-table source) - mirrors `originalTables` above,
+  // just computed for whichever OTHER source the switcher is pointed at
+  // instead of always the primary one. otherDataSources already carries
+  // each source's full schema_cache (the same /datasources list fetch that
+  // built it in the first place), so this never needs a fetch of its own.
+  const activeOtherOriginalTables = useMemo(() => {
+    if (isViewingPrimaryInDataTab) return [];
+    const d = otherDataSources.find((x) => x.id === activeDataTabSourceId);
+    return d && hasMultipleTables(d.kind, d.schema_cache) ? Object.keys(d.schema_cache || {}) : [];
+  }, [isViewingPrimaryInDataTab, otherDataSources, activeDataTabSourceId]);
+
   // The header-level "+ Add data" popup (see AddDataPicker.tsx) - an
   // always-visible entry point next to the datasource name for pulling
   // another connected data source, or a brand-new one, into this analysis,
@@ -759,6 +852,14 @@ export default function Workspace() {
     setFlow(null);
     setFlowError("");
     setVersionScope("conversation");
+    // The Data tab's source switcher (see switchDataTabSource above) always
+    // starts back on this Project's own primary source for a new session,
+    // never left pointed at whichever other connected source happened to
+    // be on screen a moment ago.
+    setDataTabSourceId(null);
+    setOtherDsVersions({});
+    setOtherDsActiveVersionId({});
+    setOtherDsActiveTable({});
     // Forces the versions-loading effect below to re-pick a starting tab
     // for this "new" session instead of leaving whatever was active before.
     versionsInitRef.current = null;
@@ -1488,6 +1589,7 @@ export default function Workspace() {
         onSourceIdsChange={setSourceIds}
         otherDataSources={otherDataSources}
         onDataSourceCreated={handleDataSourceCreatedInPicker}
+        conversationId={conversationId}
       />
 
       {error && <div className="mx-4 sm:mx-6 mt-3 text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
@@ -1532,6 +1634,7 @@ export default function Workspace() {
             datasourceKind={dsInfo?.kind}
             datasourceSchema={dsInfo?.schema_cache}
             otherDataSources={otherDataSources}
+            conversationId={conversationId}
           />
         </div>
 
@@ -1612,54 +1715,127 @@ export default function Workspace() {
               </button>
             </div>
           </div>
-          <div className="flex-1 min-h-[350px] overflow-visible lg:overflow-hidden">
+          <div className="flex-1 min-h-[350px] overflow-visible lg:overflow-hidden flex flex-col gap-2">
             {centerTab === "data" && datasourceId ? (
-              <DataTable
-                datasourceId={datasourceId}
-                refreshKey={dataRefreshKey}
-                versions={visibleVersions}
-                activeVersionId={activeVersionId}
-                onActiveVersionChange={(id) => {
-                  // Clicking a tab points the next chat prompt at that one
-                  // table by default; WORKING ON can still widen the
-                  // selection afterward without changing which tab shows.
-                  // For a multi-table datasource, clicking one of the real
-                  // original-table tabs also fires onActiveTableChange
-                  // right after this in the same click handler (see
-                  // DataTable.tsx), which sets the more specific
-                  // "sheet:<name>" selection - same-batch state updates
-                  // apply in order, so that ends up as the final sourceIds
-                  // value, not this plain ORIGINAL_SOURCE_ID fallback.
-                  setActiveVersionId(id);
-                  setSourceIds([id ?? ORIGINAL_SOURCE_ID]);
-                }}
-                onVersionsChanged={() => setDataRefreshKey((k) => k + 1)}
-                originalTables={originalTables}
-                activeTable={activeOriginalTable}
-                onActiveTableChange={(t) => {
-                  setActiveOriginalTable(t);
-                  setSourceIds([t ? `sheet:${t}` : ORIGINAL_SOURCE_ID]);
-                }}
-                onInsertColumn={(afterColumn, side, description) => {
-                  // "Insert column left/right" in the Data tab's column
-                  // menu - runs through the exact same AI transform
-                  // pipeline as any other data-prep chat prompt (real
-                  // version, real cleaning-log entry, shows up on the Flow
-                  // map), scoped with forceSourceIds to the EXACT table
-                  // currently open in the Data tab - not whatever WORKING
-                  // ON happens to be set to, which the person may not even
-                  // be looking at right now.
-                  const forceSourceIds = activeVersionId
-                    ? [activeVersionId]
-                    : [activeOriginalTable ? `sheet:${activeOriginalTable}` : ORIGINAL_SOURCE_ID];
-                  const placement = side === "left" ? "before" : "after";
-                  runPrompt(
-                    `Add a new column ${placement} the "${afterColumn}" column: ${description}`,
-                    undefined,
-                    { forceSourceIds }
-                  );
-                }}
-              />
+              <>
+                {/* Data-tab source switcher: one pill per data source
+                    actually part of this analysis, its own real connector
+                    icon (so a SQL database, a warehouse and an uploaded
+                    file never all look the same generic "data") and its
+                    own real name - never a bare "Original data" once more
+                    than one source is combined. Renders nothing at all for
+                    the ordinary single-source case (connectedOtherDataSources
+                    is then empty), so nobody who has never combined sources
+                    sees anything new here. */}
+                {connectedOtherDataSources.length > 0 && (
+                  <div className="flex items-center gap-1.5 overflow-x-auto shrink-0 pb-0.5">
+                    {[
+                      { id: datasourceId, name: dsName, kind: dsInfo?.kind || "" },
+                      ...connectedOtherDataSources.map((d) => ({ id: d.id, name: d.name, kind: d.kind })),
+                    ].map((s) => {
+                      const meta = connectionKindMeta(s.kind);
+                      const active = activeDataTabSourceId === s.id;
+                      return (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => switchDataTabSource(s.id)}
+                          title={s.name}
+                          className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg shrink-0 transition ${
+                            active
+                              ? "bg-sky-600 text-white"
+                              : "border border-sky-500/40 text-sky-300 bg-sky-500/10 hover:bg-sky-500/20"
+                          }`}
+                        >
+                          <span className={active ? "text-white" : ""} style={active ? undefined : { color: meta.color }}>
+                            <meta.Logo className="w-3.5 h-3.5" />
+                          </span>
+                          <span className="max-w-[140px] truncate">{s.name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                <div className="flex-1 min-h-0">
+                  <DataTable
+                    datasourceId={activeDataTabSourceId}
+                    refreshKey={dataRefreshKey}
+                    versions={isViewingPrimaryInDataTab ? visibleVersions : otherDsVersions[activeDataTabSourceId] || []}
+                    activeVersionId={
+                      isViewingPrimaryInDataTab ? activeVersionId : otherDsActiveVersionId[activeDataTabSourceId] ?? null
+                    }
+                    onActiveVersionChange={(id) => {
+                      // Clicking a tab points the next chat prompt at that
+                      // one table by default; WORKING ON can still widen
+                      // the selection afterward without changing which tab
+                      // shows. For a multi-table datasource, clicking one
+                      // of the real original-table tabs also fires
+                      // onActiveTableChange right after this in the same
+                      // click handler (see DataTable.tsx), which sets the
+                      // more specific "sheet:<name>" selection - same-batch
+                      // state updates apply in order, so that ends up as
+                      // the final sourceIds value, not this plain
+                      // ORIGINAL_SOURCE_ID fallback. The exact same rule
+                      // now applies whichever connected source the switcher
+                      // above is currently showing - not just the primary.
+                      if (isViewingPrimaryInDataTab) {
+                        setActiveVersionId(id);
+                        setSourceIds([id ?? ORIGINAL_SOURCE_ID]);
+                      } else {
+                        setOtherDsActiveVersionId((m) => ({ ...m, [activeDataTabSourceId]: id }));
+                        setSourceIds([id ?? otherDsSourceId(activeDataTabSourceId)]);
+                      }
+                    }}
+                    onVersionsChanged={() => {
+                      setDataRefreshKey((k) => k + 1);
+                      if (!isViewingPrimaryInDataTab) refreshOtherDsVersions(activeDataTabSourceId);
+                    }}
+                    originalTables={isViewingPrimaryInDataTab ? originalTables : activeOtherOriginalTables}
+                    activeTable={
+                      isViewingPrimaryInDataTab ? activeOriginalTable : otherDsActiveTable[activeDataTabSourceId] ?? null
+                    }
+                    onActiveTableChange={(t) => {
+                      if (isViewingPrimaryInDataTab) {
+                        setActiveOriginalTable(t);
+                        setSourceIds([t ? `sheet:${t}` : ORIGINAL_SOURCE_ID]);
+                      } else {
+                        setOtherDsActiveTable((m) => ({ ...m, [activeDataTabSourceId]: t }));
+                        setSourceIds([t ? otherDsSourceId(activeDataTabSourceId, t) : otherDsSourceId(activeDataTabSourceId)]);
+                      }
+                    }}
+                    onInsertColumn={(afterColumn, side, description) => {
+                      // "Insert column left/right" in the Data tab's
+                      // column menu - runs through the exact same AI
+                      // transform pipeline as any other data-prep chat
+                      // prompt (real version, real cleaning-log entry,
+                      // shows up on the Flow map), scoped with
+                      // forceSourceIds to the EXACT table currently open in
+                      // the Data tab - not whatever WORKING ON happens to
+                      // be set to, which the person may not even be
+                      // looking at right now, and correctly against
+                      // whichever connected source the switcher above is
+                      // showing.
+                      const forceSourceIds = isViewingPrimaryInDataTab
+                        ? activeVersionId
+                          ? [activeVersionId]
+                          : [activeOriginalTable ? `sheet:${activeOriginalTable}` : ORIGINAL_SOURCE_ID]
+                        : otherDsActiveVersionId[activeDataTabSourceId]
+                        ? [otherDsActiveVersionId[activeDataTabSourceId]!]
+                        : [
+                            otherDsActiveTable[activeDataTabSourceId]
+                              ? otherDsSourceId(activeDataTabSourceId, otherDsActiveTable[activeDataTabSourceId])
+                              : otherDsSourceId(activeDataTabSourceId),
+                          ];
+                      const placement = side === "left" ? "before" : "after";
+                      runPrompt(
+                        `Add a new column ${placement} the "${afterColumn}" column: ${description}`,
+                        undefined,
+                        { forceSourceIds }
+                      );
+                    }}
+                  />
+                </div>
+              </>
             ) : centerTab === "flow" && datasourceId ? (
               <DataFlowMap
                 flow={flow}
