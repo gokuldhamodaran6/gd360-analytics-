@@ -187,6 +187,85 @@ function CloseIcon({ className = "w-4 h-4" }: { className?: string }) {
   );
 }
 
+// 2026-09-23, round four (Gokul's own explicit ask: "after 6 rows make
+// option for page 2,3"): the same Prev/Next-plus-numbers pager DataSources.tsx
+// uses for its own Existing data view, duplicated here per this codebase's
+// established per-file icon/small-component convention.
+function ChevronLeftIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M15 18l-6-6 6-6" />
+    </svg>
+  );
+}
+
+function ChevronRightIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 18l6-6-6-6" />
+    </svg>
+  );
+}
+
+// PAGE_SIZE=6 is Gokul's own explicit number ("after 6 rows") - deliberately
+// smaller than the Data Sources page's own PAGE_SIZE=12, since this popup's
+// list sits inside a much smaller, already-scrollable modal pane.
+const CONNECT_POPUP_PAGE_SIZE = 6;
+
+function Pager({ page, totalPages, onChange }: { page: number; totalPages: number; onChange: (p: number) => void }) {
+  if (totalPages <= 1) return null;
+
+  const pages: (number | "gap")[] = [];
+  const push = (p: number) => { if (!pages.includes(p)) pages.push(p); };
+  push(1);
+  for (let p = page - 1; p <= page + 1; p++) if (p > 1 && p < totalPages) push(p);
+  push(totalPages);
+  const withGaps: (number | "gap")[] = [];
+  let prev = 0;
+  for (const p of pages) {
+    if (typeof p === "number" && p - prev > 1) withGaps.push("gap");
+    withGaps.push(p);
+    if (typeof p === "number") prev = p;
+  }
+
+  const btn = (active: boolean) =>
+    `min-w-[2rem] h-8 px-2 text-sm rounded-lg border transition ${
+      active ? "bg-primary text-white border-primary font-semibold" : "border-border text-muted hover:text-text hover:bg-surface2"
+    }`;
+
+  return (
+    <div className="flex items-center justify-center gap-1.5 mt-4">
+      <button
+        type="button"
+        className="h-8 px-2 rounded-lg border border-border text-muted hover:text-text hover:bg-surface2 transition disabled:opacity-40 disabled:cursor-not-allowed"
+        onClick={() => onChange(page - 1)}
+        disabled={page <= 1}
+        aria-label="Previous page"
+      >
+        <ChevronLeftIcon />
+      </button>
+      {withGaps.map((p, i) =>
+        p === "gap" ? (
+          <span key={`gap-${i}`} className="px-1 text-muted text-sm select-none">&hellip;</span>
+        ) : (
+          <button key={p} type="button" className={btn(p === page)} onClick={() => onChange(p)}>
+            {p}
+          </button>
+        )
+      )}
+      <button
+        type="button"
+        className="h-8 px-2 rounded-lg border border-border text-muted hover:text-text hover:bg-surface2 transition disabled:opacity-40 disabled:cursor-not-allowed"
+        onClick={() => onChange(page + 1)}
+        disabled={page >= totalPages}
+        aria-label="Next page"
+      >
+        <ChevronRightIcon />
+      </button>
+    </div>
+  );
+}
+
 function initials(nameOrEmail: string): string {
   const trimmed = (nameOrEmail || "").trim();
   if (!trimmed) return "?";
@@ -559,6 +638,7 @@ export function ConnectDataPopup({
   const [sources, setSources] = useState<DataSourceSummary[] | null>(null);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<"all" | "Files" | "Databases" | "Warehouses">("all");
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     if (!activeWorkspaceId) return;
@@ -573,6 +653,11 @@ export function ConnectDataPopup({
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // A fresh search/category (or the list itself changing) always lands back
+  // on page 1, same reasoning as the Data Sources page's own pager - never
+  // leave the pager pointed at a page that just emptied out from under it.
+  useEffect(() => { setPage(1); }, [query, category, sources]);
 
   const destination = (dsId: string) =>
     draft && draft.trim() ? `/workspace/${dsId}?draft=${encodeURIComponent(draft.trim())}` : `/workspace/${dsId}`;
@@ -592,9 +677,16 @@ export function ConnectDataPopup({
     if (category !== "all" && dataSourceCategory(ds.kind) !== category) return false;
     return true;
   });
+  // Paginate the flat filtered list FIRST, then group only this page's
+  // sources into category sections - same order as DataSources.tsx's own
+  // Existing data view, so "page 2" is always a real, bounded slice rather
+  // than however many rows one huge category happens to have.
+  const totalPages = Math.max(1, Math.ceil(filtered.length / CONNECT_POPUP_PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageSlice = filtered.slice((currentPage - 1) * CONNECT_POPUP_PAGE_SIZE, currentPage * CONNECT_POPUP_PAGE_SIZE);
   const groupCats = category === "all" ? DATA_SOURCE_CATEGORIES : [category];
   const grouped = groupCats
-    .map((cat) => ({ category: cat, sources: filtered.filter((ds) => dataSourceCategory(ds.kind) === cat) }))
+    .map((cat) => ({ category: cat, sources: pageSlice.filter((ds) => dataSourceCategory(ds.kind) === cat) }))
     .filter((g) => g.sources.length > 0);
   const hasFiltersApplied = query.trim() !== "" || category !== "all";
 
@@ -736,6 +828,8 @@ export function ConnectDataPopup({
                   </div>
                 ))
               )}
+
+              <Pager page={currentPage} totalPages={totalPages} onChange={setPage} />
             </>
           )}
         </div>
