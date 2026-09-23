@@ -271,6 +271,26 @@ export function connectionKindMeta(kind: string) {
   return { label: "CSV file", color: "#64748b", Logo: FileSpreadsheetIcon };
 }
 
+// 2026-09-23 (sidebar redesign round): the category a connected source is
+// grouped under everywhere it's browsed instead of shown as one flat,
+// unsorted list - the sidebar's "Connect data" popup and the Data Sources
+// page both group by this. Mirrors the exact three tabs DataSourceForm
+// itself already offers (Database / Warehouse / Upload+Connect), so
+// "which category is this in" always matches "which tab would I have
+// picked it from" - never a separate taxonomy to keep in sync by hand.
+export type DataSourceCategory = "Databases" | "Warehouses" | "Files";
+export const DATA_SOURCE_CATEGORIES: DataSourceCategory[] = ["Files", "Databases", "Warehouses"];
+
+export function dataSourceCategory(kind: string): DataSourceCategory {
+  if (DB_KINDS.some((d) => d.value === kind)) return "Databases";
+  if (WAREHOUSE_KINDS.some((w) => w.value === kind)) return "Warehouses";
+  // Everything else - csv/excel uploads, and the live Google Sheets/Excel
+  // OneDrive connections (CONNECT_KINDS) - reads as "a file" to a
+  // non-technical person even when it's actually a live-linked connection,
+  // not something sitting on disk.
+  return "Files";
+}
+
 // Normalizes the different shapes `schema_cache` can come back in (SQL:
 // { table: [{name,type}] }, MongoDB: { collection: ["field", ...] }, a
 // single-table file upload - a CSV, or an Excel workbook with only one
