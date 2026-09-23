@@ -22,6 +22,7 @@ README "Security roadmap".
 from __future__ import annotations
 
 import multiprocessing as mp
+import time
 import traceback
 from typing import Any
 
@@ -102,19 +103,43 @@ def _child_worker(code: str, tables: dict[str, pd.DataFrame], conn, timeout: int
 def run_sandboxed(code: str, tables: dict[str, pd.DataFrame], timeout: int = 20) -> tuple[Any, str | None]:
     """Runs `code` against one or more named tables in an isolated process.
     Returns (result, error)."""
+    # 2026-09-23: real production logs showed "Analysis code timed out"
+    # firing for ordinary requests against tables of only tens of
+    # thousands of rows - operations that should be well under a second
+    # for genuinely vectorized pandas. This app's Render instance is a
+    # shared 0.5 CPU / 512MB box (confirmed via the Render API), so a slow
+    # per-row Python loop in generated code and real CPU contention under
+    # this container's own small share of a core can both plausibly turn
+    # "should take milliseconds" into "took over 20 real seconds" - but
+    # without ever timing a run, there was no data to tell those apart, or
+    # to know whether the fix in SYSTEM_PROMPT above (vectorized-only
+    # pandas, safe merge keys) is actually helping in practice. Logging the
+    # real elapsed wall-clock time on every call - success AND timeout -
+    # turns "it's slow sometimes" into an actual measurable trend the next
+    # investigation can look at, instead of starting from zero again.
+    start = time.monotonic()
     parent_conn, child_conn = mp.Pipe()
     process = mp.Process(target=_child_worker, args=(code, tables, child_conn, timeout), daemon=True)
     process.start()
     process.join(timeout)
+    elapsed = time.monotonic() - start
 
     if process.is_alive():
         process.terminate()
         process.join(2)
+        print(f"[sandbox] timed out after {elapsed:.1f}s (limit {timeout}s)")
         return None, f"Analysis code timed out after {timeout}s. Try a simpler request."
 
     if parent_conn.poll():
         status, payload = parent_conn.recv()
         if status == "ok":
+            if elapsed > 3:
+                # Finished, but slower than any normal vectorized pandas
+                # operation on this app's tables should be - worth a log
+                # line even on success, since a "successful but very slow"
+                # run is exactly the kind of case that times out for the
+                # next, slightly bigger request.
+                print(f"[sandbox] slow but completed: {elapsed:.1f}s")
             return payload, None
         return None, payload
 
