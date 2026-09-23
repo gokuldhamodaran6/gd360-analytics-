@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { conversationApi, ConversationSummary } from "../api/client";
+import { conversationApi, ConversationSummary, FolderSummary } from "../api/client";
 
 function MoreIcon({ className }: { className?: string }) {
   return (
@@ -29,6 +29,30 @@ function PinIcon({ className, filled = false }: { className?: string; filled?: b
   );
 }
 
+function FolderIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+    </svg>
+  );
+}
+
+function ChevronLeftIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M15 18l-6-6 6-6" />
+    </svg>
+  );
+}
+
+function CheckIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 6L9 17l-5-5" />
+    </svg>
+  );
+}
+
 function TrashIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -51,10 +75,13 @@ function RowMenu({
   busy,
   canEdit,
   canDelete,
+  folders,
+  currentFolderId,
   onClose,
   onRename,
   onTogglePin,
   onDelete,
+  onMoveToFolder,
 }: {
   pinned: boolean;
   busy: boolean;
@@ -64,12 +91,56 @@ function RowMenu({
   // 403 when clicked.
   canEdit: boolean;
   canDelete: boolean;
+  // The workspace's folders, for "Move to folder" below (2026-09-23,
+  // folders round) - omitted/empty just skips that menu item entirely,
+  // same as any other list-driven menu row in this app.
+  folders?: FolderSummary[];
+  currentFolderId?: string | null;
   onClose: () => void;
   onRename: () => void;
   onTogglePin: () => void;
   onDelete: () => void;
+  onMoveToFolder?: (folderId: string | null) => void;
 }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  // A second drill-down step, same shallow one-level pattern as
+  // AddDataPicker.tsx's own "existing" view - "folders" shows the list of
+  // folders to move into instead of the normal Rename/Pin/Delete row.
+  const [pickingFolder, setPickingFolder] = useState(false);
+
+  if (pickingFolder) {
+    return (
+      <div className="p-1.5 w-56" onClick={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          className="w-full flex items-center gap-2 px-2 py-1.5 text-xs text-muted hover:text-text transition"
+          onClick={() => setPickingFolder(false)}
+        >
+          <ChevronLeftIcon className="w-3.5 h-3.5" /> Back
+        </button>
+        <div className="my-1 border-t border-border" />
+        <button
+          type="button"
+          className="w-full flex items-center justify-between gap-2.5 px-3 py-2 text-sm text-left hover:bg-surface2 transition rounded-lg"
+          onClick={() => { onMoveToFolder?.(null); setPickingFolder(false); }}
+        >
+          <span>No folder</span>
+          {!currentFolderId && <CheckIcon className="w-3.5 h-3.5 text-primary shrink-0" />}
+        </button>
+        {(folders || []).map((f) => (
+          <button
+            key={f.id}
+            type="button"
+            className="w-full flex items-center justify-between gap-2.5 px-3 py-2 text-sm text-left hover:bg-surface2 transition rounded-lg"
+            onClick={() => { onMoveToFolder?.(f.id); setPickingFolder(false); }}
+          >
+            <span className="truncate">{f.name}</span>
+            {currentFolderId === f.id && <CheckIcon className="w-3.5 h-3.5 text-primary shrink-0" />}
+          </button>
+        ))}
+      </div>
+    );
+  }
 
   if (confirmingDelete) {
     return (
@@ -113,6 +184,12 @@ function RowMenu({
             <PinIcon className="w-4 h-4 text-muted shrink-0" filled={pinned} />
             <span>{pinned ? "Unpin chat" : "Pin chat"}</span>
           </button>
+          {(folders || []).length > 0 && (
+            <button type="button" className={itemClass} onClick={() => setPickingFolder(true)}>
+              <FolderIcon className="w-4 h-4 text-muted shrink-0" />
+              <span>Move to folder</span>
+            </button>
+          )}
         </>
       )}
       {canEdit && canDelete && <div className="my-1 border-t border-border" />}
@@ -150,6 +227,11 @@ export default function ConversationRow({
   onRenamed,
   onPinned,
   onDeleted,
+  folders,
+  onMoved,
+  selectMode = false,
+  selected = false,
+  onToggleSelect,
 }: {
   conversation: ConversationSummary;
   // "card": the homepage / Workspace style (icon + title + subtitle).
@@ -167,6 +249,22 @@ export default function ConversationRow({
   onRenamed: (id: string, title: string) => void;
   onPinned?: (id: string, pinned: boolean) => void;
   onDeleted?: (id: string) => void;
+  // 2026-09-23 (folders round): the workspace's folders, for this row's own
+  // "Move to folder" menu item - and the callback fired once a move
+  // actually succeeds, so the page holding this list can update its own
+  // copy of conversation.folder_id without a full refetch. Both omitted
+  // (Workspace.tsx's "Recent conversations" panel, which has no folders
+  // concept at all) just skips that menu item entirely.
+  folders?: FolderSummary[];
+  onMoved?: (id: string, folderId: string | null) => void;
+  // Select-all/bulk-move mode (2026-09-23, folders round): while active,
+  // clicking the card toggles its checkbox instead of opening it, and the
+  // "..." menu is hidden (its Rename/Pin/Delete/Move actions don't apply
+  // to a multi-select). `folders`/`onMoved` above are for the single-row
+  // "Move to folder" menu item, unrelated to this bulk mode.
+  selectMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(conversation.title);
@@ -244,6 +342,23 @@ export default function ConversationRow({
     }
   };
 
+  // Reuses the same bulk-move endpoint with a single id - one call either
+  // way, so there is only ever one code path (and one set of edge cases)
+  // for "does this person actually have permission to move it" between the
+  // single-row menu here and the Projects page's own select-all bar.
+  const moveToFolder = async (folderId: string | null) => {
+    setMenuBusy(true);
+    try {
+      await conversationApi.bulkMove([conversation.id], folderId);
+      onMoved?.(conversation.id, folderId);
+      setMenuOpen(false);
+    } catch {
+      // Leaves the menu open (non-busy) so the person can try again.
+    } finally {
+      setMenuBusy(false);
+    }
+  };
+
   // Both false only for a workspace "viewer" looking at someone else's
   // Project (own Projects are always at least deletable by their creator -
   // see backend can_delete_conversation) - there's genuinely nothing this
@@ -251,7 +366,11 @@ export default function ConversationRow({
   // empty dropdown.
   const canEdit = conversation.can_edit ?? true;
   const canDelete = conversation.can_delete ?? true;
-  const menuButton = (canEdit || canDelete) && (
+  // Hidden in select mode - a multi-select bar makes its own bulk actions
+  // available (see the Projects page), and this row's own Rename/Pin/
+  // Delete/Move menu would otherwise sit right next to a checkbox meant
+  // for a completely different action.
+  const menuButton = !selectMode && (canEdit || canDelete) && (
     <div className="relative shrink-0" ref={menuRef}>
       <button
         type="button"
@@ -278,12 +397,26 @@ export default function ConversationRow({
           busy={menuBusy}
           canEdit={canEdit}
           canDelete={canDelete}
+          folders={folders}
+          currentFolderId={conversation.folder_id}
           onClose={() => setMenuOpen(false)}
           onRename={startRename}
           onTogglePin={togglePin}
           onDelete={confirmDelete}
+          onMoveToFolder={moveToFolder}
         />
       </div>
+    </div>
+  );
+
+  const checkbox = selectMode && (
+    <div className="shrink-0 pt-0.5" onClick={(e) => { e.stopPropagation(); onToggleSelect?.(conversation.id); }}>
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={() => onToggleSelect?.(conversation.id)}
+        className="w-4 h-4 rounded accent-primary cursor-pointer"
+      />
     </div>
   );
 
@@ -333,6 +466,12 @@ export default function ConversationRow({
     <span className="absolute left-0 top-1/2 -translate-y-1/2 h-[65%] w-[3px] rounded-full bg-gradient-to-b from-primary to-accent" />
   ) : null;
 
+  const handleCardClick = () => {
+    if (renaming) return;
+    if (selectMode) { onToggleSelect?.(conversation.id); return; }
+    onOpen();
+  };
+
   if (variant === "row") {
     return (
       <div
@@ -343,9 +482,10 @@ export default function ConversationRow({
             ? "pl-4 pr-3 bg-gradient-to-r from-primary/15 via-primary/5 to-transparent border-primary/40"
             : "pl-3 pr-3 border-border hover:bg-surface2"
         }`}
-        onClick={renaming ? undefined : onOpen}
+        onClick={handleCardClick}
       >
         {activeBar}
+        {checkbox}
         <div className="min-w-0 flex-1">{titleBlock}</div>
         <div className="flex items-center gap-1 shrink-0">
           {trailing && <span className="text-[11px] text-muted">{trailing}</span>}
@@ -367,12 +507,17 @@ export default function ConversationRow({
       // the entire card - dropdown included - above the rest of the list,
       // so the open menu is never sliced up by the cards below it.
       className={`relative card p-4 transition group cursor-pointer ${menuOpen ? "z-30" : "z-0"} ${
-        active ? "border-primary/50 shadow-glow bg-gradient-to-br from-primary/10 via-transparent to-accent/5" : "hover:shadow-glow"
+        selected
+          ? "border-primary/60 bg-primary/5"
+          : active
+          ? "border-primary/50 shadow-glow bg-gradient-to-br from-primary/10 via-transparent to-accent/5"
+          : "hover:shadow-glow"
       }`}
-      onClick={renaming ? undefined : onOpen}
+      onClick={handleCardClick}
     >
       {activeBar}
       <div className={`flex items-start gap-3 ${active ? "pl-1.5" : ""}`}>
+        {checkbox}
         {icon && (
           <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-primary/25 to-accent/25 flex items-center justify-center text-primary shrink-0">
             {icon}
