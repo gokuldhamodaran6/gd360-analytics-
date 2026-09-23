@@ -54,6 +54,49 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(min_length=8)
 
 
+# ---------- Workspaces ----------
+class WorkspaceCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class WorkspaceRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class WorkspaceOut(BaseModel):
+    id: str
+    name: str
+    is_personal: bool
+    role: str  # "owner" | "member" - the CURRENT user's role in this workspace
+    member_count: int
+    datasource_count: int
+    invite_token: str
+    created_at: datetime
+
+
+class WorkspaceMemberOut(BaseModel):
+    user_id: str
+    email: EmailStr
+    full_name: Optional[str] = None
+    role: str
+    created_at: datetime
+
+
+class WorkspaceDetailOut(WorkspaceOut):
+    members: list[WorkspaceMemberOut]
+
+
+class InvitePreviewOut(BaseModel):
+    workspace_id: str
+    workspace_name: str
+    member_count: int
+    already_member: bool
+
+
+class AssignWorkspaceRequest(BaseModel):
+    workspace_id: str
+
+
 # ---------- DataSources ----------
 class DataSourceCreateDB(BaseModel):
     name: str
