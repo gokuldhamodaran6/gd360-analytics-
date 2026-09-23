@@ -5,7 +5,7 @@ import {
   DatasetVersion, DataSourceSummary, DataFlow, DashboardSummary, WorkspaceSummary,
 } from "../api/client";
 import TopNav from "../components/TopNav";
-import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID } from "../components/ChatPanel";
+import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID, otherDsSourceId } from "../components/ChatPanel";
 import { hasMultipleTables, CreatedDataSource } from "../components/DataSourceForm";
 import AddDataPicker from "../components/AddDataPicker";
 import GokuChat from "../components/GokuChat";
@@ -282,6 +282,15 @@ export default function Workspace() {
   // this to pick that one chart tab as active instead of defaulting to the
   // conversation's last chart.
   const chartParam = searchParams.get("chart");
+  // Set only when arriving from the sidebar's "Connect data" popup
+  // (AppSidebar.tsx's ConnectDataPopup) with more than one source picked
+  // there - a comma-separated list of the OTHER datasource ids chosen
+  // alongside this page's own :datasourceId. Only ever read once, by
+  // `sourceIds`'s own lazy initial state below, to seed the chat's WORKING
+  // ON selection with every source that was picked before ever landing
+  // here - recomputing it on later renders would be harmless (nothing else
+  // reads it) but is skipped anyway since a plain string split is cheap.
+  const extraDatasourceIds = (searchParams.get("extra") || "").split(",").map((s) => s.trim()).filter(Boolean);
 
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -457,7 +466,11 @@ export default function Workspace() {
   // single prompt without changing which tab is on screen.
   const [versions, setVersions] = useState<DatasetVersion[]>([]);
   const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
-  const [sourceIds, setSourceIds] = useState<string[]>([ORIGINAL_SOURCE_ID]);
+  const [sourceIds, setSourceIds] = useState<string[]>(() =>
+    extraDatasourceIds.length
+      ? [ORIGINAL_SOURCE_ID, ...extraDatasourceIds.map((id) => otherDsSourceId(id))]
+      : [ORIGINAL_SOURCE_ID]
+  );
   const versionsInitRef = useRef<string | null>(null);
   // Guards the draft-prompt auto-send effect below against firing twice for
   // the same (datasourceId, draft) pair - re-renders happen several times
@@ -1431,33 +1444,41 @@ export default function Workspace() {
             {savingDsName && <span className="text-xs text-accent shrink-0">Saving&hellip;</span>}
             {dsRenameFailed && <span className="text-xs text-red-400 shrink-0">Could not rename</span>}
             {resuming && <span className="ml-2 text-xs text-accent shrink-0">Loading conversation...</span>}
-            {/* "+ Add data": the header-level entry point Gokul asked for,
-                directly opposite the datasource name - opens a popup of every
-                other connected source's logo (plus a "New data" tile) instead
-                of requiring a click into the chat panel's own WORKING ON
-                dropdown first. See AddDataPicker.tsx; both write into the
-                exact same `sourceIds` selection ChatPanel reads from. */}
-            <button
-              type="button"
-              className="ml-2 text-xs px-2.5 py-1 rounded-lg border border-primary/40 text-primary hover:bg-primary/10 transition font-medium shrink-0 flex items-center gap-1"
-              onClick={() => setAddDataOpen(true)}
-            >
-              <span aria-hidden>+</span> Add data
-            </button>
           </div>
         </div>
-        {chartSpec && centerTab === "chart" && (
-          <div className="flex items-center gap-3">
-            {saveMsg && <span className="text-xs text-accent">{saveMsg}</span>}
-            <SaveChartMenu
-              chartSpec={displaySpec}
-              title={chartStyle.title || chartTitle || "Untitled chart"}
-              insight={lastInsight}
-              dsName={dsName}
-              onSaved={setSaveMsg}
-            />
-          </div>
-        )}
+        {/* "+ Add data": the header-level entry point Gokul asked for -
+            2026-09-23 round three moved this out of the subdued "Analyzing:"
+            line (a small outline pill nobody noticed) and next to "Save
+            chart to dashboard" instead, restyled as the same solid green
+            .btn-primary every other primary action in the app uses, so it
+            reads as the obviously-clickable action it is rather than a
+            secondary detail. Unconditional (not gated behind chartSpec) -
+            adding data is just as relevant before the first chart exists as
+            after it. Opens the same popup of every other connected source's
+            logo (plus a "New data" tile) as before; see AddDataPicker.tsx,
+            which writes into the exact same `sourceIds` selection ChatPanel
+            reads from. */}
+        <div className="flex items-center gap-3 shrink-0">
+          <button
+            type="button"
+            className="btn-primary text-xs px-3 py-1.5 flex items-center gap-1 shrink-0"
+            onClick={() => setAddDataOpen(true)}
+          >
+            <span aria-hidden>+</span> Add data
+          </button>
+          {chartSpec && centerTab === "chart" && (
+            <>
+              {saveMsg && <span className="text-xs text-accent">{saveMsg}</span>}
+              <SaveChartMenu
+                chartSpec={displaySpec}
+                title={chartStyle.title || chartTitle || "Untitled chart"}
+                insight={lastInsight}
+                dsName={dsName}
+                onSaved={setSaveMsg}
+              />
+            </>
+          )}
+        </div>
       </div>
 
       <AddDataPicker
