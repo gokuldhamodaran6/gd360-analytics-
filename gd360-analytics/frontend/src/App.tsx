@@ -42,7 +42,36 @@ function Home() {
   return user ? <Dashboard /> : <Landing />;
 }
 
+// 2026-09-24 (Dashboard Builder Phase 4, white-label custom domains): this
+// exact same built JS bundle is served by Render regardless of which
+// hostname it's reached through - GD360's own onrender.com URL, OR any
+// number of customers' own custom domains pointed at the same frontend
+// static site (see backend/app/services/render_domains.py's own docstring
+// for why they all resolve to ONE Render service). A hostname this app
+// doesn't recognize as its own is therefore, by construction, someone's
+// white-label custom domain - and that whole domain is dedicated to their
+// one published dashboard (see the Dashboard Builder Spec's white-label
+// section: "a customer points their own subdomain at their published
+// dashboard"), so every path on it renders PublicDashboardView in its
+// hostname-resolution mode (see that file's own module docstring),
+// skipping the rest of this app's routes entirely - a stranger on a
+// customer's own domain should never be able to reach GD360's own /login,
+// /register, or anyone else's data by guessing a path.
+function isRecognizedHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  if (h === "localhost" || h === "127.0.0.1") return true;
+  // Every real deployment of this app today is served from a Render
+  // onrender.com static-site hostname - see get_service's own confirmed
+  // service details in this round's build notes.
+  if (h.endsWith(".onrender.com")) return true;
+  return false;
+}
+
 export default function App() {
+  const hostname = typeof window !== "undefined" ? window.location.hostname : "";
+  if (!isRecognizedHost(hostname)) {
+    return <PublicDashboardView />;
+  }
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
