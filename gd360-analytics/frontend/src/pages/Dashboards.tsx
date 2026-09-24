@@ -164,7 +164,10 @@ function DashboardCard({ d, onDeleted }: { d: DashboardSummary; onDeleted: (id: 
   return (
     <div className="card p-4 flex flex-col gap-2">
       <div className="flex items-start justify-between gap-2">
-        <Link to={`/dashboards/${d.id}`} className="flex items-center gap-2 min-w-0 group">
+        <Link
+          to={d.layout_version === 2 ? `/dashboard-builder/${d.id}` : `/dashboards/${d.id}`}
+          className="flex items-center gap-2 min-w-0 group"
+        >
           <span className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
             <ChartIcon />
           </span>
