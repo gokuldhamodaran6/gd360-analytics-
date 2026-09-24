@@ -59,6 +59,14 @@ _NEW_COLUMNS = [
     ("users", "token_version", "INTEGER DEFAULT 0"),
     ("dashboards", "layout_version", "INTEGER DEFAULT 1"),
     ("dashboards", "source_conversation_id", "TEXT"),
+    # Dashboard Builder Phase 3 (2026-09-24): private sharing's optional
+    # shared password - dashboard_shares itself is a table added 2026-09-24
+    # (Phase 1), already live in production before this column existed, so
+    # it needs the normal ALTER-TABLE treatment like any other new column on
+    # an existing table. dashboard_share_emails is a brand NEW table added
+    # the same round - per this file's own note above, that needs no entry
+    # here at all.
+    ("dashboard_shares", "password_hash", "TEXT"),
 ]
 
 
