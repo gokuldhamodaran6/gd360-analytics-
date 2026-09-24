@@ -1,6 +1,7 @@
 """
-Dashboard Builder (2026-09-24, Phase 1 of the "real dashboard" roadmap -
-see the published "Dashboard Builder Spec" artifact for the full plan).
+Dashboard Builder (2026-09-24, Phase 1 + Phase 2 of the "real dashboard"
+roadmap - see the published "Dashboard Builder Spec" artifact for the full
+plan).
 
 This is deliberately a SEPARATE model and a SEPARATE set of endpoints from
 routers/dashboards.py's original flat "save a chart to a named board"
@@ -10,49 +11,66 @@ models.Dashboard's own docstring for how layout_version tells the two
 apart on the same table). This file only ever creates/reads/publishes
 layout_version=2 dashboards.
 
-What Phase 1 actually does, end to end:
-  1. generate_dashboard(): takes a finished chat analysis (a Conversation)
-     and turns its already-computed answers into a real, laid-out
-     dashboard - one page, a handful of kpi/chart/table blocks placed on a
-     12-column grid. No new data is queried; every block's numbers are
-     exactly what that chat turn already computed and stored (see
-     Message.chart_spec/result_columns/result_rows), so this is instant
-     and never re-runs the AI's pandas code.
-  2. get_builder_dashboard(): the owner/editor's read view - the actual
-     drag/resize canvas editor is Phase 2; for now this is what
-     DashboardBuilderView.tsx renders read-only, with a Publish button.
-  3. publish_dashboard() / unpublish_dashboard(): turns a dashboard into a
-     public link (see the separate, no-auth `public_router` at the bottom
-     of this file, which is what a viewer with that link actually hits).
-     Only "public" mode exists yet - named-email private sharing is
-     Phase 3.
+Phase 1 (2026-09-24): generate_dashboard() turns a finished chat analysis
+into a real, laid-out dashboard in one shot (AI only picks which turns
+become blocks and what TYPE each is - the grid layout is always computed
+deterministically, see _layout_blocks); get_builder_dashboard() is the
+read view; publish_dashboard()/unpublish_dashboard() turn it into a public
+link via the separate, no-auth `public_router` at the bottom of this file.
 
-AI's job here is narrow and deliberately kept out of the layout math: it
-only picks WHICH of the conversation's turns deserve a spot on the
-dashboard and what TYPE each should be shown as (kpi/chart/table) - see
-_generate_plan. The actual grid coordinates are always computed
-deterministically in Python (_layout_blocks), never trusted to the model,
-so a dashboard can never come back with overlapping or out-of-bounds
-blocks even if the AI's response is imperfect. If the AI call fails
-outright or returns something unusable, _generate_plan falls back to a
-sensible deterministic plan (include every turn that has a chart or a
-result, in order) rather than failing the whole feature - Gokul asked for
-"100% perfection, no compromise" on this feature, and a dashboard that
-always gets built beats one that occasionally errors out because a single
-LLM call hiccuped.
+Phase 2 (2026-09-24, the canvas - THIS round's addition): a dashboard is no
+longer frozen the moment it's generated.
+  - create_block()/update_block()/delete_block(): add a block, persist a
+    drag/resize/title/config edit, or remove one. The frontend's canvas
+    (react-grid-layout) calls update_block once per completed drag or
+    resize gesture, not on every intermediate frame.
+  - ask_ai_block(): fills one block in by asking a plain-English question
+    against the dashboard's own data source - this reuses the EXACT SAME
+    services.ai_engine.analyze() pipeline the main "Ask GD360" chat runs
+    (see routers/chat.py), scoped to this dashboard's original data and
+    with guided=False so it can never pause mid-answer waiting for a
+    step-by-step confirmation the block editor has no UI for. This is a
+    deliberate reuse, not a second implementation of the NL-to-pandas
+    pipeline - it gets the exact same sandboxed execution, retry-on-
+    transient-failure, and self-healing behavior the main chat already has,
+    for free and with zero duplicated risk.
+  - build_manual_block(): the non-AI path Gokul asked for ("create by own")
+    - a plain column + aggregation form (sum/avg/count/min/max, optional
+    group-by) computed directly with pandas, no AI call and no sandboxed
+    code execution at all, since every operation is a fixed, whitelisted
+    pandas call rather than anything AI-authored or user-authored code.
+  - restyle_block(): switches a chart block to a different chart type
+    using the same tidy result_columns/result_rows already stored on it
+    (see _block_config/_ai_result_to_block, both of which now keep the
+    tidy data alongside chart_spec for exactly this) - deterministic,
+    reuses services.chart_builder.build_figure, no AI call needed to
+    "just try it as a bar chart instead."
+
+Scope note, stated plainly rather than left implicit: Phase 2 does NOT yet
+include multiple pages or page-wide cross-filtering (a filter bar that
+filters every block on a page at once) - both are real, separate future
+work (Phase 2b for cross-filtering, Phase 3 for multi-page + private
+sharing), confirmed with Gokul as a deliberate split before this round
+started rather than rushing everything into one round. Phase 2 also has no
+automatic collision avoidance between blocks - react-grid-layout lets a
+person drag one block, but two blocks CAN be dropped on top of each other
+if someone does that on purpose; auto-reflow to prevent overlaps entirely
+is a nice future refinement, not core to "a working canvas."
 """
 import re
 import secrets
 from datetime import datetime
 
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_user
-from ..services import workspace_access
+from ..services import ai_engine, chart_builder, workspace_access
 from ..services.ai_engine import _call_llm_resilient, _extract_json
+from ..services.data_loader import load_dataframe
 from .dashboards import _can_edit, _can_view
 
 router = APIRouter(prefix="/dashboard-builder", tags=["dashboard-builder"])
@@ -64,6 +82,20 @@ public_router = APIRouter(prefix="/public/dashboards", tags=["public-dashboards"
 
 _MAX_TABLE_ROWS_PER_BLOCK = 200
 _GRID_COLUMNS = 12
+
+# Phase 2's manual-build form only ever offers these five - a small,
+# reviewable whitelist dispatched straight to pandas' own Series.agg, never
+# anything resembling AI- or user-authored code, so there is no code-
+# execution surface here at all (unlike the sandboxed AI path).
+_MANUAL_AGG_FUNCS = {"sum": "sum", "avg": "mean", "count": "count", "min": "min", "max": "max"}
+_MANUAL_AGG_NEEDS_NUMERIC = {"sum", "avg"}
+# The style panel's chart-type choices - deliberately the subset of
+# chart_builder.build_figure's chart types that always work from a plain
+# two-column (dimension, measure) result, so a restyle can never fail on a
+# valid block just because that particular type wanted a different shape
+# of data (e.g. grouped_bar needs two numeric columns, heatmap needs a
+# wide matrix - neither fits what a dashboard block ever stores).
+_RESTYLE_CHART_TYPES = {"bar", "line", "area", "pie", "horizontal_bar", "scatter"}
 
 
 # ---------- Building the AI's block-selection plan ----------
@@ -148,7 +180,20 @@ def _block_config(message: models.Message, requested_type: str) -> tuple[str, di
     actually has (e.g. the AI asked for "chart" on a turn with no
     chart_spec), so the block never ends up empty."""
     if requested_type == "chart" and message.chart_spec:
-        return "chart", {"chart_spec": message.chart_spec}
+        # 2026-09-24 (Phase 2): a chart block also keeps the tidy
+        # result_columns/result_rows it was built from, when this message
+        # has them - not just the already-rendered chart_spec. This is
+        # what lets restyle_block below switch chart type later without a
+        # second AI call: it rebuilds the figure from this same tidy data
+        # via chart_builder.build_figure. A message from before this
+        # existed (or one with no tabular result attached) simply omits
+        # these keys, and restyle_block degrades honestly for that case
+        # instead of guessing.
+        config = {"chart_spec": message.chart_spec}
+        if message.result_columns and message.result_rows:
+            config["result_columns"] = message.result_columns
+            config["result_rows"] = message.result_rows
+        return "chart", config
 
     if requested_type == "kpi":
         cols = message.result_columns or []
@@ -196,6 +241,89 @@ def _layout_blocks(kpi_items: list[dict], other_items: list[dict]) -> list[dict]
     return laid_out
 
 
+# ---------- Phase 2: turning one ai_engine.analyze() result into a block ----------
+
+def _ai_result_to_block(result: dict, requested_type: str) -> tuple[str, dict]:
+    """Same fallback spirit as _block_config above, generalized to a live
+    ai_engine.analyze() result dict instead of a stored Message: honor
+    what the person actually asked this block to be (requested_type), but
+    never leave it empty just because the AI's answer doesn't perfectly
+    fit that shape - fall back through chart -> kpi -> table -> a plain
+    text block carrying the narrative, so a block is never left blank
+    purely because of a type mismatch between what was asked for and what
+    the question actually produced (e.g. asking a "chart" block "what is
+    total revenue?" - a single number, not a chart - still fills the block
+    in as a kpi rather than erroring)."""
+    chart_spec = result.get("chart_spec")
+    cols = result.get("result_columns") or []
+    rows = result.get("result_rows") or []
+
+    def _kpi_from_rows() -> tuple[str, dict] | None:
+        if not rows:
+            return None
+        measure_col = next((c.get("name") for c in cols if c.get("role") == "measure"), None)
+        if measure_col is None and cols:
+            measure_col = cols[0].get("name")
+        if measure_col is None:
+            return None
+        return "kpi", {"value": rows[0].get(measure_col), "label": measure_col}
+
+    def _table_from_rows() -> tuple[str, dict] | None:
+        if not rows:
+            return None
+        return "table", {
+            "columns": [c.get("name") for c in cols],
+            "rows": rows[:_MAX_TABLE_ROWS_PER_BLOCK],
+            "truncated": len(rows) > _MAX_TABLE_ROWS_PER_BLOCK,
+        }
+
+    if requested_type == "chart" and chart_spec:
+        config = {"chart_spec": chart_spec}
+        if cols and rows:
+            config["result_columns"] = cols
+            config["result_rows"] = rows
+        return "chart", config
+    if requested_type == "kpi":
+        kpi = _kpi_from_rows()
+        if kpi:
+            return kpi
+    if requested_type == "table":
+        table = _table_from_rows()
+        if table:
+            return table
+
+    # Fallback cascade - a real chart first, then a single clear number,
+    # then a table, then just the narrative as text.
+    if chart_spec:
+        config = {"chart_spec": chart_spec}
+        if cols and rows:
+            config["result_columns"] = cols
+            config["result_rows"] = rows
+        return "chart", config
+    if rows and len(rows) == 1:
+        kpi = _kpi_from_rows()
+        if kpi:
+            return kpi
+    table = _table_from_rows()
+    if table:
+        return table
+    return "text", {"text": result.get("narrative") or "No result."}
+
+
+def _place_new_block(page: models.DashboardPage, block_type: str) -> tuple[int, int, int, int]:
+    """Where a freshly-created block lands before the person drags it
+    anywhere - always appended below whatever is already on the page
+    (never overlapping an existing block), sized sensibly for its type.
+    x/y/w/h are all in the same 12-column grid unit system as everywhere
+    else in this file."""
+    max_bottom = max((b.y + b.h for b in page.blocks), default=0)
+    if block_type == "kpi":
+        return 0, max_bottom, 3, 3
+    if block_type == "text":
+        return 0, max_bottom, 6, 3
+    return 0, max_bottom, 6, 6  # chart / table
+
+
 # ---------- Slugs for public links ----------
 
 def _slugify(text: str) -> str:
@@ -228,6 +356,23 @@ def _get_dashboard_v2(
     return d
 
 
+def _get_block(db: Session, dashboard: models.Dashboard, block_id: str) -> models.DashboardBlock:
+    """A block scoped to THIS dashboard specifically - joined through its
+    page rather than trusted from the URL alone, so a block id belonging
+    to some OTHER dashboard (even one this same person owns) 404s here
+    instead of being readable/editable through the wrong dashboard's
+    endpoints."""
+    page_ids = [p.id for p in dashboard.pages]
+    block = (
+        db.query(models.DashboardBlock)
+        .filter(models.DashboardBlock.id == block_id, models.DashboardBlock.page_id.in_(page_ids))
+        .first()
+    )
+    if not block:
+        raise HTTPException(404, "Block not found on this dashboard.")
+    return block
+
+
 def _page_out(page: models.DashboardPage) -> schemas.DashboardPageOut:
     blocks = [
         schemas.DashboardBlockOut(
@@ -239,15 +384,55 @@ def _page_out(page: models.DashboardPage) -> schemas.DashboardPageOut:
     return schemas.DashboardPageOut(id=page.id, name=page.name, position=page.position, blocks=blocks)
 
 
+def _dashboard_datasource(db: Session, d: models.Dashboard) -> models.DataSource | None:
+    """The data source this dashboard's blocks are (or can be) built
+    against - resolved from source_conversation_id, best-effort: returns
+    None for a dashboard with no source conversation, or whose original
+    conversation/datasource has since been deleted, rather than raising -
+    _builder_out uses this just to REPORT the datasource (id/name) so the
+    frontend knows whether Ask AI/manual-build are even offered; the
+    endpoints that actually NEED it (ask_ai_block, build_manual_block) use
+    the stricter _resolve_datasource below, which raises instead."""
+    if not d.source_conversation_id:
+        return None
+    conv = db.query(models.Conversation).filter(models.Conversation.id == d.source_conversation_id).first()
+    if not conv or not conv.datasource_id:
+        return None
+    return db.query(models.DataSource).filter(models.DataSource.id == conv.datasource_id).first()
+
+
+def _resolve_datasource(db: Session, user: models.User, d: models.Dashboard) -> models.DataSource:
+    """Same resolution as _dashboard_datasource, but for an endpoint that
+    is about to actually RUN something against the data (ask-ai/manual-
+    build) - raises a clear, friendly error instead of quietly returning
+    None, and re-checks that the current user still has edit access to
+    that specific data source (not just to the dashboard - a dashboard
+    shared into a workspace doesn't automatically mean every editor there
+    also has access to the original data source it was generated from)."""
+    ds = _dashboard_datasource(db, d)
+    if not ds:
+        raise HTTPException(
+            400,
+            "This dashboard has no linked data source to build blocks from - it may have been "
+            "created before this feature, or its original analysis was deleted.",
+        )
+    if not workspace_access.can_edit_datasource(db, ds, user):
+        raise HTTPException(403, "You have view-only access to this dashboard's data source.")
+    return ds
+
+
 def _builder_out(db: Session, d: models.Dashboard, user: models.User) -> schemas.DashboardBuilderOut:
     pages = [_page_out(p) for p in sorted(d.pages, key=lambda p: p.position)]
     share = d.share
+    ds = _dashboard_datasource(db, d)
     return schemas.DashboardBuilderOut(
         id=d.id,
         name=d.name,
         layout_version=d.layout_version,
         created_at=d.created_at,
         source_conversation_id=d.source_conversation_id,
+        datasource_id=ds.id if ds else None,
+        datasource_name=ds.name if ds else None,
         pages=pages,
         can_edit=_can_edit(db, d, user),
         is_published=bool(share and share.published_at),
@@ -336,6 +521,305 @@ def get_builder_dashboard(
     dashboard_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
 ):
     d = _get_dashboard_v2(db, user, dashboard_id)
+    return _builder_out(db, d, user)
+
+
+@router.post("/{dashboard_id}/blocks", response_model=schemas.DashboardBuilderOut, status_code=201)
+def create_block(
+    dashboard_id: str,
+    payload: schemas.CreateBlockRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Adds one empty block to the canvas - the "+ Add block" toolbar's
+    Chart/Table/KPI/Text choice. Empty on purpose: the person fills it in
+    right after, either with ask_ai_block or build_manual_block below (or,
+    for a text block, a plain PATCH via update_block)."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    if payload.type not in ("chart", "table", "kpi", "text"):
+        raise HTTPException(400, "Unknown block type.")
+    page = next((p for p in d.pages if p.id == payload.page_id), None)
+    if not page:
+        raise HTTPException(404, "Page not found on this dashboard.")
+
+    x, y, w, h = _place_new_block(page, payload.type)
+    default_config = {"text": ""} if payload.type == "text" else {}
+    block = models.DashboardBlock(
+        page_id=page.id,
+        type=payload.type,
+        title=(payload.title or "").strip()[:120] or None,
+        x=x, y=y, w=w, h=h,
+        config=default_config,
+        position=len(page.blocks),
+    )
+    db.add(block)
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.patch("/{dashboard_id}/blocks/{block_id}", response_model=schemas.DashboardBuilderOut)
+def update_block(
+    dashboard_id: str,
+    block_id: str,
+    payload: schemas.UpdateBlockRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Partial update - the canvas calls this once per completed drag
+    (x/y) or resize (w/h) gesture, the title field's inline edit calls it
+    with just `title`, and a text block's own body is written through
+    `config` (e.g. {"text": "..."}) the same way a chart/table/kpi
+    block's config is written by ask_ai_block/build_manual_block/
+    restyle_block - this is the one generic setter all of those specific
+    endpoints ultimately share for the position/title/config fields."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    block = _get_block(db, d, block_id)
+
+    if payload.x is None and payload.y is None and payload.w is None and payload.h is None \
+            and payload.title is None and payload.config is None:
+        raise HTTPException(400, "Nothing to update.")
+
+    if payload.w is not None and not (1 <= payload.w <= _GRID_COLUMNS):
+        raise HTTPException(400, f"Width must be between 1 and {_GRID_COLUMNS} columns.")
+    if payload.h is not None and payload.h < 1:
+        raise HTTPException(400, "Height must be at least 1.")
+    if payload.x is not None:
+        block.x = max(0, payload.x)
+    if payload.y is not None:
+        block.y = max(0, payload.y)
+    if payload.w is not None:
+        block.w = payload.w
+    if payload.h is not None:
+        block.h = payload.h
+    if payload.title is not None:
+        block.title = payload.title.strip()[:120] or None
+    if payload.config is not None:
+        block.config = payload.config
+
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.delete("/{dashboard_id}/blocks/{block_id}", response_model=schemas.DashboardBuilderOut)
+def delete_block(
+    dashboard_id: str, block_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
+):
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    block = _get_block(db, d, block_id)
+    db.delete(block)
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.post("/{dashboard_id}/blocks/{block_id}/ask-ai", response_model=schemas.DashboardBuilderOut)
+def ask_ai_block(
+    dashboard_id: str,
+    block_id: str,
+    payload: schemas.AskAiBlockRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Fills one block in by asking a plain-English question against this
+    dashboard's own data source - "place a block and then have GD360
+    build whatever chart/table the customer wants in it", per Gokul's own
+    spec for this feature. Reuses services.ai_engine.analyze() directly -
+    the exact same function the main "Ask GD360" chat calls (see
+    routers/chat.py) - rather than a second NL-to-pandas implementation,
+    so this gets the same sandboxed execution, transient-failure retry,
+    and self-healing behavior the main chat already has, for free.
+
+    Always runs against this data source's ORIGINAL data (never a saved/
+    cleaned table, and never the specific WORKING ON selection the
+    original chat conversation happened to have picked) - a dashboard
+    block is a fresh question against the real data, not a continuation
+    of that old chat's own table selection. guided=False so the analysis
+    always completes in one call and can never come back
+    paused_for_continue (there is no step-by-step confirmation UI here to
+    pause into)."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    block = _get_block(db, d, block_id)
+    ds = _resolve_datasource(db, user, d)
+
+    try:
+        original_df = load_dataframe(ds, table=None, version="original", db=db)
+    except Exception as e:
+        raise HTTPException(400, f"Could not load this dashboard's data: {e}")
+
+    try:
+        result = ai_engine.analyze(
+            payload.prompt, {"Original data": original_df}, history=[], guided=False, skip_prep=False,
+            original_df=original_df,
+        )
+    except Exception as e:
+        print(f"[dashboard_builder] Ask AI failed: {e}")
+        raise HTTPException(502, ai_engine.friendly_ai_error(e))
+
+    if result.get("needs_clarification"):
+        raise HTTPException(422, result.get("clarifying_question") or "Could you rephrase that question?")
+
+    actual_type, config = _ai_result_to_block(result, block.type)
+    block.type = actual_type
+    block.config = config
+    if not block.title:
+        block.title = payload.prompt.strip()[:120]
+
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.post("/{dashboard_id}/blocks/{block_id}/build-manual", response_model=schemas.DashboardBuilderOut)
+def build_manual_block(
+    dashboard_id: str,
+    block_id: str,
+    payload: schemas.ManualBuildBlockRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """The non-AI "create by own" path - a plain column + aggregation
+    form, computed directly with pandas against this dashboard's original
+    data. Every operation dispatches through the small, fixed
+    _MANUAL_AGG_FUNCS whitelist rather than anything AI- or user-authored,
+    so unlike ask_ai_block above, there is no sandboxed code execution
+    here at all - there is no code to execute, just a parameterized
+    groupby/agg call."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    block = _get_block(db, d, block_id)
+    ds = _resolve_datasource(db, user, d)
+
+    if payload.agg not in _MANUAL_AGG_FUNCS:
+        raise HTTPException(400, "Unknown aggregation.")
+    if payload.block_type not in ("kpi", "table", "chart"):
+        raise HTTPException(400, "Unknown block type.")
+
+    try:
+        df = load_dataframe(ds, table=None, version="original", db=db)
+    except Exception as e:
+        raise HTTPException(400, f"Could not load this dashboard's data: {e}")
+
+    if payload.metric_column not in df.columns:
+        raise HTTPException(400, f'Column "{payload.metric_column}" was not found in this data.')
+    if payload.agg in _MANUAL_AGG_NEEDS_NUMERIC and not pd.api.types.is_numeric_dtype(df[payload.metric_column]):
+        raise HTTPException(
+            400,
+            f'"{payload.metric_column}" isn\'t a numeric column, so it can\'t be summed or averaged - '
+            "try Count, Min, or Max instead, or pick a numeric column.",
+        )
+    agg_func = _MANUAL_AGG_FUNCS[payload.agg]
+    agg_label = {"sum": "Sum", "avg": "Average", "count": "Count", "min": "Min", "max": "Max"}[payload.agg]
+
+    if payload.block_type == "kpi":
+        try:
+            value = df[payload.metric_column].agg(agg_func)
+            # pandas .agg() returns a numpy scalar (e.g. numpy.float64), not
+            # a plain Python number - .item() converts it, since neither
+            # the JSON DB column nor the API response can serialize a numpy
+            # type directly (this would otherwise 500 on commit).
+            value = value.item() if hasattr(value, "item") else value
+        except Exception as e:
+            raise HTTPException(400, f"Couldn't compute that: {e}")
+        block.type = "kpi"
+        block.config = {"value": value, "label": f"{agg_label} of {payload.metric_column}"}
+    else:
+        if not payload.group_by_column:
+            raise HTTPException(400, "Pick a column to group by for a table or chart.")
+        if payload.group_by_column not in df.columns:
+            raise HTTPException(400, f'Column "{payload.group_by_column}" was not found in this data.')
+        try:
+            grouped = (
+                df.groupby(payload.group_by_column)[payload.metric_column]
+                .agg(agg_func)
+                .sort_values(ascending=False)
+                .head(50 if payload.block_type == "chart" else _MAX_TABLE_ROWS_PER_BLOCK)
+            )
+            # Named columns, not the generic "label"/"value" that
+            # chart_builder.result_to_tidy would otherwise fall back to for
+            # a bare Series - so a manually-built table's headers read as
+            # "region" / "revenue", not "label" / "value".
+            grouped_df = grouped.reset_index()
+            grouped_df.columns = [payload.group_by_column, payload.metric_column]
+        except Exception as e:
+            raise HTTPException(400, f"Couldn't compute that: {e}")
+
+        title = f"{agg_label} of {payload.metric_column} by {payload.group_by_column}"
+        if payload.block_type == "chart":
+            chart_type = (payload.chart_type or "bar").lower().strip()
+            if chart_type not in _RESTYLE_CHART_TYPES:
+                chart_type = "bar"
+            try:
+                chart_spec = chart_builder.build_figure(grouped_df, chart_type, title=block.title or title)
+            except Exception as e:
+                raise HTTPException(400, f"Couldn't build that chart: {e}")
+            tidy = chart_builder.result_to_tidy(grouped_df)
+            block.type = "chart"
+            block.config = {"chart_spec": chart_spec, **({"result_columns": tidy["columns"], "result_rows": tidy["rows"]} if tidy else {})}
+        else:
+            tidy = chart_builder.result_to_tidy(grouped_df)
+            block.type = "table"
+            block.config = {
+                "columns": [c["name"] for c in (tidy["columns"] if tidy else [])],
+                "rows": tidy["rows"] if tidy else [],
+                "truncated": False,
+            }
+
+    if not block.title:
+        block.title = title if payload.block_type != "kpi" else f"{agg_label} of {payload.metric_column}"
+
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.patch("/{dashboard_id}/blocks/{block_id}/style", response_model=schemas.DashboardBuilderOut)
+def restyle_block(
+    dashboard_id: str,
+    block_id: str,
+    payload: schemas.RestyleBlockRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Switches a chart block to a different chart type - deterministic,
+    no AI call, rebuilt from the same tidy result_columns/result_rows the
+    block was originally built from (see _block_config/_ai_result_to_block/
+    build_manual_block, all three of which now store that tidy data
+    alongside chart_spec for exactly this). A chart block from before that
+    existed (or a message with no tabular result attached) has no tidy
+    data to rebuild from - this fails with a clear, honest message rather
+    than guessing or silently doing nothing."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    block = _get_block(db, d, block_id)
+
+    if block.type != "chart":
+        raise HTTPException(400, "Only a chart block can be restyled.")
+    chart_type = payload.chart_type.lower().strip()
+    if chart_type not in _RESTYLE_CHART_TYPES:
+        raise HTTPException(400, f"Unsupported chart type for restyling: {chart_type}.")
+
+    cols = (block.config or {}).get("result_columns")
+    rows = (block.config or {}).get("result_rows")
+    if not cols or not rows:
+        raise HTTPException(
+            400,
+            "This chart doesn't have restyle data attached yet (it was built before this option existed) - "
+            "ask GD360's AI to rebuild it, or build a new chart block, to enable style options.",
+        )
+
+    title = payload.title.strip()[:120] if payload.title else block.title
+    try:
+        df = pd.DataFrame(rows, columns=[c["name"] for c in cols])
+        new_spec = chart_builder.build_figure(df, chart_type, title=title or "")
+    except Exception as e:
+        raise HTTPException(400, f"Couldn't restyle to that chart type: {e}")
+
+    block.config = {**block.config, "chart_spec": new_spec}
+    if title != block.title:
+        block.title = title
+
+    db.commit()
+    db.refresh(d)
     return _builder_out(db, d, user)
 
 
