@@ -790,17 +790,25 @@ export const dashboardApi = {
 // no canvas editing yet (that's Phase 2), so there's no "create blank" or
 // "move/resize a block" call here yet either. ----
 
-export type DashboardBlockType = "chart" | "table" | "kpi";
+export type DashboardBlockType = "chart" | "table" | "kpi" | "text";
 
 // `config`'s shape depends on `type` - deliberately left loosely typed
 // here (this client is a pass-through, same convention as PreviewOptions.
 // filters above) rather than a discriminated union, since every renderer
 // (components/DashboardBlocks.tsx) narrows it itself right where it's
-// used. The three shapes the backend actually sends, verbatim from
-// routers/dashboard_builder.py's _block_config:
-//   chart: { chart_spec: any }
+// used. The shapes the backend actually sends, verbatim from
+// routers/dashboard_builder.py's _block_config/_ai_result_to_block/
+// build_manual_block:
+//   chart: { chart_spec: any; result_columns?: any; result_rows?: any }
+//     (result_columns/result_rows are only present when this chart has
+//     tidy data attached - that's what makes restyle_block possible; a
+//     chart block from before this existed may omit them)
 //   table: { columns: string[]; rows: Record<string, any>[]; truncated: boolean }
 //   kpi:   { value: number | string | null; label: string }
+//   text:  { text: string }
+//     (2026-09-24, Phase 2: a freeform note block - its body is written
+//     straight through dashboardBuilderApi.updateBlock's `config` field,
+//     there is no dedicated endpoint for it)
 export type DashboardBlock = {
   id: string;
   type: DashboardBlockType;
@@ -829,6 +837,16 @@ export type DashboardBuilderDetail = {
   // started blank (not possible yet in Phase 1, but the field already
   // exists on the model for when Phase 2 adds it).
   source_conversation_id: string | null;
+  // 2026-09-24 (Phase 2): the data source this dashboard's blocks are (or
+  // can be) built against, resolved server-side from source_conversation_id
+  // - both null for a dashboard with no source conversation, or whose
+  // original conversation/data source was since deleted. The canvas uses
+  // this to know whether Ask AI / manual-build are even offered, and
+  // datasourceApi.preview(datasource_id, null) to populate the manual-build
+  // column picker (deliberately reusing that existing endpoint rather than
+  // adding a new "list columns" one).
+  datasource_id: string | null;
+  datasource_name: string | null;
   pages: DashboardBuilderPage[];
   can_edit: boolean;
   is_published: boolean;
@@ -842,6 +860,17 @@ export type PublicDashboard = {
   name: string;
   pages: DashboardBuilderPage[];
 };
+
+// 2026-09-24 (Phase 2): the manual-build form's five whitelisted
+// aggregations, verbatim from backend _MANUAL_AGG_FUNCS - kept here as a
+// typed union (rather than a bare string) so the form component can't
+// accidentally send one the backend doesn't recognize.
+export type ManualAgg = "sum" | "avg" | "count" | "min" | "max";
+
+// The style panel's chart-type choices - verbatim from backend
+// _RESTYLE_CHART_TYPES, the subset of chart_builder.build_figure's types
+// that always work from a plain two-column (dimension, measure) result.
+export type RestyleChartType = "bar" | "line" | "area" | "pie" | "horizontal_bar" | "scatter";
 
 export const dashboardBuilderApi = {
   // Builds a brand-new pages+blocks dashboard out of everything scoreable
@@ -866,4 +895,82 @@ export const dashboardBuilderApi = {
   // call. A 404 here just means "not currently published", not "doesn't
   // exist" - see the backend's own info-non-leak reasoning.
   getPublic: (slug: string) => api.get<PublicDashboard>(`/public/dashboards/${slug}`).then((r) => r.data),
+
+  // ---- Phase 2 (2026-09-24): the canvas editor's own calls - every one of
+  // these returns the WHOLE updated DashboardBuilderDetail (not just the
+  // one block), same convention as generate/publish/unpublish above, so
+  // the canvas can just replace its local state wholesale after each edit
+  // instead of hand-patching one block in place. ----
+
+  // Adds one empty block to a page - the "+ Add block" toolbar's
+  // Chart/Table/KPI/Text choice. Filled in right after with askAiBlock or
+  // buildManualBlock (or, for a text block, a plain updateBlock config
+  // write).
+  createBlock: (dashboardId: string, pageId: string, type: DashboardBlockType, title?: string) =>
+    api
+      .post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks`, {
+        page_id: pageId,
+        type,
+        title: title || undefined,
+      })
+      .then((r) => r.data),
+
+  // Partial update - the canvas calls this once per completed drag (x/y)
+  // or resize (w/h) gesture (never on intermediate drag frames), a title
+  // inline-edit calls it with just `title`, and a text block's body is
+  // written through `config`.
+  updateBlock: (
+    dashboardId: string,
+    blockId: string,
+    payload: { x?: number; y?: number; w?: number; h?: number; title?: string; config?: Record<string, any> }
+  ) => api.patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}`, payload).then((r) => r.data),
+
+  deleteBlock: (dashboardId: string, blockId: string) =>
+    api.delete<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}`).then((r) => r.data),
+
+  // Fills a block in by asking a plain-English question against this
+  // dashboard's own data source - reuses the exact same AI pipeline the
+  // main chat uses. Two error shapes the caller should show inline rather
+  // than as a generic failure toast: a 422, whose `detail` string IS the
+  // clarifying question to show back (the block is left untouched so the
+  // person can just try again with a clearer prompt); and a 502, whose
+  // `detail` string is already a short, friendly message safe to show
+  // as-is (see backend ai_engine.friendly_ai_error).
+  askAiBlock: (dashboardId: string, blockId: string, prompt: string) =>
+    api
+      .post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}/ask-ai`, { prompt })
+      .then((r) => r.data),
+
+  // The non-AI "create by own" path - a plain column + aggregation form,
+  // computed directly with pandas server-side (no AI call, no sandboxed
+  // code execution). group_by_column is required for block_type
+  // "table"/"chart" and ignored for "kpi"; chart_type is only used when
+  // block_type is "chart" (defaults to "bar" server-side if omitted).
+  buildManualBlock: (
+    dashboardId: string,
+    blockId: string,
+    payload: {
+      metric_column: string;
+      agg: ManualAgg;
+      group_by_column?: string | null;
+      block_type: "kpi" | "table" | "chart";
+      chart_type?: RestyleChartType | null;
+    }
+  ) =>
+    api
+      .post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}/build-manual`, payload)
+      .then((r) => r.data),
+
+  // Switches an existing chart block to a different chart type - no AI
+  // call, rebuilt deterministically from the tidy data already stored on
+  // the block. Only works on a "chart" block that has result_columns/
+  // result_rows attached (see DashboardBlock's config docs above) - a 400
+  // here with a friendly message means that data isn't there yet.
+  restyleBlock: (dashboardId: string, blockId: string, chartType: RestyleChartType, title?: string) =>
+    api
+      .patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}/style`, {
+        chart_type: chartType,
+        title: title || undefined,
+      })
+      .then((r) => r.data),
 };
