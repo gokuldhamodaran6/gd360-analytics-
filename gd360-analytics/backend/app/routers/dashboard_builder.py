@@ -104,16 +104,81 @@ stating plainly:
      saved content, and a filter block on it renders as a plain, inert
      label rather than an interactive control that would silently do
      nothing.
+
+Phase 3 (2026-09-24, scale it - THIS round's addition): multiple pages per
+dashboard, and private sharing to named people.
+
+  - Page management: create_page/update_page/delete_page/duplicate_page.
+    `position` is the only ordering the model has (see DashboardPage's own
+    docstring) - every mutating page endpoint here renumbers the surviving
+    pages to a contiguous 0..n-1 sequence before returning, so `position`
+    never develops gaps or duplicates no matter how many creates/deletes/
+    reorders/duplicates have happened. A dashboard can never be left with
+    zero pages - delete_page refuses to remove the last one. duplicate_page
+    deep-copies every block on the source page (new ids, identical type/
+    position/config) onto a brand new page inserted immediately after the
+    source, since that's where a person expects a "duplicate" to land, not
+    tacked onto the end of the tab bar.
+
+  - Private sharing: publish_dashboard now accepts mode="private" (named
+    emails, optional shared password) alongside the existing "public".
+    Three deliberate design decisions, matching the ones already made for
+    Phase 2b:
+
+    1. A private dashboard grants NO GD360 account to its viewers - there
+       is no signup, no login, nothing added to the `users` table. Passing
+       the email/password gate (verify_private_dashboard_access, on
+       public_router) issues a short-lived, narrowly-scoped JWT
+       (security.create_dashboard_viewer_token) that proves only "this
+       browser supplied an allowed email (and the right password, if one
+       is set) for THIS ONE share" - nothing more.
+
+    2. Revoke is immediate, not "eventually, once their token expires."
+       get_public_dashboard re-checks the viewer's token's email against
+       DashboardShareEmail on EVERY SINGLE request, not just once at the
+       door - so removing someone's email from the access list (via
+       remove_share_email) takes effect on their very next page load,
+       regardless of how much longer their still-technically-valid token
+       would otherwise have run. The token proves the person once passed
+       the gate; the live database row is what actually still grants
+       access.
+
+    3. A private link's own content-fetching endpoint is still
+       unauthenticated (no GD360 login required to view it at all - that's
+       the entire point of "share with people who don't have a GD360
+       account"), so verify_private_dashboard_access is rate-limited per
+       client IP AND per dashboard slug (the same in-process sliding-
+       window limiter routers/auth.py already uses for login) to keep a
+       password guess from being tried at unlimited speed. This is the
+       same honest MVP-grade tradeoff the rest of this app's auth already
+       makes (see routers/auth.py's own docstring) - a determined, slow,
+       distributed attacker isn't fully stopped by an in-process limiter,
+       but casual/scripted guessing is.
+
+  The viewer's own access token is passed back on GET /public/dashboards/
+  {slug} as a custom `X-Dashboard-Access-Token` header, deliberately NOT
+  the standard `Authorization` header - the frontend's shared axios
+  instance (api/client.ts) auto-attaches a real, logged-in GD360 user's
+  own Authorization bearer token to every request if one exists in this
+  browser (e.g. Gokul testing his own private link while logged into his
+  own account in the same browser), which would silently clobber a
+  viewer token passed the normal way. The public dashboard viewer
+  deliberately uses its own separate, interceptor-free axios instance for
+  exactly this reason - see api/client.ts's own comment on
+  dashboardBuilderApi.getPublic/verifyPrivateAccess.
 """
+import copy
 import re
 import secrets
+import time
+from collections import defaultdict, deque
 from datetime import datetime
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
-from .. import models, schemas
+from .. import models, schemas, security
 from ..database import get_db
 from ..deps import get_current_user
 from ..services import ai_engine, chart_builder, workspace_access
@@ -127,6 +192,31 @@ router = APIRouter(prefix="/dashboard-builder", tags=["dashboard-builder"])
 # openable by someone who has never signed in at all, so this is never
 # wired behind get_current_user. Registered separately in main.py.
 public_router = APIRouter(prefix="/public/dashboards", tags=["public-dashboards"])
+
+# Phase 3's private-dashboard password gate (verify_private_dashboard_access
+# below) is unauthenticated by necessity, so it gets the same simple
+# in-process sliding-window rate limiter routers/auth.py already uses for
+# login - kept as its own copy here rather than shared/imported, matching
+# that file's own stated reasoning (this file doesn't depend on, or risk
+# destabilizing, the working auth rate limiter).
+_call_log: dict[str, deque] = defaultdict(deque)
+
+
+def _check_rate_limit(key: str, limit: int, window_seconds: int = 60):
+    now = time.time()
+    log = _call_log[key]
+    while log and now - log[0] > window_seconds:
+        log.popleft()
+    if len(log) >= limit:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many attempts. Please wait a minute and try again.")
+    log.append(now)
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 _MAX_TABLE_ROWS_PER_BLOCK = 200
 _GRID_COLUMNS = 12
@@ -613,6 +703,12 @@ def _builder_out(db: Session, d: models.Dashboard, user: models.User) -> schemas
         can_edit=_can_edit(db, d, user),
         is_published=bool(share and share.published_at),
         public_slug=share.slug if share else None,
+        share_mode=share.mode if share else None,
+        share_has_password=bool(share and share.password_hash),
+        share_emails=(
+            [schemas.DashboardShareEmailOut(id=e.id, email=e.email) for e in share.allowed_emails]
+            if share else []
+        ),
     )
 
 
@@ -1023,6 +1119,130 @@ def preview_filtered_blocks(
     return schemas.FilteredBlocksOut(blocks=out)
 
 
+@router.post("/{dashboard_id}/pages", response_model=schemas.DashboardBuilderOut, status_code=201)
+def create_page(
+    dashboard_id: str,
+    payload: schemas.CreatePageRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Adds a new, empty page (tab) at the end of the dashboard - the "+
+    Add page" button. Named blocks are added to it afterward through the
+    normal create_block flow, same as any other page."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    name = (payload.name or "").strip()[:80] or f"Page {len(d.pages) + 1}"
+    page = models.DashboardPage(dashboard_id=d.id, name=name, position=len(d.pages))
+    db.add(page)
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.patch("/{dashboard_id}/pages/{page_id}", response_model=schemas.DashboardBuilderOut)
+def update_page(
+    dashboard_id: str,
+    page_id: str,
+    payload: schemas.UpdatePageRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Renames a page tab (`name`), reorders it (`position`), or both in
+    one call. A reorder is expressed as "this page's new index among all
+    of this dashboard's pages" - every page is then renumbered to a
+    contiguous 0..n-1 sequence in that new order, so `position` can never
+    end up with a gap or a duplicate regardless of where the target index
+    fell."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    page = next((p for p in d.pages if p.id == page_id), None)
+    if not page:
+        raise HTTPException(404, "Page not found on this dashboard.")
+    if payload.name is None and payload.position is None:
+        raise HTTPException(400, "Nothing to update.")
+
+    if payload.name is not None:
+        name = payload.name.strip()[:80]
+        if not name:
+            raise HTTPException(400, "Page name can't be empty.")
+        page.name = name
+
+    if payload.position is not None:
+        ordered = sorted(d.pages, key=lambda p: p.position)
+        ordered.remove(page)
+        target = max(0, min(payload.position, len(ordered)))
+        ordered.insert(target, page)
+        for i, p in enumerate(ordered):
+            p.position = i
+
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.delete("/{dashboard_id}/pages/{page_id}", response_model=schemas.DashboardBuilderOut)
+def delete_page(
+    dashboard_id: str, page_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
+):
+    """A dashboard can never be left with zero pages - refuses to delete
+    the last remaining one rather than leaving the dashboard in a state
+    the frontend has no page to show for."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    page = next((p for p in d.pages if p.id == page_id), None)
+    if not page:
+        raise HTTPException(404, "Page not found on this dashboard.")
+    other_pages = [p for p in d.pages if p.id != page_id]
+    if not other_pages:
+        raise HTTPException(400, "A dashboard needs at least one page - add another page before deleting this one.")
+
+    db.delete(page)
+    db.flush()
+    for i, p in enumerate(sorted(other_pages, key=lambda p: p.position)):
+        p.position = i
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.post("/{dashboard_id}/pages/{page_id}/duplicate", response_model=schemas.DashboardBuilderOut, status_code=201)
+def duplicate_page(
+    dashboard_id: str, page_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
+):
+    """Deep-copies a page's blocks onto a brand new page inserted
+    immediately after the source page (not appended to the end - that's
+    where a person expects a duplicate to land, right next to the
+    original). copy.deepcopy on each block's config is deliberate: config
+    can hold nested lists/dicts (chart_spec, result_rows, ...), and a
+    shallow copy would leave the new block's config aliased to the SAME
+    Python objects as the source block's for the rest of this request."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    source = next((p for p in d.pages if p.id == page_id), None)
+    if not source:
+        raise HTTPException(404, "Page not found on this dashboard.")
+
+    for p in d.pages:
+        if p.position > source.position:
+            p.position += 1
+    new_page = models.DashboardPage(
+        dashboard_id=d.id,
+        name=(f"{source.name} copy")[:80],
+        position=source.position + 1,
+    )
+    db.add(new_page)
+    db.flush()
+    for b in sorted(source.blocks, key=lambda b: b.position):
+        db.add(models.DashboardBlock(
+            page_id=new_page.id,
+            type=b.type,
+            title=b.title,
+            x=b.x, y=b.y, w=b.w, h=b.h,
+            config=copy.deepcopy(b.config),
+            position=b.position,
+        ))
+
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
 @router.post("/{dashboard_id}/publish", response_model=schemas.DashboardBuilderOut)
 def publish_dashboard(
     dashboard_id: str,
@@ -1031,18 +1251,79 @@ def publish_dashboard(
     user: models.User = Depends(get_current_user),
 ):
     d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
-    if payload.mode != "public":
-        raise HTTPException(
-            400,
-            "Only a public link is available right now - sharing with specific named people is "
-            "coming in a later round.",
-        )
+    if payload.mode not in ("public", "private"):
+        raise HTTPException(400, f'Unknown share mode "{payload.mode}".')
+
     share = d.share
     if not share:
-        share = models.DashboardShare(dashboard_id=d.id, slug=_make_unique_slug(db, d.name), mode="public")
+        share = models.DashboardShare(dashboard_id=d.id, slug=_make_unique_slug(db, d.name), mode=payload.mode)
         db.add(share)
-    share.mode = "public"
+
+    share.mode = payload.mode
+    if payload.mode == "private":
+        password = (payload.password or "").strip()
+        share.password_hash = security.hash_password(password) if password else None
     share.published_at = datetime.utcnow()
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.post("/{dashboard_id}/shares/emails", response_model=schemas.DashboardBuilderOut, status_code=201)
+def add_share_email(
+    dashboard_id: str,
+    payload: schemas.AddShareEmailRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Adds one person to this dashboard's private access list. Works
+    whether or not the dashboard has been published yet, and whether it's
+    currently public or private - lets someone build up the guest list (or
+    switch back and forth) before flipping the share to "private" and
+    publishing, rather than forcing that order. Creates the DashboardShare
+    row itself (mode="private", unpublished) if this dashboard has never
+    been shared at all yet."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    email = payload.email.strip().lower()
+
+    share = d.share
+    if not share:
+        share = models.DashboardShare(dashboard_id=d.id, slug=_make_unique_slug(db, d.name), mode="private")
+        db.add(share)
+        db.flush()
+
+    already = any(e.email.lower() == email for e in share.allowed_emails)
+    if already:
+        raise HTTPException(400, "That email is already on this dashboard's access list.")
+
+    db.add(models.DashboardShareEmail(share_id=share.id, email=email))
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.delete("/{dashboard_id}/shares/emails/{email_id}", response_model=schemas.DashboardBuilderOut)
+def remove_share_email(
+    dashboard_id: str,
+    email_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Revokes one person's access immediately - see this file's own
+    module docstring (Phase 3, point 2) for why this takes effect on that
+    person's very next page load rather than only once some token
+    expires."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    share = d.share
+    row = (
+        db.query(models.DashboardShareEmail)
+        .filter(models.DashboardShareEmail.id == email_id, models.DashboardShareEmail.share_id == (share.id if share else None))
+        .first()
+        if share else None
+    )
+    if not row:
+        raise HTTPException(404, "That person isn't on this dashboard's access list.")
+    db.delete(row)
     db.commit()
     db.refresh(d)
     return _builder_out(db, d, user)
@@ -1063,17 +1344,80 @@ def unpublish_dashboard(
     return _builder_out(db, d, user)
 
 
-@public_router.get("/{slug}", response_model=schemas.PublicDashboardOut)
-def get_public_dashboard(slug: str, db: Session = Depends(get_db)):
-    """No auth at all, deliberately - this is the endpoint an anonymous
-    person with the public link actually hits. Only ever returns a
-    dashboard that is CURRENTLY published (mode == "public" and
-    published_at set) - unpublishing takes effect immediately here, even
-    though the share row/slug itself is kept around for a possible
-    republish (see unpublish_dashboard above)."""
+@public_router.post("/{slug}/verify", response_model=schemas.VerifyPrivateAccessOut)
+def verify_private_dashboard_access(
+    slug: str,
+    payload: schemas.VerifyPrivateAccessRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """The private-dashboard email/password gate - unauthenticated (this
+    person has no GD360 account and isn't getting one), rate-limited per
+    IP and per slug since it's effectively a password-guessing surface
+    (see this file's own module docstring, Phase 3, point 3). Deliberately
+    the SAME "not available" message whether the slug doesn't exist, isn't
+    published, or is published as "public" rather than "private" - no
+    information about which case it is leaks to an unauthenticated caller.
+    On success, issues a short-lived viewer token scoped to exactly this
+    share and email (security.create_dashboard_viewer_token) - see
+    get_public_dashboard below for how that token is then re-validated
+    against the live access list on every actual content fetch."""
+    ip = _client_ip(request)
+    _check_rate_limit(f"dashboard-verify:ip:{ip}", limit=20)
+    _check_rate_limit(f"dashboard-verify:slug:{slug}", limit=30)
+
     share = db.query(models.DashboardShare).filter(models.DashboardShare.slug == slug).first()
-    if not share or share.mode != "public" or not share.published_at:
+    if not share or not share.published_at or share.mode != "private":
         raise HTTPException(404, "This dashboard isn't available.")
+
+    email = payload.email.strip().lower()
+    allowed = {e.email.lower() for e in share.allowed_emails}
+    if email not in allowed:
+        raise HTTPException(403, "This dashboard hasn't been shared with that email address.")
+    if share.password_hash and not (payload.password and security.verify_password(payload.password, share.password_hash)):
+        raise HTTPException(401, "Incorrect password.")
+
+    token = security.create_dashboard_viewer_token(share.id, email)
+    return schemas.VerifyPrivateAccessOut(access_token=token)
+
+
+@public_router.get("/{slug}", response_model=schemas.PublicDashboardOut)
+def get_public_dashboard(
+    slug: str,
+    db: Session = Depends(get_db),
+    x_dashboard_access_token: str | None = Header(default=None, alias="X-Dashboard-Access-Token"),
+):
+    """No GD360 login at all, deliberately - this is the endpoint an
+    anonymous person with the public OR private link actually hits. Only
+    ever returns a dashboard that is CURRENTLY published - unpublishing
+    takes effect immediately here, even though the share row/slug itself
+    is kept around for a possible republish (see unpublish_dashboard
+    above).
+
+    For mode=="private", a valid X-Dashboard-Access-Token (from
+    verify_private_dashboard_access above) is required, AND that token's
+    email is re-checked against the share's LIVE allowed_emails list on
+    this exact request - not just trusted because the token's signature
+    checks out - so a revoke (remove_share_email) takes effect on the very
+    next page load, not only once the token eventually expires. A missing/
+    invalid token 401s ("please sign in with your email"); a valid token
+    for an email that's since been removed from the list 403s ("access
+    revoked") - the frontend shows a different message for each."""
+    share = db.query(models.DashboardShare).filter(models.DashboardShare.slug == slug).first()
+    if not share or not share.published_at or share.mode not in ("public", "private"):
+        raise HTTPException(404, "This dashboard isn't available.")
+
+    if share.mode == "private":
+        email = (
+            security.decode_dashboard_viewer_token(x_dashboard_access_token, share.id)
+            if x_dashboard_access_token else None
+        )
+        if not email:
+            raise HTTPException(401, "Sign in with your email to view this dashboard.")
+        allowed = {e.email.lower() for e in share.allowed_emails}
+        if email.lower() not in allowed:
+            raise HTTPException(403, "Your access to this dashboard has been revoked or was never granted.")
+
     d = db.query(models.Dashboard).filter(models.Dashboard.id == share.dashboard_id).first()
     if not d:
         raise HTTPException(404, "This dashboard isn't available.")
