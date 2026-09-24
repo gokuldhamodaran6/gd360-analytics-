@@ -871,6 +871,20 @@ export type DashboardBuilderDetail = {
   share_mode: "public" | "private" | null;
   share_has_password: boolean;
   share_emails: DashboardShareEmail[];
+  // 2026-09-24 (Phase 4, white-label): this dashboard's own custom domain,
+  // if any - null/null/null until setCustomDomain is ever called.
+  // custom_domain_status is Render's own DNS-verification/SSL-issuance
+  // progress, collapsed to one of three values by the backend (see
+  // services/render_domains.py): "pending_dns" (the CNAME record hasn't
+  // been seen yet), "pending_ssl" (DNS verified, certificate still being
+  // issued), or "live" (actually serving HTTPS traffic on this domain
+  // now) - PublishPanel below shows a different message/icon for each.
+  // custom_domain_error is set only when the last recheck hit a real
+  // problem (e.g. the domain was removed by hand on Render) - shown
+  // inline next to the "Check again" button rather than failing silently.
+  custom_domain: string | null;
+  custom_domain_status: "pending_dns" | "pending_ssl" | "live" | null;
+  custom_domain_error: string | null;
 };
 
 // What the anonymous, no-login public link actually gets back - no
@@ -948,6 +962,26 @@ export const dashboardBuilderApi = {
     api.post<DashboardBuilderDetail>(`/dashboard-builder/${id}/shares/emails`, { email }).then((r) => r.data),
   removeShareEmail: (id: string, emailId: string) =>
     api.delete<DashboardBuilderDetail>(`/dashboard-builder/${id}/shares/emails/${emailId}`).then((r) => r.data),
+
+  // ---- Phase 4 (2026-09-24): white-label custom domains - see backend
+  // routers/dashboard_builder.py's own module docstring and
+  // services/render_domains.py. The dashboard must already be published
+  // (any mode) before a domain can be set - setCustomDomain 400s
+  // otherwise, same as this client's other share-management calls. A 503
+  // here means this GD360 installation hasn't had RENDER_API_KEY/
+  // RENDER_FRONTEND_SERVICE_ID configured yet (see config.py) - show that
+  // message as-is, it's already written for a non-technical reader. ----
+  setCustomDomain: (id: string, domain: string) =>
+    api.post<DashboardBuilderDetail>(`/dashboard-builder/${id}/shares/domain`, { domain }).then((r) => r.data),
+  // The "Check again" button - re-polls Render for this domain's current
+  // DNS/SSL status. Never throws for an ordinary Render-side problem (a
+  // stale/removed registration) - that comes back as a normal 200 with
+  // custom_domain_error set, so the caller just re-renders from the
+  // response like any other update.
+  recheckCustomDomain: (id: string) =>
+    api.post<DashboardBuilderDetail>(`/dashboard-builder/${id}/shares/domain/recheck`).then((r) => r.data),
+  removeCustomDomain: (id: string) =>
+    api.delete<DashboardBuilderDetail>(`/dashboard-builder/${id}/shares/domain`).then((r) => r.data),
 
   // ---- Phase 3 (2026-09-24): page management - add/rename/reorder/
   // duplicate/delete a page (tab). Every one of these returns the whole
@@ -1112,5 +1146,26 @@ export const publicDashboardApi = {
   verify: (slug: string, email: string, password?: string) =>
     publicApi
       .post<{ access_token: string }>(`/public/dashboards/${slug}/verify`, { email, password: password || undefined })
+      .then((r) => r.data.access_token),
+
+  // 2026-09-24 (Phase 4, white-label): the hostname-keyed counterpart of
+  // get/verify above, for when this SPA is being viewed through a
+  // customer's own custom domain rather than GD360's own onrender.com URL
+  // with a /d/:slug path in it - see PublicDashboardView.tsx for how it
+  // decides which pair to call, and backend routers/dashboard_builder.py's
+  // public_domains_router for the matching server side. Same error-shape
+  // contract as get/verify above (404/401/403 mean the same things).
+  getByHostname: (hostname: string, viewerToken?: string) =>
+    publicApi
+      .get<PublicDashboard>(`/public/domains/${encodeURIComponent(hostname)}`, {
+        headers: viewerToken ? { "X-Dashboard-Access-Token": viewerToken } : undefined,
+      })
+      .then((r) => r.data),
+  verifyByHostname: (hostname: string, email: string, password?: string) =>
+    publicApi
+      .post<{ access_token: string }>(`/public/domains/${encodeURIComponent(hostname)}/verify`, {
+        email,
+        password: password || undefined,
+      })
       .then((r) => r.data.access_token),
 };
