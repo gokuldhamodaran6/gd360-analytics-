@@ -439,9 +439,11 @@ class SavedChart(Base):
 
 class DashboardPage(Base):
     """One page (tab) of a layout_version=2 Dashboard - see Dashboard's own
-    docstring. Phase 1 only ever creates a single page per dashboard
-    ("Overview"); the model already supports several so Phase 3 (multiple
-    pages) needs no migration, just a UI to add/reorder more of them."""
+    docstring. Phase 1 only ever created a single page per dashboard
+    ("Overview"); Phase 3 (2026-09-24) adds add/rename/reorder/duplicate/
+    delete through routers/dashboard_builder.py's page endpoints - this
+    model itself needed no schema change for that, since `position` (the
+    ordering) and multi-page support were already here from the start."""
     __tablename__ = "dashboard_pages"
 
     id = Column(String, primary_key=True, default=gen_uuid)
@@ -488,22 +490,54 @@ class DashboardBlock(Base):
 
 class DashboardShare(Base):
     """Publish settings for a layout_version=2 Dashboard - at most one row
-    per dashboard. Phase 1 only ever writes mode="public"; "private" (named
-    emails + optional password) is Phase 3, and the columns it needs
-    (an allowed-emails list, a password hash) are added then rather than
-    guessed at now. published_at is the on/off switch: a share row can
+    per dashboard. published_at is the on/off switch: a share row can
     exist (holding a stable slug) while unpublished (published_at NULL),
-    so publishing and unpublishing never change the dashboard's URL."""
+    so publishing and unpublishing never change the dashboard's URL.
+
+    mode: "public" (anyone with the link, no login) or "private" (2026-
+    09-24, Phase 3 - named emails + optional shared password, see
+    DashboardShareEmail below and routers/dashboard_builder.py's own
+    module docstring for the full access-check design). password_hash is
+    only ever read when mode=="private" - bcrypt via security.hash_password/
+    verify_password, same as a real account password, never stored or
+    compared in plaintext. A private share with password_hash NULL means
+    "email only, no password" - a deliberately allowed configuration, not
+    a bug: the email allow-list is itself the access control."""
     __tablename__ = "dashboard_shares"
 
     id = Column(String, primary_key=True, default=gen_uuid)
     dashboard_id = Column(String, ForeignKey("dashboards.id"), nullable=False, unique=True)
     slug = Column(String, nullable=False, unique=True, index=True)
     mode = Column(String, nullable=False, default="public")
+    password_hash = Column(String, nullable=True)
     published_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     dashboard = relationship("Dashboard", back_populates="share")
+    allowed_emails = relationship(
+        "DashboardShareEmail", back_populates="share", cascade="all, delete-orphan",
+    )
+
+
+class DashboardShareEmail(Base):
+    """One named person allowed to open a "private" DashboardShare - see
+    its own docstring. Deleting this row revokes that specific person's
+    access immediately: routers/dashboard_builder.py's get_public_dashboard
+    re-checks this table against the viewer's token on EVERY request (not
+    just at the moment they first entered their email/password), so a
+    revoke here takes effect on that person's very next page load, not
+    only once whatever short-lived viewer token they already have expires.
+    A dashboard can have several of these; there is deliberately no cap
+    matching a real "team-sized" access list (a few dozen names at most in
+    practice), so none is enforced here."""
+    __tablename__ = "dashboard_share_emails"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    share_id = Column(String, ForeignKey("dashboard_shares.id"), nullable=False)
+    email = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    share = relationship("DashboardShare", back_populates="allowed_emails")
 
 
 class PushdownQueryLog(Base):
