@@ -733,6 +733,13 @@ export type DashboardSummary = {
   created_by_email: string | null;
   can_edit: boolean;
   can_delete: boolean;
+  // 2026-09-24 (Dashboard Builder Phase 1): 1 = this original flat saved-
+  // chart-list kind, 2 = the new pages+blocks kind (dashboardBuilderApi
+  // further down). Dashboards.tsx branches a row's link on this so it
+  // opens the right viewer. Optional so a response from before this round
+  // still types cleanly - "not exactly 2" always means "open the old
+  // viewer".
+  layout_version?: number;
 };
 
 export type SavedChart = {
@@ -770,4 +777,93 @@ export const dashboardApi = {
       .then((r) => r.data),
   removeChart: (dashboardId: string, chartId: string) =>
     api.delete(`/dashboards/${dashboardId}/charts/${chartId}`).then(() => undefined),
+};
+
+// ---- Dashboard Builder (2026-09-24, Phase 1): the new real-time,
+// publishable "pages of blocks" kind of dashboard - what replaces the flat
+// saved-chart-list above as this app's actual PowerBI/Tableau/Hex-style
+// dashboard feature. A dashboard here is layout_version===2 on the exact
+// same Dashboard row the API above also manages; this client just talks to
+// a completely separate router (see backend routers/dashboard_builder.py)
+// that only ever creates/reads/publishes that kind. Phase 1 covers
+// AI-generation from a finished chat analysis and a public share link -
+// no canvas editing yet (that's Phase 2), so there's no "create blank" or
+// "move/resize a block" call here yet either. ----
+
+export type DashboardBlockType = "chart" | "table" | "kpi";
+
+// `config`'s shape depends on `type` - deliberately left loosely typed
+// here (this client is a pass-through, same convention as PreviewOptions.
+// filters above) rather than a discriminated union, since every renderer
+// (components/DashboardBlocks.tsx) narrows it itself right where it's
+// used. The three shapes the backend actually sends, verbatim from
+// routers/dashboard_builder.py's _block_config:
+//   chart: { chart_spec: any }
+//   table: { columns: string[]; rows: Record<string, any>[]; truncated: boolean }
+//   kpi:   { value: number | string | null; label: string }
+export type DashboardBlock = {
+  id: string;
+  type: DashboardBlockType;
+  title: string | null;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  config: any;
+  position: number;
+};
+
+export type DashboardBuilderPage = {
+  id: string;
+  name: string;
+  position: number;
+  blocks: DashboardBlock[];
+};
+
+export type DashboardBuilderDetail = {
+  id: string;
+  name: string;
+  layout_version: number;
+  created_at: string;
+  // Which chat Project this was generated from - null for a dashboard
+  // started blank (not possible yet in Phase 1, but the field already
+  // exists on the model for when Phase 2 adds it).
+  source_conversation_id: string | null;
+  pages: DashboardBuilderPage[];
+  can_edit: boolean;
+  is_published: boolean;
+  public_slug: string | null;
+};
+
+// What the anonymous, no-login public link actually gets back - no
+// can_edit/is_published/ids beyond what's needed to render the pages, so
+// nothing about the owner's account leaks into a page a stranger can open.
+export type PublicDashboard = {
+  name: string;
+  pages: DashboardBuilderPage[];
+};
+
+export const dashboardBuilderApi = {
+  // Builds a brand-new pages+blocks dashboard out of everything scoreable
+  // in one chat Project (its chart/table-producing turns) - this is the
+  // "Build with AI" action behind the chat's "Build Dashboard" button. See
+  // backend generate_dashboard for exactly how blocks are chosen, typed,
+  // and laid out (always deterministic layout, AI only picks content).
+  generate: (conversationId: string) =>
+    api
+      .post<DashboardBuilderDetail>("/dashboard-builder/generate", { conversation_id: conversationId })
+      .then((r) => r.data),
+  get: (id: string) => api.get<DashboardBuilderDetail>(`/dashboard-builder/${id}`).then((r) => r.data),
+  // Phase 1 only ever publishes "public" mode - named-people private
+  // sharing is Phase 3, so this call takes no arguments yet.
+  publish: (id: string) =>
+    api.post<DashboardBuilderDetail>(`/dashboard-builder/${id}/publish`, { mode: "public" }).then((r) => r.data),
+  unpublish: (id: string) =>
+    api.post<DashboardBuilderDetail>(`/dashboard-builder/${id}/unpublish`).then((r) => r.data),
+  // No Authorization header is needed (or sent - the interceptor just adds
+  // it if a token happens to exist, which is harmless here since the
+  // backend endpoint ignores auth entirely) - this is the public viewer
+  // call. A 404 here just means "not currently published", not "doesn't
+  // exist" - see the backend's own info-non-leak reasoning.
+  getPublic: (slug: string) => api.get<PublicDashboard>(`/public/dashboards/${slug}`).then((r) => r.data),
 };
