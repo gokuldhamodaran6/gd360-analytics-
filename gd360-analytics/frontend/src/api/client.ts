@@ -837,6 +837,10 @@ export type DashboardBuilderPage = {
   blocks: DashboardBlock[];
 };
 
+// 2026-09-24 (Phase 3): one named person allowed to open a "private" share
+// - see dashboardBuilderApi.addShareEmail/removeShareEmail below.
+export type DashboardShareEmail = { id: string; email: string };
+
 export type DashboardBuilderDetail = {
   id: string;
   name: string;
@@ -860,6 +864,13 @@ export type DashboardBuilderDetail = {
   can_edit: boolean;
   is_published: boolean;
   public_slug: string | null;
+  // 2026-09-24 (Phase 3): the share row's own settings - all present once
+  // this dashboard has ever been published at least once (null/false/empty
+  // before that). share_emails only matters when share_mode is "private";
+  // never includes the password itself, just whether one is set.
+  share_mode: "public" | "private" | null;
+  share_has_password: boolean;
+  share_emails: DashboardShareEmail[];
 };
 
 // What the anonymous, no-login public link actually gets back - no
@@ -915,18 +926,43 @@ export const dashboardBuilderApi = {
       .post<DashboardBuilderDetail>("/dashboard-builder/generate", { conversation_id: conversationId })
       .then((r) => r.data),
   get: (id: string) => api.get<DashboardBuilderDetail>(`/dashboard-builder/${id}`).then((r) => r.data),
-  // Phase 1 only ever publishes "public" mode - named-people private
-  // sharing is Phase 3, so this call takes no arguments yet.
-  publish: (id: string) =>
-    api.post<DashboardBuilderDetail>(`/dashboard-builder/${id}/publish`, { mode: "public" }).then((r) => r.data),
+  // 2026-09-24 (Phase 3): mode is "public" (anyone with the link) or
+  // "private" (named emails + optional password - see addShareEmail/
+  // removeShareEmail below for managing that list). `password` is only
+  // read by the backend when mode is "private"; omit/undefined it there
+  // to mean "no password, email alone is the gate" - there's no separate
+  // "leave the existing password as-is" option, every publish call fully
+  // states the password this dashboard should use going forward.
+  publish: (id: string, mode: "public" | "private" = "public", password?: string) =>
+    api
+      .post<DashboardBuilderDetail>(`/dashboard-builder/${id}/publish`, { mode, password: password || undefined })
+      .then((r) => r.data),
   unpublish: (id: string) =>
     api.post<DashboardBuilderDetail>(`/dashboard-builder/${id}/unpublish`).then((r) => r.data),
-  // No Authorization header is needed (or sent - the interceptor just adds
-  // it if a token happens to exist, which is harmless here since the
-  // backend endpoint ignores auth entirely) - this is the public viewer
-  // call. A 404 here just means "not currently published", not "doesn't
-  // exist" - see the backend's own info-non-leak reasoning.
-  getPublic: (slug: string) => api.get<PublicDashboard>(`/public/dashboards/${slug}`).then((r) => r.data),
+  // 2026-09-24 (Phase 3): who's currently allowed to open this dashboard's
+  // PRIVATE link. Adding/removing is edit-gated (same as everything else
+  // in this object) - only the dashboard's owner/editor manages the list;
+  // the people ON it never sign in as GD360 users at all (see
+  // publicDashboardApi below for how they actually get in).
+  addShareEmail: (id: string, email: string) =>
+    api.post<DashboardBuilderDetail>(`/dashboard-builder/${id}/shares/emails`, { email }).then((r) => r.data),
+  removeShareEmail: (id: string, emailId: string) =>
+    api.delete<DashboardBuilderDetail>(`/dashboard-builder/${id}/shares/emails/${emailId}`).then((r) => r.data),
+
+  // ---- Phase 3 (2026-09-24): page management - add/rename/reorder/
+  // duplicate/delete a page (tab). Every one of these returns the whole
+  // updated DashboardBuilderDetail, same convention as the block calls
+  // below. ----
+  createPage: (dashboardId: string, name?: string) =>
+    api.post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/pages`, { name: name || "" }).then((r) => r.data),
+  renamePage: (dashboardId: string, pageId: string, name: string) =>
+    api.patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/pages/${pageId}`, { name }).then((r) => r.data),
+  reorderPage: (dashboardId: string, pageId: string, position: number) =>
+    api.patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/pages/${pageId}`, { position }).then((r) => r.data),
+  deletePage: (dashboardId: string, pageId: string) =>
+    api.delete<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/pages/${pageId}`).then((r) => r.data),
+  duplicatePage: (dashboardId: string, pageId: string) =>
+    api.post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/pages/${pageId}/duplicate`).then((r) => r.data),
 
   // ---- Phase 2 (2026-09-24): the canvas editor's own calls - every one of
   // these returns the WHOLE updated DashboardBuilderDetail (not just the
@@ -1030,4 +1066,51 @@ export const dashboardBuilderApi = {
         title: title || undefined,
       })
       .then((r) => r.data),
+};
+
+// 2026-09-24 (Phase 3): a deliberately SEPARATE axios instance with NO
+// interceptors, used only by the anonymous public/private dashboard
+// viewer (PublicDashboardView.tsx). Two concrete reasons this can't just
+// reuse the shared `api` instance above:
+//   1. `api`'s request interceptor auto-attaches a real, logged-in GD360
+//      user's own Authorization bearer token from localStorage to every
+//      request, if one happens to exist in this browser - e.g. Gokul
+//      testing his own private dashboard link while logged into his own
+//      GD360 account in the same browser. That would silently clobber a
+//      private-dashboard viewer token passed the normal way.
+//   2. `api`'s response interceptor treats ANY 401 (other than a login/
+//      register attempt) as "your GD360 session expired," clears the
+//      real gd360_token/gd360_user from localStorage, and redirects to
+//      /login. A private dashboard's own 401 ("enter your email") is a
+//      completely different, expected, everyday state - it must never
+//      log a real signed-in user out of their own account or bounce them
+//      off the page they were looking at.
+// So the viewer's own access token (from verify below) is sent as a
+// custom X-Dashboard-Access-Token header, never the standard
+// Authorization header, and a 401/403 here is just handled inline by the
+// caller - see backend routers/dashboard_builder.py's own module
+// docstring for the matching server-side reasoning.
+const publicApi = axios.create({ baseURL: API_URL });
+
+export const publicDashboardApi = {
+  // A 404 here means "not currently published" (or the slug doesn't
+  // exist at all - same message either way, no info leak). A 401 means
+  // "this is a private dashboard - show the email/password gate." A 403
+  // (only possible once a token IS supplied) means "that email's access
+  // was revoked, or a stale/foreign token was passed."
+  get: (slug: string, viewerToken?: string) =>
+    publicApi
+      .get<PublicDashboard>(`/public/dashboards/${slug}`, {
+        headers: viewerToken ? { "X-Dashboard-Access-Token": viewerToken } : undefined,
+      })
+      .then((r) => r.data),
+  // Submits the email/password gate. On success, returns a short-lived
+  // access_token scoped to exactly this dashboard's share - pass it to
+  // `get` above on every subsequent fetch. password is only checked by
+  // the backend when this share actually has one set; send it whenever
+  // the gate form has a password field showing.
+  verify: (slug: string, email: string, password?: string) =>
+    publicApi
+      .post<{ access_token: string }>(`/public/dashboards/${slug}/verify`, { email, password: password || undefined })
+      .then((r) => r.data.access_token),
 };
