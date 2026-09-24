@@ -38,6 +38,10 @@ def init_db():
 
 # Every column added to an existing model after it first went live needs an
 # entry here (table, column name, SQL type) - see _ensure_new_columns below.
+# A brand new TABLE (e.g. dashboard_pages/dashboard_blocks/dashboard_shares,
+# added 2026-09-24) needs no entry here at all - create_all() above already
+# creates any table that doesn't exist yet; this list is only for a new
+# COLUMN on a table that already exists in production.
 _NEW_COLUMNS = [
     ("messages", "code", "TEXT"),
     ("messages", "action", "TEXT"),
@@ -52,6 +56,9 @@ _NEW_COLUMNS = [
     ("datasources", "workspace_id", "TEXT"),
     ("dashboards", "workspace_id", "TEXT"),
     ("conversations", "folder_id", "TEXT"),
+    ("users", "token_version", "INTEGER DEFAULT 0"),
+    ("dashboards", "layout_version", "INTEGER DEFAULT 1"),
+    ("dashboards", "source_conversation_id", "TEXT"),
 ]
 
 
