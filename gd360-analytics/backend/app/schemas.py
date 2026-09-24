@@ -437,6 +437,13 @@ class DashboardPageOut(BaseModel):
     blocks: list[DashboardBlockOut]
 
 
+# ---------- Dashboard Builder Phase 3 (2026-09-24): page management +
+# private sharing. See routers/dashboard_builder.py for the full design. ----
+class DashboardShareEmailOut(BaseModel):
+    id: str
+    email: str
+
+
 class DashboardBuilderOut(BaseModel):
     id: str
     name: str
@@ -457,15 +464,59 @@ class DashboardBuilderOut(BaseModel):
     can_edit: bool
     is_published: bool
     public_slug: Optional[str] = None
+    # 2026-09-24 (Phase 3): the share row's own settings, always present
+    # once a dashboard has ever been published at least once (None/false/
+    # empty before that first publish). share_emails is only meaningful
+    # when share_mode=="private"; it's harmless (just unused) otherwise.
+    # Never includes password_hash itself - share_has_password is a plain
+    # boolean so the editor UI can show "a password is set" without the
+    # hash ever reaching the frontend.
+    share_mode: Optional[str] = None
+    share_has_password: bool = False
+    share_emails: list[DashboardShareEmailOut] = []
 
 
 class PublishDashboardRequest(BaseModel):
-    # Only "public" exists in Phase 1 - "private" (named emails + optional
-    # password) is Phase 3. Validated server-side in
-    # routers/dashboard_builder.py rather than with a Literal type, so a
-    # not-yet-supported mode fails with a clear, friendly 400 instead of a
-    # generic 422 validation error.
+    # "public" (anyone with the link) or "private" (2026-09-24, Phase 3 -
+    # named emails + optional password - see routers/dashboard_builder.py's
+    # own module docstring). Validated server-side rather than with a
+    # Literal type, so an unrecognized mode fails with a clear, friendly
+    # 400 instead of a generic 422 validation error.
     mode: str = "public"
+    # Only read when mode=="private". None/omitted = no password (the
+    # email allow-list alone is the gate); a non-empty string sets/replaces
+    # the current password. There is no separate "leave password
+    # unchanged" option - every publish call fully states the password
+    # this dashboard should use going forward, so there's never ambiguity
+    # about whether an omitted field means "keep the old one" or "clear
+    # it." Ignored entirely when mode=="public".
+    password: Optional[str] = None
+
+
+class CreatePageRequest(BaseModel):
+    name: str = Field(default="", max_length=80)
+
+
+class UpdatePageRequest(BaseModel):
+    # Both optional - a rename sends just `name`, a reorder (drag a page
+    # tab to a new spot) sends just `position`; either or both can be sent
+    # in one call. At least one must actually be set, enforced in the
+    # endpoint so the error message can be specific.
+    name: Optional[str] = Field(default=None, max_length=80)
+    position: Optional[int] = None
+
+
+class AddShareEmailRequest(BaseModel):
+    email: EmailStr
+
+
+class VerifyPrivateAccessRequest(BaseModel):
+    email: EmailStr
+    password: Optional[str] = None
+
+
+class VerifyPrivateAccessOut(BaseModel):
+    access_token: str
 
 
 class PublicDashboardOut(BaseModel):
