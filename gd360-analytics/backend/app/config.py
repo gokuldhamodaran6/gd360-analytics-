@@ -43,6 +43,18 @@ class Settings(BaseSettings):
     JWT_SECRET: str = "change-me-please-in-production"
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
+    # Dashboard Builder Phase 3 (2026-09-24): how long a private dashboard
+    # viewer's signed access token stays valid before they need to re-enter
+    # their email (and password, if one is set) - see security.py's
+    # create_dashboard_viewer_token/decode_dashboard_viewer_token and
+    # routers/dashboard_builder.py's get_public_dashboard. Deliberately
+    # short relative to ACCESS_TOKEN_EXPIRE_MINUTES above (that one's for a
+    # real signed-in GD360 account) - this token grants no account access
+    # at all, only "may view this one dashboard", and the email allow-list
+    # is re-checked against the database on every single request regardless
+    # of this token's own remaining lifetime, so a revoke always takes
+    # effect immediately rather than waiting for this to expire.
+    DASHBOARD_VIEWER_TOKEN_EXPIRE_HOURS: int = 24
 
     # --- Credential encryption (for storing customer DB passwords at rest) ---
     # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
