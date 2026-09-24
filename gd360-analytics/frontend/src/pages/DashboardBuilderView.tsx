@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { dashboardBuilderApi, DashboardBuilderDetail } from "../api/client";
+import { dashboardBuilderApi, DashboardBuilderDetail, DashboardBuilderPage } from "../api/client";
 import TopNav from "../components/TopNav";
 import { DashboardBlockGrid } from "../components/DashboardBlocks";
 import DashboardCanvas from "../components/DashboardCanvas";
 import { useDashboardFilters } from "../lib/useDashboardFilters";
 
-// 2026-09-24 (Dashboard Builder Phase 1 + Phase 2 + Phase 2b): the
+// 2026-09-24 (Dashboard Builder Phase 1 + Phase 2 + Phase 2b + Phase 3): the
 // owner/editor view for the new pages+blocks kind of dashboard - opened
 // from Dashboards.tsx (routed here instead of DashboardView.tsx whenever
 // layout_version===2) or straight after "Build with AI" finishes (see
@@ -24,6 +24,17 @@ import { useDashboardFilters } from "../lib/useDashboardFilters";
 // own reasoning). One useDashboardFilters() call per active page, shared
 // by both DashboardCanvas and DashboardBlockGrid below so a filter
 // selection behaves identically whichever mode you're looking at it in.
+//
+// Phase 3 adds two things to this file specifically: (1) PublishPanel grows
+// a public/private mode choice, an optional password, and the named-email
+// access list (see PrivateAccessEditor) - editing that list works whether
+// or not the dashboard has ever been published yet, since the backend
+// auto-creates an unpublished private share row the first time an email is
+// added; (2) the page-tabs bar (PageTabsBar) is now always visible for an
+// editor (not gated on having more than one page) with inline rename,
+// reorder, duplicate and delete - a view-only visitor still gets the old
+// plain read-only tabs, unchanged, only shown once there's more than one
+// page to switch between.
 
 function LinkIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
@@ -43,11 +54,142 @@ function CopyIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   );
 }
 
+function TrashIcon({ className = "w-3 h-3" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16Z" />
+    </svg>
+  );
+}
+
+function PencilIcon({ className = "w-3 h-3" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+function PlusIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function ChevronLeftIcon({ className = "w-3 h-3" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M15 18l-6-6 6-6" />
+    </svg>
+  );
+}
+
+function ChevronRightIcon({ className = "w-3 h-3" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 18l6-6-6-6" />
+    </svg>
+  );
+}
+
+// 2026-09-24 (Phase 3): manages the "who can view it" list for a PRIVATE
+// share - add-by-email plus a remove button per row. Deliberately usable
+// even before the dashboard has ever been published: dashboardBuilderApi
+// .addShareEmail auto-creates an unpublished private share row server-side
+// the first time it's called, so someone can build up the access list
+// first and hit Publish once it's ready, rather than being forced to
+// publish empty-and-inaccessible before adding anyone.
+function PrivateAccessEditor({ dash, onChange }: { dash: DashboardBuilderDetail; onChange: (d: DashboardBuilderDetail) => void }) {
+  const [emailDraft, setEmailDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const addEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const email = emailDraft.trim();
+    if (!email || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      onChange(await dashboardBuilderApi.addShareEmail(dash.id, email));
+      setEmailDraft("");
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Couldn't add that email.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeEmail = async (emailId: string) => {
+    setBusy(true);
+    setError("");
+    try {
+      onChange(await dashboardBuilderApi.removeShareEmail(dash.id, emailId));
+    } catch {
+      setError("Couldn't remove that person. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mb-3">
+      <label className="text-[11px] text-muted uppercase tracking-wide">Who can view it</label>
+      <form onSubmit={addEmail} className="flex items-center gap-1.5 mt-1 mb-2">
+        <input
+          type="email"
+          className="input text-xs flex-1"
+          placeholder="name@company.com"
+          value={emailDraft}
+          onChange={(e) => setEmailDraft(e.target.value)}
+        />
+        <button type="submit" disabled={busy || !emailDraft.trim()} className="btn-secondary text-xs px-2.5 py-1.5 shrink-0 disabled:opacity-50">
+          Add
+        </button>
+      </form>
+      {error && <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-2.5 py-1.5 mb-2">{error}</div>}
+      {dash.share_emails.length === 0 ? (
+        <div className="text-xs text-muted italic">No one added yet - this link won't open for anyone until you add at least one email.</div>
+      ) : (
+        <ul className="flex flex-col gap-1 max-h-32 overflow-y-auto">
+          {dash.share_emails.map((e) => (
+            <li key={e.id} className="flex items-center justify-between gap-2 text-xs bg-surface2 rounded-md px-2 py-1">
+              <span className="truncate">{e.email}</span>
+              <button
+                type="button"
+                disabled={busy}
+                className="text-muted hover:text-red-400 transition shrink-0 disabled:opacity-50"
+                onClick={() => removeEmail(e.id)}
+                title="Remove access"
+              >
+                <TrashIcon />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function PublishPanel({ dash, onChange }: { dash: DashboardBuilderDetail; onChange: (d: DashboardBuilderDetail) => void }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  // Drafts for the (re-)publish form - only read when it's actually
+  // submitted. Seeded from the dashboard's current share settings so
+  // reopening "Change sharing settings" on an already-private dashboard
+  // starts from Private, not defaults back to Public.
+  const [mode, setMode] = useState<"public" | "private">(dash.share_mode === "private" ? "private" : "public");
+  const [password, setPassword] = useState("");
+  // True while showing the editable mode/password form on an ALREADY
+  // published dashboard (opened via "Change sharing settings" below) -
+  // false means show the read-only published summary instead.
+  const [editingSettings, setEditingSettings] = useState(false);
 
   const publicUrl = dash.public_slug ? `${window.location.origin}/d/${dash.public_slug}` : "";
 
@@ -55,9 +197,11 @@ function PublishPanel({ dash, onChange }: { dash: DashboardBuilderDetail; onChan
     setBusy(true);
     setError("");
     try {
-      onChange(await dashboardBuilderApi.publish(dash.id));
-    } catch {
-      setError("Couldn't publish this dashboard. Please try again.");
+      onChange(await dashboardBuilderApi.publish(dash.id, mode, mode === "private" ? password : undefined));
+      setEditingSettings(false);
+      setPassword("");
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Couldn't publish this dashboard. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -89,10 +233,12 @@ function PublishPanel({ dash, onChange }: { dash: DashboardBuilderDetail; onChan
   if (!dash.can_edit) {
     return dash.is_published ? (
       <a href={publicUrl} target="_blank" rel="noreferrer" className="btn-secondary text-xs flex items-center gap-1.5">
-        <LinkIcon className="w-3.5 h-3.5" /> View public link
+        <LinkIcon className="w-3.5 h-3.5" /> View {dash.share_mode === "private" ? "private" : "public"} link
       </a>
     ) : null;
   }
+
+  const showEditForm = !dash.is_published || editingSettings;
 
   return (
     <div className="relative">
@@ -101,37 +247,314 @@ function PublishPanel({ dash, onChange }: { dash: DashboardBuilderDetail; onChan
         className={dash.is_published ? "btn-secondary text-xs" : "btn-primary text-xs"}
         onClick={() => setOpen((o) => !o)}
       >
-        {dash.is_published ? "Published" : "Publish"}
+        {dash.is_published ? (dash.share_mode === "private" ? "Published · Private" : "Published") : "Publish"}
       </button>
       {open && (
         <div className="absolute right-0 top-full mt-2 w-80 card bg-surface shadow-2xl border border-border p-4 z-30">
           {error && <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-3">{error}</div>}
-          {dash.is_published ? (
+          {!showEditForm ? (
             <>
-              <div className="text-xs text-muted mb-2">Anyone with this link can view this dashboard.</div>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <span className="text-xs text-muted">
+                  {dash.share_mode === "private"
+                    ? "Only the people you've added below can open this link."
+                    : "Anyone with this link can view this dashboard."}
+                </span>
+                <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-surface2 border border-border text-muted shrink-0">
+                  {dash.share_mode === "private" ? "Private" : "Public"}
+                </span>
+              </div>
               <div className="flex items-center gap-1.5 mb-3">
                 <input readOnly className="input text-xs flex-1 truncate" value={publicUrl} onFocus={(e) => e.target.select()} />
                 <button type="button" className="btn-secondary text-xs px-2.5 py-1.5 shrink-0 flex items-center gap-1" onClick={copyLink}>
                   <CopyIcon /> {copied ? "Copied" : "Copy"}
                 </button>
               </div>
-              <button type="button" disabled={busy} className="text-xs text-muted hover:text-red-400 transition disabled:opacity-50" onClick={doUnpublish}>
-                {busy ? "Working…" : "Unpublish"}
-              </button>
+
+              {dash.share_mode === "private" && (
+                <>
+                  <div className="text-[11px] text-muted mb-3">
+                    {dash.share_has_password ? "Password protected." : "No password - the email address alone is enough."}
+                  </div>
+                  <PrivateAccessEditor dash={dash} onChange={onChange} />
+                </>
+              )}
+
+              <div className="flex items-center justify-between mt-1 pt-2 border-t border-border">
+                <button
+                  type="button"
+                  className="text-xs text-muted hover:text-text transition"
+                  onClick={() => {
+                    setMode(dash.share_mode === "private" ? "private" : "public");
+                    setPassword("");
+                    setEditingSettings(true);
+                  }}
+                >
+                  Change sharing settings
+                </button>
+                <button type="button" disabled={busy} className="text-xs text-muted hover:text-red-400 transition disabled:opacity-50" onClick={doUnpublish}>
+                  {busy ? "Working…" : "Unpublish"}
+                </button>
+              </div>
             </>
           ) : (
             <>
               <div className="text-xs text-muted mb-3 leading-relaxed">
-                Publishing creates a public link - anyone who has it can view this dashboard without
-                signing in. Named, password-protected private sharing is coming in a later round.
+                {mode === "private"
+                  ? "Only the email addresses you add below will be able to open this link - optionally behind a password too."
+                  : "Anyone who has the link can view this dashboard without signing in."}
               </div>
-              <button type="button" disabled={busy} className="btn-primary text-xs w-full" onClick={doPublish}>
-                {busy ? "Publishing…" : "Publish publicly"}
-              </button>
+              <div className="flex items-center rounded-lg border border-border overflow-hidden text-xs mb-3">
+                <button
+                  type="button"
+                  className={`flex-1 px-2.5 py-1.5 transition ${mode === "public" ? "bg-primary text-white" : "text-muted hover:text-text hover:bg-surface2"}`}
+                  onClick={() => setMode("public")}
+                >
+                  Public
+                </button>
+                <button
+                  type="button"
+                  className={`flex-1 px-2.5 py-1.5 transition ${mode === "private" ? "bg-primary text-white" : "text-muted hover:text-text hover:bg-surface2"}`}
+                  onClick={() => setMode("private")}
+                >
+                  Private
+                </button>
+              </div>
+
+              {mode === "private" && (
+                <>
+                  <label className="text-[11px] text-muted uppercase tracking-wide">Password (optional)</label>
+                  <input
+                    type="password"
+                    className="input text-xs w-full mt-1 mb-3"
+                    placeholder={dash.share_has_password ? "Leave blank to remove the current password" : "Leave blank for no password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                  <PrivateAccessEditor dash={dash} onChange={onChange} />
+                </>
+              )}
+
+              <div className="flex items-center gap-2 mt-1">
+                {editingSettings && (
+                  <button type="button" className="text-xs text-muted hover:text-text transition" onClick={() => setEditingSettings(false)}>
+                    Cancel
+                  </button>
+                )}
+                <button type="button" disabled={busy} className="btn-primary text-xs flex-1" onClick={doPublish}>
+                  {busy ? "Publishing…" : dash.is_published ? "Save changes" : mode === "private" ? "Publish privately" : "Publish publicly"}
+                </button>
+              </div>
             </>
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// 2026-09-24 (Phase 3): the page-tabs bar. An editor always sees it (even
+// with a single page, so "+ Add page" stays discoverable) with rename,
+// reorder, duplicate and delete on the active tab; a view-only visitor
+// gets the old plain, read-only tabs unchanged, shown only once there's
+// more than one page.
+function PageTabsBar({
+  dash,
+  activePageId,
+  setActivePageId,
+  onChange,
+}: {
+  dash: DashboardBuilderDetail;
+  activePageId: string | undefined;
+  setActivePageId: (id: string) => void;
+  onChange: (d: DashboardBuilderDetail) => void;
+}) {
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const pages = dash.pages;
+
+  const startRename = (p: DashboardBuilderPage) => {
+    setRenamingId(p.id);
+    setRenameDraft(p.name);
+  };
+
+  const commitRename = async (pageId: string) => {
+    const name = renameDraft.trim();
+    setRenamingId(null);
+    const original = pages.find((p) => p.id === pageId)?.name || "";
+    if (!name || name === original || busy) return;
+    setBusy(true);
+    try {
+      onChange(await dashboardBuilderApi.renamePage(dash.id, pageId, name));
+    } catch {
+      // Transient failure - dash still reflects the last-known-good server
+      // state, so the tab just keeps its old name locally rather than
+      // showing something that was never actually saved.
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const move = async (p: DashboardBuilderPage, direction: -1 | 1) => {
+    const idx = pages.findIndex((x) => x.id === p.id);
+    const targetIdx = idx + direction;
+    if (busy || idx < 0 || targetIdx < 0 || targetIdx >= pages.length) return;
+    setBusy(true);
+    try {
+      onChange(await dashboardBuilderApi.reorderPage(dash.id, p.id, targetIdx));
+    } catch {
+      // no-op - tabs just stay where they were
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const duplicate = async (p: DashboardBuilderPage) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const updated = await dashboardBuilderApi.duplicatePage(dash.id, p.id);
+      onChange(updated);
+      const idx = updated.pages.findIndex((x) => x.id === p.id);
+      const dup = updated.pages[idx + 1];
+      if (dup) setActivePageId(dup.id);
+    } catch {
+      // no-op
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (p: DashboardBuilderPage) => {
+    if (busy || pages.length <= 1) return;
+    if (!confirm(`Delete the page "${p.name}"? Every block on it will be deleted too. This can't be undone.`)) return;
+    setBusy(true);
+    try {
+      const updated = await dashboardBuilderApi.deletePage(dash.id, p.id);
+      onChange(updated);
+      if (activePageId === p.id) {
+        const first = updated.pages[0];
+        if (first) setActivePageId(first.id);
+      }
+    } catch {
+      // no-op
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addPage = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const updated = await dashboardBuilderApi.createPage(dash.id);
+      onChange(updated);
+      const last = updated.pages[updated.pages.length - 1];
+      if (last) setActivePageId(last.id);
+    } catch {
+      // no-op
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!dash.can_edit) {
+    if (pages.length <= 1) return null;
+    return (
+      <div className="flex items-center gap-1.5 mt-5 mb-4 flex-wrap">
+        {pages.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            className={`text-xs font-medium px-3 py-1.5 rounded-full border transition ${
+              activePageId === p.id
+                ? "bg-primary text-white border-primary"
+                : "border-border text-muted hover:text-text hover:bg-surface2"
+            }`}
+            onClick={() => setActivePageId(p.id)}
+          >
+            {p.name}
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1.5 mt-5 mb-4 flex-wrap">
+      {pages.map((p, i) => {
+        const isActive = activePageId === p.id;
+        return (
+          <div
+            key={p.id}
+            className={`flex items-center gap-1 pl-3 pr-1.5 py-1 rounded-full border text-xs font-medium transition ${
+              isActive ? "bg-primary text-white border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
+            }`}
+          >
+            {renamingId === p.id ? (
+              <input
+                autoFocus
+                className={`bg-transparent outline-none text-xs w-24 ${isActive ? "text-white placeholder-white/60" : "text-text"}`}
+                value={renameDraft}
+                onChange={(e) => setRenameDraft(e.target.value)}
+                onBlur={() => commitRename(p.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                  if (e.key === "Escape") setRenamingId(null);
+                }}
+                onClick={(e) => e.stopPropagation()}
+              />
+            ) : (
+              <button type="button" className="max-w-[10rem] truncate" onClick={() => setActivePageId(p.id)}>
+                {p.name}
+              </button>
+            )}
+            {isActive && (
+              <div className="flex items-center gap-0.5 text-white/80">
+                <button
+                  type="button"
+                  disabled={busy || i === 0}
+                  className="p-0.5 hover:text-white disabled:opacity-30 disabled:cursor-default"
+                  title="Move left"
+                  onClick={() => move(p, -1)}
+                >
+                  <ChevronLeftIcon />
+                </button>
+                <button
+                  type="button"
+                  disabled={busy || i === pages.length - 1}
+                  className="p-0.5 hover:text-white disabled:opacity-30 disabled:cursor-default"
+                  title="Move right"
+                  onClick={() => move(p, 1)}
+                >
+                  <ChevronRightIcon />
+                </button>
+                <button type="button" disabled={busy} className="p-0.5 hover:text-white disabled:opacity-50" title="Rename page" onClick={() => startRename(p)}>
+                  <PencilIcon />
+                </button>
+                <button type="button" disabled={busy} className="p-0.5 hover:text-white disabled:opacity-50" title="Duplicate page" onClick={() => duplicate(p)}>
+                  <CopyIcon className="w-3 h-3" />
+                </button>
+                {pages.length > 1 && (
+                  <button type="button" disabled={busy} className="p-0.5 hover:text-red-300 disabled:opacity-50" title="Delete page" onClick={() => remove(p)}>
+                    <TrashIcon />
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      <button
+        type="button"
+        disabled={busy}
+        className="flex items-center gap-1 text-xs font-medium px-3 py-1.5 rounded-full border border-dashed border-border text-muted hover:text-text hover:border-text/40 transition disabled:opacity-50"
+        onClick={addPage}
+      >
+        <PlusIcon className="w-3 h-3" /> Add page
+      </button>
     </div>
   );
 }
@@ -269,24 +692,7 @@ function DashboardBuilderViewBody({
           </div>
         </div>
 
-        {dash.pages.length > 1 && (
-          <div className="flex items-center gap-1.5 mt-5 mb-4 flex-wrap">
-            {dash.pages.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                className={`text-xs font-medium px-3 py-1.5 rounded-full border transition ${
-                  activePage?.id === p.id
-                    ? "bg-primary text-white border-primary"
-                    : "border-border text-muted hover:text-text hover:bg-surface2"
-                }`}
-                onClick={() => setActivePageId(p.id)}
-              >
-                {p.name}
-              </button>
-            ))}
-          </div>
-        )}
+        <PageTabsBar dash={dash} activePageId={activePage?.id} setActivePageId={setActivePageId} onChange={handleDashChange} />
 
         {filterState.activeFilters.length > 0 && (
           <div className="text-[11px] text-muted mb-2 flex items-center gap-1.5">
