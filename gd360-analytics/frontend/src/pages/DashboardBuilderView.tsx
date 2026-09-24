@@ -175,6 +175,153 @@ function PrivateAccessEditor({ dash, onChange }: { dash: DashboardBuilderDetail;
   );
 }
 
+// 2026-09-24 (Phase 4, white-label custom domains): friendly labels for
+// the three-state custom_domain_status the backend collapses Render's own
+// DNS-verification/SSL-issuance progress into (see
+// services/render_domains.py's own docstring). Anything not "live" is
+// shown with the same amber "still in progress" styling, since from a
+// dashboard owner's point of view "waiting for DNS" and "verifying/
+// issuing the certificate" are both just "not ready yet, check back."
+const DOMAIN_STATUS_LABEL: Record<string, string> = {
+  pending_dns: "Waiting for DNS",
+  pending_ssl: "Verifying · issuing certificate",
+  live: "Live",
+};
+
+function CustomDomainEditor({ dash, onChange }: { dash: DashboardBuilderDetail; onChange: (d: DashboardBuilderDetail) => void }) {
+  const [domainDraft, setDomainDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  // The exact hostname a visitor's CNAME record needs to point at. This
+  // editor only ever renders inside DashboardBuilderView, which - per
+  // App.tsx's isRecognizedHost - only ever loads on GD360's own
+  // onrender.com frontend hostname, never on a customer's own custom
+  // domain. So window.location.hostname right here IS that target - no
+  // separate "what's our own frontend hostname" config needed on the
+  // frontend side at all.
+  const cnameTarget = typeof window !== "undefined" ? window.location.hostname : "";
+
+  const addDomain = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const domain = domainDraft.trim();
+    if (!domain || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      onChange(await dashboardBuilderApi.setCustomDomain(dash.id, domain));
+      setDomainDraft("");
+    } catch (err: any) {
+      // A 503 here means this GD360 installation hasn't had
+      // RENDER_API_KEY/RENDER_FRONTEND_SERVICE_ID configured yet (see
+      // backend config.py) - that message is already written for exactly
+      // this reader (the account owner), so it's shown as-is rather than
+      // replaced with something generic.
+      setError(err?.response?.data?.detail || "Couldn't set that domain. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const recheck = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      onChange(await dashboardBuilderApi.recheckCustomDomain(dash.id));
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Couldn't check this domain's status. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeDomain = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      onChange(await dashboardBuilderApi.removeCustomDomain(dash.id));
+    } catch {
+      setError("Couldn't remove this domain. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-3 pt-3 border-t border-border">
+      <label className="text-[11px] text-muted uppercase tracking-wide">Custom domain (optional)</label>
+
+      {!dash.custom_domain ? (
+        <>
+          <form onSubmit={addDomain} className="flex items-center gap-1.5 mt-1">
+            <input
+              type="text"
+              className="input text-xs flex-1"
+              placeholder="dashboards.yourcompany.com"
+              value={domainDraft}
+              onChange={(e) => setDomainDraft(e.target.value)}
+            />
+            <button type="submit" disabled={busy || !domainDraft.trim()} className="btn-secondary text-xs px-2.5 py-1.5 shrink-0 disabled:opacity-50">
+              Add
+            </button>
+          </form>
+          <div className="text-[11px] text-muted mt-1.5 leading-relaxed">
+            Point your own subdomain at this dashboard - a free SSL certificate is issued automatically once the
+            DNS record is in place.
+          </div>
+        </>
+      ) : (
+        <div className="mt-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-medium truncate">{dash.custom_domain}</span>
+            <span
+              className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full border shrink-0 ${
+                dash.custom_domain_status === "live"
+                  ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-500"
+                  : "bg-amber-500/10 border-amber-500/30 text-amber-500"
+              }`}
+            >
+              {DOMAIN_STATUS_LABEL[dash.custom_domain_status || ""] || "Setting up"}
+            </span>
+          </div>
+
+          {dash.custom_domain_status === "live" ? (
+            <div className="text-[11px] text-muted mt-1.5">
+              This domain is live -{" "}
+              <a href={`https://${dash.custom_domain}`} target="_blank" rel="noreferrer" className="text-primary hover:underline">
+                open it &rarr;
+              </a>
+            </div>
+          ) : (
+            <div className="text-[11px] text-muted mt-1.5 leading-relaxed">
+              Add a CNAME record for <span className="font-mono text-text">{dash.custom_domain}</span> pointing to{" "}
+              <span className="font-mono text-text">{cnameTarget}</span>. This can take anywhere from a few minutes
+              to a few hours depending on your DNS provider.
+            </div>
+          )}
+
+          {dash.custom_domain_error && (
+            <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-2.5 py-1.5 mt-1.5">
+              {dash.custom_domain_error}
+            </div>
+          )}
+
+          <div className="flex items-center gap-3 mt-2">
+            <button type="button" disabled={busy} className="text-xs text-muted hover:text-text transition disabled:opacity-50" onClick={recheck}>
+              {busy ? "Working…" : "Check again"}
+            </button>
+            <button type="button" disabled={busy} className="text-xs text-muted hover:text-red-400 transition disabled:opacity-50" onClick={removeDomain}>
+              Remove
+            </button>
+          </div>
+        </div>
+      )}
+
+      {error && <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-2.5 py-1.5 mt-2">{error}</div>}
+    </div>
+  );
+}
+
 function PublishPanel({ dash, onChange }: { dash: DashboardBuilderDetail; onChange: (d: DashboardBuilderDetail) => void }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -279,6 +426,11 @@ function PublishPanel({ dash, onChange }: { dash: DashboardBuilderDetail; onChan
                   <PrivateAccessEditor dash={dash} onChange={onChange} />
                 </>
               )}
+
+              {/* 2026-09-24 (Phase 4, white-label): a custom domain applies
+                  regardless of public/private mode - it's a different way
+                  in, same underlying share and same access rules. */}
+              <CustomDomainEditor dash={dash} onChange={onChange} />
 
               <div className="flex items-center justify-between mt-1 pt-2 border-t border-border">
                 <button
