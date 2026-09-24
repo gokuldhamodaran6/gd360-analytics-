@@ -790,7 +790,7 @@ export const dashboardApi = {
 // no canvas editing yet (that's Phase 2), so there's no "create blank" or
 // "move/resize a block" call here yet either. ----
 
-export type DashboardBlockType = "chart" | "table" | "kpi" | "text";
+export type DashboardBlockType = "chart" | "table" | "kpi" | "text" | "filter";
 
 // `config`'s shape depends on `type` - deliberately left loosely typed
 // here (this client is a pass-through, same convention as PreviewOptions.
@@ -798,17 +798,26 @@ export type DashboardBlockType = "chart" | "table" | "kpi" | "text";
 // (components/DashboardBlocks.tsx) narrows it itself right where it's
 // used. The shapes the backend actually sends, verbatim from
 // routers/dashboard_builder.py's _block_config/_ai_result_to_block/
-// build_manual_block:
-//   chart: { chart_spec: any; result_columns?: any; result_rows?: any }
+// _run_manual_recipe:
+//   chart: { chart_spec: any; result_columns?: any; result_rows?: any; recipe?: ManualRecipe }
 //     (result_columns/result_rows are only present when this chart has
 //     tidy data attached - that's what makes restyle_block possible; a
-//     chart block from before this existed may omit them)
-//   table: { columns: string[]; rows: Record<string, any>[]; truncated: boolean }
-//   kpi:   { value: number | string | null; label: string }
+//     chart block from before this existed may omit them. `recipe` is
+//     only present on a block built with "Build manually" - that's what
+//     makes it respond to a cross-filter at all, see dashboardBuilderApi.
+//     previewFiltered below)
+//   table: { columns: string[]; rows: Record<string, any>[]; truncated: boolean; recipe?: ManualRecipe }
+//   kpi:   { value: number | string | null; label: string; recipe?: ManualRecipe }
 //   text:  { text: string }
 //     (2026-09-24, Phase 2: a freeform note block - its body is written
 //     straight through dashboardBuilderApi.updateBlock's `config` field,
 //     there is no dedicated endpoint for it)
+//   filter: { column: string | null }
+//     (2026-09-24, Phase 2b: which column this filter block targets - a
+//     structural, shared setting written through updateBlock's `config`
+//     field, same as text. Deliberately the ONLY thing stored here - the
+//     filter's currently-SELECTED VALUE is never persisted anywhere; see
+//     dashboardBuilderApi.previewFiltered below for why)
 export type DashboardBlock = {
   id: string;
   type: DashboardBlockType;
@@ -871,6 +880,29 @@ export type ManualAgg = "sum" | "avg" | "count" | "min" | "max";
 // _RESTYLE_CHART_TYPES, the subset of chart_builder.build_figure's types
 // that always work from a plain two-column (dimension, measure) result.
 export type RestyleChartType = "bar" | "line" | "area" | "pie" | "horizontal_bar" | "scatter";
+
+// 2026-09-24 (Phase 2b): what makes a chart/table/kpi block able to
+// respond to a cross-filter at all - stored on the block's own config
+// under `recipe` by build_manual_block, verbatim from backend
+// _run_manual_recipe's `recipe` dict. A block with no `recipe` (anything
+// AI-built) simply can't be cross-filtered - see previewFiltered below.
+export type ManualRecipe = {
+  metric_column: string;
+  agg: ManualAgg;
+  group_by_column: string | null;
+  block_type: "kpi" | "table" | "chart";
+  chart_type: RestyleChartType | null;
+};
+
+// One active cross-filter selection - (which column, which value). Lives
+// ONLY in the frontend's own component state per viewer, per page - see
+// previewFiltered's own docs for why this is never persisted anywhere.
+export type FilterCriterion = { column: string; value: string | number | boolean };
+
+// What previewFiltered returns for one block it successfully recomputed -
+// same (type, config) shape as everywhere else, keyed by the block's id
+// so the caller can merge it into whatever it's currently rendering.
+export type FilteredBlock = { id: string; type: DashboardBlockType; config: any };
 
 export const dashboardBuilderApi = {
   // Builds a brand-new pages+blocks dashboard out of everything scoreable
@@ -946,6 +978,12 @@ export const dashboardBuilderApi = {
   // code execution). group_by_column is required for block_type
   // "table"/"chart" and ignored for "kpi"; chart_type is only used when
   // block_type is "chart" (defaults to "bar" server-side if omitted).
+  // `filters` (2026-09-24, Phase 2b) are whichever cross-filters the
+  // person currently has active on the page - pass the same array
+  // previewFiltered below was last called with, so a brand-new block
+  // starts out correctly filtered instead of jumping on the next change.
+  // The server also stores this block's recipe, which is what makes IT
+  // respond to a future filter change via previewFiltered.
   buildManualBlock: (
     dashboardId: string,
     blockId: string,
@@ -955,11 +993,30 @@ export const dashboardBuilderApi = {
       group_by_column?: string | null;
       block_type: "kpi" | "table" | "chart";
       chart_type?: RestyleChartType | null;
+      filters?: FilterCriterion[];
     }
   ) =>
     api
       .post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}/build-manual`, payload)
       .then((r) => r.data),
+
+  // Cross-filtering (2026-09-24, Phase 2b) - READ-ONLY, changes nothing on
+  // the server. Call this every time the viewer's active filter selection
+  // changes on a page; it returns only the blocks that could actually be
+  // recomputed (anything built with "Build manually" - see ManualRecipe
+  // above), and the caller merges those into local render state rather
+  // than writing them into the persisted dashboard - a filter selection
+  // is per-viewer and never saved. A block not present in the response
+  // (an AI-built block, a filter block itself, or one that failed to
+  // recompute) should be rendered exactly as it already is; the caller
+  // never treats "missing from this response" as "clear this block."
+  // Requires only VIEW access to the dashboard, not edit - and
+  // deliberately has no public/no-login equivalent (see backend
+  // routers/dashboard_builder.py's module docstring for why).
+  previewFiltered: (dashboardId: string, pageId: string, filters: FilterCriterion[]) =>
+    api
+      .post<{ blocks: FilteredBlock[] }>(`/dashboard-builder/${dashboardId}/pages/${pageId}/preview-filtered`, { filters })
+      .then((r) => r.data.blocks),
 
   // Switches an existing chart block to a different chart type - no AI
   // call, rebuilt deterministically from the tidy data already stored on
