@@ -443,6 +443,16 @@ class DashboardBuilderOut(BaseModel):
     layout_version: int
     created_at: datetime
     source_conversation_id: Optional[str] = None
+    # 2026-09-24 (Phase 2, the canvas): which data source this dashboard's
+    # blocks are built against - resolved server-side from
+    # source_conversation_id (see routers/dashboard_builder.py
+    # _resolve_datasource). The frontend uses this to know whether "Ask AI"/
+    # "Build manually" are even available on this dashboard (both need a
+    # real data source behind them) and to fetch the column list for the
+    # manual-build form via the existing GET /datasources/{id}/preview
+    # endpoint - no new backend endpoint needed just to list columns.
+    datasource_id: Optional[str] = None
+    datasource_name: Optional[str] = None
     pages: list[DashboardPageOut]
     can_edit: bool
     is_published: bool
@@ -461,6 +471,48 @@ class PublishDashboardRequest(BaseModel):
 class PublicDashboardOut(BaseModel):
     name: str
     pages: list[DashboardPageOut]
+
+
+# ---------- Dashboard Builder Phase 2 (2026-09-24): the real canvas editor
+# - add/move/resize/delete a block, fill one in with AI or a manual
+# aggregation, restyle a chart's type. See routers/dashboard_builder.py for
+# what each does; every one of these still only ever operates on a
+# layout_version==2 dashboard the caller can edit. ----------
+class CreateBlockRequest(BaseModel):
+    page_id: str = Field(min_length=1)
+    type: str = Field(min_length=1)  # "chart" | "table" | "kpi" | "text"
+    title: Optional[str] = None
+
+
+class UpdateBlockRequest(BaseModel):
+    # Every field optional - this is a partial update (drag persists x/y,
+    # resize persists w/h, a title edit persists just title, and so on).
+    # At least one field must actually be set or there is nothing to do -
+    # enforced in the endpoint itself, not here, so the error message can
+    # be specific.
+    x: Optional[int] = None
+    y: Optional[int] = None
+    w: Optional[int] = None
+    h: Optional[int] = None
+    title: Optional[str] = None
+    config: Optional[dict] = None
+
+
+class AskAiBlockRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=2000)
+
+
+class ManualBuildBlockRequest(BaseModel):
+    metric_column: str = Field(min_length=1)
+    agg: str = "sum"  # "sum" | "avg" | "count" | "min" | "max"
+    group_by_column: Optional[str] = None
+    block_type: str = "table"  # "kpi" | "table" | "chart"
+    chart_type: Optional[str] = None  # only read when block_type == "chart"
+
+
+class RestyleBlockRequest(BaseModel):
+    chart_type: str = Field(min_length=1)
+    title: Optional[str] = None
 
 
 # ---------- Folders (2026-09-23, folders round: organizes Projects on the
