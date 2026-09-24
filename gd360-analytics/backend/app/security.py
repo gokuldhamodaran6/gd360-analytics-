@@ -88,6 +88,43 @@ def decode_oauth_state(token: str, expected_provider: str) -> Optional[str]:
     return payload.get("sub")
 
 
+def create_dashboard_viewer_token(share_id: str, email: str) -> str:
+    """Dashboard Builder Phase 3 (2026-09-24): a short-lived, signed token
+    proving a specific email address passed a private dashboard's
+    email/password gate (routers/dashboard_builder.py's
+    verify_private_dashboard_access). This grants NO GD360 account access
+    at all - it is scoped to exactly one DashboardShare (share_id) and is
+    re-validated against that share's live allowed_emails list on every
+    single request (see get_public_dashboard), not just trusted outright,
+    so revoking that person's access takes effect on their very next page
+    load rather than waiting for this token to expire."""
+    expire = datetime.now(timezone.utc) + timedelta(hours=settings.DASHBOARD_VIEWER_TOKEN_EXPIRE_HOURS)
+    payload = {
+        "sub": email.lower().strip(),
+        "share_id": share_id,
+        "typ": "dashboard_viewer",
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+
+def decode_dashboard_viewer_token(token: str, expected_share_id: str) -> Optional[str]:
+    """Returns the lowercased email a create_dashboard_viewer_token was
+    minted for, or None if the token is missing, expired, tampered with,
+    or was minted for a different DashboardShare than the one being
+    viewed (e.g. a token from one private dashboard replayed against a
+    different one). The caller MUST separately re-check this email is
+    still in that share's live allowed_emails list - this function only
+    proves the token itself is genuine, not that access is still granted."""
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+    except JWTError:
+        return None
+    if payload.get("typ") != "dashboard_viewer" or payload.get("share_id") != expected_share_id:
+        return None
+    return payload.get("sub")
+
+
 def _fernet() -> Fernet:
     key = settings.CREDENTIAL_ENCRYPTION_KEY
     if not key:
