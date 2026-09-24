@@ -8,6 +8,8 @@ import Dashboard from "./pages/Dashboard";
 import Workspace from "./pages/Workspace";
 import Dashboards from "./pages/Dashboards";
 import DashboardView from "./pages/DashboardView";
+import DashboardBuilderView from "./pages/DashboardBuilderView";
+import PublicDashboardView from "./pages/PublicDashboardView";
 import DataSources from "./pages/DataSources";
 import NewProject from "./pages/NewProject";
 import AdminDashboard from "./pages/AdminDashboard";
@@ -55,6 +57,20 @@ export default function App() {
       <Route path="/workspace/:datasourceId" element={<Protected><Workspace /></Protected>} />
       <Route path="/dashboards" element={<Protected><Dashboards /></Protected>} />
       <Route path="/dashboards/:dashboardId" element={<Protected><DashboardView /></Protected>} />
+      {/* 2026-09-24 (Dashboard Builder Phase 1): the new pages+blocks kind
+          of dashboard gets its own viewer at a deliberately different path
+          from /dashboards/:dashboardId above, rather than branching inside
+          DashboardView itself - the two kinds render completely differently
+          (grid of typed blocks vs. a flat chart list) and keeping them as
+          separate pages means neither one's code has to know the other
+          exists. Dashboards.tsx picks which of the two links to render for
+          a given row based on its layout_version. */}
+      <Route path="/dashboard-builder/:dashboardId" element={<Protected><DashboardBuilderView /></Protected>} />
+      {/* The public, no-login viewer a dashboard's "Publish" link points
+          at - deliberately NOT wrapped in <Protected>, same reasoning as
+          /help/connect-bigquery and /privacy below: this has to work for
+          someone who has never signed in and never will. */}
+      <Route path="/d/:slug" element={<PublicDashboardView />} />
       <Route path="/data" element={<Protected><DataSources /></Protected>} />
       <Route path="/admin" element={<Protected><AdminDashboard /></Protected>} />
       <Route path="/profile" element={<Protected><Profile /></Protected>} />
