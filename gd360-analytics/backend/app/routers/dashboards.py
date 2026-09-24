@@ -35,6 +35,14 @@ Scope history:
     real POST /dashboards (create an empty one to start pinning into) and
     fixed save-chart to actually reuse an existing dashboard_id instead of
     silently creating a new board every time.
+  - 2026-09-24 (Dashboard Builder Phase 1): a dashboard can now ALSO be
+    the new pages+blocks kind (Dashboard.layout_version == 2), created by
+    routers/dashboard_builder.py rather than anything in this file. This
+    file's own endpoints (save-chart, add/remove SavedChart, etc.) still
+    only ever operate on the original flat chart-list shape and are
+    untouched by that - _dashboard_out below just also reports
+    layout_version now, so Dashboards.tsx (the shared list page both kinds
+    appear on) knows which viewer to open a given row in.
 
 Every "not accessible at all" case here 404s; a workspace member who CAN
 see a dashboard but lacks the tier for the specific action they tried gets
@@ -125,6 +133,7 @@ def _dashboard_out(db: Session, dash: models.Dashboard, user: models.User) -> sc
         created_by_email=creator.email if creator else None,
         can_edit=_can_edit(db, dash, user),
         can_delete=_can_delete(db, dash, user),
+        layout_version=dash.layout_version or 1,
     )
 
 
@@ -132,7 +141,9 @@ def _dashboard_out(db: Session, dash: models.Dashboard, user: models.User) -> sc
 def list_dashboards(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     """Every dashboard this person can see - their own personal ones, plus
     any dashboard shared into a workspace they belong to (regardless of
-    who created it)."""
+    who created it). Includes both layout kinds (see this file's own
+    docstring) - Dashboards.tsx branches on layout_version to open the
+    right viewer."""
     ws_ids = workspace_access.member_workspace_ids(db, user.id)
     if ws_ids:
         dashboards = (
@@ -153,7 +164,9 @@ def create_dashboard(
 ):
     """Starts a brand-new, empty dashboard - charts get pinned onto it
     afterward from the AI workspace's "Save chart to dashboard" flow (see
-    save_chart below)."""
+    save_chart below). Always the original flat layout (layout_version=1,
+    the model default) - a new pages+blocks dashboard is only ever created
+    by routers/dashboard_builder.py's own generate endpoint."""
     if payload.workspace_id:
         _check_can_share_into(db, user, payload.workspace_id)
     dash = models.Dashboard(
