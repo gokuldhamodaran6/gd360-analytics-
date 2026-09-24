@@ -67,6 +67,12 @@ _NEW_COLUMNS = [
     # the same round - per this file's own note above, that needs no entry
     # here at all.
     ("dashboard_shares", "password_hash", "TEXT"),
+    # Dashboard Builder Phase 4 (2026-09-24): white-label custom domains -
+    # see models.DashboardShare's own docstring and services/render_domains.py.
+    ("dashboard_shares", "custom_domain", "TEXT"),
+    ("dashboard_shares", "render_custom_domain_id", "TEXT"),
+    ("dashboard_shares", "custom_domain_status", "TEXT"),
+    ("dashboard_shares", "custom_domain_error", "TEXT"),
 ]
 
 
