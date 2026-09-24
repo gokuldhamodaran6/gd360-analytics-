@@ -474,6 +474,14 @@ class DashboardBuilderOut(BaseModel):
     share_mode: Optional[str] = None
     share_has_password: bool = False
     share_emails: list[DashboardShareEmailOut] = []
+    # 2026-09-24 (Phase 4, white-label): set once a custom domain has ever
+    # been attached to this dashboard's share (None before that). status
+    # is one of "pending_dns" / "pending_ssl" / "live" - see
+    # models.DashboardShare's own docstring. error is the last message
+    # from Render, if any, shown as-is in the publish panel.
+    custom_domain: Optional[str] = None
+    custom_domain_status: Optional[str] = None
+    custom_domain_error: Optional[str] = None
 
 
 class PublishDashboardRequest(BaseModel):
@@ -522,6 +530,10 @@ class VerifyPrivateAccessOut(BaseModel):
 class PublicDashboardOut(BaseModel):
     name: str
     pages: list[DashboardPageOut]
+
+
+class SetCustomDomainRequest(BaseModel):
+    domain: str = Field(min_length=1, max_length=255)
 
 
 # ---------- Dashboard Builder Phase 2 (2026-09-24): the real canvas editor
