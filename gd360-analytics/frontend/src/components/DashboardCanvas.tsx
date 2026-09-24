@@ -10,16 +10,24 @@ import {
   DashboardBlockType,
   ManualAgg,
   RestyleChartType,
+  FilterCriterion,
 } from "../api/client";
-import { KpiTile, BlockTable, BlockChart, TextBlock } from "./DashboardBlocks";
+import { KpiTile, BlockTable, BlockChart, TextBlock, FilterControl } from "./DashboardBlocks";
+import { DashboardFilterState } from "../lib/useDashboardFilters";
 
-// 2026-09-24 (Dashboard Builder Phase 2): the real canvas editor - drag,
-// resize, add, remove blocks, and fill each one in either by asking GD360's
-// AI or by building it manually from a column + aggregation. Deliberately
-// scoped to ONE page's blocks at a time (multi-page management is still
-// Phase 3) and does NOT do page-wide cross-filtering (that's Phase 2b, a
-// separate confirmed-with-Gokul future round) - a block here is exactly as
-// independent as it was in Phase 1, just now editable in place.
+// 2026-09-24 (Dashboard Builder Phase 2 + Phase 2b): the real canvas editor -
+// drag, resize, add, remove blocks, and fill each one in either by asking
+// GD360's AI or by building it manually from a column + aggregation.
+// Deliberately scoped to ONE page's blocks at a time (multi-page management
+// is still Phase 3).
+//
+// Phase 2b adds a "filter" block type (a column picker here in edit mode,
+// plus the same interactive FilterControl used in Preview) and threads the
+// page's live filterState down into every block card, so a "Build manually"
+// block edited while a filter is active can be rebuilt pre-filtered, and so
+// restyling a filtered chart is disabled rather than silently discarding the
+// filter (restyle_block only ever reads a block's PERSISTED config - see the
+// backend module docstring's own Phase 2b section for why).
 //
 // react-grid-layout's v2 default export is a new hooks-based composable
 // API with no widely-documented examples yet; this imports its `/legacy`
@@ -83,6 +91,7 @@ const BLOCK_TYPE_LABEL: Record<DashboardBlockType, string> = {
   table: "Table",
   kpi: "KPI",
   text: "Text",
+  filter: "Filter",
 };
 
 const RESTYLE_OPTIONS: { value: RestyleChartType; label: string }[] = [
@@ -170,12 +179,18 @@ function ManualBuildPanel({
   dashboardId,
   block,
   columns,
+  activeFilters,
   onDone,
   onClose,
 }: {
   dashboardId: string;
   block: DashboardBlock;
   columns: ColumnInfo[];
+  // 2026-09-24 (Phase 2b): whatever cross-filter is currently selected on
+  // this page, so a block (re)built here starts out correctly pre-filtered
+  // instead of showing unfiltered data until the next filter change forces
+  // a recompute - mirrors ManualBuildBlockRequest.filters on the backend.
+  activeFilters?: FilterCriterion[];
   onDone: (d: DashboardBuilderDetail) => void;
   onClose: () => void;
 }) {
@@ -211,6 +226,7 @@ function ManualBuildPanel({
         group_by_column: needsGroupBy ? groupBy : undefined,
         block_type: blockType,
         chart_type: blockType === "chart" ? chartType : undefined,
+        filters: activeFilters && activeFilters.length > 0 ? activeFilters : undefined,
       });
       onDone(updated);
     } catch (err: any) {
@@ -231,6 +247,12 @@ function ManualBuildPanel({
           Cancel
         </button>
       </div>
+
+      {activeFilters && activeFilters.length > 0 && (
+        <div className="text-[11px] text-accent bg-accent/10 border border-accent/30 rounded-lg px-2.5 py-1.5">
+          Building with {activeFilters.length} active filter{activeFilters.length > 1 ? "s" : ""} applied.
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-2">
         {(["kpi", "table", "chart"] as const).map((t) => (
@@ -370,21 +392,66 @@ function StylePanel({
   );
 }
 
+function FilterColumnPicker({
+  dashboardId,
+  block,
+  columns,
+  onDone,
+}: {
+  dashboardId: string;
+  block: DashboardBlock;
+  columns: ColumnInfo[];
+  onDone: (d: DashboardBuilderDetail) => void;
+}) {
+  const [column, setColumn] = useState<string>(block.config?.column || "");
+  const [busy, setBusy] = useState(false);
+
+  const save = async (next: string) => {
+    setColumn(next);
+    setBusy(true);
+    try {
+      onDone(await dashboardBuilderApi.updateBlock(dashboardId, block.id, { config: { column: next || null } }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="no-drag p-3 flex flex-col gap-2 h-full">
+      <label className="text-[11px] text-muted uppercase tracking-wide">Filters on column</label>
+      <select className="input text-sm" value={column} disabled={busy} onChange={(e) => save(e.target.value)}>
+        <option value="">Choose a column…</option>
+        {columns.map((c) => (
+          <option key={c.name} value={c.name}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+      {!column && <div className="text-[11px] text-muted italic">Pick a column - this filter won&apos;t do anything until you do.</div>}
+    </div>
+  );
+}
+
 function BlockCard({
   dashboardId,
   block,
   columns,
+  datasourceId,
+  filterState,
   onChange,
 }: {
   dashboardId: string;
   block: DashboardBlock;
   columns: ColumnInfo[];
+  datasourceId?: string | null;
+  filterState?: DashboardFilterState;
   onChange: (d: DashboardBuilderDetail) => void;
 }) {
   const [panel, setPanel] = useState<"none" | "ask" | "manual" | "style">("none");
   const [titleDraft, setTitleDraft] = useState(block.title || "");
   const [textDraft, setTextDraft] = useState(block.config?.text || "");
   const [deleting, setDeleting] = useState(false);
+  const filtersActive = Boolean(filterState && filterState.activeFilters.length > 0);
 
   useEffect(() => setTitleDraft(block.title || ""), [block.id, block.title]);
   useEffect(() => setTextDraft(block.config?.text || ""), [block.id, block.config?.text]);
@@ -437,7 +504,7 @@ function BlockCard({
         <span className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-surface border border-border text-muted shrink-0">
           {BLOCK_TYPE_LABEL[block.type]}
         </span>
-        {block.type !== "text" && (
+        {block.type !== "text" && block.type !== "filter" && (
           <button
             type="button"
             title="Ask AI"
@@ -447,7 +514,7 @@ function BlockCard({
             <SparkleIcon />
           </button>
         )}
-        {block.type !== "text" && (
+        {block.type !== "text" && block.type !== "filter" && (
           <button
             type="button"
             title="Build manually"
@@ -460,9 +527,10 @@ function BlockCard({
         {block.type === "chart" && (
           <button
             type="button"
-            title="Chart style"
-            className="p-1 rounded hover:bg-surface text-muted hover:text-text transition shrink-0"
-            onClick={() => setPanel(panel === "style" ? "none" : "style")}
+            title={filtersActive ? "Restyling is disabled while a filter is active - it would overwrite this filtered view with the chart's real, unfiltered data." : "Chart style"}
+            disabled={filtersActive}
+            className="p-1 rounded hover:bg-surface text-muted hover:text-text transition shrink-0 disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+            onClick={() => !filtersActive && setPanel(panel === "style" ? "none" : "style")}
           >
             <PaletteIcon />
           </button>
@@ -480,15 +548,43 @@ function BlockCard({
       <div className="flex-1 min-h-0">
         {panel === "ask" && <AskAiPanel dashboardId={dashboardId} block={block} onDone={onDone} onClose={() => setPanel("none")} />}
         {panel === "manual" && (
-          <ManualBuildPanel dashboardId={dashboardId} block={block} columns={columns} onDone={onDone} onClose={() => setPanel("none")} />
+          <ManualBuildPanel
+            dashboardId={dashboardId}
+            block={block}
+            columns={columns}
+            activeFilters={filterState?.activeFilters}
+            onDone={onDone}
+            onClose={() => setPanel("none")}
+          />
         )}
         {panel === "style" && <StylePanel dashboardId={dashboardId} block={block} onDone={onDone} onClose={() => setPanel("none")} />}
 
         {panel === "none" && (
           <>
-            {block.type === "kpi" && <KpiTile title={block.title} config={block.config} />}
-            {block.type === "table" && <BlockTable title={block.title} config={block.config} />}
-            {block.type === "chart" && <BlockChart title={block.title} config={block.config} />}
+            {block.type === "kpi" && <KpiTile title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "table" && <BlockTable title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "chart" && <BlockChart title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "filter" && (
+              <div className="h-full flex flex-col divide-y divide-border">
+                <div className="flex-1 min-h-0">
+                  <FilterColumnPicker dashboardId={dashboardId} block={block} columns={columns} onDone={onChange} />
+                </div>
+                {block.config?.column && (
+                  <div className="shrink-0">
+                    {filterState ? (
+                      <FilterControl
+                        block={block}
+                        datasourceId={datasourceId || null}
+                        value={filterState.values[block.id] || ""}
+                        onChange={(v) => filterState.setFilterValue(block.id, v)}
+                      />
+                    ) : (
+                      <div className="no-drag text-[11px] text-muted italic p-3">Loading filter…</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             {block.type === "text" && (
               <textarea
                 className="no-drag w-full h-full p-3 text-sm bg-transparent outline-none resize-none leading-relaxed"
@@ -509,10 +605,16 @@ export default function DashboardCanvas({
   dash,
   page,
   onChange,
+  filterState,
 }: {
   dash: DashboardBuilderDetail;
   page: DashboardBuilderPage;
   onChange: (d: DashboardBuilderDetail) => void;
+  // 2026-09-24 (Phase 2b): optional purely for prop-shape symmetry with
+  // DashboardBlockGrid - in practice DashboardBuilderView.tsx only ever
+  // renders DashboardCanvas for someone who can_edit, and always passes
+  // this, so it's live here whenever this component is on screen at all.
+  filterState?: DashboardFilterState;
 }) {
   const [columns, setColumns] = useState<ColumnInfo[]>([]);
   const [adding, setAdding] = useState(false);
@@ -557,7 +659,7 @@ export default function DashboardCanvas({
     <div>
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <span className="text-xs text-muted mr-1">Add block:</span>
-        {(["chart", "table", "kpi", "text"] as DashboardBlockType[]).map((t) => (
+        {(["chart", "table", "kpi", "text", "filter"] as DashboardBlockType[]).map((t) => (
           <button
             key={t}
             type="button"
@@ -607,7 +709,14 @@ export default function DashboardCanvas({
         >
           {page.blocks.map((b) => (
             <div key={b.id}>
-              <BlockCard dashboardId={dash.id} block={b} columns={columns} onChange={onChange} />
+              <BlockCard
+                dashboardId={dash.id}
+                block={b}
+                columns={columns}
+                datasourceId={dash.datasource_id}
+                filterState={filterState}
+                onChange={onChange}
+              />
             </div>
           ))}
         </ReactGridLayout>
