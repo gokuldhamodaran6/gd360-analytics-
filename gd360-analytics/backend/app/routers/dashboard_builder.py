@@ -166,6 +166,51 @@ dashboard, and private sharing to named people.
   deliberately uses its own separate, interceptor-free axios instance for
   exactly this reason - see api/client.ts's own comment on
   dashboardBuilderApi.getPublic/verifyPrivateAccess.
+
+Phase 4 (2026-09-24, white-label - THIS round's addition): a dashboard
+owner can point their OWN domain (e.g. dashboards.theircompany.com) at
+their already-published dashboard, as an alternative way to reach the
+exact same share (public or private) instead of this app's own /d/{slug}
+link. set_custom_domain/recheck_custom_domain/remove_custom_domain below
+manage it; get_public_dashboard_by_domain/verify_private_dashboard_access_
+by_domain on the new `public_domains_router` are the hostname-keyed
+counterparts of get_public_dashboard/verify_private_dashboard_access
+above, sharing the exact same private-share gating logic via
+_render_public_dashboard/_issue_viewer_token_if_allowed so the two paths
+can never drift apart in what they allow.
+
+  1. This backend does NOT do DNS verification or certificate issuance
+     itself - it registers the domain with Render (services/
+     render_domains.py, calling Render's own Custom Domains REST API,
+     which has no tool in the Render MCP connector this session also has
+     access to) and Render does both automatically from there: checking
+     the CNAME record the owner was told to add, then issuing a free TLS
+     certificate once that's verified. custom_domain_status on the share
+     (pending_dns -> pending_ssl -> live) reflects Render's own progress,
+     refreshed on demand by recheck_custom_domain (a "Check again"
+     button in the owner's publish panel) - not pushed by a webhook,
+     since setting one up is real additional infrastructure outside this
+     round's scope.
+
+  2. A custom domain can only be attached to an ALREADY-PUBLISHED share -
+     there is no content to serve through it otherwise, and doing so
+     also means _make_unique_slug has already minted the share row this
+     domain attaches to.
+
+  3. custom_domain is kept globally unique at the application level
+     (checked explicitly in set_custom_domain), not via a real database
+     UNIQUE constraint - see models.DashboardShare's own docstring for
+     why (this column was added to an already-live table through the
+     no-migration-tool _NEW_COLUMNS pattern, which can't add a new
+     index/constraint, only a plain column).
+
+  4. A custom domain reaching this app's frontend still has to call this
+     backend's API cross-origin (the SPA is served from the OWNER's
+     domain, e.g. https://dashboards.theircompany.com, but still talks
+     to this one shared backend) - see main.py's own comment on why
+     /public/* specifically gets a permissive, dynamically-reflected CORS
+     policy instead of the app's normal fixed origin allow-list, which
+     has no way to know a customer's domain in advance.
 """
 import copy
 import re
@@ -181,7 +226,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas, security
 from ..database import get_db
 from ..deps import get_current_user
-from ..services import ai_engine, chart_builder, workspace_access
+from ..services import ai_engine, chart_builder, render_domains, workspace_access
 from ..services.ai_engine import _call_llm_resilient, _extract_json
 from ..services.data_loader import load_dataframe
 from .dashboards import _can_edit, _can_view
@@ -192,6 +237,15 @@ router = APIRouter(prefix="/dashboard-builder", tags=["dashboard-builder"])
 # openable by someone who has never signed in at all, so this is never
 # wired behind get_current_user. Registered separately in main.py.
 public_router = APIRouter(prefix="/public/dashboards", tags=["public-dashboards"])
+
+# 2026-09-24 (Phase 4, white-label): the hostname-keyed counterpart of
+# public_router above - a custom domain resolves through THIS router
+# instead of /public/dashboards/{slug}. Kept as its own router (rather
+# than a second path on public_router) so main.py's per-router CORS
+# handling reads as "every /public/* router is open to any origin," a
+# single clear rule, rather than something that has to special-case one
+# specific path.
+public_domains_router = APIRouter(prefix="/public/domains", tags=["public-domains"])
 
 # Phase 3's private-dashboard password gate (verify_private_dashboard_access
 # below) is unauthenticated by necessity, so it gets the same simple
@@ -593,6 +647,36 @@ def _make_unique_slug(db: Session, name: str) -> str:
     return f"{base}-{secrets.token_hex(8)}"
 
 
+# 2026-09-24 (Phase 4): hostnames rather than slugs. This app never invents
+# a custom domain the way it does a slug - the dashboard owner types in a
+# domain THEY already own, so all this does is clean up what they typed
+# (strip a pasted scheme/path/whitespace, lowercase) and reject the couple
+# of shapes that are either meaningless here or would silently collide with
+# infrastructure this whole app depends on:
+#   - no dots at all ("dashboards") - not a real registrable hostname.
+#   - *.onrender.com - every GD360 install already has one of these as its
+#     OWN default frontend URL; letting a customer "claim" one as their
+#     white-label domain would either fail confusingly against Render's API
+#     or, worse, let one customer register another customer's install's
+#     default hostname.
+#   - localhost / 127.0.0.1 - meaningless as a public custom domain.
+# Uniqueness (one custom_domain can only ever point at ONE dashboard) is
+# enforced by the caller (set_custom_domain below) at the application level,
+# same reasoning as slugs - see models.DashboardShare's own docstring.
+def _normalize_domain(raw: str) -> str:
+    domain = (raw or "").strip().lower()
+    domain = re.sub(r"^https?://", "", domain)
+    domain = domain.split("/")[0]
+    domain = domain.split(":")[0]  # drop a pasted :port, if any
+    if not domain or "." not in domain:
+        raise HTTPException(400, "That doesn't look like a real domain - it needs at least one dot, e.g. dashboards.yourcompany.com.")
+    if domain.endswith(".onrender.com") or domain in ("localhost", "127.0.0.1"):
+        raise HTTPException(400, f'"{domain}" can\'t be used as a custom domain - it belongs to GD360\'s own infrastructure.')
+    if not re.match(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$", domain):
+        raise HTTPException(400, f'"{domain}" doesn\'t look like a valid domain name.')
+    return domain
+
+
 # ---------- Access + serialization shared by the endpoints below ----------
 
 def _get_dashboard_v2(
@@ -709,6 +793,9 @@ def _builder_out(db: Session, d: models.Dashboard, user: models.User) -> schemas
             [schemas.DashboardShareEmailOut(id=e.id, email=e.email) for e in share.allowed_emails]
             if share else []
         ),
+        custom_domain=share.custom_domain if share else None,
+        custom_domain_status=share.custom_domain_status if share else None,
+        custom_domain_error=share.custom_domain_error if share else None,
     )
 
 
@@ -1344,6 +1431,204 @@ def unpublish_dashboard(
     return _builder_out(db, d, user)
 
 
+@router.post("/{dashboard_id}/shares/domain", response_model=schemas.DashboardBuilderOut, status_code=201)
+def set_custom_domain(
+    dashboard_id: str,
+    payload: schemas.SetCustomDomainRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Registers a white-label custom domain against this dashboard's
+    share (see this file's own module docstring, Phase 4, and
+    services/render_domains.py for what actually happens on Render's
+    side). Works whether or not the dashboard is currently published -
+    same reasoning as add_share_email above - but the share row itself
+    must already exist, since a custom domain always points at one
+    specific slug's dashboard, never a dashboard with no share at all."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    share = d.share
+    if not share:
+        raise HTTPException(400, "Publish this dashboard first, then add a custom domain.")
+
+    domain = _normalize_domain(payload.domain)
+
+    clash = (
+        db.query(models.DashboardShare)
+        .filter(models.DashboardShare.custom_domain == domain, models.DashboardShare.id != share.id)
+        .first()
+    )
+    if clash:
+        raise HTTPException(400, f'"{domain}" is already in use by another dashboard on this account.')
+
+    if share.custom_domain == domain and share.render_custom_domain_id:
+        # Re-submitting the same domain (e.g. a double click) is a no-op,
+        # not a duplicate-registration error.
+        return _builder_out(db, d, user)
+
+    if share.render_custom_domain_id and share.custom_domain != domain:
+        # Swapping to a different domain - deregister the old one first
+        # so it doesn't linger claimed on Render after this dashboard no
+        # longer uses it. Best-effort: render_domains.delete_custom_domain
+        # already tolerates the old registration being gone by now.
+        try:
+            render_domains.delete_custom_domain(share.render_custom_domain_id)
+        except render_domains.RenderDomainError:
+            pass
+
+    try:
+        domain_id, status_value = render_domains.create_custom_domain(domain)
+    except render_domains.RenderDomainsNotConfigured as e:
+        raise HTTPException(503, str(e))
+    except render_domains.RenderDomainError as e:
+        raise HTTPException(400, str(e))
+
+    share.custom_domain = domain
+    share.render_custom_domain_id = domain_id
+    share.custom_domain_status = status_value
+    share.custom_domain_error = None
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.post("/{dashboard_id}/shares/domain/recheck", response_model=schemas.DashboardBuilderOut)
+def recheck_custom_domain(
+    dashboard_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
+):
+    """The "Check again" button - re-polls Render for this domain's
+    current DNS-verification/SSL state (see render_domains.py's own
+    docstring for why this is on-demand rather than a webhook). A Render-
+    side error (e.g. the domain got removed by hand in Render's own
+    dashboard) is recorded on custom_domain_error and returned as a
+    normal 200 rather than failing the request - the frontend shows it
+    inline next to the "Check again" button, same as any other domain
+    error, rather than as a failed page load."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    share = d.share
+    if not share or not share.render_custom_domain_id:
+        raise HTTPException(400, "This dashboard doesn't have a custom domain set up yet.")
+
+    try:
+        share.custom_domain_status = render_domains.get_custom_domain_status(share.render_custom_domain_id)
+        share.custom_domain_error = None
+    except render_domains.RenderDomainsNotConfigured as e:
+        raise HTTPException(503, str(e))
+    except render_domains.RenderDomainError as e:
+        share.custom_domain_error = str(e)
+
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.delete("/{dashboard_id}/shares/domain", response_model=schemas.DashboardBuilderOut)
+def remove_custom_domain(
+    dashboard_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
+):
+    """Deregisters this dashboard's custom domain, both on Render and in
+    this app's own state. Deliberately clears the local fields even if
+    the Render call itself fails or isn't configured (see
+    services.render_domains.delete_custom_domain's own docstring) - a
+    dashboard owner should never be stuck unable to remove a domain from
+    their own dashboard just because of something on Render's side."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    share = d.share
+    if not share or not share.custom_domain:
+        raise HTTPException(400, "This dashboard doesn't have a custom domain set up.")
+
+    if share.render_custom_domain_id:
+        try:
+            render_domains.delete_custom_domain(share.render_custom_domain_id)
+        except (render_domains.RenderDomainsNotConfigured, render_domains.RenderDomainError):
+            pass
+
+    share.custom_domain = None
+    share.render_custom_domain_id = None
+    share.custom_domain_status = None
+    share.custom_domain_error = None
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+# ---------- Shared logic between slug-based and hostname-based public access ----------
+# (Phase 4: a custom domain resolves through public_domains_router below
+# instead of public_router above - see this file's own module docstring,
+# Phase 4 points 2-3, for why they're kept as two routers rather than two
+# paths on one. Both funnel through the exact same helpers below so the
+# private-share access-check logic is never duplicated between them.)
+
+def _resolve_share_by_slug(db: Session, slug: str) -> models.DashboardShare:
+    share = db.query(models.DashboardShare).filter(models.DashboardShare.slug == slug).first()
+    if not share or not share.published_at:
+        raise HTTPException(404, "This dashboard isn't available.")
+    return share
+
+
+def _resolve_share_by_domain(db: Session, hostname: str) -> models.DashboardShare:
+    domain = (hostname or "").strip().lower().split(":")[0]  # drop a browser-supplied :port
+    share = (
+        db.query(models.DashboardShare)
+        .filter(models.DashboardShare.custom_domain == domain, models.DashboardShare.published_at.isnot(None))
+        .first()
+    )
+    if not share:
+        raise HTTPException(404, "This dashboard isn't available.")
+    return share
+
+
+def _issue_viewer_token_if_allowed(share: models.DashboardShare, payload: schemas.VerifyPrivateAccessRequest) -> str:
+    """The private-dashboard email/password gate itself, shared by both
+    the slug and hostname verify endpoints below. Deliberately the SAME
+    "not available" / access-denied messages regardless of how the
+    dashboard was reached - see verify_private_dashboard_access's own
+    docstring for the full reasoning."""
+    if share.mode != "private":
+        raise HTTPException(404, "This dashboard isn't available.")
+    email = payload.email.strip().lower()
+    allowed = {e.email.lower() for e in share.allowed_emails}
+    if email not in allowed:
+        raise HTTPException(403, "This dashboard hasn't been shared with that email address.")
+    if share.password_hash and not (payload.password and security.verify_password(payload.password, share.password_hash)):
+        raise HTTPException(401, "Incorrect password.")
+    return security.create_dashboard_viewer_token(share.id, email)
+
+
+def _render_public_dashboard(
+    db: Session, share: models.DashboardShare, x_dashboard_access_token: str | None
+) -> schemas.PublicDashboardOut:
+    """The actual dashboard-content fetch, shared by both the slug and
+    hostname GET endpoints below. For mode=="private", a valid
+    X-Dashboard-Access-Token (from _issue_viewer_token_if_allowed above)
+    is required, AND that token's email is re-checked against the
+    share's LIVE allowed_emails list on this exact request - not just
+    trusted because the token's signature checks out - so a revoke
+    (remove_share_email) takes effect on the very next page load, not
+    only once the token eventually expires. A missing/invalid token
+    401s ("please sign in with your email"); a valid token for an email
+    that's since been removed from the list 403s ("access revoked") -
+    the frontend shows a different message for each."""
+    if share.mode not in ("public", "private"):
+        raise HTTPException(404, "This dashboard isn't available.")
+
+    if share.mode == "private":
+        email = (
+            security.decode_dashboard_viewer_token(x_dashboard_access_token, share.id)
+            if x_dashboard_access_token else None
+        )
+        if not email:
+            raise HTTPException(401, "Sign in with your email to view this dashboard.")
+        allowed = {e.email.lower() for e in share.allowed_emails}
+        if email.lower() not in allowed:
+            raise HTTPException(403, "Your access to this dashboard has been revoked or was never granted.")
+
+    d = db.query(models.Dashboard).filter(models.Dashboard.id == share.dashboard_id).first()
+    if not d:
+        raise HTTPException(404, "This dashboard isn't available.")
+    pages = [_page_out(p) for p in sorted(d.pages, key=lambda p: p.position)]
+    return schemas.PublicDashboardOut(name=d.name, pages=pages)
+
+
 @public_router.post("/{slug}/verify", response_model=schemas.VerifyPrivateAccessOut)
 def verify_private_dashboard_access(
     slug: str,
@@ -1366,18 +1651,10 @@ def verify_private_dashboard_access(
     _check_rate_limit(f"dashboard-verify:ip:{ip}", limit=20)
     _check_rate_limit(f"dashboard-verify:slug:{slug}", limit=30)
 
-    share = db.query(models.DashboardShare).filter(models.DashboardShare.slug == slug).first()
-    if not share or not share.published_at or share.mode != "private":
+    share = _resolve_share_by_slug(db, slug)
+    if share.mode != "private":
         raise HTTPException(404, "This dashboard isn't available.")
-
-    email = payload.email.strip().lower()
-    allowed = {e.email.lower() for e in share.allowed_emails}
-    if email not in allowed:
-        raise HTTPException(403, "This dashboard hasn't been shared with that email address.")
-    if share.password_hash and not (payload.password and security.verify_password(payload.password, share.password_hash)):
-        raise HTTPException(401, "Incorrect password.")
-
-    token = security.create_dashboard_viewer_token(share.id, email)
+    token = _issue_viewer_token_if_allowed(share, payload)
     return schemas.VerifyPrivateAccessOut(access_token=token)
 
 
@@ -1392,34 +1669,46 @@ def get_public_dashboard(
     ever returns a dashboard that is CURRENTLY published - unpublishing
     takes effect immediately here, even though the share row/slug itself
     is kept around for a possible republish (see unpublish_dashboard
-    above).
+    above). See _render_public_dashboard above for the actual access
+    checks, shared with get_public_dashboard_by_domain below."""
+    share = _resolve_share_by_slug(db, slug)
+    return _render_public_dashboard(db, share, x_dashboard_access_token)
 
-    For mode=="private", a valid X-Dashboard-Access-Token (from
-    verify_private_dashboard_access above) is required, AND that token's
-    email is re-checked against the share's LIVE allowed_emails list on
-    this exact request - not just trusted because the token's signature
-    checks out - so a revoke (remove_share_email) takes effect on the very
-    next page load, not only once the token eventually expires. A missing/
-    invalid token 401s ("please sign in with your email"); a valid token
-    for an email that's since been removed from the list 403s ("access
-    revoked") - the frontend shows a different message for each."""
-    share = db.query(models.DashboardShare).filter(models.DashboardShare.slug == slug).first()
-    if not share or not share.published_at or share.mode not in ("public", "private"):
+
+@public_domains_router.post("/{hostname}/verify", response_model=schemas.VerifyPrivateAccessOut)
+def verify_private_dashboard_access_by_domain(
+    hostname: str,
+    payload: schemas.VerifyPrivateAccessRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Hostname-keyed counterpart of verify_private_dashboard_access
+    above, for a dashboard reached through its own white-label custom
+    domain instead of GD360's own /d/:slug link - see this file's own
+    module docstring, Phase 4, for why this is a separate router rather
+    than a second path on public_router. Rate-limited the same way,
+    keyed by hostname instead of slug."""
+    ip = _client_ip(request)
+    _check_rate_limit(f"dashboard-verify:ip:{ip}", limit=20)
+    _check_rate_limit(f"dashboard-verify:domain:{hostname}", limit=30)
+
+    share = _resolve_share_by_domain(db, hostname)
+    if share.mode != "private":
         raise HTTPException(404, "This dashboard isn't available.")
+    token = _issue_viewer_token_if_allowed(share, payload)
+    return schemas.VerifyPrivateAccessOut(access_token=token)
 
-    if share.mode == "private":
-        email = (
-            security.decode_dashboard_viewer_token(x_dashboard_access_token, share.id)
-            if x_dashboard_access_token else None
-        )
-        if not email:
-            raise HTTPException(401, "Sign in with your email to view this dashboard.")
-        allowed = {e.email.lower() for e in share.allowed_emails}
-        if email.lower() not in allowed:
-            raise HTTPException(403, "Your access to this dashboard has been revoked or was never granted.")
 
-    d = db.query(models.Dashboard).filter(models.Dashboard.id == share.dashboard_id).first()
-    if not d:
-        raise HTTPException(404, "This dashboard isn't available.")
-    pages = [_page_out(p) for p in sorted(d.pages, key=lambda p: p.position)]
-    return schemas.PublicDashboardOut(name=d.name, pages=pages)
+@public_domains_router.get("/{hostname}", response_model=schemas.PublicDashboardOut)
+def get_public_dashboard_by_domain(
+    hostname: str,
+    db: Session = Depends(get_db),
+    x_dashboard_access_token: str | None = Header(default=None, alias="X-Dashboard-Access-Token"),
+):
+    """Hostname-keyed counterpart of get_public_dashboard above - this is
+    what the SPA calls (see api/client.ts's publicDashboardApi.
+    getByHostname and pages/PublicDashboardView.tsx) when it's been
+    loaded through a customer's own custom domain rather than GD360's
+    own onrender.com URL with a /d/:slug path in it."""
+    share = _resolve_share_by_domain(db, hostname)
+    return _render_public_dashboard(db, share, x_dashboard_access_token)
