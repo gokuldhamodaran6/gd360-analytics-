@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react";
 import ChartCanvas from "./ChartCanvas";
-import { DashboardBlock } from "../api/client";
+import { datasourceApi, DashboardBlock } from "../api/client";
+import { DashboardFilterState } from "../lib/useDashboardFilters";
 
 // 2026-09-24 (Dashboard Builder Phase 1): the shared block-rendering layer
 // for a pages+blocks dashboard - used by BOTH the owner's editor view
@@ -109,7 +111,104 @@ export function TextBlock({ title, config }: { title: string | null; config: any
   );
 }
 
-export function DashboardBlockGrid({ blocks }: { blocks: DashboardBlock[] }) {
+// 2026-09-24 (Dashboard Builder Phase 2b): a filter block's own control -
+// a plain dropdown of that column's distinct values (reusing the existing
+// Data-tab distinct-values endpoint, same as the Excel-style filter panel
+// in DataTable.tsx uses - no new backend endpoint just for this list).
+// Used both here (Preview mode) and inside DashboardCanvas's BlockCard
+// (edit mode) - one control, one behavior, everywhere it's interactive.
+// The SELECTED VALUE is never fetched from or written to the server; it
+// comes in as `value` and goes out through `onChange` - see
+// lib/useDashboardFilters.ts for where that state actually lives.
+export function FilterControl({
+  block,
+  datasourceId,
+  value,
+  onChange,
+}: {
+  block: DashboardBlock;
+  datasourceId: string | null;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const column: string | null = block.config?.column || null;
+  const [values, setValues] = useState<{ value: string | number | boolean | null; count: number }[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!column || !datasourceId) {
+      setValues([]);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    datasourceApi
+      .getColumnDistinctValues(datasourceId, column, null, { limit: 200 })
+      .then((res) => {
+        if (!cancelled) setValues(res.values);
+      })
+      .catch(() => {
+        if (!cancelled) setValues([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [column, datasourceId]);
+
+  return (
+    <div className="card h-full p-3 flex flex-col justify-center gap-1.5 overflow-hidden">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted truncate">
+        {block.title || column || "Filter"}
+      </div>
+      {!column ? (
+        <div className="text-xs text-muted italic">Not set up yet.</div>
+      ) : (
+        <select className="input text-xs py-1.5" value={value} onChange={(e) => onChange(e.target.value)} disabled={loading}>
+          <option value="">All</option>
+          {values.map((v) => (
+            <option key={String(v.value)} value={String(v.value)}>
+              {String(v.value)} ({v.count})
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
+}
+
+// The public/no-login view's stand-in for a filter block - see this
+// file's own top comment and the backend module docstring (Phase 2b,
+// point 3) for why cross-filtering isn't wired up there yet: recomputing
+// against a customer's own connected data source from an unauthenticated
+// link with no rate limiting is a real cost/security question this round
+// deliberately didn't answer with "just allow it."
+function StaticFilterNote({ block }: { block: DashboardBlock }) {
+  const column: string | null = block.config?.column || null;
+  return (
+    <div className="card h-full p-3 flex flex-col justify-center gap-1 opacity-70">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted truncate">
+        {block.title || column || "Filter"}
+      </div>
+      <div className="text-xs text-muted italic">Filtering isn&apos;t available on the public link yet.</div>
+    </div>
+  );
+}
+
+export function DashboardBlockGrid({
+  blocks,
+  datasourceId,
+  filterState,
+}: {
+  blocks: DashboardBlock[];
+  // Both optional - a caller that omits filterState (PublicDashboardView)
+  // gets every block exactly as saved, with a filter block rendered as an
+  // inert StaticFilterNote instead of a live control.
+  datasourceId?: string | null;
+  filterState?: DashboardFilterState;
+}) {
   if (blocks.length === 0) {
     return <div className="text-sm text-muted py-10 text-center">This page has no blocks yet.</div>;
   }
@@ -121,20 +220,40 @@ export function DashboardBlockGrid({ blocks }: { blocks: DashboardBlock[] }) {
         gridAutoRows: `${ROW_UNIT_PX}px`,
       }}
     >
-      {blocks.map((b) => (
-        <div
-          key={b.id}
-          style={{
-            gridColumn: `${b.x + 1} / span ${b.w}`,
-            gridRow: `${b.y + 1} / span ${b.h}`,
-          }}
-        >
-          {b.type === "kpi" && <KpiTile title={b.title} config={b.config} />}
-          {b.type === "table" && <BlockTable title={b.title} config={b.config} />}
-          {b.type === "chart" && <BlockChart title={b.title} config={b.config} />}
-          {b.type === "text" && <TextBlock title={b.title} config={b.config} />}
-        </div>
-      ))}
+      {blocks.map((b) => {
+        // A block currently recomputed by an active cross-filter (Phase
+        // 2b) - overrides only ever cover a block with a stored `recipe`
+        // (see ManualRecipe in api/client.ts); everything else renders
+        // its own real, persisted content untouched.
+        const override = filterState?.overrides[b.id];
+        const type = override?.type ?? b.type;
+        const config = override?.config ?? b.config;
+        return (
+          <div
+            key={b.id}
+            style={{
+              gridColumn: `${b.x + 1} / span ${b.w}`,
+              gridRow: `${b.y + 1} / span ${b.h}`,
+            }}
+          >
+            {type === "kpi" && <KpiTile title={b.title} config={config} />}
+            {type === "table" && <BlockTable title={b.title} config={config} />}
+            {type === "chart" && <BlockChart title={b.title} config={config} />}
+            {type === "text" && <TextBlock title={b.title} config={config} />}
+            {type === "filter" &&
+              (filterState ? (
+                <FilterControl
+                  block={b}
+                  datasourceId={datasourceId || null}
+                  value={filterState.values[b.id] || ""}
+                  onChange={(v) => filterState.setFilterValue(b.id, v)}
+                />
+              ) : (
+                <StaticFilterNote block={b} />
+              ))}
+          </div>
+        );
+      })}
     </div>
   );
 }
