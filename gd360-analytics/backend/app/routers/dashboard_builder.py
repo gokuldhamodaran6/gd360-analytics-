@@ -47,15 +47,63 @@ longer frozen the moment it's generated.
     "just try it as a bar chart instead."
 
 Scope note, stated plainly rather than left implicit: Phase 2 does NOT yet
-include multiple pages or page-wide cross-filtering (a filter bar that
-filters every block on a page at once) - both are real, separate future
-work (Phase 2b for cross-filtering, Phase 3 for multi-page + private
-sharing), confirmed with Gokul as a deliberate split before this round
-started rather than rushing everything into one round. Phase 2 also has no
-automatic collision avoidance between blocks - react-grid-layout lets a
-person drag one block, but two blocks CAN be dropped on top of each other
-if someone does that on purpose; auto-reflow to prevent overlaps entirely
-is a nice future refinement, not core to "a working canvas."
+include multiple pages - that's Phase 3 (multi-page + private sharing).
+Phase 2 also has no automatic collision avoidance between blocks -
+react-grid-layout lets a person drag one block, but two blocks CAN be
+dropped on top of each other if someone does that on purpose; auto-reflow
+to prevent overlaps entirely is a nice future refinement, not core to "a
+working canvas."
+
+Phase 2b (2026-09-24, cross-filtering - THIS round's addition): a "filter"
+block type, and preview_filtered_blocks() below, which is what actually
+makes a filter block do something. Three deliberate design decisions worth
+stating plainly:
+
+  1. A filter's current selection is PER-VIEWER and EPHEMERAL, never
+     written to the database. preview_filtered_blocks() is a read-only
+     POST - it recomputes and returns filtered block content but changes
+     nothing in storage. This is exactly how a PowerBI/Tableau slicer
+     works: two people looking at the same dashboard can have completely
+     different filter selections active at the same time without
+     affecting each other or the dashboard's own saved content. The
+     frontend holds each viewer's current filter values in React state and
+     re-POSTs on every change; a filter block's stored config only ever
+     remembers WHICH COLUMN it filters (a structural, shared setting, set
+     like any other block edit via update_block), never a currently-active
+     value.
+
+  2. Only a block built with "Build manually" (build_manual_block below)
+     can respond to a filter - it has a stored `recipe` (metric column,
+     aggregation, optional group-by, chart type) that can be safely and
+     deterministically re-run against filtered data with plain pandas, no
+     AI call. An AI-built block (from "Build Dashboard" or a block's own
+     "Ask AI") has no recipe - there is no safe, fast way to "re-run" an
+     AI's freeform, sandboxed-generated pandas code against different
+     input data on every filter change without either a slow new AI call
+     per keystroke or genuinely re-executing arbitrary generated code
+     outside the reviewed pipeline, so those blocks are simply left alone
+     when a filter changes, and the frontend says so rather than silently
+     pretending they responded. build_manual_block itself also now accepts
+     an optional `filters` list, so building a brand new block while a
+     filter is already active produces correctly-filtered content
+     immediately, not a stale unfiltered one that then jumps on the next
+     filter change.
+
+  3. Cross-filtering is deliberately NOT exposed on the public, no-login
+     link this round. preview_filtered_blocks lives on the authenticated
+     `router` (same access check as every other Phase 2 endpoint - view
+     access to the dashboard, at minimum), not on `public_router`. The
+     reason is concrete, not hypothetical: for a database/warehouse-
+     connected data source, "recompute this filter" means running a live
+     query against the customer's own connected credentials - allowing
+     that from a public, unauthenticated link with no rate limiting would
+     let any stranger with the URL trigger unbounded live queries against
+     someone's production database. Enabling this safely needs its own
+     rate-limiting/caching design, which is real future work, not a gap to
+     paper over - the public link continues to show each block's last
+     saved content, and a filter block on it renders as a plain, inert
+     label rather than an interactive control that would silently do
+     nothing.
 """
 import re
 import secrets
@@ -96,6 +144,116 @@ _MANUAL_AGG_NEEDS_NUMERIC = {"sum", "avg"}
 # of data (e.g. grouped_bar needs two numeric columns, heatmap needs a
 # wide matrix - neither fits what a dashboard block ever stores).
 _RESTYLE_CHART_TYPES = {"bar", "line", "area", "pie", "horizontal_bar", "scatter"}
+# A page can carry at most this many active filter blocks at once - plenty
+# for any real dashboard, and keeps preview_filtered_blocks' per-request
+# work (one boolean mask pass over the dataframe per filter) bounded.
+_MAX_FILTERS_PER_REQUEST = 8
+
+
+def _apply_filters(df: pd.DataFrame, filters: list) -> pd.DataFrame:
+    """Applies every (column, value) filter as an AND'd exact-match mask -
+    the same semantics as a PowerBI/Tableau slicer. Compares as strings
+    (`.astype(str)`) rather than trying to coerce the incoming JSON value
+    to the column's own dtype - simpler and more robust than dtype-
+    guessing, at the cost of exact float-equality edge cases, which is a
+    fine trade for a dropdown-driven exact-match filter. A filter whose
+    column isn't actually in this dataframe is skipped rather than
+    raising - defensive against a stale filter selection surviving a data
+    source change."""
+    for f in filters:
+        column = f.column if hasattr(f, "column") else f.get("column")
+        value = f.value if hasattr(f, "value") else f.get("value")
+        if column not in df.columns:
+            continue
+        df = df[df[column].astype(str) == str(value)]
+    return df
+
+
+def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | None = None) -> tuple[str, dict, str]:
+    """The actual column + aggregation computation behind both
+    build_manual_block (a fresh build) and preview_filtered_blocks (a
+    re-run against filtered data) - pulled out into its own function so
+    the two share exactly one implementation rather than drifting apart.
+    Raises ValueError with a short, friendly message on anything the
+    caller should show back as-is (bad column, wrong aggregation for a
+    non-numeric column, missing group-by); any other exception is a
+    genuine computation failure the caller wraps its own way. Returns
+    (actual_type, config, default_title) - default_title is only used by
+    the caller when the block doesn't already have one of its own.
+    existing_title, when given, is what gets baked into a chart's own
+    title text (matching the original build_manual_block behavior of
+    preferring an already-set block title over the generated default) -
+    the returned default_title is unaffected either way, since the caller
+    needs the plain default for its own "no title yet" fallback."""
+    metric_column = recipe.get("metric_column")
+    agg = recipe.get("agg")
+    group_by_column = recipe.get("group_by_column")
+    block_type = recipe.get("block_type")
+    chart_type = recipe.get("chart_type")
+
+    if agg not in _MANUAL_AGG_FUNCS:
+        raise ValueError("Unknown aggregation.")
+    if block_type not in ("kpi", "table", "chart"):
+        raise ValueError("Unknown block type.")
+    if metric_column not in df.columns:
+        raise ValueError(f'Column "{metric_column}" was not found in this data.')
+    if agg in _MANUAL_AGG_NEEDS_NUMERIC and not pd.api.types.is_numeric_dtype(df[metric_column]):
+        raise ValueError(
+            f'"{metric_column}" isn\'t a numeric column, so it can\'t be summed or averaged - '
+            "try Count, Min, or Max instead, or pick a numeric column."
+        )
+    agg_func = _MANUAL_AGG_FUNCS[agg]
+    agg_label = {"sum": "Sum", "avg": "Average", "count": "Count", "min": "Min", "max": "Max"}[agg]
+
+    if block_type == "kpi":
+        value = df[metric_column].agg(agg_func)
+        # pandas .agg() returns a numpy scalar (e.g. numpy.float64), not a
+        # plain Python number - .item() converts it, since neither the
+        # JSON DB column nor the API response can serialize a numpy type
+        # directly (this would otherwise 500 on commit).
+        value = value.item() if hasattr(value, "item") else value
+        default_title = f"{agg_label} of {metric_column}"
+        return "kpi", {"value": value, "label": default_title, "recipe": recipe}, default_title
+
+    if not group_by_column:
+        raise ValueError("Pick a column to group by for a table or chart.")
+    if group_by_column not in df.columns:
+        raise ValueError(f'Column "{group_by_column}" was not found in this data.')
+
+    grouped = (
+        df.groupby(group_by_column)[metric_column]
+        .agg(agg_func)
+        .sort_values(ascending=False)
+        .head(50 if block_type == "chart" else _MAX_TABLE_ROWS_PER_BLOCK)
+    )
+    # Named columns, not the generic "label"/"value" that
+    # chart_builder.result_to_tidy would otherwise fall back to for a bare
+    # Series - so a manually-built table's headers read as "region" /
+    # "revenue", not "label" / "value".
+    grouped_df = grouped.reset_index()
+    grouped_df.columns = [group_by_column, metric_column]
+    default_title = f"{agg_label} of {metric_column} by {group_by_column}"
+
+    if block_type == "chart":
+        ct = (chart_type or "bar").lower().strip()
+        if ct not in _RESTYLE_CHART_TYPES:
+            ct = "bar"
+        chart_spec = chart_builder.build_figure(grouped_df, ct, title=existing_title or default_title)
+        tidy = chart_builder.result_to_tidy(grouped_df)
+        config = {"chart_spec": chart_spec, "recipe": recipe}
+        if tidy:
+            config["result_columns"] = tidy["columns"]
+            config["result_rows"] = tidy["rows"]
+        return "chart", config, default_title
+
+    tidy = chart_builder.result_to_tidy(grouped_df)
+    config = {
+        "columns": [c["name"] for c in (tidy["columns"] if tidy else [])],
+        "rows": tidy["rows"] if tidy else [],
+        "truncated": False,
+        "recipe": recipe,
+    }
+    return "table", config, default_title
 
 
 # ---------- Building the AI's block-selection plan ----------
@@ -321,6 +479,8 @@ def _place_new_block(page: models.DashboardPage, block_type: str) -> tuple[int, 
         return 0, max_bottom, 3, 3
     if block_type == "text":
         return 0, max_bottom, 6, 3
+    if block_type == "filter":
+        return 0, max_bottom, 3, 2
     return 0, max_bottom, 6, 6  # chart / table
 
 
@@ -418,6 +578,22 @@ def _resolve_datasource(db: Session, user: models.User, d: models.Dashboard) -> 
         )
     if not workspace_access.can_edit_datasource(db, ds, user):
         raise HTTPException(403, "You have view-only access to this dashboard's data source.")
+    return ds
+
+
+def _resolve_datasource_for_read(db: Session, user: models.User, d: models.Dashboard) -> models.DataSource | None:
+    """The read-only counterpart to _resolve_datasource, for
+    preview_filtered_blocks - cross-filtering doesn't change any stored
+    data, so it only needs VIEW access to the data source (can_access_
+    datasource, the same "viewer" tier check used everywhere else), not
+    edit access. Returns None instead of raising on anything that would
+    stop this from working (no linked data source, no view access, or the
+    data source itself failing to load) - the caller degrades to an empty
+    filtered-blocks response rather than surfacing an error for what is,
+    from the viewer's perspective, just "nothing filtered."."""
+    ds = _dashboard_datasource(db, d)
+    if not ds or not workspace_access.can_access_datasource(db, ds, user):
+        return None
     return ds
 
 
@@ -532,18 +708,31 @@ def create_block(
     user: models.User = Depends(get_current_user),
 ):
     """Adds one empty block to the canvas - the "+ Add block" toolbar's
-    Chart/Table/KPI/Text choice. Empty on purpose: the person fills it in
-    right after, either with ask_ai_block or build_manual_block below (or,
-    for a text block, a plain PATCH via update_block)."""
+    Chart/Table/KPI/Text/Filter choice. Empty on purpose: the person fills
+    it in right after, either with ask_ai_block or build_manual_block
+    below (or, for a text block, a plain PATCH via update_block; a filter
+    block similarly gets its target column set via update_block's config
+    field, never a dedicated endpoint)."""
     d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
-    if payload.type not in ("chart", "table", "kpi", "text"):
+    if payload.type not in ("chart", "table", "kpi", "text", "filter"):
         raise HTTPException(400, "Unknown block type.")
     page = next((p for p in d.pages if p.id == payload.page_id), None)
     if not page:
         raise HTTPException(404, "Page not found on this dashboard.")
 
     x, y, w, h = _place_new_block(page, payload.type)
-    default_config = {"text": ""} if payload.type == "text" else {}
+    # A filter block's config only ever remembers WHICH COLUMN it filters -
+    # a structural setting, edited the normal way through update_block's
+    # `config` field, same as a text block's body. Its currently-selected
+    # VALUE is never stored here at all - see this file's own module
+    # docstring (Phase 2b, point 1) for why that's per-viewer/ephemeral
+    # instead.
+    if payload.type == "text":
+        default_config = {"text": ""}
+    elif payload.type == "filter":
+        default_config = {"column": None}
+    else:
+        default_config = {}
     block = models.DashboardBlock(
         page_id=page.id,
         type=payload.type,
@@ -685,88 +874,46 @@ def build_manual_block(
     _MANUAL_AGG_FUNCS whitelist rather than anything AI- or user-authored,
     so unlike ask_ai_block above, there is no sandboxed code execution
     here at all - there is no code to execute, just a parameterized
-    groupby/agg call."""
+    groupby/agg call.
+
+    The computation itself lives in _run_manual_recipe (shared with
+    preview_filtered_blocks below) - this endpoint's own job is just to
+    load the data, apply any filters the person currently has active on
+    the page (payload.filters - optional, so building while no filter is
+    active behaves exactly as before), persist the result, and store the
+    RECIPE (not just the computed output) on the block. That stored
+    recipe is what makes this specific block respond to a filter change
+    later - see the module docstring's Phase 2b section, point 2."""
     d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
     block = _get_block(db, d, block_id)
     ds = _resolve_datasource(db, user, d)
-
-    if payload.agg not in _MANUAL_AGG_FUNCS:
-        raise HTTPException(400, "Unknown aggregation.")
-    if payload.block_type not in ("kpi", "table", "chart"):
-        raise HTTPException(400, "Unknown block type.")
 
     try:
         df = load_dataframe(ds, table=None, version="original", db=db)
     except Exception as e:
         raise HTTPException(400, f"Could not load this dashboard's data: {e}")
 
-    if payload.metric_column not in df.columns:
-        raise HTTPException(400, f'Column "{payload.metric_column}" was not found in this data.')
-    if payload.agg in _MANUAL_AGG_NEEDS_NUMERIC and not pd.api.types.is_numeric_dtype(df[payload.metric_column]):
-        raise HTTPException(
-            400,
-            f'"{payload.metric_column}" isn\'t a numeric column, so it can\'t be summed or averaged - '
-            "try Count, Min, or Max instead, or pick a numeric column.",
-        )
-    agg_func = _MANUAL_AGG_FUNCS[payload.agg]
-    agg_label = {"sum": "Sum", "avg": "Average", "count": "Count", "min": "Min", "max": "Max"}[payload.agg]
+    if payload.filters:
+        df = _apply_filters(df, payload.filters)
 
-    if payload.block_type == "kpi":
-        try:
-            value = df[payload.metric_column].agg(agg_func)
-            # pandas .agg() returns a numpy scalar (e.g. numpy.float64), not
-            # a plain Python number - .item() converts it, since neither
-            # the JSON DB column nor the API response can serialize a numpy
-            # type directly (this would otherwise 500 on commit).
-            value = value.item() if hasattr(value, "item") else value
-        except Exception as e:
-            raise HTTPException(400, f"Couldn't compute that: {e}")
-        block.type = "kpi"
-        block.config = {"value": value, "label": f"{agg_label} of {payload.metric_column}"}
-    else:
-        if not payload.group_by_column:
-            raise HTTPException(400, "Pick a column to group by for a table or chart.")
-        if payload.group_by_column not in df.columns:
-            raise HTTPException(400, f'Column "{payload.group_by_column}" was not found in this data.')
-        try:
-            grouped = (
-                df.groupby(payload.group_by_column)[payload.metric_column]
-                .agg(agg_func)
-                .sort_values(ascending=False)
-                .head(50 if payload.block_type == "chart" else _MAX_TABLE_ROWS_PER_BLOCK)
-            )
-            # Named columns, not the generic "label"/"value" that
-            # chart_builder.result_to_tidy would otherwise fall back to for
-            # a bare Series - so a manually-built table's headers read as
-            # "region" / "revenue", not "label" / "value".
-            grouped_df = grouped.reset_index()
-            grouped_df.columns = [payload.group_by_column, payload.metric_column]
-        except Exception as e:
-            raise HTTPException(400, f"Couldn't compute that: {e}")
+    recipe = {
+        "metric_column": payload.metric_column,
+        "agg": payload.agg,
+        "group_by_column": payload.group_by_column,
+        "block_type": payload.block_type,
+        "chart_type": payload.chart_type,
+    }
+    try:
+        actual_type, config, default_title = _run_manual_recipe(df, recipe, existing_title=block.title)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"Couldn't compute that: {e}")
 
-        title = f"{agg_label} of {payload.metric_column} by {payload.group_by_column}"
-        if payload.block_type == "chart":
-            chart_type = (payload.chart_type or "bar").lower().strip()
-            if chart_type not in _RESTYLE_CHART_TYPES:
-                chart_type = "bar"
-            try:
-                chart_spec = chart_builder.build_figure(grouped_df, chart_type, title=block.title or title)
-            except Exception as e:
-                raise HTTPException(400, f"Couldn't build that chart: {e}")
-            tidy = chart_builder.result_to_tidy(grouped_df)
-            block.type = "chart"
-            block.config = {"chart_spec": chart_spec, **({"result_columns": tidy["columns"], "result_rows": tidy["rows"]} if tidy else {})}
-        else:
-            tidy = chart_builder.result_to_tidy(grouped_df)
-            block.type = "table"
-            block.config = {
-                "columns": [c["name"] for c in (tidy["columns"] if tidy else [])],
-                "rows": tidy["rows"] if tidy else [],
-                "truncated": False,
-            }
-
+    block.type = actual_type
+    block.config = config
     if not block.title:
-        block.title = title if payload.block_type != "kpi" else f"{agg_label} of {payload.metric_column}"
+        block.title = default_title
 
     db.commit()
     db.refresh(d)
@@ -821,6 +968,59 @@ def restyle_block(
     db.commit()
     db.refresh(d)
     return _builder_out(db, d, user)
+
+
+@router.post("/{dashboard_id}/pages/{page_id}/preview-filtered", response_model=schemas.FilteredBlocksOut)
+def preview_filtered_blocks(
+    dashboard_id: str,
+    page_id: str,
+    payload: schemas.ApplyFiltersRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Cross-filtering (Phase 2b) - READ-ONLY, changes nothing in the
+    database. See this file's own module docstring for the three design
+    decisions behind this endpoint (per-viewer/ephemeral, recipe-only,
+    never exposed on the public link). Only view access to the dashboard
+    is required (not edit) - filtering is not editing.
+
+    Every filterable block on this page (one with a stored `recipe` - see
+    build_manual_block) is recomputed against the data filtered by
+    `payload.filters` and returned; every other block on the page (AI-
+    built, text, the filter blocks themselves) is simply left out of the
+    response, and the frontend leaves whatever it's currently showing for
+    those alone. A block that fails to recompute for any reason (a filter
+    happens to remove every matching row, a stale group-by column, etc.)
+    is also just left out, rather than failing the whole request over one
+    block - the frontend's existing content for it stays put."""
+    d = _get_dashboard_v2(db, user, dashboard_id)  # view access only
+    page = next((p for p in d.pages if p.id == page_id), None)
+    if not page:
+        raise HTTPException(404, "Page not found on this dashboard.")
+
+    ds = _resolve_datasource_for_read(db, user, d)
+    if not ds:
+        return schemas.FilteredBlocksOut(blocks=[])
+
+    try:
+        df = load_dataframe(ds, table=None, version="original", db=db)
+    except Exception:
+        return schemas.FilteredBlocksOut(blocks=[])
+
+    df = _apply_filters(df, payload.filters[:_MAX_FILTERS_PER_REQUEST])
+
+    out: list[schemas.FilteredBlockOut] = []
+    for block in page.blocks:
+        recipe = (block.config or {}).get("recipe")
+        if not recipe:
+            continue
+        try:
+            actual_type, config, _default_title = _run_manual_recipe(df, recipe, existing_title=block.title)
+        except Exception:
+            continue
+        out.append(schemas.FilteredBlockOut(id=block.id, type=actual_type, config=config))
+
+    return schemas.FilteredBlocksOut(blocks=out)
 
 
 @router.post("/{dashboard_id}/publish", response_model=schemas.DashboardBuilderOut)
