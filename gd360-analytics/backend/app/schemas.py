@@ -420,7 +420,7 @@ class GenerateDashboardRequest(BaseModel):
 
 class DashboardBlockOut(BaseModel):
     id: str
-    type: str  # "chart" | "table" | "kpi" | "text"
+    type: str  # "chart" | "table" | "kpi" | "text" | "filter"
     title: Optional[str] = None
     x: int
     y: int
@@ -480,7 +480,7 @@ class PublicDashboardOut(BaseModel):
 # layout_version==2 dashboard the caller can edit. ----------
 class CreateBlockRequest(BaseModel):
     page_id: str = Field(min_length=1)
-    type: str = Field(min_length=1)  # "chart" | "table" | "kpi" | "text"
+    type: str = Field(min_length=1)  # "chart" | "table" | "kpi" | "text" | "filter"
     title: Optional[str] = None
 
 
@@ -502,17 +502,51 @@ class AskAiBlockRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=2000)
 
 
+class FilterCriterion(BaseModel):
+    """One active cross-filter selection - (which column, which value).
+    See routers/dashboard_builder.py's module docstring (Phase 2b) for why
+    these are never persisted anywhere: a viewer's current filter
+    selections live only in the frontend's own React state and get sent
+    fresh on every preview-filtered call."""
+    column: str = Field(min_length=1)
+    value: str | int | float | bool
+
+
 class ManualBuildBlockRequest(BaseModel):
     metric_column: str = Field(min_length=1)
     agg: str = "sum"  # "sum" | "avg" | "count" | "min" | "max"
     group_by_column: Optional[str] = None
     block_type: str = "table"  # "kpi" | "table" | "chart"
     chart_type: Optional[str] = None  # only read when block_type == "chart"
+    # 2026-09-24 (Phase 2b): whichever filters the person building this
+    # block currently has active on the page, so a brand-new block built
+    # while a filter is active is correctly filtered from the moment it's
+    # created, not just on the next filter change.
+    filters: list[FilterCriterion] = Field(default_factory=list, max_length=8)
 
 
 class RestyleBlockRequest(BaseModel):
     chart_type: str = Field(min_length=1)
     title: Optional[str] = None
+
+
+# ---------- Cross-filtering (2026-09-24, Phase 2b) ----------
+class ApplyFiltersRequest(BaseModel):
+    filters: list[FilterCriterion] = Field(default_factory=list, max_length=8)
+
+
+class FilteredBlockOut(BaseModel):
+    id: str
+    type: str
+    config: dict
+
+
+class FilteredBlocksOut(BaseModel):
+    # Only ever includes a block that actually has a stored `recipe` (see
+    # build_manual_block) and successfully recomputed - see
+    # preview_filtered_blocks' own docstring for why everything else is
+    # simply left out rather than echoed back unchanged.
+    blocks: list[FilteredBlockOut]
 
 
 # ---------- Folders (2026-09-23, folders round: organizes Projects on the
