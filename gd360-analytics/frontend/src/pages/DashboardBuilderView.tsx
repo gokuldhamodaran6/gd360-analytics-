@@ -3,14 +3,19 @@ import { Link, useParams } from "react-router-dom";
 import { dashboardBuilderApi, DashboardBuilderDetail } from "../api/client";
 import TopNav from "../components/TopNav";
 import { DashboardBlockGrid } from "../components/DashboardBlocks";
+import DashboardCanvas from "../components/DashboardCanvas";
 
-// 2026-09-24 (Dashboard Builder Phase 1): the owner/editor view for the new
-// pages+blocks kind of dashboard - opened from Dashboards.tsx (routed here
-// instead of DashboardView.tsx whenever layout_version===2) or straight
-// after "Build with AI" finishes (see BuildDashboardModal.tsx). Phase 1 has
-// no canvas editing yet (no drag/resize/add-block - that's Phase 2), so
-// this is a real, working read view of exactly what got generated, plus
-// the actual publish/unpublish flow, which is fully functional this round.
+// 2026-09-24 (Dashboard Builder Phase 1 + Phase 2): the owner/editor view
+// for the new pages+blocks kind of dashboard - opened from Dashboards.tsx
+// (routed here instead of DashboardView.tsx whenever layout_version===2) or
+// straight after "Build with AI" finishes (see BuildDashboardModal.tsx).
+//
+// Phase 2 adds a real edit/view toggle: someone who can_edit this dashboard
+// lands in edit mode by default (DashboardCanvas - drag/resize/add/remove
+// blocks, per-block Ask AI/manual build/style) and can switch to a plain
+// read view (DashboardBlockGrid, the exact same renderer the public link
+// uses) at any time; a view-only visitor (can_edit===false) only ever sees
+// the read view, with no toggle offered at all.
 
 function LinkIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
@@ -128,6 +133,11 @@ export default function DashboardBuilderView() {
   const [dash, setDash] = useState<DashboardBuilderDetail | null>(null);
   const [error, setError] = useState("");
   const [activePageId, setActivePageId] = useState<string | null>(null);
+  // 2026-09-24 (Phase 2): edit mode by default for whoever can actually
+  // edit this dashboard - a view-only visitor never sees "edit" at all
+  // (guarded below in the render, not just here) since dash.can_edit isn't
+  // known until the fetch below resolves.
+  const [mode, setMode] = useState<"edit" | "view">("edit");
 
   useEffect(() => {
     if (!dashboardId) return;
@@ -136,6 +146,7 @@ export default function DashboardBuilderView() {
       .then((data) => {
         setDash(data);
         setActivePageId(data.pages[0]?.id || null);
+        if (!data.can_edit) setMode("view");
       })
       .catch((err) =>
         setError(err?.response?.status === 404 ? "Dashboard not found." : "Couldn't load this dashboard.")
@@ -185,7 +196,27 @@ export default function DashboardBuilderView() {
               {dash.is_published ? "Published - anyone with the link can view it" : "Not published yet - only you can see this"}
             </div>
           </div>
-          <PublishPanel dash={dash} onChange={setDash} />
+          <div className="flex items-center gap-2 shrink-0">
+            {dash.can_edit && (
+              <div className="flex items-center rounded-lg border border-border overflow-hidden text-xs">
+                <button
+                  type="button"
+                  className={`px-2.5 py-1.5 transition ${mode === "edit" ? "bg-primary text-white" : "text-muted hover:text-text hover:bg-surface2"}`}
+                  onClick={() => setMode("edit")}
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  className={`px-2.5 py-1.5 transition ${mode === "view" ? "bg-primary text-white" : "text-muted hover:text-text hover:bg-surface2"}`}
+                  onClick={() => setMode("view")}
+                >
+                  Preview
+                </button>
+              </div>
+            )}
+            <PublishPanel dash={dash} onChange={setDash} />
+          </div>
         </div>
 
         {dash.pages.length > 1 && (
@@ -208,8 +239,12 @@ export default function DashboardBuilderView() {
         )}
 
         <div className="mt-6">
-          {activePage ? <DashboardBlockGrid blocks={activePage.blocks} /> : (
+          {!activePage ? (
             <div className="text-sm text-muted py-10 text-center">This dashboard has no pages yet.</div>
+          ) : dash.can_edit && mode === "edit" ? (
+            <DashboardCanvas dash={dash} page={activePage} onChange={setDash} />
+          ) : (
+            <DashboardBlockGrid blocks={activePage.blocks} />
           )}
         </div>
       </div>
