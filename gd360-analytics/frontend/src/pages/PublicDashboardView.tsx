@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { publicDashboardApi, PublicDashboard } from "../api/client";
 import ThemeToggle from "../components/ThemeToggle";
@@ -22,26 +22,46 @@ import { DashboardBlockGrid } from "../components/DashboardBlocks";
 // shared instance would wrongly redirect a real logged-in GD360 user to
 // /login on this page's very ordinary 401s).
 //
+// 2026-09-24 (Phase 4, white-label): this component is reached TWO ways
+// now - at /d/:slug (a real slug param, GD360's own onrender.com URL) or,
+// with no slug param at all, as App.tsx's catch-all render for EVERY path
+// when this whole SPA has been loaded through a customer's own custom
+// domain (see App.tsx's own comment for why that's a deliberate whole-
+// domain catch-all rather than a specific route). `resolverKey` below is
+// whichever one is actually present - the single source of truth for
+// which mode this is, rather than a separate boolean that could drift out
+// of sync with it. In hostname mode, the GD360 wordmark header and the
+// "Built with GD360 Analytics" footer are both hidden - the entire point
+// of a white-label domain is that a visitor never sees GD360's own
+// branding on it.
+//
 // The viewer token issued after passing the gate is kept in
-// sessionStorage, keyed per slug - deliberately NOT localStorage: it's a
-// narrow, short-lived "may view this one dashboard" grant, not something
-// that should silently outlive the browser tab across days/weeks on a
-// shared or public computer.
-function tokenStorageKey(slug: string) {
-  return `gd360_dashboard_access:${slug}`;
+// sessionStorage, keyed per slug/hostname - deliberately NOT localStorage:
+// it's a narrow, short-lived "may view this one dashboard" grant, not
+// something that should silently outlive the browser tab across days/
+// weeks on a shared or public computer.
+function tokenStorageKey(kind: "slug" | "host", key: string) {
+  return `gd360_dashboard_access:${kind}:${key}`;
 }
 
 function AccessGate({
-  slug,
   reasonMessage,
+  verify,
+  fetchDashboard,
+  storageKey,
   onUnlocked,
 }: {
-  slug: string;
   // Set only when we arrived here after a 403 (a previously-working token
   // just got revoked, or was for a different dashboard) - shown once,
   // above the form, so the person understands why they're being asked
   // again rather than assuming the link is simply broken.
   reasonMessage?: string;
+  // Bound to either publicDashboardApi.verify/get (slug mode) or
+  // .verifyByHostname/.getByHostname (hostname mode) by the caller below -
+  // this component itself has no idea which one it's talking to.
+  verify: (email: string, password?: string) => Promise<string>;
+  fetchDashboard: (token: string) => Promise<PublicDashboard>;
+  storageKey: string;
   onUnlocked: (dash: PublicDashboard) => void;
 }) {
   const [email, setEmail] = useState("");
@@ -55,9 +75,9 @@ function AccessGate({
     setBusy(true);
     setError("");
     try {
-      const token = await publicDashboardApi.verify(slug, email.trim(), password || undefined);
-      sessionStorage.setItem(tokenStorageKey(slug), token);
-      const dash = await publicDashboardApi.get(slug, token);
+      const token = await verify(email.trim(), password || undefined);
+      sessionStorage.setItem(storageKey, token);
+      const dash = await fetchDashboard(token);
       onUnlocked(dash);
     } catch (err: any) {
       const status = err?.response?.status;
@@ -122,19 +142,41 @@ function AccessGate({
 
 export default function PublicDashboardView() {
   const { slug } = useParams();
+  // Hostname mode has no slug param at all - see this file's own module
+  // docstring above and App.tsx for how a request ever gets routed here
+  // with none. window.location.hostname is read once at mount; a custom
+  // domain never changes out from under an already-open tab, so this
+  // doesn't need to be reactive to navigation the way slug already is.
+  const [hostname] = useState(() => (typeof window !== "undefined" ? window.location.hostname : ""));
+  const byHostname = !slug;
+  const resolverKey = slug || hostname;
+
   const [dash, setDash] = useState<PublicDashboard | null>(null);
   const [error, setError] = useState("");
   const [needsAccess, setNeedsAccess] = useState(false);
   const [gateReason, setGateReason] = useState<string | undefined>(undefined);
   const [activePageIndex, setActivePageIndex] = useState(0);
 
-  useEffect(() => {
-    if (!slug) return;
-    let cancelled = false;
-    const storedToken = sessionStorage.getItem(tokenStorageKey(slug)) || undefined;
+  const fetchDashboard = useCallback(
+    (token?: string) =>
+      byHostname ? publicDashboardApi.getByHostname(resolverKey, token) : publicDashboardApi.get(resolverKey, token),
+    [byHostname, resolverKey]
+  );
+  const verifyAccess = useCallback(
+    (email: string, password?: string) =>
+      byHostname
+        ? publicDashboardApi.verifyByHostname(resolverKey, email, password)
+        : publicDashboardApi.verify(resolverKey, email, password),
+    [byHostname, resolverKey]
+  );
+  const storageKey = tokenStorageKey(byHostname ? "host" : "slug", resolverKey);
 
-    publicDashboardApi
-      .get(slug, storedToken)
+  useEffect(() => {
+    if (!resolverKey) return;
+    let cancelled = false;
+    const storedToken = sessionStorage.getItem(storageKey) || undefined;
+
+    fetchDashboard(storedToken)
       .then((data) => {
         if (cancelled) return;
         setDash(data);
@@ -151,7 +193,7 @@ export default function PublicDashboardView() {
           // Had a token (from a previous visit, or from a DIFFERENT
           // private dashboard's gate) that no longer grants access here -
           // clear it and show the gate again with an explanation.
-          sessionStorage.removeItem(tokenStorageKey(slug));
+          sessionStorage.removeItem(storageKey);
           const detail = err?.response?.data?.detail;
           setGateReason(typeof detail === "string" ? detail : "Your access has changed - please sign in again.");
           setNeedsAccess(true);
@@ -162,7 +204,8 @@ export default function PublicDashboardView() {
     return () => {
       cancelled = true;
     };
-  }, [slug]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolverKey, storageKey]);
 
   const activePage = dash?.pages[activePageIndex];
 
@@ -170,9 +213,15 @@ export default function PublicDashboardView() {
     <div className="min-h-screen bg-base text-text">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         <div className="flex items-center justify-between mb-8">
-          <Link to="/" className="font-bold text-lg tracking-tight">
-            GD360 <span className="text-primary">Analytics</span>
-          </Link>
+          {byHostname ? (
+            // White-label: never show the GD360 wordmark on a customer's
+            // own domain - see this file's own module docstring.
+            <span />
+          ) : (
+            <Link to="/" className="font-bold text-lg tracking-tight">
+              GD360 <span className="text-primary">Analytics</span>
+            </Link>
+          )}
           <div className="flex items-center gap-3">
             <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-surface2 border border-border text-muted">
               {needsAccess ? "Private dashboard" : "Public dashboard"}
@@ -187,10 +236,12 @@ export default function PublicDashboardView() {
           </div>
         )}
 
-        {needsAccess && !dash && !error && slug && (
+        {needsAccess && !dash && !error && resolverKey && (
           <AccessGate
-            slug={slug}
             reasonMessage={gateReason}
+            verify={verifyAccess}
+            fetchDashboard={fetchDashboard}
+            storageKey={storageKey}
             onUnlocked={(data) => {
               setDash(data);
               setNeedsAccess(false);
@@ -230,10 +281,13 @@ export default function PublicDashboardView() {
               )}
             </div>
 
-            <div className="mt-12 pt-6 border-t border-border text-xs text-muted flex items-center justify-between flex-wrap gap-2">
-              <span>Built with GD360 Analytics</span>
-              <Link to="/register" className="text-primary hover:underline">Build your own dashboard &rarr;</Link>
-            </div>
+            {/* White-label: no GD360 upsell footer on a customer's own domain. */}
+            {!byHostname && (
+              <div className="mt-12 pt-6 border-t border-border text-xs text-muted flex items-center justify-between flex-wrap gap-2">
+                <span>Built with GD360 Analytics</span>
+                <Link to="/register" className="text-primary hover:underline">Build your own dashboard &rarr;</Link>
+              </div>
+            )}
           </>
         )}
       </div>
