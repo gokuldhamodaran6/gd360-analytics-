@@ -4,11 +4,13 @@ import { dashboardBuilderApi, DashboardBuilderDetail } from "../api/client";
 import TopNav from "../components/TopNav";
 import { DashboardBlockGrid } from "../components/DashboardBlocks";
 import DashboardCanvas from "../components/DashboardCanvas";
+import { useDashboardFilters } from "../lib/useDashboardFilters";
 
-// 2026-09-24 (Dashboard Builder Phase 1 + Phase 2): the owner/editor view
-// for the new pages+blocks kind of dashboard - opened from Dashboards.tsx
-// (routed here instead of DashboardView.tsx whenever layout_version===2) or
-// straight after "Build with AI" finishes (see BuildDashboardModal.tsx).
+// 2026-09-24 (Dashboard Builder Phase 1 + Phase 2 + Phase 2b): the
+// owner/editor view for the new pages+blocks kind of dashboard - opened
+// from Dashboards.tsx (routed here instead of DashboardView.tsx whenever
+// layout_version===2) or straight after "Build with AI" finishes (see
+// BuildDashboardModal.tsx).
 //
 // Phase 2 adds a real edit/view toggle: someone who can_edit this dashboard
 // lands in edit mode by default (DashboardCanvas - drag/resize/add/remove
@@ -16,6 +18,12 @@ import DashboardCanvas from "../components/DashboardCanvas";
 // read view (DashboardBlockGrid, the exact same renderer the public link
 // uses) at any time; a view-only visitor (can_edit===false) only ever sees
 // the read view, with no toggle offered at all.
+//
+// Phase 2b adds cross-filtering, live in BOTH Edit and Preview here (never
+// on the public link - see lib/useDashboardFilters.ts and the backend's
+// own reasoning). One useDashboardFilters() call per active page, shared
+// by both DashboardCanvas and DashboardBlockGrid below so a filter
+// selection behaves identically whichever mode you're looking at it in.
 
 function LinkIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
@@ -179,6 +187,48 @@ export default function DashboardBuilderView() {
   const activePage = dash.pages.find((p) => p.id === activePageId) || dash.pages[0];
 
   return (
+    <DashboardBuilderViewBody
+      dash={dash}
+      setDash={setDash}
+      activePage={activePage}
+      setActivePageId={setActivePageId}
+      mode={mode}
+      setMode={setMode}
+    />
+  );
+}
+
+// Split out so useDashboardFilters (a hook, which can't be called
+// conditionally) only ever runs once `dash` is loaded and `activePage` is
+// known - the loading/error early-returns above happen before this
+// component even mounts.
+function DashboardBuilderViewBody({
+  dash,
+  setDash,
+  activePage,
+  setActivePageId,
+  mode,
+  setMode,
+}: {
+  dash: DashboardBuilderDetail;
+  setDash: (d: DashboardBuilderDetail) => void;
+  activePage: DashboardBuilderDetail["pages"][number] | undefined;
+  setActivePageId: (id: string) => void;
+  mode: "edit" | "view";
+  setMode: (m: "edit" | "view") => void;
+}) {
+  const filterState = useDashboardFilters(dash.id, activePage);
+
+  // Every block-mutating action anywhere on this page (build manually,
+  // ask AI, restyle, delete, add) flows through here - re-running the
+  // active filter selection afterward means an override never lingers on
+  // a block whose real, persisted content just changed underneath it.
+  const handleDashChange = (d: DashboardBuilderDetail) => {
+    setDash(d);
+    filterState.refresh();
+  };
+
+  return (
     <div>
       <TopNav />
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
@@ -215,7 +265,7 @@ export default function DashboardBuilderView() {
                 </button>
               </div>
             )}
-            <PublishPanel dash={dash} onChange={setDash} />
+            <PublishPanel dash={dash} onChange={handleDashChange} />
           </div>
         </div>
 
@@ -238,13 +288,20 @@ export default function DashboardBuilderView() {
           </div>
         )}
 
+        {filterState.activeFilters.length > 0 && (
+          <div className="text-[11px] text-muted mb-2 flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
+            Filtering {filterState.loading ? "…" : `${filterState.activeFilters.length} active`}
+          </div>
+        )}
+
         <div className="mt-6">
           {!activePage ? (
             <div className="text-sm text-muted py-10 text-center">This dashboard has no pages yet.</div>
           ) : dash.can_edit && mode === "edit" ? (
-            <DashboardCanvas dash={dash} page={activePage} onChange={setDash} />
+            <DashboardCanvas dash={dash} page={activePage} onChange={handleDashChange} filterState={filterState} />
           ) : (
-            <DashboardBlockGrid blocks={activePage.blocks} />
+            <DashboardBlockGrid blocks={activePage.blocks} datasourceId={dash.datasource_id} filterState={filterState} />
           )}
         </div>
       </div>
