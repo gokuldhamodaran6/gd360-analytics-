@@ -31,6 +31,18 @@ class User(Base):
     failed_login_attempts = Column(Integer, default=0)
     locked_until = Column(DateTime, nullable=True)
 
+    # 2026-09-24 (full-app security round): bumped every time this user
+    # changes their password (see routers/auth.py change_password). Baked
+    # into every access token issued at login (security.create_access_token
+    # / deps.get_current_user) as the "tv" claim - a token whose "tv" no
+    # longer matches this column is rejected even though it hasn't expired
+    # yet, so changing your password actually signs out every OTHER device/
+    # session immediately, not just the one you changed it from. NOT NULL
+    # with a server default of 0 so every pre-existing row (and every plain
+    # INSERT that omits it) is unambiguously "never changed" rather than
+    # NULL, which would otherwise need special-casing everywhere it's read.
+    token_version = Column(Integer, default=0, nullable=False, server_default="0")
+
     datasources = relationship("DataSource", back_populates="owner", cascade="all, delete-orphan")
     conversations = relationship("Conversation", back_populates="owner", cascade="all, delete-orphan")
     dashboards = relationship("Dashboard", back_populates="owner", cascade="all, delete-orphan")
@@ -361,8 +373,7 @@ class GokuMessage(Base):
 
 class Dashboard(Base):
     """
-    A named board of pinned charts, built by clicking "Save chart to
-    dashboard" from the AI workspace (see routers/dashboards.py).
+    A named, shareable dashboard.
 
     owner_id is always who CREATED this dashboard - that never changes.
     workspace_id (added 2026-09-23, shared dashboards v1) is optional and
@@ -373,6 +384,23 @@ class Dashboard(Base):
     routers/dashboards.py for the exact rule) - so a team can build one
     curated set of charts together instead of everyone re-saving the same
     numbers into their own private dashboard.
+
+    layout_version (2026-09-24, Dashboard Builder Phase 1) distinguishes
+    the two shapes a Dashboard row can have, so the two live side by side
+    without a disruptive migration:
+      - 1 (the default, every pre-existing row): the original flat model -
+        a plain, ordered list of SavedChart snapshots, no pages, no
+        publishing. routers/dashboards.py and DashboardView.tsx keep
+        working on these completely unchanged.
+      - 2: the new model - one or more DashboardPage rows, each holding
+        its own laid-out DashboardBlock grid, and an optional DashboardShare
+        for publishing. Built by routers/dashboard_builder.py and rendered
+        by DashboardBuilderView.tsx / the public viewer. A v2 dashboard's
+        `charts` list is always empty; a v1 dashboard's `pages` list is
+        always empty - the two are never mixed on the same row.
+    source_conversation_id records which chat analysis a v2 dashboard was
+    generated from, purely for reference (e.g. "Built from: <title>" in the
+    UI) - never required, since every block's own config is self-contained.
     """
     __tablename__ = "dashboards"
 
@@ -381,9 +409,18 @@ class Dashboard(Base):
     workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True)
     name = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    layout_version = Column(Integer, default=1, nullable=False, server_default="1")
+    source_conversation_id = Column(String, ForeignKey("conversations.id"), nullable=True)
 
     owner = relationship("User", back_populates="dashboards")
     charts = relationship("SavedChart", back_populates="dashboard", cascade="all, delete-orphan")
+    pages = relationship(
+        "DashboardPage", back_populates="dashboard", cascade="all, delete-orphan",
+        order_by="DashboardPage.position",
+    )
+    share = relationship(
+        "DashboardShare", back_populates="dashboard", uselist=False, cascade="all, delete-orphan",
+    )
 
 
 class SavedChart(Base):
@@ -398,6 +435,75 @@ class SavedChart(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     dashboard = relationship("Dashboard", back_populates="charts")
+
+
+class DashboardPage(Base):
+    """One page (tab) of a layout_version=2 Dashboard - see Dashboard's own
+    docstring. Phase 1 only ever creates a single page per dashboard
+    ("Overview"); the model already supports several so Phase 3 (multiple
+    pages) needs no migration, just a UI to add/reorder more of them."""
+    __tablename__ = "dashboard_pages"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    dashboard_id = Column(String, ForeignKey("dashboards.id"), nullable=False)
+    name = Column(String, nullable=False, default="Overview")
+    position = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    dashboard = relationship("Dashboard", back_populates="pages")
+    blocks = relationship(
+        "DashboardBlock", back_populates="page", cascade="all, delete-orphan",
+        order_by="DashboardBlock.position",
+    )
+
+
+class DashboardBlock(Base):
+    """One tile on a DashboardPage's grid.
+
+    type: "chart" | "table" | "kpi" | "text" - see routers/dashboard_builder.py
+    for exactly what `config` holds for each (a Plotly chart_spec for
+    "chart", {columns, rows} for "table", {value, label} for "kpi",
+    {body} for "text" - the last of these isn't produced by the Phase 1 AI
+    generator yet, reserved for the Phase 2 canvas editor).
+    x/y/w/h place this block on a 12-column grid, in grid units (not
+    pixels) - the same coordinate system PowerBI/Hex-style canvases use, so
+    Phase 2's drag/resize editor can read and write these directly with no
+    schema change."""
+    __tablename__ = "dashboard_blocks"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    page_id = Column(String, ForeignKey("dashboard_pages.id"), nullable=False)
+    type = Column(String, nullable=False)
+    title = Column(String, nullable=True)
+    x = Column(Integer, default=0, nullable=False)
+    y = Column(Integer, default=0, nullable=False)
+    w = Column(Integer, default=6, nullable=False)
+    h = Column(Integer, default=4, nullable=False)
+    config = Column(JSON, nullable=False, default=dict)
+    position = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    page = relationship("DashboardPage", back_populates="blocks")
+
+
+class DashboardShare(Base):
+    """Publish settings for a layout_version=2 Dashboard - at most one row
+    per dashboard. Phase 1 only ever writes mode="public"; "private" (named
+    emails + optional password) is Phase 3, and the columns it needs
+    (an allowed-emails list, a password hash) are added then rather than
+    guessed at now. published_at is the on/off switch: a share row can
+    exist (holding a stable slug) while unpublished (published_at NULL),
+    so publishing and unpublishing never change the dashboard's URL."""
+    __tablename__ = "dashboard_shares"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    dashboard_id = Column(String, ForeignKey("dashboards.id"), nullable=False, unique=True)
+    slug = Column(String, nullable=False, unique=True, index=True)
+    mode = Column(String, nullable=False, default="public")
+    published_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    dashboard = relationship("Dashboard", back_populates="share")
 
 
 class PushdownQueryLog(Base):
