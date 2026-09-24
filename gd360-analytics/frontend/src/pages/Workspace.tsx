@@ -13,6 +13,7 @@ import ChartCanvas from "../components/ChartCanvas";
 import ExplorePanel from "../components/ExplorePanel";
 import DataTable from "../components/DataTable";
 import DataFlowMap, { FlowJumpTarget } from "../components/DataFlowMap";
+import BuildDashboardModal from "../components/BuildDashboardModal";
 import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
 import {
   CLIENT_PIVOTABLE_TYPES, ExploreConfig, ResultColumn, buildExploreFigure, defaultExploreConfig,
@@ -104,6 +105,20 @@ function CloseIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
     <svg viewBox="0 0 20 20" fill="none" className={className} aria-hidden="true">
       <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// 2026-09-24 (Dashboard Builder Phase 1): the "Build Dashboard" button's
+// icon - same sparkle mark BuildDashboardModal.tsx uses for its "Build with
+// AI" tile, kept as its own small copy here (rather than exported/shared)
+// since it's a trivial one-off SVG, matching how every other icon in this
+// file is already a private local function.
+function SparkleIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M18 6l-2.5 2.5M8.5 15.5 6 18" />
+      <circle cx="12" cy="12" r="2.5" />
     </svg>
   );
 }
@@ -319,6 +334,10 @@ export default function Workspace() {
     [allDataSources, datasourceId]
   );
   const [saveMsg, setSaveMsg] = useState("");
+  // 2026-09-24 (Dashboard Builder Phase 1): the "Build Dashboard" button
+  // Gokul asked to appear once an analysis is done - opens the AI/blank
+  // choice modal, same header row as "Save chart to dashboard".
+  const [buildDashboardOpen, setBuildDashboardOpen] = useState(false);
 
   // Inline rename of the data source itself - the "Analyzing: <name>"
   // header, right next to the pencil icon. Mirrors the same
@@ -1659,10 +1678,29 @@ export default function Workspace() {
                 dsName={dsName}
                 onSaved={setSaveMsg}
               />
+              {/* 2026-09-24 (Dashboard Builder Phase 1): the real-time,
+                  publishable dashboard entry point - deliberately separate
+                  from "Save chart to dashboard" above (that still only ever
+                  pins THIS one chart onto the old flat board). This builds
+                  a whole new dashboard out of everything this analysis has
+                  produced so far. */}
+              <button
+                type="button"
+                className="btn-primary text-sm flex items-center gap-1.5"
+                onClick={() => setBuildDashboardOpen(true)}
+              >
+                <SparkleIcon /> Build Dashboard
+              </button>
             </>
           )}
         </div>
       </div>
+
+      <BuildDashboardModal
+        open={buildDashboardOpen}
+        conversationId={conversationId}
+        onClose={() => setBuildDashboardOpen(false)}
+      />
 
       <AddDataPicker
         open={addDataOpen}
