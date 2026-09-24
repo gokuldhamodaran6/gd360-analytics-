@@ -227,6 +227,30 @@ class Settings(BaseSettings):
     MAX_UPLOAD_MB: int = 50
     RATE_LIMIT_PER_MINUTE: int = 30  # per-user AI calls/minute, protects the free AI tier
 
+    # --- White-label custom domains (Dashboard Builder Phase 4, 2026-09-24) ---
+    # Both are required for the "custom domain" publish option to work at
+    # all - see services/render_domains.py for exactly how they're used.
+    # Neither is set by default, so this feature 503s with a clear message
+    # until both are configured, rather than silently pretending to work.
+    #
+    # RENDER_API_KEY: a Render account API key with permission to manage
+    # this account's services. Generate one at
+    # https://dashboard.render.com/u/settings#api-keys (Account Settings ->
+    # API Keys -> Create API Key) and set it as a Render environment
+    # variable on THIS backend service - never commit it to git.
+    RENDER_API_KEY: str = ""
+    # RENDER_FRONTEND_SERVICE_ID: the Render service id of the FRONTEND
+    # static site every custom domain gets registered against (this
+    # installation's is srv-dakh7ebm8hqs73ejhcmg, "gd360-analytics-web" -
+    # visible in that service's Render dashboard URL). Every custom domain
+    # across every dashboard on this whole installation points at this one
+    # service, since Render serves the exact same built JS bundle no
+    # matter which hostname it was reached through - the frontend itself
+    # (see PublicDashboardView.tsx/App.tsx) is what looks at
+    # window.location.hostname at runtime and resolves it to the right
+    # dashboard by calling this backend.
+    RENDER_FRONTEND_SERVICE_ID: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
