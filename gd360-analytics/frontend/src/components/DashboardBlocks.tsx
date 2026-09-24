@@ -19,7 +19,13 @@ import { DashboardBlock } from "../api/client";
 // wasteful for a KPI number.
 const ROW_UNIT_PX = 48;
 
-function KpiTile({ title, config }: { title: string | null; config: any }) {
+// 2026-09-24 (Dashboard Builder Phase 2): KpiTile/BlockTable/BlockChart are
+// now exported - DashboardCanvas.tsx (the new editable canvas) reuses these
+// exact same renderers inside each grid cell, so a block looks pixel-
+// identical whether you're looking at it in the read-only viewer
+// (DashboardBlockGrid below) or dragging it around in edit mode. TextBlock
+// is new this round (Phase 2's freeform note block type).
+export function KpiTile({ title, config }: { title: string | null; config: any }) {
   const raw = config?.value;
   const isNumber = typeof raw === "number" && Number.isFinite(raw);
   const display = isNumber
@@ -37,7 +43,7 @@ function KpiTile({ title, config }: { title: string | null; config: any }) {
   );
 }
 
-function BlockTable({ title, config }: { title: string | null; config: any }) {
+export function BlockTable({ title, config }: { title: string | null; config: any }) {
   const columns: string[] = Array.isArray(config?.columns) ? config.columns : [];
   const rows: Record<string, any>[] = Array.isArray(config?.rows) ? config.rows : [];
   return (
@@ -81,10 +87,24 @@ function BlockTable({ title, config }: { title: string | null; config: any }) {
   );
 }
 
-function BlockChart({ title, config }: { title: string | null; config: any }) {
+export function BlockChart({ title, config }: { title: string | null; config: any }) {
   return (
     <div className="h-full">
       <ChartCanvas chartSpec={config?.chart_spec} title={title || undefined} />
+    </div>
+  );
+}
+
+export function TextBlock({ title, config }: { title: string | null; config: any }) {
+  const text: string = typeof config?.text === "string" ? config.text : "";
+  return (
+    <div className="card h-full p-4 overflow-auto">
+      {title && <div className="text-xs font-semibold uppercase tracking-wide text-muted mb-2 truncate">{title}</div>}
+      {text ? (
+        <div className="text-sm leading-relaxed whitespace-pre-wrap">{text}</div>
+      ) : (
+        <div className="text-sm text-muted italic">Empty note.</div>
+      )}
     </div>
   );
 }
@@ -112,6 +132,7 @@ export function DashboardBlockGrid({ blocks }: { blocks: DashboardBlock[] }) {
           {b.type === "kpi" && <KpiTile title={b.title} config={b.config} />}
           {b.type === "table" && <BlockTable title={b.title} config={b.config} />}
           {b.type === "chart" && <BlockChart title={b.title} config={b.config} />}
+          {b.type === "text" && <TextBlock title={b.title} config={b.config} />}
         </div>
       ))}
     </div>
