@@ -28,6 +28,14 @@ class UserOut(BaseModel):
     full_name: Optional[str] = None
     company: Optional[str] = None
     created_at: datetime
+    # 2026-09-24 (full-app security round): computed server-side from
+    # deps.is_admin_email and returned on register/login/me/profile, so the
+    # frontend never again needs its own hardcoded copy of the admin email
+    # list (previously duplicated in TopNav.tsx AND AdminLogin.tsx, shipped
+    # in plain text in the public JS bundle). Defaults false so any caller
+    # building a UserOut without explicitly setting it never accidentally
+    # grants admin UI.
+    is_admin: bool = False
 
     class Config:
         from_attributes = True
@@ -383,6 +391,12 @@ class DashboardOut(BaseModel):
     created_by_email: Optional[str] = None
     can_edit: bool
     can_delete: bool
+    # 2026-09-24 (Dashboard Builder Phase 1): 1 = the original flat
+    # saved-chart board (routers/dashboards.py, DashboardView.tsx);
+    # 2 = a new pages+blocks dashboard (routers/dashboard_builder.py,
+    # DashboardBuilderView.tsx). Lets the Dashboards.tsx list page route a
+    # click at each dashboard to the right viewer/editor.
+    layout_version: int = 1
 
 
 class SavedChartOut(BaseModel):
@@ -395,6 +409,58 @@ class SavedChartOut(BaseModel):
 
 class DashboardDetailOut(DashboardOut):
     charts: list[SavedChartOut]
+
+
+# ---------- Dashboard Builder (2026-09-24, Phase 1): the new pages+blocks
+# dashboard model - see models.Dashboard/DashboardPage/DashboardBlock/
+# DashboardShare and routers/dashboard_builder.py for the full picture. ----------
+class GenerateDashboardRequest(BaseModel):
+    conversation_id: str = Field(min_length=1)
+
+
+class DashboardBlockOut(BaseModel):
+    id: str
+    type: str  # "chart" | "table" | "kpi" | "text"
+    title: Optional[str] = None
+    x: int
+    y: int
+    w: int
+    h: int
+    config: dict
+    position: int
+
+
+class DashboardPageOut(BaseModel):
+    id: str
+    name: str
+    position: int
+    blocks: list[DashboardBlockOut]
+
+
+class DashboardBuilderOut(BaseModel):
+    id: str
+    name: str
+    layout_version: int
+    created_at: datetime
+    source_conversation_id: Optional[str] = None
+    pages: list[DashboardPageOut]
+    can_edit: bool
+    is_published: bool
+    public_slug: Optional[str] = None
+
+
+class PublishDashboardRequest(BaseModel):
+    # Only "public" exists in Phase 1 - "private" (named emails + optional
+    # password) is Phase 3. Validated server-side in
+    # routers/dashboard_builder.py rather than with a Literal type, so a
+    # not-yet-supported mode fails with a clear, friendly 400 instead of a
+    # generic 422 validation error.
+    mode: str = "public"
+
+
+class PublicDashboardOut(BaseModel):
+    name: str
+    pages: list[DashboardPageOut]
 
 
 # ---------- Folders (2026-09-23, folders round: organizes Projects on the
