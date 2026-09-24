@@ -502,7 +502,28 @@ class DashboardShare(Base):
     verify_password, same as a real account password, never stored or
     compared in plaintext. A private share with password_hash NULL means
     "email only, no password" - a deliberately allowed configuration, not
-    a bug: the email allow-list is itself the access control."""
+    a bug: the email allow-list is itself the access control.
+
+    custom_domain* (2026-09-24, Phase 4 - white-label): an alternate way
+    to reach this SAME published share (public or private - the domain
+    doesn't change which mode it's in, just how it's reached) through a
+    dashboard owner's own domain instead of this app's own /d/{slug}
+    link. See services/render_domains.py for how this backend actually
+    registers/checks/removes the domain with Render, and
+    routers/dashboard_builder.py's module docstring (Phase 4 section) for
+    the full design. custom_domain is kept globally unique at the
+    APPLICATION level (checked explicitly in set_custom_domain, the same
+    pattern _make_unique_slug already uses for `slug` above) rather than
+    a real database UNIQUE constraint - this column was added to an
+    already-live table via the no-migration-tool _NEW_COLUMNS pattern
+    (see database.py), which can add a plain column but not a new index/
+    constraint on one. custom_domain_status is one of "pending_dns"
+    (Render hasn't verified the owner's DNS record yet), "pending_ssl"
+    (DNS verified, certificate still being issued), or "live" (verified
+    AND HTTPS is actually being served for it) - NULL means no custom
+    domain has ever been attached. custom_domain_error holds the last
+    error message from Render, if any, purely for display in the owner's
+    publish panel."""
     __tablename__ = "dashboard_shares"
 
     id = Column(String, primary_key=True, default=gen_uuid)
@@ -512,6 +533,10 @@ class DashboardShare(Base):
     password_hash = Column(String, nullable=True)
     published_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    custom_domain = Column(String, nullable=True, index=True)
+    render_custom_domain_id = Column(String, nullable=True)
+    custom_domain_status = Column(String, nullable=True)
+    custom_domain_error = Column(String, nullable=True)
 
     dashboard = relationship("Dashboard", back_populates="share")
     allowed_emails = relationship(
