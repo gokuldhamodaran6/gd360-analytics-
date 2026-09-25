@@ -682,6 +682,16 @@ class RestyleBlockRequest(BaseModel):
     title: Optional[str] = None
 
 
+# 2026-09-25h (inline editing round): pure presentation, never a data
+# change - see routers/dashboard_builder.py's set_block_accent_color for
+# why this is its own small endpoint rather than routed through the
+# generic update_block (which replaces a block's whole `config`, and would
+# silently wipe out a kpi's real value/label). color is a hex string like
+# "#1a7a5c", or None/"" to reset back to the automatic per-block color.
+class SetBlockAccentColorRequest(BaseModel):
+    color: Optional[str] = None
+
+
 # ---------- Cross-filtering (2026-09-24, Phase 2b) ----------
 class ApplyFiltersRequest(BaseModel):
     filters: list[FilterCriterion] = Field(default_factory=list, max_length=8)
