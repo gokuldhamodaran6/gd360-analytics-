@@ -96,6 +96,24 @@ function PaletteIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
     </svg>
   );
 }
+// 2026-09-25d (elite pass): every block card used to show up to four
+// separate icon buttons (Ask AI, Build manually, Chart style, Delete) in
+// its header at all times - the literal "lot of unwanted editing options"
+// a side-by-side against a premium reference dashboard called out (none of
+// Vision UI/Horizon UI's cards carry a permanent row of controls like
+// that). Collapsed into the same single "..." kebab menu pattern
+// ChartCanvas.tsx already uses for a chart's export menu, so a block's
+// header reads as just its title - same actions, one click behind a menu
+// instead of four buttons competing for attention on every single card.
+function KebabIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+      <circle cx="12" cy="5" r="1.9" />
+      <circle cx="12" cy="12" r="1.9" />
+      <circle cx="12" cy="19" r="1.9" />
+    </svg>
+  );
+}
 
 const BLOCK_TYPE_LABEL: Record<DashboardBlockType, string> = {
   chart: "Chart",
@@ -512,6 +530,8 @@ function BlockCard({
   const [titleDraft, setTitleDraft] = useState(block.title || "");
   const [textDraft, setTextDraft] = useState(block.config?.text || "");
   const [deleting, setDeleting] = useState(false);
+  // 2026-09-25d (elite pass) - see KebabIcon above.
+  const [menuOpen, setMenuOpen] = useState(false);
   const filtersActive = Boolean(filterState && filterState.activeFilters.length > 0);
 
   useEffect(() => setTitleDraft(block.title || ""), [block.id, block.title]);
@@ -565,45 +585,79 @@ function BlockCard({
         <span className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-surface border border-border text-muted shrink-0">
           {BLOCK_TYPE_LABEL[block.type]}
         </span>
-        {block.type !== "text" && block.type !== "filter" && !MANUAL_ONLY_TYPES.includes(block.type) && (
+        <div className="relative shrink-0">
           <button
             type="button"
-            title="Ask AI"
-            className="p-1 rounded hover:bg-surface text-muted hover:text-accent transition shrink-0"
-            onClick={() => setPanel(panel === "ask" ? "none" : "ask")}
+            className="dash-chart-menu-btn"
+            aria-label="Block options"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((o) => !o)}
           >
-            <SparkleIcon />
+            <KebabIcon />
           </button>
-        )}
-        {block.type !== "text" && block.type !== "filter" && (
-          <button
-            type="button"
-            title="Build manually"
-            className="p-1 rounded hover:bg-surface text-muted hover:text-text transition shrink-0"
-            onClick={() => setPanel(panel === "manual" ? "none" : "manual")}
-          >
-            <WrenchIcon />
-          </button>
-        )}
-        {block.type === "chart" && (
-          <button
-            type="button"
-            title={filtersActive ? "Restyling is disabled while a filter is active - it would overwrite this filtered view with the chart's real, unfiltered data." : "Chart style"}
-            disabled={filtersActive}
-            className="p-1 rounded hover:bg-surface text-muted hover:text-text transition shrink-0 disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
-            onClick={() => !filtersActive && setPanel(panel === "style" ? "none" : "style")}
-          >
-            <PaletteIcon />
-          </button>
-        )}
-        <button
-          type="button"
-          title="Delete block"
-          className="p-1 rounded hover:bg-red-500/10 text-muted hover:text-red-400 transition shrink-0"
-          onClick={remove}
-        >
-          <TrashIcon />
-        </button>
+          {menuOpen && (
+            <div role="menu" className="absolute right-0 top-full mt-1 w-40 card bg-surface shadow-2xl border border-border p-1.5 z-20">
+              {block.type !== "text" && block.type !== "filter" && !MANUAL_ONLY_TYPES.includes(block.type) && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors flex items-center gap-2"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setPanel(panel === "ask" ? "none" : "ask");
+                  }}
+                >
+                  <SparkleIcon className="w-3.5 h-3.5" /> Ask AI
+                </button>
+              )}
+              {block.type !== "text" && block.type !== "filter" && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors flex items-center gap-2"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setPanel(panel === "manual" ? "none" : "manual");
+                  }}
+                >
+                  <WrenchIcon className="w-3.5 h-3.5" /> Build manually
+                </button>
+              )}
+              {block.type === "chart" && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={filtersActive}
+                  title={
+                    filtersActive
+                      ? "Restyling is disabled while a filter is active - it would overwrite this filtered view with the chart's real, unfiltered data."
+                      : undefined
+                  }
+                  className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                  onClick={() => {
+                    if (filtersActive) return;
+                    setMenuOpen(false);
+                    setPanel(panel === "style" ? "none" : "style");
+                  }}
+                >
+                  <PaletteIcon className="w-3.5 h-3.5" /> Chart style
+                </button>
+              )}
+              <button
+                type="button"
+                role="menuitem"
+                className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-red-500/10 text-red-400 transition-colors flex items-center gap-2"
+                onClick={() => {
+                  setMenuOpen(false);
+                  remove();
+                }}
+              >
+                <TrashIcon className="w-3.5 h-3.5" /> Delete block
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="flex-1 min-h-0">
