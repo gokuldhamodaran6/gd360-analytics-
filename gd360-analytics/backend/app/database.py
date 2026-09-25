@@ -73,6 +73,24 @@ _NEW_COLUMNS = [
     ("dashboard_shares", "render_custom_domain_id", "TEXT"),
     ("dashboard_shares", "custom_domain_status", "TEXT"),
     ("dashboard_shares", "custom_domain_error", "TEXT"),
+    # Round 4 (2026-09-25): per-dashboard branding/customization - logo,
+    # brand colors, background. logo_image/background_image are BYTEA (the
+    # Postgres type LargeBinary maps to - production runs on Supabase
+    # Postgres, not SQLite) for the same reason DataSource.file_data is:
+    # Render's web services reset their local disk on every deploy, so raw
+    # bytes have to live in the database to survive one. See
+    # models.Dashboard's own docstring for what each column means.
+    ("dashboards", "brand_primary_color", "TEXT"),
+    ("dashboards", "brand_accent_color", "TEXT"),
+    ("dashboards", "background_style", "TEXT"),
+    ("dashboards", "background_color", "TEXT"),
+    ("dashboards", "logo_image", "BYTEA"),
+    ("dashboards", "logo_image_content_type", "TEXT"),
+    ("dashboards", "background_image", "BYTEA"),
+    ("dashboards", "background_image_content_type", "TEXT"),
+    # Round 4: a page's own background tint override - see
+    # models.DashboardPage's own docstring.
+    ("dashboard_pages", "background_color", "TEXT"),
 ]
 
 
