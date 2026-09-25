@@ -912,6 +912,32 @@ def _ai_result_to_block(result: dict, requested_type: str) -> tuple[str, dict]:
     return "text", {"text": result.get("narrative") or "No result."}
 
 
+def _default_block_size(block_type: str) -> tuple[int, int]:
+    """A freshly-placed block's sensible default (w, h) for its type - the
+    sizing half of _place_new_block below, pulled out on its own
+    (2026-09-25, Round 15, element library) so create_block can reuse it
+    even when the CLIENT supplies where the block goes (x/y, from a drag-
+    and-drop) but never how big it starts - size always stays type-driven,
+    never something a dropped block's on-screen footprint at drop time
+    would otherwise be free to distort."""
+    if block_type == "kpi":
+        return 3, 3
+    if block_type in ("gauge", "sparkline"):
+        return 4, 4
+    if block_type == "text":
+        return 6, 3
+    if block_type == "filter":
+        return 3, 2
+    # 2026-09-25 (Round 15, element library): "heading" reads best as a
+    # short full-width banner above whatever follows it; "divider" only
+    # ever needs to be a thin full-width rule, the shortest a block can be.
+    if block_type == "heading":
+        return 12, 2
+    if block_type == "divider":
+        return 12, 1
+    return 6, 6  # chart / table / donut / avatar_list
+
+
 def _place_new_block(page: models.DashboardPage, block_type: str) -> tuple[int, int, int, int]:
     """Where a freshly-created block lands before the person drags it
     anywhere - always appended below whatever is already on the page
@@ -919,15 +945,8 @@ def _place_new_block(page: models.DashboardPage, block_type: str) -> tuple[int, 
     x/y/w/h are all in the same 12-column grid unit system as everywhere
     else in this file."""
     max_bottom = max((b.y + b.h for b in page.blocks), default=0)
-    if block_type == "kpi":
-        return 0, max_bottom, 3, 3
-    if block_type in ("gauge", "sparkline"):
-        return 0, max_bottom, 4, 4
-    if block_type == "text":
-        return 0, max_bottom, 6, 3
-    if block_type == "filter":
-        return 0, max_bottom, 3, 2
-    return 0, max_bottom, 6, 6  # chart / table / donut / avatar_list
+    w, h = _default_block_size(block_type)
+    return 0, max_bottom, w, h
 
 
 def _default_block_config(block_type: str) -> dict:
@@ -936,8 +955,15 @@ def _default_block_config(block_type: str) -> dict:
     so a template-created block is indistinguishable from one a person
     added by hand: no value, no rows, nothing computed. Every block
     still has to be filled in for real via Ask AI / build manually / a
-    plain text edit before it shows anything but its own empty state."""
-    if block_type == "text":
+    plain text edit before it shows anything but its own empty state.
+
+    2026-09-25 (Round 15, element library): "heading" stores its text the
+    same way "text" does (a plain config.text string, edited the same
+    way) - purely presentational content the person types themselves,
+    same as a text block's own note, never a computed value. "divider"
+    needs no config at all - it draws unconditionally, nothing to ever
+    be "empty" about - so it falls through to the {} default below."""
+    if block_type in ("text", "heading"):
         return {"text": ""}
     if block_type == "filter":
         return {"column": None}
@@ -1683,23 +1709,38 @@ def create_block(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    """Adds one empty block to the canvas - the "+ Add block" toolbar's
-    Chart/Table/KPI/Text/Filter choice. Empty on purpose: the person fills
-    it in right after, either with ask_ai_block or build_manual_block
-    below (or, for a text block, a plain PATCH via update_block; a filter
-    block similarly gets its target column set via update_block's config
-    field, never a dedicated endpoint)."""
+    """Adds one empty block to the canvas - the element library's
+    Chart/Table/KPI/Text/Filter/Heading/Divider/... choice. Empty on
+    purpose: the person fills it in right after, either with ask_ai_block
+    or build_manual_block below (or, for a text/heading block, a plain
+    PATCH via update_block; a filter block similarly gets its target
+    column set via update_block's config field, never a dedicated
+    endpoint).
+
+    2026-09-25 (Round 15, element library): payload.x/payload.y are new -
+    when the frontend's canvas drags a card from the element library and
+    drops it at a specific grid cell (react-grid-layout's own onDrop),
+    it now sends exactly where the person dropped it instead of always
+    landing at the bottom via _place_new_block below. Size is still never
+    client-controlled - _default_block_size stays the only thing that
+    decides how big a fresh block starts, whichever way it was placed."""
     d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
     if payload.type not in (
         "chart", "table", "kpi", "text", "filter",
         "gauge", "donut", "sparkline", "avatar_list",
+        "heading", "divider",
     ):
         raise HTTPException(400, "Unknown block type.")
     page = next((p for p in d.pages if p.id == payload.page_id), None)
     if not page:
         raise HTTPException(404, "Page not found on this dashboard.")
 
-    x, y, w, h = _place_new_block(page, payload.type)
+    if payload.x is not None and payload.y is not None:
+        w, h = _default_block_size(payload.type)
+        x = max(0, min(payload.x, _GRID_COLUMNS - w))
+        y = max(0, payload.y)
+    else:
+        x, y, w, h = _place_new_block(page, payload.type)
     # A filter block's config only ever remembers WHICH COLUMN it filters -
     # a structural setting, edited the normal way through update_block's
     # `config` field, same as a text block's body. Its currently-selected
