@@ -5,6 +5,8 @@ import {
   DatasetVersion, DataSourceSummary, DataFlow, DashboardSummary, WorkspaceSummary,
 } from "../api/client";
 import TopNav from "../components/TopNav";
+import AppSidebar from "../components/AppSidebar";
+import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID, otherDsSourceId, otherDsIdFromSourceId } from "../components/ChatPanel";
 import { hasMultipleTables, connectionKindMeta, CreatedDataSource } from "../components/DataSourceForm";
 import AddDataPicker from "../components/AddDataPicker";
@@ -290,6 +292,13 @@ function SaveChartMenu({
 export default function Workspace() {
   const { datasourceId } = useParams();
   const navigate = useNavigate();
+  // 2026-09-25i (sidebar consistency pass) - see DashboardBuilderView.tsx's
+  // own note. This was the one real remaining authenticated page still on
+  // the old top-bar-only layout, with no left AppSidebar at all - unlike
+  // SaveChartMenu's own unrelated `workspaces` state further up this file
+  // (that one is just the share-target list for "Save chart"), this feeds
+  // the sidebar's workspace switcher.
+  const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
   const [searchParams] = useSearchParams();
   const resumeConversationId = searchParams.get("conversation");
   // Set only when arriving straight from the new blank-chat "New Project"
@@ -1560,15 +1569,28 @@ export default function Workspace() {
   };
 
   return (
-    // min-h-screen (not a hard h-screen) below lg lets the page grow to fit
-    // its real content and scroll normally on a phone - only at lg+ does
-    // this lock to the exact viewport height for the fixed, non-scrolling
-    // 2-pane desktop layout below. Without this, the stacked panels'
-    // combined minimum heights on mobile exceeded what a fixed-height,
-    // overflow-hidden page had room for, and the bottom of the layout was
-    // simply clipped off-screen with no way to scroll down to it.
-    <div className="min-h-screen lg:h-screen flex flex-col">
-      <TopNav />
+    // 2026-09-25i (sidebar consistency pass): the min-h-screen/lg:h-screen
+    // lock used to sit on this page's outermost div - moved down one level
+    // onto the new inner flex-1 column instead, now that AppSidebar (its
+    // own fixed-height desktop rail) sits beside it rather than above it.
+    // The lock's own original reasoning is unchanged, just one level
+    // deeper: min-h-screen (not a hard h-screen) below lg lets the page
+    // grow to fit its real content and scroll normally on a phone - only
+    // at lg+ does this lock to the exact viewport height for the fixed,
+    // non-scrolling 2-pane desktop layout below. Without this, the stacked
+    // panels' combined minimum heights on mobile exceeded what a
+    // fixed-height, overflow-hidden page had room for, and the bottom of
+    // the layout was simply clipped off-screen with no way to scroll down
+    // to it.
+    <div className="flex">
+      <AppSidebar
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
+        onWorkspaceSwitch={switchWorkspace}
+        onWorkspaceCreated={handleWorkspaceCreated}
+      />
+      <div className="min-h-screen lg:h-screen flex-1 min-w-0 flex flex-col">
+      <TopNav hideLogo />
       <div className="px-4 sm:px-6 py-3 border-b border-border flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0 flex-1">
           {/* 2026-09-23 (Project identity round): this Project's own name -
@@ -2120,6 +2142,7 @@ export default function Workspace() {
           startFresh={!resumeConversationId}
         />
       )}
+      </div>
     </div>
   );
 }
