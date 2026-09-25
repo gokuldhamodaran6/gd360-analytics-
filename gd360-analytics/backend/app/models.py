@@ -401,6 +401,33 @@ class Dashboard(Base):
     source_conversation_id records which chat analysis a v2 dashboard was
     generated from, purely for reference (e.g. "Built from: <title>" in the
     UI) - never required, since every block's own config is self-contained.
+
+    Round 4 (2026-09-25, branding/customization) columns are all optional
+    and only meaningful on a layout_version==2 dashboard, same as pages/
+    share above: brand_primary_color/brand_accent_color are hex strings
+    ("#2a78d6") that override this dashboard's --color-primary/--color-
+    accent CSS tokens wherever it's rendered (owner editor, preview, and
+    the public viewer alike - see routers/dashboard_builder.py's
+    _hex_color_or_none and the frontend's hexToRgbTriple). background_style
+    is "default" (the app's normal surface, the same as before this round
+    existed), "color" (background_color, same hex-string convention), or
+    "image" (background_image below); NULL behaves exactly like "default"
+    so every pre-existing row needs no backfill. logo_image/background_image
+    are raw image bytes stored directly in this table - same reasoning as
+    DataSource.file_data (see that model's own comment): Render's web
+    services have ephemeral local disks that reset on every deploy, so
+    anything saved to local disk would silently vanish on the next deploy;
+    Postgres is the only durable place to put it. *_content_type is
+    whichever of image/png, image/jpeg, image/webp was actually uploaded
+    (validated in _read_and_validate_image - deliberately NOT image/svg+xml,
+    which can carry embedded script) so the serving endpoints can send back
+    the right Content-Type instead of guessing. Branding images are served
+    to the public viewer whenever this dashboard's share is currently
+    published, with no email/password gate even on a private share (see
+    _resolve_dashboard_for_public_branding's own comment) - purely
+    cosmetic, non-sensitive assets, deliberately kept simple rather than
+    threaded through the viewer-token machinery real dashboard content
+    uses.
     """
     __tablename__ = "dashboards"
 
@@ -411,6 +438,14 @@ class Dashboard(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     layout_version = Column(Integer, default=1, nullable=False, server_default="1")
     source_conversation_id = Column(String, ForeignKey("conversations.id"), nullable=True)
+    brand_primary_color = Column(String, nullable=True)
+    brand_accent_color = Column(String, nullable=True)
+    background_style = Column(String, nullable=True)  # "default" | "color" | "image"
+    background_color = Column(String, nullable=True)
+    logo_image = Column(LargeBinary, nullable=True)
+    logo_image_content_type = Column(String, nullable=True)
+    background_image = Column(LargeBinary, nullable=True)
+    background_image_content_type = Column(String, nullable=True)
 
     owner = relationship("User", back_populates="dashboards")
     charts = relationship("SavedChart", back_populates="dashboard", cascade="all, delete-orphan")
@@ -443,7 +478,15 @@ class DashboardPage(Base):
     ("Overview"); Phase 3 (2026-09-24) adds add/rename/reorder/duplicate/
     delete through routers/dashboard_builder.py's page endpoints - this
     model itself needed no schema change for that, since `position` (the
-    ordering) and multi-page support were already here from the start."""
+    ordering) and multi-page support were already here from the start.
+
+    background_color (2026-09-25, Round 4 branding) is this one page's own
+    override of the dashboard-level background - a hex string, or NULL to
+    just inherit whatever the parent Dashboard's background_style/
+    background_color/background_image says. Deliberately color-only (no
+    per-page image) to keep this round's scope bounded: a per-page tint is
+    enough to tell pages apart at a glance without a second image-upload
+    surface per page."""
     __tablename__ = "dashboard_pages"
 
     id = Column(String, primary_key=True, default=gen_uuid)
@@ -451,6 +494,7 @@ class DashboardPage(Base):
     name = Column(String, nullable=False, default="Overview")
     position = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
+    background_color = Column(String, nullable=True)
 
     dashboard = relationship("Dashboard", back_populates="pages")
     blocks = relationship(
