@@ -265,7 +265,21 @@ export default function ChartCanvas({
           // this always used, so nothing changes for the common case.
           style={{ width: "100%", height: "100%", minHeight: suggestedChartMinHeight(chartSpec) }}
           useResizeHandler
-          config={{ displaylogo: false, responsive: true }}
+          // 2026-09-25c (elite pass): a dashPremium chart already has its
+          // own "..." export menu (see the header above) - Plotly's own
+          // built-in modebar (camera/zoom/pan/box-select) was still
+          // rendering on top of it on hover, a second, redundant, distinctly
+          // un-premium toolbar fighting for the same corner of the card
+          // (this is the literal "map inside which is very bad" clutter a
+          // side-by-side against Vision UI/Horizon UI called out). It's
+          // switched off only for dashPremium - the live Workspace/chat
+          // chart still gets Plotly's native toolbar, since that surface
+          // has no export menu of its own to replace it with.
+          config={
+            dashPremium
+              ? { displaylogo: false, responsive: true, displayModeBar: false }
+              : { displaylogo: false, responsive: true }
+          }
           onInitialized={(_figure: any, graphDiv: any) => {
             graphDivRef.current = graphDiv;
           }}
