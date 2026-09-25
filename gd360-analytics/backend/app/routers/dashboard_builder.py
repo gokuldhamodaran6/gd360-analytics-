@@ -1013,7 +1013,7 @@ def _page_out(page: models.DashboardPage) -> schemas.DashboardPageOut:
     blocks = [
         schemas.DashboardBlockOut(
             id=b.id, type=b.type, title=b.title, x=b.x, y=b.y, w=b.w, h=b.h,
-            config=b.config, position=b.position,
+            config=b.config, position=b.position, data_updated_at=b.data_updated_at,
         )
         for b in sorted(page.blocks, key=lambda b: b.position)
     ]
@@ -1558,6 +1558,11 @@ def update_block(
         block.title = payload.title.strip()[:120] or None
     if payload.config is not None:
         block.config = payload.config
+        # A real content change (a text block's body, a filter block's
+        # column) - not a position/title-only edit, which leaves this
+        # column untouched. See models.DashboardBlock's own docstring for
+        # why this is set explicitly rather than via onupdate.
+        block.data_updated_at = datetime.utcnow()
 
     db.commit()
     db.refresh(d)
@@ -1625,6 +1630,7 @@ def ask_ai_block(
     actual_type, config = _ai_result_to_block(result, block.type)
     block.type = actual_type
     block.config = config
+    block.data_updated_at = datetime.utcnow()
     if not block.title:
         block.title = payload.prompt.strip()[:120]
 
@@ -1692,6 +1698,7 @@ def build_manual_block(
 
     block.type = actual_type
     block.config = config
+    block.data_updated_at = datetime.utcnow()
     if not block.title:
         block.title = default_title
 
