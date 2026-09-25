@@ -985,7 +985,15 @@ export default function AppSidebar({
         <Link
           to="/dashboards"
           className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
-            location.pathname.startsWith("/dashboards") ? "bg-primary text-white" : "text-text hover:bg-surface2"
+            // 2026-09-25d (elite pass): /dashboard-builder/:id (the pages+
+            // blocks editor - see App.tsx's own routing comment for why
+            // it's a deliberately different path prefix from /dashboards)
+            // is still, conceptually, "being in Dashboards" - now that it
+            // also renders this sidebar, it should highlight the same nav
+            // item rather than leaving nothing active while editing one.
+            location.pathname.startsWith("/dashboards") || location.pathname.startsWith("/dashboard-builder")
+              ? "bg-primary text-white"
+              : "text-text hover:bg-surface2"
           }`}
         >
           <DashboardsIcon />
