@@ -1757,6 +1757,40 @@ def restyle_block(
     return _builder_out(db, d, user)
 
 
+@router.patch("/{dashboard_id}/blocks/{block_id}/accent-color", response_model=schemas.DashboardBuilderOut)
+def set_block_accent_color(
+    dashboard_id: str,
+    block_id: str,
+    payload: schemas.SetBlockAccentColorRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """2026-09-25h (inline editing round): the "click a color swatch right
+    on the tile" affordance the frontend's KpiTile now offers in edit mode
+    - see its own comment in components/DashboardBlocks.tsx. Merges just
+    `config.accent_color` into whatever config already exists, exactly the
+    same merge-not-replace pattern restyle_block above uses for
+    chart_spec, rather than going through the generic update_block (which
+    replaces a block's whole config and would silently erase a kpi's real
+    computed value/label). Only meaningful for a kpi block today, but
+    harmless to store on any block type - a color choice is pure
+    presentation, so this deliberately does NOT touch data_updated_at
+    (see models.DashboardBlock's own docstring for why that column is
+    reserved for real content changes only)."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    block = _get_block(db, d, block_id)
+
+    color = (payload.color or "").strip()
+    if color and not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        raise HTTPException(400, "Color must be a hex value like #1a7a5c, or empty to reset it.")
+
+    block.config = {**(block.config or {}), "accent_color": color or None}
+
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
 @router.post("/{dashboard_id}/pages/{page_id}/preview-filtered", response_model=schemas.FilteredBlocksOut)
 def preview_filtered_blocks(
     dashboard_id: str,
