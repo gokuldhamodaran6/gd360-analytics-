@@ -37,14 +37,29 @@ const THEME_CHROME = {
   },
 } as const;
 
-export default function ChartCanvas({ chartSpec, title }: { chartSpec: any; title?: string }) {
+export default function ChartCanvas({
+  chartSpec,
+  title,
+  dashPremium,
+}: {
+  chartSpec: any;
+  title?: string;
+  // 2026-09-25 (naming fix + premium light theme foundation round): when
+  // true, renders on the new `.dash-card` treatment (index.css) instead of
+  // the plain `.card` every other chart in the app still uses - passed
+  // only by DashboardBlocks.tsx's BlockChart, so this is a no-op for the
+  // live Workspace chat chart and the old v1 DashboardView, both of which
+  // never pass it.
+  dashPremium?: boolean;
+}) {
   const graphDivRef = useRef<any>(null);
   const [downloading, setDownloading] = useState("");
   const { theme } = useTheme();
+  const cardClass = dashPremium ? "dash-card" : "card";
 
   if (!chartSpec) {
     return (
-      <div className="card h-full flex flex-col items-center justify-center text-center p-10 gap-3">
+      <div className={`${cardClass} h-full flex flex-col items-center justify-center text-center p-10 gap-3`}>
         <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center text-2xl">
           📊
         </div>
@@ -165,7 +180,7 @@ export default function ChartCanvas({ chartSpec, title }: { chartSpec: any; titl
   };
 
   return (
-    <div className="card p-4 h-full flex flex-col overflow-hidden transition-shadow hover:shadow-glow">
+    <div className={`${cardClass} p-4 h-full flex flex-col overflow-hidden transition-shadow hover:shadow-glow`}>
       <div className="flex items-center justify-between mb-3 shrink-0">
         <div className="text-xs font-semibold tracking-wide text-muted uppercase">Export chart as</div>
         <div className="flex gap-1.5">
