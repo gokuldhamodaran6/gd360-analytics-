@@ -19,6 +19,7 @@ import HelpSnowflake from "./pages/HelpSnowflake";
 import ConnectResourcePicker from "./pages/ConnectResourcePicker";
 import PrivacyPolicy from "./pages/PrivacyPolicy";
 import InviteJoin from "./pages/InviteJoin";
+import CommandPalette from "./components/CommandPalette";
 
 function Protected({ children }: { children: JSX.Element }) {
   const { user, loading } = useAuth();
@@ -73,7 +74,15 @@ export default function App() {
     return <PublicDashboardView />;
   }
   return (
-    <Routes>
+    <>
+      {/* 2026-09-25f (command palette round): mounted once here rather than
+          by each page - it reads its own auth/workspace state and renders
+          nothing (see its own `if (!user) return null`) on the signed-out
+          routes above (Login/Register/Landing/etc.), so nothing below
+          needs to know it exists. Opened by Cmd+K/Ctrl+K anywhere, or by
+          the search button every authenticated page's TopNav now shows. */}
+      <CommandPalette />
+      <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/admin-login" element={<AdminLogin />} />
@@ -131,6 +140,7 @@ export default function App() {
           or creating an account. */}
       <Route path="/invite/:token" element={<Protected><InviteJoin /></Protected>} />
       <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+      </Routes>
+    </>
   );
 }
