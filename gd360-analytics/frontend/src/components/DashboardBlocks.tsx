@@ -70,6 +70,32 @@ export const STACK_MIN_HEIGHT: Record<string, number> = {
   donut: 320,
   sparkline: 200,
   avatar_list: 280,
+  // 2026-09-25 (Round 15, element library): heading/divider are the two
+  // pure-layout widgets - see HeadingBlock/DividerBlock below.
+  heading: 64,
+  divider: 40,
+};
+
+// 2026-09-25 (Round 15, element library): the (w, h) grid units a freshly
+// dropped block should preview at while it's being dragged over the
+// canvas, BEFORE the create-block call that actually decides its real
+// size lands - see DashboardCanvas.tsx's onDrop/droppingItem. Kept as its
+// own table (not derived from STACK_MIN_HEIGHT above, which is pixel
+// heights for the narrow-mode stack, a different unit) so it can mirror
+// the backend's own _default_block_size in routers/dashboard_builder.py
+// exactly, number for number - if one ever changes, this one should too.
+export const BLOCK_DEFAULT_SIZE: Record<DashboardBlockType, { w: number; h: number }> = {
+  kpi: { w: 3, h: 3 },
+  gauge: { w: 4, h: 4 },
+  sparkline: { w: 4, h: 4 },
+  text: { w: 6, h: 3 },
+  filter: { w: 3, h: 2 },
+  heading: { w: 12, h: 2 },
+  divider: { w: 12, h: 1 },
+  chart: { w: 6, h: 6 },
+  table: { w: 6, h: 6 },
+  donut: { w: 6, h: 6 },
+  avatar_list: { w: 6, h: 6 },
 };
 
 // A small, fixed set of accent hues (see index.css's --dash-accent-0..5
@@ -309,6 +335,43 @@ export function TextBlock({ title, config }: { title: string | null; config: any
       ) : (
         <div className="text-sm text-muted italic">Empty note.</div>
       )}
+    </div>
+  );
+}
+
+// 2026-09-25 (Round 15, element library): the first of two pure-layout
+// widgets the element library adds - a section banner, not a data block.
+// Its content lives in the exact same config.text field a "text" block
+// uses (edited the same way in DashboardCanvas.tsx's BlockCard, just
+// through a single-line input instead of a textarea) - it's the same
+// "the person typed this themselves" content, just meant to read big and
+// bold above whatever follows it rather than as a note.
+export function HeadingBlock({ config }: { title: string | null; config: any }) {
+  const text: string = typeof config?.text === "string" ? config.text : "";
+  return (
+    <div className="h-full flex items-center px-1">
+      {text ? (
+        <h2 className="text-xl font-bold text-text truncate w-full" style={{ textWrap: "balance" }}>
+          {text}
+        </h2>
+      ) : (
+        <span className="text-xl font-bold text-muted italic">Untitled heading</span>
+      )}
+    </div>
+  );
+}
+
+// 2026-09-25 (Round 15, element library): the second pure-layout widget -
+// a plain horizontal rule to separate sections of a page. It has no
+// config at all (see backend _default_block_config: it isn't special-
+// cased there, so it just gets {}) and nothing to ever edit, so it's the
+// one block type BlockCard renders directly in edit mode too instead of
+// giving it its own inline-editable control - there's no content for one
+// to hold.
+export function DividerBlock() {
+  return (
+    <div className="h-full flex items-center px-1">
+      <hr className="w-full border-t border-border" />
     </div>
   );
 }
@@ -713,6 +776,8 @@ export function DashboardBlockGrid({
         {type === "donut" && <DonutBlock title={b.title} config={config} />}
         {type === "sparkline" && <SparklineBlock title={b.title} config={config} />}
         {type === "avatar_list" && <AvatarListBlock title={b.title} config={config} />}
+        {type === "heading" && <HeadingBlock title={b.title} config={config} />}
+        {type === "divider" && <DividerBlock />}
         {type === "filter" &&
           (filterState ? (
             <FilterControl
