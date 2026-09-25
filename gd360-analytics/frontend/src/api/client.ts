@@ -796,7 +796,11 @@ export const dashboardApi = {
 // rendered entirely in components/DashboardBlocks.tsx, not a chart_spec.
 // See routers/dashboard_builder.py's own module docstring, Round 3
 // section, for each one's config shape.
-export type DashboardBlockType = "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut" | "sparkline" | "avatar_list";
+// 2026-09-25 (Round 15, element library): "heading" | "divider" added -
+// two pure-layout widgets alongside the original data block types, both
+// drag-and-droppable from the canvas's new element library the same way
+// every other type already is.
+export type DashboardBlockType = "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut" | "sparkline" | "avatar_list" | "heading" | "divider";
 
 // 2026-09-25 (Round 5, template gallery): what GET /dashboard-builder/
 // templates returns - a LAYOUT catalog only (page names, block types,
@@ -1123,16 +1127,23 @@ export const dashboardBuilderApi = {
   // the canvas can just replace its local state wholesale after each edit
   // instead of hand-patching one block in place. ----
 
-  // Adds one empty block to a page - the "+ Add block" toolbar's
-  // Chart/Table/KPI/Text choice. Filled in right after with askAiBlock or
-  // buildManualBlock (or, for a text block, a plain updateBlock config
-  // write).
-  createBlock: (dashboardId: string, pageId: string, type: DashboardBlockType, title?: string) =>
+  // Adds one empty block to a page - the element library's
+  // Chart/Table/KPI/Text/Heading/Divider/... choice. Filled in right
+  // after with askAiBlock or buildManualBlock (or, for a text/heading
+  // block, a plain updateBlock config write).
+  //
+  // 2026-09-25 (Round 15, element library): `position` is new - passed
+  // when a card was dragged from the library and dropped at a specific
+  // grid cell (see DashboardCanvas.tsx's onDrop), so the block lands
+  // exactly there instead of always at the bottom of the page.
+  createBlock: (dashboardId: string, pageId: string, type: DashboardBlockType, title?: string, position?: { x: number; y: number }) =>
     api
       .post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks`, {
         page_id: pageId,
         type,
         title: title || undefined,
+        x: position?.x,
+        y: position?.y,
       })
       .then((r) => r.data),
 
