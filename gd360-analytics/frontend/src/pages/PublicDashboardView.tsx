@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { publicDashboardApi, PublicDashboard } from "../api/client";
+import { API_URL, publicDashboardApi, PublicDashboard } from "../api/client";
 import ThemeToggle from "../components/ThemeToggle";
 import { DashboardBlockGrid } from "../components/DashboardBlocks";
+import { brandingBackgroundImageStyle, brandingStyleVars, hexToRgbTriple } from "../lib/branding";
 
 // 2026-09-24 (Dashboard Builder Phase 1 + Phase 3): the anonymous, no-login
 // viewer a published dashboard's public OR private link actually opens -
@@ -40,6 +41,19 @@ import { DashboardBlockGrid } from "../components/DashboardBlocks";
 // it's a narrow, short-lived "may view this one dashboard" grant, not
 // something that should silently outlive the browser tab across days/
 // weeks on a shared or public computer.
+//
+// 2026-09-25 (Round 4, branding/customization): this is the surface
+// branding is really FOR - a stranger who opens this link should see the
+// owner's own logo/colors/background, not GD360's defaults. `dash` (once
+// loaded) already carries brand_primary_color/brand_accent_color/
+// background_style/background_color/has_logo/has_background_image (see
+// api/client.ts's DashboardBranding) and is rendered through the exact
+// same lib/branding.ts helpers DashboardBuilderView.tsx's owner editor
+// uses, so a dashboard looks identical here and there. Unlike the owner
+// editor, the branding image URLs here point straight at this file's own
+// UNAUTHENTICATED public endpoints (/public/dashboards/{slug}/branding/...
+// or /public/domains/{hostname}/branding/...) - no bearer token to attach,
+// so a plain <img src> works with no blob-fetch dance.
 function tokenStorageKey(kind: "slug" | "host", key: string) {
   return `gd360_dashboard_access:${kind}:${key}`;
 }
@@ -209,6 +223,22 @@ export default function PublicDashboardView() {
 
   const activePage = dash?.pages[activePageIndex];
 
+  // 2026-09-25 (Round 4, branding): built from resolverKey/byHostname
+  // (already known before `dash` loads), not from anything in the
+  // response - these are plain, unauthenticated URLs the browser can just
+  // <img src> directly, matching get_public_logo/get_public_background
+  // (or their _by_domain counterparts) in routers/dashboard_builder.py.
+  const brandingBase = byHostname
+    ? `${API_URL}/public/domains/${encodeURIComponent(resolverKey)}`
+    : `${API_URL}/public/dashboards/${resolverKey}`;
+  const logoUrl = dash?.has_logo ? `${brandingBase}/branding/logo` : null;
+  const backgroundImageUrl = dash?.has_background_image ? `${brandingBase}/branding/background` : null;
+  const shellStyle: React.CSSProperties = {
+    ...brandingStyleVars(dash),
+    ...brandingBackgroundImageStyle(dash, backgroundImageUrl),
+  };
+  const pageBgTriple = activePage?.background_color ? hexToRgbTriple(activePage.background_color) : null;
+
   // 2026-09-25 (naming fix + premium light theme foundation round): this
   // is the one surface in the whole app an external viewer - a customer,
   // an investor, a professor - ever opens with no GD360 account at all,
@@ -220,17 +250,22 @@ export default function PublicDashboardView() {
   // riding the app's existing light/dark tokens so it looks right in
   // either theme rather than only one.
   return (
-    <div className="dash-shell min-h-screen bg-base text-text">
+    <div className="dash-shell min-h-screen bg-base text-text" style={shellStyle}>
       <div className="sticky top-0 z-20 backdrop-blur-md bg-base/80 border-b border-border">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
           {byHostname ? (
             // White-label: never show the GD360 wordmark on a customer's
-            // own domain - see this file's own module docstring.
-            <span />
+            // own domain - see this file's own module docstring. The
+            // owner's own logo (Round 4 branding) takes its place instead,
+            // when one is set.
+            logoUrl ? <img src={logoUrl} alt="" className="h-7 w-auto max-w-[160px] object-contain" /> : <span />
           ) : (
-            <Link to="/" className="font-bold text-lg tracking-tight">
-              GD360 <span className="text-primary">Analytics</span>
-            </Link>
+            <div className="flex items-center gap-2.5">
+              {logoUrl && <img src={logoUrl} alt="" className="h-7 w-auto max-w-[140px] object-contain" />}
+              <Link to="/" className="font-bold text-lg tracking-tight">
+                GD360 <span className="text-primary">Analytics</span>
+              </Link>
+            </div>
           )}
           <div className="flex items-center gap-3">
             <span className="text-[10px] font-semibold uppercase tracking-wide px-2.5 py-1 rounded-full bg-surface2 border border-border text-muted">
@@ -288,7 +323,10 @@ export default function PublicDashboardView() {
               </div>
             )}
 
-            <div className="mt-7">
+            <div
+              className="mt-7"
+              style={pageBgTriple ? { background: `rgb(${pageBgTriple} / 0.35)`, borderRadius: 20, padding: 16 } : undefined}
+            >
               {activePage ? <DashboardBlockGrid blocks={activePage.blocks} /> : (
                 <div className="text-sm text-muted py-10 text-center">This dashboard has no pages yet.</div>
               )}
