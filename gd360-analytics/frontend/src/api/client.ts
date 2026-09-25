@@ -841,13 +841,36 @@ export type DashboardBuilderPage = {
   name: string;
   position: number;
   blocks: DashboardBlock[];
+  // 2026-09-25 (Round 4, branding): this page's own background tint
+  // override, or null to inherit the parent dashboard's background - see
+  // backend models.DashboardPage's own docstring.
+  background_color: string | null;
+};
+
+// 2026-09-25 (Round 4, branding/customization): the shape shared by
+// DashboardBuilderDetail and PublicDashboard below - identical fields,
+// identical meaning, so lib/branding.ts's hexToRgbTriple/brandingStyleVars
+// can render the owner's editor, the owner's preview, and the anonymous
+// public/private viewer with exactly one rendering rule, never three
+// slightly different ones. has_logo/has_background_image are booleans
+// (never the raw bytes, which never travel through this JSON payload at
+// all - see dashboardBuilderApi.fetchBrandingImageUrl / the public
+// branding image URLs below) so the caller knows whether to even try
+// fetching the image, avoiding a broken-<img> flash while it decides.
+export type DashboardBranding = {
+  brand_primary_color: string | null;
+  brand_accent_color: string | null;
+  background_style: "default" | "color" | "image" | null;
+  background_color: string | null;
+  has_logo: boolean;
+  has_background_image: boolean;
 };
 
 // 2026-09-24 (Phase 3): one named person allowed to open a "private" share
 // - see dashboardBuilderApi.addShareEmail/removeShareEmail below.
 export type DashboardShareEmail = { id: string; email: string };
 
-export type DashboardBuilderDetail = {
+export type DashboardBuilderDetail = DashboardBranding & {
   id: string;
   name: string;
   layout_version: number;
@@ -896,7 +919,10 @@ export type DashboardBuilderDetail = {
 // What the anonymous, no-login public link actually gets back - no
 // can_edit/is_published/ids beyond what's needed to render the pages, so
 // nothing about the owner's account leaks into a page a stranger can open.
-export type PublicDashboard = {
+// 2026-09-25 (Round 4): also carries the owner's branding (DashboardBranding)
+// - never the dashboard's own id, same privacy boundary this type already
+// held before this round.
+export type PublicDashboard = DashboardBranding & {
   name: string;
   pages: DashboardBuilderPage[];
 };
@@ -1030,6 +1056,14 @@ export const dashboardBuilderApi = {
     api.patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/pages/${pageId}`, { name }).then((r) => r.data),
   reorderPage: (dashboardId: string, pageId: string, position: number) =>
     api.patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/pages/${pageId}`, { position }).then((r) => r.data),
+  // 2026-09-25 (Round 4, branding): this one page's own background tint -
+  // pass a hex string ("#00ff00") to set it, or "" to clear it back to
+  // "inherit the dashboard's background" (empty-string-clears, same
+  // convention renamePage's `name` doesn't use but a block's title does).
+  setPageBackgroundColor: (dashboardId: string, pageId: string, color: string) =>
+    api
+      .patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/pages/${pageId}`, { background_color: color })
+      .then((r) => r.data),
   deletePage: (dashboardId: string, pageId: string) =>
     api.delete<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/pages/${pageId}`).then((r) => r.data),
   duplicatePage: (dashboardId: string, pageId: string) =>
@@ -1141,6 +1175,64 @@ export const dashboardBuilderApi = {
         title: title || undefined,
       })
       .then((r) => r.data),
+
+  // ---- Round 4 (2026-09-25): branding/customization - logo, brand
+  // colors, background. Every call here returns the whole updated
+  // DashboardBuilderDetail, same convention as everything else in this
+  // object. See backend routers/dashboard_builder.py's own module
+  // docstring (Round 4 section) for the full design. ----
+
+  // Every field optional and independently settable - send only what
+  // changed. "" (empty string) for a color clears it back to the app's
+  // default; omit/undefined leaves that field unchanged.
+  updateBranding: (
+    dashboardId: string,
+    payload: {
+      brand_primary_color?: string;
+      brand_accent_color?: string;
+      background_style?: "default" | "color" | "image";
+      background_color?: string;
+    }
+  ) => api.patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/branding`, payload).then((r) => r.data),
+
+  // file must already be validated client-side (png/jpeg/webp, under the
+  // backend's size cap) - the backend re-validates both regardless, this
+  // just gives a faster/friendlier error than a round trip.
+  uploadLogo: (dashboardId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return api
+      .post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/branding/logo`, form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+      .then((r) => r.data);
+  },
+  removeLogo: (dashboardId: string) =>
+    api.delete<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/branding/logo`).then((r) => r.data),
+  uploadBackground: (dashboardId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return api
+      .post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/branding/background`, form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+      .then((r) => r.data);
+  },
+  removeBackground: (dashboardId: string) =>
+    api.delete<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/branding/background`).then((r) => r.data),
+
+  // The owner/editor's own preview fetch - GET .../branding/logo|background
+  // is authenticated (view access), so a plain <img src> can't carry the
+  // Authorization header the way it can on the public/private viewer's
+  // unauthenticated equivalent (see PublicDashboardView.tsx). Fetches the
+  // bytes through the normal `api` instance (which DOES attach the bearer
+  // token) and hands back a blob: object URL for an <img> to point at -
+  // see lib/branding.ts's useBrandingAsset, which owns revoking it again.
+  fetchBrandingImageUrl: (dashboardId: string, kind: "logo" | "background") =>
+    api
+      .get(`/dashboard-builder/${dashboardId}/branding/${kind}`, { responseType: "blob" })
+      .then((r) => URL.createObjectURL(r.data))
+      .catch(() => null as string | null),
 };
 
 // 2026-09-24 (Phase 3): a deliberately SEPARATE axios instance with NO
