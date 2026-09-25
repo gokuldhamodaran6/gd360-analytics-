@@ -233,6 +233,59 @@ to generate_dashboard()'s own entry point, BuildDashboardModal.tsx.
      has worked per-block since it shipped) - only this one missing
      entry point: a v2 dashboard with a page and zero blocks, so the
      person builds the whole thing by hand from there.
+
+Round 3 (2026-09-25, four new native widget types): "gauge", "donut",
+"sparkline", and "avatar_list" join the original five block types
+(chart/table/kpi/text/filter). All four are real, hand-built React
+components (see DashboardBlocks.tsx), not a relabeled Plotly chart -
+matching the reference dashboards' own radial meters, curved-legend
+donuts, half-tone trend bars, and ranked leaderboard lists, which no
+generic chart library shape fits.
+
+  - "gauge": one metric read as progress toward a target on a radial arc.
+    config: {value, min, max, target, label}. Built the same way "kpi" is
+    (one column + aggregation), plus two OPTIONAL numbers the person can
+    set - target_value and max_value (new on ManualBuildBlockRequest,
+    carried straight through the stored recipe, same pattern as every
+    other recipe field). Left unset, _run_manual_recipe fills in a
+    sensible max (25% above the target or the value itself) and target
+    (defaults to the max) - a gauge is never left un-renderable just
+    because the person didn't type a target.
+  - "donut": a category breakdown, same (metric, group-by) shape a
+    grouped chart/table already produces - capped to the top 6 categories
+    plus a rolled-up "Other" slice, since a curved-legend donut with 20
+    labels around it is unreadable at any block size. config: {items:
+    [{label, value}]}.
+  - "sparkline": a compact trend - the SAME (metric, group-by) recipe
+    shape, but deliberately NOT value-sorted like chart/table/donut are
+    (pandas' own groupby key order instead, which reads as chronological
+    for a date/sequence group-by column) and capped to the most recent 30
+    points, since a trend's whole point is order, not rank. config:
+    {value, series, categories, delta_pct} - delta_pct compares the last
+    point to the first.
+  - "avatar_list": a ranked top-N leaderboard from that same grouped-and-
+    sorted shape "chart"/"table" already use, capped to the top 8 (a
+    leaderboard longer than that stops reading as "the leaders").
+    config: {items: [{rank, name, value}]}.
+
+  Deliberately NOT wired into ask_ai_block or the goal-driven "AI Build"
+  plan this round - _ai_result_to_block's fallback cascade only ever
+  produces chart/kpi/table/text, and teaching the AI to reliably choose a
+  believable gauge target or curate a donut's categories is real, separate
+  prompt-design work, not a rename. Exactly the same scope line Phase 2b
+  drew around the "filter" block type (structural, manual-only) - see this
+  docstring's own Phase 2b section. All four are available from the "+ Add
+  block" toolbar and "Build manually" only; they are also NOT offered in
+  the chart restyle panel (restyle_block still only ever targets an
+  existing "chart" block's own six chart types) - switching INTO one of
+  these four is what "Build manually" with a different Type choice already
+  does, reusing the exact same block-type-reassignment build_manual_block
+  has always done for kpi/table/chart.
+
+  Because preview_filtered_blocks (Phase 2b) re-runs whatever recipe a
+  block has stored through this same _run_manual_recipe, cross-filtering
+  works on all four new types for free, with no changes needed to
+  preview_filtered_blocks itself.
 """
 import copy
 import re
@@ -240,6 +293,7 @@ import secrets
 import time
 from collections import defaultdict, deque
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -335,6 +389,20 @@ def _apply_filters(df: pd.DataFrame, filters: list) -> pd.DataFrame:
     return df
 
 
+def _safe_float(v: Any, default: float = 0.0) -> float:
+    """Coerces a pandas/numpy scalar to a plain, JSON-safe Python float,
+    substituting `default` for NaN/None/anything non-numeric rather than
+    letting a NaN slip into a stored config (not valid JSON, and would
+    500 on commit) - used by the donut/sparkline/avatar_list branches
+    below, which each build several small numbers per item rather than
+    the single value kpi/gauge compute."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    return f if pd.notna(f) else default
+
+
 def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | None = None) -> tuple[str, dict, str]:
     """The actual column + aggregation computation behind both
     build_manual_block (a fresh build) and preview_filtered_blocks (a
@@ -350,7 +418,13 @@ def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | Non
     title text (matching the original build_manual_block behavior of
     preferring an already-set block title over the generated default) -
     the returned default_title is unaffected either way, since the caller
-    needs the plain default for its own "no title yet" fallback."""
+    needs the plain default for its own "no title yet" fallback.
+
+    2026-09-25 (Round 3): block_type also accepts "gauge" (single-value,
+    same branch as "kpi") and "donut"/"sparkline"/"avatar_list" (grouped,
+    same branch as "chart"/"table") - see this file's own module
+    docstring, Round 3 section, for what each one's config shape is and
+    why."""
     metric_column = recipe.get("metric_column")
     agg = recipe.get("agg")
     group_by_column = recipe.get("group_by_column")
@@ -359,7 +433,7 @@ def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | Non
 
     if agg not in _MANUAL_AGG_FUNCS:
         raise ValueError("Unknown aggregation.")
-    if block_type not in ("kpi", "table", "chart"):
+    if block_type not in ("kpi", "table", "chart", "gauge", "donut", "sparkline", "avatar_list"):
         raise ValueError("Unknown block type.")
     if metric_column not in df.columns:
         raise ValueError(f'Column "{metric_column}" was not found in this data.')
@@ -371,7 +445,7 @@ def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | Non
     agg_func = _MANUAL_AGG_FUNCS[agg]
     agg_label = {"sum": "Sum", "avg": "Average", "count": "Count", "min": "Min", "max": "Max"}[agg]
 
-    if block_type == "kpi":
+    if block_type in ("kpi", "gauge"):
         value = df[metric_column].agg(agg_func)
         # pandas .agg() returns a numpy scalar (e.g. numpy.float64), not a
         # plain Python number - .item() converts it, since neither the
@@ -379,18 +453,66 @@ def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | Non
         # directly (this would otherwise 500 on commit).
         value = value.item() if hasattr(value, "item") else value
         default_title = f"{agg_label} of {metric_column}"
-        return "kpi", {"value": value, "label": default_title, "recipe": recipe}, default_title
+        if block_type == "kpi":
+            return "kpi", {"value": value, "label": default_title, "recipe": recipe}, default_title
+
+        # "gauge" - a plain number becomes a radial "value out of max,
+        # marked at target" read. target_value/max_value are both
+        # optional (ManualBuildBlockRequest) - a gauge is never left
+        # un-renderable just because the person didn't type either one.
+        numeric_value = _safe_float(value, 0.0)
+        target = recipe.get("target_value")
+        resolved_target = _safe_float(target, None) if target is not None else None
+        resolved_max = recipe.get("max_value")
+        resolved_max = _safe_float(resolved_max, None) if resolved_max is not None else None
+        if resolved_max is None:
+            basis = max(abs(numeric_value), abs(resolved_target or 0))
+            resolved_max = basis * 1.25 if basis > 0 else 1.0
+        if resolved_target is None:
+            resolved_target = resolved_max
+        resolved_min = min(0.0, numeric_value, resolved_target)
+        if resolved_max <= resolved_min:
+            resolved_max = resolved_min + 1.0
+        config = {
+            "value": numeric_value, "min": resolved_min, "max": resolved_max,
+            "target": resolved_target, "label": default_title, "recipe": recipe,
+        }
+        return "gauge", config, default_title
 
     if not group_by_column:
-        raise ValueError("Pick a column to group by for a table or chart.")
+        raise ValueError("Pick a column to group by for a table, chart, donut, sparkline, or top list.")
     if group_by_column not in df.columns:
         raise ValueError(f'Column "{group_by_column}" was not found in this data.')
+
+    if block_type == "sparkline":
+        # Deliberately NOT value-sorted (unlike every other grouped branch
+        # below) - a trend's whole point is order, not rank. pandas'
+        # groupby default (sort=True) sorts by the group KEY itself, which
+        # reads as chronological for a date/sequence group-by column.
+        grouped = df.groupby(group_by_column, sort=True)[metric_column].agg(agg_func).tail(30)
+        grouped_df = grouped.reset_index()
+        grouped_df.columns = [group_by_column, metric_column]
+        default_title = f"{agg_label} of {metric_column} by {group_by_column}"
+        series = [_safe_float(v, None) if pd.notna(v) else None for v in grouped_df[metric_column].tolist()]
+        clean = [v for v in series if v is not None]
+        current = clean[-1] if clean else None
+        first = clean[0] if clean else None
+        delta_pct = ((current - first) / abs(first)) * 100 if current is not None and first not in (None, 0) else None
+        config = {
+            "label": default_title,
+            "value": current,
+            "series": series,
+            "categories": [str(v) for v in grouped_df[group_by_column].tolist()],
+            "delta_pct": delta_pct,
+            "recipe": recipe,
+        }
+        return "sparkline", config, default_title
 
     grouped = (
         df.groupby(group_by_column)[metric_column]
         .agg(agg_func)
         .sort_values(ascending=False)
-        .head(50 if block_type == "chart" else _MAX_TABLE_ROWS_PER_BLOCK)
+        .head(8 if block_type == "avatar_list" else (50 if block_type in ("chart", "donut") else _MAX_TABLE_ROWS_PER_BLOCK))
     )
     # Named columns, not the generic "label"/"value" that
     # chart_builder.result_to_tidy would otherwise fall back to for a bare
@@ -411,6 +533,35 @@ def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | Non
             config["result_columns"] = tidy["columns"]
             config["result_rows"] = tidy["rows"]
         return "chart", config, default_title
+
+    if block_type == "donut":
+        # Capped at the top 6 categories plus a rolled-up "Other" slice -
+        # a curved-legend donut with 20 labels crowded around it is
+        # unreadable at any block size (see this file's own module
+        # docstring, Round 3 section).
+        top = grouped_df.head(6)
+        items = [
+            {"label": str(r[group_by_column]), "value": _safe_float(r[metric_column])}
+            for _, r in top.iterrows()
+        ]
+        if len(grouped_df) > 6:
+            remainder = _safe_float(grouped_df.iloc[6:][metric_column].sum())
+            if remainder > 0:
+                items.append({"label": "Other", "value": remainder})
+        tidy = chart_builder.result_to_tidy(grouped_df)
+        config = {"items": items, "recipe": recipe}
+        if tidy:
+            config["result_columns"] = tidy["columns"]
+            config["result_rows"] = tidy["rows"]
+        return "donut", config, default_title
+
+    if block_type == "avatar_list":
+        items = [
+            {"rank": i + 1, "name": str(r[group_by_column]), "value": _safe_float(r[metric_column])}
+            for i, (_, r) in enumerate(grouped_df.iterrows())
+        ]
+        config = {"items": items, "label": default_title, "recipe": recipe}
+        return "avatar_list", config, default_title
 
     tidy = chart_builder.result_to_tidy(grouped_df)
     config = {
@@ -718,11 +869,13 @@ def _place_new_block(page: models.DashboardPage, block_type: str) -> tuple[int, 
     max_bottom = max((b.y + b.h for b in page.blocks), default=0)
     if block_type == "kpi":
         return 0, max_bottom, 3, 3
+    if block_type in ("gauge", "sparkline"):
+        return 0, max_bottom, 4, 4
     if block_type == "text":
         return 0, max_bottom, 6, 3
     if block_type == "filter":
         return 0, max_bottom, 3, 2
-    return 0, max_bottom, 6, 6  # chart / table
+    return 0, max_bottom, 6, 6  # chart / table / donut / avatar_list
 
 
 # ---------- Slugs for public links ----------
@@ -1125,7 +1278,10 @@ def create_block(
     block similarly gets its target column set via update_block's config
     field, never a dedicated endpoint)."""
     d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
-    if payload.type not in ("chart", "table", "kpi", "text", "filter"):
+    if payload.type not in (
+        "chart", "table", "kpi", "text", "filter",
+        "gauge", "donut", "sparkline", "avatar_list",
+    ):
         raise HTTPException(400, "Unknown block type.")
     page = next((p for p in d.pages if p.id == payload.page_id), None)
     if not page:
@@ -1313,6 +1469,13 @@ def build_manual_block(
         "group_by_column": payload.group_by_column,
         "block_type": payload.block_type,
         "chart_type": payload.chart_type,
+        # 2026-09-25 (Round 3): only read when block_type == "gauge" - see
+        # _run_manual_recipe. Carried in the stored recipe itself (not a
+        # separate column) so a later cross-filter recompute
+        # (preview_filtered_blocks) reproduces the exact same gauge
+        # range/target the person originally set, not a re-guessed one.
+        "target_value": payload.target_value,
+        "max_value": payload.max_value,
     }
     try:
         actual_type, config, default_title = _run_manual_recipe(df, recipe, existing_title=block.title)
