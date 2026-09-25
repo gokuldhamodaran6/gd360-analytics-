@@ -7,7 +7,29 @@ import ThemeToggle from "./ThemeToggle";
 // Display-only check for showing the Admin link in the nav. The real
 // access control happens on the backend (see ADMIN_EMAILS in config.py) -
 // this just avoids showing the link to people it would 403 for anyway.
-const ADMIN_EMAILS = ["gokuldhamodaran6@gmail.com", "gokuldhamodaranb@gmail.com"];
+//
+// 2026-09-25f (command palette round): exported so CommandPalette.tsx can
+// gate its own "Admin" quick action off this exact same list, instead of
+// keeping a second copy of these two email addresses that could quietly
+// drift out of sync with this one.
+export const ADMIN_EMAILS = ["gokuldhamodaran6@gmail.com", "gokuldhamodaranb@gmail.com"];
+
+// 2026-09-25f (command palette round): the visible way to discover Cmd+K
+// on any authenticated page (every caller of this component - see
+// CommandPalette.tsx's own module comment for why a shortcut alone isn't
+// enough). Clicking it dispatches the same custom "open" event the
+// keyboard shortcut fires internally, since the palette itself is mounted
+// once at the app root (App.tsx) rather than owned by this bar - a plain
+// DOM event is the lightest way to reach it from here without adding a
+// Context provider just for one open/close boolean.
+function SearchIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="11" cy="11" r="7" />
+      <path d="M21 21l-4.3-4.3" />
+    </svg>
+  );
+}
 
 function ChevronDownIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   return (
@@ -220,6 +242,19 @@ export default function TopNav({
         </Link>
       )}
       <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end">
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new Event("gd360:open-command-palette"))}
+          aria-label="Search and jump to anything"
+          title="Search / jump to anything"
+          className="h-9 shrink-0 rounded-lg border border-border bg-surface2 hover:bg-border/60 flex items-center gap-1.5 px-2.5 sm:pr-2 text-muted hover:text-text transition"
+        >
+          <SearchIcon />
+          <span className="hidden sm:inline text-[11px] font-medium">Search</span>
+          <span className="hidden sm:inline-flex items-center justify-center text-[10px] font-semibold px-1.5 py-0.5 rounded border border-border bg-surface text-muted">
+            {typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent || "") ? "⌘K" : "Ctrl K"}
+          </span>
+        </button>
         <ThemeToggle />
         {onConnectData && (
           <button className="btn-primary text-xs sm:text-sm px-3 py-1.5 sm:px-4 sm:py-2" onClick={onConnectData}>
