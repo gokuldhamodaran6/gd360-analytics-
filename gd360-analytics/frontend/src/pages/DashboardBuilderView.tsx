@@ -1324,10 +1324,35 @@ function DashboardBuilderViewBody({
 
         <PageTabsBar dash={dash} activePageId={activePage?.id} setActivePageId={setActivePageId} onChange={handleDashChange} />
 
-        {filterState.activeFilters.length > 0 && (
-          <div className="text-[11px] text-muted mb-2 flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
-            Filtering {filterState.loading ? "…" : `${filterState.activeFilters.length} active`}
+        {/* 2026-09-25e (elite pass): replaces the old bare "Filtering N
+            active" line with the real, honest version of the reference
+            dashboards' own filter-bar footer ("Showing 6,709 reviews · all
+            departments · all years") - a real server-counted row count
+            (filterState.matchedRows, never fabricated - see
+            lib/useDashboardFilters.ts) plus every filter block's current
+            state, not just the ones actively set, so at rest it reads as
+            a clear summary of what's being shown rather than only
+            appearing once something is filtered. */}
+        {activePage && filterState.matchedRows !== null && (
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 mb-2 text-[11px] text-muted">
+            <span
+              className={`w-1.5 h-1.5 rounded-full shrink-0 ${filterState.loading ? "bg-accent animate-pulse" : "bg-accent/40"}`}
+            />
+            <span className="font-semibold text-text tabular-nums">{filterState.matchedRows.toLocaleString()}</span>
+            <span>row{filterState.matchedRows === 1 ? "" : "s"} match</span>
+            {activePage.blocks
+              .filter((b) => b.type === "filter" && b.config?.column)
+              .map((b) => {
+                const val = filterState.values[b.id];
+                const label = b.title || b.config?.column || "Filter";
+                return (
+                  <span key={b.id} className="flex items-center gap-1.5">
+                    <span aria-hidden="true" className="text-border">&middot;</span>
+                    <span>{label}:</span>
+                    <span className={val ? "text-text font-medium" : ""}>{val || "All"}</span>
+                  </span>
+                );
+              })}
           </div>
         )}
 
