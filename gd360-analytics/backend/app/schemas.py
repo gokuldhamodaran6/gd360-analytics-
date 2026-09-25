@@ -454,6 +454,12 @@ class DashboardBlockOut(BaseModel):
     h: int
     config: dict
     position: int
+    # 2026-09-25g (live-data freshness round): when this block's data was
+    # last actually recomputed - None for a block that has never been
+    # built yet, or one that existed before this column did (never
+    # backfilled with a guessed time - see models.DashboardBlock's own
+    # docstring). Read by the frontend's DataFreshnessBadge.
+    data_updated_at: Optional[datetime] = None
 
 
 class DashboardPageOut(BaseModel):
