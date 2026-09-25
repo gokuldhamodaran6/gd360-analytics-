@@ -1,1415 +1,788 @@
-import { useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { dashboardBuilderApi, DashboardBuilderDetail, DashboardBuilderPage, WorkspaceSummary } from "../api/client";
-import TopNav from "../components/TopNav";
-import AppSidebar from "../components/AppSidebar";
-import { DashboardBlockGrid, DataFreshnessBadge } from "../components/DashboardBlocks";
-import DashboardCanvas from "../components/DashboardCanvas";
-import { useDashboardFilters } from "../lib/useDashboardFilters";
-import { useWorkspaceNav } from "../lib/useWorkspaceNav";
-import { brandingBackgroundImageStyle, brandingStyleVars, hexToRgbTriple, useBrandingAsset } from "../lib/branding";
-
-// 2026-09-25d (elite pass): the dashboard builder/editor - the exact page
-// Gokul's own screenshots of the live app's edit mode were taken from -
-// used to render on the old top-bar-only layout, the one real page left
-// out of the persistent left AppSidebar (Projects/Dashboards/Data Sources)
-// the rest of the app already got in the 2026-09-23 sidebar redesign. That
-// gap is very likely a real part of why editing a dashboard still felt
-// like "just a chart" next to the Vision UI/Horizon UI references - every
-// other page already has the premium sidebar-nav shell those references
-// use, this one didn't. Wired in here exactly the same way Dashboard.tsx,
-// Dashboards.tsx and DataSources.tsx already do it (useWorkspaceNav owns
-// which workspace is active; TopNav keeps its own logo hidden since the
-// sidebar already shows one - see TopNav's own hideLogo prop), so this
-// page now matches every other authenticated page in the app instead of
-// standing out as the one place the shell doesn't apply.
-
-// 2026-09-24 (Dashboard Builder Phase 1 + Phase 2 + Phase 2b + Phase 3): the
-// owner/editor view for the new pages+blocks kind of dashboard - opened
-// from Dashboards.tsx (routed here instead of DashboardView.tsx whenever
-// layout_version===2) or straight after "Build with AI" finishes (see
-// BuildDashboardModal.tsx).
-//
-// Phase 2 adds a real edit/view toggle: someone who can_edit this dashboard
-// lands in edit mode by default (DashboardCanvas - drag/resize/add/remove
-// blocks, per-block Ask AI/manual build/style) and can switch to a plain
-// read view (DashboardBlockGrid, the exact same renderer the public link
-// uses) at any time; a view-only visitor (can_edit===false) only ever sees
-// the read view, with no toggle offered at all.
-//
-// Phase 2b adds cross-filtering, live in BOTH Edit and Preview here (never
-// on the public link - see lib/useDashboardFilters.ts and the backend's
-// own reasoning). One useDashboardFilters() call per active page, shared
-// by both DashboardCanvas and DashboardBlockGrid below so a filter
-// selection behaves identically whichever mode you're looking at it in.
-//
-// Phase 3 adds two things to this file specifically: (1) PublishPanel grows
-// a public/private mode choice, an optional password, and the named-email
-// access list (see PrivateAccessEditor) - editing that list works whether
-// or not the dashboard has ever been published yet, since the backend
-// auto-creates an unpublished private share row the first time an email is
-// added; (2) the page-tabs bar (PageTabsBar) is now always visible for an
-// editor (not gated on having more than one page) with inline rename,
-// reorder, duplicate and delete - a view-only visitor still gets the old
-// plain read-only tabs, unchanged, only shown once there's more than one
-// page to switch between.
-
-function LinkIcon({ className = "w-4 h-4" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-    </svg>
-  );
-}
-
-function CopyIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="9" y="9" width="12" height="12" rx="2" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
-  );
-}
-
-function TrashIcon({ className = "w-3 h-3" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16Z" />
-    </svg>
-  );
-}
-
-function PencilIcon({ className = "w-3 h-3" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
-    </svg>
-  );
-}
-
-function PlusIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  );
-}
-
-function ChevronLeftIcon({ className = "w-3 h-3" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M15 18l-6-6 6-6" />
-    </svg>
-  );
-}
-
-function ChevronRightIcon({ className = "w-3 h-3" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M9 18l6-6-6-6" />
-    </svg>
-  );
-}
-
-// 2026-09-25d (elite pass) - see DashboardCanvas.tsx's own KebabIcon for the
-// same reasoning: an active page tab used to sprout up to seven separate
-// icon buttons (move left/right, rename, duplicate, a color swatch, clear
-// tint, delete) the moment it was selected - the same "unwanted editing
-// options" clutter, just one level up from the block cards. One kebab menu
-// here too, so a page tab reads as just its name and color dot until
-// someone deliberately opens its menu.
-function KebabIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
-      <circle cx="12" cy="5" r="1.9" />
-      <circle cx="12" cy="12" r="1.9" />
-      <circle cx="12" cy="19" r="1.9" />
-    </svg>
-  );
-}
-
-function PaletteIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 21a9 9 0 1 1 0-18c4.5 0 8.5 3 8.5 6.5 0 2-1.5 3-3 3h-2a1.5 1.5 0 0 0-1 2.6c.5.5.5 1.3 0 1.8-1 1-1.5 2.3-2.5 4.1Z" />
-      <circle cx="7.5" cy="10.5" r="1.1" fill="currentColor" stroke="none" />
-      <circle cx="10.5" cy="7" r="1.1" fill="currentColor" stroke="none" />
-      <circle cx="15" cy="7.5" r="1.1" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
-// 2026-09-24 (Phase 3): manages the "who can view it" list for a PRIVATE
-// share - add-by-email plus a remove button per row. Deliberately usable
-// even before the dashboard has ever been published: dashboardBuilderApi
-// .addShareEmail auto-creates an unpublished private share row server-side
-// the first time it's called, so someone can build up the access list
-// first and hit Publish once it's ready, rather than being forced to
-// publish empty-and-inaccessible before adding anyone.
-function PrivateAccessEditor({ dash, onChange }: { dash: DashboardBuilderDetail; onChange: (d: DashboardBuilderDetail) => void }) {
-  const [emailDraft, setEmailDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  const addEmail = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const email = emailDraft.trim();
-    if (!email || busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      onChange(await dashboardBuilderApi.addShareEmail(dash.id, email));
-      setEmailDraft("");
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || "Couldn't add that email.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const removeEmail = async (emailId: string) => {
-    setBusy(true);
-    setError("");
-    try {
-      onChange(await dashboardBuilderApi.removeShareEmail(dash.id, emailId));
-    } catch {
-      setError("Couldn't remove that person. Please try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="mb-3">
-      <label className="text-[11px] text-muted uppercase tracking-wide">Who can view it</label>
-      <form onSubmit={addEmail} className="flex items-center gap-1.5 mt-1 mb-2">
-        <input
-          type="email"
-          className="input text-xs flex-1"
-          placeholder="name@company.com"
-          value={emailDraft}
-          onChange={(e) => setEmailDraft(e.target.value)}
-        />
-        <button type="submit" disabled={busy || !emailDraft.trim()} className="btn-secondary text-xs px-2.5 py-1.5 shrink-0 disabled:opacity-50">
-          Add
-        </button>
-      </form>
-      {error && <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-2.5 py-1.5 mb-2">{error}</div>}
-      {dash.share_emails.length === 0 ? (
-        <div className="text-xs text-muted italic">No one added yet - this link won't open for anyone until you add at least one email.</div>
-      ) : (
-        <ul className="flex flex-col gap-1 max-h-32 overflow-y-auto">
-          {dash.share_emails.map((e) => (
-            <li key={e.id} className="flex items-center justify-between gap-2 text-xs bg-surface2 rounded-md px-2 py-1">
-              <span className="truncate">{e.email}</span>
-              <button
-                type="button"
-                disabled={busy}
-                className="text-muted hover:text-red-400 transition shrink-0 disabled:opacity-50"
-                onClick={() => removeEmail(e.id)}
-                title="Remove access"
-              >
-                <TrashIcon />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-// 2026-09-24 (Phase 4, white-label custom domains): friendly labels for
-// the three-state custom_domain_status the backend collapses Render's own
-// DNS-verification/SSL-issuance progress into (see
-// services/render_domains.py's own docstring). Anything not "live" is
-// shown with the same amber "still in progress" styling, since from a
-// dashboard owner's point of view "waiting for DNS" and "verifying/
-// issuing the certificate" are both just "not ready yet, check back."
-const DOMAIN_STATUS_LABEL: Record<string, string> = {
-  pending_dns: "Waiting for DNS",
-  pending_ssl: "Verifying · issuing certificate",
-  live: "Live",
-};
-
-function CustomDomainEditor({ dash, onChange }: { dash: DashboardBuilderDetail; onChange: (d: DashboardBuilderDetail) => void }) {
-  const [domainDraft, setDomainDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-
-  // The exact hostname a visitor's CNAME record needs to point at. This
-  // editor only ever renders inside DashboardBuilderView, which - per
-  // App.tsx's isRecognizedHost - only ever loads on GD360's own
-  // onrender.com frontend hostname, never on a customer's own custom
-  // domain. So window.location.hostname right here IS that target - no
-  // separate "what's our own frontend hostname" config needed on the
-  // frontend side at all.
-  const cnameTarget = typeof window !== "undefined" ? window.location.hostname : "";
-
-  const addDomain = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const domain = domainDraft.trim();
-    if (!domain || busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      onChange(await dashboardBuilderApi.setCustomDomain(dash.id, domain));
-      setDomainDraft("");
-    } catch (err: any) {
-      // A 503 here means this GD360 installation hasn't had
-      // RENDER_API_KEY/RENDER_FRONTEND_SERVICE_ID configured yet (see
-      // backend config.py) - that message is already written for exactly
-      // this reader (the account owner), so it's shown as-is rather than
-      // replaced with something generic.
-      setError(err?.response?.data?.detail || "Couldn't set that domain. Please try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const recheck = async () => {
-    setBusy(true);
-    setError("");
-    try {
-      onChange(await dashboardBuilderApi.recheckCustomDomain(dash.id));
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || "Couldn't check this domain's status. Please try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const removeDomain = async () => {
-    setBusy(true);
-    setError("");
-    try {
-      onChange(await dashboardBuilderApi.removeCustomDomain(dash.id));
-    } catch {
-      setError("Couldn't remove this domain. Please try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="mt-3 pt-3 border-t border-border">
-      <label className="text-[11px] text-muted uppercase tracking-wide">Custom domain (optional)</label>
-
-      {!dash.custom_domain ? (
-        <>
-          <form onSubmit={addDomain} className="flex items-center gap-1.5 mt-1">
-            <input
-              type="text"
-              className="input text-xs flex-1"
-              placeholder="dashboards.yourcompany.com"
-              value={domainDraft}
-              onChange={(e) => setDomainDraft(e.target.value)}
-            />
-            <button type="submit" disabled={busy || !domainDraft.trim()} className="btn-secondary text-xs px-2.5 py-1.5 shrink-0 disabled:opacity-50">
-              Add
-            </button>
-          </form>
-          <div className="text-[11px] text-muted mt-1.5 leading-relaxed">
-            Point your own subdomain at this dashboard - a free SSL certificate is issued automatically once the
-            DNS record is in place.
-          </div>
-        </>
-      ) : (
-        <div className="mt-1.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-medium truncate">{dash.custom_domain}</span>
-            <span
-              className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full border shrink-0 ${
-                dash.custom_domain_status === "live"
-                  ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-500"
-                  : "bg-amber-500/10 border-amber-500/30 text-amber-500"
-              }`}
-            >
-              {DOMAIN_STATUS_LABEL[dash.custom_domain_status || ""] || "Setting up"}
-            </span>
-          </div>
-
-          {dash.custom_domain_status === "live" ? (
-            <div className="text-[11px] text-muted mt-1.5">
-              This domain is live -{" "}
-              <a href={`https://${dash.custom_domain}`} target="_blank" rel="noreferrer" className="text-primary hover:underline">
-                open it &rarr;
-              </a>
-            </div>
-          ) : (
-            <div className="text-[11px] text-muted mt-1.5 leading-relaxed">
-              Add a CNAME record for <span className="font-mono text-text">{dash.custom_domain}</span> pointing to{" "}
-              <span className="font-mono text-text">{cnameTarget}</span>. This can take anywhere from a few minutes
-              to a few hours depending on your DNS provider.
-            </div>
-          )}
-
-          {dash.custom_domain_error && (
-            <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-2.5 py-1.5 mt-1.5">
-              {dash.custom_domain_error}
-            </div>
-          )}
-
-          <div className="flex items-center gap-3 mt-2">
-            <button type="button" disabled={busy} className="text-xs text-muted hover:text-text transition disabled:opacity-50" onClick={recheck}>
-              {busy ? "Working…" : "Check again"}
-            </button>
-            <button type="button" disabled={busy} className="text-xs text-muted hover:text-red-400 transition disabled:opacity-50" onClick={removeDomain}>
-              Remove
-            </button>
-          </div>
-        </div>
-      )}
-
-      {error && <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-2.5 py-1.5 mt-2">{error}</div>}
-    </div>
-  );
-}
-
-// 2026-09-25 (Round 4, branding/customization): logo upload, brand-color
-// pickers, and background style/image - "complete freedom" over how a
-// dashboard looks, mirroring PublishPanel's own dropdown-button pattern so
-// this reads as a sibling of it rather than a bolted-on extra. logoUrl/
-// backgroundImageUrl are passed in (fetched once, in DashboardBuilderViewBody,
-// via useBrandingAsset) rather than fetched again here, so the thumbnail
-// preview and the actual header logo/page background always show the
-// exact same bytes with no duplicate network round trip.
-function BrandingPanel({
-  dash,
-  onChange,
-  logoUrl,
-  backgroundImageUrl,
-  onAssetChanged,
-}: {
-  dash: DashboardBuilderDetail;
-  onChange: (d: DashboardBuilderDetail) => void;
-  logoUrl: string | null;
-  backgroundImageUrl: string | null;
-  onAssetChanged: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const logoInputRef = useRef<HTMLInputElement>(null);
-  const bgInputRef = useRef<HTMLInputElement>(null);
-
-  if (!dash.can_edit) return null;
-
-  const run = async (fn: () => Promise<DashboardBuilderDetail>, touchesAsset = true) => {
-    setBusy(true);
-    setError("");
-    try {
-      onChange(await fn());
-      if (touchesAsset) onAssetChanged();
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || "Couldn't update branding. Please try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const pickLogo = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (file) run(() => dashboardBuilderApi.uploadLogo(dash.id, file));
-  };
-  const pickBackground = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (file) run(() => dashboardBuilderApi.uploadBackground(dash.id, file));
-  };
-
-  const setStyle = (style: "default" | "color" | "image") =>
-    run(() => dashboardBuilderApi.updateBranding(dash.id, { background_style: style }), false);
-  const setColor = (field: "brand_primary_color" | "brand_accent_color" | "background_color", value: string) =>
-    run(() => dashboardBuilderApi.updateBranding(dash.id, { [field]: value }), false);
-
-  const activeStyle = dash.background_style || "default";
-
-  return (
-    <div className="relative">
-      <button type="button" className="btn-secondary text-xs flex items-center gap-1.5" onClick={() => setOpen((o) => !o)}>
-        <PaletteIcon /> Branding
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-2 w-80 card bg-surface shadow-2xl border border-border p-4 z-30 max-h-[75vh] overflow-y-auto">
-          {error && <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-3">{error}</div>}
-
-          <label className="text-[11px] text-muted uppercase tracking-wide">Logo</label>
-          <div className="flex items-center gap-2 mt-1.5 mb-3.5">
-            <div className="w-12 h-12 rounded-lg border border-border bg-surface2 flex items-center justify-center overflow-hidden shrink-0">
-              {logoUrl ? (
-                <img src={logoUrl} alt="" className="w-full h-full object-contain" />
-              ) : (
-                <span className="text-[9px] text-muted">None</span>
-              )}
-            </div>
-            <div className="flex flex-col gap-1">
-              <button
-                type="button"
-                disabled={busy}
-                className="btn-secondary text-xs px-2.5 py-1.5 disabled:opacity-50"
-                onClick={() => logoInputRef.current?.click()}
-              >
-                {dash.has_logo ? "Replace" : "Upload"}
-              </button>
-              {dash.has_logo && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  className="text-xs text-muted hover:text-red-400 transition disabled:opacity-50 text-left"
-                  onClick={() => run(() => dashboardBuilderApi.removeLogo(dash.id))}
-                >
-                  Remove
-                </button>
-              )}
-            </div>
-            <input ref={logoInputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={pickLogo} />
-          </div>
-
-          <label className="text-[11px] text-muted uppercase tracking-wide">Brand colors</label>
-          <div className="flex items-center gap-4 mt-1.5 mb-3.5">
-            <div className="flex items-center gap-1.5">
-              <input
-                type="color"
-                title="Primary color"
-                value={dash.brand_primary_color || "#147a5c"}
-                onChange={(e) => setColor("brand_primary_color", e.target.value)}
-                className="w-7 h-7 rounded-full border-0 bg-transparent cursor-pointer p-0"
-              />
-              <span className="text-xs text-muted">Primary</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <input
-                type="color"
-                title="Accent color"
-                value={dash.brand_accent_color || "#6ec9aa"}
-                onChange={(e) => setColor("brand_accent_color", e.target.value)}
-                className="w-7 h-7 rounded-full border-0 bg-transparent cursor-pointer p-0"
-              />
-              <span className="text-xs text-muted">Accent</span>
-            </div>
-            {(dash.brand_primary_color || dash.brand_accent_color) && (
-              <button
-                type="button"
-                disabled={busy}
-                className="text-xs text-muted hover:text-text transition disabled:opacity-50"
-                onClick={() => run(() => dashboardBuilderApi.updateBranding(dash.id, { brand_primary_color: "", brand_accent_color: "" }), false)}
-              >
-                Reset
-              </button>
-            )}
-          </div>
-
-          <label className="text-[11px] text-muted uppercase tracking-wide">Background</label>
-          <div className="flex items-center rounded-lg border border-border overflow-hidden text-xs mt-1.5 mb-2.5">
-            {(["default", "color", "image"] as const).map((s) => (
-              <button
-                key={s}
-                type="button"
-                disabled={busy}
-                className={`flex-1 px-2 py-1.5 capitalize transition ${
-                  activeStyle === s ? "bg-primary text-white" : "text-muted hover:text-text hover:bg-surface2"
-                }`}
-                onClick={() => setStyle(s)}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-
-          {activeStyle === "color" && (
-            <div className="flex items-center gap-2 mb-3.5">
-              <input
-                type="color"
-                title="Background color"
-                value={dash.background_color || "#0a0a0b"}
-                onChange={(e) => setColor("background_color", e.target.value)}
-                className="w-7 h-7 rounded-full border-0 bg-transparent cursor-pointer p-0"
-              />
-              <span className="text-xs text-muted">Page background</span>
-            </div>
-          )}
-
-          {activeStyle === "image" && (
-            <div className="flex items-center gap-2 mb-3.5">
-              <div className="w-12 h-9 rounded-md border border-border bg-surface2 flex items-center justify-center overflow-hidden shrink-0">
-                {backgroundImageUrl ? (
-                  <img src={backgroundImageUrl} alt="" className="w-full h-full object-cover" />
-                ) : (
-                  <span className="text-[9px] text-muted">None</span>
-                )}
-              </div>
-              <div className="flex flex-col gap-1">
-                <button
-                  type="button"
-                  disabled={busy}
-                  className="btn-secondary text-xs px-2.5 py-1.5 disabled:opacity-50"
-                  onClick={() => bgInputRef.current?.click()}
-                >
-                  {dash.has_background_image ? "Replace" : "Upload"}
-                </button>
-                {dash.has_background_image && (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    className="text-xs text-muted hover:text-red-400 transition disabled:opacity-50 text-left"
-                    onClick={() => run(() => dashboardBuilderApi.removeBackground(dash.id))}
-                  >
-                    Remove
-                  </button>
-                )}
-              </div>
-              <input ref={bgInputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={pickBackground} />
-            </div>
-          )}
-
-          <div className="text-[11px] text-muted leading-relaxed pt-2.5 border-t border-border">
-            Applies everywhere this dashboard is viewed - here, in Preview, and on the published link.
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function PublishPanel({ dash, onChange }: { dash: DashboardBuilderDetail; onChange: (d: DashboardBuilderDetail) => void }) {
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [copied, setCopied] = useState(false);
-  // Drafts for the (re-)publish form - only read when it's actually
-  // submitted. Seeded from the dashboard's current share settings so
-  // reopening "Change sharing settings" on an already-private dashboard
-  // starts from Private, not defaults back to Public.
-  const [mode, setMode] = useState<"public" | "private">(dash.share_mode === "private" ? "private" : "public");
-  const [password, setPassword] = useState("");
-  // True while showing the editable mode/password form on an ALREADY
-  // published dashboard (opened via "Change sharing settings" below) -
-  // false means show the read-only published summary instead.
-  const [editingSettings, setEditingSettings] = useState(false);
-
-  const publicUrl = dash.public_slug ? `${window.location.origin}/d/${dash.public_slug}` : "";
-
-  const doPublish = async () => {
-    setBusy(true);
-    setError("");
-    try {
-      onChange(await dashboardBuilderApi.publish(dash.id, mode, mode === "private" ? password : undefined));
-      setEditingSettings(false);
-      setPassword("");
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || "Couldn't publish this dashboard. Please try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const doUnpublish = async () => {
-    setBusy(true);
-    setError("");
-    try {
-      onChange(await dashboardBuilderApi.unpublish(dash.id));
-    } catch {
-      setError("Couldn't unpublish this dashboard. Please try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const copyLink = async () => {
-    try {
-      await navigator.clipboard.writeText(publicUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
-    } catch {
-      // Clipboard permission can be refused in some contexts - the link
-      // text itself is still selectable, so this just silently no-ops.
-    }
-  };
-
-  if (!dash.can_edit) {
-    return dash.is_published ? (
-      <a href={publicUrl} target="_blank" rel="noreferrer" className="btn-secondary text-xs flex items-center gap-1.5">
-        <LinkIcon className="w-3.5 h-3.5" /> View {dash.share_mode === "private" ? "private" : "public"} link
-      </a>
-    ) : null;
-  }
-
-  const showEditForm = !dash.is_published || editingSettings;
-
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        className={dash.is_published ? "btn-secondary text-xs" : "btn-primary text-xs"}
-        onClick={() => setOpen((o) => !o)}
-      >
-        {dash.is_published ? (dash.share_mode === "private" ? "Published · Private" : "Published") : "Publish"}
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-2 w-80 card bg-surface shadow-2xl border border-border p-4 z-30">
-          {error && <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-3">{error}</div>}
-          {!showEditForm ? (
-            <>
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <span className="text-xs text-muted">
-                  {dash.share_mode === "private"
-                    ? "Only the people you've added below can open this link."
-                    : "Anyone with this link can view this dashboard."}
-                </span>
-                <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-surface2 border border-border text-muted shrink-0">
-                  {dash.share_mode === "private" ? "Private" : "Public"}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5 mb-3">
-                <input readOnly className="input text-xs flex-1 truncate" value={publicUrl} onFocus={(e) => e.target.select()} />
-                <button type="button" className="btn-secondary text-xs px-2.5 py-1.5 shrink-0 flex items-center gap-1" onClick={copyLink}>
-                  <CopyIcon /> {copied ? "Copied" : "Copy"}
-                </button>
-              </div>
-
-              {dash.share_mode === "private" && (
-                <>
-                  <div className="text-[11px] text-muted mb-3">
-                    {dash.share_has_password ? "Password protected." : "No password - the email address alone is enough."}
-                  </div>
-                  <PrivateAccessEditor dash={dash} onChange={onChange} />
-                </>
-              )}
-
-              {/* 2026-09-24 (Phase 4, white-label): a custom domain applies
-                  regardless of public/private mode - it's a different way
-                  in, same underlying share and same access rules. */}
-              <CustomDomainEditor dash={dash} onChange={onChange} />
-
-              <div className="flex items-center justify-between mt-1 pt-2 border-t border-border">
-                <button
-                  type="button"
-                  className="text-xs text-muted hover:text-text transition"
-                  onClick={() => {
-                    setMode(dash.share_mode === "private" ? "private" : "public");
-                    setPassword("");
-                    setEditingSettings(true);
-                  }}
-                >
-                  Change sharing settings
-                </button>
-                <button type="button" disabled={busy} className="text-xs text-muted hover:text-red-400 transition disabled:opacity-50" onClick={doUnpublish}>
-                  {busy ? "Working…" : "Unpublish"}
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="text-xs text-muted mb-3 leading-relaxed">
-                {mode === "private"
-                  ? "Only the email addresses you add below will be able to open this link - optionally behind a password too."
-                  : "Anyone who has the link can view this dashboard without signing in."}
-              </div>
-              <div className="flex items-center rounded-lg border border-border overflow-hidden text-xs mb-3">
-                <button
-                  type="button"
-                  className={`flex-1 px-2.5 py-1.5 transition ${mode === "public" ? "bg-primary text-white" : "text-muted hover:text-text hover:bg-surface2"}`}
-                  onClick={() => setMode("public")}
-                >
-                  Public
-                </button>
-                <button
-                  type="button"
-                  className={`flex-1 px-2.5 py-1.5 transition ${mode === "private" ? "bg-primary text-white" : "text-muted hover:text-text hover:bg-surface2"}`}
-                  onClick={() => setMode("private")}
-                >
-                  Private
-                </button>
-              </div>
-
-              {mode === "private" && (
-                <>
-                  <label className="text-[11px] text-muted uppercase tracking-wide">Password (optional)</label>
-                  <input
-                    type="password"
-                    className="input text-xs w-full mt-1 mb-3"
-                    placeholder={dash.share_has_password ? "Leave blank to remove the current password" : "Leave blank for no password"}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                  />
-                  <PrivateAccessEditor dash={dash} onChange={onChange} />
-                </>
-              )}
-
-              <div className="flex items-center gap-2 mt-1">
-                {editingSettings && (
-                  <button type="button" className="text-xs text-muted hover:text-text transition" onClick={() => setEditingSettings(false)}>
-                    Cancel
-                  </button>
-                )}
-                <button type="button" disabled={busy} className="btn-primary text-xs flex-1" onClick={doPublish}>
-                  {busy ? "Publishing…" : dash.is_published ? "Save changes" : mode === "private" ? "Publish privately" : "Publish publicly"}
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// 2026-09-24 (Phase 3): the page-tabs bar. An editor always sees it (even
-// with a single page, so "+ Add page" stays discoverable) with rename,
-// reorder, duplicate and delete on the active tab; a view-only visitor
-// gets the old plain, read-only tabs unchanged, shown only once there's
-// more than one page.
-function PageTabsBar({
-  dash,
-  activePageId,
-  setActivePageId,
-  onChange,
-}: {
-  dash: DashboardBuilderDetail;
-  activePageId: string | undefined;
-  setActivePageId: (id: string) => void;
-  onChange: (d: DashboardBuilderDetail) => void;
-}) {
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameDraft, setRenameDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-  // 2026-09-25d (elite pass) - see KebabIcon above. Which page's menu is
-  // currently open, if any - only ever one at a time.
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
-
-  const pages = dash.pages;
-
-  const startRename = (p: DashboardBuilderPage) => {
-    setRenamingId(p.id);
-    setRenameDraft(p.name);
-  };
-
-  const commitRename = async (pageId: string) => {
-    const name = renameDraft.trim();
-    setRenamingId(null);
-    const original = pages.find((p) => p.id === pageId)?.name || "";
-    if (!name || name === original || busy) return;
-    setBusy(true);
-    try {
-      onChange(await dashboardBuilderApi.renamePage(dash.id, pageId, name));
-    } catch {
-      // Transient failure - dash still reflects the last-known-good server
-      // state, so the tab just keeps its old name locally rather than
-      // showing something that was never actually saved.
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const move = async (p: DashboardBuilderPage, direction: -1 | 1) => {
-    const idx = pages.findIndex((x) => x.id === p.id);
-    const targetIdx = idx + direction;
-    if (busy || idx < 0 || targetIdx < 0 || targetIdx >= pages.length) return;
-    setBusy(true);
-    try {
-      onChange(await dashboardBuilderApi.reorderPage(dash.id, p.id, targetIdx));
-    } catch {
-      // no-op - tabs just stay where they were
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const duplicate = async (p: DashboardBuilderPage) => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const updated = await dashboardBuilderApi.duplicatePage(dash.id, p.id);
-      onChange(updated);
-      const idx = updated.pages.findIndex((x) => x.id === p.id);
-      const dup = updated.pages[idx + 1];
-      if (dup) setActivePageId(dup.id);
-    } catch {
-      // no-op
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const remove = async (p: DashboardBuilderPage) => {
-    if (busy || pages.length <= 1) return;
-    if (!confirm(`Delete the page "${p.name}"? Every block on it will be deleted too. This can't be undone.`)) return;
-    setBusy(true);
-    try {
-      const updated = await dashboardBuilderApi.deletePage(dash.id, p.id);
-      onChange(updated);
-      if (activePageId === p.id) {
-        const first = updated.pages[0];
-        if (first) setActivePageId(first.id);
-      }
-    } catch {
-      // no-op
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const addPage = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const updated = await dashboardBuilderApi.createPage(dash.id);
-      onChange(updated);
-      const last = updated.pages[updated.pages.length - 1];
-      if (last) setActivePageId(last.id);
-    } catch {
-      // no-op
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  // 2026-09-25 (Round 4, branding): this one page's own background tint,
-  // separate from the dashboard-level Branding panel above - lets pages
-  // read as visually distinct at a glance (an "Overview" vs. a "Details"
-  // tab, say) without a second image-upload surface per page. "" clears
-  // it back to "inherit the dashboard's background."
-  const setPageColor = async (p: DashboardBuilderPage, color: string) => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      onChange(await dashboardBuilderApi.setPageBackgroundColor(dash.id, p.id, color));
-    } catch {
-      // no-op - swatch just stays where it was
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (!dash.can_edit) {
-    if (pages.length <= 1) return null;
-    return (
-      <div className="flex items-center gap-1.5 mt-5 mb-4 flex-wrap">
-        {pages.map((p) => (
-          <button
-            key={p.id}
-            type="button"
-            className={`text-xs font-medium px-3 py-1.5 rounded-full border transition ${
-              activePageId === p.id
-                ? "bg-primary text-white border-primary"
-                : "border-border text-muted hover:text-text hover:bg-surface2"
-            }`}
-            onClick={() => setActivePageId(p.id)}
-          >
-            {p.name}
-          </button>
-        ))}
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex items-center gap-1.5 mt-5 mb-4 flex-wrap">
-      {pages.map((p, i) => {
-        const isActive = activePageId === p.id;
-        return (
-          <div
-            key={p.id}
-            className={`relative flex items-center gap-1 pl-3 pr-1.5 py-1 rounded-full border text-xs font-medium transition ${
-              isActive ? "bg-primary text-white border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
-            }`}
-          >
-            {p.background_color && (
-              <span
-                className="w-1.5 h-1.5 rounded-full shrink-0"
-                style={{ background: p.background_color }}
-                title="Page background tint"
-              />
-            )}
-            {renamingId === p.id ? (
-              <input
-                autoFocus
-                className={`bg-transparent outline-none text-xs w-24 ${isActive ? "text-white placeholder-white/60" : "text-text"}`}
-                value={renameDraft}
-                onChange={(e) => setRenameDraft(e.target.value)}
-                onBlur={() => commitRename(p.id)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                  if (e.key === "Escape") setRenamingId(null);
-                }}
-                onClick={(e) => e.stopPropagation()}
-              />
-            ) : (
-              // 2026-09-25h (inline editing round): double-click renames
-              // right here, no detour through the kebab menu - the menu's
-              // own "Rename" stays too (same startRename/commitRename this
-              // calls), since not everyone discovers a double-click on
-              // their own.
-              <button
-                type="button"
-                className="max-w-[10rem] truncate"
-                onClick={() => setActivePageId(p.id)}
-                onDoubleClick={(e) => {
-                  e.stopPropagation();
-                  startRename(p);
-                }}
-                title="Double-click to rename"
-              >
-                {p.name}
-              </button>
-            )}
-            {isActive && (
-              <button
-                type="button"
-                className="p-0.5 rounded hover:bg-white/15 text-white/80 hover:text-white transition"
-                aria-label="Page options"
-                aria-haspopup="menu"
-                aria-expanded={openMenuId === p.id}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setOpenMenuId((id) => (id === p.id ? null : p.id));
-                }}
-              >
-                <KebabIcon />
-              </button>
-            )}
-            {isActive && openMenuId === p.id && (
-              <div
-                role="menu"
-                className="absolute left-0 top-full mt-1 w-44 card bg-surface shadow-2xl border border-border p-1.5 z-30 text-text normal-case font-normal"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="flex items-center gap-1 mb-1">
-                  <button
-                    type="button"
-                    disabled={busy || i === 0}
-                    className="flex-1 flex items-center justify-center gap-1 text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors disabled:opacity-30 disabled:cursor-default"
-                    title="Move left"
-                    onClick={() => move(p, -1)}
-                  >
-                    <ChevronLeftIcon />
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy || i === pages.length - 1}
-                    className="flex-1 flex items-center justify-center gap-1 text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors disabled:opacity-30 disabled:cursor-default"
-                    title="Move right"
-                    onClick={() => move(p, 1)}
-                  >
-                    <ChevronRightIcon />
-                  </button>
-                </div>
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={busy}
-                  className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors flex items-center gap-2 disabled:opacity-50"
-                  onClick={() => {
-                    setOpenMenuId(null);
-                    startRename(p);
-                  }}
-                >
-                  <PencilIcon /> Rename
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={busy}
-                  className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors flex items-center gap-2 disabled:opacity-50"
-                  onClick={() => {
-                    setOpenMenuId(null);
-                    duplicate(p);
-                  }}
-                >
-                  <CopyIcon className="w-3 h-3" /> Duplicate
-                </button>
-                <label className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="color"
-                    title="Page background tint"
-                    disabled={busy}
-                    value={p.background_color || "#000000"}
-                    onChange={(e) => setPageColor(p, e.target.value)}
-                    className="w-3.5 h-3.5 rounded-full border-0 bg-transparent cursor-pointer p-0 disabled:opacity-50 shrink-0"
-                  />
-                  Page color
-                </label>
-                {p.background_color && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    disabled={busy}
-                    className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors disabled:opacity-50"
-                    onClick={() => {
-                      setOpenMenuId(null);
-                      setPageColor(p, "");
-                    }}
-                  >
-                    Clear page color
-                  </button>
-                )}
-                {pages.length > 1 && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    disabled={busy}
-                    className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-red-500/10 text-red-400 transition-colors flex items-center gap-2 disabled:opacity-50"
-                    onClick={() => {
-                      setOpenMenuId(null);
-                      remove(p);
-                    }}
-                  >
-                    <TrashIcon /> Delete page
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        );
-      })}
-      <button
-        type="button"
-        disabled={busy}
-        className="flex items-center gap-1 text-xs font-medium px-3 py-1.5 rounded-full border border-dashed border-border text-muted hover:text-text hover:border-text/40 transition disabled:opacity-50"
-        onClick={addPage}
-      >
-        <PlusIcon className="w-3 h-3" /> Add page
-      </button>
-    </div>
-  );
-}
-
-export default function DashboardBuilderView() {
-  const { dashboardId } = useParams();
-  const [dash, setDash] = useState<DashboardBuilderDetail | null>(null);
-  const [error, setError] = useState("");
-  const [activePageId, setActivePageId] = useState<string | null>(null);
-  // 2026-09-24 (Phase 2): edit mode by default for whoever can actually
-  // edit this dashboard - a view-only visitor never sees "edit" at all
-  // (guarded below in the render, not just here) since dash.can_edit isn't
-  // known until the fetch below resolves.
-  const [mode, setMode] = useState<"edit" | "view">("edit");
-  // 2026-09-25d (elite pass) - see the file-top note above.
-  const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
-
-  useEffect(() => {
-    if (!dashboardId) return;
-    dashboardBuilderApi
-      .get(dashboardId)
-      .then((data) => {
-        setDash(data);
-        setActivePageId(data.pages[0]?.id || null);
-        if (!data.can_edit) setMode("view");
-      })
-      .catch((err) =>
-        setError(err?.response?.status === 404 ? "Dashboard not found." : "Couldn't load this dashboard.")
-      );
-  }, [dashboardId]);
-
-  if (error) {
-    return (
-      <div className="flex">
-        <AppSidebar
-          workspaces={workspaces}
-          activeWorkspaceId={activeWorkspaceId}
-          onWorkspaceSwitch={switchWorkspace}
-          onWorkspaceCreated={handleWorkspaceCreated}
-        />
-        <div className="flex-1 min-w-0 flex flex-col min-h-screen">
-          <TopNav hideLogo />
-          <div className="max-w-6xl mx-auto px-6 py-8">
-            <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 inline-block">{error}</div>
-            <div className="mt-4">
-              <Link to="/dashboards" className="text-sm text-primary hover:underline">&larr; Back to Dashboards</Link>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!dash) {
-    return (
-      <div className="flex">
-        <AppSidebar
-          workspaces={workspaces}
-          activeWorkspaceId={activeWorkspaceId}
-          onWorkspaceSwitch={switchWorkspace}
-          onWorkspaceCreated={handleWorkspaceCreated}
-        />
-        <div className="flex-1 min-w-0 flex flex-col min-h-screen">
-          <TopNav hideLogo />
-          <div className="max-w-6xl mx-auto px-6 py-8 text-sm text-muted">Loading&hellip;</div>
-        </div>
-      </div>
-    );
-  }
-
-  const activePage = dash.pages.find((p) => p.id === activePageId) || dash.pages[0];
-
-  return (
-    <DashboardBuilderViewBody
-      dash={dash}
-      workspaces={workspaces}
-      activeWorkspaceId={activeWorkspaceId}
-      switchWorkspace={switchWorkspace}
-      handleWorkspaceCreated={handleWorkspaceCreated}
-      setDash={setDash}
-      activePage={activePage}
-      setActivePageId={setActivePageId}
-      mode={mode}
-      setMode={setMode}
-    />
-  );
-}
-
-// Split out so useDashboardFilters (a hook, which can't be called
-// conditionally) only ever runs once `dash` is loaded and `activePage` is
-// known - the loading/error early-returns above happen before this
-// component even mounts.
-function DashboardBuilderViewBody({
-  dash,
-  setDash,
-  activePage,
-  setActivePageId,
-  mode,
-  setMode,
-  workspaces,
-  activeWorkspaceId,
-  switchWorkspace,
-  handleWorkspaceCreated,
-}: {
-  dash: DashboardBuilderDetail;
-  setDash: (d: DashboardBuilderDetail) => void;
-  activePage: DashboardBuilderDetail["pages"][number] | undefined;
-  setActivePageId: (id: string) => void;
-  mode: "edit" | "view";
-  setMode: (m: "edit" | "view") => void;
-  // 2026-09-25d (elite pass) - see the file-top note above.
-  workspaces: WorkspaceSummary[];
-  activeWorkspaceId: string;
-  switchWorkspace: (id: string) => void;
-  handleWorkspaceCreated: (ws: WorkspaceSummary) => void;
-}) {
-  const filterState = useDashboardFilters(dash.id, activePage);
-
-  // 2026-09-25 (Round 4, branding): fetched once here (not inside
-  // BrandingPanel itself) so the same object URLs back both the header
-  // logo / full-page background AND BrandingPanel's own thumbnail
-  // previews - one network round trip per asset, not two. brandingNonce
-  // is bumped after every successful upload/remove so a REPLACE (has_logo/
-  // has_background_image staying true with new bytes underneath) actually
-  // refetches instead of quietly keeping the stale blob url - see
-  // lib/branding.ts's useBrandingAsset for why has_logo/has_background_
-  // image alone can't be the only dependency.
-  const [brandingNonce, setBrandingNonce] = useState(0);
-  const bumpBranding = () => setBrandingNonce((n) => n + 1);
-  const logoUrl = useBrandingAsset(dash.id, "logo", dash.has_logo, brandingNonce);
-  const backgroundImageUrl = useBrandingAsset(
-    dash.id,
-    "background",
-    dash.background_style === "image" && dash.has_background_image,
-    brandingNonce
-  );
-  const shellStyle: React.CSSProperties = {
-    ...brandingStyleVars(dash),
-    ...brandingBackgroundImageStyle(dash, backgroundImageUrl),
-  };
-  const pageBgTriple = activePage?.background_color ? hexToRgbTriple(activePage.background_color) : null;
-
-  // Every block-mutating action anywhere on this page (build manually,
-  // ask AI, restyle, delete, add) flows through here - re-running the
-  // active filter selection afterward means an override never lingers on
-  // a block whose real, persisted content just changed underneath it.
-  const handleDashChange = (d: DashboardBuilderDetail) => {
-    setDash(d);
-    filterState.refresh();
-  };
-
-  // 2026-09-25 (Round 2): inline rename - there was no way to fix a
-  // dashboard's name at all before this round, which mattered a lot more
-  // once "Create your own" could hand someone one permanently called
-  // "Untitled dashboard." Same pattern as DashboardView.tsx's own rename.
-  const [renaming, setRenaming] = useState(false);
-  const [nameDraft, setNameDraft] = useState(dash.name);
-  const [savingName, setSavingName] = useState(false);
-
-  const startRename = () => {
-    setNameDraft(dash.name);
-    setRenaming(true);
-  };
-
-  const commitRename = async () => {
-    const trimmed = nameDraft.trim();
-    setRenaming(false);
-    if (!trimmed || trimmed === dash.name) return;
-    setSavingName(true);
-    try {
-      setDash(await dashboardBuilderApi.rename(dash.id, trimmed));
-    } catch {
-      setNameDraft(dash.name);
-    } finally {
-      setSavingName(false);
-    }
-  };
-
-  return (
-    <div className="flex">
-      <AppSidebar
-        workspaces={workspaces}
-        activeWorkspaceId={activeWorkspaceId}
-        onWorkspaceSwitch={switchWorkspace}
-        onWorkspaceCreated={handleWorkspaceCreated}
-      />
-      <div className="dash-shell flex-1 min-w-0 min-h-screen flex flex-col" style={shellStyle}>
-        <TopNav hideLogo />
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 w-full flex-1">
-          <Link to="/dashboards" className="text-xs text-muted hover:text-text transition inline-block mb-3">&larr; Dashboards</Link>
-
-        <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
-          <div className="min-w-0">
-            {logoUrl && (
-              <img src={logoUrl} alt="" className="h-9 w-auto max-w-[160px] object-contain mb-2 rounded-md" />
-            )}
-            {renaming ? (
-              <input
-                autoFocus
-                className="input text-2xl font-bold tracking-tight py-1 w-full max-w-md"
-                value={nameDraft}
-                onChange={(e) => setNameDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") commitRename();
-                  if (e.key === "Escape") setRenaming(false);
-                }}
-                onBlur={commitRename}
-                maxLength={120}
-              />
-            ) : (
-            <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2 flex-wrap">
-              {/* 2026-09-25h (inline editing round): the name itself is now
-                  the click target, not just the small pencil next to it -
-                  the whole point of "click the thing you see to edit it"
-                  is that the thing itself is clickable. The pencil stays
-                  too, both for a visible hint that this is editable and as
-                  a second way in for anyone who'd rather not click text. */}
-              {dash.can_edit ? (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  className="cursor-text hover:bg-surface2 rounded-md px-1 -mx-1 transition"
-                  title="Click to rename this dashboard"
-                  onClick={startRename}
-                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); startRename(); } }}
-                >
-                  {dash.name}
-                </span>
-              ) : (
-                dash.name
-              )}
-              {dash.can_edit && (
-                <button
-                  type="button"
-                  className="opacity-50 hover:opacity-100 transition text-base"
-                  title="Rename this dashboard"
-                  onClick={startRename}
-                >
-                  &#9998;
-                </button>
-              )}
-              {savingName && <span className="text-xs font-normal text-accent">Saving&hellip;</span>}
-              <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-accent/15 text-accent border border-accent/30">
-                Dashboard
-              </span>
-            </h1>
-            )}
-            <div className="text-xs text-muted mt-1.5">
-              {dash.is_published ? "Published - anyone with the link can view it" : "Not published yet - only you can see this"}
-            </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {dash.can_edit && (
-              <div className="flex items-center rounded-lg border border-border overflow-hidden text-xs">
-                <button
-                  type="button"
-                  className={`px-2.5 py-1.5 transition ${mode === "edit" ? "bg-primary text-white" : "text-muted hover:text-text hover:bg-surface2"}`}
-                  onClick={() => setMode("edit")}
-                >
-                  Edit
-                </button>
-                <button
-                  type="button"
-                  className={`px-2.5 py-1.5 transition ${mode === "view" ? "bg-primary text-white" : "text-muted hover:text-text hover:bg-surface2"}`}
-                  onClick={() => setMode("view")}
-                >
-                  Preview
-                </button>
-              </div>
-            )}
-            <BrandingPanel
-              dash={dash}
-              onChange={handleDashChange}
-              logoUrl={logoUrl}
-              backgroundImageUrl={backgroundImageUrl}
-              onAssetChanged={bumpBranding}
-            />
-            <PublishPanel dash={dash} onChange={handleDashChange} />
-          </div>
-        </div>
-
-        <PageTabsBar dash={dash} activePageId={activePage?.id} setActivePageId={setActivePageId} onChange={handleDashChange} />
-
-        {/* 2026-09-25g (live-data freshness round): shown regardless of
-            filter state - see DashboardBlocks.tsx's own comment for why
-            this is a real, honest "last computed" signal rather than a
-            simulated "live" pulse. */}
-        {activePage && (
-          <div className="mb-1.5">
-            <DataFreshnessBadge blocks={activePage.blocks} />
-          </div>
-        )}
-
-        {/* 2026-09-25e (elite pass): replaces the old bare "Filtering N
-            active" line with the real, honest version of the reference
-            dashboards' own filter-bar footer ("Showing 6,709 reviews · all
-            departments · all years") - a real server-counted row count
-            (filterState.matchedRows, never fabricated - see
-            lib/useDashboardFilters.ts) plus every filter block's current
-            state, not just the ones actively set, so at rest it reads as
-            a clear summary of what's being shown rather than only
-            appearing once something is filtered. */}
-        {activePage && filterState.matchedRows !== null && (
-          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 mb-2 text-[11px] text-muted">
-            <span
-              className={`w-1.5 h-1.5 rounded-full shrink-0 ${filterState.loading ? "bg-accent animate-pulse" : "bg-accent/40"}`}
-            />
-            <span className="font-semibold text-text tabular-nums">{filterState.matchedRows.toLocaleString()}</span>
-            <span>row{filterState.matchedRows === 1 ? "" : "s"} match</span>
-            {activePage.blocks
-              .filter((b) => b.type === "filter" && b.config?.column)
-              .map((b) => {
-                const val = filterState.values[b.id];
-                const label = b.title || b.config?.column || "Filter";
-                return (
-                  <span key={b.id} className="flex items-center gap-1.5">
-                    <span aria-hidden="true" className="text-border">&middot;</span>
-                    <span>{label}:</span>
-                    <span className={val ? "text-text font-medium" : ""}>{val || "All"}</span>
-                  </span>
-                );
-              })}
-          </div>
-        )}
-
-        <div className="mt-6" style={pageBgTriple ? { background: `rgb(${pageBgTriple} / 0.35)`, borderRadius: 20, padding: 16 } : undefined}>
-          {!activePage ? (
-            <div className="text-sm text-muted py-10 text-center">This dashboard has no pages yet.</div>
-          ) : dash.can_edit && mode === "edit" ? (
-            <DashboardCanvas dash={dash} page={activePage} onChange={handleDashChange} filterState={filterState} />
-          ) : (
-            <DashboardBlockGrid blocks={activePage.blocks} datasourceId={dash.datasource_id} filterState={filterState} />
-          )}
-        </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+"""
+Pydantic request/response schemas.
+"""
+from datetime import datetime
+from typing import Optional, Any
+
+from pydantic import BaseModel, EmailStr, Field
+
+
+# ---------- Auth ----------
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8)
+    full_name: Optional[str] = None
+    company: Optional[str] = None
+    captcha_id: str
+    captcha_answer: str
+
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserOut(BaseModel):
+    id: str
+    email: EmailStr
+    full_name: Optional[str] = None
+    company: Optional[str] = None
+    created_at: datetime
+    # 2026-09-24 (full-app security round): computed server-side from
+    # deps.is_admin_email and returned on register/login/me/profile, so the
+    # frontend never again needs its own hardcoded copy of the admin email
+    # list (previously duplicated in TopNav.tsx AND AdminLogin.tsx, shipped
+    # in plain text in the public JS bundle). Defaults false so any caller
+    # building a UserOut without explicitly setting it never accidentally
+    # grants admin UI.
+    is_admin: bool = False
+
+    class Config:
+        from_attributes = True
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserOut
+
+
+class CaptchaOut(BaseModel):
+    captcha_id: str
+    question: str
+
+
+class UpdateProfileRequest(BaseModel):
+    full_name: Optional[str] = Field(default=None, max_length=120)
+    company: Optional[str] = Field(default=None, max_length=120)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
+
+
+# ---------- Workspaces ----------
+class WorkspaceCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class WorkspaceRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class WorkspaceOut(BaseModel):
+    id: str
+    name: str
+    is_personal: bool
+    role: str  # "owner" | "member" - the CURRENT user's role in this workspace
+    member_count: int
+    datasource_count: int
+    invite_token: str
+    created_at: datetime
+
+
+class WorkspaceMemberOut(BaseModel):
+    user_id: str
+    email: EmailStr
+    full_name: Optional[str] = None
+    role: str  # "owner" | "member" | "viewer"
+    created_at: datetime
+
+
+class WorkspaceDetailOut(WorkspaceOut):
+    members: list[WorkspaceMemberOut]
+
+
+class WorkspaceMemberRoleUpdate(BaseModel):
+    # Only ever "member" (full collaborate access) or "viewer" (read-only)
+    # - a workspace's "owner" role is set once at creation and never
+    # changed through this endpoint; see routers/workspaces.py
+    # update_member_role for the actual validation.
+    role: str
+
+
+class InvitePreviewOut(BaseModel):
+    workspace_id: str
+    workspace_name: str
+    member_count: int
+    already_member: bool
+
+
+class AssignWorkspaceRequest(BaseModel):
+    workspace_id: str
+
+
+# ---------- DataSources ----------
+class DataSourceCreateDB(BaseModel):
+    name: str
+    kind: str  # postgres | mysql | mongodb | sqlserver | supabase
+    host: str
+    port: int
+    database: str
+    username: str
+    password: str
+    ssl: bool = True
+
+
+# A data warehouse authenticates completely differently from a database
+# connection above (a service-account key, never a host/port/username/
+# password), so it gets its own request shape and its own endpoint
+# (POST /datasources/warehouse) rather than being squeezed into
+# DataSourceCreateDB.
+class DataSourceCreateWarehouse(BaseModel):
+    name: str
+    kind: str  # bigquery | snowflake (more warehouse kinds may be added later)
+    # --- BigQuery fields ---
+    project_id: str = ""
+    dataset_id: str = ""
+    service_account_json: str = ""
+    # --- Snowflake fields (Enterprise Scale Roadmap, Phase 2) ---
+    # Snowflake authenticates completely differently from BigQuery (a
+    # username/password against an account, never a service-account key),
+    # so it gets its own set of fields here rather than reusing the
+    # BigQuery ones above - each kind's handler in routers/datasources.py
+    # connect_warehouse only ever reads the fields that apply to it.
+    account: str = ""  # e.g. "xy12345.us-east-1" - the account identifier from the Snowflake URL
+    snowflake_warehouse: str = ""  # Snowflake's own compute cluster name (unrelated to "kind: warehouse" above)
+    database: str = ""
+    db_schema: str = ""  # optional - the user's default schema is used when left blank
+    role: str = ""  # optional - the user's default role is used when left blank
+    username: str = ""
+    password: str = ""
+
+
+# ---------- Live OAuth connectors (Google Sheets, Microsoft Excel) ----------
+# See routers/connections.py for the full authorize -> callback -> pick a
+# resource -> finish flow these support.
+class OAuthAuthorizeOut(BaseModel):
+    authorize_url: str
+
+
+class OAuthResourceOut(BaseModel):
+    id: str
+    name: str
+    modified_at: Optional[str] = None
+    # Microsoft only: which drive this item lives in (None for the
+    # person's own OneDrive, set for a SharePoint/shared library item) -
+    # round-tripped back on OAuthFinishRequest so the workbook can be
+    # addressed the same way again on every later live load.
+    drive_id: Optional[str] = None
+
+
+class OAuthResourcesOut(BaseModel):
+    provider: str
+    resources: list[OAuthResourceOut]
+
+
+class OAuthFinishRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    resource_id: str
+    resource_name: str
+    drive_id: Optional[str] = None
+
+
+# Google Sheets picks its spreadsheet through Google's own file-picker
+# widget (see ConnectResourcePicker.tsx) rather than our own search list,
+# so the browser needs to hold this connection's own access token just
+# long enough to open that widget - never logged, never stored client
+# side, and only ever handed to Google's picker.js, the same discipline
+# oauth_tokens.py already documents for every other use of this token.
+class PickerTokenOut(BaseModel):
+    access_token: str
+
+
+class DataSourceOut(BaseModel):
+    id: str
+    name: str
+    kind: str
+    connection_info: dict
+    read_only: bool
+    schema_cache: Optional[dict] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ---------- Chat / AI ----------
+class ChatRequest(BaseModel):
+    conversation_id: Optional[str] = None
+    datasource_id: str
+    prompt: str
+    # Optional explicit chart customization instructions layered on top of prompt
+    chart_override: Optional[dict] = None
+
+
+class ChatResponse(BaseModel):
+    conversation_id: str
+    message_id: str
+    role: str = "assistant"
+    reply_text: str
+    action: str = "analyze"
+    chart_spec: Optional[dict] = None
+    # The chart type actually rendered (e.g. "bar", "scatter") - the
+    # Explore panel's chart-type picker needs this as its starting
+    # selection, since chart_spec itself doesn't reliably name its own type.
+    chart_type: Optional[str] = None
+    # Tidy, row-level numbers behind this chart (see
+    # chart_builder.result_to_tidy) plus per-column dtype/role metadata -
+    # what lets the frontend's Explore panel remap axes/chart type/filters
+    # instantly, client-side, against the real numbers instead of only ever
+    # having the one fixed chart_spec above. None when the result wasn't
+    # tabular (e.g. a bare scalar answer).
+    result_columns: Optional[list] = None
+    result_rows: Optional[list] = None
+    result_truncated: bool = False
+    insight: Optional[str] = None
+    suggested_charts: Optional[list] = None
+    suggested_stats: Optional[list] = None
+    # Specific, contextual "what to try next" buttons tied to this exact
+    # result (e.g. an alternative correlation method) - distinct from the
+    # generic, dataset-level suggested_charts/suggested_stats above.
+    follow_up_suggestions: Optional[list] = None
+    needs_clarification: bool = False
+    rows_before: Optional[int] = None
+    rows_after: Optional[int] = None
+    nulls_before: Optional[int] = None
+    nulls_after: Optional[int] = None
+    # Set only when this prompt created a new saved table (a cleaning/prep
+    # transform), so the client can add it as a new tab and switch to it.
+    new_version_id: Optional[str] = None
+    new_version_name: Optional[str] = None
+    # Set only in step-by-step ("guided") analysis mode, right after this
+    # turn prepared a table but has NOT yet run the actual analysis on it -
+    # the client shows this as a single prominent button; clicking it
+    # re-sends "prompt" with skip_prep=true and source_version_ids=
+    # [version_id] to run the analysis against the just-prepared table.
+    continue_action: Optional[dict] = None
+
+
+# ---------- Verify ("Double-check this") ----------
+class VerifyResponse(BaseModel):
+    # "confirmed": reviewed and found correct, nothing changed.
+    # "corrected": an issue was found and this message was fixed in place
+    #   (reply_text/chart_spec/insight below are the corrected versions).
+    # "unavailable": the review itself could not be completed (a transient
+    #   AI service issue), or found a bigger problem that needs a fresh
+    #   message rather than an in-place fix - the original answer is
+    #   unchanged either way.
+    status: str
+    message: str
+    message_id: str
+    reply_text: Optional[str] = None
+    chart_spec: Optional[dict] = None
+    chart_type: Optional[str] = None
+    result_columns: Optional[list] = None
+    result_rows: Optional[list] = None
+    result_truncated: bool = False
+    insight: Optional[str] = None
+    new_version_id: Optional[str] = None
+    new_version_name: Optional[str] = None
+
+
+# ---------- Dataset versions (saved/named tables) ----------
+class RenameVersionRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+# ---------- Data tab: natural-language filter bar ----------
+class ParseFilterRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=500)
+    table: Optional[str] = None
+    version_id: Optional[str] = None
+
+
+# ---------- Data tab: Saved Views (a named snapshot of the whole Data tab
+# display - sort/filter/columns/format - see models.SavedView) ----------
+class SavedViewCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    table: Optional[str] = None
+    version_id: Optional[str] = None
+    config: dict
+
+
+class SavedViewOut(BaseModel):
+    id: str
+    name: str
+    table: Optional[str] = None
+    version_id: Optional[str] = None
+    config: dict
+    created_at: datetime
+    updated_at: datetime
+    # Who actually created this view (2026-09-23, workspace roles &
+    # attribution round) - saved views are shared team-wide once their data
+    # source is, so the Views dropdown can now show "by <name>" instead of
+    # every teammate's views looking like they came from whoever's looking
+    # at them.
+    created_by_id: Optional[str] = None
+    created_by_name: Optional[str] = None
+    created_by_email: Optional[str] = None
+
+
+# ---------- Rename a data source (the file/connection name shown as
+# "Analyzing: <name>" at the top of the Workspace page, and everywhere else
+# that name is displayed) ----------
+class RenameDataSourceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+# ---------- Update a conversation (its title and/or pinned state, wherever
+# it's listed - the homepage's Recent conversations, a data source's own
+# conversation list, and the Workspace page's own Recent conversations
+# panel). Both fields are optional so the same endpoint serves a plain
+# rename, a plain pin/unpin, or - in principle - both at once, without the
+# caller needing to resend a field it isn't changing. ----------
+class UpdateConversationRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=80)
+    pinned: bool | None = None
+
+
+# Kept as an alias so any older caller still referencing the previous name
+# keeps working unchanged.
+RenameConversationRequest = UpdateConversationRequest
+
+
+# ---------- Dashboards (2026-09-23: can optionally be shared into a
+# workspace instead of staying personal - see models.Dashboard and
+# routers/dashboards.py) ----------
+class DashboardCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    # Share this brand-new dashboard with a team workspace right away
+    # instead of keeping it personal. Omitted/None = personal, same as
+    # before shared dashboards existed.
+    workspace_id: Optional[str] = None
+
+
+class DashboardRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class DashboardShareRequest(BaseModel):
+    # Sets which workspace this dashboard is shared with - None un-shares
+    # it back to personal (visible only to its creator again).
+    workspace_id: Optional[str] = None
+
+
+class SaveChartRequest(BaseModel):
+    dashboard_id: Optional[str] = None
+    dashboard_name: Optional[str] = None
+    # Only used when dashboard_id is omitted (a brand-new dashboard is
+    # being created by this save) and the person wants it shared with a
+    # workspace right away rather than staying personal.
+    workspace_id: Optional[str] = None
+    title: str
+    chart_spec: dict
+    insight: Optional[str] = None
+
+
+class DashboardOut(BaseModel):
+    id: str
+    name: str
+    workspace_id: Optional[str] = None
+    workspace_name: Optional[str] = None
+    created_at: datetime
+    chart_count: int
+    # Whether the CURRENT signed-in user created this dashboard themselves
+    # (vs. seeing it because a teammate shared it into a workspace they're
+    # both in).
+    is_own: bool
+    created_by_name: Optional[str] = None
+    created_by_email: Optional[str] = None
+    can_edit: bool
+    can_delete: bool
+    # 2026-09-24 (Dashboard Builder Phase 1): 1 = the original flat
+    # saved-chart board (routers/dashboards.py, DashboardView.tsx);
+    # 2 = a new pages+blocks dashboard (routers/dashboard_builder.py,
+    # DashboardBuilderView.tsx). Lets the Dashboards.tsx list page route a
+    # click at each dashboard to the right viewer/editor.
+    layout_version: int = 1
+
+
+class SavedChartOut(BaseModel):
+    id: str
+    title: str
+    chart_spec: dict
+    insight: Optional[str] = None
+    position: int
+
+
+class DashboardDetailOut(DashboardOut):
+    charts: list[SavedChartOut]
+
+
+# ---------- Dashboard Builder (2026-09-24, Phase 1): the new pages+blocks
+# dashboard model - see models.Dashboard/DashboardPage/DashboardBlock/
+# DashboardShare and routers/dashboard_builder.py for the full picture. ----------
+class GenerateDashboardRequest(BaseModel):
+    conversation_id: str = Field(min_length=1)
+    # 2026-09-25 (Round 2, the "AI Build" wizard): optional - when set, the
+    # dashboard is built FRESH around this plain-English description
+    # (GD360 plans a set of blocks and runs a real, new analysis for each
+    # one against this conversation's data source) instead of the original
+    # one-shot behavior of just laying out whatever charts/tables already
+    # happen to be in this chat. Omitted/blank keeps that original
+    # behavior exactly as it always worked - see generate_dashboard's own
+    # docstring for the full picture.
+    goal: Optional[str] = Field(default=None, max_length=500)
+
+
+# 2026-09-25 (Round 2, "build own"): a blank v2 dashboard tied to a
+# conversation's data source but with zero blocks - the person adds and
+# fills every block themselves via the existing Phase 2 canvas. See
+# routers/dashboard_builder.py's create_blank_dashboard.
+class CreateBlankDashboardRequest(BaseModel):
+    conversation_id: str = Field(min_length=1)
+
+
+# 2026-09-25 (Round 5, template gallery): the third choice in
+# BuildDashboardModal.tsx, alongside "Build with AI" and "Create your
+# own" - a v2 dashboard pre-laid-out from one of the fixed catalog
+# entries GET /dashboard-builder/templates returns. See
+# routers/dashboard_builder.py's _TEMPLATES for why a template only ever
+# supplies layout (page names, block types, grid positions, placeholder
+# titles), never data.
+class CreateFromTemplateRequest(BaseModel):
+    conversation_id: str = Field(min_length=1)
+    template_key: str = Field(min_length=1)
+
+
+# 2026-09-25 (Round 5): what GET /dashboard-builder/templates returns -
+# the same shape create_from_template reads from, so the gallery's
+# preview thumbnails can never drift from what "Use this template"
+# actually builds.
+class DashboardTemplateBlockOut(BaseModel):
+    type: str
+    title: Optional[str] = None
+    x: int
+    y: int
+    w: int
+    h: int
+
+
+class DashboardTemplatePageOut(BaseModel):
+    name: str
+    blocks: list[DashboardTemplateBlockOut]
+
+
+class DashboardTemplateOut(BaseModel):
+    key: str
+    name: str
+    description: str
+    icon: str
+    pages: list[DashboardTemplatePageOut]
+
+
+# 2026-09-25 (Round 2): renaming a v2 dashboard's own name - see
+# routers/dashboard_builder.py's update_dashboard.
+class UpdateDashboardRequest(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=120)
+
+
+class DashboardBlockOut(BaseModel):
+    id: str
+    # 2026-09-25 (Round 3): added "gauge" | "donut" | "sparkline" |
+    # "avatar_list" - four native widget types, config shapes documented
+    # in routers/dashboard_builder.py's own module docstring.
+    type: str  # "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut" | "sparkline" | "avatar_list"
+    title: Optional[str] = None
+    x: int
+    y: int
+    w: int
+    h: int
+    config: dict
+    position: int
+    # 2026-09-25g (live-data freshness round): when this block's data was
+    # last actually recomputed - None for a block that has never been
+    # built yet, or one that existed before this column did (never
+    # backfilled with a guessed time - see models.DashboardBlock's own
+    # docstring). Read by the frontend's DataFreshnessBadge.
+    data_updated_at: Optional[datetime] = None
+
+
+class DashboardPageOut(BaseModel):
+    id: str
+    name: str
+    position: int
+    blocks: list[DashboardBlockOut]
+    # 2026-09-25 (Round 4, branding): this page's own background tint
+    # override, or None to inherit the parent dashboard's background - see
+    # models.DashboardPage's own docstring.
+    background_color: Optional[str] = None
+
+
+# ---------- Dashboard Builder Phase 3 (2026-09-24): page management +
+# private sharing. See routers/dashboard_builder.py for the full design. ----
+class DashboardShareEmailOut(BaseModel):
+    id: str
+    email: str
+
+
+class DashboardBuilderOut(BaseModel):
+    id: str
+    name: str
+    layout_version: int
+    created_at: datetime
+    source_conversation_id: Optional[str] = None
+    # 2026-09-24 (Phase 2, the canvas): which data source this dashboard's
+    # blocks are built against - resolved server-side from
+    # source_conversation_id (see routers/dashboard_builder.py
+    # _resolve_datasource). The frontend uses this to know whether "Ask AI"/
+    # "Build manually" are even available on this dashboard (both need a
+    # real data source behind them) and to fetch the column list for the
+    # manual-build form via the existing GET /datasources/{id}/preview
+    # endpoint - no new backend endpoint needed just to list columns.
+    datasource_id: Optional[str] = None
+    datasource_name: Optional[str] = None
+    pages: list[DashboardPageOut]
+    can_edit: bool
+    is_published: bool
+    public_slug: Optional[str] = None
+    # 2026-09-24 (Phase 3): the share row's own settings, always present
+    # once a dashboard has ever been published at least once (None/false/
+    # empty before that first publish). share_emails is only meaningful
+    # when share_mode=="private"; it's harmless (just unused) otherwise.
+    # Never includes password_hash itself - share_has_password is a plain
+    # boolean so the editor UI can show "a password is set" without the
+    # hash ever reaching the frontend.
+    share_mode: Optional[str] = None
+    share_has_password: bool = False
+    share_emails: list[DashboardShareEmailOut] = []
+    # 2026-09-24 (Phase 4, white-label): set once a custom domain has ever
+    # been attached to this dashboard's share (None before that). status
+    # is one of "pending_dns" / "pending_ssl" / "live" - see
+    # models.DashboardShare's own docstring. error is the last message
+    # from Render, if any, shown as-is in the publish panel.
+    custom_domain: Optional[str] = None
+    custom_domain_status: Optional[str] = None
+    custom_domain_error: Optional[str] = None
+    # 2026-09-25 (Round 4, branding/customization): this dashboard's own
+    # look - see models.Dashboard's own docstring for exactly what each
+    # field means and update_branding/upload_logo/upload_background in
+    # routers/dashboard_builder.py for how they're set. has_logo/
+    # has_background_image are plain booleans (never the raw bytes, which
+    # would bloat every single dashboard fetch) so the frontend knows
+    # whether to fetch the actual image at all, avoiding a broken-<img>
+    # flash while it decides.
+    brand_primary_color: Optional[str] = None
+    brand_accent_color: Optional[str] = None
+    background_style: Optional[str] = None
+    background_color: Optional[str] = None
+    has_logo: bool = False
+    has_background_image: bool = False
+
+
+class PublishDashboardRequest(BaseModel):
+    # "public" (anyone with the link) or "private" (2026-09-24, Phase 3 -
+    # named emails + optional password - see routers/dashboard_builder.py's
+    # own module docstring). Validated server-side rather than with a
+    # Literal type, so an unrecognized mode fails with a clear, friendly
+    # 400 instead of a generic 422 validation error.
+    mode: str = "public"
+    # Only read when mode=="private". None/omitted = no password (the
+    # email allow-list alone is the gate); a non-empty string sets/replaces
+    # the current password. There is no separate "leave password
+    # unchanged" option - every publish call fully states the password
+    # this dashboard should use going forward, so there's never ambiguity
+    # about whether an omitted field means "keep the old one" or "clear
+    # it." Ignored entirely when mode=="public".
+    password: Optional[str] = None
+
+
+class CreatePageRequest(BaseModel):
+    name: str = Field(default="", max_length=80)
+
+
+class UpdatePageRequest(BaseModel):
+    # Both optional - a rename sends just `name`, a reorder (drag a page
+    # tab to a new spot) sends just `position`; either or both can be sent
+    # in one call. At least one must actually be set, enforced in the
+    # endpoint so the error message can be specific.
+    name: Optional[str] = Field(default=None, max_length=80)
+    position: Optional[int] = None
+    # 2026-09-25 (Round 4, branding): this page's own background tint - a
+    # hex string to set it, or "" (empty string) to clear it back to
+    # "inherit the dashboard's background", the same "empty clears it"
+    # convention this codebase already uses elsewhere (e.g. a block's
+    # title). None/omitted leaves it unchanged, same as name/position.
+    background_color: Optional[str] = None
+
+
+class AddShareEmailRequest(BaseModel):
+    email: EmailStr
+
+
+class VerifyPrivateAccessRequest(BaseModel):
+    email: EmailStr
+    password: Optional[str] = None
+
+
+class VerifyPrivateAccessOut(BaseModel):
+    access_token: str
+
+
+class PublicDashboardOut(BaseModel):
+    name: str
+    pages: list[DashboardPageOut]
+    # 2026-09-25 (Round 4, branding): same fields/meaning as
+    # DashboardBuilderOut above, mirrored here so the anonymous public/
+    # private viewer renders with the owner's branding too - deliberately
+    # never the dashboard's own id (see this class's own module-level
+    # reasoning elsewhere in the codebase: PublicDashboardOut never exposes
+    # it to an anonymous caller).
+    brand_primary_color: Optional[str] = None
+    brand_accent_color: Optional[str] = None
+    background_style: Optional[str] = None
+    background_color: Optional[str] = None
+    has_logo: bool = False
+    has_background_image: bool = False
+
+
+class SetCustomDomainRequest(BaseModel):
+    domain: str = Field(min_length=1, max_length=255)
+
+
+class UpdateBrandingRequest(BaseModel):
+    # 2026-09-25 (Round 4): every field optional and independently
+    # settable - a call can change just the color, just the style, or all
+    # of them at once. Each is normalized/validated server-side
+    # (_hex_color_or_none / the background_style whitelist) rather than
+    # with a strict Pydantic type, so a bad value degrades to "leave it
+    # cleared" instead of failing the whole request with a generic 422 -
+    # same reasoning as PublishDashboardRequest.mode above. Sending ""
+    # (empty string) for a color clears it back to the app's default;
+    # omitting/None leaves that field unchanged.
+    brand_primary_color: Optional[str] = None
+    brand_accent_color: Optional[str] = None
+    background_style: Optional[str] = None
+    background_color: Optional[str] = None
+
+
+# ---------- Dashboard Builder Phase 2 (2026-09-24): the real canvas editor
+# - add/move/resize/delete a block, fill one in with AI or a manual
+# aggregation, restyle a chart's type. See routers/dashboard_builder.py for
+# what each does; every one of these still only ever operates on a
+# layout_version==2 dashboard the caller can edit. ----------
+class CreateBlockRequest(BaseModel):
+    page_id: str = Field(min_length=1)
+    type: str = Field(min_length=1)  # "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut" | "sparkline" | "avatar_list"
+    title: Optional[str] = None
+
+
+class UpdateBlockRequest(BaseModel):
+    # Every field optional - this is a partial update (drag persists x/y,
+    # resize persists w/h, a title edit persists just title, and so on).
+    # At least one field must actually be set or there is nothing to do -
+    # enforced in the endpoint itself, not here, so the error message can
+    # be specific.
+    x: Optional[int] = None
+    y: Optional[int] = None
+    w: Optional[int] = None
+    h: Optional[int] = None
+    title: Optional[str] = None
+    config: Optional[dict] = None
+
+
+class AskAiBlockRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=2000)
+
+
+class FilterCriterion(BaseModel):
+    """One active cross-filter selection - (which column, which value).
+    See routers/dashboard_builder.py's module docstring (Phase 2b) for why
+    these are never persisted anywhere: a viewer's current filter
+    selections live only in the frontend's own React state and get sent
+    fresh on every preview-filtered call."""
+    column: str = Field(min_length=1)
+    value: str | int | float | bool
+
+
+class ManualBuildBlockRequest(BaseModel):
+    metric_column: str = Field(min_length=1)
+    agg: str = "sum"  # "sum" | "avg" | "count" | "min" | "max"
+    group_by_column: Optional[str] = None
+    block_type: str = "table"  # "kpi" | "table" | "chart" | "gauge" | "donut" | "sparkline" | "avatar_list"
+    chart_type: Optional[str] = None  # only read when block_type == "chart"
+    # 2026-09-24 (Phase 2b): whichever filters the person building this
+    # block currently has active on the page, so a brand-new block built
+    # while a filter is active is correctly filtered from the moment it's
+    # created, not just on the next filter change.
+    filters: list[FilterCriterion] = Field(default_factory=list, max_length=8)
+    # 2026-09-25 (Round 3): only read when block_type == "gauge" - both
+    # optional, see _run_manual_recipe for the sensible defaults filled in
+    # when either (or both) is left unset.
+    target_value: Optional[float] = None
+    max_value: Optional[float] = None
+
+
+class RestyleBlockRequest(BaseModel):
+    chart_type: str = Field(min_length=1)
+    title: Optional[str] = None
+
+
+# 2026-09-25h (inline editing round): pure presentation, never a data
+# change - see routers/dashboard_builder.py's set_block_accent_color for
+# why this is its own small endpoint rather than routed through the
+# generic update_block (which replaces a block's whole `config`, and would
+# silently wipe out a kpi's real value/label). color is a hex string like
+# "#1a7a5c", or None/"" to reset back to the automatic per-block color.
+class SetBlockAccentColorRequest(BaseModel):
+    color: Optional[str] = None
+
+
+# ---------- Cross-filtering (2026-09-24, Phase 2b) ----------
+class ApplyFiltersRequest(BaseModel):
+    filters: list[FilterCriterion] = Field(default_factory=list, max_length=8)
+
+
+class FilteredBlockOut(BaseModel):
+    id: str
+    type: str
+    config: dict
+
+
+class FilteredBlocksOut(BaseModel):
+    # Only ever includes a block that actually has a stored `recipe` (see
+    # build_manual_block) and successfully recomputed - see
+    # preview_filtered_blocks' own docstring for why everything else is
+    # simply left out rather than echoed back unchanged.
+    blocks: list[FilteredBlockOut]
+    # 2026-09-25e (elite pass, real filter-bar row count): the real number
+    # of rows in the datasource that match `payload.filters` - literally
+    # `len(df)` after preview_filtered_blocks applies those filters, no
+    # separate query. This is what lets the frontend show an honest
+    # "Showing 6,709 rows" next to the filter row (the reference dashboard
+    # screenshots Gokul sent) instead of a fabricated number - see this
+    # engagement's standing rule against ever inventing stats. 0 whenever
+    # the datasource couldn't be loaded at all (frontend treats 0 as "no
+    # count to show", same as any other empty state).
+    matched_rows: int = 0
+
+
+# ---------- Folders (2026-09-23, folders round: organizes Projects on the
+# home page - see models.Folder and routers/folders.py) ----------
+class FolderCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    workspace_id: str
+
+
+class FolderRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class FolderOut(BaseModel):
+    id: str
+    name: str
+    workspace_id: str
+    created_at: datetime
+    # How many Projects are filed into this folder right now - lets the
+    # frontend show a count without a second request per folder.
+    project_count: int
+    can_edit: bool
+
+
+class BulkMoveConversationsRequest(BaseModel):
+    conversation_ids: list[str] = Field(min_length=1, max_length=200)
+    # The folder to move every listed Project into - None files them back
+    # to "no folder" (the Projects page's default, unfiled view).
+    folder_id: Optional[str] = None
