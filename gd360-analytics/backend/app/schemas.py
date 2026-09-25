@@ -483,8 +483,10 @@ class DashboardBlockOut(BaseModel):
     id: str
     # 2026-09-25 (Round 3): added "gauge" | "donut" | "sparkline" |
     # "avatar_list" - four native widget types, config shapes documented
-    # in routers/dashboard_builder.py's own module docstring.
-    type: str  # "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut" | "sparkline" | "avatar_list"
+    # in routers/dashboard_builder.py's own module docstring. 2026-09-25
+    # (Round 15): added "heading" | "divider" - the element library's two
+    # pure-layout widgets, no computed data.
+    type: str  # "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut" | "sparkline" | "avatar_list" | "heading" | "divider"
     title: Optional[str] = None
     x: int
     y: int
@@ -665,8 +667,17 @@ class UpdateBrandingRequest(BaseModel):
 # layout_version==2 dashboard the caller can edit. ----------
 class CreateBlockRequest(BaseModel):
     page_id: str = Field(min_length=1)
-    type: str = Field(min_length=1)  # "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut" | "sparkline" | "avatar_list"
+    # 2026-09-25 (Round 15): "heading" | "divider" added - two pure-layout
+    # element-library widgets alongside the original data block types.
+    type: str = Field(min_length=1)  # "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut" | "sparkline" | "avatar_list" | "heading" | "divider"
     title: Optional[str] = None
+    # 2026-09-25 (Round 15, element library): optional - set together when
+    # the canvas drags a card from the element library and drops it at a
+    # specific grid cell, so it lands exactly where it was dropped instead
+    # of always appending at the bottom. See routers/dashboard_builder.py's
+    # create_block for why size is still never taken from here.
+    x: Optional[int] = None
+    y: Optional[int] = None
 
 
 class UpdateBlockRequest(BaseModel):
