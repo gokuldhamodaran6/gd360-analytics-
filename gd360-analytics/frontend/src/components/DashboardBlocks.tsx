@@ -156,7 +156,39 @@ const KPI_ICONS = [TrendIcon, BarsGlyph, UsersGlyph, TargetGlyph, LayersGlyph, B
 // tile, a tinted header on a table, an accent rule on a text note). This
 // is additive: `.card` itself is untouched, so nothing outside Dashboard
 // Builder changes.
-export function KpiTile({ title, config }: { title: string | null; config: any }) {
+function ResetSwatchIcon({ className = "w-3 h-3" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 12a9 9 0 1 1 2.64 6.36" />
+      <path d="M3 21v-6h6" />
+    </svg>
+  );
+}
+
+// 2026-09-25h (inline editing round): a kpi tile's color used to be
+// entirely automatic (accentIndex's deterministic hash of its own label) -
+// no way to change it short of renaming the tile and hoping for a
+// different hash. `editable`/`onAccentColorChange` (only ever passed by
+// DashboardCanvas.tsx's edit-mode BlockCard, never by the read-only
+// DashboardBlockGrid below) add a small color swatch directly on the tile
+// - click it, pick a color, done - plus a tiny reset control once a
+// custom color is set. Pure presentation: config.accent_color rides
+// alongside the tile's real value/label but never touches them (see the
+// backend's set_block_accent_color for why this is its own endpoint
+// rather than a generic config write). No custom color set = exactly the
+// same automatic palette as before, so every existing dashboard looks
+// unchanged until someone actually clicks the swatch.
+export function KpiTile({
+  title,
+  config,
+  editable,
+  onAccentColorChange,
+}: {
+  title: string | null;
+  config: any;
+  editable?: boolean;
+  onAccentColorChange?: (color: string | null) => void;
+}) {
   const raw = config?.value;
   const isNumber = typeof raw === "number" && Number.isFinite(raw);
   const display = isNumber
@@ -167,18 +199,50 @@ export function KpiTile({ title, config }: { title: string | null; config: any }
   const label = title || config?.label || "Value";
   const idx = accentIndex(label);
   const Icon = KPI_ICONS[idx];
+  const customColor: string | null = typeof config?.accent_color === "string" && config.accent_color ? config.accent_color : null;
+  const accentCss = customColor || `rgb(var(--dash-accent-${idx}))`;
   return (
     <div
-      className="dash-card dash-card--accented h-full p-5 flex flex-col justify-between gap-4 overflow-hidden"
-      style={{ "--dash-card-accent-color": `rgb(var(--dash-accent-${idx}))` } as any}
+      className="dash-card dash-card--accented h-full p-5 flex flex-col justify-between gap-4 overflow-hidden relative"
+      style={{ "--dash-card-accent-color": accentCss } as any}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="text-[11px] font-semibold uppercase tracking-wide text-muted truncate">{label}</div>
-        <span className={`dash-icon-chip dash-accent-${idx}`}>
+        <span
+          className={`dash-icon-chip ${customColor ? "" : `dash-accent-${idx}`}`}
+          style={customColor ? { background: `${customColor}26`, color: customColor } : undefined}
+        >
           <Icon className="w-[18px] h-[18px]" />
         </span>
       </div>
       <div className="dash-kpi-value text-3xl font-bold truncate">{display}</div>
+
+      {editable && onAccentColorChange && (
+        <div className="no-drag absolute bottom-2.5 right-2.5 flex items-center gap-1">
+          {customColor && (
+            <button
+              type="button"
+              className="w-5 h-5 rounded-full bg-surface2 border border-border text-muted hover:text-text transition flex items-center justify-center"
+              title="Reset to the automatic color"
+              onClick={() => onAccentColorChange(null)}
+            >
+              <ResetSwatchIcon />
+            </button>
+          )}
+          <label
+            className="w-5 h-5 rounded-full border-2 border-surface shadow cursor-pointer block"
+            style={{ background: accentCss }}
+            title="Click to choose this tile's color"
+          >
+            <input
+              type="color"
+              className="sr-only"
+              value={customColor || "#2d8267"}
+              onChange={(e) => onAccentColorChange(e.target.value)}
+            />
+          </label>
+        </div>
+      )}
     </div>
   );
 }
@@ -638,7 +702,10 @@ export function DashboardBlockGrid({
     const config = override?.config ?? b.config;
     return (
       <>
-        {type === "kpi" && <KpiTile title={b.title} config={config} />}
+        {/* accent_color always comes from the block's own real config, not
+            an active filter override - same reasoning as
+            DashboardCanvas.tsx's edit-mode BlockCard. */}
+        {type === "kpi" && <KpiTile title={b.title} config={{ ...config, accent_color: b.config?.accent_color }} />}
         {type === "table" && <BlockTable title={b.title} config={config} />}
         {type === "chart" && <BlockChart title={b.title} config={config} />}
         {type === "text" && <TextBlock title={b.title} config={config} />}
