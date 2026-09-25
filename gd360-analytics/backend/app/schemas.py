@@ -461,6 +461,10 @@ class DashboardPageOut(BaseModel):
     name: str
     position: int
     blocks: list[DashboardBlockOut]
+    # 2026-09-25 (Round 4, branding): this page's own background tint
+    # override, or None to inherit the parent dashboard's background - see
+    # models.DashboardPage's own docstring.
+    background_color: Optional[str] = None
 
 
 # ---------- Dashboard Builder Phase 3 (2026-09-24): page management +
@@ -508,6 +512,20 @@ class DashboardBuilderOut(BaseModel):
     custom_domain: Optional[str] = None
     custom_domain_status: Optional[str] = None
     custom_domain_error: Optional[str] = None
+    # 2026-09-25 (Round 4, branding/customization): this dashboard's own
+    # look - see models.Dashboard's own docstring for exactly what each
+    # field means and update_branding/upload_logo/upload_background in
+    # routers/dashboard_builder.py for how they're set. has_logo/
+    # has_background_image are plain booleans (never the raw bytes, which
+    # would bloat every single dashboard fetch) so the frontend knows
+    # whether to fetch the actual image at all, avoiding a broken-<img>
+    # flash while it decides.
+    brand_primary_color: Optional[str] = None
+    brand_accent_color: Optional[str] = None
+    background_style: Optional[str] = None
+    background_color: Optional[str] = None
+    has_logo: bool = False
+    has_background_image: bool = False
 
 
 class PublishDashboardRequest(BaseModel):
@@ -538,6 +556,12 @@ class UpdatePageRequest(BaseModel):
     # endpoint so the error message can be specific.
     name: Optional[str] = Field(default=None, max_length=80)
     position: Optional[int] = None
+    # 2026-09-25 (Round 4, branding): this page's own background tint - a
+    # hex string to set it, or "" (empty string) to clear it back to
+    # "inherit the dashboard's background", the same "empty clears it"
+    # convention this codebase already uses elsewhere (e.g. a block's
+    # title). None/omitted leaves it unchanged, same as name/position.
+    background_color: Optional[str] = None
 
 
 class AddShareEmailRequest(BaseModel):
@@ -556,10 +580,38 @@ class VerifyPrivateAccessOut(BaseModel):
 class PublicDashboardOut(BaseModel):
     name: str
     pages: list[DashboardPageOut]
+    # 2026-09-25 (Round 4, branding): same fields/meaning as
+    # DashboardBuilderOut above, mirrored here so the anonymous public/
+    # private viewer renders with the owner's branding too - deliberately
+    # never the dashboard's own id (see this class's own module-level
+    # reasoning elsewhere in the codebase: PublicDashboardOut never exposes
+    # it to an anonymous caller).
+    brand_primary_color: Optional[str] = None
+    brand_accent_color: Optional[str] = None
+    background_style: Optional[str] = None
+    background_color: Optional[str] = None
+    has_logo: bool = False
+    has_background_image: bool = False
 
 
 class SetCustomDomainRequest(BaseModel):
     domain: str = Field(min_length=1, max_length=255)
+
+
+class UpdateBrandingRequest(BaseModel):
+    # 2026-09-25 (Round 4): every field optional and independently
+    # settable - a call can change just the color, just the style, or all
+    # of them at once. Each is normalized/validated server-side
+    # (_hex_color_or_none / the background_style whitelist) rather than
+    # with a strict Pydantic type, so a bad value degrades to "leave it
+    # cleared" instead of failing the whole request with a generic 422 -
+    # same reasoning as PublishDashboardRequest.mode above. Sending ""
+    # (empty string) for a color clears it back to the app's default;
+    # omitting/None leaves that field unchanged.
+    brand_primary_color: Optional[str] = None
+    brand_accent_color: Optional[str] = None
+    background_style: Optional[str] = None
+    background_color: Optional[str] = None
 
 
 # ---------- Dashboard Builder Phase 2 (2026-09-24): the real canvas editor
