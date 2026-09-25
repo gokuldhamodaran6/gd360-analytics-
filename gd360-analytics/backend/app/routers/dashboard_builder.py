@@ -211,6 +211,28 @@ can never drift apart in what they allow.
      /public/* specifically gets a permissive, dynamically-reflected CORS
      policy instead of the app's normal fixed origin allow-list, which
      has no way to know a customer's domain in advance.
+
+Round 2 (2026-09-25, the "AI Build" wizard + "build own"): two additions
+to generate_dashboard()'s own entry point, BuildDashboardModal.tsx.
+
+  1. generate_dashboard now takes an optional `goal` (schemas.
+     GenerateDashboardRequest) - the one clarifying question Gokul asked
+     for ("ai should ask user what we going to build from this data").
+     When set, _generate_goal_plan plans a FRESH set of analysis
+     questions grounded in the real data source's columns, and every one
+     of them is actually run through services.ai_engine.analyze() (same
+     call ask_ai_block already makes for a single block) before the
+     dashboard is ever created - "build exactly whatever is needed,"
+     not just a recap of whichever turns already happened to be in this
+     one chat. Omitting `goal` keeps the original Phase 1 one-shot recap
+     behavior exactly as it always worked, unchanged.
+  2. create_blank_dashboard is the real implementation behind "Create
+     your own" in BuildDashboardModal.tsx - shown but disabled since
+     Phase 1 ("coming in the next round"). It needed nothing new on the
+     canvas side (Phase 2's add-block/Ask AI/build-manually/style flow
+     has worked per-block since it shipped) - only this one missing
+     entry point: a v2 dashboard with a page and zero blocks, so the
+     person builds the whole thing by hand from there.
 """
 import copy
 import re
@@ -436,6 +458,81 @@ def _fallback_plan(entries: list[dict]) -> list[dict]:
         }
         for i, e in enumerate(entries)
     ]
+
+
+# ---------- Round 2 (2026-09-25), the "AI Build" wizard's goal-driven plan:
+# unlike _generate_plan above (which only ever RE-ARRANGES turns that
+# already exist in the chat), this plans a set of BRAND NEW questions to
+# ask against the real data, grounded in a plain-English description of
+# what the person wants the dashboard to show. Each planned block is a
+# self-contained analysis prompt - generate_dashboard runs every one of
+# them for real through services.ai_engine.analyze() (the exact same call
+# ask_ai_block makes for a single block), so the result is "exactly
+# whatever's needed for the dashboard they asked for," not a recap of
+# whatever happened to already be in this one chat. ----------
+def _build_goal_plan_messages(goal: str, conversation_title: str, column_summary: str) -> list[dict]:
+    system = (
+        "You are planning a business dashboard from a plain-English description of what someone "
+        "wants to see, against a specific dataset. You do not compute anything yourself - for each "
+        "block you plan, you write ONE precise, self-contained analysis question that a separate "
+        "data-analysis AI will run against the real data to produce that block's actual numbers or "
+        "chart. Ground every question in the real column names you are given below - never invent a "
+        "column that is not listed, and never ask a question the given columns cannot answer. Rules: "
+        "prefer 4 to 8 blocks total - too few is thin, too many is clutter. A block whose question "
+        'clearly produces one headline number should be type "kpi"; a question that compares or '
+        'breaks a measure down by a category or over time should be type "chart"; anything better '
+        'shown as a detailed list of rows should be type "table". Give the whole dashboard a short, '
+        "specific title that reflects what was asked for. Return ONLY compact JSON, no prose, no "
+        "markdown fences, in exactly this shape:\n"
+        '{"dashboard_title": "short punchy title", "blocks": '
+        '[{"type": "kpi", "title": "short block title", "prompt": "the exact question to ask"}, ...]}'
+    )
+    user = (
+        f"What they want this dashboard to show: {goal}\n\n"
+        f"Available columns in the data: {column_summary}\n\n"
+        f'(For background only, not the source of truth: this dashboard is being built from a chat '
+        f'analysis titled "{conversation_title}".)'
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def _fallback_goal_plan(goal: str) -> list[dict]:
+    return [{"type": "table", "title": (goal[:80] or "Overview").strip(), "prompt": goal}]
+
+
+def _generate_goal_plan(goal: str, conversation_title: str, column_summary: str) -> tuple[str, list[dict]]:
+    fallback_title = (goal[:80] or "New dashboard").strip() or "New dashboard"
+    fallback_blocks = _fallback_goal_plan(goal)
+    try:
+        raw = _call_llm_resilient(
+            _build_goal_plan_messages(goal, conversation_title, column_summary), max_tokens=1200
+        )
+        parsed = _extract_json(raw)
+    except Exception:
+        # Transient AI hiccup, missing/invalid key, malformed JSON - degrade
+        # to a single block asking the goal verbatim rather than failing
+        # the whole "Build with AI" action.
+        return fallback_title, fallback_blocks
+
+    title = str(parsed.get("dashboard_title") or fallback_title).strip()[:80] or fallback_title
+    raw_blocks = parsed.get("blocks")
+    if not isinstance(raw_blocks, list) or not raw_blocks:
+        return title, fallback_blocks
+
+    blocks: list[dict] = []
+    for b in raw_blocks[:10]:
+        if not isinstance(b, dict):
+            continue
+        prompt = str(b.get("prompt") or "").strip()
+        if not prompt:
+            continue
+        btype = b.get("type")
+        if btype not in ("kpi", "chart", "table"):
+            btype = "chart"
+        block_title = str(b.get("title") or prompt).strip()[:80] or prompt[:80]
+        blocks.append({"type": btype, "title": block_title, "prompt": prompt})
+
+    return title, (blocks or fallback_blocks)
 
 
 def _generate_plan(conversation_title: str, entries: list[dict]) -> tuple[str, list[dict]]:
@@ -807,9 +904,83 @@ def generate_dashboard(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
+    """Two modes, branching on whether payload.goal was sent:
+
+    - goal set (Round 2, 2026-09-25 - the "AI Build" wizard): GD360 asks
+      one question ("what should this dashboard show?") before building,
+      then plans and runs a FRESH set of analyses against this
+      conversation's real data source for exactly what was described -
+      see _generate_goal_plan and the services.ai_engine.analyze() calls
+      below. This can produce blocks that have nothing to do with what
+      was already asked in this chat.
+    - goal omitted/blank: the original Phase 1 behavior, unchanged - picks
+      which of this chat's own already-computed turns become blocks and
+      lays them out. Never fails just because the AI planning call had a
+      transient problem (see _generate_plan's own fallback).
+    """
     conv = db.query(models.Conversation).filter(models.Conversation.id == payload.conversation_id).first()
     if not conv or not workspace_access.can_access_conversation(db, conv, user):
         raise HTTPException(404, "Conversation not found.")
+
+    goal = (payload.goal or "").strip()
+    if goal:
+        # Same probe-object reuse _resolve_datasource is already built
+        # for: it only ever reads d.source_conversation_id off whatever's
+        # passed in, so a transient, never-added-to-the-session Dashboard
+        # resolves the real data source without persisting anything yet -
+        # every fallible step below (loading the data, the planning call,
+        # every per-block analyze() call) happens BEFORE any row is
+        # created, same zero-partial-write discipline as the plain path.
+        ds = _resolve_datasource(db, user, models.Dashboard(source_conversation_id=conv.id))
+        try:
+            original_df = load_dataframe(ds, table=None, version="original", db=db)
+        except Exception as e:
+            raise HTTPException(400, f"Could not load this data source: {e}")
+
+        column_summary = ", ".join(f"{c} ({original_df[c].dtype})" for c in list(original_df.columns)[:60])
+        title, block_specs = _generate_goal_plan(goal, conv.title, column_summary)
+
+        kpi_items: list[dict] = []
+        other_items: list[dict] = []
+        for position, spec in enumerate(block_specs):
+            try:
+                result = ai_engine.analyze(
+                    spec["prompt"], {"Original data": original_df}, history=[], guided=False,
+                    skip_prep=False, original_df=original_df,
+                )
+            except Exception as e:
+                print(f"[dashboard_builder] goal-driven block build failed for {spec['prompt']!r}: {e}")
+                continue
+            if result.get("needs_clarification"):
+                continue
+            actual_type, config = _ai_result_to_block(result, spec["type"])
+            item = {"type": actual_type, "title": spec["title"], "config": config, "position": position}
+            (kpi_items if actual_type == "kpi" else other_items).append(item)
+
+        if not kpi_items and not other_items:
+            raise HTTPException(
+                400,
+                "GD360 couldn't build anything from that description - try naming which numbers or "
+                "breakdowns matter most (e.g. \"revenue by region this quarter, and our top 5 "
+                "customers\"), then try again.",
+            )
+
+        dashboard = models.Dashboard(owner_id=user.id, name=title, layout_version=2, source_conversation_id=conv.id)
+        db.add(dashboard)
+        db.flush()
+        page = models.DashboardPage(dashboard_id=dashboard.id, name="Overview", position=0)
+        db.add(page)
+        db.flush()
+        for item in _layout_blocks(kpi_items, other_items):
+            db.add(models.DashboardBlock(
+                page_id=page.id,
+                type=item["type"], title=item["title"],
+                x=item["x"], y=item["y"], w=item["w"], h=item["h"],
+                config=item["config"], position=item["position"],
+            ))
+        db.commit()
+        db.refresh(dashboard)
+        return _builder_out(db, dashboard, user)
 
     messages = sorted(conv.messages, key=lambda m: m.created_at)
     entries: list[dict] = []
@@ -875,11 +1046,68 @@ def generate_dashboard(
     return _builder_out(db, dashboard, user)
 
 
+# 2026-09-25 (Round 2, "build own"): the "Create your own" tile in
+# BuildDashboardModal.tsx has shown this choice since Phase 1 but was
+# disabled the whole time ("coming in the next round") - the Phase 2
+# canvas it needed (add/fill/edit a block by hand) has been live since
+# then, it just had no way to START a dashboard with zero blocks. This is
+# that entry point: a real v2 dashboard + one empty page, nothing more.
+# Everything after that - adding blocks, Ask AI per block, build
+# manually, style, publish - is the exact same canvas every other v2
+# dashboard already uses.
+@router.post("/create-blank", response_model=schemas.DashboardBuilderOut, status_code=201)
+def create_blank_dashboard(
+    payload: schemas.CreateBlankDashboardRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    conv = db.query(models.Conversation).filter(models.Conversation.id == payload.conversation_id).first()
+    if not conv or not workspace_access.can_access_conversation(db, conv, user):
+        raise HTTPException(404, "Conversation not found.")
+
+    dashboard = models.Dashboard(
+        owner_id=user.id,
+        name="Untitled dashboard",
+        layout_version=2,
+        source_conversation_id=conv.id,
+    )
+    db.add(dashboard)
+    db.flush()
+    page = models.DashboardPage(dashboard_id=dashboard.id, name="Overview", position=0)
+    db.add(page)
+    db.commit()
+    db.refresh(dashboard)
+    return _builder_out(db, dashboard, user)
+
+
 @router.get("/{dashboard_id}", response_model=schemas.DashboardBuilderOut)
 def get_builder_dashboard(
     dashboard_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
 ):
     d = _get_dashboard_v2(db, user, dashboard_id)
+    return _builder_out(db, d, user)
+
+
+# 2026-09-25 (Round 2): there was previously no way at all to rename a v2
+# dashboard's own name after it was created - a real gap that only became
+# obviously wrong once create_blank_dashboard above could hand someone a
+# dashboard permanently called "Untitled dashboard" with no way to fix it.
+# Same pattern as update_page's own name handling just below.
+@router.patch("/{dashboard_id}", response_model=schemas.DashboardBuilderOut)
+def update_dashboard(
+    dashboard_id: str,
+    payload: schemas.UpdateDashboardRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    if payload.name is not None:
+        trimmed = payload.name.strip()
+        if not trimmed:
+            raise HTTPException(400, "Dashboard name can't be empty.")
+        d.name = trimmed[:120]
+    db.commit()
+    db.refresh(d)
     return _builder_out(db, d, user)
 
 
