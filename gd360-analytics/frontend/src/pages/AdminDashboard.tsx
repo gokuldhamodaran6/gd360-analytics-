@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Plot from "../lib/plotly";
 import TopNav from "../components/TopNav";
+import AppSidebar from "../components/AppSidebar";
+import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { useTheme } from "../api/ThemeContext";
 import { connectionKindMeta } from "../components/DataSourceForm";
 import { SIGNATURE_COLORS } from "../lib/chartStyle";
@@ -456,6 +458,13 @@ function isWithinUserDateFilter(lastPromptAt: string | null, filter: UserDateFil
 export default function AdminDashboard() {
   const { theme } = useTheme();
   const chrome = THEME_CHROME[theme === "dark" ? "dark" : "light"];
+  // 2026-09-25i (sidebar consistency pass) - see DashboardBuilderView.tsx's
+  // own note. The workspace switcher this puts in the sidebar is present
+  // but functionally inert here on purpose: admin stats are platform-wide,
+  // not scoped to any one workspace, so switching it does nothing to the
+  // data on this page - it's here only so the nav rail itself looks like
+  // every other authenticated page rather than vanishing on this one.
+  const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
 
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [users, setUsers] = useState<AdminUserRow[]>([]);
@@ -697,22 +706,35 @@ export default function AdminDashboard() {
   const promptsPerUserLabelAll = promptsPerUserBuckets.length > 0 && promptsPerUserBuckets.length <= 10;
 
   return (
-    <div className="admin-dashboard">
-      {/* Plotly still paints its own hover-only drag layer with a CSS
-          class it calls "cursor-crosshair" even with dragmode switched
-          off above (dragmode:false stops the actual click-drag zoom/pan,
-          but Plotly's cursor logic doesn't special-case "false" - it just
-          isn't 'pan', so it still picks the crosshair cursor). This is the
-          other half of that fix: force the normal pointer back on, scoped
-          to this page only via the .admin-dashboard wrapper so it can
-          never affect any other chart elsewhere in the app. */}
-      <style>{`
-        .admin-dashboard .js-plotly-plot .cursor-crosshair {
-          cursor: default !important;
-        }
-      `}</style>
-      <TopNav />
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
+    <div className="flex">
+      <AppSidebar
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
+        onWorkspaceSwitch={switchWorkspace}
+        onWorkspaceCreated={handleWorkspaceCreated}
+      />
+      {/* 2026-09-25i (sidebar consistency pass): .admin-dashboard used to
+          be the outermost element on this page - moved here, onto the new
+          inner flex column, rather than dropped, since the <style> block
+          right below still scopes its Plotly cursor-crosshair fix through
+          a `.admin-dashboard ...` selector; it just needs to still be an
+          ancestor of the plots, not literally the page's root div. */}
+      <div className="admin-dashboard flex-1 min-w-0 flex flex-col min-h-screen">
+        {/* Plotly still paints its own hover-only drag layer with a CSS
+            class it calls "cursor-crosshair" even with dragmode switched
+            off above (dragmode:false stops the actual click-drag zoom/pan,
+            but Plotly's cursor logic doesn't special-case "false" - it just
+            isn't 'pan', so it still picks the crosshair cursor). This is the
+            other half of that fix: force the normal pointer back on, scoped
+            to this page only via the .admin-dashboard wrapper so it can
+            never affect any other chart elsewhere in the app. */}
+        <style>{`
+          .admin-dashboard .js-plotly-plot .cursor-crosshair {
+            cursor: default !important;
+          }
+        `}</style>
+        <TopNav hideLogo />
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
           <div>
             <h1 className="text-2xl font-bold">Admin dashboard</h1>
@@ -1320,6 +1342,7 @@ export default function AdminDashboard() {
             </div>
           </>
         )}
+        </div>
       </div>
     </div>
   );
