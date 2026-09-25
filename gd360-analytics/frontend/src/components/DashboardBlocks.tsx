@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ChartCanvas from "./ChartCanvas";
-import { datasourceApi, DashboardBlock } from "../api/client";
+import { datasourceApi, DashboardBlock, DashboardBlockType } from "../api/client";
 import { DashboardFilterState } from "../lib/useDashboardFilters";
 
 // 2026-09-24 (Dashboard Builder Phase 1): the shared block-rendering layer
@@ -698,6 +698,69 @@ export function DashboardBlockGrid({
           {renderBlock(b)}
         </div>
       ))}
+    </div>
+  );
+}
+
+// 2026-09-25g (live-data freshness round): a real "Data updated Xm ago"
+// trust signal, shared by both the owner's Preview (DashboardBuilderView)
+// and the anonymous public viewer (PublicDashboardView) - top design-
+// trends priority from this round's research, and the one flagged as
+// especially valuable on a shared/public dashboard someone outside GD360
+// is looking at. Deliberately honest rather than a fake "live" pulse: this
+// app has no auto-refreshing data pipeline, so what actually changes is
+// when a block's numbers were last (re)computed by someone asking AI or
+// building manually - exactly what backend DashboardBlock.data_updated_at
+// tracks (see its own docstring for precisely which actions advance it).
+// A block with no real computed data yet (never built, or an empty text/
+// filter block) never counts toward this - nothing here is ever guessed.
+const DATA_BLOCK_TYPES: DashboardBlockType[] = ["chart", "table", "kpi", "gauge", "donut", "sparkline", "avatar_list"];
+
+function hasComputedData(block: DashboardBlock): boolean {
+  return DATA_BLOCK_TYPES.includes(block.type) && !!block.config && Object.keys(block.config).length > 0;
+}
+
+function formatRelativeTime(whenMs: number, nowMs: number): string {
+  const diffSec = Math.max(0, Math.round((nowMs - whenMs) / 1000));
+  if (diffSec < 45) return "just now";
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `${diffMin} minute${diffMin === 1 ? "" : "s"} ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr} hour${diffHr === 1 ? "" : "s"} ago`;
+  const diffDay = Math.round(diffHr / 24);
+  if (diffDay < 30) return `${diffDay} day${diffDay === 1 ? "" : "s"} ago`;
+  return new Date(whenMs).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+export function DataFreshnessBadge({ blocks }: { blocks: DashboardBlock[] }) {
+  // Ticks every 30s purely to re-render this one small label so "2 minutes
+  // ago" quietly becomes "3 minutes ago" without the person ever
+  // refreshing the page - not a data refetch, just a clock tick.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 30000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const latestMs = useMemo(() => {
+    let latest = 0;
+    for (const b of blocks) {
+      if (!hasComputedData(b) || !b.data_updated_at) continue;
+      const t = new Date(b.data_updated_at).getTime();
+      if (!Number.isNaN(t) && t > latest) latest = t;
+    }
+    return latest;
+  }, [blocks]);
+
+  if (latestMs === 0) return null;
+
+  return (
+    <div
+      className="inline-flex items-center gap-1.5 text-[11px] text-muted"
+      title={`Last computed ${new Date(latestMs).toLocaleString()}`}
+    >
+      <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
+      Data updated {formatRelativeTime(latestMs, now)}
     </div>
   );
 }
