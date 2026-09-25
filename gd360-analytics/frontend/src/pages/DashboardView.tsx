@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { dashboardApi, DashboardDetail, workspaceApi, WorkspaceSummary } from "../api/client";
+import { dashboardApi, DashboardDetail } from "../api/client";
 import TopNav from "../components/TopNav";
+import AppSidebar from "../components/AppSidebar";
 import ChartCanvas from "../components/ChartCanvas";
+import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 
 function PeopleIcon({ className = "w-3 h-3" }: { className?: string }) {
   return (
@@ -35,8 +37,13 @@ export default function DashboardView() {
   const { dashboardId } = useParams();
   const navigate = useNavigate();
   const [dash, setDash] = useState<DashboardDetail | null>(null);
-  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [error, setError] = useState("");
+  // 2026-09-25i (sidebar consistency pass): matches every other
+  // AppSidebar-equipped page (see DashboardBuilderView.tsx's own note) -
+  // this replaces what used to be this page's own one-off
+  // workspaceApi.list() fetch below, since useWorkspaceNav fetches the
+  // exact same list and shareOptions can read straight off it.
+  const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
 
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -57,7 +64,6 @@ export default function DashboardView() {
   };
 
   useEffect(load, [dashboardId]);
-  useEffect(() => { workspaceApi.list().then(setWorkspaces).catch(() => {}); }, []);
 
   const startRename = () => {
     if (!dash) return;
@@ -124,12 +130,20 @@ export default function DashboardView() {
 
   if (error) {
     return (
-      <div>
-        <TopNav />
-        <div className="max-w-6xl mx-auto px-6 py-8">
-          <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 inline-block">{error}</div>
-          <div className="mt-4">
-            <Link to="/dashboards" className="text-sm text-primary hover:underline">&larr; Back to Dashboards</Link>
+      <div className="flex">
+        <AppSidebar
+          workspaces={workspaces}
+          activeWorkspaceId={activeWorkspaceId}
+          onWorkspaceSwitch={switchWorkspace}
+          onWorkspaceCreated={handleWorkspaceCreated}
+        />
+        <div className="flex-1 min-w-0 flex flex-col min-h-screen">
+          <TopNav hideLogo />
+          <div className="max-w-6xl mx-auto px-6 py-8">
+            <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 inline-block">{error}</div>
+            <div className="mt-4">
+              <Link to="/dashboards" className="text-sm text-primary hover:underline">&larr; Back to Dashboards</Link>
+            </div>
           </div>
         </div>
       </div>
@@ -138,16 +152,31 @@ export default function DashboardView() {
 
   if (!dash) {
     return (
-      <div>
-        <TopNav />
-        <div className="max-w-6xl mx-auto px-6 py-8 text-sm text-muted">Loading&hellip;</div>
+      <div className="flex">
+        <AppSidebar
+          workspaces={workspaces}
+          activeWorkspaceId={activeWorkspaceId}
+          onWorkspaceSwitch={switchWorkspace}
+          onWorkspaceCreated={handleWorkspaceCreated}
+        />
+        <div className="flex-1 min-w-0 flex flex-col min-h-screen">
+          <TopNav hideLogo />
+          <div className="max-w-6xl mx-auto px-6 py-8 text-sm text-muted">Loading&hellip;</div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div>
-      <TopNav />
+    <div className="flex">
+      <AppSidebar
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
+        onWorkspaceSwitch={switchWorkspace}
+        onWorkspaceCreated={handleWorkspaceCreated}
+      />
+      <div className="flex-1 min-w-0 flex flex-col min-h-screen">
+      <TopNav hideLogo />
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         <Link to="/dashboards" className="text-xs text-muted hover:text-text transition inline-block mb-3">&larr; Dashboards</Link>
 
@@ -290,6 +319,7 @@ export default function DashboardView() {
             )}
           </div>
         )}
+      </div>
       </div>
     </div>
   );
