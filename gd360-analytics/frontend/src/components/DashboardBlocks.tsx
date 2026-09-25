@@ -34,7 +34,7 @@ const ROW_UNIT_PX = 48;
 // opens on their phone) both render through.
 const NARROW_BREAKPOINT = 760;
 
-function useIsNarrow(breakpoint = NARROW_BREAKPOINT) {
+export function useIsNarrow(breakpoint = NARROW_BREAKPOINT) {
   const [narrow, setNarrow] = useState(() => (typeof window !== "undefined" ? window.innerWidth < breakpoint : false));
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
@@ -50,7 +50,13 @@ function useIsNarrow(breakpoint = NARROW_BREAKPOINT) {
 // Natural stacked-mode height per block type, in px - not a grid unit
 // count, just a sensible minimum so a table or chart has real room and a
 // kpi tile doesn't stretch to fill the screen.
-const STACK_MIN_HEIGHT: Record<string, number> = {
+//
+// 2026-09-25e (responsive pass): exported so DashboardCanvas.tsx (the
+// owner's edit view) can size its own narrow-mode stacked blocks off the
+// exact same numbers Preview/the public viewer already use here - one
+// table of "how tall should a kpi/table/chart/etc. be when stacked",
+// never two tables that could quietly drift apart.
+export const STACK_MIN_HEIGHT: Record<string, number> = {
   kpi: 128,
   table: 320,
   chart: 360,
