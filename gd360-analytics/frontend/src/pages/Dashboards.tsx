@@ -14,6 +14,21 @@ import ViewToggle, { useViewMode } from "../components/ViewToggle";
 // backend/app/routers/dashboards.py's scope history). This lists every
 // dashboard the signed-in person can see: their own personal ones, plus
 // anything a teammate has shared into a workspace they're a member of.
+//
+// 2026-09-25 (naming fix + premium light theme foundation round): this
+// page has always listed TWO genuinely different things under one plain
+// "Dashboards" heading with no distinction beyond routing - a real,
+// multi-block Dashboard Builder page (layout_version===2, built via
+// "Build Dashboard" in a Project's chat) and a plain flat board of pinned
+// charts with no layout at all (layout_version===1, "New dashboard" on
+// this page always created one of these - dashboardApi.create posts to
+// /dashboards, whose backend default is layout_version=1; there is
+// currently no "start a blank real dashboard" entry point at all, only
+// "generate one from an existing chat analysis"). Calling the second kind
+// a "Dashboard" too was the exact bug reported this round. The two are
+// now shown as clearly separate, honestly-labeled sections below -
+// "Dashboards" and "Saved Charts" - and "New dashboard" was renamed to
+// "New chart board" to match what it actually creates.
 
 function ChartIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
@@ -63,7 +78,15 @@ function PeopleIcon({ className = "w-3 h-3" }: { className?: string }) {
   );
 }
 
-function CreateDashboardModal({
+// "New chart board" - 2026-09-25 (naming fix round): renamed from "New
+// dashboard". This always creates a layout_version=1 flat board (see
+// dashboardApi.create -> POST /dashboards, backend default layout_version
+// 1) - a place to pin individual saved charts, with no blocks, no layout,
+// no AI. A real Dashboard Builder dashboard can only be created today by
+// generating one from an existing Project chat's analysis ("Build
+// Dashboard" in Workspace.tsx) - there's no blank-canvas entry point yet;
+// that's tracked as later work, not this round's naming/theme fix.
+function CreateChartBoardModal({
   workspaces,
   onClose,
   onCreated,
@@ -92,7 +115,7 @@ function CreateDashboardModal({
       const d = await dashboardApi.create(trimmed, workspaceId || null);
       onCreated(d);
     } catch {
-      setError("Couldn't create that dashboard. Please try again.");
+      setError("Couldn't create that chart board. Please try again.");
       setBusy(false);
     }
   };
@@ -102,14 +125,15 @@ function CreateDashboardModal({
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="card w-full max-w-sm p-6 relative">
+      <div className="dash-card w-full max-w-sm p-6 relative">
         <button className="absolute top-4 right-4 text-muted hover:text-text transition" onClick={onClose} aria-label="Close">
           <CloseIcon className="w-5 h-5" />
         </button>
-        <h2 className="text-lg font-bold mb-1">New dashboard</h2>
+        <h2 className="text-lg font-bold mb-1">New chart board</h2>
         <p className="text-xs text-muted mb-5 leading-relaxed">
-          A board to pin charts onto. Keep it personal, or share it with a team workspace so everyone
-          sees the same curated set instead of digging through Projects to find it again.
+          A simple board to pin individual saved charts onto - no layout or AI, just a curated list. Keep it
+          personal, or share it with a team workspace so everyone sees the same set. Looking to build a real,
+          multi-widget dashboard instead? Use &ldquo;Build Dashboard&rdquo; from a Project&rsquo;s chat.
         </p>
         <form onSubmit={submit} className="space-y-3">
           {error && <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
@@ -137,7 +161,7 @@ function CreateDashboardModal({
             </div>
           )}
           <button className="btn-primary w-full text-sm" type="submit" disabled={busy || !name.trim()}>
-            {busy ? "Creating…" : "Create dashboard"}
+            {busy ? "Creating…" : "Create chart board"}
           </button>
         </form>
       </div>
@@ -146,9 +170,19 @@ function CreateDashboardModal({
   );
 }
 
+// 2026-09-25 (naming fix round): a card now looks different depending on
+// which kind it is - a real Dashboard gets the accent icon chip + a
+// "Dashboard" pill and no chart_count line (chart_count is always 0 for a
+// layout_version=2 row - it counts the old flat SavedChart list, which a
+// pages+blocks dashboard never has any rows in, see
+// routers/dashboards.py's _dashboard_out); a chart board keeps the
+// original chart-count line and a neutral icon, with no "Dashboard" pill
+// anywhere near it - the exact distinction this round's bug report asked
+// for.
 function DashboardCard({ d, onDeleted }: { d: DashboardSummary; onDeleted: (id: string) => void }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [busy, setBusy] = useState(false);
+  const isDashboard = d.layout_version === 2;
 
   const doDelete = async () => {
     setBusy(true);
@@ -162,13 +196,17 @@ function DashboardCard({ d, onDeleted }: { d: DashboardSummary; onDeleted: (id: 
   };
 
   return (
-    <div className="card p-4 flex flex-col gap-2">
+    <div className="dash-card p-4 flex flex-col gap-2.5">
       <div className="flex items-start justify-between gap-2">
         <Link
-          to={d.layout_version === 2 ? `/dashboard-builder/${d.id}` : `/dashboards/${d.id}`}
-          className="flex items-center gap-2 min-w-0 group"
+          to={isDashboard ? `/dashboard-builder/${d.id}` : `/dashboards/${d.id}`}
+          className="flex items-center gap-2.5 min-w-0 group"
         >
-          <span className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+          <span
+            className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+              isDashboard ? "dash-accent-0" : "bg-surface2 border border-border text-muted"
+            }`}
+          >
             <ChartIcon />
           </span>
           <span className="font-semibold text-sm truncate group-hover:text-primary transition">{d.name}</span>
@@ -177,7 +215,7 @@ function DashboardCard({ d, onDeleted }: { d: DashboardSummary; onDeleted: (id: 
           <button
             type="button"
             className="opacity-50 hover:opacity-100 hover:text-red-400 transition shrink-0"
-            title="Delete dashboard"
+            title={isDashboard ? "Delete dashboard" : "Delete chart board"}
             onClick={() => setConfirmingDelete(true)}
           >
             <TrashIcon />
@@ -208,9 +246,15 @@ function DashboardCard({ d, onDeleted }: { d: DashboardSummary; onDeleted: (id: 
         </div>
       ) : (
         <>
-          <div className="text-xs text-muted">
-            {d.chart_count} chart{d.chart_count === 1 ? "" : "s"}
-          </div>
+          {isDashboard ? (
+            <div className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-accent/15 text-accent border border-accent/30 w-fit">
+              Dashboard
+            </div>
+          ) : (
+            <div className="text-xs text-muted">
+              {d.chart_count} chart{d.chart_count === 1 ? "" : "s"}
+            </div>
+          )}
           <div className="flex items-center gap-1.5 flex-wrap">
             {d.workspace_id ? (
               <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-surface2 border border-border text-muted">
@@ -229,6 +273,61 @@ function DashboardCard({ d, onDeleted }: { d: DashboardSummary; onDeleted: (id: 
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// Renders one section ("Dashboards" or "Saved Charts") - personal items
+// first, then a subsection per workspace they're shared into - so the two
+// kinds never visually blend together even though they share this one
+// layout helper.
+function DashboardSection({
+  title,
+  items,
+  viewMode,
+  onDeleted,
+}: {
+  title: string;
+  items: DashboardSummary[];
+  viewMode: "grid" | "list";
+  onDeleted: (id: string) => void;
+}) {
+  if (items.length === 0) return null;
+  const personal = items.filter((d) => !d.workspace_id);
+  const shared = items.filter((d) => d.workspace_id);
+  const sharedByWorkspace = new Map<string, DashboardSummary[]>();
+  for (const d of shared) {
+    const key = d.workspace_id as string;
+    if (!sharedByWorkspace.has(key)) sharedByWorkspace.set(key, []);
+    sharedByWorkspace.get(key)!.push(d);
+  }
+  const gridClass = viewMode === "grid" ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" : "grid grid-cols-1 gap-2";
+
+  return (
+    <div className="mb-10">
+      <h2 className="text-sm font-bold mb-3">{title}</h2>
+      {personal.length > 0 && (
+        <div className="mb-6">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2">Personal</div>
+          <div className={gridClass}>
+            {personal.map((d) => (
+              <DashboardCard key={d.id} d={d} onDeleted={onDeleted} />
+            ))}
+          </div>
+        </div>
+      )}
+      {[...sharedByWorkspace.entries()].map(([wsId, list]) => (
+        <div className="mb-6" key={wsId}>
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2">
+            Shared with {list[0].workspace_name || "workspace"}
+          </div>
+          <div className={gridClass}>
+            {list.map((d) => (
+              <DashboardCard key={d.id} d={d} onDeleted={onDeleted} />
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -253,17 +352,18 @@ export default function Dashboards() {
       .catch(() => setError("Couldn't load your dashboards. Please try refreshing."));
   }, []);
 
-  const personal = (dashboards || []).filter((d) => !d.workspace_id);
-  const shared = (dashboards || []).filter((d) => d.workspace_id);
-  const sharedByWorkspace = new Map<string, DashboardSummary[]>();
-  for (const d of shared) {
-    const key = d.workspace_id as string;
-    if (!sharedByWorkspace.has(key)) sharedByWorkspace.set(key, []);
-    sharedByWorkspace.get(key)!.push(d);
-  }
+  const removeById = (id: string) => setDashboards((ds) => (ds || []).filter((x) => x.id !== id));
+
+  // 2026-09-25 (naming fix round): split by layout_version before
+  // anything else renders - a real Dashboard (2) never appears in the
+  // "Saved Charts" section, and a flat chart board (1, the default) never
+  // gets the word "Dashboard" anywhere near it. See this file's own
+  // module docstring above for the full reasoning.
+  const trueDashboards = (dashboards || []).filter((d) => d.layout_version === 2);
+  const chartBoards = (dashboards || []).filter((d) => d.layout_version !== 2);
 
   return (
-    <div className="flex">
+    <div className="dash-shell flex min-h-screen">
       <AppSidebar
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
@@ -275,15 +375,15 @@ export default function Dashboards() {
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8">
         <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
           <div>
-            <h1 className="text-2xl font-bold">Dashboards</h1>
+            <h1 className="text-2xl font-bold tracking-tight">Dashboards</h1>
             <p className="text-sm text-muted mt-1">
-              Curated boards of pinned charts - keep one for yourself, or share one with a workspace.
+              Your Dashboard Builder pages, plus any charts you&rsquo;ve pinned to a saved chart board.
             </p>
           </div>
           <div className="flex items-center gap-2.5">
             {dashboards && dashboards.length > 0 && <ViewToggle mode={viewMode} onChange={setViewMode} />}
             <button type="button" className="btn-primary text-sm flex items-center gap-1.5" onClick={() => setShowCreate(true)}>
-              <PlusIcon /> New dashboard
+              <PlusIcon /> New chart board
             </button>
           </div>
         </div>
@@ -293,45 +393,25 @@ export default function Dashboards() {
         {dashboards === null && !error && <div className="text-sm text-muted">Loading…</div>}
 
         {dashboards !== null && dashboards.length === 0 && (
-          <div className="card p-8 text-center">
+          <div className="dash-card p-8 text-center">
             <div className="text-sm text-muted mb-4 leading-relaxed">
-              You don&rsquo;t have any dashboards yet. Save a chart from a Project&rsquo;s Ask GD360 chat
-              with &ldquo;Save chart to dashboard&rdquo;, or start an empty one here.
+              You don&rsquo;t have any dashboards or chart boards yet. Ask a question in a Project&rsquo;s
+              chat and use &ldquo;Build Dashboard&rdquo; to build a real dashboard from it, or start a simple
+              chart board here to pin individual charts onto.
             </div>
             <button type="button" className="btn-primary text-sm" onClick={() => setShowCreate(true)}>
-              + New dashboard
+              + New chart board
             </button>
           </div>
         )}
 
-        {personal.length > 0 && (
-          <div className="mb-8">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2">Personal</div>
-            <div className={viewMode === "grid" ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" : "grid grid-cols-1 gap-2"}>
-              {personal.map((d) => (
-                <DashboardCard key={d.id} d={d} onDeleted={(id) => setDashboards((ds) => (ds || []).filter((x) => x.id !== id))} />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {[...sharedByWorkspace.entries()].map(([wsId, list]) => (
-          <div className="mb-8" key={wsId}>
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2">
-              Shared with {list[0].workspace_name || "workspace"}
-            </div>
-            <div className={viewMode === "grid" ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" : "grid grid-cols-1 gap-2"}>
-              {list.map((d) => (
-                <DashboardCard key={d.id} d={d} onDeleted={(id) => setDashboards((ds) => (ds || []).filter((x) => x.id !== id))} />
-              ))}
-            </div>
-          </div>
-        ))}
+        <DashboardSection title="Dashboards" items={trueDashboards} viewMode={viewMode} onDeleted={removeById} />
+        <DashboardSection title="Saved Charts" items={chartBoards} viewMode={viewMode} onDeleted={removeById} />
       </div>
       </div>
 
       {showCreate && (
-        <CreateDashboardModal
+        <CreateChartBoardModal
           workspaces={workspaces}
           onClose={() => setShowCreate(false)}
           onCreated={(d) => {
