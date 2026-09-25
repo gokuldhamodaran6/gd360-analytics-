@@ -534,6 +534,24 @@ class DashboardBlock(Base):
     config = Column(JSON, nullable=False, default=dict)
     position = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # 2026-09-25g (live-data freshness round): when this block's DATA was
+    # last actually (re)computed - set at creation, then explicitly
+    # advanced only by the code paths that recompute real content
+    # (ask_ai_block, build_manual_block, and update_block's `config` field,
+    # which also covers a text block's own body / a filter block's column)
+    # - see routers/dashboard_builder.py for exactly where. Deliberately
+    # NOT a SQLAlchemy onupdate=datetime.utcnow on this column: that would
+    # fire on every UPDATE of this row for ANY reason, including a plain
+    # drag/resize/rename via update_block's x/y/w/h/title fields - which
+    # would make "data last updated" silently lie every time someone just
+    # repositions a tile. restyle_block deliberately does not touch this
+    # either - restyling only changes chart TYPE, never the underlying
+    # numbers (see that endpoint's own docstring). The frontend's
+    # DataFreshnessBadge (components/DashboardBlocks.tsx) reads this to
+    # show a real, honest "Data updated Xm ago" - never a fabricated or
+    # simulated "live" signal, since this app has no auto-refreshing data
+    # pipeline; a block's numbers only change when someone rebuilds them.
+    data_updated_at = Column(DateTime, default=datetime.utcnow)
 
     page = relationship("DashboardPage", back_populates="blocks")
 
