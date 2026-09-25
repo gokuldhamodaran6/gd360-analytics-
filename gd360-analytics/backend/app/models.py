@@ -462,11 +462,17 @@ class DashboardPage(Base):
 class DashboardBlock(Base):
     """One tile on a DashboardPage's grid.
 
-    type: "chart" | "table" | "kpi" | "text" - see routers/dashboard_builder.py
-    for exactly what `config` holds for each (a Plotly chart_spec for
-    "chart", {columns, rows} for "table", {value, label} for "kpi",
-    {body} for "text" - the last of these isn't produced by the Phase 1 AI
-    generator yet, reserved for the Phase 2 canvas editor).
+    type: "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut"
+    | "sparkline" | "avatar_list" - see routers/dashboard_builder.py for
+    exactly what `config` holds for each (a Plotly chart_spec for "chart",
+    {columns, rows} for "table", {value, label} for "kpi", {text} for
+    "text", {column} for "filter"; the four Round 3 (2026-09-25) native
+    widget types are {value, min, max, target, label} for "gauge", {items:
+    [{label, value}]} for "donut", {value, series, categories, delta_pct}
+    for "sparkline", and {items: [{rank, name, value}]} for "avatar_list" -
+    all four are plain, hand-built React components, not a relabeled
+    chart_spec, and are only ever produced by build_manual_block, never
+    the AI paths - see that file's own module docstring for why).
     x/y/w/h place this block on a 12-column grid, in grid units (not
     pixels) - the same coordinate system PowerBI/Hex-style canvases use, so
     Phase 2's drag/resize editor can read and write these directly with no
