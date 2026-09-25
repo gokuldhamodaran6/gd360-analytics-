@@ -23,6 +23,8 @@ import {
   DonutBlock,
   SparklineBlock,
   AvatarListBlock,
+  useIsNarrow,
+  STACK_MIN_HEIGHT,
 } from "./DashboardBlocks";
 import { DashboardFilterState } from "../lib/useDashboardFilters";
 
@@ -737,6 +739,22 @@ export default function DashboardCanvas({
 }) {
   const [columns, setColumns] = useState<ColumnInfo[]>([]);
   const [adding, setAdding] = useState(false);
+  // 2026-09-25e (responsive pass): below the same phone/small-tablet
+  // breakpoint Preview/the public viewer already switch at (see
+  // DashboardBlocks.tsx's own NARROW_BREAKPOINT comment), the desktop-tuned
+  // 12-column absolute grid isn't just cramped here - it's the one
+  // genuinely unusable surface in the whole app on a phone: react-grid-
+  // layout's drag/resize handles need real precision, and a block sized
+  // "3 wide" on a 375px screen is a sliver no one can grab. Rather than
+  // trying to make free-form drag/resize work with touch (and risk writing
+  // squashed, phone-sized x/y/w/h back over the SAME stored layout the
+  // desktop view relies on), this drops react-grid-layout entirely below
+  // the breakpoint and stacks blocks full-width in their existing order -
+  // same choice Preview already made, and the one place drag/resize
+  // positioning stays a "use a bigger screen" action rather than a broken
+  // one. Every other editing action (add, Ask AI, build manually, restyle,
+  // delete, edit title/text) stays fully available on mobile.
+  const narrow = useIsNarrow();
 
   useEffect(() => {
     if (!dash.datasource_id) return;
@@ -796,9 +814,33 @@ export default function DashboardCanvas({
         )}
       </div>
 
+      {narrow && page.blocks.length > 0 && (
+        <div className="text-[11px] text-muted mb-3 -mt-1">
+          Blocks are shown full-width and in order on this screen size. Drag-and-drop positioning and resizing need a
+          wider screen - everything else here still works.
+        </div>
+      )}
+
       {page.blocks.length === 0 ? (
         <div className="text-sm text-muted py-16 text-center border border-dashed border-border rounded-xl">
           This page has no blocks yet - add one above to get started.
+        </div>
+      ) : narrow ? (
+        <div className="flex flex-col gap-4">
+          {[...page.blocks]
+            .sort((a, b) => a.y - b.y || a.x - b.x)
+            .map((b) => (
+              <div key={b.id} style={{ height: (STACK_MIN_HEIGHT[b.type] ?? 200) + 40 }}>
+                <BlockCard
+                  dashboardId={dash.id}
+                  block={b}
+                  columns={columns}
+                  datasourceId={dash.datasource_id}
+                  filterState={filterState}
+                  onChange={onChange}
+                />
+              </div>
+            ))}
         </div>
       ) : (
         <ReactGridLayout
