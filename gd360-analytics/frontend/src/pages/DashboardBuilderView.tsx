@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { dashboardBuilderApi, DashboardBuilderDetail, DashboardBuilderPage, WorkspaceSummary } from "../api/client";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
-import { DashboardBlockGrid } from "../components/DashboardBlocks";
+import { DashboardBlockGrid, DataFreshnessBadge } from "../components/DashboardBlocks";
 import DashboardCanvas from "../components/DashboardCanvas";
 import { useDashboardFilters } from "../lib/useDashboardFilters";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
@@ -1323,6 +1323,16 @@ function DashboardBuilderViewBody({
         </div>
 
         <PageTabsBar dash={dash} activePageId={activePage?.id} setActivePageId={setActivePageId} onChange={handleDashChange} />
+
+        {/* 2026-09-25g (live-data freshness round): shown regardless of
+            filter state - see DashboardBlocks.tsx's own comment for why
+            this is a real, honest "last computed" signal rather than a
+            simulated "live" pulse. */}
+        {activePage && (
+          <div className="mb-1.5">
+            <DataFreshnessBadge blocks={activePage.blocks} />
+          </div>
+        )}
 
         {/* 2026-09-25e (elite pass): replaces the old bare "Filtering N
             active" line with the real, honest version of the reference
