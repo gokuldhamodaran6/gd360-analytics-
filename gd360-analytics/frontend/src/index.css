@@ -235,3 +235,95 @@ body {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ============================================================
+   Dashboard Builder - premium block styling
+   2026-09-25 (naming fix + premium light theme foundation round)
+   Scoped entirely to Dashboard Builder surfaces (the block renderers in
+   DashboardBlocks.tsx, the owner/editor shell in DashboardBuilderView.tsx,
+   and the public/published page in PublicDashboardView.tsx) via the
+   dash- prefix below - every other page in the app keeps using the plain
+   .card token exactly as it did before this round; .card itself is
+   untouched. Built on the same --color-* custom properties every other
+   page already reads, so this automatically follows the app's existing
+   dark/light theme toggle rather than hardcoding a separate one.
+   ============================================================ */
+
+.dash-shell {
+  background:
+    radial-gradient(ellipse 900px 420px at 10% -12%, rgb(var(--color-primary) / 0.07), transparent 60%),
+    radial-gradient(ellipse 760px 400px at 100% 0%, rgb(var(--color-accent) / 0.06), transparent 55%);
+}
+
+.dash-card {
+  background: rgb(var(--color-surface));
+  border: 1px solid rgb(var(--color-border));
+  border-radius: 20px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 14px 32px -18px rgb(0 0 0 / 0.22);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+:root[data-theme="light"] .dash-card {
+  box-shadow: 0 1px 2px rgb(20 20 25 / 0.04), 0 18px 36px -18px rgb(20 20 40 / 0.12);
+}
+.dash-card:hover {
+  border-color: rgb(var(--color-accent) / 0.35);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 22px 44px -18px rgb(0 0 0 / 0.3);
+}
+:root[data-theme="light"] .dash-card:hover {
+  box-shadow: 0 1px 2px rgb(20 20 25 / 0.05), 0 24px 48px -20px rgb(20 20 40 / 0.16);
+}
+
+.dash-icon-chip {
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.dash-kpi-value {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.dash-table-head th {
+  background: rgb(var(--color-surface2));
+}
+
+.dash-table-row:hover {
+  background: rgb(var(--color-accent) / 0.06);
+}
+
+.dash-note-quote {
+  border-left: 3px solid rgb(var(--color-accent) / 0.5);
+}
+
+/* Six rotating kpi-tile accent hues (see DashboardBlocks.tsx's
+   accentIndex) - dark-mode values here, restated for light mode below so
+   each stays legible as icon-chip text on a 14% tint of itself in either
+   theme. Deliberately in the same restrained, non-neon family as the
+   rest of the app rather than a loud rainbow set. */
+:root {
+  --dash-accent-0: 92 156 248;
+  --dash-accent-1: 235 148 84;
+  --dash-accent-2: 92 210 176;
+  --dash-accent-3: 224 138 199;
+  --dash-accent-4: 154 138 224;
+  --dash-accent-5: 224 122 122;
+}
+:root[data-theme="light"] {
+  --dash-accent-0: 42 120 214;
+  --dash-accent-1: 200 104 34;
+  --dash-accent-2: 27 155 108;
+  --dash-accent-3: 197 84 150;
+  --dash-accent-4: 90 66 176;
+  --dash-accent-5: 197 60 60;
+}
+.dash-accent-0 { background: rgb(var(--dash-accent-0) / 0.14); color: rgb(var(--dash-accent-0)); }
+.dash-accent-1 { background: rgb(var(--dash-accent-1) / 0.14); color: rgb(var(--dash-accent-1)); }
+.dash-accent-2 { background: rgb(var(--dash-accent-2) / 0.14); color: rgb(var(--dash-accent-2)); }
+.dash-accent-3 { background: rgb(var(--dash-accent-3) / 0.14); color: rgb(var(--dash-accent-3)); }
+.dash-accent-4 { background: rgb(var(--dash-accent-4) / 0.14); color: rgb(var(--dash-accent-4)); }
+.dash-accent-5 { background: rgb(var(--dash-accent-5) / 0.14); color: rgb(var(--dash-accent-5)); }
