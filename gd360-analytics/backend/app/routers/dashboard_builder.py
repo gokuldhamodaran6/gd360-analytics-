@@ -286,6 +286,58 @@ generic chart library shape fits.
   block has stored through this same _run_manual_recipe, cross-filtering
   works on all four new types for free, with no changes needed to
   preview_filtered_blocks itself.
+
+Round 4 (2026-09-25, branding/customization - "complete freedom" over how a
+dashboard looks, not just what's on it). Note the name: this is this
+project's fourth numbered ROUND since the widget-types/AI-wizard work
+started, an entirely different count from "Phase 4" above (white-label
+custom domains, shipped 2026-09-24) - the two happen to share a number by
+coincidence of two different people's counting, not because this is more
+white-label work. See models.Dashboard's own docstring for exactly what
+each new column means.
+
+  - update_branding: PATCHes the non-image fields (brand_primary_color,
+    brand_accent_color, background_style, background_color) in one call -
+    every field optional and independently settable, each normalized by
+    _hex_color_or_none/the background_style whitelist rather than a strict
+    Pydantic type, so a bad value just doesn't get set instead of failing
+    the whole request (same tradeoff PublishDashboardRequest.mode already
+    makes).
+  - upload_logo/upload_background (POST, multipart) and remove_logo/
+    remove_background (DELETE): store/clear the raw image bytes directly on
+    the Dashboard row (_read_and_validate_image whitelists image/png,
+    image/jpeg, image/webp - deliberately NOT image/svg+xml, which can
+    carry embedded script - and caps size at _MAX_LOGO_BYTES/
+    _MAX_BACKGROUND_BYTES). get_logo/get_background (GET, owner/editor-only,
+    view access) let the editor preview what's actually stored without
+    re-uploading.
+  - Public serving: get_public_logo/get_public_background on public_router,
+    and their _by_domain counterparts on public_domains_router, mirror the
+    existing three-tier id/slug/hostname access pattern Phase 3/4
+    established - but deliberately DON'T thread through the private-share
+    viewer-token gate _render_public_dashboard uses for real dashboard
+    content. A logo or a background image is cosmetic, not data - the
+    dashboard's own id is never exposed to these endpoints (they're keyed
+    by slug/hostname, same as every other public endpoint), and requiring
+    someone to first pass a private share's email/password gate just to
+    see the company logo on the gate screen itself would be backwards. Both
+    are gated only on "this share is currently published" (via
+    _resolve_share_by_slug/_resolve_share_by_domain, the same as every
+    other public endpoint here) - unpublishing hides them immediately, same
+    as it hides everything else.
+  - PublicDashboardOut/DashboardBuilderOut both gained the same branding
+    fields (plus has_logo/has_background_image booleans, never the raw
+    bytes) so the owner's editor, the owner's preview, and the anonymous
+    public/private viewer all render with identical branding logic
+    frontend-side - one hexToRgbTriple/background-style switch, reused by
+    DashboardBuilderView.tsx and PublicDashboardView.tsx alike.
+  - Per-page background_color (DashboardPageOut/UpdatePageRequest): a plain
+    hex tint layered UNDER a page's blocks, editable from PageTabsBar's
+    active-tab controls. Deliberately color-only, not a second per-page
+    image upload - the "complete freedom" ask is fully met by dashboard-
+    level logo/colors/background image plus a lightweight per-page
+    differentiator, without doubling the upload/storage surface this round
+    adds.
 """
 import copy
 import re
@@ -296,7 +348,7 @@ from datetime import datetime
 from typing import Any
 
 import pandas as pd
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from .. import models, schemas, security
@@ -965,7 +1017,10 @@ def _page_out(page: models.DashboardPage) -> schemas.DashboardPageOut:
         )
         for b in sorted(page.blocks, key=lambda b: b.position)
     ]
-    return schemas.DashboardPageOut(id=page.id, name=page.name, position=page.position, blocks=blocks)
+    return schemas.DashboardPageOut(
+        id=page.id, name=page.name, position=page.position, blocks=blocks,
+        background_color=page.background_color,
+    )
 
 
 def _dashboard_datasource(db: Session, d: models.Dashboard) -> models.DataSource | None:
@@ -1046,7 +1101,61 @@ def _builder_out(db: Session, d: models.Dashboard, user: models.User) -> schemas
         custom_domain=share.custom_domain if share else None,
         custom_domain_status=share.custom_domain_status if share else None,
         custom_domain_error=share.custom_domain_error if share else None,
+        brand_primary_color=d.brand_primary_color,
+        brand_accent_color=d.brand_accent_color,
+        background_style=d.background_style,
+        background_color=d.background_color,
+        has_logo=bool(d.logo_image),
+        has_background_image=bool(d.background_image),
     )
+
+
+# ---------- Round 4 (2026-09-25) branding helpers ----------
+
+_ALLOWED_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/webp"}
+_MAX_LOGO_BYTES = 2 * 1024 * 1024  # 2MB
+_MAX_BACKGROUND_BYTES = 6 * 1024 * 1024  # 6MB
+_ALLOWED_BACKGROUND_STYLES = {"default", "color", "image"}
+
+
+def _hex_color_or_none(raw: str | None) -> str | None:
+    """Normalizes a hex color string ("#2a78d6", "2A78D6", or the 3-digit
+    short form "2af") to a lowercase 6-digit "#rrggbb", or None for an
+    empty/invalid value. Deliberately never raises - a bad or blank color
+    just means "don't set it"/"clear it" rather than a hard error worth
+    failing the whole branding save over, same tradeoff every other field
+    on UpdateBrandingRequest makes."""
+    if not raw:
+        return None
+    s = raw.strip().lstrip("#")
+    if len(s) == 3 and all(c in "0123456789abcdefABCDEF" for c in s):
+        s = "".join(c * 2 for c in s)
+    if len(s) == 6 and all(c in "0123456789abcdefABCDEF" for c in s):
+        return f"#{s.lower()}"
+    return None
+
+
+async def _read_and_validate_image(file: UploadFile, max_bytes: int) -> tuple[bytes, str]:
+    """Shared validation for upload_logo/upload_background: whitelists the
+    content type (deliberately excluding image/svg+xml, which can carry
+    embedded script - the same reasoning any file-upload surface serving
+    the result back as image/* needs) and caps the size before ever
+    touching the database."""
+    content_type = (file.content_type or "").lower()
+    if content_type not in _ALLOWED_IMAGE_CONTENT_TYPES:
+        raise HTTPException(400, "Please upload a PNG, JPEG, or WEBP image.")
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(400, "That file looks empty.")
+    if len(contents) > max_bytes:
+        raise HTTPException(400, f"That image is too large - please keep it under {max_bytes // (1024 * 1024)}MB.")
+    return contents, content_type
+
+
+def _image_response(image: bytes | None, content_type: str | None) -> Response:
+    if not image:
+        raise HTTPException(404, "No image set.")
+    return Response(content=image, media_type=content_type or "image/png")
 
 
 # ---------- Endpoints ----------
@@ -1262,6 +1371,103 @@ def update_dashboard(
     db.commit()
     db.refresh(d)
     return _builder_out(db, d, user)
+
+
+# ---------- Round 4 (2026-09-25): branding/customization - see this
+# file's own module docstring for the full design. Every one of these
+# requires edit access (view-only visitors never change branding), and
+# every one returns the whole updated DashboardBuilderOut, same convention
+# as the rest of this file. ----------
+
+@router.patch("/{dashboard_id}/branding", response_model=schemas.DashboardBuilderOut)
+def update_branding(
+    dashboard_id: str,
+    payload: schemas.UpdateBrandingRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    if payload.brand_primary_color is not None:
+        d.brand_primary_color = _hex_color_or_none(payload.brand_primary_color)
+    if payload.brand_accent_color is not None:
+        d.brand_accent_color = _hex_color_or_none(payload.brand_accent_color)
+    if payload.background_style is not None:
+        style = payload.background_style.strip().lower()
+        d.background_style = style if style in _ALLOWED_BACKGROUND_STYLES else None
+    if payload.background_color is not None:
+        d.background_color = _hex_color_or_none(payload.background_color)
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.post("/{dashboard_id}/branding/logo", response_model=schemas.DashboardBuilderOut, status_code=201)
+async def upload_logo(
+    dashboard_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    contents, content_type = await _read_and_validate_image(file, _MAX_LOGO_BYTES)
+    d.logo_image = contents
+    d.logo_image_content_type = content_type
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.delete("/{dashboard_id}/branding/logo", response_model=schemas.DashboardBuilderOut)
+def remove_logo(dashboard_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    d.logo_image = None
+    d.logo_image_content_type = None
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.get("/{dashboard_id}/branding/logo")
+def get_logo(dashboard_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """The owner/editor's own preview fetch (e.g. BrandingPanel showing
+    the current logo without re-uploading) - requires only VIEW access,
+    same tier as get_builder_dashboard itself. The anonymous public/
+    private viewer never calls this; it has its own unauthenticated,
+    slug/hostname-keyed counterpart below."""
+    d = _get_dashboard_v2(db, user, dashboard_id)
+    return _image_response(d.logo_image, d.logo_image_content_type)
+
+
+@router.post("/{dashboard_id}/branding/background", response_model=schemas.DashboardBuilderOut, status_code=201)
+async def upload_background(
+    dashboard_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    contents, content_type = await _read_and_validate_image(file, _MAX_BACKGROUND_BYTES)
+    d.background_image = contents
+    d.background_image_content_type = content_type
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.delete("/{dashboard_id}/branding/background", response_model=schemas.DashboardBuilderOut)
+def remove_background(dashboard_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    d.background_image = None
+    d.background_image_content_type = None
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.get("/{dashboard_id}/branding/background")
+def get_background(dashboard_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _get_dashboard_v2(db, user, dashboard_id)
+    return _image_response(d.background_image, d.background_image_content_type)
 
 
 @router.post("/{dashboard_id}/blocks", response_model=schemas.DashboardBuilderOut, status_code=201)
@@ -1624,17 +1830,18 @@ def update_page(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    """Renames a page tab (`name`), reorders it (`position`), or both in
-    one call. A reorder is expressed as "this page's new index among all
-    of this dashboard's pages" - every page is then renumbered to a
-    contiguous 0..n-1 sequence in that new order, so `position` can never
-    end up with a gap or a duplicate regardless of where the target index
-    fell."""
+    """Renames a page tab (`name`), reorders it (`position`), sets its own
+    background tint (`background_color`, 2026-09-25 Round 4), or any
+    combination in one call. A reorder is expressed as "this page's new
+    index among all of this dashboard's pages" - every page is then
+    renumbered to a contiguous 0..n-1 sequence in that new order, so
+    `position` can never end up with a gap or a duplicate regardless of
+    where the target index fell."""
     d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
     page = next((p for p in d.pages if p.id == page_id), None)
     if not page:
         raise HTTPException(404, "Page not found on this dashboard.")
-    if payload.name is None and payload.position is None:
+    if payload.name is None and payload.position is None and payload.background_color is None:
         raise HTTPException(400, "Nothing to update.")
 
     if payload.name is not None:
@@ -1650,6 +1857,12 @@ def update_page(
         ordered.insert(target, page)
         for i, p in enumerate(ordered):
             p.position = i
+
+    # 2026-09-25 (Round 4): "" (empty string) clears it back to "inherit
+    # the dashboard's background" - the same empty-string-clears convention
+    # this codebase already uses for a block's title.
+    if payload.background_color is not None:
+        page.background_color = _hex_color_or_none(payload.background_color)
 
     db.commit()
     db.refresh(d)
@@ -2017,7 +2230,54 @@ def _render_public_dashboard(
     if not d:
         raise HTTPException(404, "This dashboard isn't available.")
     pages = [_page_out(p) for p in sorted(d.pages, key=lambda p: p.position)]
-    return schemas.PublicDashboardOut(name=d.name, pages=pages)
+    return schemas.PublicDashboardOut(
+        name=d.name,
+        pages=pages,
+        brand_primary_color=d.brand_primary_color,
+        brand_accent_color=d.brand_accent_color,
+        background_style=d.background_style,
+        background_color=d.background_color,
+        has_logo=bool(d.logo_image),
+        has_background_image=bool(d.background_image),
+    )
+
+
+# ---------- Round 4 (2026-09-25): branding images, served publicly by slug
+# or hostname - see this file's own module docstring for why these are
+# gated only on "currently published," never the private-share viewer-
+# token check _render_public_dashboard uses for actual dashboard content.
+# ----------
+
+def _resolve_dashboard_for_public_branding(db: Session, share: models.DashboardShare) -> models.Dashboard | None:
+    return db.query(models.Dashboard).filter(models.Dashboard.id == share.dashboard_id).first()
+
+
+@public_router.get("/{slug}/branding/logo")
+def get_public_logo(slug: str, db: Session = Depends(get_db)):
+    share = _resolve_share_by_slug(db, slug)
+    d = _resolve_dashboard_for_public_branding(db, share)
+    return _image_response(d.logo_image if d else None, d.logo_image_content_type if d else None)
+
+
+@public_router.get("/{slug}/branding/background")
+def get_public_background(slug: str, db: Session = Depends(get_db)):
+    share = _resolve_share_by_slug(db, slug)
+    d = _resolve_dashboard_for_public_branding(db, share)
+    return _image_response(d.background_image if d else None, d.background_image_content_type if d else None)
+
+
+@public_domains_router.get("/{hostname}/branding/logo")
+def get_public_logo_by_domain(hostname: str, db: Session = Depends(get_db)):
+    share = _resolve_share_by_domain(db, hostname)
+    d = _resolve_dashboard_for_public_branding(db, share)
+    return _image_response(d.logo_image if d else None, d.logo_image_content_type if d else None)
+
+
+@public_domains_router.get("/{hostname}/branding/background")
+def get_public_background_by_domain(hostname: str, db: Session = Depends(get_db)):
+    share = _resolve_share_by_domain(db, hostname)
+    d = _resolve_dashboard_for_public_branding(db, share)
+    return _image_response(d.background_image if d else None, d.background_image_content_type if d else None)
 
 
 @public_router.post("/{slug}/verify", response_model=schemas.VerifyPrivateAccessOut)
