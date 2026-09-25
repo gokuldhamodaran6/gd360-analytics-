@@ -729,7 +729,7 @@ export default function DashboardCanvas({
             key={t}
             type="button"
             disabled={adding}
-            className="btn-secondary text-xs flex items-center gap-1 disabled:opacity-50"
+            className="dash-toolbtn disabled:opacity-50"
             onClick={() => addBlock(t)}
           >
             <PlusIcon className="w-3.5 h-3.5" /> {BLOCK_TYPE_LABEL[t]}
