@@ -568,6 +568,18 @@ function BlockCard({
     }
   };
 
+  // 2026-09-25h (inline editing round): best-effort - a failed save just
+  // leaves the swatch showing whatever color it already had, which is
+  // low-stakes enough not to need a scary inline error for something this
+  // cosmetic.
+  const setAccentColor = async (color: string | null) => {
+    try {
+      onChange(await dashboardBuilderApi.setBlockAccentColor(dashboardId, block.id, color));
+    } catch {
+      /* see comment above */
+    }
+  };
+
   const onDone = (d: DashboardBuilderDetail) => {
     setPanel("none");
     onChange(d);
@@ -678,7 +690,21 @@ function BlockCard({
 
         {panel === "none" && (
           <>
-            {block.type === "kpi" && <KpiTile title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "kpi" && (
+              <KpiTile
+                title={block.title}
+                // The accent color always comes from the block's own REAL
+                // persisted config, even while a filter override is
+                // showing different (filtered) content - an override's
+                // config is a fresh, ephemeral recompute (see
+                // lib/useDashboardFilters.ts) that never carries a custom
+                // color along, so without this overlay a custom color
+                // would visibly vanish for as long as a filter is active.
+                config={{ ...(filterState?.overrides[block.id]?.config ?? block.config), accent_color: block.config?.accent_color }}
+                editable
+                onAccentColorChange={setAccentColor}
+              />
+            )}
             {block.type === "table" && <BlockTable title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
             {block.type === "chart" && <BlockChart title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
             {block.type === "gauge" && <GaugeBlock title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
