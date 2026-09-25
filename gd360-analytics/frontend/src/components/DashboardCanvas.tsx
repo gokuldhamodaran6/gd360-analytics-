@@ -1,898 +1,999 @@
 import { useEffect, useMemo, useState } from "react";
-import ChartCanvas from "./ChartCanvas";
-import { datasourceApi, DashboardBlock, DashboardBlockType } from "../api/client";
+import "react-grid-layout/css/styles.css";
+import { ReactGridLayout as RGL, WidthProvider } from "react-grid-layout/legacy";
+import {
+  dashboardBuilderApi,
+  datasourceApi,
+  DashboardBuilderDetail,
+  DashboardBuilderPage,
+  DashboardBlock,
+  DashboardBlockType,
+  ManualAgg,
+  ManualBlockType,
+  RestyleChartType,
+  FilterCriterion,
+} from "../api/client";
+import {
+  KpiTile,
+  BlockTable,
+  BlockChart,
+  TextBlock,
+  FilterControl,
+  GaugeBlock,
+  DonutBlock,
+  SparklineBlock,
+  AvatarListBlock,
+  DividerBlock,
+  useIsNarrow,
+  STACK_MIN_HEIGHT,
+  BLOCK_DEFAULT_SIZE,
+} from "./DashboardBlocks";
 import { DashboardFilterState } from "../lib/useDashboardFilters";
 
-// 2026-09-24 (Dashboard Builder Phase 1): the shared block-rendering layer
-// for a pages+blocks dashboard - used by BOTH the owner's editor view
-// (DashboardBuilderView.tsx) and the anonymous public viewer
-// (PublicDashboardView.tsx), so a chart/table/kpi block looks and lays out
-// identically in both places. Deliberately NOT reused from DataTable.tsx
-// (that component is tightly coupled to live datasource/version browsing -
-// props like datasourceId/versions/onActiveVersionChange - none of which
-// apply to a block's already-computed, static rows) - BlockTable below is a
-// new, much smaller component built specifically for this.
+// 2026-09-24 (Dashboard Builder Phase 2 + Phase 2b): the real canvas editor -
+// drag, resize, add, remove blocks, and fill each one in either by asking
+// GD360's AI or by building it manually from a column + aggregation.
+// Deliberately scoped to ONE page's blocks at a time (multi-page management
+// is still Phase 3).
 //
-// Layout: a 12-column CSS grid, one grid row unit per backend "h"/"w" unit
-// (see routers/dashboard_builder.py's _layout_blocks - kpi tiles are 3x3,
-// chart/table blocks are 6x6 on that same 12-wide grid). ROW_UNIT_PX is
-// chosen so a kpi tile (h=3) comes out ~144px tall and a chart/table block
-// (h=6) ~288px tall - enough room for a real Plotly chart without being
-// wasteful for a KPI number.
+// Phase 2b adds a "filter" block type (a column picker here in edit mode,
+// plus the same interactive FilterControl used in Preview) and threads the
+// page's live filterState down into every block card, so a "Build manually"
+// block edited while a filter is active can be rebuilt pre-filtered, and so
+// restyling a filtered chart is disabled rather than silently discarding the
+// filter (restyle_block only ever reads a block's PERSISTED config - see the
+// backend module docstring's own Phase 2b section for why).
+//
+// react-grid-layout's v2 default export is a new hooks-based composable
+// API with no widely-documented examples yet; this imports its `/legacy`
+// subpath instead, which is the same well-known v1 flat-prop API
+// (layout/cols/rowHeight/onDragStop/onResizeStop/...) - lower implementation
+// risk for something this central. ROW_UNIT_PX matches DashboardBlocks.tsx's
+// own constant exactly, so a block is the same physical size whether you're
+// viewing it (DashboardBlockGrid) or editing it (this component).
 const ROW_UNIT_PX = 48;
+const GRID_COLUMNS = 12;
+const ReactGridLayout = WidthProvider(RGL);
 
-// 2026-09-25 (naming fix + premium light theme foundation round): below a
-// phone/small-tablet width, the absolute x/y/w/h grid positions tuned for
-// a 12-column desktop layout stop making sense (a kpi tile sized "3 wide"
-// on a 375px screen is a sliver). Rather than trying to reflow the grid
-// itself, DashboardBlockGrid switches to a plain single-column stack, each
-// block full width and given a sensible natural height for its type - the
-// same data, same block components, just laid out differently. This is
-// the one place true "every device" responsiveness needed to be solved,
-// since this exact component is what both the owner's Preview mode AND
-// the public/published page (the surface a customer or investor actually
-// opens on their phone) both render through.
-const NARROW_BREAKPOINT = 760;
+// No automatic collision avoidance this round (see the backend module
+// docstring's own scope note) - compactType={null} + allowOverlap so
+// react-grid-layout never silently reflows a block the person didn't touch,
+// and a manual overlap (dragging one block onto another on purpose) is
+// allowed rather than fought.
 
-export function useIsNarrow(breakpoint = NARROW_BREAKPOINT) {
-  const [narrow, setNarrow] = useState(() => (typeof window !== "undefined" ? window.innerWidth < breakpoint : false));
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mq = window.matchMedia(`(max-width: ${breakpoint - 1}px)`);
-    const onChange = () => setNarrow(mq.matches);
-    onChange();
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, [breakpoint]);
-  return narrow;
-}
-
-// Natural stacked-mode height per block type, in px - not a grid unit
-// count, just a sensible minimum so a table or chart has real room and a
-// kpi tile doesn't stretch to fill the screen.
-//
-// 2026-09-25e (responsive pass): exported so DashboardCanvas.tsx (the
-// owner's edit view) can size its own narrow-mode stacked blocks off the
-// exact same numbers Preview/the public viewer already use here - one
-// table of "how tall should a kpi/table/chart/etc. be when stacked",
-// never two tables that could quietly drift apart.
-export const STACK_MIN_HEIGHT: Record<string, number> = {
-  kpi: 128,
-  table: 320,
-  chart: 360,
-  text: 160,
-  filter: 88,
-  // 2026-09-25 (Round 3): the four new native widget types - see this
-  // file's own KpiTile/BlockTable comment block for the general pattern
-  // these follow (GaugeBlock/DonutBlock/SparklineBlock/AvatarListBlock,
-  // just below TextBlock).
-  gauge: 240,
-  donut: 320,
-  sparkline: 200,
-  avatar_list: 280,
-  // 2026-09-25 (Round 15, element library): heading/divider are the two
-  // pure-layout widgets - see HeadingBlock/DividerBlock below.
-  heading: 64,
-  divider: 40,
-};
-
-// 2026-09-25 (Round 15, element library): the (w, h) grid units a freshly
-// dropped block should preview at while it's being dragged over the
-// canvas, BEFORE the create-block call that actually decides its real
-// size lands - see DashboardCanvas.tsx's onDrop/droppingItem. Kept as its
-// own table (not derived from STACK_MIN_HEIGHT above, which is pixel
-// heights for the narrow-mode stack, a different unit) so it can mirror
-// the backend's own _default_block_size in routers/dashboard_builder.py
-// exactly, number for number - if one ever changes, this one should too.
-export const BLOCK_DEFAULT_SIZE: Record<DashboardBlockType, { w: number; h: number }> = {
-  kpi: { w: 3, h: 3 },
-  gauge: { w: 4, h: 4 },
-  sparkline: { w: 4, h: 4 },
-  text: { w: 6, h: 3 },
-  filter: { w: 3, h: 2 },
-  heading: { w: 12, h: 2 },
-  divider: { w: 12, h: 1 },
-  chart: { w: 6, h: 6 },
-  table: { w: 6, h: 6 },
-  donut: { w: 6, h: 6 },
-  avatar_list: { w: 6, h: 6 },
-};
-
-// A small, fixed set of accent hues (see index.css's --dash-accent-0..5
-// tokens, themed for both light and dark) a kpi tile's icon chip rotates
-// through - deterministic per block so the same tile always gets the same
-// color/icon pair rather than flickering between renders, and varied
-// enough across a page of tiles to read the way the reference dashboards'
-// stat cards do (each one its own color) without ever needing per-block
-// color configuration to exist as real data.
-function accentIndex(seed: string): number {
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-  return h % 6;
-}
-
-function TrendIcon({ className = "w-4 h-4" }: { className?: string }) {
+function PlusIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 17l6-6 4 4 8-8" />
-      <path d="M15 7h6v6" />
+      <path d="M12 5v14M5 12h14" />
     </svg>
   );
 }
-function BarsGlyph({ className = "w-4 h-4" }: { className?: string }) {
+function TrashIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="4" y="12" width="4" height="8" rx="0.5" />
-      <rect x="10" y="7" width="4" height="13" rx="0.5" />
-      <rect x="16" y="3" width="4" height="17" rx="0.5" />
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16Z" />
     </svg>
   );
 }
-function UsersGlyph({ className = "w-4 h-4" }: { className?: string }) {
+function SparkleIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-      <circle cx="9" cy="7" r="4" />
-      <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M18 6l-2.5 2.5M8.5 15.5 6 18" />
     </svg>
   );
 }
-function TargetGlyph({ className = "w-4 h-4" }: { className?: string }) {
+function WrenchIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14.7 6.3a4 4 0 0 0-5.6 5L3 17.4V21h3.6l6.1-6.1a4 4 0 0 0 5-5.6l-3 3-2-2 3-3Z" />
+    </svg>
+  );
+}
+function PaletteIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="9" />
-      <circle cx="12" cy="12" r="5" />
-      <circle cx="12" cy="12" r="1" fill="currentColor" />
+      <circle cx="9" cy="10" r="1" fill="currentColor" />
+      <circle cx="13" cy="8" r="1" fill="currentColor" />
+      <circle cx="16" cy="12" r="1" fill="currentColor" />
+      <path d="M12 21a2 2 0 0 1-2-2c0-.6.4-1.1.4-1.7 0-.7-.6-1.3-1.3-1.3H8a5 5 0 0 1 0-8" />
     </svg>
   );
 }
-function LayersGlyph({ className = "w-4 h-4" }: { className?: string }) {
+// 2026-09-25d (elite pass): every block card used to show up to four
+// separate icon buttons (Ask AI, Build manually, Chart style, Delete) in
+// its header at all times - the literal "lot of unwanted editing options"
+// a side-by-side against a premium reference dashboard called out (none of
+// Vision UI/Horizon UI's cards carry a permanent row of controls like
+// that). Collapsed into the same single "..." kebab menu pattern
+// ChartCanvas.tsx already uses for a chart's export menu, so a block's
+// header reads as just its title - same actions, one click behind a menu
+// instead of four buttons competing for attention on every single card.
+function KebabIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 3 2 8l10 5 10-5-10-5Z" />
-      <path d="m2 14 10 5 10-5" />
-    </svg>
-  );
-}
-function BoltGlyph({ className = "w-4 h-4" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z" />
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+      <circle cx="12" cy="5" r="1.9" />
+      <circle cx="12" cy="12" r="1.9" />
+      <circle cx="12" cy="19" r="1.9" />
     </svg>
   );
 }
 
-const KPI_ICONS = [TrendIcon, BarsGlyph, UsersGlyph, TargetGlyph, LayersGlyph, BoltGlyph];
+const BLOCK_TYPE_LABEL: Record<DashboardBlockType, string> = {
+  chart: "Chart",
+  table: "Table",
+  kpi: "KPI",
+  text: "Text",
+  filter: "Filter",
+  // 2026-09-25 (Round 3): four new native widget types - manual-build-only
+  // (see MANUAL_ONLY_TYPES below and the backend module docstring, Round
+  // 3 section, for why these never get an "Ask AI" option this round).
+  gauge: "Gauge",
+  donut: "Donut",
+  sparkline: "Sparkline",
+  avatar_list: "Top list",
+  // 2026-09-25 (Round 15, element library): two pure-layout widgets - see
+  // NO_DATA_TYPES below for why neither ever offers Ask AI/Build manually.
+  heading: "Heading",
+  divider: "Divider",
+};
 
-// 2026-09-24 (Dashboard Builder Phase 2): KpiTile/BlockTable/BlockChart are
-// now exported - DashboardCanvas.tsx (the new editable canvas) reuses these
-// exact same renderers inside each grid cell, so a block looks pixel-
-// identical whether you're looking at it in the read-only viewer
-// (DashboardBlockGrid below) or dragging it around in edit mode. TextBlock
-// is new this round (Phase 2's freeform note block type).
-//
-// 2026-09-25 (naming fix + premium light theme foundation round): all four
-// block renderers below were plain, generic `.card` boxes with no color,
-// icon or typographic accent at all - the concrete gap the reference
-// screenshots (Zoho ProjectsPlus, Horizon UI, Vision UI) made obvious.
-// They now render on the new `.dash-card` treatment (index.css) - a
-// larger radius, a soft layered shadow instead of a flat 1px border, and
-// a hover lift - plus per-block accents (a colored icon chip on a kpi
-// tile, a tinted header on a table, an accent rule on a text note). This
-// is additive: `.card` itself is untouched, so nothing outside Dashboard
-// Builder changes.
-function ResetSwatchIcon({ className = "w-3 h-3" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 12a9 9 0 1 1 2.64 6.36" />
-      <path d="M3 21v-6h6" />
-    </svg>
-  );
-}
+// 2026-09-25 (Round 3): these four are only ever filled in through "Build
+// manually" - _ai_result_to_block's fallback cascade only ever produces
+// chart/kpi/table/text, so offering "Ask AI" on one of these would just
+// silently flip it into one of those instead of respecting the type the
+// person actually chose. Same honest-scope decision Phase 2b made for the
+// "filter" block type.
+const MANUAL_ONLY_TYPES: DashboardBlockType[] = ["gauge", "donut", "sparkline", "avatar_list"];
 
-// 2026-09-25h (inline editing round): a kpi tile's color used to be
-// entirely automatic (accentIndex's deterministic hash of its own label) -
-// no way to change it short of renaming the tile and hoping for a
-// different hash. `editable`/`onAccentColorChange` (only ever passed by
-// DashboardCanvas.tsx's edit-mode BlockCard, never by the read-only
-// DashboardBlockGrid below) add a small color swatch directly on the tile
-// - click it, pick a color, done - plus a tiny reset control once a
-// custom color is set. Pure presentation: config.accent_color rides
-// alongside the tile's real value/label but never touches them (see the
-// backend's set_block_accent_color for why this is its own endpoint
-// rather than a generic config write). No custom color set = exactly the
-// same automatic palette as before, so every existing dashboard looks
-// unchanged until someone actually clicks the swatch.
-export function KpiTile({
-  title,
-  config,
-  editable,
-  onAccentColorChange,
+// 2026-09-25 (Round 15, element library): block types with no computed
+// data behind them at all - a person types a heading's text directly
+// (same as a text block's note) and a divider has no content whatsoever -
+// so neither "Ask AI" nor "Build manually" (which both exist to compute
+// something FROM the data source) ever makes sense on either. Replaces
+// the old `block.type !== "text" && block.type !== "filter"` checks
+// below with one shared list "text"/"filter" already belonged in.
+const NO_DATA_TYPES: DashboardBlockType[] = ["text", "filter", "heading", "divider"];
+
+// 2026-09-25 (Round 15, element library): every type the "Add block" row
+// renders as a draggable/clickable card - the exact same nine as before,
+// plus heading/divider. Pulled out as its own constant (was an inline
+// array literal) so onDrop below can validate a browser drag's payload
+// against it - a foreign drag from outside the app (an image, selected
+// text) could still register as an isDroppable drop event, but its
+// dataTransfer text will never match one of these, so onDrop just no-ops.
+const ELEMENT_LIBRARY_TYPES: DashboardBlockType[] = [
+  "chart", "table", "kpi", "gauge", "donut", "sparkline", "avatar_list", "text", "filter", "heading", "divider",
+];
+
+// The "Build manually" form's own Type picker - every type
+// build_manual_block can produce (everything except "text" and "filter",
+// which are edited directly rather than computed from a recipe).
+const MANUAL_BUILD_TYPES: ManualBlockType[] = ["kpi", "table", "chart", "gauge", "donut", "sparkline", "avatar_list"];
+
+const RESTYLE_OPTIONS: { value: RestyleChartType; label: string }[] = [
+  { value: "bar", label: "Bar" },
+  { value: "horizontal_bar", label: "Horizontal bar" },
+  { value: "line", label: "Line" },
+  { value: "area", label: "Area" },
+  { value: "pie", label: "Pie" },
+  { value: "scatter", label: "Scatter" },
+];
+
+const AGG_OPTIONS: { value: ManualAgg; label: string }[] = [
+  { value: "sum", label: "Sum" },
+  { value: "avg", label: "Average" },
+  { value: "count", label: "Count" },
+  { value: "min", label: "Min" },
+  { value: "max", label: "Max" },
+];
+
+type ColumnInfo = { name: string; dtype: string };
+
+function AskAiPanel({
+  dashboardId,
+  block,
+  onDone,
+  onClose,
 }: {
-  title: string | null;
-  config: any;
-  editable?: boolean;
-  onAccentColorChange?: (color: string | null) => void;
+  dashboardId: string;
+  block: DashboardBlock;
+  onDone: (d: DashboardBuilderDetail) => void;
+  onClose: () => void;
 }) {
-  const raw = config?.value;
-  const isNumber = typeof raw === "number" && Number.isFinite(raw);
-  const display = isNumber
-    ? raw.toLocaleString(undefined, { maximumFractionDigits: 2 })
-    : raw === null || raw === undefined || raw === ""
-    ? "—"
-    : String(raw);
-  const label = title || config?.label || "Value";
-  const idx = accentIndex(label);
-  const Icon = KPI_ICONS[idx];
-  const customColor: string | null = typeof config?.accent_color === "string" && config.accent_color ? config.accent_color : null;
-  const accentCss = customColor || `rgb(var(--dash-accent-${idx}))`;
-  return (
-    <div
-      className="dash-card dash-card--accented h-full p-5 flex flex-col justify-between gap-4 overflow-hidden relative"
-      style={{ "--dash-card-accent-color": accentCss } as any}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted truncate">{label}</div>
-        <span
-          className={`dash-icon-chip ${customColor ? "" : `dash-accent-${idx}`}`}
-          style={customColor ? { background: `${customColor}26`, color: customColor } : undefined}
-        >
-          <Icon className="w-[18px] h-[18px]" />
-        </span>
-      </div>
-      <div className="dash-kpi-value text-3xl font-bold truncate">{display}</div>
+  const [prompt, setPrompt] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
 
-      {editable && onAccentColorChange && (
-        <div className="no-drag absolute bottom-2.5 right-2.5 flex items-center gap-1">
-          {customColor && (
-            <button
-              type="button"
-              className="w-5 h-5 rounded-full bg-surface2 border border-border text-muted hover:text-text transition flex items-center justify-center"
-              title="Reset to the automatic color"
-              onClick={() => onAccentColorChange(null)}
-            >
-              <ResetSwatchIcon />
-            </button>
-          )}
-          <label
-            className="w-5 h-5 rounded-full border-2 border-surface shadow cursor-pointer block"
-            style={{ background: accentCss }}
-            title="Click to choose this tile's color"
-          >
-            <input
-              type="color"
-              className="sr-only"
-              value={customColor || "#2d8267"}
-              onChange={(e) => onAccentColorChange(e.target.value)}
-            />
-          </label>
-        </div>
-      )}
-    </div>
-  );
-}
-
-export function BlockTable({ title, config }: { title: string | null; config: any }) {
-  const columns: string[] = Array.isArray(config?.columns) ? config.columns : [];
-  const rows: Record<string, any>[] = Array.isArray(config?.rows) ? config.rows : [];
-  return (
-    <div className="dash-card h-full p-4 flex flex-col overflow-hidden">
-      {title && <div className="text-xs font-semibold uppercase tracking-wide text-muted mb-2.5 shrink-0 truncate">{title}</div>}
-      <div className="flex-1 min-h-0 overflow-auto rounded-xl border border-border">
-        <table className="w-full text-sm">
-          <thead className="dash-table-head sticky top-0">
-            <tr>
-              {columns.map((c) => (
-                <th key={c} className="text-left font-semibold text-[11px] text-muted uppercase tracking-wide px-3 py-2.5 whitespace-nowrap">
-                  {c}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, i) => (
-              <tr key={i} className="dash-table-row border-t border-border transition-colors">
-                {columns.map((c) => (
-                  <td key={c} className="px-3 py-2 whitespace-nowrap tabular-nums">
-                    {row[c] === null || row[c] === undefined ? "" : String(row[c])}
-                  </td>
-                ))}
-              </tr>
-            ))}
-            {rows.length === 0 && (
-              <tr>
-                <td className="px-3 py-4 text-muted text-xs" colSpan={Math.max(columns.length, 1)}>
-                  No rows.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-      {config?.truncated && (
-        <div className="text-[11px] text-muted mt-1.5 shrink-0">Showing the first {rows.length} rows.</div>
-      )}
-    </div>
-  );
-}
-
-export function BlockChart({ title, config }: { title: string | null; config: any }) {
-  return (
-    <div className="h-full">
-      <ChartCanvas chartSpec={config?.chart_spec} title={title || undefined} dashPremium />
-    </div>
-  );
-}
-
-export function TextBlock({ title, config }: { title: string | null; config: any }) {
-  const text: string = typeof config?.text === "string" ? config.text : "";
-  return (
-    <div className="dash-card h-full p-5 overflow-auto">
-      {title && <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2.5 truncate">{title}</div>}
-      {text ? (
-        <div className="dash-note-quote pl-3.5 text-sm leading-relaxed whitespace-pre-wrap text-text">{text}</div>
-      ) : (
-        <div className="text-sm text-muted italic">Empty note.</div>
-      )}
-    </div>
-  );
-}
-
-// 2026-09-25 (Round 15, element library): the first of two pure-layout
-// widgets the element library adds - a section banner, not a data block.
-// Its content lives in the exact same config.text field a "text" block
-// uses (edited the same way in DashboardCanvas.tsx's BlockCard, just
-// through a single-line input instead of a textarea) - it's the same
-// "the person typed this themselves" content, just meant to read big and
-// bold above whatever follows it rather than as a note.
-export function HeadingBlock({ config }: { title: string | null; config: any }) {
-  const text: string = typeof config?.text === "string" ? config.text : "";
-  return (
-    <div className="h-full flex items-center px-1">
-      {text ? (
-        <h2 className="text-xl font-bold text-text truncate w-full" style={{ textWrap: "balance" }}>
-          {text}
-        </h2>
-      ) : (
-        <span className="text-xl font-bold text-muted italic">Untitled heading</span>
-      )}
-    </div>
-  );
-}
-
-// 2026-09-25 (Round 15, element library): the second pure-layout widget -
-// a plain horizontal rule to separate sections of a page. It has no
-// config at all (see backend _default_block_config: it isn't special-
-// cased there, so it just gets {}) and nothing to ever edit, so it's the
-// one block type BlockCard renders directly in edit mode too instead of
-// giving it its own inline-editable control - there's no content for one
-// to hold.
-export function DividerBlock() {
-  return (
-    <div className="h-full flex items-center px-1">
-      <hr className="w-full border-t border-border" />
-    </div>
-  );
-}
-
-// 2026-09-25 (Round 3): four new native widget types, matching the
-// reference dashboards' own radial meters, curved-legend donuts, half-tone
-// trend bars, and ranked leaderboard lists - hand-built with inline SVG/CSS
-// on the same dash-card/dash-accent-N tokens every other block uses, not a
-// relabeled Plotly chart (see routers/dashboard_builder.py's own module
-// docstring, Round 3 section, for the exact config shape each one reads
-// and why these are manual-build-only this round). All four render
-// identically in the read-only grid below and inside DashboardCanvas.tsx's
-// edit-mode BlockCard, same convention as KpiTile/BlockTable/BlockChart.
-
-function polar(cx: number, cy: number, r: number, deg: number): [number, number] {
-  const rad = (deg * Math.PI) / 180;
-  return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
-}
-
-// A single metric read as progress toward a target on a 270-degree radial
-// arc (a 90-degree gap at the bottom) - the classic "gauge meter" read used
-// throughout the Vision UI / Horizon-class admin dashboards this round's
-// reference screenshots draw from. config: {value, min, max, target, label}.
-export function GaugeBlock({ title, config }: { title: string | null; config: any }) {
-  const value = typeof config?.value === "number" ? config.value : 0;
-  const min = typeof config?.min === "number" ? config.min : 0;
-  const max = typeof config?.max === "number" && config.max > min ? config.max : Math.max(value, min + 1);
-  const target = typeof config?.target === "number" ? config.target : null;
-  const label = title || config?.label || "Progress";
-  const idx = accentIndex(label);
-
-  const cx = 100, cy = 100, r = 72, strokeW = 14;
-  const startAngle = 135, sweep = 270;
-  const pct = Math.min(1, Math.max(0, (value - min) / (max - min)));
-  const [x0, y0] = polar(cx, cy, r, startAngle);
-  const [x1, y1] = polar(cx, cy, r, startAngle + sweep);
-  const trackPath = `M ${x0} ${y0} A ${r} ${r} 0 1 1 ${x1} ${y1}`;
-  const valueAngle = startAngle + sweep * pct;
-  const [xv, yv] = polar(cx, cy, r, valueAngle);
-  const valueLargeArc = sweep * pct > 180 ? 1 : 0;
-  const valuePath = pct > 0 ? `M ${x0} ${y0} A ${r} ${r} 0 ${valueLargeArc} 1 ${xv} ${yv}` : "";
-
-  let targetTick: [number, number, number, number] | null = null;
-  if (target !== null && target >= min && target <= max) {
-    const tAngle = startAngle + sweep * ((target - min) / (max - min));
-    const [tx0, ty0] = polar(cx, cy, r - 11, tAngle);
-    const [tx1, ty1] = polar(cx, cy, r + 11, tAngle);
-    targetTick = [tx0, ty0, tx1, ty1];
-  }
-
-  const display = value.toLocaleString(undefined, { maximumFractionDigits: 2 });
-
-  return (
-    <div className="dash-card h-full p-5 flex flex-col gap-1 overflow-hidden">
-      <div className="flex items-start justify-between gap-2">
-        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted truncate">{label}</div>
-        <span className={`dash-icon-chip dash-accent-${idx}`}>
-          <TargetGlyph className="w-[18px] h-[18px]" />
-        </span>
-      </div>
-      <div className="flex-1 min-h-0 flex items-center justify-center">
-        <svg viewBox="0 0 200 175" className="w-full h-full max-w-[240px]" role="img" aria-label={`${label}: ${display}`}>
-          <path d={trackPath} fill="none" stroke="rgb(var(--color-border))" strokeWidth={strokeW} strokeLinecap="round" />
-          {valuePath && (
-            <path d={valuePath} fill="none" stroke={`rgb(var(--dash-accent-${idx}))`} strokeWidth={strokeW} strokeLinecap="round" />
-          )}
-          {targetTick && (
-            <line x1={targetTick[0]} y1={targetTick[1]} x2={targetTick[2]} y2={targetTick[3]} stroke="rgb(var(--color-text))" strokeWidth="2.5" strokeLinecap="round" />
-          )}
-          <text x={cx} y={cy + 6} textAnchor="middle" style={{ fontSize: "27px", fontWeight: 700, fill: "rgb(var(--color-text))" }} className="dash-kpi-value">
-            {display}
-          </text>
-        </svg>
-      </div>
-      {target !== null && (
-        <div className="text-[11px] text-muted text-center -mt-2">
-          Target {target.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// A category breakdown with a curved connector-line legend - each slice's
-// label sits out past the ring, joined by a short curved leader line, the
-// PowerBI-style donut callout the reference screenshots use. Capped
-// server-side to the top 6 categories + "Other" (see _run_manual_recipe) so
-// the legend never overlaps itself. config: {items: [{label, value}]}.
-export function DonutBlock({ title, config }: { title: string | null; config: any }) {
-  const items: { label: string; value: number }[] = Array.isArray(config?.items) ? config.items : [];
-  const total = items.reduce((s, it) => s + (typeof it.value === "number" ? it.value : 0), 0);
-
-  if (items.length === 0 || total <= 0) {
-    return (
-      <div className="dash-card h-full p-5 flex flex-col overflow-hidden">
-        {title && <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2 truncate">{title}</div>}
-        <div className="flex-1 flex items-center justify-center text-sm text-muted italic">No data yet.</div>
-      </div>
-    );
-  }
-
-  const cx = 150, cy = 108, rOuter = 66, rInner = 40, labelR = 94;
-  let cursor = -90;
-  const segments = items.map((it, i) => {
-    const val = typeof it.value === "number" ? it.value : 0;
-    const frac = val / total;
-    const startA = cursor;
-    const endA = startA + frac * 360;
-    cursor = endA;
-    return { label: it.label, value: val, pct: frac, startA, endA, midA: (startA + endA) / 2, idx: i % 6 };
-  });
-
-  const arcPath = (startA: number, endA: number) => {
-    const [x0, y0] = polar(cx, cy, rOuter, startA);
-    const [x1, y1] = polar(cx, cy, rOuter, endA);
-    const [ix1, iy1] = polar(cx, cy, rInner, endA);
-    const [ix0, iy0] = polar(cx, cy, rInner, startA);
-    const large = endA - startA > 180 ? 1 : 0;
-    return `M ${x0} ${y0} A ${rOuter} ${rOuter} 0 ${large} 1 ${x1} ${y1} L ${ix1} ${iy1} A ${rInner} ${rInner} 0 ${large} 0 ${ix0} ${iy0} Z`;
+  const ask = async () => {
+    if (!prompt.trim() || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await dashboardBuilderApi.askAiBlock(dashboardId, block.id, prompt.trim());
+      onDone(updated);
+    } catch (err: any) {
+      // A 422 here IS a clarifying question the AI is asking back - show it
+      // inline so the person can just refine their prompt, not a generic
+      // failure. A 502 is already a short, friendly message. Anything else
+      // falls back to a generic line.
+      const detail = err?.response?.data?.detail;
+      setError(typeof detail === "string" ? detail : "Couldn't answer that. Please try rephrasing.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
-    <div className="dash-card h-full p-5 flex flex-col overflow-hidden">
-      {title && <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-1 truncate">{title}</div>}
-      <div className="flex-1 min-h-0 flex items-center justify-center">
-        <svg viewBox="0 0 300 216" className="w-full h-full" role="img" aria-label={title || "Breakdown"}>
-          {segments.map((s) => (
-            <path key={s.idx} d={arcPath(s.startA, s.endA)} fill={`rgb(var(--dash-accent-${s.idx}))`} stroke="rgb(var(--color-surface))" strokeWidth="2" />
-          ))}
-          <text x={cx} y={cy - 3} textAnchor="middle" style={{ fontSize: "19px", fontWeight: 700, fill: "rgb(var(--color-text))" }}>
-            {total.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-          </text>
-          <text x={cx} y={cy + 14} textAnchor="middle" style={{ fontSize: "10px", fill: "rgb(var(--color-muted))" }}>
-            Total
-          </text>
-          {segments.map((s) => {
-            const [sx, sy] = polar(cx, cy, (rOuter + rInner) / 2, s.midA);
-            const [mx, my] = polar(cx, cy, rOuter + 14, s.midA);
-            const [ex, ey] = polar(cx, cy, labelR, s.midA);
-            const isRight = Math.cos((s.midA * Math.PI) / 180) >= 0;
-            const labelX = ex + (isRight ? 6 : -6);
-            return (
-              <g key={`leg-${s.idx}-${s.label}`}>
-                <path d={`M ${sx} ${sy} Q ${mx} ${my} ${ex} ${ey}`} fill="none" stroke={`rgb(var(--dash-accent-${s.idx}))`} strokeWidth="1.5" opacity="0.7" />
-                <circle cx={ex} cy={ey} r="2.2" fill={`rgb(var(--dash-accent-${s.idx}))`} />
-                <text x={labelX} y={ey - 1} textAnchor={isRight ? "start" : "end"} style={{ fontSize: "10px", fontWeight: 600, fill: "rgb(var(--color-text))" }}>
-                  {s.label.length > 16 ? `${s.label.slice(0, 15)}…` : s.label}
-                </text>
-                <text x={labelX} y={ey + 11} textAnchor={isRight ? "start" : "end"} style={{ fontSize: "9px", fill: "rgb(var(--color-muted))" }}>
-                  {Math.round(s.pct * 100)}%
-                </text>
-              </g>
-            );
-          })}
-        </svg>
-      </div>
-    </div>
-  );
-}
-
-// A compact trend tile - the current value, an up/down delta badge, and a
-// half-tone bar sparkline underneath (older bars fade in, the latest bar
-// solid) - the "half-tone bar" trend read from the reference dashboards.
-// config: {value, series, categories, delta_pct}.
-export function SparklineBlock({ title, config }: { title: string | null; config: any }) {
-  const rawSeries: unknown[] = Array.isArray(config?.series) ? config.series : [];
-  const series: number[] = rawSeries.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
-  const label = title || config?.label || "Trend";
-  const idx = accentIndex(label);
-  const value = typeof config?.value === "number" ? config.value : series[series.length - 1];
-  const deltaPct = typeof config?.delta_pct === "number" ? config.delta_pct : null;
-  const max = series.length ? Math.max(...series, 0) : 1;
-  const min = series.length ? Math.min(...series, 0) : 0;
-  const range = max - min || 1;
-  const display = typeof value === "number" ? value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—";
-  const up = deltaPct !== null && deltaPct >= 0;
-
-  return (
-    <div className="dash-card h-full p-5 flex flex-col justify-between gap-3 overflow-hidden">
-      <div className="flex items-start justify-between gap-2">
-        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted truncate">{label}</div>
-        <span className={`dash-icon-chip dash-accent-${idx}`}>
-          <TrendIcon className="w-[18px] h-[18px]" />
-        </span>
-      </div>
-      <div className="flex items-end justify-between gap-3">
-        <div className="dash-kpi-value text-2xl font-bold truncate">{display}</div>
-        {deltaPct !== null && (
-          <span
-            className="text-[11px] font-semibold px-1.5 py-0.5 rounded-md shrink-0"
-            style={{
-              color: up ? "rgb(var(--dash-accent-2))" : "rgb(var(--dash-accent-5))",
-              background: `rgb(var(--dash-accent-${up ? 2 : 5}) / 0.12)`,
-            }}
-          >
-            {up ? "▲" : "▼"} {Math.abs(deltaPct).toFixed(1)}%
-          </span>
-        )}
-      </div>
-      {series.length > 1 ? (
-        <div className="flex items-end gap-[3px] h-10">
-          {series.map((v, i) => {
-            const h = Math.max(8, ((v - min) / range) * 100);
-            const isLast = i === series.length - 1;
-            const opacity = isLast ? 0.95 : 0.22 + (i / Math.max(1, series.length - 1)) * 0.45;
-            return (
-              <div
-                key={i}
-                className="flex-1 rounded-sm min-w-[2px]"
-                style={{ height: `${h}%`, background: `rgb(var(--dash-accent-${idx}) / ${opacity})` }}
-              />
-            );
-          })}
+    <div className="no-drag flex flex-col gap-2 p-3 h-full">
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-semibold text-muted flex items-center gap-1.5">
+          <SparkleIcon className="w-3.5 h-3.5 text-accent" /> Ask GD360&apos;s AI
         </div>
-      ) : (
-        <div className="text-[11px] text-muted italic">Not enough points for a trend yet.</div>
-      )}
-    </div>
-  );
-}
-
-function initials(name: string): string {
-  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
-
-// A ranked leaderboard - rank, an initials "avatar" chip, name, value, and
-// a thin relative-share bar - the top-N banner list style from the
-// reference dashboards. Capped server-side to the top 8 (see
-// _run_manual_recipe). config: {items: [{rank, name, value}], label}.
-export function AvatarListBlock({ title, config }: { title: string | null; config: any }) {
-  const items: { rank?: number; name: string; value: number }[] = Array.isArray(config?.items) ? config.items : [];
-  const label = title || config?.label || "Top list";
-  const max = items.length ? Math.max(...items.map((it) => (typeof it.value === "number" ? it.value : 0)), 1) : 1;
-
-  return (
-    <div className="dash-card h-full p-4 flex flex-col overflow-hidden">
-      <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-3 shrink-0 truncate">{label}</div>
-      <div className="flex-1 min-h-0 overflow-auto flex flex-col gap-2.5">
-        {items.length === 0 && <div className="text-sm text-muted italic">No data yet.</div>}
-        {items.map((it, i) => {
-          const idx = accentIndex(it.name || String(i));
-          const val = typeof it.value === "number" ? it.value : 0;
-          const pct = Math.max(4, (val / max) * 100);
-          return (
-            <div key={i} className="flex items-center gap-2.5">
-              <span className="text-[10px] font-semibold text-muted w-4 shrink-0 text-right tabular-nums">{it.rank ?? i + 1}</span>
-              <span className={`dash-icon-chip dash-icon-chip--sm dash-accent-${idx}`}>{initials(it.name)}</span>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium truncate">{it.name}</span>
-                  <span className="text-xs font-semibold tabular-nums shrink-0">
-                    {val.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                  </span>
-                </div>
-                <div className="mt-1 h-1.5 rounded-full bg-surface2 overflow-hidden">
-                  <div className="h-full rounded-full" style={{ width: `${pct}%`, background: `rgb(var(--dash-accent-${idx}))` }} />
-                </div>
-              </div>
-            </div>
-          );
-        })}
+        <button type="button" className="text-xs text-muted hover:text-text" onClick={onClose}>
+          Cancel
+        </button>
       </div>
+      <textarea
+        className="input text-sm flex-1 min-h-[70px] resize-none"
+        placeholder='e.g. "Revenue by region this quarter"'
+        value={prompt}
+        onChange={(e) => setPrompt(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) ask();
+        }}
+        autoFocus
+      />
+      {error && <div className="text-xs text-amber-500 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-1.5">{error}</div>}
+      <button type="button" disabled={busy || !prompt.trim()} className="btn-primary text-xs w-full disabled:opacity-50" onClick={ask}>
+        {busy ? "Thinking…" : "Build this block"}
+      </button>
     </div>
   );
 }
 
-// 2026-09-24 (Dashboard Builder Phase 2b): a filter block's own control -
-// a plain dropdown of that column's distinct values (reusing the existing
-// Data-tab distinct-values endpoint, same as the Excel-style filter panel
-// in DataTable.tsx uses - no new backend endpoint just for this list).
-// Used both here (Preview mode) and inside DashboardCanvas's BlockCard
-// (edit mode) - one control, one behavior, everywhere it's interactive.
-// The SELECTED VALUE is never fetched from or written to the server; it
-// comes in as `value` and goes out through `onChange` - see
-// lib/useDashboardFilters.ts for where that state actually lives.
-export function FilterControl({
+function ManualBuildPanel({
+  dashboardId,
   block,
-  datasourceId,
-  value,
-  onChange,
+  columns,
+  activeFilters,
+  onDone,
+  onClose,
 }: {
+  dashboardId: string;
   block: DashboardBlock;
-  datasourceId: string | null;
-  value: string;
-  onChange: (value: string) => void;
+  columns: ColumnInfo[];
+  // 2026-09-24 (Phase 2b): whatever cross-filter is currently selected on
+  // this page, so a block (re)built here starts out correctly pre-filtered
+  // instead of showing unfiltered data until the next filter change forces
+  // a recompute - mirrors ManualBuildBlockRequest.filters on the backend.
+  activeFilters?: FilterCriterion[];
+  onDone: (d: DashboardBuilderDetail) => void;
+  onClose: () => void;
 }) {
-  const column: string | null = block.config?.column || null;
-  const [values, setValues] = useState<{ value: string | number | boolean | null; count: number }[]>([]);
-  const [loading, setLoading] = useState(false);
+  const numericColumns = useMemo(
+    () => columns.filter((c) => /int|float|double|number|decimal/i.test(c.dtype)).map((c) => c.name),
+    [columns]
+  );
+  const [metric, setMetric] = useState(columns[0]?.name || "");
+  const [agg, setAgg] = useState<ManualAgg>("sum");
+  const [groupBy, setGroupBy] = useState("");
+  const [blockType, setBlockType] = useState<ManualBlockType>(
+    (MANUAL_BUILD_TYPES as readonly string[]).includes(block.type) ? (block.type as ManualBlockType) : "table"
+  );
+  const [chartType, setChartType] = useState<RestyleChartType>("bar");
+  // 2026-09-25 (Round 3): only read/sent when blockType === "gauge" - both
+  // optional, kept as plain text state (rather than number) so the field
+  // can sit empty instead of defaulting to 0, which build_manual_block
+  // would otherwise treat as a REAL target of zero instead of "unset."
+  const [targetValue, setTargetValue] = useState("");
+  const [maxValue, setMaxValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
 
-  useEffect(() => {
-    if (!column || !datasourceId) {
-      setValues([]);
+  const needsNumeric = agg === "sum" || agg === "avg";
+  const needsGroupBy = blockType !== "kpi" && blockType !== "gauge";
+  const isGauge = blockType === "gauge";
+
+  const build = async () => {
+    if (!metric || busy) return;
+    if (needsGroupBy && !groupBy) {
+      setError("Pick a column to group by for a table, chart, donut, sparkline, or top list.");
       return;
     }
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await dashboardBuilderApi.buildManualBlock(dashboardId, block.id, {
+        metric_column: metric,
+        agg,
+        group_by_column: needsGroupBy ? groupBy : undefined,
+        block_type: blockType,
+        chart_type: blockType === "chart" ? chartType : undefined,
+        target_value: isGauge && targetValue.trim() !== "" ? Number(targetValue) : undefined,
+        max_value: isGauge && maxValue.trim() !== "" ? Number(maxValue) : undefined,
+        filters: activeFilters && activeFilters.length > 0 ? activeFilters : undefined,
+      });
+      onDone(updated);
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      setError(typeof detail === "string" ? detail : "Couldn't build that. Please check your choices.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="no-drag flex flex-col gap-2 p-3 h-full overflow-auto">
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-semibold text-muted flex items-center gap-1.5">
+          <WrenchIcon className="w-3.5 h-3.5" /> Build manually
+        </div>
+        <button type="button" className="text-xs text-muted hover:text-text" onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+
+      {activeFilters && activeFilters.length > 0 && (
+        <div className="text-[11px] text-accent bg-accent/10 border border-accent/30 rounded-lg px-2.5 py-1.5">
+          Building with {activeFilters.length} active filter{activeFilters.length > 1 ? "s" : ""} applied.
+        </div>
+      )}
+
+      <div className="grid grid-cols-3 gap-1.5">
+        {MANUAL_BUILD_TYPES.map((t) => (
+          <button
+            key={t}
+            type="button"
+            className={`text-xs px-2 py-1.5 rounded-lg border transition ${
+              blockType === t ? "bg-primary text-white border-primary" : "border-border text-muted hover:text-text"
+            }`}
+            onClick={() => setBlockType(t)}
+          >
+            {BLOCK_TYPE_LABEL[t]}
+          </button>
+        ))}
+      </div>
+
+      <label className="text-[11px] text-muted uppercase tracking-wide">Column</label>
+      <select className="input text-sm" value={metric} onChange={(e) => setMetric(e.target.value)}>
+        {columns.map((c) => (
+          <option key={c.name} value={c.name}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+
+      <label className="text-[11px] text-muted uppercase tracking-wide">Aggregation</label>
+      <select className="input text-sm" value={agg} onChange={(e) => setAgg(e.target.value as ManualAgg)}>
+        {AGG_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value} disabled={(o.value === "sum" || o.value === "avg") && numericColumns.length === 0}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      {needsNumeric && !numericColumns.includes(metric) && (
+        <div className="text-[11px] text-amber-500">Sum/Average need a numeric column.</div>
+      )}
+
+      {needsGroupBy && (
+        <>
+          <label className="text-[11px] text-muted uppercase tracking-wide">Group by</label>
+          <select className="input text-sm" value={groupBy} onChange={(e) => setGroupBy(e.target.value)}>
+            <option value="">Choose a column…</option>
+            {columns
+              .filter((c) => c.name !== metric)
+              .map((c) => (
+                <option key={c.name} value={c.name}>
+                  {c.name}
+                </option>
+              ))}
+          </select>
+        </>
+      )}
+
+      {blockType === "chart" && (
+        <>
+          <label className="text-[11px] text-muted uppercase tracking-wide">Chart type</label>
+          <select className="input text-sm" value={chartType} onChange={(e) => setChartType(e.target.value as RestyleChartType)}>
+            {RESTYLE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </>
+      )}
+
+      {isGauge && (
+        <>
+          <label className="text-[11px] text-muted uppercase tracking-wide">Target (optional)</label>
+          <input
+            type="number"
+            className="input text-sm"
+            placeholder="e.g. 100000"
+            value={targetValue}
+            onChange={(e) => setTargetValue(e.target.value)}
+          />
+          <label className="text-[11px] text-muted uppercase tracking-wide">Gauge max (optional)</label>
+          <input
+            type="number"
+            className="input text-sm"
+            placeholder="Leave blank to set automatically"
+            value={maxValue}
+            onChange={(e) => setMaxValue(e.target.value)}
+          />
+        </>
+      )}
+
+      {error && <div className="text-xs text-amber-500 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-1.5">{error}</div>}
+
+      <button type="button" disabled={busy || !metric} className="btn-primary text-xs w-full mt-auto disabled:opacity-50" onClick={build}>
+        {busy ? "Building…" : "Build"}
+      </button>
+    </div>
+  );
+}
+
+function StylePanel({
+  dashboardId,
+  block,
+  onDone,
+  onClose,
+}: {
+  dashboardId: string;
+  block: DashboardBlock;
+  onDone: (d: DashboardBuilderDetail) => void;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState<RestyleChartType | null>(null);
+  const [error, setError] = useState("");
+  const hasTidyData = Boolean(block.config?.result_columns && block.config?.result_rows);
+
+  const restyle = async (type: RestyleChartType) => {
+    setBusy(type);
+    setError("");
+    try {
+      const updated = await dashboardBuilderApi.restyleBlock(dashboardId, block.id, type);
+      onDone(updated);
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      setError(typeof detail === "string" ? detail : "Couldn't restyle this chart.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="no-drag flex flex-col gap-2 p-3 h-full">
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-semibold text-muted flex items-center gap-1.5">
+          <PaletteIcon className="w-3.5 h-3.5" /> Chart style
+        </div>
+        <button type="button" className="text-xs text-muted hover:text-text" onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+      {!hasTidyData ? (
+        <div className="text-xs text-muted leading-relaxed">
+          This chart doesn&apos;t have restyle data attached yet (it was built before this option existed). Ask GD360&apos;s AI to
+          rebuild it, or build a new chart block, to enable style options.
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-2">
+          {RESTYLE_OPTIONS.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              disabled={busy !== null}
+              className="text-xs px-2 py-1.5 rounded-lg border border-border text-muted hover:text-text hover:bg-surface2 transition disabled:opacity-50"
+              onClick={() => restyle(o.value)}
+            >
+              {busy === o.value ? "Applying…" : o.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {error && <div className="text-xs text-amber-500 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-1.5">{error}</div>}
+    </div>
+  );
+}
+
+function FilterColumnPicker({
+  dashboardId,
+  block,
+  columns,
+  onDone,
+}: {
+  dashboardId: string;
+  block: DashboardBlock;
+  columns: ColumnInfo[];
+  onDone: (d: DashboardBuilderDetail) => void;
+}) {
+  const [column, setColumn] = useState<string>(block.config?.column || "");
+  const [busy, setBusy] = useState(false);
+
+  const save = async (next: string) => {
+    setColumn(next);
+    setBusy(true);
+    try {
+      onDone(await dashboardBuilderApi.updateBlock(dashboardId, block.id, { config: { column: next || null } }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="no-drag p-3 flex flex-col gap-2 h-full">
+      <label className="text-[11px] text-muted uppercase tracking-wide">Filters on column</label>
+      <select className="input text-sm" value={column} disabled={busy} onChange={(e) => save(e.target.value)}>
+        <option value="">Choose a column…</option>
+        {columns.map((c) => (
+          <option key={c.name} value={c.name}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+      {!column && <div className="text-[11px] text-muted italic">Pick a column - this filter won&apos;t do anything until you do.</div>}
+    </div>
+  );
+}
+
+function BlockCard({
+  dashboardId,
+  block,
+  columns,
+  datasourceId,
+  filterState,
+  onChange,
+}: {
+  dashboardId: string;
+  block: DashboardBlock;
+  columns: ColumnInfo[];
+  datasourceId?: string | null;
+  filterState?: DashboardFilterState;
+  onChange: (d: DashboardBuilderDetail) => void;
+}) {
+  const [panel, setPanel] = useState<"none" | "ask" | "manual" | "style">("none");
+  const [titleDraft, setTitleDraft] = useState(block.title || "");
+  const [textDraft, setTextDraft] = useState(block.config?.text || "");
+  const [deleting, setDeleting] = useState(false);
+  // 2026-09-25d (elite pass) - see KebabIcon above.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const filtersActive = Boolean(filterState && filterState.activeFilters.length > 0);
+
+  useEffect(() => setTitleDraft(block.title || ""), [block.id, block.title]);
+  useEffect(() => setTextDraft(block.config?.text || ""), [block.id, block.config?.text]);
+
+  const saveTitle = async () => {
+    const trimmed = titleDraft.trim();
+    if (trimmed === (block.title || "")) return;
+    try {
+      onChange(await dashboardBuilderApi.updateBlock(dashboardId, block.id, { title: trimmed }));
+    } catch {
+      setTitleDraft(block.title || "");
+    }
+  };
+
+  const saveText = async () => {
+    if (textDraft === (block.config?.text || "")) return;
+    try {
+      onChange(await dashboardBuilderApi.updateBlock(dashboardId, block.id, { config: { text: textDraft } }));
+    } catch {
+      setTextDraft(block.config?.text || "");
+    }
+  };
+
+  const remove = async () => {
+    if (deleting) return;
+    setDeleting(true);
+    try {
+      onChange(await dashboardBuilderApi.deleteBlock(dashboardId, block.id));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  // 2026-09-25h (inline editing round): best-effort - a failed save just
+  // leaves the swatch showing whatever color it already had, which is
+  // low-stakes enough not to need a scary inline error for something this
+  // cosmetic.
+  const setAccentColor = async (color: string | null) => {
+    try {
+      onChange(await dashboardBuilderApi.setBlockAccentColor(dashboardId, block.id, color));
+    } catch {
+      /* see comment above */
+    }
+  };
+
+  const onDone = (d: DashboardBuilderDetail) => {
+    setPanel("none");
+    onChange(d);
+  };
+
+  return (
+    <div className="card h-full flex flex-col overflow-hidden border-2 border-transparent hover:border-primary/30 transition">
+      <div className="no-drag flex items-center gap-1.5 px-2 py-1.5 border-b border-border shrink-0 bg-surface2/60">
+        <input
+          className="flex-1 min-w-0 bg-transparent text-xs font-semibold truncate outline-none focus:underline"
+          value={titleDraft}
+          placeholder="Untitled block"
+          onChange={(e) => setTitleDraft(e.target.value)}
+          onBlur={saveTitle}
+          onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+        />
+        <span className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-surface border border-border text-muted shrink-0">
+          {BLOCK_TYPE_LABEL[block.type]}
+        </span>
+        <div className="relative shrink-0">
+          <button
+            type="button"
+            className="dash-chart-menu-btn"
+            aria-label="Block options"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((o) => !o)}
+          >
+            <KebabIcon />
+          </button>
+          {menuOpen && (
+            <div role="menu" className="absolute right-0 top-full mt-1 w-40 card bg-surface shadow-2xl border border-border p-1.5 z-20">
+              {!NO_DATA_TYPES.includes(block.type) && !MANUAL_ONLY_TYPES.includes(block.type) && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors flex items-center gap-2"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setPanel(panel === "ask" ? "none" : "ask");
+                  }}
+                >
+                  <SparkleIcon className="w-3.5 h-3.5" /> Ask AI
+                </button>
+              )}
+              {!NO_DATA_TYPES.includes(block.type) && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors flex items-center gap-2"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setPanel(panel === "manual" ? "none" : "manual");
+                  }}
+                >
+                  <WrenchIcon className="w-3.5 h-3.5" /> Build manually
+                </button>
+              )}
+              {block.type === "chart" && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={filtersActive}
+                  title={
+                    filtersActive
+                      ? "Restyling is disabled while a filter is active - it would overwrite this filtered view with the chart's real, unfiltered data."
+                      : undefined
+                  }
+                  className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                  onClick={() => {
+                    if (filtersActive) return;
+                    setMenuOpen(false);
+                    setPanel(panel === "style" ? "none" : "style");
+                  }}
+                >
+                  <PaletteIcon className="w-3.5 h-3.5" /> Chart style
+                </button>
+              )}
+              <button
+                type="button"
+                role="menuitem"
+                className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-red-500/10 text-red-400 transition-colors flex items-center gap-2"
+                onClick={() => {
+                  setMenuOpen(false);
+                  remove();
+                }}
+              >
+                <TrashIcon className="w-3.5 h-3.5" /> Delete block
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0">
+        {panel === "ask" && <AskAiPanel dashboardId={dashboardId} block={block} onDone={onDone} onClose={() => setPanel("none")} />}
+        {panel === "manual" && (
+          <ManualBuildPanel
+            dashboardId={dashboardId}
+            block={block}
+            columns={columns}
+            activeFilters={filterState?.activeFilters}
+            onDone={onDone}
+            onClose={() => setPanel("none")}
+          />
+        )}
+        {panel === "style" && <StylePanel dashboardId={dashboardId} block={block} onDone={onDone} onClose={() => setPanel("none")} />}
+
+        {panel === "none" && (
+          <>
+            {block.type === "kpi" && (
+              <KpiTile
+                title={block.title}
+                // The accent color always comes from the block's own REAL
+                // persisted config, even while a filter override is
+                // showing different (filtered) content - an override's
+                // config is a fresh, ephemeral recompute (see
+                // lib/useDashboardFilters.ts) that never carries a custom
+                // color along, so without this overlay a custom color
+                // would visibly vanish for as long as a filter is active.
+                config={{ ...(filterState?.overrides[block.id]?.config ?? block.config), accent_color: block.config?.accent_color }}
+                editable
+                onAccentColorChange={setAccentColor}
+              />
+            )}
+            {block.type === "table" && <BlockTable title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "chart" && <BlockChart title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "gauge" && <GaugeBlock title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "donut" && <DonutBlock title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "sparkline" && <SparklineBlock title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "avatar_list" && <AvatarListBlock title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "filter" && (
+              <div className="h-full flex flex-col divide-y divide-border">
+                <div className="flex-1 min-h-0">
+                  <FilterColumnPicker dashboardId={dashboardId} block={block} columns={columns} onDone={onChange} />
+                </div>
+                {block.config?.column && (
+                  <div className="shrink-0">
+                    {filterState ? (
+                      <FilterControl
+                        block={block}
+                        datasourceId={datasourceId || null}
+                        value={filterState.values[block.id] || ""}
+                        onChange={(v) => filterState.setFilterValue(block.id, v)}
+                      />
+                    ) : (
+                      <div className="no-drag text-[11px] text-muted italic p-3">Loading filter…</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            {block.type === "text" && (
+              <textarea
+                className="no-drag w-full h-full p-3 text-sm bg-transparent outline-none resize-none leading-relaxed"
+                placeholder="Type a note…"
+                value={textDraft}
+                onChange={(e) => setTextDraft(e.target.value)}
+                onBlur={saveText}
+              />
+            )}
+            {/* 2026-09-25 (Round 15, element library): a heading's content
+                lives in the exact same config.text field/draft/save path a
+                text block already uses - just a single-line input styled
+                large and bold instead of a note's textarea. */}
+            {block.type === "heading" && (
+              <div className="h-full flex items-center px-3">
+                <input
+                  className="no-drag w-full bg-transparent outline-none text-xl font-bold text-text placeholder:text-muted placeholder:italic placeholder:font-normal"
+                  placeholder="Untitled heading"
+                  value={textDraft}
+                  onChange={(e) => setTextDraft(e.target.value)}
+                  onBlur={saveText}
+                />
+              </div>
+            )}
+            {/* A divider has no content to ever edit - see DividerBlock's
+                own comment in DashboardBlocks.tsx - so it renders the exact
+                same way in edit mode as it does everywhere else. */}
+            {block.type === "divider" && <DividerBlock />}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function DashboardCanvas({
+  dash,
+  page,
+  onChange,
+  filterState,
+}: {
+  dash: DashboardBuilderDetail;
+  page: DashboardBuilderPage;
+  onChange: (d: DashboardBuilderDetail) => void;
+  // 2026-09-24 (Phase 2b): optional purely for prop-shape symmetry with
+  // DashboardBlockGrid - in practice DashboardBuilderView.tsx only ever
+  // renders DashboardCanvas for someone who can_edit, and always passes
+  // this, so it's live here whenever this component is on screen at all.
+  filterState?: DashboardFilterState;
+}) {
+  const [columns, setColumns] = useState<ColumnInfo[]>([]);
+  const [adding, setAdding] = useState(false);
+  // 2026-09-25e (responsive pass): below the same phone/small-tablet
+  // breakpoint Preview/the public viewer already switch at (see
+  // DashboardBlocks.tsx's own NARROW_BREAKPOINT comment), the desktop-tuned
+  // 12-column absolute grid isn't just cramped here - it's the one
+  // genuinely unusable surface in the whole app on a phone: react-grid-
+  // layout's drag/resize handles need real precision, and a block sized
+  // "3 wide" on a 375px screen is a sliver no one can grab. Rather than
+  // trying to make free-form drag/resize work with touch (and risk writing
+  // squashed, phone-sized x/y/w/h back over the SAME stored layout the
+  // desktop view relies on), this drops react-grid-layout entirely below
+  // the breakpoint and stacks blocks full-width in their existing order -
+  // same choice Preview already made, and the one place drag/resize
+  // positioning stays a "use a bigger screen" action rather than a broken
+  // one. Every other editing action (add, Ask AI, build manually, restyle,
+  // delete, edit title/text) stays fully available on mobile.
+  const narrow = useIsNarrow();
+
+  useEffect(() => {
+    if (!dash.datasource_id) return;
     let cancelled = false;
-    setLoading(true);
+    // Reuses the existing preview endpoint purely to read this data
+    // source's column names/dtypes for the manual-build form's pickers -
+    // deliberately not a new "list columns" endpoint, since preview
+    // already returns exactly this.
     datasourceApi
-      .getColumnDistinctValues(datasourceId, column, null, { limit: 200 })
-      .then((res) => {
-        if (!cancelled) setValues(res.values);
+      .preview(dash.datasource_id, null, 1, 0)
+      .then((p) => {
+        if (cancelled) return;
+        setColumns(p.columns.map((name) => ({ name, dtype: p.dtypes[name] || "" })));
       })
       .catch(() => {
-        if (!cancelled) setValues([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setColumns([]);
       });
     return () => {
       cancelled = true;
     };
-  }, [column, datasourceId]);
+  }, [dash.datasource_id]);
 
-  // 2026-09-25e (elite pass): a filter used to be its own small dash-card -
-  // a bordered, backgrounded box, same chrome as a KPI tile - which is
-  // exactly why a row of them read as scattered little widgets instead of
-  // the clean, label-over-control filter bar in the reference dashboards
-  // Gokul sent (a plain label above a plain bordered select, no card
-  // around either). Dropped the card entirely: a filter block is now just
-  // its label and its control sitting straight on the page, so several of
-  // them placed in a row read as one continuous, premium filter strip
-  // instead of N separate boxes.
-  return (
-    <div className="h-full flex flex-col justify-center gap-1.5 min-w-0">
-      <label className="text-[13px] font-medium text-muted truncate">{block.title || column || "Filter"}</label>
-      {!column ? (
-        <div className="text-xs text-muted italic">Not set up yet.</div>
-      ) : (
-        <select
-          className="dash-select w-full"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          disabled={loading}
-        >
-          <option value="">All</option>
-          {values.map((v) => (
-            <option key={String(v.value)} value={String(v.value)}>
-              {String(v.value)} ({v.count})
-            </option>
-          ))}
-        </select>
-      )}
-    </div>
+  const layout = useMemo(
+    () => page.blocks.map((b) => ({ i: b.id, x: b.x, y: b.y, w: b.w, h: b.h })),
+    [page.blocks]
   );
-}
 
-// The public/no-login view's stand-in for a filter block - see this
-// file's own top comment and the backend module docstring (Phase 2b,
-// point 3) for why cross-filtering isn't wired up there yet: recomputing
-// against a customer's own connected data source from an unauthenticated
-// link with no rate limiting is a real cost/security question this round
-// deliberately didn't answer with "just allow it."
-function StaticFilterNote({ block }: { block: DashboardBlock }) {
-  const column: string | null = block.config?.column || null;
-  return (
-    <div className="h-full flex flex-col justify-center gap-1.5 opacity-60 min-w-0">
-      <label className="text-[13px] font-medium text-muted truncate">{block.title || column || "Filter"}</label>
-      <div className="dash-select w-full pointer-events-none">All</div>
-    </div>
-  );
-}
-
-export function DashboardBlockGrid({
-  blocks,
-  datasourceId,
-  filterState,
-}: {
-  blocks: DashboardBlock[];
-  // Both optional - a caller that omits filterState (PublicDashboardView)
-  // gets every block exactly as saved, with a filter block rendered as an
-  // inert StaticFilterNote instead of a live control.
-  datasourceId?: string | null;
-  filterState?: DashboardFilterState;
-}) {
-  const narrow = useIsNarrow();
-
-  if (blocks.length === 0) {
-    return <div className="text-sm text-muted py-10 text-center">This page has no blocks yet.</div>;
-  }
-
-  const renderBlock = (b: DashboardBlock) => {
-    // A block currently recomputed by an active cross-filter (Phase 2b) -
-    // overrides only ever cover a block with a stored `recipe` (see
-    // ManualRecipe in api/client.ts); everything else renders its own
-    // real, persisted content untouched.
-    const override = filterState?.overrides[b.id];
-    const type = override?.type ?? b.type;
-    const config = override?.config ?? b.config;
-    return (
-      <>
-        {/* accent_color always comes from the block's own real config, not
-            an active filter override - same reasoning as
-            DashboardCanvas.tsx's edit-mode BlockCard. */}
-        {type === "kpi" && <KpiTile title={b.title} config={{ ...config, accent_color: b.config?.accent_color }} />}
-        {type === "table" && <BlockTable title={b.title} config={config} />}
-        {type === "chart" && <BlockChart title={b.title} config={config} />}
-        {type === "text" && <TextBlock title={b.title} config={config} />}
-        {type === "gauge" && <GaugeBlock title={b.title} config={config} />}
-        {type === "donut" && <DonutBlock title={b.title} config={config} />}
-        {type === "sparkline" && <SparklineBlock title={b.title} config={config} />}
-        {type === "avatar_list" && <AvatarListBlock title={b.title} config={config} />}
-        {type === "heading" && <HeadingBlock title={b.title} config={config} />}
-        {type === "divider" && <DividerBlock />}
-        {type === "filter" &&
-          (filterState ? (
-            <FilterControl
-              block={b}
-              datasourceId={datasourceId || null}
-              value={filterState.values[b.id] || ""}
-              onChange={(v) => filterState.setFilterValue(b.id, v)}
-            />
-          ) : (
-            <StaticFilterNote block={b} />
-          ))}
-      </>
-    );
+  // 2026-09-25 (Round 15, element library): addBlock now takes an optional
+  // drop position - set only when a library card was dragged onto the
+  // canvas and dropped at a specific cell (see onDrop below); a plain
+  // click still omits it and lands at the bottom via the backend's own
+  // _place_new_block, exactly as it always has.
+  const addBlock = async (type: DashboardBlockType, position?: { x: number; y: number }) => {
+    if (adding) return;
+    setAdding(true);
+    try {
+      onChange(await dashboardBuilderApi.createBlock(dash.id, page.id, type, undefined, position));
+    } finally {
+      setAdding(false);
+    }
   };
 
-  // 2026-09-25: below the phone/small-tablet breakpoint, the desktop-tuned
-  // 12-column absolute grid gives way to a plain stacked column, ordered
-  // top-to-bottom / left-to-right the way it was laid out on the real
-  // grid, each block full width with a sensible natural height for its
-  // type. Same blocks, same data - just readable on a real phone.
-  if (narrow) {
-    const ordered = [...blocks].sort((a, b) => a.y - b.y || a.x - b.x);
-    return (
-      <div className="flex flex-col gap-4">
-        {ordered.map((b) => (
-          <div key={b.id} style={{ minHeight: STACK_MIN_HEIGHT[b.type] ?? 200 }}>
-            {renderBlock(b)}
-          </div>
-        ))}
-      </div>
-    );
-  }
+  // The card currently being dragged from the element library, if any -
+  // drives both the ghost placeholder's size while hovering the canvas
+  // (droppingItem/onDropDragOver below) and, as a fallback, what onDrop
+  // creates if the browser's own dataTransfer read comes back empty.
+  const [draggingType, setDraggingType] = useState<DashboardBlockType | null>(null);
 
   return (
-    <div
-      className="grid gap-4"
-      style={{
-        gridTemplateColumns: "repeat(12, minmax(0, 1fr))",
-        gridAutoRows: `${ROW_UNIT_PX}px`,
-      }}
-    >
-      {blocks.map((b) => (
-        <div
-          key={b.id}
-          style={{
-            gridColumn: `${b.x + 1} / span ${b.w}`,
-            gridRow: `${b.y + 1} / span ${b.h}`,
+    <div>
+      <div className="mb-4">
+        <div className="text-xs text-muted mb-2">
+          {narrow ? "Add block:" : "Element library - drag a card onto the canvas, or click to add it at the bottom:"}
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {ELEMENT_LIBRARY_TYPES.map((t) => (
+            <button
+              key={t}
+              type="button"
+              disabled={adding}
+              draggable={!narrow && !adding}
+              className="dash-toolbtn disabled:opacity-50 cursor-grab active:cursor-grabbing"
+              title={narrow ? undefined : `Drag onto the canvas, or click to add "${BLOCK_TYPE_LABEL[t]}"`}
+              onClick={() => addBlock(t)}
+              onDragStart={(e) => {
+                setDraggingType(t);
+                e.dataTransfer.effectAllowed = "copy";
+                e.dataTransfer.setData("text/plain", t);
+              }}
+              onDragEnd={() => setDraggingType(null)}
+            >
+              <PlusIcon className="w-3.5 h-3.5" /> {BLOCK_TYPE_LABEL[t]}
+            </button>
+          ))}
+        </div>
+        {!dash.datasource_id && (
+          <span className="text-[11px] text-muted mt-1.5 block">
+            No linked data source - Ask AI and manual build aren&apos;t available on this dashboard.
+          </span>
+        )}
+      </div>
+
+      {narrow && page.blocks.length > 0 && (
+        <div className="text-[11px] text-muted mb-3 -mt-1">
+          Blocks are shown full-width and in order on this screen size. Drag-and-drop positioning and resizing need a
+          wider screen - everything else here still works.
+        </div>
+      )}
+
+      {page.blocks.length === 0 ? (
+        <div className="text-sm text-muted py-16 text-center border border-dashed border-border rounded-xl">
+          This page has no blocks yet - add one above to get started.
+        </div>
+      ) : narrow ? (
+        <div className="flex flex-col gap-4">
+          {[...page.blocks]
+            .sort((a, b) => a.y - b.y || a.x - b.x)
+            .map((b) => (
+              <div key={b.id} style={{ height: (STACK_MIN_HEIGHT[b.type] ?? 200) + 40 }}>
+                <BlockCard
+                  dashboardId={dash.id}
+                  block={b}
+                  columns={columns}
+                  datasourceId={dash.datasource_id}
+                  filterState={filterState}
+                  onChange={onChange}
+                />
+              </div>
+            ))}
+        </div>
+      ) : (
+        <ReactGridLayout
+          className="layout"
+          layout={layout}
+          cols={GRID_COLUMNS}
+          rowHeight={ROW_UNIT_PX}
+          margin={[16, 16]}
+          isDraggable
+          isResizable
+          allowOverlap
+          compactType={null}
+          preventCollision={false}
+          draggableCancel=".no-drag"
+          onDragStop={(_layout, oldItem, newItem) => {
+            if (!newItem || !oldItem) return;
+            if (newItem.x === oldItem.x && newItem.y === oldItem.y) return;
+            dashboardBuilderApi.updateBlock(dash.id, newItem.i, { x: newItem.x, y: newItem.y }).then(onChange);
+          }}
+          onResizeStop={(_layout, oldItem, newItem) => {
+            if (!newItem || !oldItem) return;
+            if (newItem.w === oldItem.w && newItem.h === oldItem.h && newItem.x === oldItem.x && newItem.y === oldItem.y) return;
+            dashboardBuilderApi
+              .updateBlock(dash.id, newItem.i, { x: newItem.x, y: newItem.y, w: newItem.w, h: newItem.h })
+              .then(onChange);
+          }}
+          // 2026-09-25 (Round 15, element library): native react-grid-
+          // layout external-drag-drop - isDroppable makes the grid listen
+          // for a browser drag entering/leaving/dropping over it;
+          // droppingItem sizes the ghost placeholder shown while hovering
+          // (kept in sync with whichever card is actually being dragged,
+          // via draggingType + BLOCK_DEFAULT_SIZE - the same numbers
+          // _default_block_size computes server-side); onDrop fires once,
+          // on release, with the grid cell it landed on.
+          isDroppable
+          droppingItem={{ i: "__dropping-elem__", x: 0, y: 0, ...(draggingType ? BLOCK_DEFAULT_SIZE[draggingType] : { w: 6, h: 6 }) }}
+          onDropDragOver={() => (draggingType ? BLOCK_DEFAULT_SIZE[draggingType] : undefined)}
+          onDrop={(_layout, item, e) => {
+            const dropped = (e as DragEvent)?.dataTransfer?.getData("text/plain") as DashboardBlockType | undefined;
+            const type = dropped && ELEMENT_LIBRARY_TYPES.includes(dropped) ? dropped : draggingType;
+            setDraggingType(null);
+            if (!type || !item) return;
+            addBlock(type, { x: item.x, y: item.y });
           }}
         >
-          {renderBlock(b)}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// 2026-09-25g (live-data freshness round): a real "Data updated Xm ago"
-// trust signal, shared by both the owner's Preview (DashboardBuilderView)
-// and the anonymous public viewer (PublicDashboardView) - top design-
-// trends priority from this round's research, and the one flagged as
-// especially valuable on a shared/public dashboard someone outside GD360
-// is looking at. Deliberately honest rather than a fake "live" pulse: this
-// app has no auto-refreshing data pipeline, so what actually changes is
-// when a block's numbers were last (re)computed by someone asking AI or
-// building manually - exactly what backend DashboardBlock.data_updated_at
-// tracks (see its own docstring for precisely which actions advance it).
-// A block with no real computed data yet (never built, or an empty text/
-// filter block) never counts toward this - nothing here is ever guessed.
-const DATA_BLOCK_TYPES: DashboardBlockType[] = ["chart", "table", "kpi", "gauge", "donut", "sparkline", "avatar_list"];
-
-function hasComputedData(block: DashboardBlock): boolean {
-  return DATA_BLOCK_TYPES.includes(block.type) && !!block.config && Object.keys(block.config).length > 0;
-}
-
-function formatRelativeTime(whenMs: number, nowMs: number): string {
-  const diffSec = Math.max(0, Math.round((nowMs - whenMs) / 1000));
-  if (diffSec < 45) return "just now";
-  const diffMin = Math.round(diffSec / 60);
-  if (diffMin < 60) return `${diffMin} minute${diffMin === 1 ? "" : "s"} ago`;
-  const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `${diffHr} hour${diffHr === 1 ? "" : "s"} ago`;
-  const diffDay = Math.round(diffHr / 24);
-  if (diffDay < 30) return `${diffDay} day${diffDay === 1 ? "" : "s"} ago`;
-  return new Date(whenMs).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-}
-
-export function DataFreshnessBadge({ blocks }: { blocks: DashboardBlock[] }) {
-  // Ticks every 30s purely to re-render this one small label so "2 minutes
-  // ago" quietly becomes "3 minutes ago" without the person ever
-  // refreshing the page - not a data refetch, just a clock tick.
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 30000);
-    return () => window.clearInterval(id);
-  }, []);
-
-  const latestMs = useMemo(() => {
-    let latest = 0;
-    for (const b of blocks) {
-      if (!hasComputedData(b) || !b.data_updated_at) continue;
-      const t = new Date(b.data_updated_at).getTime();
-      if (!Number.isNaN(t) && t > latest) latest = t;
-    }
-    return latest;
-  }, [blocks]);
-
-  if (latestMs === 0) return null;
-
-  return (
-    <div
-      className="inline-flex items-center gap-1.5 text-[11px] text-muted"
-      title={`Last computed ${new Date(latestMs).toLocaleString()}`}
-    >
-      <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
-      Data updated {formatRelativeTime(latestMs, now)}
+          {page.blocks.map((b) => (
+            <div key={b.id}>
+              <BlockCard
+                dashboardId={dash.id}
+                block={b}
+                columns={columns}
+                datasourceId={dash.datasource_id}
+                filterState={filterState}
+                onChange={onChange}
+              />
+            </div>
+          ))}
+        </ReactGridLayout>
+      )}
     </div>
   );
 }
