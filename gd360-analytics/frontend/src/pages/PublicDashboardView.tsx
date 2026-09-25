@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { API_URL, publicDashboardApi, PublicDashboard } from "../api/client";
 import ThemeToggle from "../components/ThemeToggle";
-import { DashboardBlockGrid } from "../components/DashboardBlocks";
+import { DashboardBlockGrid, DataFreshnessBadge } from "../components/DashboardBlocks";
 import { brandingBackgroundImageStyle, brandingStyleVars, hexToRgbTriple } from "../lib/branding";
 
 // 2026-09-24 (Dashboard Builder Phase 1 + Phase 3): the anonymous, no-login
@@ -303,6 +303,18 @@ export default function PublicDashboardView() {
           <>
             <div className="text-[11px] font-semibold uppercase tracking-wide text-accent mb-1.5">Dashboard</div>
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight mb-2">{dash.name}</h1>
+
+            {/* 2026-09-25g (live-data freshness round): the one place this
+                matters most - a stranger with no GD360 account, looking at
+                someone else's numbers, gets an honest, real answer to "how
+                current is this?" instead of just having to trust it. See
+                DashboardBlocks.tsx's own comment for why this is never a
+                simulated "live" signal. */}
+            {activePage && (
+              <div className="mb-2">
+                <DataFreshnessBadge blocks={activePage.blocks} />
+              </div>
+            )}
 
             {dash.pages.length > 1 && (
               <div className="flex items-center gap-1.5 mt-5 mb-2 flex-wrap">
