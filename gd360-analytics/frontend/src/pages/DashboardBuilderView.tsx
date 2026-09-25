@@ -1,11 +1,28 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { dashboardBuilderApi, DashboardBuilderDetail, DashboardBuilderPage } from "../api/client";
+import { dashboardBuilderApi, DashboardBuilderDetail, DashboardBuilderPage, WorkspaceSummary } from "../api/client";
 import TopNav from "../components/TopNav";
+import AppSidebar from "../components/AppSidebar";
 import { DashboardBlockGrid } from "../components/DashboardBlocks";
 import DashboardCanvas from "../components/DashboardCanvas";
 import { useDashboardFilters } from "../lib/useDashboardFilters";
+import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { brandingBackgroundImageStyle, brandingStyleVars, hexToRgbTriple, useBrandingAsset } from "../lib/branding";
+
+// 2026-09-25d (elite pass): the dashboard builder/editor - the exact page
+// Gokul's own screenshots of the live app's edit mode were taken from -
+// used to render on the old top-bar-only layout, the one real page left
+// out of the persistent left AppSidebar (Projects/Dashboards/Data Sources)
+// the rest of the app already got in the 2026-09-23 sidebar redesign. That
+// gap is very likely a real part of why editing a dashboard still felt
+// like "just a chart" next to the Vision UI/Horizon UI references - every
+// other page already has the premium sidebar-nav shell those references
+// use, this one didn't. Wired in here exactly the same way Dashboard.tsx,
+// Dashboards.tsx and DataSources.tsx already do it (useWorkspaceNav owns
+// which workspace is active; TopNav keeps its own logo hidden since the
+// sidebar already shows one - see TopNav's own hideLogo prop), so this
+// page now matches every other authenticated page in the app instead of
+// standing out as the one place the shell doesn't apply.
 
 // 2026-09-24 (Dashboard Builder Phase 1 + Phase 2 + Phase 2b + Phase 3): the
 // owner/editor view for the new pages+blocks kind of dashboard - opened
@@ -92,6 +109,23 @@ function ChevronRightIcon({ className = "w-3 h-3" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M9 18l6-6-6-6" />
+    </svg>
+  );
+}
+
+// 2026-09-25d (elite pass) - see DashboardCanvas.tsx's own KebabIcon for the
+// same reasoning: an active page tab used to sprout up to seven separate
+// icon buttons (move left/right, rename, duplicate, a color swatch, clear
+// tint, delete) the moment it was selected - the same "unwanted editing
+// options" clutter, just one level up from the block cards. One kebab menu
+// here too, so a page tab reads as just its name and color dot until
+// someone deliberately opens its menu.
+function KebabIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+      <circle cx="12" cy="5" r="1.9" />
+      <circle cx="12" cy="12" r="1.9" />
+      <circle cx="12" cy="19" r="1.9" />
     </svg>
   );
 }
@@ -743,6 +777,9 @@ function PageTabsBar({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  // 2026-09-25d (elite pass) - see KebabIcon above. Which page's menu is
+  // currently open, if any - only ever one at a time.
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
   const pages = dash.pages;
 
@@ -877,10 +914,17 @@ function PageTabsBar({
         return (
           <div
             key={p.id}
-            className={`flex items-center gap-1 pl-3 pr-1.5 py-1 rounded-full border text-xs font-medium transition ${
+            className={`relative flex items-center gap-1 pl-3 pr-1.5 py-1 rounded-full border text-xs font-medium transition ${
               isActive ? "bg-primary text-white border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
             }`}
           >
+            {p.background_color && (
+              <span
+                className="w-1.5 h-1.5 rounded-full shrink-0"
+                style={{ background: p.background_color }}
+                title="Page background tint"
+              />
+            )}
             {renamingId === p.id ? (
               <input
                 autoFocus
@@ -900,54 +944,107 @@ function PageTabsBar({
               </button>
             )}
             {isActive && (
-              <div className="flex items-center gap-0.5 text-white/80">
+              <button
+                type="button"
+                className="p-0.5 rounded hover:bg-white/15 text-white/80 hover:text-white transition"
+                aria-label="Page options"
+                aria-haspopup="menu"
+                aria-expanded={openMenuId === p.id}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setOpenMenuId((id) => (id === p.id ? null : p.id));
+                }}
+              >
+                <KebabIcon />
+              </button>
+            )}
+            {isActive && openMenuId === p.id && (
+              <div
+                role="menu"
+                className="absolute left-0 top-full mt-1 w-44 card bg-surface shadow-2xl border border-border p-1.5 z-30 text-text normal-case font-normal"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center gap-1 mb-1">
+                  <button
+                    type="button"
+                    disabled={busy || i === 0}
+                    className="flex-1 flex items-center justify-center gap-1 text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors disabled:opacity-30 disabled:cursor-default"
+                    title="Move left"
+                    onClick={() => move(p, -1)}
+                  >
+                    <ChevronLeftIcon />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || i === pages.length - 1}
+                    className="flex-1 flex items-center justify-center gap-1 text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors disabled:opacity-30 disabled:cursor-default"
+                    title="Move right"
+                    onClick={() => move(p, 1)}
+                  >
+                    <ChevronRightIcon />
+                  </button>
+                </div>
                 <button
                   type="button"
-                  disabled={busy || i === 0}
-                  className="p-0.5 hover:text-white disabled:opacity-30 disabled:cursor-default"
-                  title="Move left"
-                  onClick={() => move(p, -1)}
-                >
-                  <ChevronLeftIcon />
-                </button>
-                <button
-                  type="button"
-                  disabled={busy || i === pages.length - 1}
-                  className="p-0.5 hover:text-white disabled:opacity-30 disabled:cursor-default"
-                  title="Move right"
-                  onClick={() => move(p, 1)}
-                >
-                  <ChevronRightIcon />
-                </button>
-                <button type="button" disabled={busy} className="p-0.5 hover:text-white disabled:opacity-50" title="Rename page" onClick={() => startRename(p)}>
-                  <PencilIcon />
-                </button>
-                <button type="button" disabled={busy} className="p-0.5 hover:text-white disabled:opacity-50" title="Duplicate page" onClick={() => duplicate(p)}>
-                  <CopyIcon className="w-3 h-3" />
-                </button>
-                <input
-                  type="color"
-                  title="Page background tint"
+                  role="menuitem"
                   disabled={busy}
-                  value={p.background_color || "#000000"}
-                  onChange={(e) => setPageColor(p, e.target.value)}
-                  className="w-3.5 h-3.5 rounded-full border-0 bg-transparent cursor-pointer p-0 disabled:opacity-50"
-                  onClick={(e) => e.stopPropagation()}
-                />
+                  className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors flex items-center gap-2 disabled:opacity-50"
+                  onClick={() => {
+                    setOpenMenuId(null);
+                    startRename(p);
+                  }}
+                >
+                  <PencilIcon /> Rename
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={busy}
+                  className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors flex items-center gap-2 disabled:opacity-50"
+                  onClick={() => {
+                    setOpenMenuId(null);
+                    duplicate(p);
+                  }}
+                >
+                  <CopyIcon className="w-3 h-3" /> Duplicate
+                </button>
+                <label className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="color"
+                    title="Page background tint"
+                    disabled={busy}
+                    value={p.background_color || "#000000"}
+                    onChange={(e) => setPageColor(p, e.target.value)}
+                    className="w-3.5 h-3.5 rounded-full border-0 bg-transparent cursor-pointer p-0 disabled:opacity-50 shrink-0"
+                  />
+                  Page color
+                </label>
                 {p.background_color && (
                   <button
                     type="button"
+                    role="menuitem"
                     disabled={busy}
-                    className="p-0.5 hover:text-white disabled:opacity-50 text-[10px] leading-none"
-                    title="Clear page background tint"
-                    onClick={() => setPageColor(p, "")}
+                    className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors disabled:opacity-50"
+                    onClick={() => {
+                      setOpenMenuId(null);
+                      setPageColor(p, "");
+                    }}
                   >
-                    &times;
+                    Clear page color
                   </button>
                 )}
                 {pages.length > 1 && (
-                  <button type="button" disabled={busy} className="p-0.5 hover:text-red-300 disabled:opacity-50" title="Delete page" onClick={() => remove(p)}>
-                    <TrashIcon />
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={busy}
+                    className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-red-500/10 text-red-400 transition-colors flex items-center gap-2 disabled:opacity-50"
+                    onClick={() => {
+                      setOpenMenuId(null);
+                      remove(p);
+                    }}
+                  >
+                    <TrashIcon /> Delete page
                   </button>
                 )}
               </div>
@@ -977,6 +1074,8 @@ export default function DashboardBuilderView() {
   // (guarded below in the render, not just here) since dash.can_edit isn't
   // known until the fetch below resolves.
   const [mode, setMode] = useState<"edit" | "view">("edit");
+  // 2026-09-25d (elite pass) - see the file-top note above.
+  const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
 
   useEffect(() => {
     if (!dashboardId) return;
@@ -994,12 +1093,20 @@ export default function DashboardBuilderView() {
 
   if (error) {
     return (
-      <div>
-        <TopNav />
-        <div className="max-w-6xl mx-auto px-6 py-8">
-          <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 inline-block">{error}</div>
-          <div className="mt-4">
-            <Link to="/dashboards" className="text-sm text-primary hover:underline">&larr; Back to Dashboards</Link>
+      <div className="flex">
+        <AppSidebar
+          workspaces={workspaces}
+          activeWorkspaceId={activeWorkspaceId}
+          onWorkspaceSwitch={switchWorkspace}
+          onWorkspaceCreated={handleWorkspaceCreated}
+        />
+        <div className="flex-1 min-w-0 flex flex-col min-h-screen">
+          <TopNav hideLogo />
+          <div className="max-w-6xl mx-auto px-6 py-8">
+            <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 inline-block">{error}</div>
+            <div className="mt-4">
+              <Link to="/dashboards" className="text-sm text-primary hover:underline">&larr; Back to Dashboards</Link>
+            </div>
           </div>
         </div>
       </div>
@@ -1008,9 +1115,17 @@ export default function DashboardBuilderView() {
 
   if (!dash) {
     return (
-      <div>
-        <TopNav />
-        <div className="max-w-6xl mx-auto px-6 py-8 text-sm text-muted">Loading&hellip;</div>
+      <div className="flex">
+        <AppSidebar
+          workspaces={workspaces}
+          activeWorkspaceId={activeWorkspaceId}
+          onWorkspaceSwitch={switchWorkspace}
+          onWorkspaceCreated={handleWorkspaceCreated}
+        />
+        <div className="flex-1 min-w-0 flex flex-col min-h-screen">
+          <TopNav hideLogo />
+          <div className="max-w-6xl mx-auto px-6 py-8 text-sm text-muted">Loading&hellip;</div>
+        </div>
       </div>
     );
   }
@@ -1020,6 +1135,10 @@ export default function DashboardBuilderView() {
   return (
     <DashboardBuilderViewBody
       dash={dash}
+      workspaces={workspaces}
+      activeWorkspaceId={activeWorkspaceId}
+      switchWorkspace={switchWorkspace}
+      handleWorkspaceCreated={handleWorkspaceCreated}
       setDash={setDash}
       activePage={activePage}
       setActivePageId={setActivePageId}
@@ -1040,6 +1159,10 @@ function DashboardBuilderViewBody({
   setActivePageId,
   mode,
   setMode,
+  workspaces,
+  activeWorkspaceId,
+  switchWorkspace,
+  handleWorkspaceCreated,
 }: {
   dash: DashboardBuilderDetail;
   setDash: (d: DashboardBuilderDetail) => void;
@@ -1047,6 +1170,11 @@ function DashboardBuilderViewBody({
   setActivePageId: (id: string) => void;
   mode: "edit" | "view";
   setMode: (m: "edit" | "view") => void;
+  // 2026-09-25d (elite pass) - see the file-top note above.
+  workspaces: WorkspaceSummary[];
+  activeWorkspaceId: string;
+  switchWorkspace: (id: string) => void;
+  handleWorkspaceCreated: (ws: WorkspaceSummary) => void;
 }) {
   const filterState = useDashboardFilters(dash.id, activePage);
 
@@ -1111,10 +1239,17 @@ function DashboardBuilderViewBody({
   };
 
   return (
-    <div className="dash-shell min-h-screen" style={shellStyle}>
-      <TopNav />
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
-        <Link to="/dashboards" className="text-xs text-muted hover:text-text transition inline-block mb-3">&larr; Dashboards</Link>
+    <div className="flex">
+      <AppSidebar
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
+        onWorkspaceSwitch={switchWorkspace}
+        onWorkspaceCreated={handleWorkspaceCreated}
+      />
+      <div className="dash-shell flex-1 min-w-0 min-h-screen flex flex-col" style={shellStyle}>
+        <TopNav hideLogo />
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 w-full flex-1">
+          <Link to="/dashboards" className="text-xs text-muted hover:text-text transition inline-block mb-3">&larr; Dashboards</Link>
 
         <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
           <div className="min-w-0">
@@ -1204,6 +1339,7 @@ function DashboardBuilderViewBody({
           ) : (
             <DashboardBlockGrid blocks={activePage.blocks} datasourceId={dash.datasource_id} filterState={filterState} />
           )}
+        </div>
         </div>
       </div>
     </div>
