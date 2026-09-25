@@ -340,3 +340,128 @@ body {
 .dash-accent-3 { background: rgb(var(--dash-accent-3) / 0.14); color: rgb(var(--dash-accent-3)); }
 .dash-accent-4 { background: rgb(var(--dash-accent-4) / 0.14); color: rgb(var(--dash-accent-4)); }
 .dash-accent-5 { background: rgb(var(--dash-accent-5) / 0.14); color: rgb(var(--dash-accent-5)); }
+
+/* ============================================================
+   Dashboard Builder - "elite" pass (2026-09-25b)
+   Direct response to a side-by-side against a competitor's app-builder
+   dashboard: this pass touches only chrome (a kpi tile's top accent
+   hairline, the filter block's control, the chart card's header, the
+   edit-mode "Add block" toolbar) - never chart-type selection or layout
+   math, which live in chart_builder.py/chartStyle.ts and DashboardBlocks'
+   own grid math respectively and are out of scope for a CSS/JSX pass.
+   Everything below is additive and scoped under dash- the same way the
+   rest of this section is, so nothing outside Dashboard Builder changes.
+   ============================================================ */
+
+/* A thin accent hairline across the top of a stat tile - fading from that
+   tile's own accent hue to transparent, same idea as verify-bar but a top
+   edge instead of a left rule, sized to the reference dashboards' KPI
+   cards. The color itself is supplied per-instance via the
+   --dash-card-accent-color custom property (see KpiTile in
+   DashboardBlocks.tsx) rather than a fixed hue, so each tile keeps its own
+   accentIndex color instead of every hairline matching. */
+.dash-card--accented {
+  position: relative;
+}
+.dash-card--accented::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 20px;
+  right: 20px;
+  height: 2px;
+  border-radius: 0 0 999px 999px;
+  background: linear-gradient(90deg, var(--dash-card-accent-color, rgb(var(--color-accent))), transparent 85%);
+}
+
+/* The filter block's control - previously the app-wide `.input` treatment
+   (a plain bordered rectangle, same as a text field), which is exactly the
+   "boxy native dropdown" the competitor comparison called out. This keeps
+   the real <select> element (native keyboard nav, mobile picker, no new
+   interaction code to maintain) but restyles it as a rounded pill with a
+   custom chevron, matching the filter-pill row style in the reference
+   dashboards. The chevron is a fixed mid-gray by design (not
+   theme-swapped): #8a8a86 reads clearly against both this app's dark and
+   light --color-surface2, so one data-URI covers both themes without a
+   duplicate light-mode override. */
+.dash-select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  width: 100%;
+  background-color: rgb(var(--color-surface2));
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a8a86' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.7rem center;
+  background-size: 11px;
+  border: 1px solid rgb(var(--color-border));
+  border-radius: 999px;
+  padding: 0.5rem 2.1rem 0.5rem 0.9rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: rgb(var(--color-text));
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.dash-select:hover:not(:disabled) {
+  border-color: rgb(var(--color-accent) / 0.45);
+}
+.dash-select:focus {
+  outline: none;
+  border-color: rgb(var(--color-accent));
+  box-shadow: 0 0 0 3px rgb(var(--color-accent) / 0.15);
+}
+.dash-select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* The chart card's small "..." menu button/panel that replaces the old
+   always-on "Export chart as" label + 4-button row (ChartCanvas.tsx) for
+   any dashPremium chart - same export formats, same downloadImage call,
+   just tucked behind one icon instead of permanently occupying the card's
+   header the way every reference screenshot's own chart cards keep it. */
+.dash-chart-menu-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  color: rgb(var(--color-muted));
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.dash-chart-menu-btn:hover {
+  background: rgb(var(--color-surface2));
+  color: rgb(var(--color-text));
+}
+
+/* The edit-mode "Add block" toolbar (DashboardCanvas.tsx) - previously
+   plain `.btn-secondary` rectangles (9 of them in a row), which is the
+   "unwanted/cluttered header options" the competitor comparison flagged.
+   Same buttons, same labels, restyled as a quieter pill row so the row
+   reads as one grouped toolbar instead of nine separate buttons competing
+   for attention - only ever shown to someone who can_edit, never on a
+   public/preview view. */
+.dash-toolbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  border: 1px solid rgb(var(--color-border));
+  background: rgb(var(--color-surface));
+  border-radius: 999px;
+  padding: 0.38rem 0.8rem;
+  font-size: 0.71rem;
+  font-weight: 600;
+  color: rgb(var(--color-muted));
+  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+.dash-toolbtn:hover:not(:disabled) {
+  border-color: rgb(var(--color-accent) / 0.4);
+  background: rgb(var(--color-accent) / 0.08);
+  color: rgb(var(--color-text));
+}
+.dash-toolbtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
