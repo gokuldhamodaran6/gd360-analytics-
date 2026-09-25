@@ -191,6 +191,67 @@ function ResetSwatchIcon({ className = "w-3 h-3" }: { className?: string }) {
   );
 }
 
+// 2026-09-25i (inline editing round): a `#rrggbb` custom color needs a
+// translucent version of itself for chip backgrounds and (for
+// SparklineBlock) per-bar fade - the same trick KpiTile already used as a
+// one-off literal string concat (`${customColor}26`). Pulled out as a real
+// helper now that a second and third block type need the same math with a
+// non-fixed alpha, rather than quietly copy-pasting a magic "26" three
+// more times. alpha is a 0-1 fraction, same units as the CSS
+// rgb(.../0.14) syntax the automatic accent-N classes use.
+function hexWithAlpha(hex: string, alpha: number): string {
+  const a = Math.round(Math.max(0, Math.min(1, alpha)) * 255)
+    .toString(16)
+    .padStart(2, "0");
+  return `${hex}${a}`;
+}
+
+// 2026-09-25i (inline editing round): the actual swatch control (reset
+// button + color-picker circle) factored out of KpiTile, which had it as
+// inline markup, now that BlockTable/GaugeBlock/SparklineBlock need the
+// exact same control. Purely presentational - the caller owns computing
+// customColor/accentCss and persisting the change via onAccentColorChange
+// (see set_block_accent_color on the backend for why this is its own
+// endpoint). Always absolutely positioned bottom-right by the caller's own
+// `relative` wrapper, same spot on every block type so it reads as one
+// consistent affordance across the dashboard.
+function AccentSwatch({
+  customColor,
+  accentCss,
+  onAccentColorChange,
+}: {
+  customColor: string | null;
+  accentCss: string;
+  onAccentColorChange: (color: string | null) => void;
+}) {
+  return (
+    <div className="no-drag absolute bottom-2.5 right-2.5 flex items-center gap-1">
+      {customColor && (
+        <button
+          type="button"
+          className="w-5 h-5 rounded-full bg-surface2 border border-border text-muted hover:text-text transition flex items-center justify-center"
+          title="Reset to the automatic color"
+          onClick={() => onAccentColorChange(null)}
+        >
+          <ResetSwatchIcon />
+        </button>
+      )}
+      <label
+        className="w-5 h-5 rounded-full border-2 border-surface shadow cursor-pointer block"
+        style={{ background: accentCss }}
+        title="Click to choose this block's color"
+      >
+        <input
+          type="color"
+          className="sr-only"
+          value={customColor || "#2d8267"}
+          onChange={(e) => onAccentColorChange(e.target.value)}
+        />
+      </label>
+    </div>
+  );
+}
+
 // 2026-09-25h (inline editing round): a kpi tile's color used to be
 // entirely automatic (accentIndex's deterministic hash of its own label) -
 // no way to change it short of renaming the tile and hoping for a
@@ -244,40 +305,42 @@ export function KpiTile({
       <div className="dash-kpi-value text-3xl font-bold truncate">{display}</div>
 
       {editable && onAccentColorChange && (
-        <div className="no-drag absolute bottom-2.5 right-2.5 flex items-center gap-1">
-          {customColor && (
-            <button
-              type="button"
-              className="w-5 h-5 rounded-full bg-surface2 border border-border text-muted hover:text-text transition flex items-center justify-center"
-              title="Reset to the automatic color"
-              onClick={() => onAccentColorChange(null)}
-            >
-              <ResetSwatchIcon />
-            </button>
-          )}
-          <label
-            className="w-5 h-5 rounded-full border-2 border-surface shadow cursor-pointer block"
-            style={{ background: accentCss }}
-            title="Click to choose this tile's color"
-          >
-            <input
-              type="color"
-              className="sr-only"
-              value={customColor || "#2d8267"}
-              onChange={(e) => onAccentColorChange(e.target.value)}
-            />
-          </label>
-        </div>
+        <AccentSwatch customColor={customColor} accentCss={accentCss} onAccentColorChange={onAccentColorChange} />
       )}
     </div>
   );
 }
 
-export function BlockTable({ title, config }: { title: string | null; config: any }) {
+// 2026-09-25i (inline editing round): unlike KpiTile/GaugeBlock/
+// SparklineBlock, a table has never had any automatic per-instance color
+// (accentIndex hashes a *label*, and a table's title is often blank or
+// generic like "Rows") - so there is no honest "automatic" accent to fall
+// back to here, only ever a deliberately-picked one. That's why
+// customColor has no `|| automaticColor` fallback below, and why the
+// accent border only ever renders once config.accent_color is actually
+// set: showing a colored border by default would be inventing an accent
+// that was never really there, exactly the kind of fabricated default this
+// build avoids elsewhere. No custom color set = the exact same plain table
+// as before this round.
+export function BlockTable({
+  title,
+  config,
+  editable,
+  onAccentColorChange,
+}: {
+  title: string | null;
+  config: any;
+  editable?: boolean;
+  onAccentColorChange?: (color: string | null) => void;
+}) {
   const columns: string[] = Array.isArray(config?.columns) ? config.columns : [];
   const rows: Record<string, any>[] = Array.isArray(config?.rows) ? config.rows : [];
+  const customColor: string | null = typeof config?.accent_color === "string" && config.accent_color ? config.accent_color : null;
   return (
-    <div className="dash-card h-full p-4 flex flex-col overflow-hidden">
+    <div
+      className={`dash-card h-full p-4 flex flex-col overflow-hidden relative ${customColor ? "dash-card--accented" : ""}`}
+      style={customColor ? ({ "--dash-card-accent-color": customColor } as any) : undefined}
+    >
       {title && <div className="text-xs font-semibold uppercase tracking-wide text-muted mb-2.5 shrink-0 truncate">{title}</div>}
       <div className="flex-1 min-h-0 overflow-auto rounded-xl border border-border">
         <table className="w-full text-sm">
@@ -312,6 +375,13 @@ export function BlockTable({ title, config }: { title: string | null; config: an
       </div>
       {config?.truncated && (
         <div className="text-[11px] text-muted mt-1.5 shrink-0">Showing the first {rows.length} rows.</div>
+      )}
+      {editable && onAccentColorChange && (
+        <AccentSwatch
+          customColor={customColor}
+          accentCss={customColor || "rgb(var(--color-border))"}
+          onAccentColorChange={onAccentColorChange}
+        />
       )}
     </div>
   );
@@ -395,13 +465,25 @@ function polar(cx: number, cy: number, r: number, deg: number): [number, number]
 // arc (a 90-degree gap at the bottom) - the classic "gauge meter" read used
 // throughout the Vision UI / Horizon-class admin dashboards this round's
 // reference screenshots draw from. config: {value, min, max, target, label}.
-export function GaugeBlock({ title, config }: { title: string | null; config: any }) {
+export function GaugeBlock({
+  title,
+  config,
+  editable,
+  onAccentColorChange,
+}: {
+  title: string | null;
+  config: any;
+  editable?: boolean;
+  onAccentColorChange?: (color: string | null) => void;
+}) {
   const value = typeof config?.value === "number" ? config.value : 0;
   const min = typeof config?.min === "number" ? config.min : 0;
   const max = typeof config?.max === "number" && config.max > min ? config.max : Math.max(value, min + 1);
   const target = typeof config?.target === "number" ? config.target : null;
   const label = title || config?.label || "Progress";
   const idx = accentIndex(label);
+  const customColor: string | null = typeof config?.accent_color === "string" && config.accent_color ? config.accent_color : null;
+  const accentCss = customColor || `rgb(var(--dash-accent-${idx}))`;
 
   const cx = 100, cy = 100, r = 72, strokeW = 14;
   const startAngle = 135, sweep = 270;
@@ -425,10 +507,13 @@ export function GaugeBlock({ title, config }: { title: string | null; config: an
   const display = value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
   return (
-    <div className="dash-card h-full p-5 flex flex-col gap-1 overflow-hidden">
+    <div className="dash-card h-full p-5 flex flex-col gap-1 overflow-hidden relative">
       <div className="flex items-start justify-between gap-2">
         <div className="text-[11px] font-semibold uppercase tracking-wide text-muted truncate">{label}</div>
-        <span className={`dash-icon-chip dash-accent-${idx}`}>
+        <span
+          className={`dash-icon-chip ${customColor ? "" : `dash-accent-${idx}`}`}
+          style={customColor ? { background: hexWithAlpha(customColor, 0.14), color: customColor } : undefined}
+        >
           <TargetGlyph className="w-[18px] h-[18px]" />
         </span>
       </div>
@@ -436,7 +521,7 @@ export function GaugeBlock({ title, config }: { title: string | null; config: an
         <svg viewBox="0 0 200 175" className="w-full h-full max-w-[240px]" role="img" aria-label={`${label}: ${display}`}>
           <path d={trackPath} fill="none" stroke="rgb(var(--color-border))" strokeWidth={strokeW} strokeLinecap="round" />
           {valuePath && (
-            <path d={valuePath} fill="none" stroke={`rgb(var(--dash-accent-${idx}))`} strokeWidth={strokeW} strokeLinecap="round" />
+            <path d={valuePath} fill="none" stroke={accentCss} strokeWidth={strokeW} strokeLinecap="round" />
           )}
           {targetTick && (
             <line x1={targetTick[0]} y1={targetTick[1]} x2={targetTick[2]} y2={targetTick[3]} stroke="rgb(var(--color-text))" strokeWidth="2.5" strokeLinecap="round" />
@@ -450,6 +535,9 @@ export function GaugeBlock({ title, config }: { title: string | null; config: an
         <div className="text-[11px] text-muted text-center -mt-2">
           Target {target.toLocaleString(undefined, { maximumFractionDigits: 2 })}
         </div>
+      )}
+      {editable && onAccentColorChange && (
+        <AccentSwatch customColor={customColor} accentCss={accentCss} onAccentColorChange={onAccentColorChange} />
       )}
     </div>
   );
@@ -536,11 +624,22 @@ export function DonutBlock({ title, config }: { title: string | null; config: an
 // half-tone bar sparkline underneath (older bars fade in, the latest bar
 // solid) - the "half-tone bar" trend read from the reference dashboards.
 // config: {value, series, categories, delta_pct}.
-export function SparklineBlock({ title, config }: { title: string | null; config: any }) {
+export function SparklineBlock({
+  title,
+  config,
+  editable,
+  onAccentColorChange,
+}: {
+  title: string | null;
+  config: any;
+  editable?: boolean;
+  onAccentColorChange?: (color: string | null) => void;
+}) {
   const rawSeries: unknown[] = Array.isArray(config?.series) ? config.series : [];
   const series: number[] = rawSeries.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
   const label = title || config?.label || "Trend";
   const idx = accentIndex(label);
+  const customColor: string | null = typeof config?.accent_color === "string" && config.accent_color ? config.accent_color : null;
   const value = typeof config?.value === "number" ? config.value : series[series.length - 1];
   const deltaPct = typeof config?.delta_pct === "number" ? config.delta_pct : null;
   const max = series.length ? Math.max(...series, 0) : 1;
@@ -550,10 +649,13 @@ export function SparklineBlock({ title, config }: { title: string | null; config
   const up = deltaPct !== null && deltaPct >= 0;
 
   return (
-    <div className="dash-card h-full p-5 flex flex-col justify-between gap-3 overflow-hidden">
+    <div className="dash-card h-full p-5 flex flex-col justify-between gap-3 overflow-hidden relative">
       <div className="flex items-start justify-between gap-2">
         <div className="text-[11px] font-semibold uppercase tracking-wide text-muted truncate">{label}</div>
-        <span className={`dash-icon-chip dash-accent-${idx}`}>
+        <span
+          className={`dash-icon-chip ${customColor ? "" : `dash-accent-${idx}`}`}
+          style={customColor ? { background: hexWithAlpha(customColor, 0.14), color: customColor } : undefined}
+        >
           <TrendIcon className="w-[18px] h-[18px]" />
         </span>
       </div>
@@ -581,13 +683,23 @@ export function SparklineBlock({ title, config }: { title: string | null; config
               <div
                 key={i}
                 className="flex-1 rounded-sm min-w-[2px]"
-                style={{ height: `${h}%`, background: `rgb(var(--dash-accent-${idx}) / ${opacity})` }}
+                style={{
+                  height: `${h}%`,
+                  background: customColor ? hexWithAlpha(customColor, opacity) : `rgb(var(--dash-accent-${idx}) / ${opacity})`,
+                }}
               />
             );
           })}
         </div>
       ) : (
         <div className="text-[11px] text-muted italic">Not enough points for a trend yet.</div>
+      )}
+      {editable && onAccentColorChange && (
+        <AccentSwatch
+          customColor={customColor}
+          accentCss={customColor || `rgb(var(--dash-accent-${idx}))`}
+          onAccentColorChange={onAccentColorChange}
+        />
       )}
     </div>
   );
@@ -767,14 +879,18 @@ export function DashboardBlockGrid({
       <>
         {/* accent_color always comes from the block's own real config, not
             an active filter override - same reasoning as
-            DashboardCanvas.tsx's edit-mode BlockCard. */}
+            DashboardCanvas.tsx's edit-mode BlockCard. Only the block types
+            that actually support a custom accent (kpi/table/gauge/
+            sparkline) need this overlay - donut/avatar_list have no single
+            "block accent" concept (see their own render functions above),
+            so they're left reading straight off config like before. */}
         {type === "kpi" && <KpiTile title={b.title} config={{ ...config, accent_color: b.config?.accent_color }} />}
-        {type === "table" && <BlockTable title={b.title} config={config} />}
+        {type === "table" && <BlockTable title={b.title} config={{ ...config, accent_color: b.config?.accent_color }} />}
         {type === "chart" && <BlockChart title={b.title} config={config} />}
         {type === "text" && <TextBlock title={b.title} config={config} />}
-        {type === "gauge" && <GaugeBlock title={b.title} config={config} />}
+        {type === "gauge" && <GaugeBlock title={b.title} config={{ ...config, accent_color: b.config?.accent_color }} />}
         {type === "donut" && <DonutBlock title={b.title} config={config} />}
-        {type === "sparkline" && <SparklineBlock title={b.title} config={config} />}
+        {type === "sparkline" && <SparklineBlock title={b.title} config={{ ...config, accent_color: b.config?.accent_color }} />}
         {type === "avatar_list" && <AvatarListBlock title={b.title} config={config} />}
         {type === "heading" && <HeadingBlock title={b.title} config={config} />}
         {type === "divider" && <DividerBlock />}
