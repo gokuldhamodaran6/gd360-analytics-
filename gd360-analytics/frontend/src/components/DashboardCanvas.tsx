@@ -731,11 +731,32 @@ function BlockCard({
                 onAccentColorChange={setAccentColor}
               />
             )}
-            {block.type === "table" && <BlockTable title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "table" && (
+              <BlockTable
+                title={block.title}
+                config={{ ...(filterState?.overrides[block.id]?.config ?? block.config), accent_color: block.config?.accent_color }}
+                editable
+                onAccentColorChange={setAccentColor}
+              />
+            )}
             {block.type === "chart" && <BlockChart title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
-            {block.type === "gauge" && <GaugeBlock title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "gauge" && (
+              <GaugeBlock
+                title={block.title}
+                config={{ ...(filterState?.overrides[block.id]?.config ?? block.config), accent_color: block.config?.accent_color }}
+                editable
+                onAccentColorChange={setAccentColor}
+              />
+            )}
             {block.type === "donut" && <DonutBlock title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
-            {block.type === "sparkline" && <SparklineBlock title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "sparkline" && (
+              <SparklineBlock
+                title={block.title}
+                config={{ ...(filterState?.overrides[block.id]?.config ?? block.config), accent_color: block.config?.accent_color }}
+                editable
+                onAccentColorChange={setAccentColor}
+              />
+            )}
             {block.type === "avatar_list" && <AvatarListBlock title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
             {block.type === "filter" && (
               <div className="h-full flex flex-col divide-y divide-border">
