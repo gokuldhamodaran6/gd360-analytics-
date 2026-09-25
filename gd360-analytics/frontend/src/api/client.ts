@@ -798,6 +798,31 @@ export const dashboardApi = {
 // section, for each one's config shape.
 export type DashboardBlockType = "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut" | "sparkline" | "avatar_list";
 
+// 2026-09-25 (Round 5, template gallery): what GET /dashboard-builder/
+// templates returns - a LAYOUT catalog only (page names, block types,
+// grid positions, placeholder titles), never data. Every block a
+// template creates starts genuinely empty, same as one added by hand
+// from the canvas's "+ Add block" toolbar - see backend
+// _default_block_config. BuildDashboardModal.tsx's gallery reads this
+// same shape to draw each card's preview thumbnail, so the preview can
+// never drift from what "Use this template" actually builds.
+export type DashboardTemplateBlock = {
+  type: DashboardBlockType;
+  title: string | null;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+export type DashboardTemplatePage = { name: string; blocks: DashboardTemplateBlock[] };
+export type DashboardTemplate = {
+  key: string;
+  name: string;
+  description: string;
+  icon: string;
+  pages: DashboardTemplatePage[];
+};
+
 // `config`'s shape depends on `type` - deliberately left loosely typed
 // here (this client is a pass-through, same convention as PreviewOptions.
 // filters above) rather than a discriminated union, since every renderer
@@ -1003,6 +1028,23 @@ export const dashboardBuilderApi = {
   createBlank: (conversationId: string) =>
     api
       .post<DashboardBuilderDetail>("/dashboard-builder/create-blank", { conversation_id: conversationId })
+      .then((r) => r.data),
+  // 2026-09-25 (Round 5, template gallery): the catalog behind
+  // BuildDashboardModal.tsx's "Start from a template" step - see
+  // DashboardTemplate above for the shape and backend list_templates for
+  // where it comes from.
+  listTemplates: () => api.get<DashboardTemplate[]>("/dashboard-builder/templates").then((r) => r.data),
+  // 2026-09-25 (Round 5, template gallery): "Use this template" - a v2
+  // dashboard pre-laid-out from one catalog entry, tied to this
+  // conversation's data source exactly like createBlank above. Every
+  // block starts empty; the person fills each one in afterward via Ask
+  // AI / build manually on the same canvas as always.
+  createFromTemplate: (conversationId: string, templateKey: string) =>
+    api
+      .post<DashboardBuilderDetail>("/dashboard-builder/create-from-template", {
+        conversation_id: conversationId,
+        template_key: templateKey,
+      })
       .then((r) => r.data),
   get: (id: string) => api.get<DashboardBuilderDetail>(`/dashboard-builder/${id}`).then((r) => r.data),
   // 2026-09-25 (Round 2): there was previously no way to rename a v2
