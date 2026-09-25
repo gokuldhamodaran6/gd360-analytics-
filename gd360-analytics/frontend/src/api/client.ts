@@ -1158,10 +1158,19 @@ export const dashboardBuilderApi = {
   // Requires only VIEW access to the dashboard, not edit - and
   // deliberately has no public/no-login equivalent (see backend
   // routers/dashboard_builder.py's module docstring for why).
+  // 2026-09-25e (elite pass): matched_rows is the real, server-computed
+  // row count for `filters` (or the datasource's full row count when
+  // `filters` is empty) - see the backend's own preview_filtered_blocks
+  // for how it's derived. Returned alongside blocks (not just blocks
+  // alone, like before) so the caller can show an honest "Showing N rows"
+  // next to the filter controls - see lib/useDashboardFilters.ts.
   previewFiltered: (dashboardId: string, pageId: string, filters: FilterCriterion[]) =>
     api
-      .post<{ blocks: FilteredBlock[] }>(`/dashboard-builder/${dashboardId}/pages/${pageId}/preview-filtered`, { filters })
-      .then((r) => r.data.blocks),
+      .post<{ blocks: FilteredBlock[]; matched_rows: number }>(
+        `/dashboard-builder/${dashboardId}/pages/${pageId}/preview-filtered`,
+        { filters }
+      )
+      .then((r) => ({ blocks: r.data.blocks, matchedRows: r.data.matched_rows })),
 
   // Switches an existing chart block to a different chart type - no AI
   // call, rebuilt deterministically from the tidy data already stored on
