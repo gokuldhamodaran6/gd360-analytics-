@@ -91,6 +91,11 @@ _NEW_COLUMNS = [
     # Round 4: a page's own background tint override - see
     # models.DashboardPage's own docstring.
     ("dashboard_pages", "background_color", "TEXT"),
+    # 2026-09-25g (live-data freshness round): when a block's DATA was last
+    # actually recomputed - see models.DashboardBlock's own docstring for
+    # exactly which code paths advance it (never a plain drag/resize/
+    # rename, and never a chart restyle).
+    ("dashboard_blocks", "data_updated_at", "TIMESTAMP"),
 ]
 
 
