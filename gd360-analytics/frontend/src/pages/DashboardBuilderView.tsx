@@ -939,7 +939,21 @@ function PageTabsBar({
                 onClick={(e) => e.stopPropagation()}
               />
             ) : (
-              <button type="button" className="max-w-[10rem] truncate" onClick={() => setActivePageId(p.id)}>
+              // 2026-09-25h (inline editing round): double-click renames
+              // right here, no detour through the kebab menu - the menu's
+              // own "Rename" stays too (same startRename/commitRename this
+              // calls), since not everyone discovers a double-click on
+              // their own.
+              <button
+                type="button"
+                className="max-w-[10rem] truncate"
+                onClick={() => setActivePageId(p.id)}
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  startRename(p);
+                }}
+                title="Double-click to rename"
+              >
                 {p.name}
               </button>
             )}
@@ -1271,7 +1285,26 @@ function DashboardBuilderViewBody({
               />
             ) : (
             <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2 flex-wrap">
-              {dash.name}
+              {/* 2026-09-25h (inline editing round): the name itself is now
+                  the click target, not just the small pencil next to it -
+                  the whole point of "click the thing you see to edit it"
+                  is that the thing itself is clickable. The pencil stays
+                  too, both for a visible hint that this is editable and as
+                  a second way in for anyone who'd rather not click text. */}
+              {dash.can_edit ? (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  className="cursor-text hover:bg-surface2 rounded-md px-1 -mx-1 transition"
+                  title="Click to rename this dashboard"
+                  onClick={startRename}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); startRename(); } }}
+                >
+                  {dash.name}
+                </span>
+              ) : (
+                dash.name
+              )}
               {dash.can_edit && (
                 <button
                   type="button"
