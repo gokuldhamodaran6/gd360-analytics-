@@ -239,14 +239,23 @@ body {
 /* ============================================================
    Dashboard Builder - premium block styling
    2026-09-25 (naming fix + premium light theme foundation round)
-   Scoped entirely to Dashboard Builder surfaces (the block renderers in
-   DashboardBlocks.tsx, the owner/editor shell in DashboardBuilderView.tsx,
-   and the public/published page in PublicDashboardView.tsx) via the
-   dash- prefix below - every other page in the app keeps using the plain
-   .card token exactly as it did before this round; .card itself is
-   untouched. Built on the same --color-* custom properties every other
-   page already reads, so this automatically follows the app's existing
-   dark/light theme toggle rather than hardcoding a separate one.
+   Originally scoped entirely to Dashboard Builder surfaces (the block
+   renderers in DashboardBlocks.tsx, the owner/editor shell in
+   DashboardBuilderView.tsx, and the public/published page in
+   PublicDashboardView.tsx) via the dash- prefix below - .card itself is
+   untouched, and Dashboard-Builder-only pieces (.dash-shell,
+   .dash-table-head/-row, .dash-select, .dash-chart-menu-btn,
+   .dash-toolbtn, .dash-note-quote) stay Dashboard Builder-only. Built on
+   the same --color-* custom properties every other page already reads, so
+   this automatically follows the app's existing dark/light theme toggle
+   rather than hardcoding a separate one.
+   2026-09-25c (landing page elite pass): the generic "stat tile" pieces
+   below - .dash-card, .dash-card--accented, .dash-icon-chip and the
+   .dash-accent-0..5 hues - are reused as-is by Landing.tsx's feature
+   ledger and trust section now too, so the marketing page reads as the
+   same visual system as the product instead of two different UIs stitched
+   together. Nothing here changed to make that possible; it was already
+   theme-aware and never actually dashboard-specific in what it draws.
    ============================================================ */
 
 .dash-shell {
@@ -464,4 +473,21 @@ body {
 .dash-toolbtn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ============================================================
+   Landing page - elite pass (2026-09-25c)
+   New copy + the same premium chrome as the Dashboard Builder round
+   above (see that section's own updated comment), reusing .dash-card/
+   .dash-icon-chip/.dash-accent-N wherever Landing.tsx now needs a "stat
+   tile"-style block. The one genuinely new piece is this CTA band glow -
+   a soft radial wash of the brand accent behind the final call-to-action,
+   themed the same way every other color on this page is (rgb(var(--x))),
+   so it stays correct in both light and dark instead of being a
+   hardcoded dark-only background.
+   ============================================================ */
+.landing-cta-glow {
+  background:
+    radial-gradient(ellipse 640px 280px at 50% 0%, rgb(var(--color-accent) / 0.16), transparent 70%),
+    rgb(var(--color-surface));
 }
