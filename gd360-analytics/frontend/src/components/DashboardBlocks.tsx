@@ -162,7 +162,10 @@ export function KpiTile({ title, config }: { title: string | null; config: any }
   const idx = accentIndex(label);
   const Icon = KPI_ICONS[idx];
   return (
-    <div className="dash-card h-full p-5 flex flex-col justify-between gap-4 overflow-hidden">
+    <div
+      className="dash-card dash-card--accented h-full p-5 flex flex-col justify-between gap-4 overflow-hidden"
+      style={{ "--dash-card-accent-color": `rgb(var(--dash-accent-${idx}))` } as any}
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="text-[11px] font-semibold uppercase tracking-wide text-muted truncate">{label}</div>
         <span className={`dash-icon-chip dash-accent-${idx}`}>
@@ -560,7 +563,7 @@ export function FilterControl({
       {!column ? (
         <div className="text-xs text-muted italic">Not set up yet.</div>
       ) : (
-        <select className="input text-xs py-1.5" value={value} onChange={(e) => onChange(e.target.value)} disabled={loading}>
+        <select className="dash-select" value={value} onChange={(e) => onChange(e.target.value)} disabled={loading}>
           <option value="">All</option>
           {values.map((v) => (
             <option key={String(v.value)} value={String(v.value)}>
