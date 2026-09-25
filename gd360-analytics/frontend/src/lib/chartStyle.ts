@@ -515,6 +515,22 @@ const VALUE_FORMAT = ",.2~f";
  * the true result off a bar that is, visually, empty. Used for both the
  * on-bar label and the hover readout (see the bar/histogram branches
  * below) so the two always agree with each other. */
+// 2026-09-25c (elite pass): a real line/area series that should get the
+// smooth, premium curve treatment (spline shape, heavier stroke, soft
+// translucent fill) - deliberately excluded: a step line (t.line.shape
+// "hv" - the right-angle jump IS the data, e.g. a price that only changes
+// at discrete moments) and a bubble chart (marker.size is an array - each
+// point's SIZE already carries meaning, so it stays a plain marker plot,
+// never connected by a curve). Anything without an explicit "lines" mode
+// (a bare scatter/dot plot, or a chart type this can't confidently
+// recognize) is left untouched rather than guessed at.
+function isSmoothableLineTrace(t: any): boolean {
+  if (t?.type !== "scatter") return false;
+  if (Array.isArray(t?.marker?.size)) return false;
+  if (t?.line?.shape === "hv") return false;
+  return (t?.mode || "").includes("lines");
+}
+
 function formatValueSmart(v: any): string {
   const n = typeof v === "number" ? v : parseFloat(v);
   if (!Number.isFinite(n)) return "";
@@ -645,6 +661,28 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
       const t = data[i];
       t.marker = { ...(t.marker || {}), color: c };
       if (t.line || t.type === "scatter") t.line = { ...(t.line || {}), color: c };
+      // ---- Elite pass: turn a flat, kinked polyline into the smooth,
+      // gradient-washed curve every one of the reference dashboards (Vision
+      // UI, Horizon UI) uses for a trend line - a rendering hint only, so
+      // the line still passes through every real value exactly where it
+      // should; nothing about the underlying data changes. A translucent
+      // fill only ever gets ADDED where the AI already asked for one
+      // (t.fill !== "none") - a plain line chart stays a plain line,
+      // never grows a fill it didn't have. ----
+      if (isSmoothableLineTrace(t)) {
+        t.line = {
+          ...t.line,
+          shape: "spline",
+          smoothing: t.line?.smoothing ?? 0.65,
+          width: Math.max(t.line?.width ?? 0, 3),
+        };
+        if (typeof t.marker?.size === "number") {
+          t.marker = { ...t.marker, size: Math.max(t.marker.size, 7) };
+        }
+        if (t.fill && t.fill !== "none" && !t.fillcolor) {
+          t.fillcolor = hexToRgba(c, 0.16);
+        }
+      }
     });
   }
  
