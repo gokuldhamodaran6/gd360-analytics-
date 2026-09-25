@@ -934,6 +934,102 @@ export function ConnectDataPopup({
   );
 }
 
+function MenuIcon({ className = "w-5 h-5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 6h18M3 12h18M3 18h18" />
+    </svg>
+  );
+}
+
+// 2026-09-25e (responsive pass): the workspace switcher + three nav links,
+// extracted so the exact same content renders both in the desktop static
+// rail below AND in the new mobile drawer (see AppSidebar below) without
+// keeping two copies of this markup in sync by hand. `onNavigate` is fired
+// after every Link click - a no-op on desktop, closes the drawer on
+// mobile.
+function SidebarNav({
+  workspaces,
+  activeWorkspaceId,
+  pathname,
+  onSwitch,
+  onOpenCreate,
+  onOpenInvite,
+  onNavigate,
+}: {
+  workspaces: WorkspaceSummary[];
+  activeWorkspaceId: string;
+  pathname: string;
+  onSwitch: (id: string) => void;
+  onOpenCreate: () => void;
+  onOpenInvite: () => void;
+  onNavigate: () => void;
+}) {
+  const onProjects = pathname === "/";
+
+  return (
+    <>
+      <WorkspaceSwitcher
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
+        onSwitch={onSwitch}
+        onOpenCreate={onOpenCreate}
+        onOpenInvite={onOpenInvite}
+      />
+
+      <div className="px-3 mt-1 space-y-0.5">
+        <Link
+          to="/"
+          onClick={onNavigate}
+          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
+            onProjects ? "bg-primary text-white" : "text-text hover:bg-surface2"
+          }`}
+        >
+          <ProjectsIcon />
+          Projects
+        </Link>
+        <Link
+          to="/dashboards"
+          onClick={onNavigate}
+          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
+            // 2026-09-25d (elite pass): /dashboard-builder/:id (the pages+
+            // blocks editor - see App.tsx's own routing comment for why
+            // it's a deliberately different path prefix from /dashboards)
+            // is still, conceptually, "being in Dashboards" - now that it
+            // also renders this sidebar, it should highlight the same nav
+            // item rather than leaving nothing active while editing one.
+            pathname.startsWith("/dashboards") || pathname.startsWith("/dashboard-builder")
+              ? "bg-primary text-white"
+              : "text-text hover:bg-surface2"
+          }`}
+        >
+          <DashboardsIcon />
+          Dashboards
+        </Link>
+        <Link
+          to="/data"
+          onClick={onNavigate}
+          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
+            pathname.startsWith("/data") ? "bg-primary text-white" : "text-text hover:bg-surface2"
+          }`}
+        >
+          <DataSourcesIcon />
+          Data Sources
+        </Link>
+      </div>
+
+      {/* 2026-09-23, round three (Gokul's own explicit ask): the sidebar's
+          own "+ Connect data" shortcut is gone - adding data now happens in
+          exactly one place, the Data Sources page (/data), instead of two
+          different entry points that could drift out of sync. The Data
+          Sources link two lines up is how a person gets there.
+          ConnectDataPopup itself stays exported from this file - it's still
+          used by pages/NewProject.tsx's own "Connect data" button. */}
+      <div className="flex-1" />
+    </>
+  );
+}
+
 export default function AppSidebar({
   workspaces,
   activeWorkspaceId,
@@ -953,71 +1049,108 @@ export default function AppSidebar({
   const { user } = useAuth();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
+  // 2026-09-25e (responsive pass): this used to just be "hidden lg:flex" -
+  // every page that renders this sidebar (Dashboard, Dashboards,
+  // DataSources, NewProject, DashboardBuilderView) genuinely had NO way to
+  // get from Projects to Dashboards to Data Sources on a phone; the sidebar
+  // just vanished below `lg` with nothing replacing it. This turns it into
+  // a real off-canvas drawer instead: same WorkspaceSwitcher + nav links,
+  // opened from a small fixed menu button, closed by its own X, the
+  // backdrop, Escape, or picking a destination. Kept entirely self-
+  // contained in this one file (its own open/close state, its own trigger
+  // button rendered here) rather than threading a new prop through every
+  // caller and TopNav.tsx - lower risk, and every page gets the fix with no
+  // changes of its own.
+  const [mobileOpen, setMobileOpen] = useState(false);
 
-  const onProjects = location.pathname === "/";
+  useEffect(() => setMobileOpen(false), [location.pathname]);
+
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobileOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [mobileOpen]);
 
   return (
-    // Hidden below the `lg` breakpoint rather than becoming a hamburger/
-    // drawer nav - this app's other pages (Workspace.tsx) already have an
-    // established mobile pattern (stack full-width, no fixed side rail),
-    // so hiding it here keeps mobile exactly as good as it was before this
-    // round rather than half-building a second, different mobile nav
-    // pattern under time pressure.
-    <div className="hidden lg:flex w-60 shrink-0 h-screen sticky top-0 border-r border-border bg-surface flex-col">
-      <WorkspaceSwitcher
-        workspaces={workspaces}
-        activeWorkspaceId={activeWorkspaceId}
-        onSwitch={onWorkspaceSwitch}
-        onOpenCreate={() => setShowCreateModal(true)}
-        onOpenInvite={() => setShowInviteModal(true)}
-      />
+    <>
+      {/* Mobile-only trigger - below `lg` this is the sole way to reach
+          this nav, so it stays fixed/reachable from anywhere on the page
+          rather than only from the top of it. */}
+      <button
+        type="button"
+        onClick={() => setMobileOpen(true)}
+        aria-label="Open menu"
+        className="lg:hidden fixed top-3 left-3 z-30 w-10 h-10 rounded-xl bg-surface/90 backdrop-blur-sm border border-border shadow-lg flex items-center justify-center text-text hover:bg-surface2 transition"
+      >
+        <MenuIcon />
+      </button>
 
-      <div className="px-3 mt-1 space-y-0.5">
-        <Link
-          to="/"
-          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
-            onProjects ? "bg-primary text-white" : "text-text hover:bg-surface2"
+      {/* Mobile drawer - always mounted below `lg` (not conditionally
+          rendered) so open/close animate via CSS transitions instead of an
+          abrupt mount/unmount; inert and aria-hidden while closed. */}
+      <div
+        className={`lg:hidden fixed inset-0 z-40 transition-opacity duration-300 ${
+          mobileOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
+        }`}
+        aria-hidden={!mobileOpen}
+      >
+        <div className="absolute inset-0 bg-black/60" onClick={() => setMobileOpen(false)} />
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Navigation"
+          className={`absolute left-0 top-0 h-full w-72 max-w-[85vw] bg-surface border-r border-border shadow-2xl flex flex-col transition-transform duration-300 ${
+            mobileOpen ? "translate-x-0" : "-translate-x-full"
           }`}
         >
-          <ProjectsIcon />
-          Projects
-        </Link>
-        <Link
-          to="/dashboards"
-          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
-            // 2026-09-25d (elite pass): /dashboard-builder/:id (the pages+
-            // blocks editor - see App.tsx's own routing comment for why
-            // it's a deliberately different path prefix from /dashboards)
-            // is still, conceptually, "being in Dashboards" - now that it
-            // also renders this sidebar, it should highlight the same nav
-            // item rather than leaving nothing active while editing one.
-            location.pathname.startsWith("/dashboards") || location.pathname.startsWith("/dashboard-builder")
-              ? "bg-primary text-white"
-              : "text-text hover:bg-surface2"
-          }`}
-        >
-          <DashboardsIcon />
-          Dashboards
-        </Link>
-        <Link
-          to="/data"
-          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
-            location.pathname.startsWith("/data") ? "bg-primary text-white" : "text-text hover:bg-surface2"
-          }`}
-        >
-          <DataSourcesIcon />
-          Data Sources
-        </Link>
+          <div className="flex items-center justify-end px-3 pt-3 shrink-0">
+            <button
+              type="button"
+              onClick={() => setMobileOpen(false)}
+              aria-label="Close menu"
+              className="p-1.5 rounded-lg text-muted hover:text-text hover:bg-surface2 transition"
+            >
+              <CloseIcon />
+            </button>
+          </div>
+          <SidebarNav
+            workspaces={workspaces}
+            activeWorkspaceId={activeWorkspaceId}
+            pathname={location.pathname}
+            onSwitch={onWorkspaceSwitch}
+            onOpenCreate={() => {
+              setMobileOpen(false);
+              setShowCreateModal(true);
+            }}
+            onOpenInvite={() => {
+              setMobileOpen(false);
+              setShowInviteModal(true);
+            }}
+            onNavigate={() => setMobileOpen(false)}
+          />
+        </div>
       </div>
 
-      {/* 2026-09-23, round three (Gokul's own explicit ask): the sidebar's
-          own "+ Connect data" shortcut is gone - adding data now happens in
-          exactly one place, the Data Sources page (/data), instead of two
-          different entry points that could drift out of sync. The Data
-          Sources link two lines up is how a person gets there.
-          ConnectDataPopup itself stays exported from this file - it's still
-          used by pages/NewProject.tsx's own "Connect data" button. */}
-      <div className="flex-1" />
+      {/* Desktop: unchanged fixed rail, static in the flow at `lg` and up. */}
+      <div className="hidden lg:flex w-60 shrink-0 h-screen sticky top-0 border-r border-border bg-surface flex-col">
+        <SidebarNav
+          workspaces={workspaces}
+          activeWorkspaceId={activeWorkspaceId}
+          pathname={location.pathname}
+          onSwitch={onWorkspaceSwitch}
+          onOpenCreate={() => setShowCreateModal(true)}
+          onOpenInvite={() => setShowInviteModal(true)}
+          onNavigate={() => {}}
+        />
+      </div>
 
       {showCreateModal && (
         <CreateWorkspaceModal
@@ -1035,6 +1168,6 @@ export default function AppSidebar({
           onClose={() => setShowInviteModal(false)}
         />
       )}
-    </div>
+    </>
   );
 }
