@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { dashboardBuilderApi, DashboardBuilderDetail, DashboardBuilderPage } from "../api/client";
 import TopNav from "../components/TopNav";
 import { DashboardBlockGrid } from "../components/DashboardBlocks";
 import DashboardCanvas from "../components/DashboardCanvas";
 import { useDashboardFilters } from "../lib/useDashboardFilters";
+import { brandingBackgroundImageStyle, brandingStyleVars, hexToRgbTriple, useBrandingAsset } from "../lib/branding";
 
 // 2026-09-24 (Dashboard Builder Phase 1 + Phase 2 + Phase 2b + Phase 3): the
 // owner/editor view for the new pages+blocks kind of dashboard - opened
@@ -91,6 +92,17 @@ function ChevronRightIcon({ className = "w-3 h-3" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M9 18l6-6-6-6" />
+    </svg>
+  );
+}
+
+function PaletteIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 21a9 9 0 1 1 0-18c4.5 0 8.5 3 8.5 6.5 0 2-1.5 3-3 3h-2a1.5 1.5 0 0 0-1 2.6c.5.5.5 1.3 0 1.8-1 1-1.5 2.3-2.5 4.1Z" />
+      <circle cx="7.5" cy="10.5" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="10.5" cy="7" r="1.1" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="7.5" r="1.1" fill="currentColor" stroke="none" />
     </svg>
   );
 }
@@ -318,6 +330,213 @@ function CustomDomainEditor({ dash, onChange }: { dash: DashboardBuilderDetail; 
       )}
 
       {error && <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-2.5 py-1.5 mt-2">{error}</div>}
+    </div>
+  );
+}
+
+// 2026-09-25 (Round 4, branding/customization): logo upload, brand-color
+// pickers, and background style/image - "complete freedom" over how a
+// dashboard looks, mirroring PublishPanel's own dropdown-button pattern so
+// this reads as a sibling of it rather than a bolted-on extra. logoUrl/
+// backgroundImageUrl are passed in (fetched once, in DashboardBuilderViewBody,
+// via useBrandingAsset) rather than fetched again here, so the thumbnail
+// preview and the actual header logo/page background always show the
+// exact same bytes with no duplicate network round trip.
+function BrandingPanel({
+  dash,
+  onChange,
+  logoUrl,
+  backgroundImageUrl,
+  onAssetChanged,
+}: {
+  dash: DashboardBuilderDetail;
+  onChange: (d: DashboardBuilderDetail) => void;
+  logoUrl: string | null;
+  backgroundImageUrl: string | null;
+  onAssetChanged: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const logoInputRef = useRef<HTMLInputElement>(null);
+  const bgInputRef = useRef<HTMLInputElement>(null);
+
+  if (!dash.can_edit) return null;
+
+  const run = async (fn: () => Promise<DashboardBuilderDetail>, touchesAsset = true) => {
+    setBusy(true);
+    setError("");
+    try {
+      onChange(await fn());
+      if (touchesAsset) onAssetChanged();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Couldn't update branding. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pickLogo = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) run(() => dashboardBuilderApi.uploadLogo(dash.id, file));
+  };
+  const pickBackground = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) run(() => dashboardBuilderApi.uploadBackground(dash.id, file));
+  };
+
+  const setStyle = (style: "default" | "color" | "image") =>
+    run(() => dashboardBuilderApi.updateBranding(dash.id, { background_style: style }), false);
+  const setColor = (field: "brand_primary_color" | "brand_accent_color" | "background_color", value: string) =>
+    run(() => dashboardBuilderApi.updateBranding(dash.id, { [field]: value }), false);
+
+  const activeStyle = dash.background_style || "default";
+
+  return (
+    <div className="relative">
+      <button type="button" className="btn-secondary text-xs flex items-center gap-1.5" onClick={() => setOpen((o) => !o)}>
+        <PaletteIcon /> Branding
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-2 w-80 card bg-surface shadow-2xl border border-border p-4 z-30 max-h-[75vh] overflow-y-auto">
+          {error && <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-3">{error}</div>}
+
+          <label className="text-[11px] text-muted uppercase tracking-wide">Logo</label>
+          <div className="flex items-center gap-2 mt-1.5 mb-3.5">
+            <div className="w-12 h-12 rounded-lg border border-border bg-surface2 flex items-center justify-center overflow-hidden shrink-0">
+              {logoUrl ? (
+                <img src={logoUrl} alt="" className="w-full h-full object-contain" />
+              ) : (
+                <span className="text-[9px] text-muted">None</span>
+              )}
+            </div>
+            <div className="flex flex-col gap-1">
+              <button
+                type="button"
+                disabled={busy}
+                className="btn-secondary text-xs px-2.5 py-1.5 disabled:opacity-50"
+                onClick={() => logoInputRef.current?.click()}
+              >
+                {dash.has_logo ? "Replace" : "Upload"}
+              </button>
+              {dash.has_logo && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  className="text-xs text-muted hover:text-red-400 transition disabled:opacity-50 text-left"
+                  onClick={() => run(() => dashboardBuilderApi.removeLogo(dash.id))}
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+            <input ref={logoInputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={pickLogo} />
+          </div>
+
+          <label className="text-[11px] text-muted uppercase tracking-wide">Brand colors</label>
+          <div className="flex items-center gap-4 mt-1.5 mb-3.5">
+            <div className="flex items-center gap-1.5">
+              <input
+                type="color"
+                title="Primary color"
+                value={dash.brand_primary_color || "#147a5c"}
+                onChange={(e) => setColor("brand_primary_color", e.target.value)}
+                className="w-7 h-7 rounded-full border-0 bg-transparent cursor-pointer p-0"
+              />
+              <span className="text-xs text-muted">Primary</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="color"
+                title="Accent color"
+                value={dash.brand_accent_color || "#6ec9aa"}
+                onChange={(e) => setColor("brand_accent_color", e.target.value)}
+                className="w-7 h-7 rounded-full border-0 bg-transparent cursor-pointer p-0"
+              />
+              <span className="text-xs text-muted">Accent</span>
+            </div>
+            {(dash.brand_primary_color || dash.brand_accent_color) && (
+              <button
+                type="button"
+                disabled={busy}
+                className="text-xs text-muted hover:text-text transition disabled:opacity-50"
+                onClick={() => run(() => dashboardBuilderApi.updateBranding(dash.id, { brand_primary_color: "", brand_accent_color: "" }), false)}
+              >
+                Reset
+              </button>
+            )}
+          </div>
+
+          <label className="text-[11px] text-muted uppercase tracking-wide">Background</label>
+          <div className="flex items-center rounded-lg border border-border overflow-hidden text-xs mt-1.5 mb-2.5">
+            {(["default", "color", "image"] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                disabled={busy}
+                className={`flex-1 px-2 py-1.5 capitalize transition ${
+                  activeStyle === s ? "bg-primary text-white" : "text-muted hover:text-text hover:bg-surface2"
+                }`}
+                onClick={() => setStyle(s)}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+
+          {activeStyle === "color" && (
+            <div className="flex items-center gap-2 mb-3.5">
+              <input
+                type="color"
+                title="Background color"
+                value={dash.background_color || "#0a0a0b"}
+                onChange={(e) => setColor("background_color", e.target.value)}
+                className="w-7 h-7 rounded-full border-0 bg-transparent cursor-pointer p-0"
+              />
+              <span className="text-xs text-muted">Page background</span>
+            </div>
+          )}
+
+          {activeStyle === "image" && (
+            <div className="flex items-center gap-2 mb-3.5">
+              <div className="w-12 h-9 rounded-md border border-border bg-surface2 flex items-center justify-center overflow-hidden shrink-0">
+                {backgroundImageUrl ? (
+                  <img src={backgroundImageUrl} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <span className="text-[9px] text-muted">None</span>
+                )}
+              </div>
+              <div className="flex flex-col gap-1">
+                <button
+                  type="button"
+                  disabled={busy}
+                  className="btn-secondary text-xs px-2.5 py-1.5 disabled:opacity-50"
+                  onClick={() => bgInputRef.current?.click()}
+                >
+                  {dash.has_background_image ? "Replace" : "Upload"}
+                </button>
+                {dash.has_background_image && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    className="text-xs text-muted hover:text-red-400 transition disabled:opacity-50 text-left"
+                    onClick={() => run(() => dashboardBuilderApi.removeBackground(dash.id))}
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+              <input ref={bgInputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={pickBackground} />
+            </div>
+          )}
+
+          <div className="text-[11px] text-muted leading-relaxed pt-2.5 border-t border-border">
+            Applies everywhere this dashboard is viewed - here, in Preview, and on the published link.
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -612,6 +831,23 @@ function PageTabsBar({
     }
   };
 
+  // 2026-09-25 (Round 4, branding): this one page's own background tint,
+  // separate from the dashboard-level Branding panel above - lets pages
+  // read as visually distinct at a glance (an "Overview" vs. a "Details"
+  // tab, say) without a second image-upload surface per page. "" clears
+  // it back to "inherit the dashboard's background."
+  const setPageColor = async (p: DashboardBuilderPage, color: string) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      onChange(await dashboardBuilderApi.setPageBackgroundColor(dash.id, p.id, color));
+    } catch {
+      // no-op - swatch just stays where it was
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (!dash.can_edit) {
     if (pages.length <= 1) return null;
     return (
@@ -689,6 +925,26 @@ function PageTabsBar({
                 <button type="button" disabled={busy} className="p-0.5 hover:text-white disabled:opacity-50" title="Duplicate page" onClick={() => duplicate(p)}>
                   <CopyIcon className="w-3 h-3" />
                 </button>
+                <input
+                  type="color"
+                  title="Page background tint"
+                  disabled={busy}
+                  value={p.background_color || "#000000"}
+                  onChange={(e) => setPageColor(p, e.target.value)}
+                  className="w-3.5 h-3.5 rounded-full border-0 bg-transparent cursor-pointer p-0 disabled:opacity-50"
+                  onClick={(e) => e.stopPropagation()}
+                />
+                {p.background_color && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    className="p-0.5 hover:text-white disabled:opacity-50 text-[10px] leading-none"
+                    title="Clear page background tint"
+                    onClick={() => setPageColor(p, "")}
+                  >
+                    &times;
+                  </button>
+                )}
                 {pages.length > 1 && (
                   <button type="button" disabled={busy} className="p-0.5 hover:text-red-300 disabled:opacity-50" title="Delete page" onClick={() => remove(p)}>
                     <TrashIcon />
@@ -794,6 +1050,30 @@ function DashboardBuilderViewBody({
 }) {
   const filterState = useDashboardFilters(dash.id, activePage);
 
+  // 2026-09-25 (Round 4, branding): fetched once here (not inside
+  // BrandingPanel itself) so the same object URLs back both the header
+  // logo / full-page background AND BrandingPanel's own thumbnail
+  // previews - one network round trip per asset, not two. brandingNonce
+  // is bumped after every successful upload/remove so a REPLACE (has_logo/
+  // has_background_image staying true with new bytes underneath) actually
+  // refetches instead of quietly keeping the stale blob url - see
+  // lib/branding.ts's useBrandingAsset for why has_logo/has_background_
+  // image alone can't be the only dependency.
+  const [brandingNonce, setBrandingNonce] = useState(0);
+  const bumpBranding = () => setBrandingNonce((n) => n + 1);
+  const logoUrl = useBrandingAsset(dash.id, "logo", dash.has_logo, brandingNonce);
+  const backgroundImageUrl = useBrandingAsset(
+    dash.id,
+    "background",
+    dash.background_style === "image" && dash.has_background_image,
+    brandingNonce
+  );
+  const shellStyle: React.CSSProperties = {
+    ...brandingStyleVars(dash),
+    ...brandingBackgroundImageStyle(dash, backgroundImageUrl),
+  };
+  const pageBgTriple = activePage?.background_color ? hexToRgbTriple(activePage.background_color) : null;
+
   // Every block-mutating action anywhere on this page (build manually,
   // ask AI, restyle, delete, add) flows through here - re-running the
   // active filter selection afterward means an override never lingers on
@@ -831,13 +1111,16 @@ function DashboardBuilderViewBody({
   };
 
   return (
-    <div className="dash-shell min-h-screen">
+    <div className="dash-shell min-h-screen" style={shellStyle}>
       <TopNav />
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         <Link to="/dashboards" className="text-xs text-muted hover:text-text transition inline-block mb-3">&larr; Dashboards</Link>
 
         <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
           <div className="min-w-0">
+            {logoUrl && (
+              <img src={logoUrl} alt="" className="h-9 w-auto max-w-[160px] object-contain mb-2 rounded-md" />
+            )}
             {renaming ? (
               <input
                 autoFocus
@@ -893,6 +1176,13 @@ function DashboardBuilderViewBody({
                 </button>
               </div>
             )}
+            <BrandingPanel
+              dash={dash}
+              onChange={handleDashChange}
+              logoUrl={logoUrl}
+              backgroundImageUrl={backgroundImageUrl}
+              onAssetChanged={bumpBranding}
+            />
             <PublishPanel dash={dash} onChange={handleDashChange} />
           </div>
         </div>
@@ -906,7 +1196,7 @@ function DashboardBuilderViewBody({
           </div>
         )}
 
-        <div className="mt-6">
+        <div className="mt-6" style={pageBgTriple ? { background: `rgb(${pageBgTriple} / 0.35)`, borderRadius: 20, padding: 16 } : undefined}>
           {!activePage ? (
             <div className="text-sm text-muted py-10 text-center">This dashboard has no pages yet.</div>
           ) : dash.can_edit && mode === "edit" ? (
