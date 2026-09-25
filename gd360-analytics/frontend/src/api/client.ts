@@ -1191,6 +1191,15 @@ export const dashboardBuilderApi = {
       })
       .then((r) => r.data),
 
+  // 2026-09-25h (inline editing round): the "click the color swatch right
+  // on the tile" control - pure presentation (see the backend endpoint's
+  // own docstring for why this is separate from updateBlock). Pass null
+  // to reset a tile back to its automatic color.
+  setBlockAccentColor: (dashboardId: string, blockId: string, color: string | null) =>
+    api
+      .patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}/accent-color`, { color })
+      .then((r) => r.data),
+
   // ---- Round 4 (2026-09-25): branding/customization - logo, brand
   // colors, background. Every call here returns the whole updated
   // DashboardBuilderDetail, same convention as everything else in this
