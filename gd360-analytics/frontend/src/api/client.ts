@@ -834,6 +834,12 @@ export type DashboardBlock = {
   h: number;
   config: any;
   position: number;
+  // 2026-09-25g (live-data freshness round): when this block's DATA was
+  // last actually recomputed - null for a block never built yet, or one
+  // that predates this column (never backfilled with a guessed time). See
+  // backend models.DashboardBlock's own docstring for exactly which
+  // actions advance it (never a plain drag/resize/rename/restyle).
+  data_updated_at?: string | null;
 };
 
 export type DashboardBuilderPage = {
