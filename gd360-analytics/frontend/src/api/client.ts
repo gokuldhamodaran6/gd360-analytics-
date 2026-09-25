@@ -790,7 +790,13 @@ export const dashboardApi = {
 // no canvas editing yet (that's Phase 2), so there's no "create blank" or
 // "move/resize a block" call here yet either. ----
 
-export type DashboardBlockType = "chart" | "table" | "kpi" | "text" | "filter";
+// 2026-09-25 (Round 3): added "gauge" | "donut" | "sparkline" |
+// "avatar_list" - four native widget types (radial meter, curved-legend
+// donut, half-tone trend sparkline, ranked avatar leaderboard), built and
+// rendered entirely in components/DashboardBlocks.tsx, not a chart_spec.
+// See routers/dashboard_builder.py's own module docstring, Round 3
+// section, for each one's config shape.
+export type DashboardBlockType = "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut" | "sparkline" | "avatar_list";
 
 // `config`'s shape depends on `type` - deliberately left loosely typed
 // here (this client is a pass-through, same convention as PreviewOptions.
@@ -911,12 +917,19 @@ export type RestyleChartType = "bar" | "line" | "area" | "pie" | "horizontal_bar
 // under `recipe` by build_manual_block, verbatim from backend
 // _run_manual_recipe's `recipe` dict. A block with no `recipe` (anything
 // AI-built) simply can't be cross-filtered - see previewFiltered below.
+export type ManualBlockType = "kpi" | "table" | "chart" | "gauge" | "donut" | "sparkline" | "avatar_list";
+
 export type ManualRecipe = {
   metric_column: string;
   agg: ManualAgg;
   group_by_column: string | null;
-  block_type: "kpi" | "table" | "chart";
+  block_type: ManualBlockType;
   chart_type: RestyleChartType | null;
+  // 2026-09-25 (Round 3): only meaningful when block_type === "gauge" -
+  // see backend _run_manual_recipe for the defaults filled in when either
+  // is left unset.
+  target_value?: number | null;
+  max_value?: number | null;
 };
 
 // One active cross-filter selection - (which column, which value). Lives
@@ -1085,9 +1098,13 @@ export const dashboardBuilderApi = {
       metric_column: string;
       agg: ManualAgg;
       group_by_column?: string | null;
-      block_type: "kpi" | "table" | "chart";
+      block_type: ManualBlockType;
       chart_type?: RestyleChartType | null;
       filters?: FilterCriterion[];
+      // 2026-09-25 (Round 3): only read server-side when block_type is
+      // "gauge" - see ManualRecipe above.
+      target_value?: number;
+      max_value?: number;
     }
   ) =>
     api
