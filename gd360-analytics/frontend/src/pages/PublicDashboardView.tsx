@@ -96,7 +96,7 @@ function AccessGate({
 
   return (
     <div className="max-w-sm mx-auto mt-16">
-      <div className="card p-6">
+      <div className="dash-card p-6">
         <h1 className="text-lg font-bold mb-1.5">Private dashboard</h1>
         <p className="text-sm text-muted mb-5">
           This dashboard is only shared with specific people. Enter the email address it was shared with to
@@ -209,10 +209,20 @@ export default function PublicDashboardView() {
 
   const activePage = dash?.pages[activePageIndex];
 
+  // 2026-09-25 (naming fix + premium light theme foundation round): this
+  // is the one surface in the whole app an external viewer - a customer,
+  // an investor, a professor - ever opens with no GD360 account at all,
+  // so it's the surface the "should look like a website page" ask matters
+  // most for. dash-shell/dash-card (index.css) give it the same soft,
+  // premium treatment as the owner's own editor/preview, just laid out as
+  // a proper page: a clean sticky header bar instead of a bare row, an
+  // eyebrow-labeled title block, and pill-styled page tabs, all still
+  // riding the app's existing light/dark tokens so it looks right in
+  // either theme rather than only one.
   return (
-    <div className="min-h-screen bg-base text-text">
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
-        <div className="flex items-center justify-between mb-8">
+    <div className="dash-shell min-h-screen bg-base text-text">
+      <div className="sticky top-0 z-20 backdrop-blur-md bg-base/80 border-b border-border">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
           {byHostname ? (
             // White-label: never show the GD360 wordmark on a customer's
             // own domain - see this file's own module docstring.
@@ -223,13 +233,15 @@ export default function PublicDashboardView() {
             </Link>
           )}
           <div className="flex items-center gap-3">
-            <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-surface2 border border-border text-muted">
+            <span className="text-[10px] font-semibold uppercase tracking-wide px-2.5 py-1 rounded-full bg-surface2 border border-border text-muted">
               {needsAccess ? "Private dashboard" : "Public dashboard"}
             </span>
             <ThemeToggle />
           </div>
         </div>
+      </div>
 
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-10">
         {error && (
           <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 inline-block">
             {error}
@@ -254,15 +266,16 @@ export default function PublicDashboardView() {
 
         {dash && (
           <>
-            <h1 className="text-2xl sm:text-3xl font-bold mb-2">{dash.name}</h1>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-accent mb-1.5">Dashboard</div>
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight mb-2">{dash.name}</h1>
 
             {dash.pages.length > 1 && (
-              <div className="flex items-center gap-1.5 mt-4 mb-2 flex-wrap">
+              <div className="flex items-center gap-1.5 mt-5 mb-2 flex-wrap">
                 {dash.pages.map((p, i) => (
                   <button
                     key={p.id}
                     type="button"
-                    className={`text-xs font-medium px-3 py-1.5 rounded-full border transition ${
+                    className={`dash-pagepill text-xs font-medium px-3.5 py-1.5 border transition ${
                       i === activePageIndex
                         ? "bg-primary text-white border-primary"
                         : "border-border text-muted hover:text-text hover:bg-surface2"
@@ -275,7 +288,7 @@ export default function PublicDashboardView() {
               </div>
             )}
 
-            <div className="mt-6">
+            <div className="mt-7">
               {activePage ? <DashboardBlockGrid blocks={activePage.blocks} /> : (
                 <div className="text-sm text-muted py-10 text-center">This dashboard has no pages yet.</div>
               )}
@@ -283,9 +296,9 @@ export default function PublicDashboardView() {
 
             {/* White-label: no GD360 upsell footer on a customer's own domain. */}
             {!byHostname && (
-              <div className="mt-12 pt-6 border-t border-border text-xs text-muted flex items-center justify-between flex-wrap gap-2">
+              <div className="mt-14 pt-6 border-t border-border text-xs text-muted flex items-center justify-between flex-wrap gap-2">
                 <span>Built with GD360 Analytics</span>
-                <Link to="/register" className="text-primary hover:underline">Build your own dashboard &rarr;</Link>
+                <Link to="/register" className="text-primary font-medium hover:underline">Build your own dashboard &rarr;</Link>
               </div>
             )}
           </>
