@@ -803,6 +803,33 @@ function DashboardBuilderViewBody({
     filterState.refresh();
   };
 
+  // 2026-09-25 (Round 2): inline rename - there was no way to fix a
+  // dashboard's name at all before this round, which mattered a lot more
+  // once "Create your own" could hand someone one permanently called
+  // "Untitled dashboard." Same pattern as DashboardView.tsx's own rename.
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState(dash.name);
+  const [savingName, setSavingName] = useState(false);
+
+  const startRename = () => {
+    setNameDraft(dash.name);
+    setRenaming(true);
+  };
+
+  const commitRename = async () => {
+    const trimmed = nameDraft.trim();
+    setRenaming(false);
+    if (!trimmed || trimmed === dash.name) return;
+    setSavingName(true);
+    try {
+      setDash(await dashboardBuilderApi.rename(dash.id, trimmed));
+    } catch {
+      setNameDraft(dash.name);
+    } finally {
+      setSavingName(false);
+    }
+  };
+
   return (
     <div className="dash-shell min-h-screen">
       <TopNav />
@@ -811,12 +838,38 @@ function DashboardBuilderViewBody({
 
         <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
           <div className="min-w-0">
+            {renaming ? (
+              <input
+                autoFocus
+                className="input text-2xl font-bold tracking-tight py-1 w-full max-w-md"
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitRename();
+                  if (e.key === "Escape") setRenaming(false);
+                }}
+                onBlur={commitRename}
+                maxLength={120}
+              />
+            ) : (
             <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2 flex-wrap">
               {dash.name}
+              {dash.can_edit && (
+                <button
+                  type="button"
+                  className="opacity-50 hover:opacity-100 transition text-base"
+                  title="Rename this dashboard"
+                  onClick={startRename}
+                >
+                  &#9998;
+                </button>
+              )}
+              {savingName && <span className="text-xs font-normal text-accent">Saving&hellip;</span>}
               <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-accent/15 text-accent border border-accent/30">
                 Dashboard
               </span>
             </h1>
+            )}
             <div className="text-xs text-muted mt-1.5">
               {dash.is_published ? "Published - anyone with the link can view it" : "Not published yet - only you can see this"}
             </div>
