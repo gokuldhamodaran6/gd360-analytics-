@@ -416,6 +416,29 @@ class DashboardDetailOut(DashboardOut):
 # DashboardShare and routers/dashboard_builder.py for the full picture. ----------
 class GenerateDashboardRequest(BaseModel):
     conversation_id: str = Field(min_length=1)
+    # 2026-09-25 (Round 2, the "AI Build" wizard): optional - when set, the
+    # dashboard is built FRESH around this plain-English description
+    # (GD360 plans a set of blocks and runs a real, new analysis for each
+    # one against this conversation's data source) instead of the original
+    # one-shot behavior of just laying out whatever charts/tables already
+    # happen to be in this chat. Omitted/blank keeps that original
+    # behavior exactly as it always worked - see generate_dashboard's own
+    # docstring for the full picture.
+    goal: Optional[str] = Field(default=None, max_length=500)
+
+
+# 2026-09-25 (Round 2, "build own"): a blank v2 dashboard tied to a
+# conversation's data source but with zero blocks - the person adds and
+# fills every block themselves via the existing Phase 2 canvas. See
+# routers/dashboard_builder.py's create_blank_dashboard.
+class CreateBlankDashboardRequest(BaseModel):
+    conversation_id: str = Field(min_length=1)
+
+
+# 2026-09-25 (Round 2): renaming a v2 dashboard's own name - see
+# routers/dashboard_builder.py's update_dashboard.
+class UpdateDashboardRequest(BaseModel):
+    name: Optional[str] = Field(default=None, max_length=120)
 
 
 class DashboardBlockOut(BaseModel):
