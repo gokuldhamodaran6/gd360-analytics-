@@ -930,6 +930,146 @@ def _place_new_block(page: models.DashboardPage, block_type: str) -> tuple[int, 
     return 0, max_bottom, 6, 6  # chart / table / donut / avatar_list
 
 
+def _default_block_config(block_type: str) -> dict:
+    """The genuinely-empty config a freshly-placed block starts with -
+    shared by create_block below and create_from_template further down,
+    so a template-created block is indistinguishable from one a person
+    added by hand: no value, no rows, nothing computed. Every block
+    still has to be filled in for real via Ask AI / build manually / a
+    plain text edit before it shows anything but its own empty state."""
+    if block_type == "text":
+        return {"text": ""}
+    if block_type == "filter":
+        return {"column": None}
+    return {}
+
+
+# ---------- Template gallery (2026-09-25, Round 5) ----------
+#
+# Ready-made LAYOUTS, never ready-made data. Each entry below is only
+# ever a set of pages + block placements (type, placeholder title,
+# x/y/w/h) - the exact same shape a person gets one block at a time from
+# the "+ Add block" toolbar, just laid out for them up front. Every
+# block a template creates gets _default_block_config's genuinely-empty
+# config above, same as create_block - so a template-built dashboard is
+# indistinguishable from a hand-built one until its owner fills each
+# block in with their own real data via Ask AI or build-manually. This
+# catalog never invents a number, a row or a chart.
+#
+# GET /templates below returns this exact structure (via
+# schemas.DashboardTemplateOut) so BuildDashboardModal.tsx's gallery can
+# draw an accurate preview thumbnail of each template's layout, and
+# create_from_template reads this same catalog to actually build the
+# dashboard - one source of truth, so the preview can never drift from
+# what "Use this template" produces.
+_TEMPLATES: list[dict] = [
+    {
+        "key": "revenue_overview",
+        "name": "Revenue Overview",
+        "description": "A KPI row for revenue and growth, plus trend and category charts.",
+        "icon": "bar-chart",
+        "pages": [
+            {
+                "name": "Overview",
+                "blocks": [
+                    {"type": "kpi", "title": "Revenue", "x": 0, "y": 0, "w": 3, "h": 3},
+                    {"type": "kpi", "title": "Revenue Growth", "x": 3, "y": 0, "w": 3, "h": 3},
+                    {"type": "kpi", "title": "Avg Order Value", "x": 6, "y": 0, "w": 3, "h": 3},
+                    {"type": "kpi", "title": "New Customers", "x": 9, "y": 0, "w": 3, "h": 3},
+                    {"type": "chart", "title": "Revenue Trend", "x": 0, "y": 3, "w": 6, "h": 6},
+                    {"type": "chart", "title": "Revenue by Category", "x": 6, "y": 3, "w": 6, "h": 6},
+                ],
+            }
+        ],
+    },
+    {
+        "key": "sales_pipeline",
+        "name": "Sales Pipeline",
+        "description": "Open deals, pipeline value and win rate, next to a deal-by-deal table.",
+        "icon": "target",
+        "pages": [
+            {
+                "name": "Overview",
+                "blocks": [
+                    {"type": "kpi", "title": "Open Deals", "x": 0, "y": 0, "w": 3, "h": 3},
+                    {"type": "kpi", "title": "Pipeline Value", "x": 3, "y": 0, "w": 3, "h": 3},
+                    {"type": "kpi", "title": "Win Rate", "x": 6, "y": 0, "w": 3, "h": 3},
+                    {"type": "kpi", "title": "Avg Deal Size", "x": 9, "y": 0, "w": 3, "h": 3},
+                    {"type": "chart", "title": "Pipeline by Stage", "x": 0, "y": 3, "w": 6, "h": 6},
+                    {"type": "table", "title": "Open Deals", "x": 6, "y": 3, "w": 6, "h": 6},
+                ],
+            }
+        ],
+    },
+    {
+        "key": "customer_health",
+        "name": "Customer Health",
+        "description": "Active customers, churn and retention, with a segment breakdown.",
+        "icon": "users",
+        "pages": [
+            {
+                "name": "Overview",
+                "blocks": [
+                    {"type": "kpi", "title": "Active Customers", "x": 0, "y": 0, "w": 3, "h": 3},
+                    {"type": "kpi", "title": "Churn Rate", "x": 3, "y": 0, "w": 3, "h": 3},
+                    {"type": "kpi", "title": "Retention Rate", "x": 6, "y": 0, "w": 3, "h": 3},
+                    {"type": "kpi", "title": "Customer LTV", "x": 9, "y": 0, "w": 3, "h": 3},
+                    {"type": "donut", "title": "Customers by Segment", "x": 0, "y": 3, "w": 6, "h": 6},
+                    {"type": "chart", "title": "Active Customers Trend", "x": 6, "y": 3, "w": 6, "h": 6},
+                ],
+            }
+        ],
+    },
+    {
+        "key": "marketing_performance",
+        "name": "Marketing Performance",
+        "description": "Traffic, conversion and spend efficiency, with a channel table.",
+        "icon": "megaphone",
+        "pages": [
+            {
+                "name": "Overview",
+                "blocks": [
+                    {"type": "kpi", "title": "Website Traffic", "x": 0, "y": 0, "w": 3, "h": 3},
+                    {"type": "kpi", "title": "Conversion Rate", "x": 3, "y": 0, "w": 3, "h": 3},
+                    {"type": "kpi", "title": "Cost per Acquisition", "x": 6, "y": 0, "w": 3, "h": 3},
+                    {"type": "kpi", "title": "Return on Ad Spend", "x": 9, "y": 0, "w": 3, "h": 3},
+                    {"type": "chart", "title": "Traffic Over Time", "x": 0, "y": 3, "w": 6, "h": 6},
+                    {"type": "table", "title": "Performance by Channel", "x": 6, "y": 3, "w": 6, "h": 6},
+                ],
+            }
+        ],
+    },
+    {
+        "key": "executive_summary",
+        "name": "Executive Summary",
+        "description": "A two-page leadership snapshot - headline KPIs, then room for detail and notes.",
+        "icon": "briefcase",
+        "pages": [
+            {
+                "name": "Overview",
+                "blocks": [
+                    {"type": "kpi", "title": "Revenue", "x": 0, "y": 0, "w": 3, "h": 3},
+                    {"type": "kpi", "title": "Gross Margin", "x": 3, "y": 0, "w": 3, "h": 3},
+                    {"type": "kpi", "title": "Active Customers", "x": 6, "y": 0, "w": 3, "h": 3},
+                    {"type": "kpi", "title": "Net Growth", "x": 9, "y": 0, "w": 3, "h": 3},
+                    {"type": "chart", "title": "Revenue Trend", "x": 0, "y": 3, "w": 6, "h": 6},
+                    {"type": "table", "title": "Key Metrics by Segment", "x": 6, "y": 3, "w": 6, "h": 6},
+                ],
+            },
+            {
+                "name": "Details",
+                "blocks": [
+                    {"type": "text", "title": "Notes", "x": 0, "y": 0, "w": 6, "h": 3},
+                    {"type": "table", "title": "Full Data", "x": 0, "y": 3, "w": 12, "h": 6},
+                ],
+            },
+        ],
+    },
+]
+
+_TEMPLATES_BY_KEY = {t["key"]: t for t in _TEMPLATES}
+
+
 # ---------- Slugs for public links ----------
 
 def _slugify(text: str) -> str:
@@ -1342,6 +1482,72 @@ def create_blank_dashboard(
     return _builder_out(db, dashboard, user)
 
 
+# 2026-09-25 (Round 5, template gallery): the read side of the gallery -
+# BuildDashboardModal.tsx's "Start from a template" step calls this to
+# draw its cards and preview thumbnails straight from _TEMPLATES above.
+# Login-gated like every other endpoint in this file, but not scoped to
+# any one dashboard/workspace - the catalog is the same for everyone, so
+# there's nothing here to authorize beyond "is signed in". Declared
+# ahead of GET /{dashboard_id} below on purpose: FastAPI matches routes
+# in declaration order, and "/templates" would otherwise be swallowed by
+# "/{dashboard_id}" (dashboard_id="templates") if it came after.
+@router.get("/templates", response_model=list[schemas.DashboardTemplateOut])
+def list_templates(user: models.User = Depends(get_current_user)):
+    return _TEMPLATES
+
+
+# 2026-09-25 (Round 5, template gallery): the third choice in
+# BuildDashboardModal.tsx, alongside "Build with AI" (generate_dashboard)
+# and "Create your own" (create_blank_dashboard just above) - a v2
+# dashboard whose pages/blocks are pre-laid-out from one of the
+# _TEMPLATES entries, still tied to a real conversation's data source the
+# exact same way create_blank_dashboard is, and every block still starts
+# from _default_block_config's genuinely-empty config. The person fills
+# each one in afterward through the exact same canvas (Ask AI / build
+# manually) as a block they added by hand - a template only ever saves
+# them the layout work, never invents a number.
+@router.post("/create-from-template", response_model=schemas.DashboardBuilderOut, status_code=201)
+def create_from_template(
+    payload: schemas.CreateFromTemplateRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    template = _TEMPLATES_BY_KEY.get(payload.template_key)
+    if not template:
+        raise HTTPException(404, "Unknown template.")
+
+    conv = db.query(models.Conversation).filter(models.Conversation.id == payload.conversation_id).first()
+    if not conv or not workspace_access.can_access_conversation(db, conv, user):
+        raise HTTPException(404, "Conversation not found.")
+
+    dashboard = models.Dashboard(
+        owner_id=user.id,
+        name=template["name"],
+        layout_version=2,
+        source_conversation_id=conv.id,
+    )
+    db.add(dashboard)
+    db.flush()
+
+    for page_position, page_def in enumerate(template["pages"]):
+        page = models.DashboardPage(dashboard_id=dashboard.id, name=page_def["name"], position=page_position)
+        db.add(page)
+        db.flush()
+        for block_position, block_def in enumerate(page_def["blocks"]):
+            db.add(models.DashboardBlock(
+                page_id=page.id,
+                type=block_def["type"],
+                title=block_def.get("title"),
+                x=block_def["x"], y=block_def["y"], w=block_def["w"], h=block_def["h"],
+                config=_default_block_config(block_def["type"]),
+                position=block_position,
+            ))
+
+    db.commit()
+    db.refresh(dashboard)
+    return _builder_out(db, dashboard, user)
+
+
 @router.get("/{dashboard_id}", response_model=schemas.DashboardBuilderOut)
 def get_builder_dashboard(
     dashboard_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
@@ -1500,12 +1706,7 @@ def create_block(
     # VALUE is never stored here at all - see this file's own module
     # docstring (Phase 2b, point 1) for why that's per-viewer/ephemeral
     # instead.
-    if payload.type == "text":
-        default_config = {"text": ""}
-    elif payload.type == "filter":
-        default_config = {"column": None}
-    else:
-        default_config = {}
+    default_config = _default_block_config(payload.type)
     block = models.DashboardBlock(
         page_id=page.id,
         type=payload.type,
