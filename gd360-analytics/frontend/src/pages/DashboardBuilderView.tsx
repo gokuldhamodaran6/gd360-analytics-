@@ -804,14 +804,14 @@ function DashboardBuilderViewBody({
   };
 
   return (
-    <div>
+    <div className="dash-shell min-h-screen">
       <TopNav />
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
         <Link to="/dashboards" className="text-xs text-muted hover:text-text transition inline-block mb-3">&larr; Dashboards</Link>
 
         <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
           <div className="min-w-0">
-            <h1 className="text-2xl font-bold flex items-center gap-2 flex-wrap">
+            <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2 flex-wrap">
               {dash.name}
               <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-accent/15 text-accent border border-accent/30">
                 Dashboard
