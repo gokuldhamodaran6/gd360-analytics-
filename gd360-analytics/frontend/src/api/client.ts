@@ -935,11 +935,35 @@ export const dashboardBuilderApi = {
   // "Build with AI" action behind the chat's "Build Dashboard" button. See
   // backend generate_dashboard for exactly how blocks are chosen, typed,
   // and laid out (always deterministic layout, AI only picks content).
-  generate: (conversationId: string) =>
+  //
+  // 2026-09-25 (Round 2, the "AI Build" wizard): `goal` is the answer to
+  // BuildDashboardModal's one clarifying question ("what should this
+  // dashboard show?"). When given, the backend plans and runs a FRESH set
+  // of analyses against the real data for exactly that description,
+  // rather than just laying out whatever's already in this chat - see
+  // generate_dashboard's own docstring. Omitted/blank keeps the original
+  // one-shot recap behavior exactly as it always worked.
+  generate: (conversationId: string, goal?: string) =>
     api
-      .post<DashboardBuilderDetail>("/dashboard-builder/generate", { conversation_id: conversationId })
+      .post<DashboardBuilderDetail>("/dashboard-builder/generate", {
+        conversation_id: conversationId,
+        goal: goal?.trim() || undefined,
+      })
+      .then((r) => r.data),
+  // 2026-09-25 (Round 2, "build own"): a blank v2 dashboard - one page,
+  // zero blocks, linked to this conversation's data source so the
+  // canvas's Ask AI / build-manually pickers work immediately. This is
+  // "Create your own" in BuildDashboardModal.tsx, real for the first time
+  // this round (it was shown-but-disabled since Phase 1).
+  createBlank: (conversationId: string) =>
+    api
+      .post<DashboardBuilderDetail>("/dashboard-builder/create-blank", { conversation_id: conversationId })
       .then((r) => r.data),
   get: (id: string) => api.get<DashboardBuilderDetail>(`/dashboard-builder/${id}`).then((r) => r.data),
+  // 2026-09-25 (Round 2): there was previously no way to rename a v2
+  // dashboard's own name at all - see backend update_dashboard.
+  rename: (id: string, name: string) =>
+    api.patch<DashboardBuilderDetail>(`/dashboard-builder/${id}`, { name }).then((r) => r.data),
   // 2026-09-24 (Phase 3): mode is "public" (anyone with the link) or
   // "private" (named emails + optional password - see addShareEmail/
   // removeShareEmail below for managing that list). `password` is only
