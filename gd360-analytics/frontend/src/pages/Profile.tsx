@@ -2,9 +2,14 @@ import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
 import TopNav from "../components/TopNav";
+import AppSidebar from "../components/AppSidebar";
+import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 
 export default function Profile() {
   const { user, updateProfile, changePassword } = useAuth();
+  // 2026-09-25i (sidebar consistency pass) - see DashboardBuilderView.tsx's
+  // own note for why every authenticated page gets this same shell.
+  const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
 
   const [fullName, setFullName] = useState(user?.full_name || "");
   const [company, setCompany] = useState(user?.company || "");
@@ -63,8 +68,15 @@ export default function Profile() {
   };
 
   return (
-    <div className="min-h-screen">
-      <TopNav />
+    <div className="flex">
+      <AppSidebar
+        workspaces={workspaces}
+        activeWorkspaceId={activeWorkspaceId}
+        onWorkspaceSwitch={switchWorkspace}
+        onWorkspaceCreated={handleWorkspaceCreated}
+      />
+      <div className="flex-1 min-w-0 flex flex-col min-h-screen">
+      <TopNav hideLogo />
       <div className="max-w-2xl mx-auto px-6 py-10 space-y-8">
         <div>
           <Link to="/" className="text-sm text-primary hover:underline">&larr; Back to home</Link>
@@ -113,6 +125,7 @@ export default function Profile() {
             {passwordBusy ? "Updating..." : "Update password"}
           </button>
         </form>
+      </div>
       </div>
     </div>
   );
