@@ -9,10 +9,21 @@ import {
   DashboardBlock,
   DashboardBlockType,
   ManualAgg,
+  ManualBlockType,
   RestyleChartType,
   FilterCriterion,
 } from "../api/client";
-import { KpiTile, BlockTable, BlockChart, TextBlock, FilterControl } from "./DashboardBlocks";
+import {
+  KpiTile,
+  BlockTable,
+  BlockChart,
+  TextBlock,
+  FilterControl,
+  GaugeBlock,
+  DonutBlock,
+  SparklineBlock,
+  AvatarListBlock,
+} from "./DashboardBlocks";
 import { DashboardFilterState } from "../lib/useDashboardFilters";
 
 // 2026-09-24 (Dashboard Builder Phase 2 + Phase 2b): the real canvas editor -
@@ -92,7 +103,27 @@ const BLOCK_TYPE_LABEL: Record<DashboardBlockType, string> = {
   kpi: "KPI",
   text: "Text",
   filter: "Filter",
+  // 2026-09-25 (Round 3): four new native widget types - manual-build-only
+  // (see MANUAL_ONLY_TYPES below and the backend module docstring, Round
+  // 3 section, for why these never get an "Ask AI" option this round).
+  gauge: "Gauge",
+  donut: "Donut",
+  sparkline: "Sparkline",
+  avatar_list: "Top list",
 };
+
+// 2026-09-25 (Round 3): these four are only ever filled in through "Build
+// manually" - _ai_result_to_block's fallback cascade only ever produces
+// chart/kpi/table/text, so offering "Ask AI" on one of these would just
+// silently flip it into one of those instead of respecting the type the
+// person actually chose. Same honest-scope decision Phase 2b made for the
+// "filter" block type.
+const MANUAL_ONLY_TYPES: DashboardBlockType[] = ["gauge", "donut", "sparkline", "avatar_list"];
+
+// The "Build manually" form's own Type picker - every type
+// build_manual_block can produce (everything except "text" and "filter",
+// which are edited directly rather than computed from a recipe).
+const MANUAL_BUILD_TYPES: ManualBlockType[] = ["kpi", "table", "chart", "gauge", "donut", "sparkline", "avatar_list"];
 
 const RESTYLE_OPTIONS: { value: RestyleChartType; label: string }[] = [
   { value: "bar", label: "Bar" },
@@ -201,20 +232,27 @@ function ManualBuildPanel({
   const [metric, setMetric] = useState(columns[0]?.name || "");
   const [agg, setAgg] = useState<ManualAgg>("sum");
   const [groupBy, setGroupBy] = useState("");
-  const [blockType, setBlockType] = useState<"kpi" | "table" | "chart">(
-    block.type === "chart" || block.type === "table" || block.type === "kpi" ? block.type : "table"
+  const [blockType, setBlockType] = useState<ManualBlockType>(
+    (MANUAL_BUILD_TYPES as readonly string[]).includes(block.type) ? (block.type as ManualBlockType) : "table"
   );
   const [chartType, setChartType] = useState<RestyleChartType>("bar");
+  // 2026-09-25 (Round 3): only read/sent when blockType === "gauge" - both
+  // optional, kept as plain text state (rather than number) so the field
+  // can sit empty instead of defaulting to 0, which build_manual_block
+  // would otherwise treat as a REAL target of zero instead of "unset."
+  const [targetValue, setTargetValue] = useState("");
+  const [maxValue, setMaxValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const needsNumeric = agg === "sum" || agg === "avg";
-  const needsGroupBy = blockType !== "kpi";
+  const needsGroupBy = blockType !== "kpi" && blockType !== "gauge";
+  const isGauge = blockType === "gauge";
 
   const build = async () => {
     if (!metric || busy) return;
     if (needsGroupBy && !groupBy) {
-      setError("Pick a column to group by for a table or chart.");
+      setError("Pick a column to group by for a table, chart, donut, sparkline, or top list.");
       return;
     }
     setBusy(true);
@@ -226,6 +264,8 @@ function ManualBuildPanel({
         group_by_column: needsGroupBy ? groupBy : undefined,
         block_type: blockType,
         chart_type: blockType === "chart" ? chartType : undefined,
+        target_value: isGauge && targetValue.trim() !== "" ? Number(targetValue) : undefined,
+        max_value: isGauge && maxValue.trim() !== "" ? Number(maxValue) : undefined,
         filters: activeFilters && activeFilters.length > 0 ? activeFilters : undefined,
       });
       onDone(updated);
@@ -254,8 +294,8 @@ function ManualBuildPanel({
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2">
-        {(["kpi", "table", "chart"] as const).map((t) => (
+      <div className="grid grid-cols-3 gap-1.5">
+        {MANUAL_BUILD_TYPES.map((t) => (
           <button
             key={t}
             type="button"
@@ -316,6 +356,27 @@ function ManualBuildPanel({
               </option>
             ))}
           </select>
+        </>
+      )}
+
+      {isGauge && (
+        <>
+          <label className="text-[11px] text-muted uppercase tracking-wide">Target (optional)</label>
+          <input
+            type="number"
+            className="input text-sm"
+            placeholder="e.g. 100000"
+            value={targetValue}
+            onChange={(e) => setTargetValue(e.target.value)}
+          />
+          <label className="text-[11px] text-muted uppercase tracking-wide">Gauge max (optional)</label>
+          <input
+            type="number"
+            className="input text-sm"
+            placeholder="Leave blank to set automatically"
+            value={maxValue}
+            onChange={(e) => setMaxValue(e.target.value)}
+          />
         </>
       )}
 
@@ -504,7 +565,7 @@ function BlockCard({
         <span className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-surface border border-border text-muted shrink-0">
           {BLOCK_TYPE_LABEL[block.type]}
         </span>
-        {block.type !== "text" && block.type !== "filter" && (
+        {block.type !== "text" && block.type !== "filter" && !MANUAL_ONLY_TYPES.includes(block.type) && (
           <button
             type="button"
             title="Ask AI"
@@ -564,6 +625,10 @@ function BlockCard({
             {block.type === "kpi" && <KpiTile title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
             {block.type === "table" && <BlockTable title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
             {block.type === "chart" && <BlockChart title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "gauge" && <GaugeBlock title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "donut" && <DonutBlock title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "sparkline" && <SparklineBlock title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "avatar_list" && <AvatarListBlock title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
             {block.type === "filter" && (
               <div className="h-full flex flex-col divide-y divide-border">
                 <div className="flex-1 min-h-0">
@@ -659,7 +724,7 @@ export default function DashboardCanvas({
     <div>
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <span className="text-xs text-muted mr-1">Add block:</span>
-        {(["chart", "table", "kpi", "text", "filter"] as DashboardBlockType[]).map((t) => (
+        {(["chart", "table", "kpi", "gauge", "donut", "sparkline", "avatar_list", "text", "filter"] as DashboardBlockType[]).map((t) => (
           <button
             key={t}
             type="button"
