@@ -283,6 +283,19 @@ body {
   flex-shrink: 0;
 }
 
+/* 2026-09-25 (Round 3): a smaller icon-chip variant for the avatar_list
+   block's per-row initials chips - combined-selector specificity so this
+   reliably wins over the base 42px sizing above regardless of source
+   order, rather than relying on a Tailwind utility class of equal
+   specificity. */
+.dash-icon-chip.dash-icon-chip--sm {
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .dash-kpi-value {
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
