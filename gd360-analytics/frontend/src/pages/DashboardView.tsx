@@ -25,6 +25,12 @@ function TrashIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   );
 }
 
+// 2026-09-25 (naming fix + premium light theme foundation round): this
+// viewer is only ever reached for a layout_version=1 dashboard - a flat
+// board of pinned charts with no blocks or layout, not the multi-widget
+// Dashboard Builder kind (see Dashboards.tsx's own module docstring). Its
+// user-facing copy was renamed from "dashboard" to "chart board"
+// throughout to match; nothing about its behavior changed.
 export default function DashboardView() {
   const { dashboardId } = useParams();
   const navigate = useNavigate();
@@ -47,7 +53,7 @@ export default function DashboardView() {
     dashboardApi
       .get(dashboardId)
       .then((data) => setDash(data))
-      .catch((err) => setError(err?.response?.status === 404 ? "Dashboard not found." : "Couldn't load this dashboard."));
+      .catch((err) => setError(err?.response?.status === 404 ? "Chart board not found." : "Couldn't load this chart board."));
   };
 
   useEffect(load, [dashboardId]);
@@ -164,7 +170,7 @@ export default function DashboardView() {
               <h1 className="text-2xl font-bold flex items-center gap-2 flex-wrap">
                 {dash.name}
                 {dash.can_edit && (
-                  <button type="button" className="opacity-50 hover:opacity-100 transition text-base" title="Rename this dashboard" onClick={startRename}>
+                  <button type="button" className="opacity-50 hover:opacity-100 transition text-base" title="Rename this chart board" onClick={startRename}>
                     &#9998;
                   </button>
                 )}
@@ -193,8 +199,8 @@ export default function DashboardView() {
                 {dash.workspace_id ? "Change sharing" : "Share…"}
               </button>
               {sharePickerOpen && (
-                <div className="absolute right-0 top-full mt-2 w-64 card bg-surface shadow-2xl border border-border p-3 z-30">
-                  <div className="text-xs text-muted mb-2">Who can see this dashboard?</div>
+                <div className="absolute right-0 top-full mt-2 w-64 dash-card bg-surface shadow-2xl border border-border p-3 z-30">
+                  <div className="text-xs text-muted mb-2">Who can see this chart board?</div>
                   <div className="space-y-1">
                     <button
                       type="button"
@@ -254,8 +260,8 @@ export default function DashboardView() {
           ))}
           {dash.charts.length === 0 && (
             <div className="text-muted text-sm">
-              No charts saved to this dashboard yet. Open a Project&rsquo;s chart and use &ldquo;Save chart to
-              dashboard&rdquo; to pin one here.
+              No charts saved to this board yet. Open a Project&rsquo;s chart and use &ldquo;Save chart&rdquo; to
+              pin one here.
             </div>
           )}
         </div>
@@ -273,13 +279,13 @@ export default function DashboardView() {
                     className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-red-500/15 text-red-400 border border-red-500/30 hover:bg-red-500/25 transition disabled:opacity-50"
                     onClick={doDelete}
                   >
-                    {deleting ? "Deleting…" : "Delete dashboard"}
+                    {deleting ? "Deleting…" : "Delete chart board"}
                   </button>
                 </div>
               </div>
             ) : (
               <button type="button" className="text-xs text-muted hover:text-red-400 transition flex items-center gap-1.5" onClick={() => setConfirmingDelete(true)}>
-                <TrashIcon /> Delete this dashboard
+                <TrashIcon /> Delete this chart board
               </button>
             )}
           </div>
