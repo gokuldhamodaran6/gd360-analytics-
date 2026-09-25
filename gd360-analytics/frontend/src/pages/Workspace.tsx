@@ -123,13 +123,20 @@ function SparkleIcon({ className = "w-4 h-4" }: { className?: string }) {
   );
 }
 
-// "Save chart to dashboard" - 2026-09-23 (shared dashboards round): this
-// used to be a single click that silently created a BRAND NEW dashboard
-// every single time (dashboard_id was never actually sent back), so
-// saving a second chart from the same page could never land on the first
-// one. Now a small popover lets the person add to an existing dashboard
-// they can edit (personal or shared), or start a new one - optionally
-// shared with a team workspace right away instead of always personal.
+// "Save chart" - 2026-09-23 (shared dashboards round): this used to be a
+// single click that silently created a BRAND NEW board every single time
+// (dashboard_id was never actually sent back), so saving a second chart
+// from the same page could never land on the first one. Now a small
+// popover lets the person add to an existing chart board they can edit
+// (personal or shared), or start a new one - optionally shared with a
+// team workspace right away instead of always personal.
+//
+// 2026-09-25 (naming fix round): renamed from "Save chart to dashboard" -
+// this only ever pins a single chart onto a plain flat board
+// (layout_version=1), never a real multi-widget Dashboard Builder
+// dashboard, so calling it "dashboard" anywhere in this flow was the
+// naming bug this round fixed. See Dashboards.tsx's own module docstring
+// for the full picture of the two kinds.
 function SaveChartMenu({
   chartSpec,
   title,
@@ -155,7 +162,7 @@ function SaveChartMenu({
 
   useEffect(() => {
     if (!open) return;
-    setNewName(`${dsName || "My"} dashboard`);
+    setNewName(`${dsName || "My"} chart board`);
     setDashboards(null);
     Promise.all([dashboardApi.list(), workspaceApi.list()])
       .then(([d, w]) => {
@@ -190,7 +197,7 @@ function SaveChartMenu({
           ? { title, chart_spec: chartSpec, insight, dashboard_id: selectedId }
           : {
               title, chart_spec: chartSpec, insight,
-              dashboard_name: newName.trim() || "My dashboard",
+              dashboard_name: newName.trim() || "My chart board",
               workspace_id: newWorkspaceId || null,
             };
       const res = await dashboardApi.saveChart(payload);
@@ -206,10 +213,10 @@ function SaveChartMenu({
   return (
     <div className="relative" ref={boxRef}>
       <button type="button" className="btn-secondary text-sm" onClick={() => setOpen((o) => !o)}>
-        Save chart to dashboard
+        Save chart
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-72 card bg-surface shadow-2xl border border-border p-3 z-30">
+        <div className="absolute right-0 top-full mt-2 w-72 dash-card bg-surface shadow-2xl border border-border p-3 z-30">
           {dashboards === null ? (
             <div className="text-xs text-muted py-2">Loading&hellip;</div>
           ) : (
@@ -218,7 +225,7 @@ function SaveChartMenu({
                 <div className="mb-2.5">
                   <label className="flex items-center gap-2 text-xs mb-1.5 cursor-pointer">
                     <input type="radio" checked={mode === "existing"} onChange={() => setMode("existing")} />
-                    Add to an existing dashboard
+                    Add to an existing chart board
                   </label>
                   {mode === "existing" && (
                     <select
@@ -238,7 +245,7 @@ function SaveChartMenu({
               <div>
                 <label className="flex items-center gap-2 text-xs mb-1.5 cursor-pointer">
                   <input type="radio" checked={mode === "new"} onChange={() => setMode("new")} />
-                  Create a new dashboard
+                  Create a new chart board
                 </label>
                 {mode === "new" && (
                   <div className="space-y-1.5">
@@ -247,7 +254,7 @@ function SaveChartMenu({
                       value={newName}
                       onChange={(e) => setNewName(e.target.value)}
                       maxLength={80}
-                      placeholder="Dashboard name"
+                      placeholder="Chart board name"
                     />
                     {shareOptions.length > 0 && (
                       <select
@@ -1680,10 +1687,10 @@ export default function Workspace() {
               />
               {/* 2026-09-24 (Dashboard Builder Phase 1): the real-time,
                   publishable dashboard entry point - deliberately separate
-                  from "Save chart to dashboard" above (that still only ever
-                  pins THIS one chart onto the old flat board). This builds
-                  a whole new dashboard out of everything this analysis has
-                  produced so far. */}
+                  from "Save chart" above (that still only ever pins THIS
+                  one chart onto a plain flat chart board). This builds a
+                  whole new, real dashboard out of everything this analysis
+                  has produced so far. */}
               <button
                 type="button"
                 className="btn-primary text-sm flex items-center gap-1.5"
