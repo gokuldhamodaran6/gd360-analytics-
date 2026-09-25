@@ -36,17 +36,28 @@ export type DashboardFilterState = {
   // real content just changed underneath it.
   refresh: () => void;
   loading: boolean;
+  // 2026-09-25e (elite pass): the real, server-counted number of rows
+  // matching the current filter selection (or the datasource's full row
+  // count when nothing is filtered) - see api/client.ts's previewFiltered.
+  // null only until the very first count comes back (or when this page
+  // has no filter blocks at all to filter by, so there's nothing to base
+  // a filtered count on - see hasFilterBlocks below); a component renders
+  // its "Showing N rows" line only once this is a real number, never a
+  // placeholder.
+  matchedRows: number | null;
 };
 
 export function useDashboardFilters(dashboardId: string, page: DashboardBuilderPage | undefined): DashboardFilterState {
   const [values, setValues] = useState<Record<string, string>>({});
   const [overrides, setOverrides] = useState<Record<string, FilteredBlock>>({});
+  const [matchedRows, setMatchedRows] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const requestSeq = useRef(0);
 
   useEffect(() => {
     setValues({});
     setOverrides({});
+    setMatchedRows(null);
   }, [dashboardId, page?.id]);
 
   const activeFiltersFor = useCallback(
@@ -64,23 +75,36 @@ export function useDashboardFilters(dashboardId: string, page: DashboardBuilderP
     [page]
   );
 
+  // 2026-09-25e (elite pass): whether this page has any filter block at
+  // all - gates the automatic baseline fetch below, so a page with no
+  // filters never fires an extra network call just to learn a row count
+  // nothing on the page will ever display.
+  const hasFilterBlocks = Boolean(page?.blocks.some((b) => b.type === "filter"));
+
   const runPreview = useCallback(
     (vals: Record<string, string>) => {
       if (!page) return;
       const filters = activeFiltersFor(vals);
-      if (filters.length === 0) {
-        setOverrides({});
-        return;
-      }
       const seq = ++requestSeq.current;
       setLoading(true);
       dashboardBuilderApi
         .previewFiltered(dashboardId, page.id, filters)
-        .then((blocks) => {
+        .then(({ blocks, matchedRows: mr }) => {
           if (seq !== requestSeq.current) return; // superseded by a newer change
-          const next: Record<string, FilteredBlock> = {};
-          for (const b of blocks) next[b.id] = b;
-          setOverrides(next);
+          // At "All" (no active filters), every recomputed block is left
+          // exactly as its own persisted content instead of an override -
+          // same behavior as before this round - but matched_rows is still
+          // real and still worth keeping: it's the dataset's honest total
+          // row count, shown as the resting-state "Showing N rows" (see
+          // the reference dashboard screenshots this round is matching).
+          if (filters.length === 0) {
+            setOverrides({});
+          } else {
+            const next: Record<string, FilteredBlock> = {};
+            for (const b of blocks) next[b.id] = b;
+            setOverrides(next);
+          }
+          setMatchedRows(mr);
         })
         .catch(() => {
           // Leave whatever's currently shown alone rather than clearing
@@ -92,6 +116,14 @@ export function useDashboardFilters(dashboardId: string, page: DashboardBuilderP
     },
     [dashboardId, page, activeFiltersFor]
   );
+
+  // Seeds the resting-state row count as soon as a page with filter
+  // blocks loads (or is switched to), rather than leaving "Showing N
+  // rows" blank until someone actually touches a filter.
+  useEffect(() => {
+    if (hasFilterBlocks) runPreview({});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashboardId, page?.id, hasFilterBlocks]);
 
   const setFilterValue = useCallback(
     (filterBlockId: string, value: string) => {
@@ -106,5 +138,5 @@ export function useDashboardFilters(dashboardId: string, page: DashboardBuilderP
 
   const refresh = useCallback(() => runPreview(values), [values, runPreview]);
 
-  return { values, overrides, activeFilters: activeFiltersFor(values), setFilterValue, refresh, loading };
+  return { values, overrides, activeFilters: activeFiltersFor(values), setFilterValue, refresh, loading, matchedRows };
 }
