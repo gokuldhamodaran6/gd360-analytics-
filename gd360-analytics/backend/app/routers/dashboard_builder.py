@@ -1780,12 +1780,12 @@ def preview_filtered_blocks(
 
     ds = _resolve_datasource_for_read(db, user, d)
     if not ds:
-        return schemas.FilteredBlocksOut(blocks=[])
+        return schemas.FilteredBlocksOut(blocks=[], matched_rows=0)
 
     try:
         df = load_dataframe(ds, table=None, version="original", db=db)
     except Exception:
-        return schemas.FilteredBlocksOut(blocks=[])
+        return schemas.FilteredBlocksOut(blocks=[], matched_rows=0)
 
     df = _apply_filters(df, payload.filters[:_MAX_FILTERS_PER_REQUEST])
 
@@ -1800,7 +1800,13 @@ def preview_filtered_blocks(
             continue
         out.append(schemas.FilteredBlockOut(id=block.id, type=actual_type, config=config))
 
-    return schemas.FilteredBlocksOut(blocks=out)
+    # 2026-09-25e (elite pass): `df` above already has payload.filters
+    # applied (or is the untouched full dataset when payload.filters is
+    # empty - _apply_filters is a no-op on an empty list) - len(df) is
+    # therefore the real, exact row count either way, at zero extra query
+    # cost. See FilteredBlocksOut.matched_rows for what the frontend does
+    # with this.
+    return schemas.FilteredBlocksOut(blocks=out, matched_rows=len(df))
 
 
 @router.post("/{dashboard_id}/pages", response_model=schemas.DashboardBuilderOut, status_code=201)
