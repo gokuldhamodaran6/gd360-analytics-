@@ -443,7 +443,10 @@ class UpdateDashboardRequest(BaseModel):
 
 class DashboardBlockOut(BaseModel):
     id: str
-    type: str  # "chart" | "table" | "kpi" | "text" | "filter"
+    # 2026-09-25 (Round 3): added "gauge" | "donut" | "sparkline" |
+    # "avatar_list" - four native widget types, config shapes documented
+    # in routers/dashboard_builder.py's own module docstring.
+    type: str  # "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut" | "sparkline" | "avatar_list"
     title: Optional[str] = None
     x: int
     y: int
@@ -566,7 +569,7 @@ class SetCustomDomainRequest(BaseModel):
 # layout_version==2 dashboard the caller can edit. ----------
 class CreateBlockRequest(BaseModel):
     page_id: str = Field(min_length=1)
-    type: str = Field(min_length=1)  # "chart" | "table" | "kpi" | "text" | "filter"
+    type: str = Field(min_length=1)  # "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut" | "sparkline" | "avatar_list"
     title: Optional[str] = None
 
 
@@ -602,13 +605,18 @@ class ManualBuildBlockRequest(BaseModel):
     metric_column: str = Field(min_length=1)
     agg: str = "sum"  # "sum" | "avg" | "count" | "min" | "max"
     group_by_column: Optional[str] = None
-    block_type: str = "table"  # "kpi" | "table" | "chart"
+    block_type: str = "table"  # "kpi" | "table" | "chart" | "gauge" | "donut" | "sparkline" | "avatar_list"
     chart_type: Optional[str] = None  # only read when block_type == "chart"
     # 2026-09-24 (Phase 2b): whichever filters the person building this
     # block currently has active on the page, so a brand-new block built
     # while a filter is active is correctly filtered from the moment it's
     # created, not just on the next filter change.
     filters: list[FilterCriterion] = Field(default_factory=list, max_length=8)
+    # 2026-09-25 (Round 3): only read when block_type == "gauge" - both
+    # optional, see _run_manual_recipe for the sensible defaults filled in
+    # when either (or both) is left unset.
+    target_value: Optional[float] = None
+    max_value: Optional[float] = None
 
 
 class RestyleBlockRequest(BaseModel):
