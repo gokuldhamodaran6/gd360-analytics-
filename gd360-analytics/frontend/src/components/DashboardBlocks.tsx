@@ -555,15 +555,27 @@ export function FilterControl({
     };
   }, [column, datasourceId]);
 
+  // 2026-09-25e (elite pass): a filter used to be its own small dash-card -
+  // a bordered, backgrounded box, same chrome as a KPI tile - which is
+  // exactly why a row of them read as scattered little widgets instead of
+  // the clean, label-over-control filter bar in the reference dashboards
+  // Gokul sent (a plain label above a plain bordered select, no card
+  // around either). Dropped the card entirely: a filter block is now just
+  // its label and its control sitting straight on the page, so several of
+  // them placed in a row read as one continuous, premium filter strip
+  // instead of N separate boxes.
   return (
-    <div className="dash-card h-full p-3 flex flex-col justify-center gap-1.5 overflow-hidden">
-      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted truncate">
-        {block.title || column || "Filter"}
-      </div>
+    <div className="h-full flex flex-col justify-center gap-1.5 min-w-0">
+      <label className="text-[13px] font-medium text-muted truncate">{block.title || column || "Filter"}</label>
       {!column ? (
         <div className="text-xs text-muted italic">Not set up yet.</div>
       ) : (
-        <select className="dash-select" value={value} onChange={(e) => onChange(e.target.value)} disabled={loading}>
+        <select
+          className="dash-select w-full"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={loading}
+        >
           <option value="">All</option>
           {values.map((v) => (
             <option key={String(v.value)} value={String(v.value)}>
@@ -585,11 +597,9 @@ export function FilterControl({
 function StaticFilterNote({ block }: { block: DashboardBlock }) {
   const column: string | null = block.config?.column || null;
   return (
-    <div className="dash-card h-full p-3 flex flex-col justify-center gap-1 opacity-70">
-      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted truncate">
-        {block.title || column || "Filter"}
-      </div>
-      <div className="text-xs text-muted italic">Filtering isn&apos;t available on the public link yet.</div>
+    <div className="h-full flex flex-col justify-center gap-1.5 opacity-60 min-w-0">
+      <label className="text-[13px] font-medium text-muted truncate">{block.title || column || "Filter"}</label>
+      <div className="dash-select w-full pointer-events-none">All</div>
     </div>
   );
 }
