@@ -693,6 +693,16 @@ class FilteredBlocksOut(BaseModel):
     # preview_filtered_blocks' own docstring for why everything else is
     # simply left out rather than echoed back unchanged.
     blocks: list[FilteredBlockOut]
+    # 2026-09-25e (elite pass, real filter-bar row count): the real number
+    # of rows in the datasource that match `payload.filters` - literally
+    # `len(df)` after preview_filtered_blocks applies those filters, no
+    # separate query. This is what lets the frontend show an honest
+    # "Showing 6,709 rows" next to the filter row (the reference dashboard
+    # screenshots Gokul sent) instead of a fabricated number - see this
+    # engagement's standing rule against ever inventing stats. 0 whenever
+    # the datasource couldn't be loaded at all (frontend treats 0 as "no
+    # count to show", same as any other empty state).
+    matched_rows: int = 0
 
 
 # ---------- Folders (2026-09-23, folders round: organizes Projects on the
