@@ -1122,11 +1122,19 @@ export const dashboardBuilderApi = {
   // rather than just laying out whatever's already in this chat - see
   // generate_dashboard's own docstring. Omitted/blank keeps the original
   // one-shot recap behavior exactly as it always worked.
-  generate: (conversationId: string, goal?: string) =>
+  // 2026-09-28 (datasource picker round): `datasourceId` is the answer to
+  // BuildDashboardModal's new "Which data source?" picker on the goal
+  // step - an explicit override for which DataSource to build against,
+  // instead of always silently inheriting whatever data source happens
+  // to be behind the currently-open chat. Omitted/undefined keeps the
+  // exact original conversation-derived resolution (see backend
+  // generate_dashboard's own docstring).
+  generate: (conversationId: string, goal?: string, datasourceId?: string) =>
     api
       .post<DashboardBuilderDetail>("/dashboard-builder/generate", {
         conversation_id: conversationId,
         goal: goal?.trim() || undefined,
+        datasource_id: datasourceId || undefined,
       })
       .then((r) => r.data),
   // 2026-09-25 (Round 2, "build own"): a blank v2 dashboard - one page,
