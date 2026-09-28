@@ -563,6 +563,7 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         result_rows=result.get("result_rows"),
         result_truncated=result.get("result_truncated", False),
         sources=sources_manifest,
+        ok=result.get("ok", True),
     )
 
 
@@ -984,7 +985,7 @@ def _persist_and_respond(
     rows_before=None, rows_after=None, nulls_before=None, nulls_after=None,
     new_version_id=None, new_version_name=None, code=None, chart_type=None,
     continue_action=None, result_columns=None, result_rows=None, result_truncated=False,
-    sources=None,
+    sources=None, ok: bool = True,
 ) -> schemas.ChatResponse:
     msg = models.Message(
         conversation_id=conversation_id,
@@ -1018,6 +1019,7 @@ def _persist_and_respond(
         message_id=msg.id,
         action=action,
         reply_text=reply_text,
+        ok=ok,
         chart_spec=chart_spec,
         chart_type=chart_type,
         result_columns=result_columns,
