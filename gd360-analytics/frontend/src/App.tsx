@@ -13,6 +13,7 @@ import PublicDashboardView from "./pages/PublicDashboardView";
 import DataSources from "./pages/DataSources";
 import Models from "./pages/Models";
 import Jobs from "./pages/Jobs";
+import Experiments from "./pages/Experiments";
 import NewProject from "./pages/NewProject";
 import AdminDashboard from "./pages/AdminDashboard";
 import Profile from "./pages/Profile";
@@ -120,6 +121,10 @@ export default function App() {
           Jobs page - see AppSidebar.tsx's own nav entry for this, placed
           between Dashboards and Data Sources exactly like the sidebar. */}
       <Route path="/jobs" element={<Protected><Jobs /></Protected>} />
+      {/* Phase 4 (2026-09-28, Experimentation / A/B testing): see
+          AppSidebar.tsx's own nav entry for this, placed right after
+          Models exactly like the sidebar. */}
+      <Route path="/experiments" element={<Protected><Experiments /></Protected>} />
       <Route path="/admin" element={<Protected><AdminDashboard /></Protected>} />
       <Route path="/profile" element={<Protected><Profile /></Protected>} />
       {/* Public and standalone (no <Protected> wrapper): opened in a new
