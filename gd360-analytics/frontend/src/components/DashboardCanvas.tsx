@@ -100,6 +100,39 @@ function PaletteIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
     </svg>
   );
 }
+// 2026-09-28: the two new chart-block analysis toggles ("Show forecast" /
+// "Show anomalies") get their own small icons in the kebab menu, same
+// stroke style as every other icon in this file.
+function TrendIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 17 9 11l4 4 8-8" />
+      <path d="M15 6h6v6" strokeDasharray="2 2" />
+    </svg>
+  );
+}
+function AlertIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 8v5" />
+      <circle cx="12" cy="16" r="0.5" fill="currentColor" />
+    </svg>
+  );
+}
+// A small checkmark shown next to a toggle-style menu item (Show forecast/
+// Show anomalies below) when it's currently on - this app has no existing
+// "checked menu item" pattern to copy (grepped for menuitemcheckbox/
+// aria-checked - nothing), so this is the simplest honest equivalent: a
+// plain checkmark, not a different background/border, so it reads clearly
+// even against the menu's existing hover state.
+function CheckIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 12l5 5L20 6" />
+    </svg>
+  );
+}
 // 2026-09-25d (elite pass): every block card used to show up to four
 // separate icon buttons (Ask AI, Build manually, Chart style, Delete) in
 // its header at all times - the literal "lot of unwanted editing options"
@@ -606,6 +639,25 @@ function BlockCard({
     }
   };
 
+  // 2026-09-28: "Show forecast" / "Show anomalies" toggles. Unlike
+  // setAccentColor above, a failure here IS shown to the person - toggling
+  // one of these can genuinely fail for an honest reason (e.g. "Forecasting
+  // only works on a line, area, or step chart") that they need to actually
+  // see, not have silently swallowed. This copies restyle_block's own
+  // error-surfacing mechanism verbatim (StylePanel above): read
+  // err.response.data.detail, fall back to a generic message, show it in
+  // the same amber inline box.
+  const [analysisError, setAnalysisError] = useState("");
+  const setAnalysis = async (next: { forecast_enabled: boolean; anomalies_enabled: boolean }) => {
+    setAnalysisError("");
+    try {
+      onChange(await dashboardBuilderApi.setBlockAnalysis(dashboardId, block.id, next));
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      setAnalysisError(typeof detail === "string" ? detail : "Couldn't update this chart's analysis options.");
+    }
+  };
+
   const onDone = (d: DashboardBuilderDetail) => {
     setPanel("none");
     onChange(d);
@@ -684,6 +736,49 @@ function BlockCard({
                   <PaletteIcon className="w-3.5 h-3.5" /> Chart style
                 </button>
               )}
+              {/* 2026-09-28: forecast/anomalies are deliberately chart-block
+                  only (not kpi/sparkline/table/gauge) - see
+                  chart_builder.py's apply_analysis_overlays for why: both
+                  read off a Plotly trace's own x/y arrays, which only a
+                  chart block's chart_spec has. */}
+              {block.type === "chart" && (
+                <button
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={Boolean(block.config?.forecast_enabled)}
+                  className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors flex items-center gap-2"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setAnalysis({
+                      forecast_enabled: !block.config?.forecast_enabled,
+                      anomalies_enabled: Boolean(block.config?.anomalies_enabled),
+                    });
+                  }}
+                >
+                  <TrendIcon className="w-3.5 h-3.5" />
+                  <span className="flex-1">Show forecast</span>
+                  {block.config?.forecast_enabled && <CheckIcon className="w-3.5 h-3.5 text-primary" />}
+                </button>
+              )}
+              {block.type === "chart" && (
+                <button
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={Boolean(block.config?.anomalies_enabled)}
+                  className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors flex items-center gap-2"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setAnalysis({
+                      forecast_enabled: Boolean(block.config?.forecast_enabled),
+                      anomalies_enabled: !block.config?.anomalies_enabled,
+                    });
+                  }}
+                >
+                  <AlertIcon className="w-3.5 h-3.5" />
+                  <span className="flex-1">Show anomalies</span>
+                  {block.config?.anomalies_enabled && <CheckIcon className="w-3.5 h-3.5 text-primary" />}
+                </button>
+              )}
               <button
                 type="button"
                 role="menuitem"
@@ -699,6 +794,12 @@ function BlockCard({
           )}
         </div>
       </div>
+
+      {analysisError && (
+        <div className="no-drag text-xs text-amber-500 bg-amber-500/10 border-b border-amber-500/30 px-2.5 py-1.5 shrink-0">
+          {analysisError}
+        </div>
+      )}
 
       <div className="flex-1 min-h-0">
         {panel === "ask" && <AskAiPanel dashboardId={dashboardId} block={block} onDone={onDone} onClose={() => setPanel("none")} />}
