@@ -639,6 +639,23 @@ class DashboardBuilderOut(BaseModel):
     has_background_image: bool = False
 
 
+# 2026-09-28 (senior-UX round): the small, lightweight shape behind
+# GET /dashboard-builder/by-conversation/{conversation_id} - see that
+# endpoint's own docstring for the real problem this fixes (there was no
+# way to find a dashboard again from the same chat it was built from).
+# Deliberately NOT the full DashboardBuilderOut (pages/blocks/branding/
+# sharing) - the header menu this feeds only ever needs enough to list
+# and link to each dashboard, so this stays a cheap, summary-only query.
+class DashboardBuilderSummaryOut(BaseModel):
+    id: str
+    name: str
+    created_at: datetime
+    page_count: int
+    block_count: int
+    can_edit: bool
+    is_published: bool
+
+
 class PublishDashboardRequest(BaseModel):
     # "public" (anyone with the link) or "private" (2026-09-24, Phase 3 -
     # named emails + optional password - see routers/dashboard_builder.py's
