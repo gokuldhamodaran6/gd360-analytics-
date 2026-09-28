@@ -413,6 +413,31 @@ class Message(Base):
     # column existed, and for turns with nothing to record (e.g. a
     # clarifying question never loaded any table).
     sources = Column(JSON, nullable=True)
+    # 2026-09-28 (transparency round, Gokul's own bug report: an AI
+    # response with no visibility into what actually happened while it was
+    # running, especially when it silently retried once or twice before
+    # succeeding or giving up). A real, honest trace of what this turn
+    # actually did - a list of {"label", "detail"} dicts, in the order the
+    # real events happened (never fabricated, never reordered for effect -
+    # see services/ai_engine.analyze's own steps-building comment). None
+    # for a turn that predates this column, or that had nothing worth
+    # reporting beyond its own narrative.
+    steps = Column(JSON, nullable=True)
+    # 2026-09-28 (multi-result round): when this turn's answer genuinely
+    # covers several distinct analyses in one go (see the "Multiple results
+    # in one answer" rule in ai_engine.SYSTEM_PROMPT and
+    # ai_engine._build_result_entry), the extra chart/table cards beyond the
+    # first are stored here as a list of {label, chart_spec, chart_type,
+    # result_columns, result_rows, result_row_count, result_truncated}
+    # dicts, in the same shape as this row's own single chart/result_*
+    # fields. None for the overwhelming majority of ordinary single-result
+    # turns, and for any turn saved before this column existed.
+    results = Column(JSON, nullable=True)
+    # A real, honest caveat about whether this turn's result is actually
+    # trustworthy (overfit, deterministic, a weak/noisy fit) - see the
+    # "Honest self-critique for anything model-like" rule in
+    # ai_engine.SYSTEM_PROMPT. None when nothing was fitted or predicted.
+    self_critique = Column(String, nullable=True)
     # The DatasetVersion this turn's own cleaning/prep work created, if
     # any (both a "transform" and an "analyze" that had to prepare its own
     # table first can create one - see ai_engine._run_analyze_with_prep).
