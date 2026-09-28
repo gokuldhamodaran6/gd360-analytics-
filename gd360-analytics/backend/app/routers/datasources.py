@@ -779,71 +779,9 @@ def list_versions(datasource_id: str, db: Session = Depends(get_db), user: model
             "step_count": len(v.cleaning_log or []),
             "created_at": v.created_at,
             "conversation_id": conv_by_version.get(v.id),
-            # Phase 2, feature 1: lets the Data tab's own version tab strip
-            # show a "Shared" badge on an already-promoted table, and offer
-            # "Un-promote" instead of "Promote to shared model" for it - see
-            # promote_version/unpromote_version below.
-            "is_shared_model": bool(v.is_shared_model),
-            "shared_model_description": v.shared_model_description,
         }
         for v in versions
     ]
-
-
-@router.post("/{datasource_id}/versions/{version_id}/promote")
-def promote_version(
-    datasource_id: str,
-    version_id: str,
-    payload: schemas.PromoteVersionRequest,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
-):
-    """Marks a saved/prepared table as a reusable, named "shared model"
-    (Phase 2, feature 1) - it starts showing up on the /models library page
-    for anyone with access to it (routers/models_library.py), instead of
-    only being discoverable by going to find it on this one datasource's
-    own Data tab. Editable tier (same as rename_version/delete_version
-    below) - a workspace "viewer" can see a promoted model but not promote
-    or un-promote one themselves.
-
-    Re-promoting an already-promoted version is allowed and simply replaces
-    its description and refreshes shared_model_promoted_at - there is no
-    separate "edit description" endpoint, matching how this app already
-    treats PublishDashboardRequest (routers/dashboard_builder.py): every
-    call fully states the state this thing should be in going forward,
-    never a partial "leave the old value" ambiguity."""
-    ds = _get_editable_datasource(db, user, datasource_id)
-    v = _get_owned_version(db, ds, version_id)
-    v.is_shared_model = True
-    v.shared_model_description = payload.description.strip()[:2000] or None
-    v.shared_model_promoted_at = datetime.utcnow()
-    db.commit()
-    db.refresh(v)
-    return {
-        "id": v.id,
-        "is_shared_model": v.is_shared_model,
-        "shared_model_description": v.shared_model_description,
-        "promoted_at": v.shared_model_promoted_at,
-    }
-
-
-@router.delete("/{datasource_id}/versions/{version_id}/promote")
-def unpromote_version(
-    datasource_id: str, version_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
-):
-    """Un-promotes a shared model - it disappears from the /models library
-    listing immediately (that listing filters on is_shared_model directly -
-    see routers/models_library.py), even though the underlying saved table
-    itself is completely untouched and keeps working exactly as it did
-    before it was ever promoted. Editable tier, same as promote_version
-    above."""
-    ds = _get_editable_datasource(db, user, datasource_id)
-    v = _get_owned_version(db, ds, version_id)
-    v.is_shared_model = False
-    v.shared_model_description = None
-    v.shared_model_promoted_at = None
-    db.commit()
-    return {"id": v.id, "is_shared_model": False}
 
 
 def _flow_annotations_by_key(db: Session, datasource_id: str) -> dict[str, models.FlowAnnotation]:
@@ -866,95 +804,9 @@ def _annotation_fields(annotations: dict[str, models.FlowAnnotation], node_key: 
     }
 
 
-def _cross_pipeline_uses(
-    db: Session, user: models.User, ds: models.DataSource, versions: list[models.DatasetVersion]
-) -> list[dict]:
-    """Phase 2, feature 3 (data lineage across pipelines) - for every
-    promoted shared model (see models.DatasetVersion.is_shared_model) among
-    THIS datasource's own versions, finds every real Message anywhere in
-    the app whose recorded input sources (Message.sources - see that
-    column's own docstring for its exact shape, and chat.py
-    _load_selected_tables for how a version id from a DIFFERENT,
-    separately-connected data source ends up recorded there in the first
-    place) name that version's id, where that message's own conversation
-    belongs to a DIFFERENT data source than this one.
-
-    Deliberately scoped to PROMOTED SHARED MODELS ONLY, never every table
-    anyone has ever touched - a universal "who used what, anywhere" graph
-    across every datasource in the whole app would be both a real privacy
-    problem (surfacing one person's/workspace's private analysis history to
-    someone who merely owns a table they happened to reuse) and far more
-    than one round's work to build and scope correctly; a promoted model is
-    the one case where a person has already made a deliberate, explicit
-    choice to make a table reusable outside its own datasource; that
-    single, checkable flag is what makes this feature bounded rather than
-    an ever-growing whole-app lineage crawl.
-
-    Also privacy-scoped on the READING side, not just the writing side:
-    a hit is only ever included if the CALLING user can already access the
-    OTHER data source it was used from (the same accessible-datasource rule
-    every other read in this file already enforces via
-    workspace_access.can_access_datasource) - never revealing a stranger's
-    conversation title or datasource name just because they happened to
-    reuse a model someone in the caller's own workspace promoted.
-
-    No JSON-contains database operator is used here (there isn't one that
-    works identically across this app's own sqlite-for-local-dev and
-    Postgres-in-production - see database.py's own module docstring) - this
-    loads every Message that recorded ANY sources at all and filters in
-    Python. Small-SaaS scale today, same as this app's own PushdownQueryLog
-    audit trail and "Double-check this" verification counters, which take
-    the identical approach; revisit with a real JSON/GIN index the day this
-    table is large enough for that to matter."""
-    shared_ids = {v.id for v in versions if v.is_shared_model}
-    if not shared_ids:
-        return []
-
-    candidates = db.query(models.Message).filter(models.Message.sources.isnot(None)).all()
-    hits: list[tuple[str, models.Message]] = []
-    seen: set[tuple[str, str]] = set()
-    for m in candidates:
-        for src in (m.sources or []):
-            if not isinstance(src, dict):
-                continue
-            vid = src.get("version_id")
-            if vid in shared_ids and (vid, m.id) not in seen:
-                seen.add((vid, m.id))
-                hits.append((vid, m))
-    if not hits:
-        return []
-
-    conv_ids = {m.conversation_id for _, m in hits}
-    convs = {c.id: c for c in db.query(models.Conversation).filter(models.Conversation.id.in_(conv_ids)).all()}
-    other_ds_ids = {c.datasource_id for c in convs.values() if c.datasource_id and c.datasource_id != ds.id}
-    other_ds_by_id = {
-        d.id: d for d in db.query(models.DataSource).filter(models.DataSource.id.in_(other_ds_ids)).all()
-    } if other_ds_ids else {}
-
-    results = []
-    for vid, m in hits:
-        conv = convs.get(m.conversation_id)
-        if not conv or not conv.datasource_id or conv.datasource_id == ds.id:
-            continue
-        other_ds = other_ds_by_id.get(conv.datasource_id)
-        if not other_ds or not workspace_access.can_access_datasource(db, other_ds, user):
-            continue
-        results.append({
-            "version_id": vid,
-            "used_in_datasource_id": other_ds.id,
-            "used_in_datasource_name": other_ds.name,
-            "used_in_conversation_id": conv.id,
-            "used_in_conversation_title": conv.title,
-            "used_at": m.created_at,
-        })
-    results.sort(key=lambda r: r["used_at"], reverse=True)
-    return results
-
-
 @router.get("/{datasource_id}/flow")
 def get_data_flow(
     datasource_id: str,
-    cross_pipeline: bool = False,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
@@ -972,11 +824,7 @@ def get_data_flow(
     persistent annotation fields (display_label/description/position_x/
     position_y - see models.FlowAnnotation) directly, defaulting to null
     when unannotated, rather than a separate parallel structure the
-    frontend has to join client-side (feature 2). `cross_pipeline=true`
-    additionally computes cross_pipeline_uses - see _cross_pipeline_uses
-    above (feature 3); left false (the default, and what every existing
-    caller keeps getting), this key is always an empty list rather than
-    omitted, so the response shape never changes based on the flag."""
+    frontend has to join client-side (feature 2)."""
     ds = _get_accessible_datasource(db, user, datasource_id)
     ensure_legacy_migrated(db, ds)
 
@@ -995,13 +843,10 @@ def get_data_flow(
             "parent_version_ids": v.parent_version_ids,
             "step_count": len(v.cleaning_log or []),
             "created_at": v.created_at,
-            "is_shared_model": bool(v.is_shared_model),
-            "shared_model_description": v.shared_model_description,
             **_annotation_fields(annotations, v.id),
         }
         for v in versions
     ]
-    cross_pipeline_uses = _cross_pipeline_uses(db, user, ds, versions) if cross_pipeline else []
 
     # Every conversation ever built on this data source, not just the
     # caller's own - once ds itself has passed the accessible-datasource
@@ -1016,7 +861,6 @@ def get_data_flow(
     if not conversations:
         return {
             "datasource_id": ds.id, "datasource_name": ds.name, "versions": version_out, "nodes": [],
-            "cross_pipeline_uses": cross_pipeline_uses,
         }
 
     conv_by_id = {c.id: c for c in conversations}
@@ -1066,7 +910,6 @@ def get_data_flow(
 
     return {
         "datasource_id": ds.id, "datasource_name": ds.name, "versions": version_out, "nodes": nodes,
-        "cross_pipeline_uses": cross_pipeline_uses,
     }
 
 
