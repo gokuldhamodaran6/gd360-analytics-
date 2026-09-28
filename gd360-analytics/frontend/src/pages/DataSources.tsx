@@ -152,8 +152,35 @@ function timeAgo(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString();
 }
 
+// 2026-09-28 (streaming/webhook ingestion round): "live" means a real
+// webhook event genuinely arrived within the last 5 minutes - never a
+// simulated or assumed status. Only ever true for a kind==="streaming"
+// source; every other kind has no last_event_at at all.
+const LIVE_WINDOW_MS = 5 * 60 * 1000;
+
+function isLiveStreaming(ds: DataSourceSummary): boolean {
+  if (ds.kind !== "streaming" || !ds.last_event_at) return false;
+  return Date.now() - new Date(ds.last_event_at).getTime() < LIVE_WINDOW_MS;
+}
+
+// Same pulsing-dot-plus-label pattern AdminDashboard.tsx's own "Active"
+// status pill uses (a small colored dot + text) - reused here rather than
+// invented fresh, per this app's own small-badge convention.
+function LiveBadge() {
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-green-500/10 text-green-600 dark:text-green-400 shrink-0"
+      title="Received an event in the last few minutes"
+    >
+      <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+      Live
+    </span>
+  );
+}
+
 function SourceCard({ ds, viewMode, onOpen }: { ds: DataSourceSummary; viewMode: "grid" | "list"; onOpen: () => void }) {
   const meta = connectionKindMeta(ds.kind);
+  const live = isLiveStreaming(ds);
   if (viewMode === "list") {
     return (
       <button
@@ -170,6 +197,7 @@ function SourceCard({ ds, viewMode, onOpen }: { ds: DataSourceSummary; viewMode:
         <span className="min-w-0 flex-1">
           <span className="block text-sm font-medium truncate">{ds.name}</span>
         </span>
+        {live && <LiveBadge />}
         <span
           className="hidden sm:inline-block text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0"
           style={{ backgroundColor: `${meta.color}14`, color: meta.color }}
@@ -200,8 +228,9 @@ function SourceCard({ ds, viewMode, onOpen }: { ds: DataSourceSummary; viewMode:
           {meta.label}
         </span>
       </div>
-      <span className="min-w-0">
+      <span className="min-w-0 flex items-center gap-1.5">
         <span className="block text-sm font-semibold truncate">{ds.name}</span>
+        {live && <LiveBadge />}
       </span>
       <span className="text-[11px] text-muted mt-auto">{timeAgo(ds.created_at)}</span>
     </button>
