@@ -128,12 +128,6 @@ export type DatasetVersion = {
   // reads this same list) to just the currently open conversation by
   // default - see Workspace.tsx's versionScope.
   conversation_id: string | null;
-  // Phase 2, feature 1 (shared, reusable models): whether this table has
-  // been promoted into a named, reusable "model" that shows up on the
-  // /models library page for anyone with access to it - see
-  // datasourceApi.promoteVersion/unpromoteVersion and modelsApi.list.
-  is_shared_model: boolean;
-  shared_model_description: string | null;
 };
 
 // One table this datasource's data flow through - exactly what
@@ -178,11 +172,6 @@ export type FlowVersion = FlowAnnotationFields & {
   parent_version_ids: string[] | null;
   step_count: number;
   created_at: string;
-  // Phase 2, feature 1: whether this table is a promoted shared model -
-  // drives feature 3's "Show across all data sources" toggle (only a
-  // promoted table can have cross-pipeline uses at all).
-  is_shared_model: boolean;
-  shared_model_description: string | null;
 };
 
 // One chart-producing or table-producing chat turn, anywhere in this data
@@ -203,30 +192,11 @@ export type FlowNode = FlowAnnotationFields & {
   new_version_id: string | null;
 };
 
-// Phase 2, feature 3 (data lineage across pipelines): one OTHER, separately
-// -connected data source's conversation that pulled in a promoted shared
-// model FROM the datasource whose Flow tab is currently open. See backend
-// routers/datasources.py get_data_flow's own `cross_pipeline` query param
-// and _cross_pipeline_uses for exactly how/why this is scoped to promoted
-// shared models only.
-export type CrossPipelineUse = {
-  version_id: string;
-  used_in_datasource_id: string;
-  used_in_datasource_name: string;
-  used_in_conversation_id: string;
-  used_in_conversation_title: string;
-  used_at: string;
-};
-
 export type DataFlow = {
   datasource_id: string;
   datasource_name: string;
   versions: FlowVersion[];
   nodes: FlowNode[];
-  // Always an array (never omitted) - empty either because
-  // cross_pipeline wasn't requested or because nothing was found. See
-  // CrossPipelineUse's own comment.
-  cross_pipeline_uses: CrossPipelineUse[];
 };
 
 // One column's aggregate, computed server-side over the full
@@ -437,12 +407,7 @@ export const datasourceApi = {
   // Flow tab's data-lineage map (components/DataFlowMap.tsx). See
   // backend routers/datasources.py get_data_flow for exactly what this
   // reads back (nothing is computed fresh server-side either).
-  // `crossPipeline` (Phase 2, feature 3) additionally asks the backend to
-  // compute cross_pipeline_uses - left false, that key always comes back
-  // as an empty array rather than the (potentially app-wide) lookup ever
-  // running unasked.
-  getFlow: (id: string, crossPipeline = false) =>
-    api.get<DataFlow>(`/datasources/${id}/flow`, { params: { cross_pipeline: crossPipeline || undefined } }).then((r) => r.data),
+  getFlow: (id: string) => api.get<DataFlow>(`/datasources/${id}/flow`).then((r) => r.data),
 
   // Phase 2, feature 2: upserts one Flow-tab card's persistent annotation -
   // any subset of the four fields, see backend upsert_flow_annotation.
@@ -457,20 +422,6 @@ export const datasourceApi = {
         patch
       )
       .then((r) => r.data),
-
-  // Phase 2, feature 1: promotes/un-promotes a saved table into a named,
-  // reusable "model" - see modelsApi.list below for where a promoted one
-  // then shows up.
-  promoteVersion: (id: string, versionId: string, description: string) =>
-    api
-      .post<{ id: string; is_shared_model: boolean; shared_model_description: string | null; promoted_at: string | null }>(
-        `/datasources/${id}/versions/${versionId}/promote`,
-        { description }
-      )
-      .then((r) => r.data),
-
-  unpromoteVersion: (id: string, versionId: string) =>
-    api.delete<{ id: string; is_shared_model: boolean }>(`/datasources/${id}/versions/${versionId}/promote`).then((r) => r.data),
 
   // Phase 2, feature 4: connects a generic read-only REST API source, and
   // manually re-fetches it later - see backend connect_api/refresh_api.
@@ -1558,29 +1509,6 @@ export type JobRun = {
 
 export type JobRunsPage = { runs: JobRun[]; total: number; page: number; page_size: number };
 
-// Phase 2, feature 1 (shared, reusable models): one row of the /models
-// library page - see backend schemas.SharedModelOut and
-// routers/models_library.py.
-export type SharedModel = {
-  id: string;
-  name: string;
-  description: string | null;
-  datasource_id: string;
-  datasource_name: string;
-  created_at: string;
-  promoted_at: string | null;
-  step_count: number;
-  // Only ever present when this version's own cleaning_log already
-  // recorded a rows_after figure - never computed fresh by the backend
-  // just to fill this in, so a promoted-as-is original table (no cleaning
-  // steps at all) legitimately has this as null.
-  row_count: number | null;
-};
-
-export const modelsApi = {
-  list: () => api.get<SharedModel[]>("/models").then((r) => r.data),
-};
-
 export const jobsApi = {
   // Every dashboard this person can see, one row per dashboard, whether or
   // not it has a schedule turned on yet - the Jobs page's main table.
@@ -1795,9 +1723,9 @@ export const accessRulesApi = {
 // view, predict with, bulk-score with, retrain and delete a real
 // scikit-learn model. See backend models.MLModel/MLPrediction and
 // routers/ml_models.py for the full design. Always "ML Model(s)" here -
-// never just "Model(s)" - to stay permanently distinct from SharedModel/
-// modelsApi above (routers/models_library.py's promoted, reusable data
-// TABLES, which have nothing to do with machine learning). ----
+// never just "Model(s)" - a naming-collision habit kept from when this app
+// also had a "Saved Tables" feature (since removed) sitting right next to
+// this one. ----
 
 export type MLTaskType = "classification" | "regression";
 export type MLModelStatus = "training" | "ready" | "failed";
