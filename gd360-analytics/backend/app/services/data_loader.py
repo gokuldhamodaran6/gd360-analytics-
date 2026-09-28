@@ -116,7 +116,30 @@ def warm_cache(datasource_id: str, df: pd.DataFrame, table: str | None = None) -
     upload_file in routers/datasources.py, which parses every sheet once
     for the schema and warms all of them here, not just the first) - None
     for a CSV or single-sheet upload, matching `_load_original`'s own
-    "no table means the one implicit sheet" default."""
+    "no table means the one implicit sheet" default.
+
+    Also doubles, deliberately, as this cache's ONE way of invalidating a
+    stale entry: routers/datasources.py's refresh_api (Phase 2, feature 4)
+    is the one place in this whole app that reassigns an existing
+    DataSource.file_data after its row was first created - the module
+    docstring above describes every OTHER caller of this cache as reading
+    from columns that are "write-once" for exactly this reason. refresh_api
+    calls this function again, right after overwriting file_data, with the
+    freshly-fetched DataFrame - `_cache_put` unconditionally overwrites
+    whatever was there under that same key, so the stale pre-refresh
+    DataFrame this process may have already cached is replaced in the same
+    request, not left to be served again until some unrelated eviction.
+    One real limitation this does NOT solve, worth stating plainly rather
+    than silently assuming away: if this backend ever runs across more than
+    one worker process, only the process that actually handled a given
+    refresh call updates ITS OWN cache - any other worker process still
+    holding the old DataFrame under this key keeps serving it until that
+    entry ages out of its own LRU or that worker restarts. This app has no
+    shared cache layer (e.g. Redis) to fix that across processes, and
+    today's deployment is a single web process (see services/scheduler.py's
+    own module docstring for the same "single process" assumption
+    elsewhere in this app) - revisit this the same day a second worker
+    process is ever introduced."""
     _cache_put(f"original:{datasource_id}:{table or ''}", df)
 
 
@@ -180,13 +203,23 @@ def load_dataframe(
 def _load_original(
     ds: models.DataSource, table: str | None = None, row_limit: int | None = None, db: Session | None = None,
 ) -> pd.DataFrame:
-    if ds.kind in ("csv", "excel"):
+    if ds.kind in ("csv", "excel", "api"):
         if not ds.file_data:
             raise ValueError(
                 "The data for this file is missing - it was uploaded before a storage fix and its "
                 "content did not survive a server restart. Please remove this data source and "
                 "upload the file again; new uploads are stored permanently and will not be lost."
             )
+        # kind == "api" (Phase 2, feature 4): the fetch-from-a-REST-API
+        # step only ever happens at connect time or on an explicit manual
+        # refresh (see routers/datasources.py connect_api/refresh_api) -
+        # the result is flattened and stored as CSV bytes in this SAME
+        # file_data column an uploaded CSV/Excel file already uses, so from
+        # this point on an "api" source reads through the exact same
+        # cached, file-based path as any other upload, with zero special-
+        # casing beyond picking ".csv" as its ext_hint here (an API
+        # response is never treated as a multi-sheet workbook - sheet
+        # stays None below, same as a plain CSV).
         ext_hint = ".xlsx" if ds.kind == "excel" else ".csv"
         # A multi-sheet Excel workbook (schema_cache in the new
         # {sheet_name: [...]} shape - see connectors.FileConnector.
