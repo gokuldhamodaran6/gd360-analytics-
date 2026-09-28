@@ -564,6 +564,9 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         result_truncated=result.get("result_truncated", False),
         sources=sources_manifest,
         ok=result.get("ok", True),
+        steps=result.get("steps") or None,
+        results=result.get("results") or None,
+        self_critique=result.get("self_critique") or None,
     )
 
 
@@ -985,7 +988,7 @@ def _persist_and_respond(
     rows_before=None, rows_after=None, nulls_before=None, nulls_after=None,
     new_version_id=None, new_version_name=None, code=None, chart_type=None,
     continue_action=None, result_columns=None, result_rows=None, result_truncated=False,
-    sources=None, ok: bool = True,
+    sources=None, ok: bool = True, steps=None, results=None, self_critique=None,
 ) -> schemas.ChatResponse:
     msg = models.Message(
         conversation_id=conversation_id,
@@ -1009,6 +1012,12 @@ def _persist_and_respond(
         # get_data_flow.
         sources=sources,
         new_version_id=new_version_id,
+        # The real "what I did" trace - see Message.steps' own docstring.
+        steps=steps,
+        # The extra chart/table cards beyond the first, and the honest
+        # trustworthiness caveat - see Message.results/self_critique.
+        results=results,
+        self_critique=self_critique,
     )
     db.add(msg)
     db.commit()
@@ -1020,6 +1029,9 @@ def _persist_and_respond(
         action=action,
         reply_text=reply_text,
         ok=ok,
+        steps=steps,
+        results=results,
+        self_critique=self_critique,
         chart_spec=chart_spec,
         chart_type=chart_type,
         result_columns=result_columns,
