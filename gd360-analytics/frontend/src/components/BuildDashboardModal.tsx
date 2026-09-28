@@ -3,6 +3,17 @@ import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { dashboardBuilderApi, type DashboardTemplate, type DashboardTemplateBlock } from "../api/client";
 
+// 2026-09-28: raised from 500 - real usage showed people pasting a
+// genuinely detailed, multi-part description (several metrics/models named
+// at once) into this box, and 500 chars cut that off mid-sentence with no
+// visible warning (see the counter added next to the textarea below).
+// 2000 comfortably fits a detailed paragraph while still keeping this a
+// "describe what you want," not "paste your whole spec" field - backend's
+// _generate_goal_plan already caps at 10 planned blocks regardless of how
+// long the description is, so a longer goal cannot balloon into an
+// unbounded number of blocks.
+const _GOAL_MAX_LEN = 2000;
+
 // 2026-09-24 (Dashboard Builder Phase 1): the choice Gokul asked for right
 // in the chat flow - "so only they done with analysis our dashboard button
 // should show like the flow which will show build by ai or create by own".
@@ -371,15 +382,26 @@ export default function BuildDashboardModal({
 
             <textarea
               autoFocus
-              className="input text-sm w-full min-h-[90px] resize-none"
-              placeholder='e.g. "A revenue overview for my exec team" or "Customer churn broken down by region"'
+              className="input text-sm w-full min-h-[110px] resize-none"
+              placeholder='e.g. "A revenue overview for my exec team" or "Customer churn broken down by region" - a longer, detailed description (several metrics at once) works too'
               value={goal}
               onChange={(e) => setGoal(e.target.value)}
-              maxLength={500}
+              maxLength={_GOAL_MAX_LEN}
               disabled={building}
             />
+            {/* 2026-09-28: this was capped at 500 chars with no visible
+                counter - a longer, detailed description (e.g. several
+                metrics pasted in at once) got silently truncated mid-
+                sentence with no warning at all, which could leave the
+                planning step reading a half-finished sentence. Raised the
+                cap to a size that comfortably fits a genuinely detailed,
+                multi-part description, and this counter makes the limit
+                visible instead of invisible. */}
+            <div className="text-[11px] text-muted mt-1 text-right">
+              {goal.length}/{_GOAL_MAX_LEN}
+            </div>
 
-            <div className="flex items-center gap-2.5 mt-4">
+            <div className="flex items-center gap-2.5 mt-2">
               <button
                 type="button"
                 disabled={building || !goal.trim()}
