@@ -145,6 +145,16 @@ _NEW_COLUMNS = [
     # models.Message.self_critique's own docstrings for what these hold.
     ("messages", "results", "JSON"),
     ("messages", "self_critique", "TEXT"),
+    # 2026-09-28 (Flow tab transparency round): real, honestly-captured
+    # timing + a short "what actually ran" summary for the Flow tab's
+    # cards - see models.DatasetVersion.duration_ms/method_summary and
+    # models.Message.duration_ms/method_summary for what these hold and
+    # how they're derived (never fabricated - either a real wall-clock
+    # measurement or read straight off the code that actually executed).
+    ("dataset_versions", "duration_ms", "INTEGER"),
+    ("dataset_versions", "method_summary", "TEXT"),
+    ("messages", "duration_ms", "INTEGER"),
+    ("messages", "method_summary", "TEXT"),
 ]
 
 
