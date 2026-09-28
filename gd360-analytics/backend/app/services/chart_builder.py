@@ -42,6 +42,8 @@ would reach for these by reflex rather than plotting the bare numbers:
 from __future__ import annotations
 
 import json
+import re
+import warnings
 from typing import Any
 
 import numpy as np
@@ -66,6 +68,22 @@ PALETTE = [
 # marker.meta.role is how that file recognizes and protects this trace from
 # being recolored or captioned like a real series).
 TREND_COLOR = "#E24C4C"
+
+# The color used for an anomaly marker's ring + "!" badge (see
+# apply_analysis_overlays below) - the same hex as TREND_COLOR above, but
+# named separately on purpose: a trend line and a flagged unusual point are
+# conceptually different overlays (one describes the whole series' shape,
+# the other calls out one specific point that breaks it) that only
+# coincidentally look right in the same red. If either color is ever tuned
+# independently later, keeping these as two named constants means that
+# change doesn't silently drag the other one along with it.
+ANOMALY_COLOR = "#E24C4C"
+
+# meta.role values apply_analysis_overlays adds/removes - kept as one set so
+# both the "strip anything I added before" idempotency step and any future
+# caller that needs to recognize these traces (see chartStyle.ts's
+# isDecorativeTrace) have one place that lists them.
+_ANALYSIS_OVERLAY_ROLES = {"forecast_line", "forecast_band", "anomaly_markers"}
 
 # Chart types that render as a continuous color gradient rather than
 # discrete series colors - used by chartStyle.ts on the frontend too, but
@@ -184,6 +202,310 @@ def _add_trend_overlay(fig: go.Figure, x_raw: Any, y_raw: Any) -> None:
         text=f"Trend: {strength} {direction} relationship  (r = {r_value:.2f}, {significance})",
         font=dict(size=12, color=TREND_COLOR),
     )
+
+
+def _fit_forecast(pos: np.ndarray, y: np.ndarray, future_pos: np.ndarray):
+    """Fits the same simple linear trend `_fit_regression` does (on ordinal
+    POSITION, not raw x - see apply_analysis_overlays for why), but returns
+    the WIDER *prediction interval* for the requested `future_pos` values
+    instead of the narrower *confidence interval for the mean* that
+    `_fit_regression`'s own in-sample band uses. The two formulas differ by
+    exactly the leading "1 +" term inside the square root (`se_pred` here
+    vs `se_fit` there) - a real statistical distinction, not a rounding
+    nuance: a confidence interval only bounds uncertainty about where the
+    AVERAGE line sits, while a prediction interval also has to account for
+    the natural scatter of any one individual future point around that
+    average - which is strictly wider, and is the honest thing to show for
+    "where might a real future value actually land" rather than merely
+    "where does the line best go." Reusing `_fit_regression` unmodified
+    here would understate that uncertainty.
+
+    Returns None (never raises) when there isn't enough clean, varying
+    data to fit anything meaningful - same convention as `_fit_regression`.
+    Otherwise returns (forecast_y, upper, lower, slope, intercept) as plain
+    numpy arrays / floats for `future_pos`."""
+    n = len(pos)
+    if n < 4 or np.unique(pos).size < 2:
+        return None
+    try:
+        slope, intercept, r_value, p_value, _std_err = scipy_stats.linregress(pos, y)
+    except Exception:
+        return None
+    if not np.isfinite([slope, intercept, r_value, p_value]).all():
+        return None
+
+    forecast_y = slope * future_pos + intercept
+    mean_x = float(pos.mean())
+    sxx = float(np.sum((pos - mean_x) ** 2))
+    dof = n - 2
+    if dof > 0 and sxx > 0:
+        residuals = y - (slope * pos + intercept)
+        mse = float(np.sum(residuals ** 2) / dof)
+        s = mse ** 0.5
+        try:
+            t_val = float(scipy_stats.t.ppf(0.975, dof))
+        except Exception:
+            t_val = 1.96
+        # Note the "1 +" here - this is the whole difference from
+        # _fit_regression's se_fit, and it's deliberate (see docstring).
+        se_pred = s * np.sqrt(1.0 + 1.0 / n + (future_pos - mean_x) ** 2 / sxx)
+        band = t_val * se_pred
+    else:
+        band = np.zeros_like(future_pos, dtype=float)
+
+    return forecast_y, forecast_y + band, forecast_y - band, float(slope), float(intercept)
+
+
+def _color_to_rgba(color: Any, alpha: float) -> str:
+    """Converts a plain "#RRGGBB" hex color - what PALETTE and every
+    build_figure branch above hands a trace's line/marker color as - into
+    an rgba() string at the given alpha, for the forecast band's fill.
+    This has to be generic (unlike _add_trend_overlay's hardcoded
+    "rgba(226, 76, 76, 0.15)") because the forecast band must match
+    whichever color the PRIMARY trace actually has, not one fixed color.
+    Anything that isn't a plain 6-digit hex string (already an rgba()
+    string, a CSS color name, etc) falls back to a neutral gray at the
+    requested alpha, rather than raising over what is ultimately a
+    cosmetic detail - a chart is still fully honest with a plain-gray band."""
+    if isinstance(color, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+        return f"rgba({r}, {g}, {b}, {alpha})"
+    return f"rgba(160, 160, 160, {alpha})"
+
+
+def _infer_future_x(x_raw: list, periods: int) -> list:
+    """Honestly extends a chart's x-axis `periods` steps past its last real
+    point, for the forecast overlay's projected x values - never a guessed
+    or arbitrary label sequence. Tries dates first (the common case for
+    anything worth forecasting), then plain numbers, and raises a clear
+    ValueError when neither fits, rather than emitting a misleading
+    continuation of what are really just unordered category labels (e.g.
+    product names) that have no honest "next value."
+
+    Both paths infer the step size as the MEDIAN of consecutive
+    differences (robust to one irregular gap) and then repeatedly add that
+    step from the last real x value - so periods=3 after a monthly series
+    keeps landing on month boundaries, not an arbitrary interpolation."""
+    if len(x_raw) >= 2:
+        # Genuine category strings (e.g. product names) will never parse as
+        # dates - that's an expected, handled outcome here (falls through
+        # to the numeric attempt, then to the honest ValueError below), not
+        # a bug, so the noisy "could not infer format" warning pandas emits
+        # for that case is deliberately silenced (same idiom
+        # chart_suggester.py's profile_dataframe already uses for the same
+        # reason).
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            as_dates = pd.to_datetime(pd.Series(x_raw), errors="coerce")
+        if as_dates.notna().all():
+            diffs = as_dates.diff().dropna()
+            if len(diffs) > 0:
+                step = diffs.median()
+                last = as_dates.iloc[-1]
+                return [(last + step * (i + 1)).isoformat() for i in range(periods)]
+
+        as_numbers = pd.to_numeric(pd.Series(x_raw), errors="coerce")
+        if as_numbers.notna().all():
+            diffs = as_numbers.diff().dropna()
+            if len(diffs) > 0:
+                step = float(diffs.median())
+                last = float(as_numbers.iloc[-1])
+                return [last + step * (i + 1) for i in range(periods)]
+
+    raise ValueError("This chart's x-axis isn't a date or number sequence, so GD360 can't project it forward.")
+
+
+def apply_analysis_overlays(chart_spec: dict, forecast_enabled: bool, anomalies_enabled: bool):
+    """Adds or removes the two optional, purely-presentational analysis
+    overlays a chart block's kebab menu can toggle - "Show forecast" and
+    "Show anomalies" - on top of an already-built chart_spec (the same
+    go.Figure-shaped dict build_figure/restyle_block already produce).
+    Neither overlay recomputes or reshapes the chart's real data; both
+    read directly off the PRIMARY trace's own already-computed x/y arrays -
+    the same honesty rule this whole module holds elsewhere: every
+    projection and every flagged point comes from a real statistical
+    computation on the chart's own numbers, never a fabricated one.
+
+    IDEMPOTENT: any trace a PRIOR call to this function added is stripped
+    first (tagged via meta.role - see _ANALYSIS_OVERLAY_ROLES), so toggling
+    a switch off removes exactly what toggling it on added, and toggling it
+    back on never leaves duplicate traces behind.
+
+    The PRIMARY trace is the first trace in the figure whose meta.role is
+    NOT set at all - this correctly skips over another feature's own
+    decorative traces (e.g. a scatter chart's automatic trend_line/
+    trend_band, or a faceted bar's facet_panel traces), which already carry
+    a role of their own. When no such trace exists (an empty or entirely
+    decorative figure), both toggles are no-ops - not an error, since there
+    is genuinely nothing here to analyze.
+
+    Returns a (chart_spec, anomaly_count) TUPLE, not just the spec:
+      - anomaly_count is None when anomalies_enabled is False - the toggle
+        wasn't requested, so there is nothing to report.
+      - anomaly_count is an int (possibly 0) whenever anomalies_enabled is
+        True. 0 is an honest "checked, found none" result, not a failure -
+        the endpoint/frontend use it to show a plain "no unusual points
+        detected" hint instead of silence.
+
+    Raises ValueError (never anything else) with a clear, person-facing
+    message whenever a requested overlay genuinely cannot be computed for
+    this chart (wrong chart type/mode for forecasting, too few points, an
+    x-axis with no honest way to project forward, or a chart shape with no
+    y values to test at all for anomalies). Never fabricates a projection
+    or a flagged point to paper over one of those cases."""
+    fig = go.Figure(chart_spec)
+
+    # Idempotency: strip whatever a previous call to this function added,
+    # before doing anything else - so re-running with new toggle values
+    # always starts from the figure's own real data, never from a
+    # previously-drawn projection or anomaly marker.
+    fig.data = tuple(
+        t for t in fig.data
+        if not (isinstance(t.meta, dict) and t.meta.get("role") in _ANALYSIS_OVERLAY_ROLES)
+    )
+
+    primary = None
+    for t in fig.data:
+        role = t.meta.get("role") if isinstance(t.meta, dict) else None
+        if role is None:
+            primary = t
+            break
+
+    if primary is None:
+        # Nothing here to analyze (an empty figure, or one made up entirely
+        # of other features' own tagged decorative traces) - both toggles
+        # are honest no-ops, not errors.
+        return json.loads(fig.to_json()), (0 if anomalies_enabled else None)
+
+    if forecast_enabled:
+        # Not every trace type has a .mode attribute at all (e.g. go.Bar) -
+        # getattr with a default avoids an AttributeError for those rather
+        # than crashing before we even get to the honest "wrong chart type"
+        # ValueError below.
+        mode = getattr(primary, "mode", None) or ""
+        if primary.type != "scatter" or "lines" not in mode:
+            raise ValueError("Forecasting only works on a line, area, or step chart.")
+
+        x_raw = list(primary.x) if primary.x is not None else []
+        y_raw = list(primary.y) if primary.y is not None else []
+
+        y_series = pd.to_numeric(pd.Series(y_raw), errors="coerce")
+        valid_mask = y_series.notna()
+        valid_y = y_series[valid_mask].to_numpy(dtype=float)
+        n = len(valid_y)
+        if n < 4:
+            raise ValueError("Not enough data points to forecast (need at least 4).")
+
+        # Fit on ordinal POSITION among the valid points, not the raw x
+        # values - raw x is very often a date or a category label, not a
+        # number linregress can fit against.
+        pos = np.arange(n, dtype=float)
+        periods = max(2, min(8, round(n * 0.25)))
+        future_pos = np.arange(n, n + periods, dtype=float)
+
+        fit = _fit_forecast(pos, valid_y, future_pos)
+        if fit is None:
+            raise ValueError("Not enough data points to forecast (need at least 4).")
+        forecast_y, upper, lower, _slope, _intercept = fit
+
+        # Honest future x labels - dates/numbers only, real category labels
+        # raise rather than being silently extended (see _infer_future_x).
+        future_x = _infer_future_x(x_raw, periods)
+
+        # The real last raw point, used to connect the dashed projection
+        # visually to the real line (the band's width is exactly 0 there,
+        # widening outward after it). If the raw series' very last point
+        # happened to be the one dropped for a NaN y (a trailing gap), fall
+        # back to the last VALID y value instead, so the junction is still
+        # a real, honest number rather than NaN.
+        last_x = x_raw[-1] if x_raw else n - 1
+        last_y_raw = pd.to_numeric(pd.Series([y_raw[-1]]), errors="coerce").iloc[0] if y_raw else np.nan
+        last_y = float(last_y_raw) if pd.notna(last_y_raw) else float(valid_y[-1])
+
+        forecast_x = [last_x] + future_x
+        forecast_y_full = [last_y] + list(forecast_y)
+        band_x = [last_x] + future_x
+        band_upper = [last_y] + list(upper)
+        band_lower = [last_y] + list(lower)
+
+        color = None
+        if primary.line is not None and primary.line.color:
+            color = primary.line.color
+        elif getattr(primary, "marker", None) is not None and primary.marker.color:
+            color = primary.marker.color
+        if not color:
+            color = PALETTE[0]
+
+        band_x_full = list(band_x) + list(band_x[::-1])
+        band_y_full = list(band_upper) + list(band_lower[::-1])
+        # Band first, so it renders behind the dashed line (same ordering
+        # _add_trend_overlay uses for its own confidence band).
+        fig.add_trace(go.Scatter(
+            x=band_x_full, y=band_y_full, fill="toself",
+            fillcolor=_color_to_rgba(color, 0.15),
+            line=dict(width=0),
+            hoverinfo="skip", showlegend=False,
+            meta={"role": "forecast_band"},
+        ))
+        fig.add_trace(go.Scatter(
+            x=forecast_x, y=forecast_y_full, mode="lines",
+            line=dict(color=color, width=2.5, dash="dash"),
+            opacity=0.55,
+            hovertemplate="Projected: %{y:.2f}<extra></extra>",
+            showlegend=False,
+            meta={"role": "forecast_line"},
+        ))
+
+    anomaly_count = None
+    if anomalies_enabled:
+        # Not every trace type even HAS an x/y array at all - a pie/donut/
+        # sankey uses labels/values instead, and go.Pie has no .y attribute
+        # whatsoever (not just None) - getattr with a default catches that
+        # rather than crashing before the honest ValueError below.
+        y_attr = getattr(primary, "y", None)
+        y_raw = list(y_attr) if y_attr is not None else None
+        if y_raw is None:
+            raise ValueError("Anomaly detection isn't available on this chart type.")
+        x_attr = getattr(primary, "x", None)
+        x_raw = list(x_attr) if x_attr is not None else list(range(len(y_raw)))
+
+        y_series = pd.to_numeric(pd.Series(y_raw), errors="coerce")
+        valid_mask = y_series.notna()
+        y = y_series[valid_mask].to_numpy(dtype=float)
+        x_valid = [x_raw[i] for i in range(len(y_raw)) if valid_mask.iloc[i]]
+        if len(y) == 0:
+            raise ValueError("Anomaly detection isn't available on this chart type.")
+
+        # Robust modified z-score (Iglewicz & Hoaglin) - median-based, so a
+        # single extreme point can't drag the "normal" baseline toward
+        # itself the way a mean/std-based z-score would.
+        median = float(np.median(y))
+        mad = float(np.median(np.abs(y - median)))
+        scale = mad if mad != 0 else float(np.std(y))
+
+        if scale == 0:
+            # A perfectly flat series genuinely has no anomalies - an
+            # honest, correct "0", not a failure.
+            anomaly_count = 0
+        else:
+            modified_z = 0.6745 * (y - median) / scale
+            flagged = np.abs(modified_z) > 3.5
+            flagged_x = [x_valid[i] for i in range(len(y)) if flagged[i]]
+            flagged_y = [float(y[i]) for i in range(len(y)) if flagged[i]]
+            anomaly_count = len(flagged_y)
+
+            if anomaly_count > 0:
+                fig.add_trace(go.Scatter(
+                    x=flagged_x, y=flagged_y, mode="markers+text",
+                    marker=dict(symbol="circle-open", size=15, color=ANOMALY_COLOR, line=dict(width=2.5)),
+                    text=["!"] * anomaly_count, textposition="top center",
+                    textfont=dict(color=ANOMALY_COLOR, size=10),
+                    hovertemplate="Unusual value: %{y}<extra></extra>",
+                    showlegend=False,
+                    meta={"role": "anomaly_markers"},
+                ))
+
+    return json.loads(fig.to_json()), anomaly_count
 
 
 def _build_dual_axis_combo(result: pd.DataFrame, cols: list) -> go.Figure:
