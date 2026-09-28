@@ -472,7 +472,24 @@ class GenerateDashboardRequest(BaseModel):
     # happen to be in this chat. Omitted/blank keeps that original
     # behavior exactly as it always worked - see generate_dashboard's own
     # docstring for the full picture.
-    goal: Optional[str] = Field(default=None, max_length=500)
+    # 2026-09-28: raised from 500 to match BuildDashboardModal.tsx's own
+    # textarea cap (raised the same round) - this was silently rejecting
+    # (422) any longer, genuinely detailed goal description the frontend
+    # now happily accepts, which the modal would have shown as raw,
+    # unreadable Pydantic error JSON instead of a real message.
+    goal: Optional[str] = Field(default=None, max_length=2000)
+    # 2026-09-28 (datasource picker round): optional explicit override for
+    # which DataSource the goal-driven build loads and analyzes. Real
+    # usage showed the previous conversation-only resolution (see
+    # _resolve_datasource) silently building a dashboard from whatever
+    # data source happened to be behind the currently-open chat, which is
+    # not necessarily the data source the person actually meant - e.g. a
+    # schema-catalog conversation left open while they meant to build
+    # against their real sales data. Omitted/blank keeps the exact
+    # original conversation-derived resolution (backward compatible - an
+    # old frontend build, or the goal-less "Skip" recap path, never sends
+    # this). See generate_dashboard's own docstring for how it's used.
+    datasource_id: Optional[str] = Field(default=None)
 
 
 # 2026-09-25 (Round 2, "build own"): a blank v2 dashboard tied to a
