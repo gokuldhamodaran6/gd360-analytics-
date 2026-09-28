@@ -11,6 +11,7 @@ import DashboardView from "./pages/DashboardView";
 import DashboardBuilderView from "./pages/DashboardBuilderView";
 import PublicDashboardView from "./pages/PublicDashboardView";
 import DataSources from "./pages/DataSources";
+import Jobs from "./pages/Jobs";
 import NewProject from "./pages/NewProject";
 import AdminDashboard from "./pages/AdminDashboard";
 import Profile from "./pages/Profile";
@@ -110,6 +111,10 @@ export default function App() {
           someone who has never signed in and never will. */}
       <Route path="/d/:slug" element={<PublicDashboardView />} />
       <Route path="/data" element={<Protected><DataSources /></Protected>} />
+      {/* 2026-09-28 (scheduled auto-refresh + background jobs round): the
+          Jobs page - see AppSidebar.tsx's own nav entry for this, placed
+          between Dashboards and Data Sources exactly like the sidebar. */}
+      <Route path="/jobs" element={<Protected><Jobs /></Protected>} />
       <Route path="/admin" element={<Protected><AdminDashboard /></Protected>} />
       <Route path="/profile" element={<Protected><Profile /></Protected>} />
       {/* Public and standalone (no <Protected> wrapper): opened in a new
