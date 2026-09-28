@@ -44,7 +44,15 @@ class User(Base):
     # NULL, which would otherwise need special-casing everywhere it's read.
     token_version = Column(Integer, default=0, nullable=False, server_default="0")
 
-    datasources = relationship("DataSource", back_populates="owner", cascade="all, delete-orphan")
+    # foreign_keys is explicit here for the same reason DataSource.owner's
+    # own relationship below states it - DataSource.governance_last_
+    # reviewed_by_id (Phase 5, Batch A) is a second column on datasources
+    # that also points at users.id, so SQLAlchemy needs to be told which of
+    # the two this relationship (the data source's real owner) means.
+    datasources = relationship(
+        "DataSource", back_populates="owner", cascade="all, delete-orphan",
+        foreign_keys="DataSource.owner_id",
+    )
     conversations = relationship("Conversation", back_populates="owner", cascade="all, delete-orphan")
     dashboards = relationship("Dashboard", back_populates="owner", cascade="all, delete-orphan")
     learned_answers = relationship("LearnedAnswer", cascade="all, delete-orphan")
@@ -166,8 +174,24 @@ class DataSource(Base):
     # refresh_api's own docstring for why it is NOT wired into
     # services/scheduler.py's 60-second auto-refresh loop this round.
     api_last_refreshed_at = Column(DateTime, nullable=True)
+    # Phase 5, Batch A (2026-09-28, data governance & quality): the last
+    # time a human on this data source's team actually looked it over and
+    # confirmed its access/quality is still what it should be - purely a
+    # manual attestation (see routers/governance.py mark_reviewed), never
+    # inferred or auto-set by anything else in the app. Both null until the
+    # very first "Mark reviewed" click; governance_last_reviewed_by_id is
+    # who clicked it, so the Access review table can show "Reviewed by
+    # <name> <time> ago" rather than just a bare timestamp.
+    governance_last_reviewed_at = Column(DateTime, nullable=True)
+    governance_last_reviewed_by_id = Column(String, ForeignKey("users.id"), nullable=True)
 
-    owner = relationship("User", back_populates="datasources")
+    # foreign_keys is explicit here (not needed by any relationship above
+    # this one in the file) because governance_last_reviewed_by_id, added
+    # just above, is a SECOND column on this table that also points at
+    # users.id - without this, SQLAlchemy can no longer tell which of the
+    # two FK columns this particular relationship (the data source's real
+    # owner) should join on and refuses to configure the mapper at all.
+    owner = relationship("User", back_populates="datasources", foreign_keys=[owner_id])
     versions = relationship(
         "DatasetVersion", back_populates="datasource", cascade="all, delete-orphan",
         order_by="DatasetVersion.position",
@@ -179,6 +203,15 @@ class DataSource(Base):
     # relative to a live datasource's own Flow map, so it has nothing left
     # to say once that datasource is gone.
     flow_annotations = relationship("FlowAnnotation", cascade="all, delete-orphan")
+    # Phase 5, Batch A (data governance & quality): see DataQualityRule's
+    # own docstring below. back_populates + cascade="all, delete-orphan"
+    # mirrors `versions` above exactly - a quality rule only ever means
+    # anything relative to the exact column of the exact data source it
+    # checks, so deleting the data source correctly deletes every rule
+    # built on it rather than leaving orphan rows behind.
+    quality_rules = relationship(
+        "DataQualityRule", back_populates="datasource", cascade="all, delete-orphan",
+    )
 
 
 class DatasetVersion(Base):
@@ -1071,3 +1104,123 @@ class ExperimentAssignment(Base):
     variant = Column(String, nullable=False)  # "a" | "b"
     assigned_at = Column(DateTime, default=datetime.utcnow)
     converted_at = Column(DateTime, nullable=True)
+
+
+class DataQualityRule(Base):
+    """
+    Phase 5, Batch A (2026-09-28, "Data governance & quality" roadmap): one
+    automated check a person has set up on one column of one connected data
+    source - "this column should never be blank", "these values should be
+    unique", "this number should be at least/at most X", "only these exact
+    values are allowed here". Modeled closely on Experiment above: created
+    already "live" (routers/quality_checks.py runs it once, immediately, at
+    creation time - there is no separate "save a rule, run it later" step),
+    and re-run either on demand (the panel's own "Run now" button) or right
+    after creation, never on a background schedule this round - see
+    services/quality_checks.run_quality_rule for exactly how a rule is
+    evaluated.
+
+    rule_type is one of "not_null" (no blank/NaN values), "unique" (no
+    duplicate values), "min_value"/"max_value" (every numeric value is at
+    least/at most a threshold - non-numeric/blank cells are never counted
+    as failing THESE, only "not_null" is about blankness), or
+    "allowed_values" (every value must be one of an explicit list; a blank
+    value always fails this one, since NULL is never itself one of the
+    allowed values). rule_config holds whatever that rule_type needs -
+    {} for not_null/unique, {"min": <number>} for min_value, {"max":
+    <number>} for max_value, {"values": [...]} for allowed_values - kept as
+    one loosely-typed JSON blob (like DashboardBlock.config) rather than
+    five mostly-empty dedicated columns, since only one shape is ever
+    meaningful for a given row.
+
+    The last_* columns are this rule's most recently computed result,
+    always all written together in the same evaluation (see
+    run_quality_rule) so they can never show a stale mix of numbers from
+    two different runs - last_status is "pass" | "fail" | "error" | None
+    (never run - not possible in practice today, since creation always runs
+    it once immediately, but modeled as nullable for a rule that somehow
+    never got its first run). last_message is a short, human-readable
+    summary ("42 of 1,203 rows failed", "All rows passed", or an honest
+    explanation of why the check couldn't run, e.g. a since-renamed
+    column) - NEVER a fabricated or guessed number, only ever set from a
+    real value the last run actually computed against the real data.
+
+    owner_id is whoever created the rule - kept distinct from
+    datasource_id's own owner (a workspace member with edit access can
+    create a rule on a teammate's shared data source) purely for
+    attribution, the same reasoning SavedView.owner_id already follows.
+    """
+    __tablename__ = "data_quality_rules"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    datasource_id = Column(String, ForeignKey("datasources.id"), nullable=False, index=True)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False)
+    column_name = Column(String, nullable=False)
+    rule_type = Column(String, nullable=False)  # not_null | unique | min_value | max_value | allowed_values
+    rule_config = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_run_at = Column(DateTime, nullable=True)
+    last_status = Column(String, nullable=True)  # "pass" | "fail" | "error" | None
+    last_checked_row_count = Column(Integer, nullable=True)
+    last_failing_row_count = Column(Integer, nullable=True)
+    last_message = Column(String, nullable=True)
+
+    datasource = relationship("DataSource", back_populates="quality_rules")
+
+
+class AuditEvent(Base):
+    """
+    Phase 5, Batch A (2026-09-28, "Data governance & quality" roadmap): a
+    real, PERSISTED action log - one row per significant thing someone did
+    (signed up, logged in, created a workspace, changed a teammate's role,
+    joined via an invite link, connected/removed a data source, created/
+    deleted a dashboard, added/removed a quality check, marked a data
+    source reviewed). This is genuinely NOT the same thing as /admin's
+    "Recent activity" feed (routers/admin.py get_activity_feed,
+    AdminDashboard.tsx) - that feed is GD360-STAFF-ONLY, platform-wide
+    across every customer's account, and computed LIVE on every request by
+    querying a handful of other tables (users/datasources/dashboards) for
+    their own timestamps; it stores nothing of its own and has no idea
+    which workspace anything happened in or who else was affected. This
+    table is the opposite on every one of those points: written once, at
+    the moment the action happens (see services/audit.log_audit_event),
+    scoped to a specific workspace's own governance page
+    (routers/governance.py's audit-log endpoint, owner-only), and durable -
+    it is the actual source of truth a workspace owner's audit log reads
+    from, not a live re-computation.
+
+    workspace_id is nullable because not every audited action has one yet
+    (a brand-new signup's own personal workspace is attached at signup,
+    but there's nothing that stops a future audited action from being
+    genuinely workspace-less) - the governance page's own audit-log query
+    filters on a real workspace_id, so a null-workspace event simply never
+    shows up on any one workspace's own log. actor_user_id is who DID the
+    thing (never nullable - every audited action here has a real signed-in
+    actor; the one unauthenticated write path in this app, the streaming
+    webhook ingest, is deliberately NOT audited here, since it isn't a
+    person doing something in the product). target_type/target_id name
+    WHAT was acted on ("user"/"workspace"/"workspace_member"/"datasource"/
+    "dashboard"/"quality_rule", plus that row's own id) - both nullable for
+    an action with no single target (there is none in this round's list,
+    but the shape stays general for whatever's audited next).
+
+    event_metadata is a small, purely descriptive JSON blob - e.g.
+    {"new_role": "viewer"} or {"kind": "postgres"} - never a place to put
+    anything sensitive: NO password, token, secret, or full credential
+    payload belongs in here, ever, only short descriptive values safe to
+    show back to a workspace owner reading their own audit log.
+
+    Composite index on (workspace_id, created_at) - the one real query
+    pattern this table serves: "this workspace's events, newest first."
+    """
+    __tablename__ = "audit_events"
+    __table_args__ = (Index("ix_audit_event_workspace_created", "workspace_id", "created_at"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True)
+    actor_user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    action = Column(String, nullable=False)
+    target_type = Column(String, nullable=True)
+    target_id = Column(String, nullable=True)
+    event_metadata = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
