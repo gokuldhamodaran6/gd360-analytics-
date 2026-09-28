@@ -17,6 +17,7 @@ import DataTable from "../components/DataTable";
 import DataFlowMap, { FlowJumpTarget } from "../components/DataFlowMap";
 import BuildDashboardModal from "../components/BuildDashboardModal";
 import QualityChecksPanel from "../components/QualityChecksPanel";
+import AccessRulesPanel from "../components/AccessRulesPanel";
 import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
 import {
   CLIENT_PIVOTABLE_TYPES, ExploreConfig, ResultColumn, buildExploreFigure, defaultExploreConfig,
@@ -401,7 +402,7 @@ export default function Workspace() {
   // Flow tab, not its Data tab - the very first real deep-link-to-a-tab
   // this page has ever needed, so it's kept as a one-off initial-state read
   // rather than a whole synced-with-the-URL tab system.
-  const [centerTab, setCenterTab] = useState<"data" | "chart" | "flow" | "quality">(
+  const [centerTab, setCenterTab] = useState<"data" | "chart" | "flow" | "quality" | "access">(
     searchParams.get("tab") === "flow" ? "flow" : "data"
   );
   const [dataRefreshKey, setDataRefreshKey] = useState(0);
@@ -1868,6 +1869,18 @@ export default function Workspace() {
               >
                 Quality checks
               </button>
+              {/* Phase 5, Batch B (data governance & quality - row/column
+                  permissions): always shown to everyone who can open this
+                  page, same as every other tab here - AccessRulesPanel
+                  itself handles the non-owner case with its own forbidden-
+                  state message (see components/AccessRulesPanel.tsx), so
+                  ownership is never duplicated as client-side logic here. */}
+              <button
+                className={`text-sm px-4 py-2 rounded-lg font-medium transition ${centerTab === "access" ? "bg-primary text-white" : "btn-secondary"}`}
+                onClick={() => setCenterTab("access")}
+              >
+                Access
+              </button>
             </div>
             <div className="flex items-center gap-3 shrink-0">
               {/* 2026-09-23, round four (Gokul's own explicit ask: "in chat
@@ -2034,6 +2047,8 @@ export default function Workspace() {
               />
             ) : centerTab === "quality" && datasourceId ? (
               <QualityChecksPanel datasourceId={datasourceId} />
+            ) : centerTab === "access" && datasourceId ? (
+              <AccessRulesPanel datasourceId={datasourceId} />
             ) : (
               <div className="h-full flex flex-col gap-2 overflow-hidden">
                 {charts.length > 0 && (
