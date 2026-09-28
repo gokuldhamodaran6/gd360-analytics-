@@ -1273,3 +1273,145 @@ class AuditEvent(Base):
     target_id = Column(String, nullable=True)
     event_metadata = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MLModel(Base):
+    """
+    2026-09-28 (ML Models round): a trained, ready-to-use machine learning
+    model - the real ML feature this app has never had before, as opposed
+    to routers/models_library.py's "Saved Tables" (pages/Models.tsx, still
+    named ModelsIcon/`/models` internally), which are just reusable data
+    TABLES and have nothing to do with machine learning. That naming
+    collision is exactly why this table - and every user-facing string
+    about it - is always called "ML Models" or "ML Model", never just
+    "Models" or "Model", anywhere in this app (see this round's own build
+    notes for the fresh code audit that first flagged the confusion).
+
+    Training is entirely deterministic - a small, fixed, well-tested
+    shortlist of real scikit-learn algorithms per task_type (see
+    services/ml_training.py for the exact list and why), picked by real
+    held-out test performance, never AI-generated or user-authored code,
+    and never routed through this app's AI code-execution sandbox
+    (services/sandbox.py/services/ai_engine.py) at all - matching the exact
+    same "small fixed whitelist, zero code-execution risk" philosophy
+    routers/dashboard_builder.py's manual block building already
+    established for this codebase (see that file's own _MANUAL_AGG_FUNCS).
+    Training an ML model is a plain, deterministic backend computation the
+    user configures through a form (see components/TrainModelWizard.tsx),
+    exactly like manual dashboard block building already is - not a chat/
+    AI feature.
+
+    task_type ("classification" | "regression") is auto-detected from the
+    target column's own real values at training time (see
+    services/ml_training.infer_task_type) unless a caller ever states one -
+    this phase's own wizard never does, so it is always auto-detected in
+    practice. algorithm is the SPECIFIC winning algorithm's real name (e.g.
+    "random_forest_classifier") - always the one that actually won on this
+    model's own held-out test data, shown plainly to the user, never hidden
+    as an opaque "AI model".
+
+    model_artifact is the fitted scikit-learn Pipeline (preprocessing +
+    model chained together, so predict()/score() never have to redo
+    feature engineering by hand) serialized with joblib into raw bytes -
+    the exact same "no external blob storage, just a LargeBinary column"
+    pattern DataSource.file_data/cleaned_data already use in this app (see
+    that model's own docstring) - this app has no S3/blob storage.
+
+    feature_columns/excluded_columns are both real, computed at training
+    time by services/ml_training.select_features - a column that looks
+    like a unique id, or has too many distinct categorical values to
+    one-hot-encode sanely, is excluded and WHY is recorded in
+    excluded_columns so the UI can always honestly answer "why wasn't this
+    column used?" - never silently dropped with no explanation.
+
+    metrics is the real, computed held-out test performance - keys depend
+    on task_type (classification: accuracy/precision/recall/f1;
+    regression: mae/rmse/r2) - NEVER a fabricated or estimated number; see
+    this app's own strict "never fabricate a stat" discipline, unbroken
+    here.
+
+    status is "training" | "ready" | "failed" - "training" only ever
+    exists for the brief moment between this row's own creation and
+    services/ml_training.train_model returning (training runs synchronously
+    inside the same request, matching how quality-rule creation already
+    runs its own first check synchronously - see routers/quality_checks.py)
+    - by the time POST /ml-models/train responds, status is always either
+    "ready" or "failed". "failed" always keeps error_message set to a real,
+    honest explanation (e.g. "Not enough data to train a reliable model -
+    need at least 30 rows with a value in both the target and feature
+    columns, this data only has 12."), never a generic/blank failure.
+
+    prediction_count/last_predicted_at are real running counters, bumped by
+    every actual predict/score call (see routers/ml_models.py) - never
+    simulated or seeded with a fabricated starting number.
+
+    owner_id is whoever trained this model - the only person who can
+    delete it (see routers/ml_models.py delete_ml_model); datasource_id
+    ties it to the exact data source it was trained from and re-trains
+    against, following the same owner_id/datasource_id split
+    DataQualityRule already uses for the identical reason (a workspace
+    member with edit access can train a model on a teammate's shared data
+    source, attributed to themselves).
+    """
+    __tablename__ = "ml_models"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True)
+    datasource_id = Column(String, ForeignKey("datasources.id"), nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    task_type = Column(String, nullable=True)  # "classification" | "regression" - set once training completes
+    target_column = Column(String, nullable=False)
+    feature_columns = Column(JSON, nullable=True)  # list[str] actually used, set at training time
+    excluded_columns = Column(JSON, nullable=True)  # list[{"column": str, "reason": str}]
+    algorithm = Column(String, nullable=True)  # e.g. "random_forest_classifier", set once training completes
+    model_artifact = Column(LargeBinary, nullable=True)  # joblib-serialized fitted sklearn Pipeline
+    metrics = Column(JSON, nullable=True)
+    status = Column(String, nullable=False, default="training")  # "training" | "ready" | "failed"
+    error_message = Column(Text, nullable=True)
+    trained_row_count = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    trained_at = Column(DateTime, nullable=True)
+    prediction_count = Column(Integer, nullable=False, default=0)
+    last_predicted_at = Column(DateTime, nullable=True)
+
+    datasource = relationship("DataSource")
+    predictions = relationship("MLPrediction", cascade="all, delete-orphan")
+
+
+class MLPrediction(Base):
+    """2026-09-28 (ML Models round): one real prediction made against a
+    trained MLModel - powers that model's own usage stats
+    (prediction_count/last_predicted_at on MLModel) honestly, and is the
+    foundation a later round can build real accuracy-over-time monitoring
+    on top of. Written both by a single POST /ml-models/{id}/predict call
+    and, once per row, by a POST /ml-models/{id}/score call against a whole
+    table (see routers/ml_models.py) - either way, `input_values` and
+    `predicted_value` are always the real values that call actually used/
+    produced, never sampled or reconstructed after the fact.
+
+    actual_value stays null until someone later confirms the real outcome -
+    never guessed, backfilled, or auto-filled by anything in this app; this
+    round builds no UI for setting it, it is just left ready for that
+    honest, human-confirmed future feature rather than modeled around a
+    fabricated placeholder in the meantime.
+
+    confidence is predict_proba's top-class probability, only ever set for
+    a classification model whose underlying winning algorithm actually
+    supports predict_proba - null for every regression prediction, and null
+    for a classification prediction from an algorithm that doesn't expose
+    one, rather than a fabricated confidence number."""
+    __tablename__ = "ml_predictions"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    ml_model_id = Column(String, ForeignKey("ml_models.id"), nullable=False, index=True)
+    input_values = Column(JSON, nullable=False)
+    predicted_value = Column(JSON, nullable=False)  # the raw predicted value (string/number/bool)
+    confidence = Column(Float, nullable=True)  # predict_proba's top-class probability, classification only
+    # Never auto-filled - see this model's own docstring above.
+    actual_value = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by_id = Column(String, ForeignKey("users.id"), nullable=False)
+
+    ml_model = relationship("MLModel", back_populates="predictions")
