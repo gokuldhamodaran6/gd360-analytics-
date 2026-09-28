@@ -97,8 +97,14 @@ function FlowCard({ data, selected }: NodeProps<Node<FlowCardData, "card">>) {
         <div className="flow-card__top">
           <span className="flow-card__icon">{style.icon}</span>
           <span className="flow-card__title">{data.title}</span>
+          {typeof data.durationMs === "number" && (
+            <span className="flow-card__timing" title="How long this step actually took to run">
+              {data.durationMs < 1000 ? "<1s" : `${(data.durationMs / 1000).toFixed(1)}s`}
+            </span>
+          )}
         </div>
         <div className="flow-card__subtitle">{data.subtitle}</div>
+        {data.methodSummary && <div className="flow-card__method">{data.methodSummary}</div>}
         {data.annotationDescription ? (
           <div className="flow-card__detail">{data.annotationDescription}</div>
         ) : (
@@ -537,9 +543,16 @@ const FLOW_CSS = `
 .flow-card__body { padding: 10px 12px; min-width: 0; flex: 1; }
 .flow-card__top { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; color: var(--card-hue); }
 .flow-card__title {
+  flex: 1 1 auto; min-width: 0;
   font-size: 12.5px; font-weight: 600; color: rgb(var(--color-text));
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.flow-card__timing {
+  flex-shrink: 0; font-size: 9.5px; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: rgb(var(--color-muted)); background: rgb(var(--color-border) / 0.6);
+  border-radius: 999px; padding: 1px 6px;
+}
+.flow-card__method { font-size: 10.5px; font-weight: 500; color: rgb(var(--color-muted)); margin-bottom: 2px; }
 .flow-card__subtitle { font-size: 11px; color: rgb(var(--color-muted)); margin-bottom: 2px; }
 .flow-card__detail {
   font-size: 10.5px; color: rgb(var(--color-muted)); font-style: italic;
