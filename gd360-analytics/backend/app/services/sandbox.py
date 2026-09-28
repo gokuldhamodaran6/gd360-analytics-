@@ -72,7 +72,26 @@ def _child_worker(code: str, tables: dict[str, pd.DataFrame], conn, timeout: int
     try:
         try:
             import resource
-            mem_bytes = 1024 * 1024 * 1024  # 1GB
+            # 2026-09-28: investigated whether this 1GB figure was
+            # dangerously loose given this Render instance's confirmed
+            # 512MB TOTAL container RAM (see run_sandboxed's comment
+            # below) - measured directly rather than guessing, by
+            # profiling a real worker process (pandas/numpy/scipy
+            # imported, several tables loaded, a realistic 4-table merge
+            # like the kind that actually timed out in production). A
+            # first attempt at tightening this to 300MB was reverted after
+            # that measurement showed just importing pandas/numpy/scipy
+            # already puts a fresh process's VIRTUAL memory size (VmSize -
+            # exactly what RLIMIT_AS constrains) around 490MB before
+            # touching any data at all - a well-known pandas/NumPy/BLAS
+            # quirk where address space reserved for its native math
+            # libraries vastly exceeds what is actually resident (real
+            # RSS for that same realistic merge stayed under 200MB). A
+            # 300MB cap would have made ordinary, successful requests fail
+            # immediately with a memory error - a regression far worse
+            # than today's intermittent timeout. 1GB is kept as-is; it is
+            # not, in fact, the loose safety hole it first looked like.
+            mem_bytes = 1024 * 1024 * 1024  # 1GB - re-verified safe, see note above
             resource.setrlimit(resource.RLIMIT_CPU, (timeout + 2, timeout + 5))
             resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
         except Exception:
