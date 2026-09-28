@@ -129,6 +129,10 @@ _NEW_COLUMNS = [
     # entry here at all (create_all() already creates it).
     ("datasources", "governance_last_reviewed_at", "TIMESTAMP"),
     ("datasources", "governance_last_reviewed_by_id", "TEXT"),
+    # Phase 5, Batch B (data governance & quality - row/column permissions):
+    # data_access_rules is a brand NEW table added this round - per this
+    # file's own note above, a new table needs no entry here at all
+    # (create_all() already creates it).
 ]
 
 
