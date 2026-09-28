@@ -1665,3 +1665,96 @@ export const experimentsApi = {
     api.patch<Experiment>(`/experiments/${id}/status`, { status }).then((r) => r.data),
   delete: (id: string) => api.delete(`/experiments/${id}`).then(() => undefined),
 };
+
+// ---- Phase 5, Batch A (2026-09-28, "Data governance & quality" roadmap) -
+// automated column-level quality checks on a data source, plus a
+// workspace's own real, persisted audit log and access-review overview.
+// See backend models.DataQualityRule/AuditEvent and
+// routers/quality_checks.py/routers/governance.py for the full design. ----
+
+export type QualityRuleType = "not_null" | "unique" | "min_value" | "max_value" | "allowed_values";
+
+// {} for not_null/unique, {min: number} for min_value, {max: number} for
+// max_value, {values: (string|number)[]} for allowed_values - see backend
+// models.DataQualityRule's own docstring. Loosely typed here, same
+// convention as PreviewOptions.filters/SavedView.config above - this
+// client just passes it straight through.
+export type QualityRuleConfig = { min?: number; max?: number; values?: (string | number)[] };
+
+export type QualityRule = {
+  id: string;
+  datasource_id: string;
+  column_name: string;
+  rule_type: QualityRuleType;
+  rule_config: QualityRuleConfig;
+  created_at: string;
+  last_run_at: string | null;
+  // null only for a rule that has genuinely never run yet - in practice
+  // every rule this app creates is run once immediately (see
+  // qualityChecksApi.create), so this is here for completeness, not
+  // because the panel expects to see it often.
+  last_status: "pass" | "fail" | "error" | null;
+  last_checked_row_count: number | null;
+  last_failing_row_count: number | null;
+  last_message: string | null;
+  created_by_name: string | null;
+  created_by_email: string | null;
+};
+
+// What a dashboard polls (once per data source it uses) to decide whether
+// to show its "quality checks are failing" banner - cheap, read-only,
+// never triggers a live re-run (see backend get_quality_status's own
+// docstring).
+export type QualityStatus = { has_failing_rules: boolean; failing_count: number };
+
+export const qualityChecksApi = {
+  list: (datasourceId: string) => api.get<QualityRule[]>(`/datasources/${datasourceId}/quality-rules`).then((r) => r.data),
+  create: (datasourceId: string, payload: { column_name: string; rule_type: QualityRuleType; rule_config: QualityRuleConfig }) =>
+    api.post<QualityRule>(`/datasources/${datasourceId}/quality-rules`, payload).then((r) => r.data),
+  run: (datasourceId: string, ruleId: string) =>
+    api.post<QualityRule>(`/datasources/${datasourceId}/quality-rules/${ruleId}/run`).then((r) => r.data),
+  delete: (datasourceId: string, ruleId: string) => api.delete(`/datasources/${datasourceId}/quality-rules/${ruleId}`),
+  status: (datasourceId: string) => api.get<QualityStatus>(`/datasources/${datasourceId}/quality-status`).then((r) => r.data),
+};
+
+export type GovernanceMemberAccess = { user_id: string; name: string | null; email: string; role: WorkspaceRole };
+
+export type GovernanceDataSource = {
+  id: string;
+  name: string;
+  kind: string;
+  member_access: GovernanceMemberAccess[];
+  governance_last_reviewed_at: string | null;
+  // Already a display name/email, resolved server-side - never a raw id
+  // the frontend can't render (see backend schemas.GovernanceDataSourceOut).
+  governance_last_reviewed_by: string | null;
+};
+
+export type AuditEvent = {
+  id: string;
+  workspace_id: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  event_metadata: Record<string, unknown> | null;
+  created_at: string;
+  actor_name: string | null;
+  actor_email: string | null;
+};
+
+export type AuditLogPage = { events: AuditEvent[]; total: number; page: number; page_size: number };
+
+export const governanceApi = {
+  overview: (workspaceId: string) =>
+    api.get<{ datasources: GovernanceDataSource[] }>(`/workspaces/${workspaceId}/governance-overview`).then((r) => r.data.datasources),
+  markReviewed: (datasourceId: string) =>
+    api
+      .post<{ datasource_id: string; governance_last_reviewed_at: string; governance_last_reviewed_by_id: string }>(
+        `/datasources/${datasourceId}/mark-reviewed`
+      )
+      .then((r) => r.data),
+  auditLog: (workspaceId: string, page = 1, pageSize = 20) =>
+    api
+      .get<AuditLogPage>(`/workspaces/${workspaceId}/audit-log`, { params: { page, page_size: pageSize } })
+      .then((r) => r.data),
+};
