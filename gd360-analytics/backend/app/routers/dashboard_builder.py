@@ -2042,6 +2042,66 @@ def set_block_accent_color(
     return _builder_out(db, d, user)
 
 
+@router.patch("/{dashboard_id}/blocks/{block_id}/analysis", response_model=schemas.DashboardBuilderOut)
+def set_block_analysis(
+    dashboard_id: str,
+    block_id: str,
+    payload: schemas.SetBlockAnalysisRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """The "Show forecast" / "Show anomalies" chart-block kebab-menu
+    toggles (2026-09-28). This is a SEPARATE endpoint from restyle_block
+    and set_block_accent_color above for the same reason each of those is
+    separate from the generic update_block: update_block replaces a
+    block's whole `config`, which would silently wipe out whatever real
+    computed data (chart_spec, result_columns/result_rows, recipe, ...) is
+    already sitting there.
+
+    But this is also a genuinely different kind of change from either of
+    those two siblings, not just another copy of the same pattern:
+    restyle_block rebuilds chart_spec from scratch from the block's tidy
+    data (a different chart TYPE), and set_block_accent_color only ever
+    touches a plain string field. This endpoint instead hands the block's
+    EXISTING chart_spec to chart_builder.apply_analysis_overlays and gets
+    a MODIFIED chart_spec back (the same figure, with 0-2 extra traces
+    drawn on top) - a presentation/analysis LENS on already-built data, not
+    a data recompute and not a wholesale rebuild. Like set_block_accent_color,
+    this deliberately does NOT touch data_updated_at (see
+    models.DashboardBlock's own docstring for why that column is reserved
+    for real content changes only) - toggling a forecast on or off doesn't
+    change what the chart's real numbers are, only how they're drawn.
+    """
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    block = _get_block(db, d, block_id)
+
+    if block.type != "chart":
+        raise HTTPException(400, "Forecast and anomaly toggles are only available on chart blocks.")
+
+    existing_spec = (block.config or {}).get("chart_spec")
+    if not existing_spec:
+        raise HTTPException(400, "This chart doesn't have a spec to analyze yet.")
+
+    try:
+        new_spec, anomaly_count = chart_builder.apply_analysis_overlays(
+            existing_spec, payload.forecast_enabled, payload.anomalies_enabled
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    block.config = {
+        **(block.config or {}),
+        "chart_spec": new_spec,
+        "forecast_enabled": payload.forecast_enabled,
+        "anomalies_enabled": payload.anomalies_enabled,
+        "anomaly_count": anomaly_count,
+    }
+
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
 @router.post("/{dashboard_id}/pages/{page_id}/preview-filtered", response_model=schemas.FilteredBlocksOut)
 def preview_filtered_blocks(
     dashboard_id: str,
