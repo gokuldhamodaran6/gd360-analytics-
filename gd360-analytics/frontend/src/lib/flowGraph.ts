@@ -12,7 +12,17 @@ import dagre from "@dagrejs/dagre";
 import type { Edge, Node } from "@xyflow/react";
 import { DataFlow, FlowNode, FlowSource, FlowVersion } from "../api/client";
 
-export type FlowCardKind = "source" | "external" | "table" | "chart";
+// Phase 2, feature 3 added "cross_pipeline": a card for one OTHER data
+// source's conversation that pulled in one of THIS datasource's promoted
+// shared models (see backend _cross_pipeline_uses's own docstring on why
+// that's the only case this ever draws - never a universal graph of every
+// table anyone has touched). Kept as its own kind rather than reusing
+// "external" - "external" already means "raw data pulled INTO this map
+// from elsewhere" (a backward/upstream concept), while this is the
+// opposite direction: this datasource's own table being used FORWARD, by
+// someone else, elsewhere - conflating the two under one color would make
+// the arrow direction the only thing telling them apart.
+export type FlowCardKind = "source" | "external" | "table" | "chart" | "cross_pipeline";
 
 export type FlowCardData = {
   kind: FlowCardKind;
@@ -28,12 +38,31 @@ export type FlowCardData = {
   // left-to-right layout as a proxy for order.
   step: number;
   isCurrentDatasource: boolean;
+  // Phase 2, feature 2: the exact id this card's persistent annotation is
+  // stored/patched under (a DatasetVersion.id or Message.id - see
+  // models.FlowAnnotation). Null for a card that isn't annotatable at all
+  // (a raw-data origin, an external/cross-pipeline reference card) - Edit
+  // mode uses this to decide whether a card can be dragged or
+  // double-click-renamed in the first place.
+  nodeKey: string | null;
+  // The annotation's own saved description, if any - shown/edited
+  // separately from `detail` above (which, for a table card, is the real
+  // "Asked: ..." prompt that built it - a fact about how it was made, not
+  // an editable description of what it IS, which is what this holds).
+  annotationDescription: string | null;
+  // Set only when this card has a saved position override
+  // (FlowAnnotation.position_x/position_y both non-null) - layoutNodes
+  // below uses this instead of the dagre-computed position for this one
+  // card, leaving every un-annotated card exactly where auto-layout would
+  // always have put it.
+  customPosition: { x: number; y: number } | null;
   // What clicking this card should do - Workspace.tsx supplies the actual
   // handlers; this is just the payload describing the target.
   onClick:
     | { type: "jump-source"; datasourceId: string; sheet: string | null }
     | { type: "jump-version"; datasourceId: string; versionId: string }
     | { type: "jump-chart"; conversationId: string; messageId: string }
+    | { type: "jump-datasource-flow"; datasourceId: string }
     | null;
   [key: string]: unknown;
 };
@@ -135,6 +164,9 @@ export function buildFlowGraph(
         subtitle: isCurrent ? "Original data" : "Connected data source",
         step: 1,
         isCurrentDatasource: isCurrent,
+        nodeKey: null,
+        annotationDescription: null,
+        customPosition: null,
         onClick: { type: "jump-source", datasourceId, sheet },
       },
     });
@@ -157,6 +189,9 @@ export function buildFlowGraph(
         subtitle: "Saved table, another data source",
         step: 1,
         isCurrentDatasource: false,
+        nodeKey: null,
+        annotationDescription: null,
+        customPosition: null,
         onClick: s.version_id ? { type: "jump-version", datasourceId: s.datasource_id, versionId: s.version_id } : null,
       },
     });
@@ -209,17 +244,28 @@ export function buildFlowGraph(
     nodes.push({
       id: targetId,
       type: "card",
-      position: { x: 0, y: 0 },
+      // A saved position override (both x and y set) takes over in
+      // layoutNodes below - initialized here too so a card that hasn't
+      // been laid out yet (e.g. isEmpty short-circuits before ReactFlow
+      // ever mounts) still carries a sane position rather than {0,0}.
+      position: v.position_x != null && v.position_y != null ? { x: v.position_x, y: v.position_y } : { x: 0, y: 0 },
       width: NODE_WIDTH,
       height: NODE_HEIGHT,
       data: {
         kind: "table",
-        title: v.name,
+        // Phase 2, feature 2: display_label overrides the real table name
+        // on the card only - every OTHER part of the app (the Data tab's
+        // tab strip, exports, etc.) still shows/uses v.name untouched,
+        // exactly like a dashboard block's own title override works.
+        title: v.display_label || v.name,
         subtitle: `${v.step_count} cleaning step${v.step_count === 1 ? "" : "s"}`,
         detail: creator?.prompt ? `Asked: "${creator.prompt}"` : undefined,
         meta: relativeDate(v.created_at),
         step: 1,
         isCurrentDatasource: true,
+        nodeKey: v.id,
+        annotationDescription: v.description,
+        customPosition: v.position_x != null && v.position_y != null ? { x: v.position_x, y: v.position_y } : null,
         onClick: { type: "jump-version", datasourceId: currentDatasourceId, versionId: v.id },
       },
     });
@@ -232,16 +278,19 @@ export function buildFlowGraph(
     nodes.push({
       id: targetId,
       type: "card",
-      position: { x: 0, y: 0 },
+      position: n.position_x != null && n.position_y != null ? { x: n.position_x, y: n.position_y } : { x: 0, y: 0 },
       width: NODE_WIDTH,
       height: NODE_HEIGHT,
       data: {
         kind: "chart",
-        title: n.prompt || "Untitled question",
+        title: n.display_label || n.prompt || "Untitled question",
         subtitle: CHART_TYPE_LABELS[n.chart_type || ""] || (n.chart_type ? n.chart_type : "Chart"),
         meta: `${relativeDate(n.created_at)} · ${n.conversation_title}`,
         step: 1,
         isCurrentDatasource: true,
+        nodeKey: n.message_id,
+        annotationDescription: n.description,
+        customPosition: n.position_x != null && n.position_y != null ? { x: n.position_x, y: n.position_y } : null,
         onClick: { type: "jump-chart", conversationId: n.conversation_id, messageId: n.message_id },
       },
     });
@@ -262,10 +311,56 @@ export function buildFlowGraph(
     }
   }
 
+  // Phase 2, feature 3 (data lineage across pipelines): one card per real
+  // recorded use of one of THIS datasource's own promoted shared models by
+  // some OTHER, separately-connected datasource's conversation - always an
+  // empty array unless the caller asked for cross_pipeline=true (see
+  // DataFlow.cross_pipeline_uses's own comment), so this loop draws
+  // nothing extra at all for anyone who hasn't turned that toggle on.
+  // Deliberately forward-only (an edge FROM this datasource's table TO the
+  // other datasource's use of it) - never a backward walk, and never for a
+  // table that isn't itself already a promoted shared model, matching the
+  // backend's own scoping in _cross_pipeline_uses.
+  for (const u of flow.cross_pipeline_uses || []) {
+    if (!versionIds.has(u.version_id)) continue;
+    const targetId = `cpu:${u.version_id}:${u.used_in_datasource_id}:${u.used_in_conversation_id}`;
+    nodes.push({
+      id: targetId,
+      type: "card",
+      position: { x: 0, y: 0 },
+      width: NODE_WIDTH,
+      height: NODE_HEIGHT,
+      data: {
+        kind: "cross_pipeline",
+        title: `Used in ${u.used_in_datasource_name}`,
+        subtitle: u.used_in_conversation_title || "Another data source",
+        meta: relativeDate(u.used_at),
+        step: 1,
+        isCurrentDatasource: false,
+        nodeKey: null,
+        annotationDescription: null,
+        customPosition: null,
+        onClick: { type: "jump-datasource-flow", datasourceId: u.used_in_datasource_id },
+      },
+    });
+    addEdge(`ver:${u.version_id}`, targetId);
+  }
+
   let scopedNodes = nodes;
   let scopedEdges = edges;
   if (scopeConversationId) {
     const keep = conversationAncestorScope(flow, creatorByVersionId, scopeConversationId, edges);
+    // Cross-pipeline "used elsewhere" cards are forward-looking (a
+    // downstream use, not an ancestor of anything in THIS conversation),
+    // so conversationAncestorScope's backward walk never reaches them on
+    // its own - keep one only when the table card it hangs off of already
+    // survived scoping, so switching to "This conversation" doesn't show
+    // a cross-pipeline card for some other conversation's unrelated table.
+    for (const n of nodes) {
+      if (n.data.kind !== "cross_pipeline") continue;
+      const incoming = edges.find((e) => e.target === n.id);
+      if (incoming && keep.has(incoming.source)) keep.add(n.id);
+    }
     scopedNodes = nodes.filter((n) => keep.has(n.id));
     scopedEdges = edges.filter((e) => keep.has(e.source) && keep.has(String(e.target)));
   }
@@ -373,10 +468,22 @@ export function layoutNodes(nodes: FlowCardNode[], edges: Edge[]): FlowCardNode[
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: "LR", nodesep: 36, ranksep: 110, marginx: 16, marginy: 16 });
   g.setDefaultEdgeLabel(() => ({}));
+  // Every node still takes part in dagre's own layout pass, including one
+  // with a saved position override - dagre needs the full graph to lay out
+  // everything ELSE sensibly around it, and an overridden card keeps
+  // contributing to edge routing exactly like before. Only the FINAL
+  // position (below) is swapped out for the saved one.
   nodes.forEach((n) => g.setNode(n.id, { width: NODE_WIDTH, height: NODE_HEIGHT }));
   edges.forEach((e) => g.setEdge(e.source, e.target));
   dagre.layout(g);
   return nodes.map((n) => {
+    // Phase 2, feature 2: a card someone has manually dragged in Edit mode
+    // keeps exactly the position they left it at, forever, instead of
+    // snapping back to wherever dagre would auto-place it on the next
+    // load - "position_x/position_y null" (the default, for every
+    // never-touched card) is the only thing that still means "let the
+    // existing auto-layout decide", exactly as before this feature existed.
+    if (n.data.customPosition) return { ...n, position: n.data.customPosition };
     const pos = g.node(n.id);
     return pos ? { ...n, position: { x: pos.x - NODE_WIDTH / 2, y: pos.y - NODE_HEIGHT / 2 } } : n;
   });
