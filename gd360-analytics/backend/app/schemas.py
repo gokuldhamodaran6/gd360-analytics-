@@ -2,7 +2,7 @@
 Pydantic request/response schemas.
 """
 from datetime import datetime
-from typing import Optional, Any
+from typing import Optional, Any, Literal
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -979,3 +979,73 @@ class DataSourceCreateApi(BaseModel):
     auth_header_name: Optional[str] = Field(default=None, max_length=200)
     auth_header_value: Optional[str] = Field(default=None, max_length=4000)
     json_path: Optional[str] = Field(default=None, max_length=300)
+
+
+# ---------- Phase 4: Experimentation / A/B testing (2026-09-28) ----------
+# See models.Experiment / models.ExperimentAssignment's own docstrings for
+# the full data-model design, and routers/experiments.py's own module
+# docstring for the public assign/convert security model these last three
+# schemas serve.
+class CreateExperimentRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    metric_name: str = Field(min_length=1, max_length=200)
+    variant_a_name: str = Field(default="Control", max_length=80)
+    variant_b_name: str = Field(default="Treatment", max_length=80)
+
+
+class SetExperimentStatusRequest(BaseModel):
+    # The only transition this phase's wizard/UI ever exposes is
+    # running -> stopped - there is no "resume a stopped experiment"
+    # feature (see models.Experiment's own docstring). Literal["stopped"]
+    # means any other value fails request validation before it ever
+    # reaches the endpoint, the same effect as the router explicitly
+    # rejecting it.
+    status: Literal["stopped"]
+
+
+class ExperimentVariantStats(BaseModel):
+    variant_name: str
+    assigned_count: int
+    converted_count: int
+    # None when assigned_count is 0 - a conversion rate is genuinely
+    # undefined with zero visitors assigned yet, never a fabricated 0.0
+    # (see services/experiments_stats.compute_experiment_stats).
+    conversion_rate: Optional[float] = None
+
+
+class ExperimentStatsOut(BaseModel):
+    variant_a: ExperimentVariantStats
+    variant_b: ExperimentVariantStats
+    p_value: Optional[float] = None
+    is_significant: bool
+    insufficient_data: bool
+
+
+class ExperimentOut(BaseModel):
+    id: str
+    name: str
+    metric_name: str
+    variant_a_name: str
+    variant_b_name: str
+    status: str  # "running" | "stopped"
+    public_key: str
+    # Ready-to-paste URLs for the founder's own external website's
+    # client-side assign/convert calls - see routers/experiments.py's
+    # _assign_url/_convert_url, built the same way connect_streaming's own
+    # webhook_url already is.
+    assign_url: str
+    convert_url: str
+    created_at: datetime
+    started_at: datetime
+    stopped_at: Optional[datetime] = None
+    stats: ExperimentStatsOut
+    can_edit: bool
+
+
+class PublicAssignOut(BaseModel):
+    variant: str  # "a" | "b"
+    variant_name: str
+
+
+class PublicConvertRequest(BaseModel):
+    subject_id: str = Field(min_length=1, max_length=200)
