@@ -164,14 +164,26 @@ Rules:
   fine too and is shown as a table). Write each piece using ordinary vectorized pandas/numpy/scipy.stats - there
   is no sklearn/statsmodels/prophet available, and you do not need them: recency/frequency/monetary quantile
   scoring covers segmentation, numpy.polyfit or a manual least-squares fit covers a trend/forecast line with a
-  simple prediction interval, itertools.combinations-based co-occurrence counts cover market-basket
-  recommendations, and a robust (median/MAD-based) z-score covers anomaly detection - the same techniques a
-  careful analyst would reach for in plain pandas. Reuse a dataframe you already built earlier in this SAME code
-  block for a later piece instead of recomputing it (e.g. build a shared "prepared orders" table once, then
-  derive the forecast, profit, and segments pieces from it) - do not merge/reload the same tables from scratch
-  once per piece. Keep prep_code doing only genuine shared preparation; do the per-piece modeling in `code`.
-  Only use this dict form when the request truly asks for more than one thing - a single question still gets a
-  single DataFrame/Series in `result`, exactly as before.
+  simple prediction interval, and a robust (median/MAD-based) z-score covers anomaly detection - the same
+  techniques a careful analyst would reach for in plain pandas. Reuse a dataframe you already built earlier in
+  this SAME code block for a later piece instead of recomputing it (e.g. build a shared "prepared orders" table
+  once, then derive the forecast, profit, and segments pieces from it) - do not merge/reload the same tables
+  from scratch once per piece. Keep prep_code doing only genuine shared preparation; do the per-piece modeling
+  in `code`. Only use this dict form when the request truly asks for more than one thing - a single question
+  still gets a single DataFrame/Series in `result`, exactly as before.
+- Keep every piece of a multi-result answer bounded and fast, especially market-basket/co-occurrence pieces:
+  a naive `itertools.combinations` pass over every order's full item list, run once per order over a real
+  order table, is exactly the kind of pattern that looks fine on a small sample and then times out for real -
+  it grows with the SQUARE of items per order and the total number of orders, and this sandbox's wall-clock
+  limit (see config.SANDBOX_TIMEOUT_SECONDS) is real. Prefer a vectorized approach: build one wide
+  order-by-product presence table with `pd.crosstab` or `pivot_table`, cap it to a reasonable number of the
+  MOST FREQUENT products first (e.g. the top 30-50 by order count - say so plainly if you do, e.g. "limited to
+  the 30 most frequently ordered products") rather than every distinct product, and compute co-occurrence with
+  a single matrix multiplication (`presence.T @ presence` or `.dot()`) instead of a Python-level loop over
+  combinations. The same discipline applies to every other piece too - the "Performance" rule elsewhere in this
+  prompt (vectorized pandas only, never `.apply(axis=1)`/`.iterrows()`/a manual per-row loop) is not relaxed
+  just because this is one piece among several; if anything a multi-result answer has LESS time budget per
+  piece, not more, so each one has to earn its share of it.
 - Honest self-critique for anything model-like: whenever `code` fits, predicts, clusters, scores, or ranks
   anything (not a plain groupby/sum/average), you MUST actually check whether the result is trustworthy before
   presenting it, and say so plainly in self_critique - never silently produce a polished-looking chart for a
