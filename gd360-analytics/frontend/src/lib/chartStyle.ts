@@ -223,7 +223,20 @@ const BAR_LIKE_TYPES = new Set(["bar", "histogram", "waterfall", "funnel"]);
 // have" (which is what decides showLegend/showLegend defaults and the
 // hover box format below).
 function isDecorativeTrace(t: any): boolean {
-  return t?.meta?.role === "trend_line" || t?.meta?.role === "trend_band";
+  return (
+    t?.meta?.role === "trend_line" ||
+    t?.meta?.role === "trend_band" ||
+    // 2026-09-28: the "Show forecast" / "Show anomalies" chart-block
+    // toggles (see chart_builder.py's apply_analysis_overlays) add these
+    // three roles the exact same way the scatter-trend feature added the
+    // two above - real analysis drawn on top of the data, never a second
+    // real series - so they get the exact same protection here: never
+    // recolored by the palette logic, never counted toward series totals,
+    // never offered up to rename or hide like a real series.
+    t?.meta?.role === "forecast_line" ||
+    t?.meta?.role === "forecast_band" ||
+    t?.meta?.role === "anomaly_markers"
+  );
 }
  
 // One panel's bars in a faceted/small-multiples grid (see chart_builder.py's
