@@ -101,6 +101,22 @@ function ModelsIcon({ className = "w-[18px] h-[18px]" }: { className?: string })
   );
 }
 
+// Phase 4 (2026-09-28, Experimentation / A/B testing): the /experiments
+// page's own nav entry, placed right after Models - the two newest
+// "Replacing the Data Team" roadmap features sit adjacent in this
+// data-oriented group. A flask, distinct from every icon above it
+// (DashboardsIcon's bar chart, DataSourcesIcon's database cylinder,
+// ModelsIcon's stacked layers) - "testing/experimenting" reads clearly as
+// its own thing rather than a variant of any of those.
+function ExperimentsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 3h6M10 3v6.5L4.8 18a1.6 1.6 0 0 0 1.4 2.4h11.6a1.6 1.6 0 0 0 1.4-2.4L14 9.5V3" />
+      <path d="M7.5 15h9" />
+    </svg>
+  );
+}
+
 // 2026-09-23, round two of Gokul's own explicit design feedback: this
 // popup's "Your data" tab used to just be a tiny muted "FILES" label over a
 // plain flat list - no way to filter by category at all, next to a "New
@@ -297,6 +313,37 @@ function Pager({ page, totalPages, onChange }: { page: number; totalPages: numbe
   );
 }
 
+// 2026-09-28 (collapsible icon rail): Gokul's own explicit ask, after
+// flagging that the always-full-width rail ate into the dense
+// chart-building canvas (Workspace.tsx) more than anywhere else - a
+// manual, user-controlled collapse/expand toggle, remembered across visits
+// via localStorage (never auto-collapsed/expanded per page - he chose this
+// over that alternative explicitly). Namespaced key so it can't collide
+// with anything else this app (or a future one sharing the same origin in
+// dev) might put in localStorage. Every read/write is wrapped in try/catch
+// and falls back to the in-memory default (expanded) - this is a real
+// browser app so localStorage genuinely persists, but private-browsing/
+// blocked-storage still has to not crash the sidebar.
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "gd360:sidebar-collapsed";
+
+function readStoredSidebarCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeStoredSidebarCollapsed(collapsed: boolean): void {
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? "1" : "0");
+  } catch {
+    // Private browsing / blocked storage / unavailable localStorage - the
+    // in-memory state (see AppSidebar's own useState) still works for the
+    // rest of this session, it just won't be remembered next visit.
+  }
+}
+
 function initials(nameOrEmail: string): string {
   const trimmed = (nameOrEmail || "").trim();
   if (!trimmed) return "?";
@@ -315,12 +362,17 @@ function WorkspaceSwitcher({
   onSwitch,
   onOpenCreate,
   onOpenInvite,
+  collapsed = false,
 }: {
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string;
   onSwitch: (id: string) => void;
   onOpenCreate: () => void;
   onOpenInvite: () => void;
+  // 2026-09-28 (collapsible icon rail): desktop-only, defaulted false so
+  // the mobile drawer (which never passes this) keeps today's always-full
+  // avatar+name+chevron button exactly as-is.
+  collapsed?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -345,31 +397,44 @@ function WorkspaceSwitcher({
   const activeName = active?.name || "Personal Workspace";
 
   return (
-    <div className="relative px-3 pt-4 pb-2 shrink-0">
+    <div className={`relative pt-4 pb-2 shrink-0 ${collapsed ? "px-2" : "px-3"}`}>
       <button
         ref={btnRef}
         type="button"
-        title="Switch workspace"
+        title={collapsed ? `${activeName}${active?.role === "viewer" ? " · View only" : ""} - switch workspace` : "Switch workspace"}
         onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center gap-2.5 px-1.5 py-1.5 rounded-lg hover:bg-surface2 transition"
+        className={`flex items-center rounded-lg hover:bg-surface2 transition ${
+          collapsed ? "w-10 h-10 mx-auto justify-center" : "w-full gap-2.5 px-1.5 py-1.5"
+        }`}
       >
         <span className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-white font-bold text-sm shrink-0">
           G
         </span>
-        <span className="min-w-0 flex-1 text-left">
-          <span className="block text-sm font-bold gradient-text truncate">GD360 Analytics</span>
-          <span className="block text-[11px] text-muted truncate">
-            {activeName}
-            {active?.role === "viewer" && " · View only"}
-          </span>
-        </span>
-        <ChevronsUpDownIcon className="w-3.5 h-3.5 text-muted shrink-0" />
+        {!collapsed && (
+          <>
+            <span className="min-w-0 flex-1 text-left">
+              <span className="block text-sm font-bold gradient-text truncate">GD360 Analytics</span>
+              <span className="block text-[11px] text-muted truncate">
+                {activeName}
+                {active?.role === "viewer" && " · View only"}
+              </span>
+            </span>
+            <ChevronsUpDownIcon className="w-3.5 h-3.5 text-muted shrink-0" />
+          </>
+        )}
       </button>
 
       {open && (
         <div
           ref={menuRef}
-          className="absolute left-3 right-3 top-full mt-1 card bg-surface shadow-2xl border border-border py-1.5 z-40"
+          // Collapsed (64px rail): the usual `left-3 right-3` anchoring
+          // would crush this to ~40px wide since it's relative to the
+          // narrow rail itself - fly out to the right of the rail instead,
+          // with its own comfortable min-width, same as a Notion/Linear-
+          // style icon rail's flyout menus.
+          className={`absolute card bg-surface shadow-2xl border border-border py-1.5 z-40 ${
+            collapsed ? "left-full top-0 ml-2 w-64" : "left-3 right-3 top-full mt-1"
+          }`}
           role="menu"
         >
           <div className="px-3.5 pt-1 pb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
@@ -986,6 +1051,8 @@ function SidebarNav({
   onOpenCreate,
   onOpenInvite,
   onNavigate,
+  collapsed = false,
+  onToggleCollapse,
 }: {
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string;
@@ -994,8 +1061,24 @@ function SidebarNav({
   onOpenCreate: () => void;
   onOpenInvite: () => void;
   onNavigate: () => void;
+  // 2026-09-28 (collapsible icon rail): both desktop-only. `collapsed`
+  // defaults false and `onToggleCollapse` defaults undefined, so the
+  // mobile drawer's own call site (which never passes either) renders
+  // exactly as it always has - full labels, no toggle button. The desktop
+  // rail's call site is the only one that passes real values for these.
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
   const onProjects = pathname === "/";
+
+  // Shared class builder for the six nav links below: expanded keeps
+  // today's icon+label row exactly as it was; collapsed centers just the
+  // icon in the narrow rail and adds a native title attribute so hovering
+  // still shows the label (cheap, accessible, no new dependency).
+  const linkClass = (active: boolean) =>
+    `flex items-center gap-2.5 rounded-lg text-sm font-medium transition ${
+      collapsed ? "justify-center px-2 py-2.5" : "px-3 py-2"
+    } ${active ? "bg-primary text-white" : "text-text hover:bg-surface2"}`;
 
   return (
     <>
@@ -1005,23 +1088,19 @@ function SidebarNav({
         onSwitch={onSwitch}
         onOpenCreate={onOpenCreate}
         onOpenInvite={onOpenInvite}
+        collapsed={collapsed}
       />
 
-      <div className="px-3 mt-1 space-y-0.5">
-        <Link
-          to="/"
-          onClick={onNavigate}
-          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
-            onProjects ? "bg-primary text-white" : "text-text hover:bg-surface2"
-          }`}
-        >
+      <div className={`mt-1 space-y-0.5 ${collapsed ? "px-2" : "px-3"}`}>
+        <Link to="/" onClick={onNavigate} title={collapsed ? "Projects" : undefined} className={linkClass(onProjects)}>
           <ProjectsIcon />
-          Projects
+          {!collapsed && "Projects"}
         </Link>
         <Link
           to="/dashboards"
           onClick={onNavigate}
-          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
+          title={collapsed ? "Dashboards" : undefined}
+          className={linkClass(
             // 2026-09-25d (elite pass): /dashboard-builder/:id (the pages+
             // blocks editor - see App.tsx's own routing comment for why
             // it's a deliberately different path prefix from /dashboards)
@@ -1029,44 +1108,50 @@ function SidebarNav({
             // also renders this sidebar, it should highlight the same nav
             // item rather than leaving nothing active while editing one.
             pathname.startsWith("/dashboards") || pathname.startsWith("/dashboard-builder")
-              ? "bg-primary text-white"
-              : "text-text hover:bg-surface2"
-          }`}
+          )}
         >
           <DashboardsIcon />
-          Dashboards
+          {!collapsed && "Dashboards"}
         </Link>
         <Link
           to="/jobs"
           onClick={onNavigate}
-          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
-            pathname.startsWith("/jobs") ? "bg-primary text-white" : "text-text hover:bg-surface2"
-          }`}
+          title={collapsed ? "Jobs" : undefined}
+          className={linkClass(pathname.startsWith("/jobs"))}
         >
           <JobsIcon />
-          Jobs
+          {!collapsed && "Jobs"}
         </Link>
         <Link
           to="/data"
           onClick={onNavigate}
-          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
-            pathname.startsWith("/data") ? "bg-primary text-white" : "text-text hover:bg-surface2"
-          }`}
+          title={collapsed ? "Data Sources" : undefined}
+          className={linkClass(pathname.startsWith("/data"))}
         >
           <DataSourcesIcon />
-          Data Sources
+          {!collapsed && "Data Sources"}
         </Link>
         {/* Phase 2, feature 1: right after Data Sources - see ModelsIcon's
             own comment above for why it sits here. */}
         <Link
           to="/models"
           onClick={onNavigate}
-          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
-            pathname.startsWith("/models") ? "bg-primary text-white" : "text-text hover:bg-surface2"
-          }`}
+          title={collapsed ? "Models" : undefined}
+          className={linkClass(pathname.startsWith("/models"))}
         >
           <ModelsIcon />
-          Models
+          {!collapsed && "Models"}
+        </Link>
+        {/* Phase 4 (2026-09-28, Experimentation / A/B testing): right after
+            Models - see ExperimentsIcon's own comment above for why. */}
+        <Link
+          to="/experiments"
+          onClick={onNavigate}
+          title={collapsed ? "Experiments" : undefined}
+          className={linkClass(pathname.startsWith("/experiments"))}
+        >
+          <ExperimentsIcon />
+          {!collapsed && "Experiments"}
         </Link>
       </div>
 
@@ -1078,6 +1163,31 @@ function SidebarNav({
           ConnectDataPopup itself stays exported from this file - it's still
           used by pages/NewProject.tsx's own "Connect data" button. */}
       <div className="flex-1" />
+
+      {/* 2026-09-28 (collapsible icon rail): a single, always-visible,
+          discoverable collapse/expand control, pinned to the bottom of the
+          nav column - a common, well-understood placement for this pattern
+          (Notion/Linear/Vercel-style icon rails). Only rendered when a
+          handler is actually passed in, which today is desktop only - the
+          mobile drawer's own call site never passes `onToggleCollapse`, so
+          it never grows this button. Manual/user-controlled only: nothing
+          in this file ever calls this on its own based on route/page. */}
+      {onToggleCollapse && (
+        <div className={`shrink-0 pb-3 ${collapsed ? "px-2" : "px-3"}`}>
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className={`w-full flex items-center gap-2.5 rounded-lg text-sm font-medium text-muted hover:text-text hover:bg-surface2 transition ${
+              collapsed ? "justify-center px-2 py-2.5" : "px-3 py-2"
+            }`}
+          >
+            {collapsed ? <ChevronRightIcon className="w-4 h-4" /> : <ChevronLeftIcon className="w-4 h-4" />}
+            {!collapsed && "Collapse"}
+          </button>
+        </div>
+      )}
     </>
   );
 }
@@ -1114,6 +1224,24 @@ export default function AppSidebar({
   // caller and TopNav.tsx - lower risk, and every page gets the fix with no
   // changes of its own.
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // 2026-09-28 (collapsible icon rail): desktop-only, manual toggle -
+  // Gokul's own explicit ask after flagging the always-full-width rail on
+  // every page (worst on the dense Workspace.tsx analysis canvas), and his
+  // own explicit choice of this over an "auto-hide on the analysis page
+  // only" alternative. Read once on mount from localStorage (see
+  // readStoredSidebarCollapsed above this component); every existing
+  // user's first load after this ships has nothing stored yet, so this
+  // starts expanded - today's look - never a surprise auto-collapse.
+  const [collapsed, setCollapsed] = useState<boolean>(() => readStoredSidebarCollapsed());
+
+  const toggleCollapsed = () => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      writeStoredSidebarCollapsed(next);
+      return next;
+    });
+  };
 
   useEffect(() => setMobileOpen(false), [location.pathname]);
 
@@ -1191,8 +1319,18 @@ export default function AppSidebar({
         </div>
       </div>
 
-      {/* Desktop: unchanged fixed rail, static in the flow at `lg` and up. */}
-      <div className="hidden lg:flex w-60 shrink-0 h-screen sticky top-0 border-r border-border bg-surface flex-col">
+      {/* Desktop: fixed rail, static in the flow at `lg` and up. Width now
+          toggles between the full 240px rail and a 64px icon-only strip
+          (2026-09-28, collapsible icon rail - see the `collapsed` state
+          above) - `transition-[width]` animates the change instead of a
+          jump-cut. Still `shrink-0`, so every page's own sibling
+          `flex-1 min-w-0` content column reflows automatically with no
+          changes needed anywhere else. */}
+      <div
+        className={`hidden lg:flex shrink-0 h-screen sticky top-0 border-r border-border bg-surface flex-col transition-[width] duration-200 ${
+          collapsed ? "w-16" : "w-60"
+        }`}
+      >
         <SidebarNav
           workspaces={workspaces}
           activeWorkspaceId={activeWorkspaceId}
@@ -1201,6 +1339,8 @@ export default function AppSidebar({
           onOpenCreate={() => setShowCreateModal(true)}
           onOpenInvite={() => setShowInviteModal(true)}
           onNavigate={() => {}}
+          collapsed={collapsed}
+          onToggleCollapse={toggleCollapsed}
         />
       </div>
 
