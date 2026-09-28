@@ -8,7 +8,7 @@ from .config import get_settings
 from .database import init_db
 from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, admin, conversations, goku,
-    connections, workspaces, folders, jobs, models_library, experiments,
+    connections, workspaces, folders, jobs, models_library, experiments, quality_checks, governance,
 )
 from .services.scheduler import start_scheduler
 
@@ -138,6 +138,14 @@ app.include_router(jobs.router)
 app.include_router(models_library.router)
 app.include_router(experiments.router)
 app.include_router(experiments.public_router)
+# Phase 5, Batch A (2026-09-28, data governance & quality): quality_checks
+# nests under /datasources/{id}/quality-rules/quality-status (see that
+# file's own module docstring); governance nests under both
+# /datasources/{id}/mark-reviewed and /workspaces/{id}/audit-log|governance-
+# overview - two small, focused routers rather than growing datasources.py/
+# workspaces.py further.
+app.include_router(quality_checks.router)
+app.include_router(governance.router)
 
 
 @app.on_event("startup")
