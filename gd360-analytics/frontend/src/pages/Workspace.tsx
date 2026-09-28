@@ -16,6 +16,7 @@ import ExplorePanel from "../components/ExplorePanel";
 import DataTable from "../components/DataTable";
 import DataFlowMap, { FlowJumpTarget } from "../components/DataFlowMap";
 import BuildDashboardModal from "../components/BuildDashboardModal";
+import QualityChecksPanel from "../components/QualityChecksPanel";
 import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
 import {
   CLIENT_PIVOTABLE_TYPES, ExploreConfig, ResultColumn, buildExploreFigure, defaultExploreConfig,
@@ -400,7 +401,7 @@ export default function Workspace() {
   // Flow tab, not its Data tab - the very first real deep-link-to-a-tab
   // this page has ever needed, so it's kept as a one-off initial-state read
   // rather than a whole synced-with-the-URL tab system.
-  const [centerTab, setCenterTab] = useState<"data" | "chart" | "flow">(
+  const [centerTab, setCenterTab] = useState<"data" | "chart" | "flow" | "quality">(
     searchParams.get("tab") === "flow" ? "flow" : "data"
   );
   const [dataRefreshKey, setDataRefreshKey] = useState(0);
@@ -1858,6 +1859,15 @@ export default function Workspace() {
               >
                 Flow
               </button>
+              {/* Phase 5, Batch A (2026-09-28, data governance & quality):
+                  automated column-level checks on this data source's data -
+                  see components/QualityChecksPanel.tsx. */}
+              <button
+                className={`text-sm px-4 py-2 rounded-lg font-medium transition ${centerTab === "quality" ? "bg-primary text-white" : "btn-secondary"}`}
+                onClick={() => setCenterTab("quality")}
+              >
+                Quality checks
+              </button>
             </div>
             <div className="flex items-center gap-3 shrink-0">
               {/* 2026-09-23, round four (Gokul's own explicit ask: "in chat
@@ -2022,6 +2032,8 @@ export default function Workspace() {
                 crossPipeline={crossPipeline}
                 onCrossPipelineChange={setCrossPipeline}
               />
+            ) : centerTab === "quality" && datasourceId ? (
+              <QualityChecksPanel datasourceId={datasourceId} />
             ) : (
               <div className="h-full flex flex-col gap-2 overflow-hidden">
                 {charts.length > 0 && (
