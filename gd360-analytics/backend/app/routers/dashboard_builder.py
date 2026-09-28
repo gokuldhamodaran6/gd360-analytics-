@@ -680,14 +680,19 @@ def _build_goal_plan_messages(goal: str, conversation_title: str, column_summary
         "data-analysis AI will run against the real data to produce that block's actual numbers or "
         "chart. Ground every question in the real column names you are given below - never invent a "
         "column that is not listed, and never ask a question the given columns cannot answer. Rules: "
-        "prefer 4 to 8 blocks total - too few is thin, too many is clutter. A block whose question "
+        "prefer 4 to 10 blocks total - too few is thin, too many is clutter. Group blocks into PAGES "
+        'by topic (give each block a short "page" name like "Overview", "Demand forecast", "Profit", '
+        '"Shipping" - blocks sharing a page name land together on their own tab) so related blocks sit '
+        "together instead of every block crowding one page - a goal that only really covers one topic "
+        'can just put every block on the same page name. A block whose question '
         'clearly produces one headline number should be type "kpi"; a question that compares or '
         'breaks a measure down by a category or over time should be type "chart"; anything better '
         'shown as a detailed list of rows should be type "table". Give the whole dashboard a short, '
         "specific title that reflects what was asked for. Return ONLY compact JSON, no prose, no "
         "markdown fences, in exactly this shape:\n"
         '{"dashboard_title": "short punchy title", "blocks": '
-        '[{"type": "kpi", "title": "short block title", "prompt": "the exact question to ask"}, ...]}'
+        '[{"page": "short page/tab name", "type": "kpi", "title": "short block title", '
+        '"prompt": "the exact question to ask"}, ...]}'
     )
     user = (
         f"What they want this dashboard to show: {goal}\n\n"
@@ -699,7 +704,7 @@ def _build_goal_plan_messages(goal: str, conversation_title: str, column_summary
 
 
 def _fallback_goal_plan(goal: str) -> list[dict]:
-    return [{"type": "table", "title": (goal[:80] or "Overview").strip(), "prompt": goal}]
+    return [{"type": "table", "title": (goal[:80] or "Overview").strip(), "prompt": goal, "page": "Overview"}]
 
 
 def _generate_goal_plan(goal: str, conversation_title: str, column_summary: str) -> tuple[str, list[dict]]:
@@ -748,7 +753,14 @@ def _generate_goal_plan(goal: str, conversation_title: str, column_summary: str)
         if btype not in ("kpi", "chart", "table"):
             btype = "chart"
         block_title = str(b.get("title") or prompt).strip()[:80] or prompt[:80]
-        blocks.append({"type": btype, "title": block_title, "prompt": prompt})
+        # 2026-09-28 (multi-page round): which tab/page this block belongs
+        # on - see _build_goal_plan_messages above for the prompt asking
+        # the model to group by topic. Missing/blank/non-string collapses
+        # to a single "Overview" page, which is exactly the old (pre-this-
+        # round) single-page behavior - so a plan that doesn't group by
+        # page at all still builds a perfectly normal one-page dashboard.
+        page_name = str(b.get("page") or "Overview").strip()[:60] or "Overview"
+        blocks.append({"type": btype, "title": block_title, "prompt": prompt, "page": page_name})
 
     return title, (blocks or fallback_blocks)
 
@@ -934,6 +946,40 @@ def _ai_result_to_block(result: dict, requested_type: str) -> tuple[str, dict]:
     if table:
         return table
     return "text", {"text": result.get("narrative") or "No result."}
+
+
+# 2026-09-28 (Hex-parity round): a demand-forecast-style chart is exactly
+# what set_block_analysis's manual "Show forecast" kebab-menu toggle
+# already draws (chart_builder.apply_analysis_overlays - a real dashed
+# projected line + shaded confidence band, computed honestly from the
+# chart's own real y-values, never fabricated) - it was just never turned
+# ON by default for a goal-driven block that is plainly ABOUT forecasting.
+# This is a narrow, keyword-based nudge, not a new AI-output-shape
+# requirement: it only fires for a chart block whose own title/prompt says
+# "forecast"/"predict"/"projection", and it degrades completely safely
+# (apply_analysis_overlays raises ValueError on any chart shape it can't
+# honestly project from - not a line/area chart, or fewer than 4 real
+# points - caught below and left as the plain, correct chart).
+_FORECAST_KEYWORDS = ("forecast", "predict", "projection", "projected")
+
+
+def _maybe_add_forecast_overlay(spec: dict, actual_type: str, config: dict) -> dict:
+    if actual_type != "chart" or not config.get("chart_spec"):
+        return config
+    text = f"{spec.get('title', '')} {spec.get('prompt', '')}".lower()
+    if not any(k in text for k in _FORECAST_KEYWORDS):
+        return config
+    try:
+        new_spec, _anomaly_count = chart_builder.apply_analysis_overlays(
+            config["chart_spec"], forecast_enabled=True, anomalies_enabled=False
+        )
+    except ValueError:
+        return config
+    # Same shape set_block_analysis stores, so the block's own kebab-menu
+    # "Show forecast" toggle correctly starts checked (see
+    # DashboardCanvas.tsx's block.config?.forecast_enabled reads) instead
+    # of the chart looking forecasted but the toggle disagreeing with it.
+    return {**config, "chart_spec": new_spec, "forecast_enabled": True, "anomalies_enabled": False, "anomaly_count": None}
 
 
 def _default_block_size(block_type: str) -> tuple[int, int]:
@@ -1376,14 +1422,34 @@ def generate_dashboard(
 
     goal = (payload.goal or "").strip()
     if goal:
-        # Same probe-object reuse _resolve_datasource is already built
-        # for: it only ever reads d.source_conversation_id off whatever's
-        # passed in, so a transient, never-added-to-the-session Dashboard
-        # resolves the real data source without persisting anything yet -
-        # every fallible step below (loading the data, the planning call,
-        # every per-block analyze() call) happens BEFORE any row is
-        # created, same zero-partial-write discipline as the plain path.
-        ds = _resolve_datasource(db, user, models.Dashboard(source_conversation_id=conv.id))
+        # 2026-09-28 (datasource picker round): an explicit datasource_id
+        # from BuildDashboardModal's picker always wins over the
+        # conversation-derived guess below - real usage showed the guess
+        # silently building from whatever data source happened to be
+        # behind the currently-open chat, which is not necessarily the
+        # one the person actually meant (e.g. a schema-catalog
+        # conversation left open while they meant their real sales data).
+        # Access is re-checked here exactly like _resolve_datasource does
+        # for its own guess, so picking a data source from the dropdown
+        # can never grant edit access to one the person doesn't already
+        # have it on.
+        requested_ds_id = (payload.datasource_id or "").strip()
+        if requested_ds_id:
+            ds = db.query(models.DataSource).filter(models.DataSource.id == requested_ds_id).first()
+            if not ds:
+                raise HTTPException(404, "That data source could not be found.")
+            if not workspace_access.can_edit_datasource(db, ds, user):
+                raise HTTPException(403, "You have view-only access to that data source.")
+        else:
+            # Same probe-object reuse _resolve_datasource is already built
+            # for: it only ever reads d.source_conversation_id off
+            # whatever's passed in, so a transient, never-added-to-the-
+            # session Dashboard resolves the real data source without
+            # persisting anything yet - every fallible step below (loading
+            # the data, the planning call, every per-block analyze() call)
+            # happens BEFORE any row is created, same zero-partial-write
+            # discipline as the plain path.
+            ds = _resolve_datasource(db, user, models.Dashboard(source_conversation_id=conv.id))
         try:
             original_df = load_dataframe(ds, table=None, version="original", db=db)
             original_df = data_access_rules.filter_dataframe_for_role(db, original_df, ds, user)
@@ -1393,8 +1459,15 @@ def generate_dashboard(
         column_summary = ", ".join(f"{c} ({original_df[c].dtype})" for c in list(original_df.columns)[:60])
         title, block_specs = _generate_goal_plan(goal, conv.title, column_summary)
 
-        kpi_items: list[dict] = []
-        other_items: list[dict] = []
+        # 2026-09-28 (multi-page round): grouped by spec["page"] in
+        # first-seen order rather than laid onto one shared "Overview"
+        # page - see _build_goal_plan_messages/_generate_goal_plan above
+        # for where that grouping comes from. A plan that never sets a
+        # distinct page name collapses every block into "Overview" here,
+        # so this is a strict superset of the old single-page behavior,
+        # never a regression for a simple goal.
+        page_order: list[str] = []
+        page_items: dict[str, dict[str, list[dict]]] = {}
         # 2026-09-28: real production evidence (a goal like "aggregate by
         # month, region, or product" - genuinely open to three different
         # readings) showed every planned block getting silently dropped
@@ -1430,10 +1503,19 @@ def generate_dashboard(
                 skipped_reasons.append(f'"{spec["title"]}": {question}')
                 continue
             actual_type, config = _ai_result_to_block(result, spec["type"])
+            # 2026-09-28 (Hex-parity round): a plainly forecast-labeled
+            # chart block gets the real dashed-projection + confidence-
+            # band overlay automatically - see _maybe_add_forecast_overlay
+            # above for exactly when this does (and safely doesn't) apply.
+            config = _maybe_add_forecast_overlay(spec, actual_type, config)
+            page_name = spec.get("page") or "Overview"
+            if page_name not in page_items:
+                page_order.append(page_name)
+                page_items[page_name] = {"kpi": [], "other": []}
             item = {"type": actual_type, "title": spec["title"], "config": config, "position": position}
-            (kpi_items if actual_type == "kpi" else other_items).append(item)
+            (page_items[page_name]["kpi"] if actual_type == "kpi" else page_items[page_name]["other"]).append(item)
 
-        if not kpi_items and not other_items:
+        if not page_order:
             detail = (
                 "GD360 couldn't build anything from that description - try naming which numbers or "
                 "breakdowns matter most (e.g. \"revenue by region this quarter, and our top 5 "
@@ -1449,16 +1531,18 @@ def generate_dashboard(
         dashboard = models.Dashboard(owner_id=user.id, name=title, layout_version=2, source_conversation_id=conv.id)
         db.add(dashboard)
         db.flush()
-        page = models.DashboardPage(dashboard_id=dashboard.id, name="Overview", position=0)
-        db.add(page)
-        db.flush()
-        for item in _layout_blocks(kpi_items, other_items):
-            db.add(models.DashboardBlock(
-                page_id=page.id,
-                type=item["type"], title=item["title"],
-                x=item["x"], y=item["y"], w=item["w"], h=item["h"],
-                config=item["config"], position=item["position"],
-            ))
+        for page_position, page_name in enumerate(page_order):
+            page = models.DashboardPage(dashboard_id=dashboard.id, name=page_name, position=page_position)
+            db.add(page)
+            db.flush()
+            items = page_items[page_name]
+            for block_position, item in enumerate(_layout_blocks(items["kpi"], items["other"])):
+                db.add(models.DashboardBlock(
+                    page_id=page.id,
+                    type=item["type"], title=item["title"],
+                    x=item["x"], y=item["y"], w=item["w"], h=item["h"],
+                    config=item["config"], position=block_position,
+                ))
         db.commit()
         db.refresh(dashboard)
         return _builder_out(db, dashboard, user)
