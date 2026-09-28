@@ -174,10 +174,26 @@ function TemplateThumbnail({ blocks, accentIndex }: { blocks: DashboardTemplateB
 export default function BuildDashboardModal({
   open,
   conversationId,
+  currentDatasourceId,
+  currentDatasourceName,
   onClose,
 }: {
   open: boolean;
   conversationId: string | null;
+  // 2026-09-28 (data-source visibility round): the data source this SAME
+  // chat page is actually analyzing right now (Workspace.tsx's own
+  // :datasourceId route param + "Analyzing: <name>" line) - passed straight
+  // through from there rather than re-derived here, so this modal always
+  // knows and can SHOW the real name of what "this chat's data" concretely
+  // means, instead of the vague, silent "use this analysis's own data
+  // source" default from the previous round that let a person build a
+  // whole dashboard from the wrong data without ever seeing what was
+  // actually about to be used. See the real incident this fixes: a
+  // dashboard came out reading schema/catalog metadata instead of real
+  // sales data, built AFTER the previous round's (still-silent) fix
+  // shipped - the invisible default was never actually seen or corrected.
+  currentDatasourceId: string | null;
+  currentDatasourceName: string;
   onClose: () => void;
 }) {
   const navigate = useNavigate();
@@ -216,9 +232,13 @@ export default function BuildDashboardModal({
       setStep("choose");
       setGoal("");
       setError("");
-      setSelectedDatasourceId("");
+      // 2026-09-28: defaults to the REAL id of this chat's own data source
+      // (not "" any more) - so the very first render of the picker below
+      // already shows and pre-selects an actual name, before the person
+      // has to open the dropdown or even notice it exists.
+      setSelectedDatasourceId(currentDatasourceId || "");
     }
-  }, [open]);
+  }, [open, currentDatasourceId]);
 
   useEffect(() => {
     if (step !== "goal" || datasources !== null || datasourcesLoading) return;
@@ -429,31 +449,46 @@ export default function BuildDashboardModal({
               {goal.length}/{_GOAL_MAX_LEN}
             </div>
 
-            {/* 2026-09-28 (datasource picker round): lets the person name
-                exactly which connected data source this build should run
-                against, instead of always silently inheriting whatever
-                data source happens to be behind the currently-open chat -
-                real usage showed that guess landing on the wrong dataset.
-                Hidden entirely once there's nothing to pick from (0 or 1
-                data source), since the default already resolves correctly
-                in that case. */}
-            {!datasourcesLoading && datasources && datasources.length > 1 && (
+            {/* 2026-09-28 (data-source visibility round): this used to be
+                hidden entirely unless there were 2+ data sources, and even
+                then defaulted to a vague "use this analysis's own data
+                source" option with no real name shown - a silent default a
+                person had no way to notice was wrong before clicking
+                Build. Now it's ALWAYS shown (once the list has loaded) and
+                ALWAYS names, in plain text above the dropdown, exactly
+                which real data source is about to be used - so a wrong
+                one is obvious before building, not after. The current
+                chat's own data source is pinned first in the list and
+                selected by default; picking a different one explicitly
+                overrides it. */}
+            {!datasourcesLoading && datasources && datasources.length > 0 && (
               <div className="mt-3">
-                <label className="text-[11px] font-medium text-muted mb-1 block">
-                  Data source <span className="font-normal">(optional - defaults to this analysis&rsquo;s own data)</span>
-                </label>
+                <div className="text-[11px] text-muted mb-1">
+                  Building from:{" "}
+                  <span className="font-semibold text-text">
+                    {datasources.find((d) => d.id === selectedDatasourceId)?.name ||
+                      currentDatasourceName ||
+                      "this analysis's data"}
+                  </span>
+                </div>
                 <select
                   className="input text-sm w-full"
                   value={selectedDatasourceId}
                   onChange={(e) => setSelectedDatasourceId(e.target.value)}
                   disabled={building}
                 >
-                  <option value="">Use this analysis&rsquo;s own data source</option>
-                  {datasources.map((ds) => (
-                    <option key={ds.id} value={ds.id}>
-                      {ds.name}
+                  {currentDatasourceId && (
+                    <option value={currentDatasourceId}>
+                      {currentDatasourceName || "This chat's data"} (this chat&rsquo;s data)
                     </option>
-                  ))}
+                  )}
+                  {datasources
+                    .filter((ds) => ds.id !== currentDatasourceId)
+                    .map((ds) => (
+                      <option key={ds.id} value={ds.id}>
+                        {ds.name}
+                      </option>
+                    ))}
                 </select>
               </div>
             )}
@@ -462,7 +497,7 @@ export default function BuildDashboardModal({
               <button
                 type="button"
                 disabled={building || !goal.trim()}
-                onClick={() => goToBuild(goal.trim(), selectedDatasourceId || undefined)}
+                onClick={() => goToBuild(goal.trim(), selectedDatasourceId || currentDatasourceId || undefined)}
                 className="btn-primary text-sm flex-1 disabled:opacity-50"
               >
                 {building ? "Building…" : "Build dashboard"}
