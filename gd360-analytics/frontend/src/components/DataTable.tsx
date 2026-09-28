@@ -405,6 +405,15 @@ export default function DataTable({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
 
+  // Phase 2, feature 1 (shared, reusable models): promoting a version opens
+  // a small modal asking for a description (defaulted to the version's own
+  // name, since that's usually already a reasonable one-line summary of
+  // what the table is - the person can edit or clear it before confirming).
+  // `promotingVersion` holds the whole DatasetVersion (not just its id) so
+  // the modal can show its name/current description while open.
+  const [promotingVersion, setPromotingVersion] = useState<DatasetVersion | null>(null);
+  const [promoteDraft, setPromoteDraft] = useState("");
+
   // --- "Pro" table view state - all per-viewer, client-only, and reset
   // whenever a different table is opened (see the reset effect below),
   // exactly like sort/filter already were before this. ---
@@ -776,6 +785,40 @@ export default function DataTable({
       onVersionsChanged();
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Could not delete that table.");
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const startPromote = (v: DatasetVersion) => {
+    setPromotingVersion(v);
+    setPromoteDraft(v.shared_model_description || v.name);
+  };
+
+  const confirmPromote = async () => {
+    if (!promotingVersion) return;
+    const description = promoteDraft.trim();
+    if (!description) return;
+    setBusyAction(`promote-${promotingVersion.id}`);
+    try {
+      await datasourceApi.promoteVersion(datasourceId, promotingVersion.id, description);
+      setPromotingVersion(null);
+      onVersionsChanged();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Could not promote this table to a shared model.");
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const doUnpromote = async (v: DatasetVersion) => {
+    if (!confirm(`Remove "${v.name}" from the shared models library? Anyone using it there will lose access to it.`)) return;
+    setBusyAction(`unpromote-${v.id}`);
+    try {
+      await datasourceApi.unpromoteVersion(datasourceId, v.id);
+      onVersionsChanged();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Could not update this table's shared status.");
     } finally {
       setBusyAction("");
     }
@@ -1185,13 +1228,39 @@ export default function DataTable({
                 onBlur={() => commitRename(v)}
               />
             ) : (
-              <span className="cursor-pointer whitespace-nowrap" onClick={() => onActiveVersionChange(v.id)}>
+              <span className="cursor-pointer whitespace-nowrap flex items-center gap-1" onClick={() => onActiveVersionChange(v.id)}>
                 {v.name}
+                {v.is_shared_model && (
+                  <span
+                    className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-accent/20 text-accent"
+                    title={v.shared_model_description || "Shared model"}
+                  >
+                    Shared
+                  </span>
+                )}
               </span>
             )}
             <button className="opacity-70 hover:opacity-100 px-0.5" title="Rename this table" onClick={() => startRename(v)}>
               &#9998;
             </button>
+            {v.is_shared_model ? (
+              <button
+                className="opacity-70 hover:opacity-100 px-0.5 text-[10px]"
+                title="Remove from the shared models library"
+                disabled={busyAction === `unpromote-${v.id}`}
+                onClick={() => doUnpromote(v)}
+              >
+                Unshare
+              </button>
+            ) : (
+              <button
+                className="opacity-70 hover:opacity-100 px-0.5 text-[10px]"
+                title="Make this table a reusable, named shared model other data sources can browse and build from"
+                onClick={() => startPromote(v)}
+              >
+                Share
+              </button>
+            )}
             <button
               className="opacity-70 hover:opacity-100 px-0.5"
               title="Delete this table"
@@ -2155,6 +2224,57 @@ export default function DataTable({
           </button>
         </div>
       </div>
+
+      {/* Phase 2, feature 1 (shared, reusable models): the "Promote to
+          shared model" modal - copies BuildDashboardModal.tsx's own
+          portal + centered-card modal pattern (fixed inset-0 overlay,
+          dash-card, click-outside-to-close) rather than inventing a new
+          one for this single use. */}
+      {promotingVersion && createPortal(
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !busyAction) setPromotingVersion(null);
+          }}
+        >
+          <div className="dash-card w-full max-w-md p-6 relative">
+            <button
+              className="absolute top-4 right-4 text-muted hover:text-text transition disabled:opacity-40"
+              onClick={() => setPromotingVersion(null)}
+              disabled={!!busyAction}
+              aria-label="Close"
+            >
+              &times;
+            </button>
+            <h2 className="text-lg font-bold mb-1">Share &ldquo;{promotingVersion.name}&rdquo;</h2>
+            <p className="text-xs text-muted mb-4 leading-relaxed">
+              Sharing makes this table a reusable, named model that shows up on the Models page for anyone with
+              access to this workspace - across every data source, not just this one.
+            </p>
+            <label className="text-xs font-medium text-muted mb-1 block">Description</label>
+            <textarea
+              autoFocus
+              className="input text-sm w-full min-h-[80px]"
+              value={promoteDraft}
+              onChange={(e) => setPromoteDraft(e.target.value)}
+              placeholder="What is this table, and why would someone reuse it?"
+            />
+            <div className="flex justify-end gap-2 mt-4">
+              <button className="btn-secondary text-xs px-3 py-1.5" onClick={() => setPromotingVersion(null)} disabled={!!busyAction}>
+                Cancel
+              </button>
+              <button
+                className="btn-primary text-xs px-3 py-1.5"
+                onClick={confirmPromote}
+                disabled={!!busyAction || !promoteDraft.trim()}
+              >
+                {busyAction === `promote-${promotingVersion.id}` ? "Sharing..." : "Share"}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }
