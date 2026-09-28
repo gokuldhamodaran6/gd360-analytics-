@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { dashboardBuilderApi, DashboardBuilderDetail, DashboardBuilderPage, WorkspaceSummary } from "../api/client";
+import { dashboardBuilderApi, DashboardBuilderDetail, DashboardBuilderPage, WorkspaceSummary, qualityChecksApi } from "../api/client";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
 import { DashboardBlockGrid, DataFreshnessBadge } from "../components/DashboardBlocks";
@@ -1192,6 +1192,38 @@ function DashboardBuilderViewBody({
 }) {
   const filterState = useDashboardFilters(dash.id, activePage);
 
+  // Phase 5, Batch A (2026-09-28, data governance & quality): whether any
+  // quality check on this dashboard's own data source is currently
+  // failing - a v2 dashboard's blocks are always built against exactly one
+  // data source (dash.datasource_id - see _resolve_datasource on the
+  // backend), so "the distinct data sources this dashboard's blocks use"
+  // collapses to that one id here. Polls the cheap, read-only
+  // /quality-status endpoint (never triggers a live re-run) and swallows
+  // ANY failure completely silently - a slow/erroring quality check must
+  // never block, delay, or otherwise affect this dashboard's own normal
+  // rendering, which happens exactly as it always did regardless of
+  // whether this succeeds.
+  const [hasFailingQualityChecks, setHasFailingQualityChecks] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    if (!dash.datasource_id) {
+      setHasFailingQualityChecks(false);
+      return;
+    }
+    qualityChecksApi
+      .status(dash.datasource_id)
+      .then((status) => {
+        if (!cancelled) setHasFailingQualityChecks(status.has_failing_rules);
+      })
+      .catch(() => {
+        // Silently ignored, on purpose - see this effect's own comment
+        // above. The banner just doesn't show if this check couldn't run.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dash.datasource_id]);
+
   // 2026-09-25 (Round 4, branding): fetched once here (not inside
   // BrandingPanel itself) so the same object URLs back both the header
   // logo / full-page background AND BrandingPanel's own thumbnail
@@ -1262,6 +1294,21 @@ function DashboardBuilderViewBody({
       />
       <div className="dash-shell flex-1 min-w-0 min-h-screen flex flex-col" style={shellStyle}>
         <TopNav hideLogo />
+        {hasFailingQualityChecks && (
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 pt-4 w-full">
+            <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
+              One or more data-quality checks are failing on a data source this dashboard uses.
+              {dash.datasource_id && (
+                <>
+                  {" "}
+                  <Link to={`/workspace/${dash.datasource_id}?tab=quality`} className="underline hover:no-underline">
+                    Review the checks
+                  </Link>
+                </>
+              )}
+            </div>
+          </div>
+        )}
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 w-full flex-1">
           <Link to="/dashboards" className="text-xs text-muted hover:text-text transition inline-block mb-3">&larr; Dashboards</Link>
 
