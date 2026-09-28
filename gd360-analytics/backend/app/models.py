@@ -249,6 +249,19 @@ class DatasetVersion(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # 2026-09-28 (Flow tab transparency round): how long this table
+    # actually took to build (wall-clock ms, measured around the real
+    # analyze/transform call in routers/chat.py - never estimated), and a
+    # short, honest one-line description of what operation actually ran
+    # (derived from the real executed code in routers/chat.py's
+    # _derive_method_summary - e.g. "Joined tables", "Grouped &
+    # aggregated" - never invented). Both null for any version saved
+    # before this column existed, or built through a path that doesn't
+    # measure/classify yet (see _NEW_COLUMNS in database.py). Shown on
+    # the Flow tab's cards.
+    duration_ms = Column(Integer, nullable=True)
+    method_summary = Column(String, nullable=True)
+
     # 2026-09-28: the "promote to shared model" feature (Saved Tables /
     # models_library.py) these three columns belonged to was removed -
     # it turned out to duplicate a capability chat's own cross-datasource
@@ -454,6 +467,13 @@ class Message(Base):
     # measured is real trust-feature usage for the admin dashboard, not
     # anything shown back to the person who owns the message.
     verified_count = Column(Integer, default=0)
+
+    # 2026-09-28 (Flow tab transparency round): see DatasetVersion.
+    # duration_ms/method_summary just above for what these mean and how
+    # they're derived - the same real measurement/classification, just
+    # captured for a chart-producing turn instead of a table-producing one.
+    duration_ms = Column(Integer, nullable=True)
+    method_summary = Column(String, nullable=True)
 
     conversation = relationship("Conversation", back_populates="messages")
 
