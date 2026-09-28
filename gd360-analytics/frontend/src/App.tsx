@@ -12,6 +12,8 @@ import DashboardBuilderView from "./pages/DashboardBuilderView";
 import PublicDashboardView from "./pages/PublicDashboardView";
 import DataSources from "./pages/DataSources";
 import Models from "./pages/Models";
+import MLModels from "./pages/MLModels";
+import MLModelDetail from "./pages/MLModelDetail";
 import Jobs from "./pages/Jobs";
 import Experiments from "./pages/Experiments";
 import Governance from "./pages/Governance";
@@ -116,8 +118,16 @@ export default function App() {
       <Route path="/data" element={<Protected><DataSources /></Protected>} />
       {/* Phase 2, feature 1: the shared, reusable models library - see
           AppSidebar.tsx's own nav entry for this, placed right after
-          Data Sources exactly like the sidebar. */}
+          Data Sources exactly like the sidebar. Nav label reads "Saved
+          Tables" (2026-09-28) - route/component name unchanged, see that
+          file's own comment for why. */}
       <Route path="/models" element={<Protected><Models /></Protected>} />
+      {/* 2026-09-28 (ML Models round): the real ML feature - see
+          AppSidebar.tsx's own nav entry for this, placed right next to
+          "Saved Tables" above so the two are visually adjacent and their
+          difference is obvious from the nav itself. */}
+      <Route path="/ml-models" element={<Protected><MLModels /></Protected>} />
+      <Route path="/ml-models/:id" element={<Protected><MLModelDetail /></Protected>} />
       {/* 2026-09-28 (scheduled auto-refresh + background jobs round): the
           Jobs page - see AppSidebar.tsx's own nav entry for this, placed
           between Dashboards and Data Sources exactly like the sidebar. */}
