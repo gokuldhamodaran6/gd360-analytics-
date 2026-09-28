@@ -206,6 +206,12 @@ class DataSourceOut(BaseModel):
     # indicator is purely a function of this timestamp (see
     # DataSources.tsx) - never a separately-guessed status.
     last_event_at: Optional[datetime] = None
+    # Phase 2, feature 4 (generic API/webhook PULL connector): the last
+    # time this kind=="api" source's URL was successfully fetched (at
+    # connect time, or a later manual refresh) - always None for every
+    # other kind, and None for an "api" source that has never successfully
+    # fetched. See models.DataSource's own docstring.
+    api_last_refreshed_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -891,3 +897,72 @@ class StreamingDataSourceOut(DataSourceOut):
 class StreamedEventIngestResult(BaseModel):
     accepted: int
     received_at: datetime
+
+
+# ---------- Phase 2, feature 1: shared, reusable models ----------
+# A DatasetVersion promoted into a named, reusable "model" - see
+# models.DatasetVersion's own docstring and routers/datasources.py
+# promote_version/unpromote_version, and routers/models_library.py for the
+# GET /models listing built from these.
+class PromoteVersionRequest(BaseModel):
+    description: str = Field(min_length=1, max_length=2000)
+
+
+class SharedModelOut(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    datasource_id: str
+    datasource_name: str
+    created_at: datetime
+    promoted_at: Optional[datetime] = None
+    step_count: int
+    # The row count AFTER the last recorded cleaning/prep step, if this
+    # version's own cleaning_log already has one - never computed fresh by
+    # loading and counting the full CSV on every /models list call (see
+    # routers/models_library.py's own comment). None when no such figure is
+    # already sitting in stored data - left out rather than guessed.
+    row_count: Optional[int] = None
+
+
+# ---------- Phase 2, feature 2: persistent Flow-tab annotations ----------
+# A partial update to one FlowAnnotation - see models.FlowAnnotation's own
+# docstring and routers/datasources.py upsert_flow_annotation. Every field
+# is optional so a caller can send just the one thing that changed (a
+# rename, or a drag, never both at once in this app's own edit UI) without
+# resending everything else; at least one must actually be set, enforced in
+# the endpoint itself so the error message can be specific.
+class FlowAnnotationUpdate(BaseModel):
+    display_label: Optional[str] = Field(default=None, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    position_x: Optional[float] = None
+    position_y: Optional[float] = None
+
+
+class FlowAnnotationOut(BaseModel):
+    node_key: str
+    display_label: Optional[str] = None
+    description: Optional[str] = None
+    position_x: Optional[float] = None
+    position_y: Optional[float] = None
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ---------- Phase 2, feature 4: generic API/webhook PULL connector ----------
+# A read-only REST connector - GET only, always (see
+# services/connectors.ApiConnector and routers/datasources.py connect_api
+# for exactly why method is never a field here). auth_header_name/
+# auth_header_value are both optional and independent: a public API needs
+# neither; a bearer-token API sets auth_header_name="Authorization" and
+# auth_header_value="Bearer <token>". json_path is only needed when the
+# array of records is nested inside the response body rather than being
+# the whole body itself (e.g. "data.items") - see ApiConnector._extract_array.
+class DataSourceCreateApi(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    url: str = Field(min_length=1, max_length=2000)
+    auth_header_name: Optional[str] = Field(default=None, max_length=200)
+    auth_header_value: Optional[str] = Field(default=None, max_length=4000)
+    json_path: Optional[str] = Field(default=None, max_length=300)
