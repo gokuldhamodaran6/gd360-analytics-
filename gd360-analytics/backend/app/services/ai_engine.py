@@ -142,9 +142,53 @@ schema:
                             // "label" is a short button caption (under 8 words) and "prompt" is the exact
                             // follow-up request to run if the person clicks it, written as if the person
                             // typed it themselves. Use [] only when action == "clarify".
+  "self_critique": string | null   // REQUIRED (a real, honest 1-3 sentence caveat) whenever `code` fits or
+                            // predicts anything - a regression, a forecast, a clustering/segmentation, a
+                            // classifier, association/market-basket rules, or an anomaly-detection score - and
+                            // ONLY then (null for a plain aggregation/chart with nothing fitted). See "Honest
+                            // self-critique for anything model-like" below - this is where you say, in plain
+                            // words, whether the result is actually trustworthy and why, the same way a senior
+                            // analyst would flag a suspicious result to their own boss instead of presenting it
+                            // as a clean win.
 }
 
 Rules:
+- Multiple results in one answer: when the request genuinely asks for several distinct analyses at once (e.g.
+  "build the demand forecast, profit prediction, shipping-time model, customer segments, product
+  recommendations, and anomaly detection", or any request naming more than one clearly separate thing to
+  compute), action="analyze" and `code` may assign a PYTHON DICT to `result` instead of one table - each key a
+  short, human-readable label exactly as you would caption it for a person (e.g. "Demand forecast", "Profit
+  prediction", "Customer segments", never a snake_case variable name), each value one pandas DataFrame or Series
+  for that one piece, built the same way a single-result `result` would be (2-or-fewer columns when it is meant
+  to chart directly; a wider reference/detail table, like a segment profile or a market-basket rules table, is
+  fine too and is shown as a table). Write each piece using ordinary vectorized pandas/numpy/scipy.stats - there
+  is no sklearn/statsmodels/prophet available, and you do not need them: recency/frequency/monetary quantile
+  scoring covers segmentation, numpy.polyfit or a manual least-squares fit covers a trend/forecast line with a
+  simple prediction interval, itertools.combinations-based co-occurrence counts cover market-basket
+  recommendations, and a robust (median/MAD-based) z-score covers anomaly detection - the same techniques a
+  careful analyst would reach for in plain pandas. Reuse a dataframe you already built earlier in this SAME code
+  block for a later piece instead of recomputing it (e.g. build a shared "prepared orders" table once, then
+  derive the forecast, profit, and segments pieces from it) - do not merge/reload the same tables from scratch
+  once per piece. Keep prep_code doing only genuine shared preparation; do the per-piece modeling in `code`.
+  Only use this dict form when the request truly asks for more than one thing - a single question still gets a
+  single DataFrame/Series in `result`, exactly as before.
+- Honest self-critique for anything model-like: whenever `code` fits, predicts, clusters, scores, or ranks
+  anything (not a plain groupby/sum/average), you MUST actually check whether the result is trustworthy before
+  presenting it, and say so plainly in self_critique - never silently produce a polished-looking chart for a
+  result that does not deserve the confidence a clean chart implies. Concretely: for a forecast or regression,
+  hold out a portion of the real data (e.g. the most recent period, or a random split), fit only on the rest,
+  and report the actual holdout error (MAPE, RMSE, or R² on the held-out portion, never only the in-sample fit)
+  - if that error is large, or the series is short/noisy, say so in plain language ("this is a small, noisy
+  series - treat the forecast as directional only, not a precise number") instead of presenting an unreliable
+  line as confident fact. If a "predicted" value turns out to reconstruct another column almost exactly (e.g.
+  profit predicted from units and a per-unit margin that was itself derived from the data), say plainly that
+  this recovers a formula rather than learning a genuine pattern, and that it validates the data rather than
+  forecasting anything new. For association/market-basket rules, report lift alongside confidence and say
+  plainly when most rules cluster near lift ≈ 1 (meaning the association is weak and these are gentle hints, not
+  strong rules). For anomaly detection, state the actual threshold/method used and roughly how many flagged
+  rows there are, and note when the flags look more like a data-entry/bulk-order pattern than a real error. This
+  is exactly the difference between a tool a person can trust and one that just looks impressive - a caveat you
+  actually computed and mean beats a caveat-free chart every time.
 - If the request is ambiguous or you genuinely need more info to proceed (e.g. which column, which time range,
   which metric, what to do with missing values), set action="clarify" and ask ONE short, specific question -
   and that question must be about what the person just asked, using the columns/topic actually named in their
@@ -338,12 +382,27 @@ Rules:
        - set action="clarify" and ask specifically which column in each table should be used to join them,
        naming the real column names you saw in each. A wrong join produces a wrong answer that looks like a
        right one, which is worse than asking.
-    3. When the join DOES go ahead, prep_narrative or narrative MUST say, in plain language, exactly which
+    3. Before writing the merge, actually look at the real example values shown for each key column in the
+       schema section below (every column there shows a few of its real values, not just its name and dtype) -
+       this is exactly what a real data engineer does before trusting a join key: glance at the real values
+       first. The single most common way an otherwise-correct join silently fails is a FORMAT mismatch, not a
+       wrong choice of column - the same real-world identifier stored differently in each table: one side
+       zero-padded ('02138'), the other a plain unpadded number (2138); one side with stray whitespace or
+       inconsistent casing ('ACME Corp ' vs 'acme corp'); one side a string, the other a number. Compare the
+       actual example values shown for both sides of the key BEFORE merging, and if they differ only in
+       format, normalize BOTH sides to the same format first with a fast, vectorized pandas operation - e.g.
+       `.astype(str).str.strip().str.zfill(5)` for a zero-padded code, `.astype(str).str.strip().str.lower()`
+       for a text identifier - never a per-row Python loop or `.apply()` for this (see the Performance rule
+       above; a "normalize defensively, one row at a time, just in case" instinct is exactly the pattern that
+       has actually timed out in production before - the fast, vectorized form does the same normalization in
+       one pass). Mention the normalization plainly in prep_narrative/narrative when you do it (e.g. "uszip's
+       zip codes were zero-padded to 5 digits to match the sales data's postal codes before joining").
+    4. When the join DOES go ahead, prep_narrative or narrative MUST say, in plain language, exactly which
        column(s) you joined the tables on, and the real row counts before and after (e.g. "Joined on Customer
        ID: 4,102 rows in Orders matched 3,890 rows in Customers, giving 4,020 combined rows; 82 orders had no
        matching customer and were dropped.") - so a wrong or surprising join is visible immediately in the
        answer itself, never silently hidden inside code the person cannot see.
-    4. Before the merge runs, also think about whether the join key is unique on each side. A normal one-to-one
+    5. Before the merge runs, also think about whether the join key is unique on each side. A normal one-to-one
        or many-to-one join (e.g. many orders each pointing at one customer id) is fine and expected. But if the
        join key repeats on BOTH sides, pandas' merge multiplies rows for every matching pair - a key repeated 5
        times on one side and 4 times on the other produces 20 output rows for it, not 4 or 5 - and on a real
@@ -1065,12 +1124,55 @@ def _plan_with_retry(messages: list[dict]) -> dict:
         )
 
 
+_SCHEMA_MAX_COLUMNS = 40
+_SCHEMA_EXAMPLE_VALUES = 4
+
+
+def _example_values_text(series: pd.Series) -> str:
+    """A short ", e.g. X, Y, Z" suffix of REAL values actually present in
+    this column - not fabricated, not summarized, the literal first
+    _SCHEMA_EXAMPLE_VALUES distinct non-null values in the data, in
+    `repr()` form so a string keeps its quotes (and, critically, any
+    leading zeros: '02138' reads as a zero-padded 5-character code, while
+    the bare number 2138 next to it in another table reads as a plain
+    int with no leading zero - exactly the kind of format mismatch that
+    silently breaks a merge/join and previously had to be guessed at
+    blindly, with nothing but a column name and a dtype to go on).
+    Empty string when the column has no non-null values to show."""
+    try:
+        examples = series.dropna().unique()[:_SCHEMA_EXAMPLE_VALUES]
+    except Exception:
+        return ""
+    if len(examples) == 0:
+        return ""
+    shown = ", ".join(repr(v.item() if hasattr(v, "item") else v) for v in examples)
+    return f" - e.g. {shown}"
+
+
 def _dataset_schema_text(tables: dict[str, pd.DataFrame]) -> str:
+    # 2026-09-28 root-cause fix: this used to show ONLY each column's name
+    # and pandas dtype - never a single real value from the data itself,
+    # for ANY table, ever. That is enough to write code against ONE
+    # already-clean table, but it is not enough to safely MERGE/JOIN two
+    # tables: a column name and dtype alone cannot tell you that one
+    # table's postal codes are zero-padded 5-character strings ('02138')
+    # while the other table's are plain, unpadded integers (2138) - a
+    # format mismatch that silently produces a near-empty, wrong join
+    # result, or pushes the model toward a slow, row-by-row "normalize
+    # this defensively" approach instead of a fast, confident, vectorized
+    # one BECAUSE it never had the real values in front of it to be
+    # confident with in the first place. A real data engineer always
+    # glances at the actual values (df.head()) before writing a join; this
+    # gives the model the equivalent - a handful of REAL, not fabricated,
+    # example values per column - every time, not just when something
+    # already went wrong once and got a retry.
     blocks = []
     for name, table_df in tables.items():
         lines = [f"Table \"{name}\" ({len(table_df)} rows):"]
-        for col in table_df.columns:
-            lines.append(f"  - {col} ({table_df[col].dtype})")
+        for col in list(table_df.columns)[:_SCHEMA_MAX_COLUMNS]:
+            lines.append(f"  - {col} ({table_df[col].dtype}){_example_values_text(table_df[col])}")
+        if len(table_df.columns) > _SCHEMA_MAX_COLUMNS:
+            lines.append(f"  ... and {len(table_df.columns) - _SCHEMA_MAX_COLUMNS} more columns")
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
 
@@ -2073,6 +2175,28 @@ def analyze(
         user_content += f"\n\n{_SKIP_PREP_NOTE}"
     messages.append({"role": "user", "content": user_content})
 
+    # 2026-09-28: a real, honest trace of what actually happened this turn -
+    # never fabricated or staged for effect, just the genuine steps this
+    # request actually went through, in the order they actually happened.
+    # This exists because a person watching this run has, until now, had
+    # nothing to look at but a static "GD360 is working..." for however
+    # long this takes (Gokul's own real complaint) - the single biggest
+    # piece of real information missing was that a RETRY was happening at
+    # all, silently, possibly more than once, with no sign anything was
+    # different about attempt 2 versus attempt 1. See chat.py, which now
+    # returns this on ChatResponse.steps, and ChatPanel.tsx, which renders
+    # it as a collapsed "Show what I did" section under the reply.
+    steps: list[dict] = []
+    if len(explicit_table_names) > 1:
+        steps.append({
+            "label": f"Reviewed {len(explicit_table_names)} selected tables",
+            "detail": (
+                "Looked at real example values from each table's columns before writing any "
+                "merge/join code, to catch a format mismatch (like a zero-padded code on one side "
+                "and a plain number on the other) before it could produce a wrong or empty join."
+            ),
+        })
+
     plan = _plan_with_retry(messages)
     result = _execute_plan(prompt, tables, profile, plan, chart_override, guided)
 
@@ -2102,6 +2226,10 @@ def analyze(
     while needs_retry and attempt <= _MAX_EXECUTION_RETRIES:
         retry_detail = result.pop("_retry_detail", "unknown error")
         print(f"[ai_engine] attempt {attempt} failed for prompt={prompt!r}: {retry_detail}")
+        steps.append({
+            "label": f"Attempt {attempt} didn't work - trying a different approach",
+            "detail": (retry_detail[:220] + "...") if len(retry_detail) > 220 else retry_detail,
+        })
         # 2026-09-23: a plain "reconsider" nudge does nothing useful for a
         # TIMEOUT specifically - real production logs showed the model
         # retrying with the same (or an equally slow) approach and timing
@@ -2146,6 +2274,8 @@ def analyze(
             current_plan = _plan_with_retry(retry_messages)
             result = _execute_plan(prompt, tables, profile, current_plan, chart_override, guided)
             needs_retry = result.pop("_retry_needed", False)
+            if not needs_retry:
+                steps.append({"label": f"Attempt {attempt} worked", "detail": "Continuing with this result."})
         except Exception as e:
             print(f"[ai_engine] retry call itself raised for prompt={prompt!r}: {e}")
             needs_retry = False  # keep the last attempt's friendly failure message, stop retrying
@@ -2170,6 +2300,7 @@ def analyze(
         print(f"[ai_engine] final failing code for prompt={prompt!r}:\n{failing_code}")
     result.pop("_retry_needed", None)
     result.pop("_retry_detail", None)
+    result["steps"] = steps
 
     return result
 
@@ -2347,6 +2478,7 @@ def _run_analyze_with_prep(
             "clarifying_question": None,
             "action": "analyze",
             "narrative": prep_narrative,
+            "self_critique": None,
             "chart_spec": prep_chart_spec,
             "insight": prep_insight,
             "cleaned_df": prepped,
@@ -2394,6 +2526,66 @@ def _run_analyze_with_prep(
         out["_retry_detail"] = error.splitlines()[-1] if error else "unknown error"
         return out
 
+    chart_narrative = plan.get("narrative") or "Here is your analysis."
+    combined_narrative = f"**Data prep:** {prep_narrative}\n\n**Analysis:** {chart_narrative}"
+    # One combined script - preparation, then the chart code against the
+    # prepared table - stored as the single `code` this turn ran, so "give
+    # me the code" hands back the real, complete pipeline, and a later
+    # exact repeat of this same question (see _find_repeated_prompt_code)
+    # can replay it deterministically in one pass without needing a second
+    # preparation step or creating a second saved version.
+    combined_code = (
+        f"{prep_code}\n\n"
+        "# --- preparation complete; the analysis below runs against the prepared table ---\n"
+        "df = result\n\n"
+        f"{chart_code}"
+    )
+
+    if isinstance(result, dict) and result:
+        # See the identical "Multiple results in one answer" branch in
+        # _run_analyze above - same behavior here, for the (more common in
+        # practice, since a multi-model request almost always also needs a
+        # prep step) prep_code + code combination.
+        entries = []
+        for entry_label, entry_value in result.items():
+            entry = _build_result_entry(prompt, entry_label, entry_value, plan, chart_override)
+            if entry:
+                entries.append(entry)
+        if entries:
+            primary = entries[0]
+            summary = result_to_summary(next(iter(result.values())))
+            summary["source_row_count"] = rows_after
+            insight = _generate_insight(prompt, summary)
+            return {
+                "needs_clarification": False,
+                "clarifying_question": None,
+                "action": "analyze",
+                "narrative": combined_narrative,
+                "self_critique": (plan.get("self_critique") or "").strip() or None,
+                "chart_spec": primary["chart_spec"],
+                "chart_type": primary["chart_type"],
+                "insight": insight,
+                "cleaned_df": prepped,
+                "rows_before": rows_before,
+                "rows_after": rows_after,
+                "nulls_before": nulls_before,
+                "nulls_after": nulls_after,
+                "suggested_charts": suggest_charts(prepped_profile),
+                "suggested_stats": suggest_stats(prepped_profile),
+                "follow_up_suggestions": _sanitize_follow_ups(plan.get("follow_up_suggestions")),
+                "code": combined_code,
+                "result_columns": primary["result_columns"],
+                "result_rows": primary["result_rows"],
+                "result_row_count": primary["result_row_count"],
+                "result_truncated": primary["result_truncated"],
+                "results": entries,
+            }
+        out = _no_result(profile, _ANALYZE_FAILURE_NARRATIVE)
+        out["action"] = "analyze"
+        out["_retry_needed"] = True
+        out["_retry_detail"] = "The code ran and returned a dict of results, but none of them had usable rows."
+        return out
+
     chart_type = (chart_override or {}).get("chart_type") or plan.get("chart_type") or "bar"
     if not (chart_override or {}).get("chart_type"):
         chart_type = _infer_chart_type(prompt, result, chart_type)
@@ -2421,26 +2613,12 @@ def _run_analyze_with_prep(
     summary["source_row_count"] = rows_after
     insight = _generate_insight(prompt, summary)
 
-    chart_narrative = plan.get("narrative") or "Here is your analysis."
-    combined_narrative = f"**Data prep:** {prep_narrative}\n\n**Analysis:** {chart_narrative}"
-    # One combined script - preparation, then the chart code against the
-    # prepared table - stored as the single `code` this turn ran, so "give
-    # me the code" hands back the real, complete pipeline, and a later
-    # exact repeat of this same question (see _find_repeated_prompt_code)
-    # can replay it deterministically in one pass without needing a second
-    # preparation step or creating a second saved version.
-    combined_code = (
-        f"{prep_code}\n\n"
-        "# --- preparation complete; the analysis below runs against the prepared table ---\n"
-        "df = result\n\n"
-        f"{chart_code}"
-    )
-
     return {
         "needs_clarification": False,
         "clarifying_question": None,
         "action": "analyze",
         "narrative": combined_narrative,
+        "self_critique": (plan.get("self_critique") or "").strip() or None,
         "chart_spec": chart_spec,
         "chart_type": chart_type,
         "insight": insight,
@@ -2457,6 +2635,47 @@ def _run_analyze_with_prep(
         "result_rows": tidy["rows"] if tidy else None,
         "result_row_count": tidy["row_count"] if tidy else None,
         "result_truncated": tidy["truncated"] if tidy else False,
+        "results": None,
+    }
+
+
+def _build_result_entry(prompt: str, label: str, value: Any, plan: dict, chart_override: dict | None) -> dict | None:
+    """Builds one named entry of a multi-result answer (see
+    "Multiple results in one answer" in SYSTEM_PROMPT) - one chart-or-table
+    card, the same shape a person would see if this had been the ONLY
+    result. Never raises: a sub-result that cannot be charted (e.g. a wider
+    reference table like a segment profile or a recommendations list) falls
+    back to a table-only card instead of taking the whole multi-result
+    answer down with it - one bad entry among six should never cost the
+    other five. Returns None only when `value` is not something with any
+    real rows/columns to show (nothing meaningful to render)."""
+    if not isinstance(value, (pd.DataFrame, pd.Series)):
+        return None
+    tidy = result_to_tidy(value)
+    if not tidy or tidy["row_count"] == 0:
+        return None
+
+    chart_type = (chart_override or {}).get("chart_type") or plan.get("chart_type") or "bar"
+    chart_spec = None
+    try:
+        inferred = _infer_chart_type(prompt, value, chart_type)
+        chart_spec = build_figure(value, inferred, str(label), None, None)
+        chart_type = inferred
+    except Exception:
+        # Falls back to a table-only card - result_to_tidy above already
+        # succeeded, so the person still gets the real numbers, just
+        # without a chart shape that does not fit this particular table
+        # (e.g. a 5-column reference/profile table).
+        chart_spec = None
+
+    return {
+        "label": str(label),
+        "chart_spec": chart_spec,
+        "chart_type": chart_type if chart_spec else None,
+        "result_columns": tidy["columns"],
+        "result_rows": tidy["rows"],
+        "result_row_count": tidy["row_count"],
+        "result_truncated": tidy["truncated"],
     }
 
 
@@ -2468,6 +2687,57 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
         out["action"] = "analyze"
         out["_retry_needed"] = True
         out["_retry_detail"] = error.splitlines()[-1] if error else "unknown error"
+        return out
+
+    if isinstance(result, dict) and result:
+        # "Multiple results in one answer" (see SYSTEM_PROMPT): the model
+        # assigned a dict of label -> DataFrame/Series to `result` instead
+        # of one table, because the request genuinely called for several
+        # distinct analyses (e.g. "build the forecast, profit, and segments
+        # models"). Build one card per entry; nothing else about the
+        # single-result path below this block changes, and a plain
+        # DataFrame/Series `result` (the overwhelming majority of requests)
+        # never enters this branch at all.
+        entries = []
+        for entry_label, entry_value in result.items():
+            entry = _build_result_entry(prompt, entry_label, entry_value, plan, chart_override)
+            if entry:
+                entries.append(entry)
+        if entries:
+            primary = entries[0]
+            summary = result_to_summary(next(iter(result.values())))
+            summary["source_row_count"] = int(len(next(iter(tables.values()))))
+            insight = _generate_insight(prompt, summary)
+            return {
+                "needs_clarification": False,
+                "clarifying_question": None,
+                "action": "analyze",
+                "narrative": plan.get("narrative") or "Here is your analysis.",
+                "self_critique": (plan.get("self_critique") or "").strip() or None,
+                "chart_spec": primary["chart_spec"],
+                "chart_type": primary["chart_type"],
+                "insight": insight,
+                "rows_before": None,
+                "rows_after": None,
+                "nulls_before": None,
+                "nulls_after": None,
+                "suggested_charts": suggest_charts(profile),
+                "suggested_stats": suggest_stats(profile),
+                "follow_up_suggestions": _sanitize_follow_ups(plan.get("follow_up_suggestions")),
+                "code": code,
+                "result_columns": primary["result_columns"],
+                "result_rows": primary["result_rows"],
+                "result_row_count": primary["result_row_count"],
+                "result_truncated": primary["result_truncated"],
+                "results": entries,
+            }
+        # Every entry in the dict was empty/uncharted-able - treat this the
+        # same as any other "ran but produced nothing usable" failure below,
+        # rather than silently returning an empty multi-result answer.
+        out = _no_result(profile, _ANALYZE_FAILURE_NARRATIVE)
+        out["action"] = "analyze"
+        out["_retry_needed"] = True
+        out["_retry_detail"] = "The code ran and returned a dict of results, but none of them had usable rows."
         return out
 
     chart_type = (chart_override or {}).get("chart_type") or plan.get("chart_type") or "bar"
@@ -2506,6 +2776,7 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
         "clarifying_question": None,
         "action": "analyze",
         "narrative": plan.get("narrative") or "Here is your analysis.",
+        "self_critique": (plan.get("self_critique") or "").strip() or None,
         "chart_spec": chart_spec,
         # The chart_type actually used, after any override/inference - kept
         # so an exact repeat of this same question later can reuse it and
@@ -2524,6 +2795,7 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
         "result_rows": tidy["rows"] if tidy else None,
         "result_row_count": tidy["row_count"] if tidy else None,
         "result_truncated": tidy["truncated"] if tidy else False,
+        "results": None,
     }
 
 
