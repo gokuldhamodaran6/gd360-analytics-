@@ -68,6 +68,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_user
+from ..services import audit
 
 router = APIRouter(tags=["workspaces"])
 
@@ -128,6 +129,9 @@ def create_workspace(
     db.add(ws)
     db.flush()
     db.add(models.WorkspaceMember(workspace_id=ws.id, user_id=user.id, role="owner"))
+    audit.log_audit_event(
+        db, actor=user, action="workspace_created", workspace_id=ws.id, target_type="workspace", target_id=ws.id,
+    )
     db.commit()
     db.refresh(ws)
     return _workspace_out(db, ws, user.id)
@@ -265,6 +269,10 @@ def update_member_role(
     if target.role == "owner":
         raise HTTPException(400, "The workspace owner's role can't be changed.")
     target.role = payload.role
+    audit.log_audit_event(
+        db, actor=user, action="member_role_changed", workspace_id=workspace_id,
+        target_type="workspace_member", target_id=member_user_id, metadata={"new_role": payload.role},
+    )
     db.commit()
     db.refresh(target)
     target_user = db.query(models.User).filter(models.User.id == member_user_id).first()
@@ -303,5 +311,8 @@ def join_via_invite(token: str, db: Session = Depends(get_db), user: models.User
     )
     if not existing:
         db.add(models.WorkspaceMember(workspace_id=ws.id, user_id=user.id, role="member"))
+        audit.log_audit_event(
+            db, actor=user, action="member_joined", workspace_id=ws.id, target_type="workspace", target_id=ws.id,
+        )
         db.commit()
     return _workspace_out(db, ws, user.id)
