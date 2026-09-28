@@ -1049,3 +1049,95 @@ class PublicAssignOut(BaseModel):
 
 class PublicConvertRequest(BaseModel):
     subject_id: str = Field(min_length=1, max_length=200)
+
+
+# ---------- Phase 5, Batch A (2026-09-28, data governance & quality) ----------
+class CreateQualityRuleRequest(BaseModel):
+    column_name: str = Field(min_length=1, max_length=200)
+    rule_type: Literal["not_null", "unique", "min_value", "max_value", "allowed_values"]
+    # Shape depends on rule_type - {} for not_null/unique, {"min": <number>}
+    # for min_value, {"max": <number>} for max_value, {"values": [...]} for
+    # allowed_values. Left loosely typed (a plain dict) same as
+    # DashboardBlock.config/SavedView.config elsewhere in this file - the
+    # backend (services/quality_checks.run_quality_rule) is the one place
+    # that ever reads inside it.
+    rule_config: dict = Field(default_factory=dict)
+
+
+class QualityRuleOut(BaseModel):
+    id: str
+    datasource_id: str
+    column_name: str
+    rule_type: str
+    rule_config: dict
+    created_at: datetime
+    last_run_at: Optional[datetime] = None
+    last_status: Optional[str] = None  # "pass" | "fail" | "error" | None
+    last_checked_row_count: Optional[int] = None
+    last_failing_row_count: Optional[int] = None
+    last_message: Optional[str] = None
+    # Who created this rule - resolved server-side so the panel can show
+    # "Added by <name>" without a second round trip, same convention
+    # SavedViewOut.created_by_* already follows.
+    created_by_name: Optional[str] = None
+    created_by_email: Optional[str] = None
+
+
+class QualityStatusOut(BaseModel):
+    # Computed purely from each rule's own stored last_status - never
+    # triggers a live re-run (see routers/quality_checks.py
+    # get_quality_status's own docstring). This is what a dashboard polls
+    # per data source to decide whether to show its "quality checks are
+    # failing" banner, so it has to stay cheap and fast.
+    has_failing_rules: bool
+    failing_count: int
+
+
+class MarkReviewedOut(BaseModel):
+    datasource_id: str
+    governance_last_reviewed_at: datetime
+    governance_last_reviewed_by_id: str
+    governance_last_reviewed_by_name: Optional[str] = None
+    governance_last_reviewed_by_email: Optional[str] = None
+
+
+class AuditEventOut(BaseModel):
+    id: str
+    workspace_id: Optional[str] = None
+    action: str
+    target_type: Optional[str] = None
+    target_id: Optional[str] = None
+    event_metadata: Optional[dict] = None
+    created_at: datetime
+    # The actor's display name/email joined in server-side - never a raw
+    # user id the frontend can't render on its own (see the Batch A spec's
+    # own note on this).
+    actor_name: Optional[str] = None
+    actor_email: Optional[str] = None
+
+
+class AuditLogPageOut(BaseModel):
+    events: list[AuditEventOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class GovernanceMemberAccessOut(BaseModel):
+    user_id: str
+    name: Optional[str] = None
+    email: str
+    role: str  # "owner" | "member" | "viewer"
+
+
+class GovernanceDataSourceOut(BaseModel):
+    id: str
+    name: str
+    kind: str
+    member_access: list[GovernanceMemberAccessOut]
+    governance_last_reviewed_at: Optional[datetime] = None
+    governance_last_reviewed_by: Optional[str] = None  # display name/email, or None if never reviewed
+
+
+class GovernanceOverviewOut(BaseModel):
+    datasources: list[GovernanceDataSourceOut]
