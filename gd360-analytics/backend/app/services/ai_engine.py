@@ -412,6 +412,25 @@ Rules:
        and a key turns out to repeat on both sides, that is a sign the chosen key is wrong or the data needs
        de-duplicating/aggregating on one side first (e.g. `.drop_duplicates()` on the id, or aggregate that
        table down to one row per id) before joining - do that rather than merging as-is and hoping.
+    6. 2026-09-28 root-cause fix: step 5 above asks you to "think about" whether a key repeats on both sides,
+       but real production timeouts (confirmed from server logs - a request against real multi-table data timed
+       out at the sandbox's wall-clock limit on every single attempt, silently, with no error to learn from and
+       nothing for the retry loop to fix) show that reasoning about it in your head is not enough on a genuinely
+       complex multi-table merge - it is exactly the kind of check that is easy to skip while juggling several
+       joins at once. So make it mechanical, not something you have to remember: every `pd.merge`/`.merge()` call
+       in your code MUST pass pandas' own built-in `validate=` argument - `validate="many_to_one"` when the
+       right-hand table should have at most one row per key (the common case: joining a wide fact/sales table
+       against a smaller lookup/dimension table like a zip-code, product, or factory reference table),
+       `validate="one_to_one"` when both sides should be unique on the key, or `validate="one_to_many"` when the
+       LEFT table is the smaller lookup side. This costs nothing when the merge is genuinely fine, and when it is
+       not, pandas raises a clear `MergeError` naming exactly what went wrong (e.g. "Merge keys are not unique in
+       right dataset; not a many-to-one merge") in milliseconds - turning a silent, unexplained, multi-minute
+       timeout into an immediate, specific, fixable error the retry loop can actually read and correct (usually
+       by adding `.drop_duplicates(subset=[<key>])` on the offending side before merging, per step 5). When you
+       are chaining several merges in one prep_code (e.g. merge A into B, then that result into C, then into D -
+       exactly the shape of "merge sales with zip codes, then join that with products and factories"), pass
+       `validate=` on EVERY one of those merge calls, not just the first - a chained merge can pass its first
+       validate cleanly and still explode on the second or third join, and each call is what actually catches it.
 - Respond with raw JSON only.
 """
 
