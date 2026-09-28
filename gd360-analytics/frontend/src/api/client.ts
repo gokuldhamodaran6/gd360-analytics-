@@ -1601,3 +1601,67 @@ export const jobsApi = {
   listRuns: (page = 1, pageSize = 20) =>
     api.get<JobRunsPage>("/jobs/runs", { params: { page, page_size: pageSize } }).then((r) => r.data),
 };
+
+// ---- Phase 4 (2026-09-28, Experimentation / A/B testing, pages/
+// Experiments.tsx) - see backend routers/experiments.py's own module
+// docstring for the full design, including why the public assign/convert
+// calls a founder's own website makes are NOT exposed from here: those are
+// called directly from that OTHER website's own client-side JS, never from
+// this app's frontend. ----
+export type ExperimentStatus = "running" | "stopped";
+
+export type ExperimentVariantStats = {
+  variant_name: string;
+  assigned_count: number;
+  converted_count: number;
+  // null when assigned_count is 0 - a conversion rate is genuinely
+  // undefined with zero visitors assigned yet, never shown as a
+  // fabricated 0%.
+  conversion_rate: number | null;
+};
+
+export type ExperimentStats = {
+  variant_a: ExperimentVariantStats;
+  variant_b: ExperimentVariantStats;
+  p_value: number | null;
+  is_significant: boolean;
+  insufficient_data: boolean;
+};
+
+export type Experiment = {
+  id: string;
+  name: string;
+  metric_name: string;
+  variant_a_name: string;
+  variant_b_name: string;
+  status: ExperimentStatus;
+  public_key: string;
+  // Ready-to-paste URLs for the founder's OWN external website's
+  // client-side assign/convert calls.
+  assign_url: string;
+  convert_url: string;
+  created_at: string;
+  started_at: string;
+  stopped_at: string | null;
+  stats: ExperimentStats;
+  can_edit: boolean;
+};
+
+export type CreateExperimentPayload = {
+  name: string;
+  metric_name: string;
+  variant_a_name?: string;
+  variant_b_name?: string;
+};
+
+export const experimentsApi = {
+  list: () => api.get<Experiment[]>("/experiments").then((r) => r.data),
+  create: (payload: CreateExperimentPayload) => api.post<Experiment>("/experiments", payload).then((r) => r.data),
+  get: (id: string) => api.get<Experiment>(`/experiments/${id}`).then((r) => r.data),
+  // The only status transition this phase exposes - see backend
+  // schemas.SetExperimentStatusRequest's own comment for why "stopped" is
+  // the only value this ever accepts.
+  setStatus: (id: string, status: "stopped") =>
+    api.patch<Experiment>(`/experiments/${id}/status`, { status }).then((r) => r.data),
+  delete: (id: string) => api.delete(`/experiments/${id}`).then(() => undefined),
+};
