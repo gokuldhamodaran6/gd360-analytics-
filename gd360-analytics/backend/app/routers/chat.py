@@ -12,6 +12,7 @@ The core AI analytics endpoint. Given a prompt + a datasource, it:
      clarifying question if the AI/system needs more info.
 """
 import json
+import re
 import time
 from collections import defaultdict, deque
 from datetime import datetime
@@ -471,6 +472,12 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     if not payload.skip_prep:
         durable_repeat = learned_answers.find_learned_answer(db, user.id, tables, payload.prompt)
 
+    # Flow tab transparency round: a real wall-clock measurement of this
+    # turn's own analyze/transform call - never estimated - threaded
+    # through to whatever it ends up creating (a DatasetVersion and/or a
+    # Message) below, purely so the Flow tab can show something truer
+    # than "recently" on its cards.
+    _analyze_started_at = time.perf_counter()
     try:
         result = ai_engine.analyze(
             payload.prompt, tables, history=history, chart_override=payload.chart_override, intent=payload.intent,
@@ -480,6 +487,8 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     except Exception as e:
         print(f"[chat] AI analysis failed: {e}")
         raise HTTPException(502, ai_engine.friendly_ai_error(e))
+    duration_ms = int((time.perf_counter() - _analyze_started_at) * 1000)
+    method_summary = _derive_method_summary(result.get("action"), result.get("chart_type"), result.get("code"))
 
     # Learn from this turn for next time - only when it was a genuine,
     # freshly AI-planned success (never a clarifying question, never a
@@ -507,7 +516,10 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     # which action produced it.
     new_version = None
     if result.get("cleaned_df") is not None:
-        new_version = _save_cleaning_result(db, ds, source_versions, payload.prompt, result)
+        new_version = _save_cleaning_result(
+            db, ds, source_versions, payload.prompt, result,
+            duration_ms=duration_ms, method_summary=method_summary,
+        )
 
     reply_text = result.get("clarifying_question") or result.get("narrative") or "Done."
     if result.get("rows_before") is not None:
@@ -567,6 +579,8 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         steps=result.get("steps") or None,
         results=result.get("results") or None,
         self_critique=result.get("self_critique") or None,
+        duration_ms=duration_ms,
+        method_summary=method_summary,
     )
 
 
@@ -873,8 +887,46 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
     )
 
 
+# Ordered from most to least specific - the first real match wins, since a
+# step can easily contain more than one of these calls (e.g. a merge
+# followed by a groupby) and the first substantive operation is usually
+# what best explains what this step was actually for.
+_METHOD_PATTERNS: list[tuple[str, str]] = [
+    (r"\bmerge\(|\.join\(", "Joined tables"),
+    (r"\bgroupby\(", "Grouped & aggregated"),
+    (r"linregress|LinearRegression|np\.polyfit|\blstsq\(", "Fit a trend/forecast model"),
+    (r"KMeans|k-?means|\bcluster", "Clustered rows into segments"),
+    (r"\.corr\(", "Correlation analysis"),
+    (r"drop_duplicates|dropna|fillna", "Cleaned & de-duplicated rows"),
+    (r"\.pivot|pivot_table", "Pivoted data into a summary table"),
+    (r"resample\(|\.rolling\(", "Time-series aggregation"),
+    (r"zscore|z_score|\.std\(\)|\.abs\(\)\s*>", "Flagged outliers"),
+    (r"\.sort_values\(", "Sorted & ranked rows"),
+]
+
+
+def _derive_method_summary(action: str | None, chart_type: str | None, code: str | None) -> str | None:
+    """A short, honest one-line description of what this turn's code
+    actually did - read straight off the real pandas/python code that ran
+    (models.Message.code / the transform's own code), never invented or
+    guessed from the prompt text. Used only to give the Flow tab's cards
+    something more informative to show than the raw question; when the
+    code doesn't match any recognized pattern this falls back to a
+    generic, still-true label rather than fabricating a specific one."""
+    if code:
+        for pattern, label in _METHOD_PATTERNS:
+            if re.search(pattern, code):
+                return label
+    if action == "transform":
+        return "Cleaned & prepared data"
+    if chart_type:
+        return f"Built a {chart_type.replace('_', ' ')} chart"
+    return None
+
+
 def _save_cleaning_result(
-    db: Session, ds: models.DataSource, source_versions: list[models.DatasetVersion], prompt: str, result: dict
+    db: Session, ds: models.DataSource, source_versions: list[models.DatasetVersion], prompt: str, result: dict,
+    duration_ms: int | None = None, method_summary: str | None = None,
 ) -> models.DatasetVersion:
     """Every cleaning/prep prompt becomes its own new saved table, built on
     top of whichever table(s) the person picked as the source, instead of
@@ -911,6 +963,8 @@ def _save_cleaning_result(
         data=dataframe_to_csv_bytes(cleaned_df),
         cleaning_log=prior_log + [log_entry],
         position=max_position + 1,
+        duration_ms=duration_ms,
+        method_summary=method_summary,
     )
     db.add(version)
     db.commit()
@@ -989,6 +1043,7 @@ def _persist_and_respond(
     new_version_id=None, new_version_name=None, code=None, chart_type=None,
     continue_action=None, result_columns=None, result_rows=None, result_truncated=False,
     sources=None, ok: bool = True, steps=None, results=None, self_critique=None,
+    duration_ms=None, method_summary=None,
 ) -> schemas.ChatResponse:
     msg = models.Message(
         conversation_id=conversation_id,
@@ -1018,6 +1073,10 @@ def _persist_and_respond(
         # trustworthiness caveat - see Message.results/self_critique.
         results=results,
         self_critique=self_critique,
+        # Flow tab transparency round - see Message.duration_ms/
+        # method_summary's own docstring in models.py.
+        duration_ms=duration_ms,
+        method_summary=method_summary,
     )
     db.add(msg)
     db.commit()
