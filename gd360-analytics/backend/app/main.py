@@ -9,6 +9,7 @@ from .database import init_db
 from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, admin, conversations, goku,
     connections, workspaces, folders, jobs, models_library, experiments, quality_checks, governance,
+    data_access_rules,
 )
 from .services.scheduler import start_scheduler
 
@@ -146,6 +147,11 @@ app.include_router(experiments.public_router)
 # workspaces.py further.
 app.include_router(quality_checks.router)
 app.include_router(governance.router)
+# Phase 5, Batch B (data governance & quality - row/column permissions):
+# nests under /datasources/{id}/access-rules, owner-only - see that
+# router's own module docstring for why this is stricter than the usual
+# "editable" tier every other write on a data source's own row uses.
+app.include_router(data_access_rules.router)
 
 
 @app.on_event("startup")
