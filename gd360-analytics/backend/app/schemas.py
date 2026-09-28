@@ -1101,6 +1101,30 @@ class MarkReviewedOut(BaseModel):
     governance_last_reviewed_by_email: Optional[str] = None
 
 
+class CreateAccessRuleRequest(BaseModel):
+    role: Literal["member", "viewer"]
+    kind: Literal["row", "column"]
+    column_name: str = Field(min_length=1, max_length=200)
+    # Required (non-empty) when kind == "row" - the router validates this,
+    # since it depends on `kind`. None/omitted for a "column" rule, which
+    # doesn't use it at all.
+    allowed_values: Optional[list] = None
+
+
+class AccessRuleOut(BaseModel):
+    id: str
+    datasource_id: str
+    role: str
+    kind: str
+    column_name: str
+    allowed_values: Optional[list] = None
+    created_at: datetime
+    created_by_id: str
+    # Who created this rule - resolved server-side, same convention
+    # QualityRuleOut.created_by_name already follows.
+    created_by_name: Optional[str] = None
+
+
 class AuditEventOut(BaseModel):
     id: str
     workspace_id: Optional[str] = None
