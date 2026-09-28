@@ -12,17 +12,7 @@ import dagre from "@dagrejs/dagre";
 import type { Edge, Node } from "@xyflow/react";
 import { DataFlow, FlowNode, FlowSource, FlowVersion } from "../api/client";
 
-// Phase 2, feature 3 added "cross_pipeline": a card for one OTHER data
-// source's conversation that pulled in one of THIS datasource's promoted
-// shared models (see backend _cross_pipeline_uses's own docstring on why
-// that's the only case this ever draws - never a universal graph of every
-// table anyone has touched). Kept as its own kind rather than reusing
-// "external" - "external" already means "raw data pulled INTO this map
-// from elsewhere" (a backward/upstream concept), while this is the
-// opposite direction: this datasource's own table being used FORWARD, by
-// someone else, elsewhere - conflating the two under one color would make
-// the arrow direction the only thing telling them apart.
-export type FlowCardKind = "source" | "external" | "table" | "chart" | "cross_pipeline";
+export type FlowCardKind = "source" | "external" | "table" | "chart";
 
 export type FlowCardData = {
   kind: FlowCardKind;
@@ -62,7 +52,6 @@ export type FlowCardData = {
     | { type: "jump-source"; datasourceId: string; sheet: string | null }
     | { type: "jump-version"; datasourceId: string; versionId: string }
     | { type: "jump-chart"; conversationId: string; messageId: string }
-    | { type: "jump-datasource-flow"; datasourceId: string }
     | null;
   [key: string]: unknown;
 };
@@ -311,56 +300,10 @@ export function buildFlowGraph(
     }
   }
 
-  // Phase 2, feature 3 (data lineage across pipelines): one card per real
-  // recorded use of one of THIS datasource's own promoted shared models by
-  // some OTHER, separately-connected datasource's conversation - always an
-  // empty array unless the caller asked for cross_pipeline=true (see
-  // DataFlow.cross_pipeline_uses's own comment), so this loop draws
-  // nothing extra at all for anyone who hasn't turned that toggle on.
-  // Deliberately forward-only (an edge FROM this datasource's table TO the
-  // other datasource's use of it) - never a backward walk, and never for a
-  // table that isn't itself already a promoted shared model, matching the
-  // backend's own scoping in _cross_pipeline_uses.
-  for (const u of flow.cross_pipeline_uses || []) {
-    if (!versionIds.has(u.version_id)) continue;
-    const targetId = `cpu:${u.version_id}:${u.used_in_datasource_id}:${u.used_in_conversation_id}`;
-    nodes.push({
-      id: targetId,
-      type: "card",
-      position: { x: 0, y: 0 },
-      width: NODE_WIDTH,
-      height: NODE_HEIGHT,
-      data: {
-        kind: "cross_pipeline",
-        title: `Used in ${u.used_in_datasource_name}`,
-        subtitle: u.used_in_conversation_title || "Another data source",
-        meta: relativeDate(u.used_at),
-        step: 1,
-        isCurrentDatasource: false,
-        nodeKey: null,
-        annotationDescription: null,
-        customPosition: null,
-        onClick: { type: "jump-datasource-flow", datasourceId: u.used_in_datasource_id },
-      },
-    });
-    addEdge(`ver:${u.version_id}`, targetId);
-  }
-
   let scopedNodes = nodes;
   let scopedEdges = edges;
   if (scopeConversationId) {
     const keep = conversationAncestorScope(flow, creatorByVersionId, scopeConversationId, edges);
-    // Cross-pipeline "used elsewhere" cards are forward-looking (a
-    // downstream use, not an ancestor of anything in THIS conversation),
-    // so conversationAncestorScope's backward walk never reaches them on
-    // its own - keep one only when the table card it hangs off of already
-    // survived scoping, so switching to "This conversation" doesn't show
-    // a cross-pipeline card for some other conversation's unrelated table.
-    for (const n of nodes) {
-      if (n.data.kind !== "cross_pipeline") continue;
-      const incoming = edges.find((e) => e.target === n.id);
-      if (incoming && keep.has(incoming.source)) keep.add(n.id);
-    }
     scopedNodes = nodes.filter((n) => keep.has(n.id));
     scopedEdges = edges.filter((e) => keep.has(e.source) && keep.has(String(e.target)));
   }
