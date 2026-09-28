@@ -1110,8 +1110,29 @@ def _schema_with_fallback(
     return extended, schema_text, note
 
 
-def _no_result(profile: dict, narrative: str, needs_clarification: bool = False, clarifying_question: str | None = None) -> dict:
+def _no_result(
+    profile: dict, narrative: str, needs_clarification: bool = False,
+    clarifying_question: str | None = None, ok: bool = False,
+) -> dict:
+    # 2026-09-28 root-cause fix: EVERY call site of this helper except the
+    # genuine "the model wants to ask a clarifying question" one (see
+    # _execute_plan action == "clarify", which explicitly passes ok=True)
+    # is the FINAL, retries-exhausted failure narrative shown after
+    # analysis/transform genuinely could not complete (see
+    # _TRANSFORM_FAILURE_NARRATIVE / _ANALYZE_FAILURE_NARRATIVE below) -
+    # nothing real happened, no table was built, no chart was produced.
+    # Until now that failure narrative rode back to the frontend as an
+    # ordinary HTTP 200 with normal-looking `reply_text`, indistinguishable
+    # at the network level from a genuine successful answer - which is
+    # exactly what let Workspace.tsx's runPrompt() treat "the main chat
+    # step is done" (see GokuChat.tsx runActionPrompt) as true even when it
+    # had actually failed, then hand off to Goku's own follow-up call as if
+    # there were something real to comment on. `ok` is that missing
+    # signal: false here means "no real result - do not treat this as a
+    # completed step," true only for a genuine clarifying question, which
+    # IS a normal, expected turn (see chat.py ChatResponse.ok).
     return {
+        "ok": ok,
         "needs_clarification": needs_clarification,
         "clarifying_question": clarifying_question,
         "action": "clarify" if needs_clarification else "analyze",
@@ -2132,6 +2153,21 @@ def analyze(
 
     if needs_retry:
         print(f"[ai_engine] all {attempt} attempts failed for prompt={prompt!r}: {result.get('_retry_detail')}")
+        # 2026-09-28: a real production timeout investigation (multi-table
+        # merge, 3/3 attempts all hit the 30s sandbox limit) had NO way to
+        # see what pandas code had actually been running when it was
+        # killed - only the generic "timed out after 30s" message. Without
+        # the real code there was no way to tell a genuinely slow/CPU-
+        # starved operation apart from a plain inefficient-code mistake
+        # (row-by-row .apply/.iterrows, or a merge key exploding row
+        # count) that the retry guidance above already targets but cannot
+        # be confirmed to have actually fixed. Logging the last attempt's
+        # code on final exhaustion (not on every retry - only once
+        # genuinely given up) turns the NEXT such failure into something
+        # that can be read and diagnosed directly instead of guessed at
+        # again from zero.
+        failing_code = (current_plan or {}).get("code") or (current_plan or {}).get("prep_code") or "(no code in final plan)"
+        print(f"[ai_engine] final failing code for prompt={prompt!r}:\n{failing_code}")
     result.pop("_retry_needed", None)
     result.pop("_retry_detail", None)
 
@@ -2144,11 +2180,14 @@ def _execute_plan(
     action = plan.get("action") or "analyze"
 
     if action == "clarify":
+        # A real, expected turn - the model just needs more information,
+        # nothing failed - so this one gets ok=True (see _no_result).
         return _no_result(
             profile,
             "",
             needs_clarification=True,
             clarifying_question=plan.get("clarifying_question") or "Could you clarify what you would like to do?",
+            ok=True,
         )
 
     if action == "explain":
