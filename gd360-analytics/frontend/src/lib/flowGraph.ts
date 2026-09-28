@@ -46,6 +46,13 @@ export type FlowCardData = {
   // card, leaving every un-annotated card exactly where auto-layout would
   // always have put it.
   customPosition: { x: number; y: number } | null;
+  // Flow tab transparency round: a real wall-clock measurement (ms) of
+  // how long this step took, and a short, honest one-line description of
+  // what operation actually ran - both null for a card saved before this
+  // existed, or that predates real measurement. Never fabricated - see
+  // FlowVersion/FlowNode's own comments in api/client.ts.
+  durationMs: number | null;
+  methodSummary: string | null;
   // What clicking this card should do - Workspace.tsx supplies the actual
   // handlers; this is just the payload describing the target.
   onClick:
@@ -59,7 +66,12 @@ export type FlowCardData = {
 export type FlowCardNode = Node<FlowCardData, "card">;
 
 const NODE_WIDTH = 258;
-const NODE_HEIGHT = 96;
+// Bumped from 96 (Flow tab transparency round): cards can now carry an
+// extra one-line "what actually ran" summary alongside their existing
+// title/subtitle/detail/meta lines - a little more vertical room keeps a
+// fuller card from visually crowding the row below it once dagre lays
+// the graph out (see nodesep below, bumped to match).
+const NODE_HEIGHT = 112;
 
 function sourceOriginKey(datasourceId: string, sheet: string | null): string {
   return sheet ? `sheet:${datasourceId}:${sheet}` : `orig:${datasourceId}`;
@@ -156,6 +168,8 @@ export function buildFlowGraph(
         nodeKey: null,
         annotationDescription: null,
         customPosition: null,
+        durationMs: null,
+        methodSummary: null,
         onClick: { type: "jump-source", datasourceId, sheet },
       },
     });
@@ -181,6 +195,8 @@ export function buildFlowGraph(
         nodeKey: null,
         annotationDescription: null,
         customPosition: null,
+        durationMs: null,
+        methodSummary: null,
         onClick: s.version_id ? { type: "jump-version", datasourceId: s.datasource_id, versionId: s.version_id } : null,
       },
     });
@@ -255,6 +271,8 @@ export function buildFlowGraph(
         nodeKey: v.id,
         annotationDescription: v.description,
         customPosition: v.position_x != null && v.position_y != null ? { x: v.position_x, y: v.position_y } : null,
+        durationMs: v.duration_ms,
+        methodSummary: v.method_summary,
         onClick: { type: "jump-version", datasourceId: currentDatasourceId, versionId: v.id },
       },
     });
@@ -280,6 +298,8 @@ export function buildFlowGraph(
         nodeKey: n.message_id,
         annotationDescription: n.description,
         customPosition: n.position_x != null && n.position_y != null ? { x: n.position_x, y: n.position_y } : null,
+        durationMs: n.duration_ms,
+        methodSummary: n.method_summary,
         onClick: { type: "jump-chart", conversationId: n.conversation_id, messageId: n.message_id },
       },
     });
@@ -409,7 +429,7 @@ function assignStepNumbers(nodes: FlowCardNode[], edges: Edge[]) {
 
 export function layoutNodes(nodes: FlowCardNode[], edges: Edge[]): FlowCardNode[] {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: "LR", nodesep: 36, ranksep: 110, marginx: 16, marginy: 16 });
+  g.setGraph({ rankdir: "LR", nodesep: 44, ranksep: 110, marginx: 16, marginy: 16 });
   g.setDefaultEdgeLabel(() => ({}));
   // Every node still takes part in dagre's own layout pass, including one
   // with a saved position override - dagre needs the full graph to lay out
