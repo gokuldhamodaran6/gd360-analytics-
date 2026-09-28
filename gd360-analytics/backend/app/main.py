@@ -8,7 +8,7 @@ from .config import get_settings
 from .database import init_db
 from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, admin, conversations, goku,
-    connections, workspaces, folders, jobs, models_library,
+    connections, workspaces, folders, jobs, models_library, experiments,
 )
 from .services.scheduler import start_scheduler
 
@@ -136,6 +136,8 @@ app.include_router(workspaces.router)
 app.include_router(folders.router)
 app.include_router(jobs.router)
 app.include_router(models_library.router)
+app.include_router(experiments.router)
+app.include_router(experiments.public_router)
 
 
 @app.on_event("startup")
