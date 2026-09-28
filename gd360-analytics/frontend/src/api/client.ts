@@ -1056,6 +1056,22 @@ export type DashboardBuilderDetail = DashboardBranding & {
   custom_domain_error: string | null;
 };
 
+// 2026-09-28 (senior-UX round): the lightweight shape behind
+// dashboardBuilderApi.listByConversation - just enough to list and link to
+// every v2 dashboard built from one chat analysis, without pulling each
+// one's full pages/blocks/branding/sharing the way DashboardBuilderDetail
+// does. See that endpoint's own backend docstring for the real gap this
+// closes (Workspace.tsx's header).
+export type DashboardBuilderSummary = {
+  id: string;
+  name: string;
+  created_at: string;
+  page_count: number;
+  block_count: number;
+  can_edit: boolean;
+  is_published: boolean;
+};
+
 // What the anonymous, no-login public link actually gets back - no
 // can_edit/is_published/ids beyond what's needed to render the pages, so
 // nothing about the owner's account leaks into a page a stranger can open.
@@ -1164,6 +1180,17 @@ export const dashboardBuilderApi = {
       })
       .then((r) => r.data),
   get: (id: string) => api.get<DashboardBuilderDetail>(`/dashboard-builder/${id}`).then((r) => r.data),
+  // 2026-09-28 (senior-UX round): every v2 dashboard built from THIS chat
+  // analysis, most recent first - lets Workspace.tsx show a "View
+  // Dashboard(s)" entry point right in the same header "Build Dashboard"
+  // already lives in, instead of a dashboard becoming unreachable from
+  // its own source chat the moment the build finishes (see backend
+  // list_dashboards_for_conversation's own docstring for the real
+  // complaint this fixes).
+  listByConversation: (conversationId: string) =>
+    api
+      .get<DashboardBuilderSummary[]>(`/dashboard-builder/by-conversation/${conversationId}`)
+      .then((r) => r.data),
   // 2026-09-25 (Round 2): there was previously no way to rename a v2
   // dashboard's own name at all - see backend update_dashboard.
   rename: (id: string, name: string) =>
