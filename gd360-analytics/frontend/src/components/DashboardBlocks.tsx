@@ -388,9 +388,22 @@ export function BlockTable({
 }
 
 export function BlockChart({ title, config }: { title: string | null; config: any }) {
+  // 2026-09-28: an honest "checked, found none" hint for the "Show
+  // anomalies" toggle - anomaly_count is only ever a real int (never
+  // fabricated - see chart_builder.py's apply_analysis_overlays) once the
+  // toggle has actually been turned on, so === 0 here means the robust
+  // z-score check genuinely ran and genuinely found nothing unusual, not
+  // that it was skipped. Same low-key italic caption style as this file's
+  // other small inline notes (see TextBlock's "Empty note." above).
+  const showNoAnomaliesHint = config?.anomalies_enabled && config?.anomaly_count === 0;
   return (
-    <div className="h-full">
-      <ChartCanvas chartSpec={config?.chart_spec} title={title || undefined} dashPremium />
+    <div className="h-full flex flex-col">
+      {showNoAnomaliesHint && (
+        <div className="shrink-0 text-[11px] text-muted italic px-2 pt-1 pb-0.5">No unusual points detected.</div>
+      )}
+      <div className="flex-1 min-h-0">
+        <ChartCanvas chartSpec={config?.chart_spec} title={title || undefined} dashPremium />
+      </div>
     </div>
   );
 }
