@@ -178,15 +178,92 @@ function LiveBadge() {
   );
 }
 
-function SourceCard({ ds, viewMode, onOpen }: { ds: DataSourceSummary; viewMode: "grid" | "list"; onOpen: () => void }) {
-  const meta = connectionKindMeta(ds.kind);
-  const live = isLiveStreaming(ds);
-  if (viewMode === "list") {
-    return (
+// Phase 2, feature 4: the manual "Refresh" action + "last refreshed X ago"
+// text an "api"-kind source's card shows, in place of the plain created-at
+// timestamp every other kind shows - never a fabricated "live" indicator
+// the way streaming's LiveBadge is (there is no ongoing connection here to
+// be "live"), just an honest "as of when it was last actually fetched".
+// Its own small component (rather than inlined into SourceCard) purely so
+// its click can stopPropagation/preventDefault without SourceCard's own
+// onOpen handler needing to know this exists.
+function ApiRefreshControl({
+  ds,
+  onRefreshed,
+}: {
+  ds: DataSourceSummary;
+  onRefreshed: (updated: DataSourceSummary) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  const doRefresh = async (e: React.MouseEvent | React.KeyboardEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (busy) return;
+    setBusy(true);
+    setFailed(false);
+    try {
+      const updated = await datasourceApi.refreshApi(ds.id);
+      onRefreshed(updated);
+    } catch {
+      setFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <span className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+      <span className="text-[11px] text-muted">
+        {failed
+          ? "Refresh failed"
+          : ds.api_last_refreshed_at
+          ? `Refreshed ${timeAgo(ds.api_last_refreshed_at)}`
+          : "Never refreshed"}
+      </span>
       <button
         type="button"
+        onClick={doRefresh}
+        disabled={busy}
+        className="text-[11px] font-medium text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {busy ? "Refreshing…" : "Refresh"}
+      </button>
+    </span>
+  );
+}
+
+function SourceCard({
+  ds,
+  viewMode,
+  onOpen,
+  onRefreshed,
+}: {
+  ds: DataSourceSummary;
+  viewMode: "grid" | "list";
+  onOpen: () => void;
+  // Only ever used for kind === "api" - updates this one card's row in the
+  // parent's own `sources` list in place after a successful manual
+  // refresh, so "last refreshed" reflects reality immediately without a
+  // full re-fetch of the whole page.
+  onRefreshed: (updated: DataSourceSummary) => void;
+}) {
+  const meta = connectionKindMeta(ds.kind);
+  const live = isLiveStreaming(ds);
+  const isApi = ds.kind === "api";
+  // Both variants below used to be a single <button>; an api-kind card now
+  // needs its own nested, independently-clickable Refresh button, and a
+  // <button> can never nest another interactive control validly - so both
+  // become a keyboard-accessible <div role="button"> for the main "open
+  // this data source" action instead, with the refresh row as a sibling.
+  if (viewMode === "list") {
+    return (
+      <div
+        role="button"
+        tabIndex={0}
         onClick={onOpen}
-        className="w-full flex items-center gap-3 p-3 rounded-xl border border-border hover:border-primary/50 hover:bg-surface2 transition text-left"
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}
+        className="w-full flex items-center gap-3 p-3 rounded-xl border border-border hover:border-primary/50 hover:bg-surface2 transition text-left cursor-pointer"
       >
         <span
           className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
@@ -198,21 +275,24 @@ function SourceCard({ ds, viewMode, onOpen }: { ds: DataSourceSummary; viewMode:
           <span className="block text-sm font-medium truncate">{ds.name}</span>
         </span>
         {live && <LiveBadge />}
+        {isApi && <ApiRefreshControl ds={ds} onRefreshed={onRefreshed} />}
         <span
           className="hidden sm:inline-block text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0"
           style={{ backgroundColor: `${meta.color}14`, color: meta.color }}
         >
           {meta.label}
         </span>
-        <span className="text-xs text-muted shrink-0">{timeAgo(ds.created_at)}</span>
-      </button>
+        {!isApi && <span className="text-xs text-muted shrink-0">{timeAgo(ds.created_at)}</span>}
+      </div>
     );
   }
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onOpen}
-      className="card p-4 flex flex-col gap-2.5 text-left hover:border-primary/50 hover:shadow-glow transition"
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}
+      className="card p-4 flex flex-col gap-2.5 text-left hover:border-primary/50 hover:shadow-glow transition cursor-pointer"
     >
       <div className="flex items-start justify-between gap-2">
         <span
@@ -232,8 +312,12 @@ function SourceCard({ ds, viewMode, onOpen }: { ds: DataSourceSummary; viewMode:
         <span className="block text-sm font-semibold truncate">{ds.name}</span>
         {live && <LiveBadge />}
       </span>
-      <span className="text-[11px] text-muted mt-auto">{timeAgo(ds.created_at)}</span>
-    </button>
+      {isApi ? (
+        <span className="mt-auto"><ApiRefreshControl ds={ds} onRefreshed={onRefreshed} /></span>
+      ) : (
+        <span className="text-[11px] text-muted mt-auto">{timeAgo(ds.created_at)}</span>
+      )}
+    </div>
   );
 }
 
@@ -558,7 +642,15 @@ export default function DataSources() {
                           </div>
                           <div className={viewMode === "grid" ? "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4" : "grid grid-cols-1 gap-2"}>
                             {g.sources.map((ds) => (
-                              <SourceCard key={ds.id} ds={ds} viewMode={viewMode} onOpen={() => navigate(`/workspace/${ds.id}`)} />
+                              <SourceCard
+                                key={ds.id}
+                                ds={ds}
+                                viewMode={viewMode}
+                                onOpen={() => navigate(`/workspace/${ds.id}`)}
+                                onRefreshed={(updated) =>
+                                  setSources((prev) => (prev || []).map((s) => (s.id === updated.id ? updated : s)))
+                                }
+                              />
                             ))}
                           </div>
                         </div>
