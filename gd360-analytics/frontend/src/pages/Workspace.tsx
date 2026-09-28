@@ -1060,14 +1060,36 @@ export default function Workspace() {
           // clobbered the exact multi-source seed `sourceIds`'s own lazy
           // initial state (above) had just built from `extraDatasourceIds`
           // a moment earlier. Preserve that seed here instead of stomping
-          // it: only when arriving fresh from the Connect-data popup (not
-          // resuming a saved conversation, which always has its own single
-          // real selection).
-          setSourceIds(
-            !resumeConversationId && extraDatasourceIds.length
-              ? [base, ...extraDatasourceIds.map((id) => otherDsSourceId(id))]
-              : [base]
-          );
+          // it: only when arriving fresh from the Connect-data popup.
+          //
+          // 2026-09-28 root-cause fix (Gokul's own bug report this time:
+          // refreshing the browser mid-conversation collapsed WORKING ON
+          // down to just one table, every other selected table silently
+          // gone, with no explanation). The comment above used to also
+          // claim a resumed conversation "always has its own single real
+          // selection" - that was simply wrong. A resumed conversation can
+          // have selected any number of tables; this effect just had no
+          // way to know which ones, so it always guessed exactly one (the
+          // most recently created table anywhere in this whole data
+          // source, or "Original data" if none). That guess is what was
+          // overwriting the real selection. The fix is to not guess here
+          // at all when resuming - the "restore a prior chat session"
+          // effect further down now reconstructs the REAL selection from
+          // this conversation's own last turn (see conversations.py
+          // get_conversation_messages, which now returns each message's
+          // real `sources` manifest) and sets it there instead. Leaving
+          // `sourceIds` untouched here for that one moment means it
+          // briefly shows the harmless ORIGINAL_SOURCE_ID default from
+          // this component's own lazy initial state until that effect's
+          // fetch resolves, then corrects itself to the real selection -
+          // never a wrong, permanently-collapsed one.
+          if (!resumeConversationId) {
+            setSourceIds(
+              extraDatasourceIds.length
+                ? [base, ...extraDatasourceIds.map((id) => otherDsSourceId(id))]
+                : [base]
+            );
+          }
         }
       })
       .catch(() => {});
@@ -1126,6 +1148,9 @@ export default function Workspace() {
           action: (m.action as ChatTurn["action"]) || undefined,
           followUp: m.suggestions?.follow_up || null,
           messageId: m.id,
+          steps: m.steps || null,
+          results: m.results || null,
+          selfCritique: m.self_critique || null,
         }));
         setTurns(restored);
 
@@ -1170,6 +1195,32 @@ export default function Workspace() {
 
         const lastWithInsight = [...data.messages].reverse().find((m) => m.insight);
         if (lastWithInsight?.insight) setLastInsight(lastWithInsight.insight);
+
+        // 2026-09-28 root-cause fix: rebuild the REAL WORKING ON selection
+        // from this conversation's own last turn that actually ran against
+        // one, instead of leaving the "versions load" effect's crude
+        // single-table guess in place (see that effect's own comment for
+        // the full story - this is the other half of the same fix). Walk
+        // backward for the most recent message that has a real `sources`
+        // manifest (see conversations.py get_conversation_messages /
+        // routers/chat.py _load_selected_tables' own docstring for its
+        // exact shape) and translate each entry back into the same
+        // sourceId wire format WORKING ON already uses everywhere else -
+        // the exact inverse of how _load_selected_tables parses it.
+        const lastWithSources = [...data.messages].reverse().find((m) => m.sources && m.sources.length);
+        if (lastWithSources?.sources?.length) {
+          const restoredSourceIds = lastWithSources.sources
+            .map((s) => {
+              if (s.kind === "version") return s.version_id;
+              const belongsHere = s.datasource_id === datasourceId;
+              if (s.kind === "sheet") {
+                return belongsHere ? `sheet:${s.sheet}` : otherDsSourceId(s.datasource_id || "", s.sheet);
+              }
+              return belongsHere ? ORIGINAL_SOURCE_ID : otherDsSourceId(s.datasource_id || "");
+            })
+            .filter((id): id is string => !!id);
+          if (restoredSourceIds.length) setSourceIds(restoredSourceIds);
+        }
       })
       .catch(() => setError("Could not load that conversation. Starting a new one instead."))
       .finally(() => setResuming(false));
@@ -1338,6 +1389,12 @@ export default function Workspace() {
         continueAction: data.continue_action || null,
         followUp: data.follow_up_suggestions || null,
         messageId: data.message_id,
+        steps: data.steps || null,
+        // 2026-09-28 (multi-result round): the extra chart/table cards
+        // beyond the first, and the honest trustworthiness caveat - see
+        // backend schemas.ChatResponse.results/self_critique.
+        results: data.results || null,
+        selfCritique: data.self_critique || null,
       }]);
 
       if (data.action === "transform") {
