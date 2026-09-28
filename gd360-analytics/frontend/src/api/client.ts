@@ -172,6 +172,12 @@ export type FlowVersion = FlowAnnotationFields & {
   parent_version_ids: string[] | null;
   step_count: number;
   created_at: string;
+  // Flow tab transparency round: a real wall-clock measurement of how
+  // long this table took to build, and a short, honest description of
+  // what operation actually ran - both null for a version saved before
+  // this existed. Never fabricated - see backend models.DatasetVersion.
+  duration_ms: number | null;
+  method_summary: string | null;
 };
 
 // One chart-producing or table-producing chat turn, anywhere in this data
@@ -190,6 +196,10 @@ export type FlowNode = FlowAnnotationFields & {
   created_at: string;
   sources: FlowSource[] | null;
   new_version_id: string | null;
+  // Flow tab transparency round - see FlowVersion's own comment above;
+  // the same real measurement/classification, for a chart-producing turn.
+  duration_ms: number | null;
+  method_summary: string | null;
 };
 
 export type DataFlow = {
