@@ -25,7 +25,7 @@ from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
 from ..schemas_extra import ChatRequestFull, VerifyRequest
-from ..services import ai_engine, learned_answers, workspace_access
+from ..services import ai_engine, data_access_rules, learned_answers, workspace_access
 from ..services.connectors import BigQueryConnector, SnowflakeConnector, SQLConnector, MongoConnector, QueryTooExpensive, ReadOnlyViolation
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, dataframe_to_csv_bytes, ensure_legacy_migrated, NeedsTableSelection,
@@ -397,8 +397,20 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     # fallback contract (the plain-database and MongoDB paths skip the
     # cost/budget checks the two warehouses have, since a customer's own
     # database/Mongo server has no metered per-query billing to guard).
+    #
+    # Phase 5, Batch B (data governance & quality - row/column permissions):
+    # also gated on `not data_access_rules.has_active_restrictions(...)` -
+    # a pushdown query runs directly inside the customer's own warehouse/
+    # database/Mongo server and its result never passes through
+    # load_dataframe, so it can never be filtered by services/
+    # data_access_rules.filter_dataframe_for_role after the fact. The only
+    # correct fix is to never attempt pushdown at all for a restricted
+    # role, not to filter its result afterward - see that module's own
+    # docstring for the full reasoning. A restricted caller simply falls
+    # through to the normal _load_selected_tables path below, where
+    # row/column filtering is applied for real.
     pushdown_df = None
-    if requested_ids == ["original"] and not payload.table:
+    if requested_ids == ["original"] and not payload.table and not data_access_rules.has_active_restrictions(db, ds, user):
         if ds.kind == "bigquery":
             pushdown_df = _try_bigquery_pushdown(db, ds, user.id, payload.prompt)
         elif ds.kind == "snowflake":
@@ -435,6 +447,7 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         # again from scratch - see ai_engine._schema_with_fallback.
         try:
             original_df = load_dataframe(ds, table=payload.table, version="original", db=db)
+            original_df = data_access_rules.filter_dataframe_for_role(db, original_df, ds, user)
         except Exception as e:
             print(f"[chat] Could not load original data as a merge fallback: {e}")
             original_df = None
@@ -631,6 +644,7 @@ def _load_selected_tables(
         if source_id == "original":
             try:
                 original_df = load_dataframe(ds, table=table, version="original", db=db)
+                original_df = data_access_rules.filter_dataframe_for_role(db, original_df, ds, user)
             except NeedsTableSelection:
                 raise
             except Exception as e:
@@ -646,6 +660,7 @@ def _load_selected_tables(
             sheet_name = source_id[len("sheet:"):]
             try:
                 sheet_df = load_dataframe(ds, table=sheet_name, version="original", db=db)
+                sheet_df = data_access_rules.filter_dataframe_for_role(db, sheet_df, ds, user)
             except Exception as e:
                 raise HTTPException(400, f"Could not load data: {e}")
             tables[_unique_key(sheet_name)] = sheet_df
@@ -665,6 +680,7 @@ def _load_selected_tables(
             other_sheet = selector[len("sheet:"):] if selector.startswith("sheet:") else None
             try:
                 other_df = load_dataframe(other_ds, table=other_sheet, version="original", db=db)
+                other_df = data_access_rules.filter_dataframe_for_role(db, other_df, other_ds, user)
             except Exception as e:
                 raise HTTPException(400, f"Could not load data from {other_ds.name}: {e}")
             label = f"{other_ds.name} — {other_sheet}" if other_sheet else f"{other_ds.name} (original)"
@@ -689,13 +705,16 @@ def _load_selected_tables(
         if not version:
             raise HTTPException(404, "One of the selected tables no longer exists. Please update your selection and try again.")
         label = version.name
+        owning_ds = ds
         if version.datasource_id != ds.id:
-            other_ds = _get_other_ds(version.datasource_id)
-            label = f"{other_ds.name} — {version.name}"
+            owning_ds = _get_other_ds(version.datasource_id)
+            label = f"{owning_ds.name} — {version.name}"
         try:
-            tables[_unique_key(label)] = load_version_dataframe(version)
+            version_df = load_version_dataframe(version)
+            version_df = data_access_rules.filter_dataframe_for_role(db, version_df, owning_ds, user)
         except Exception as e:
             raise HTTPException(400, f"Could not load data: {e}")
+        tables[_unique_key(label)] = version_df
         sources_manifest.append({
             "kind": "version", "label": label, "datasource_id": version.datasource_id,
             "version_id": version.id, "sheet": None,
@@ -773,6 +792,7 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
     if original_df is None:
         try:
             original_df = load_dataframe(ds, table=None, version="original", db=db)
+            original_df = data_access_rules.filter_dataframe_for_role(db, original_df, ds, user)
         except Exception as e:
             print(f"[chat] Could not load original data as a merge fallback for verify: {e}")
             original_df = None
