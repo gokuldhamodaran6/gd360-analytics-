@@ -9,7 +9,7 @@ from .database import init_db
 from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, admin, conversations, goku,
     connections, workspaces, folders, jobs, models_library, experiments, quality_checks, governance,
-    data_access_rules,
+    data_access_rules, ml_models,
 )
 from .services.scheduler import start_scheduler
 
@@ -152,6 +152,12 @@ app.include_router(governance.router)
 # router's own module docstring for why this is stricter than the usual
 # "editable" tier every other write on a data source's own row uses.
 app.include_router(data_access_rules.router)
+# 2026-09-28 (ML Models round): the real ML feature - train/predict/score
+# with a real scikit-learn model, entirely separate from routers/
+# models_library.py's /models (promoted, reusable data TABLES) - see
+# models.MLModel's own docstring for why the naming is deliberately never
+# the same word.
+app.include_router(ml_models.router)
 
 
 @app.on_event("startup")
