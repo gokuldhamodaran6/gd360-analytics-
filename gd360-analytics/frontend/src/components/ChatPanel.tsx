@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { DatasetVersion, DataSourceSummary, datasourceApi } from "../api/client";
+import { DatasetVersion, DataSourceSummary, datasourceApi, ResultEntry } from "../api/client";
+import ChartCanvas from "./ChartCanvas";
 import { hasMultipleTables, connectionKindMeta } from "./DataSourceForm";
 
 // The literal id used, on both the client and the server, to mean "the
@@ -121,6 +122,25 @@ export type ChatTurn = {
   messageId?: string | null;
   verifyStatus?: "confirmed" | "corrected" | "unavailable";
   verifyMessage?: string;
+  // 2026-09-28 (transparency round): a real, honest trace of what this
+  // turn actually did while it was running (see backend
+  // models.Message.steps' own docstring) - rendered as a collapsed "Show
+  // what I did" toggle right under the reply when present. Never
+  // fabricated: undefined/empty simply means there was nothing beyond the
+  // reply itself worth reporting (the common, single-attempt case).
+  steps?: { label: string; detail?: string | null }[] | null;
+  // 2026-09-28 (multi-result round): when a request genuinely asked for
+  // several distinct analyses at once (see the "Multiple results in one
+  // answer" rule in backend ai_engine.SYSTEM_PROMPT), the extra chart/table
+  // cards beyond the first turn's own chart_spec/messageId chart tab -
+  // rendered stacked right under this message. undefined/empty/one entry
+  // means this was an ordinary single-result turn, unchanged from before.
+  results?: ResultEntry[] | null;
+  // A real, honest caveat about whether this result is actually
+  // trustworthy (see the "Honest self-critique for anything model-like"
+  // rule in ai_engine.SYSTEM_PROMPT) - null/undefined means nothing was
+  // fitted or predicted, so there is nothing to caveat.
+  selfCritique?: string | null;
 };
 
 export type CustomizeSeed = { text: string; nonce: number };
@@ -191,6 +211,132 @@ function CodeBlock({ code }: { code: string }) {
       <pre className="text-[12px] leading-relaxed text-white/90 whitespace-pre-wrap break-words px-2.5 py-2 overflow-x-auto font-mono m-0">
         {code}
       </pre>
+    </div>
+  );
+}
+
+// 2026-09-28 (transparency round, Gokul's own bug report: nothing shown
+// while GD360 works, and no visibility at all into a silent retry, so a
+// slow-but-working answer looked identical to a stuck one). A collapsed
+// "Show what I did" toggle under a turn that had something real worth
+// reporting - see ChatTurn.steps' own docstring: every entry here is a
+// genuine event this exact turn went through, in the order it actually
+// happened, never staged or fabricated for effect. Collapsed by default
+// so it never clutters a normal fast answer's view; opening it costs one
+// click for the person who wants to see the real reasoning trail.
+function StepsTrace({ steps }: { steps: { label: string; detail?: string | null }[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        className="text-[11px] text-muted hover:text-fg font-medium flex items-center gap-1"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className={`inline-block transition-transform ${open ? "rotate-90" : ""}`}>&#9656;</span>
+        {open ? "Hide what I did" : `Show what I did (${steps.length} step${steps.length === 1 ? "" : "s"})`}
+      </button>
+      {open && (
+        <div className="mt-1.5 space-y-1.5 border-l-2 border-border pl-3">
+          {steps.map((s, i) => (
+            <div key={i} className="text-[11px]">
+              <div className="font-medium text-fg/80">{s.label}</div>
+              {s.detail && <div className="text-muted mt-0.5">{s.detail}</div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// A real, computed caveat about whether THIS result is actually
+// trustworthy (see ChatTurn.selfCritique's own docstring) - shown as an
+// amber callout, the same visual language a careful analyst's own written
+// warning would get, never hidden behind a toggle the way StepsTrace is:
+// a "this forecast is unreliable" caveat is only useful if it is seen.
+function SelfCritiqueNote({ text }: { text: string }) {
+  return (
+    <div className="mt-2 text-[12px] bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2 flex items-start gap-2">
+      <span className="shrink-0 text-amber-500">&#9888;</span>
+      <span className="text-fg/80">{text}</span>
+    </div>
+  );
+}
+
+// One named chart/table card of a multi-result answer (see
+// ChatTurn.results' own docstring) - a smaller, self-contained version of
+// the same chart-or-table shape the main chat/chart-tab flow already
+// renders for a single result. A card with no chart_spec (see
+// ai_engine._build_result_entry - a wider reference table that could not
+// be charted) shows its table alone instead, never an empty box.
+function ResultCard({ entry }: { entry: ResultEntry }) {
+  const [showTable, setShowTable] = useState(!entry.chart_spec);
+  const rows: any[] = Array.isArray(entry.result_rows) ? entry.result_rows : [];
+  const columns: { name: string }[] = Array.isArray(entry.result_columns) ? entry.result_columns : [];
+  return (
+    <div className="rounded-xl border border-border bg-surface2/60 overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border">
+        <span className="text-[11px] font-semibold text-fg/80">{entry.label}</span>
+        {entry.chart_spec && columns.length > 0 && (
+          <button
+            type="button"
+            className="text-[10px] text-muted hover:text-fg font-medium"
+            onClick={() => setShowTable((s) => !s)}
+          >
+            {showTable ? "Show chart" : "Show table"}
+          </button>
+        )}
+      </div>
+      <div className="p-2">
+        {entry.chart_spec && !showTable ? (
+          <div style={{ height: 220 }}>
+            <ChartCanvas chartSpec={entry.chart_spec} title={entry.label} />
+          </div>
+        ) : rows.length > 0 && columns.length > 0 ? (
+          <div className="overflow-x-auto max-h-56">
+            <table className="w-full text-[11px] border-collapse">
+              <thead>
+                <tr>
+                  {columns.map((c) => (
+                    <th key={c.name} className="text-left px-2 py-1 border-b border-border text-muted font-medium sticky top-0 bg-surface2">
+                      {c.name}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.slice(0, 50).map((r, ri) => (
+                  <tr key={ri} className="border-b border-border/50">
+                    {columns.map((c) => (
+                      <td key={c.name} className="px-2 py-1 text-fg/80">{String(r[c.name] ?? "")}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {entry.result_truncated && (
+              <div className="text-[10px] text-muted px-2 py-1">Showing the first rows only.</div>
+            )}
+          </div>
+        ) : (
+          <div className="text-[11px] text-muted px-1 py-2">No rows to show.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// The multi-card grid for a "build all these models" style answer (see
+// ChatTurn.results' own docstring) - this is what gives one request
+// several distinct, clearly-labeled results in one turn instead of only
+// ever the single chart the rest of this file was built around.
+function MultiResultCards({ entries }: { entries: ResultEntry[] }) {
+  return (
+    <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+      {entries.map((entry, i) => (
+        <ResultCard key={i} entry={entry} />
+      ))}
     </div>
   );
 }
@@ -294,6 +440,34 @@ export default function ChatPanel({
   const [dismissedFollowUps, setDismissedFollowUps] = useState<Set<number>>(new Set());
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // 2026-09-28 (transparency round, Gokul's own bug report: the wait while
+  // GD360 works showed nothing but a static "GD360 is working..." for
+  // however long this takes - sometimes over a minute for a real
+  // multi-table request - with no way to tell a slow-but-working request
+  // apart from a stuck one). This tracks real, honest elapsed seconds
+  // since `busy` turned true, and phaseLabel below picks a generic phase
+  // description from real, known stages the backend actually goes through
+  // (see routers/chat.py: load the selected tables, ask the AI to plan,
+  // run the generated code) - never a fabricated specific like "joining
+  // on postal code" for a request that isn't a join, only genuinely true
+  // generic phases, timed against real elapsed seconds so a claim like
+  // "almost there" is never shown two seconds in.
+  const [busySeconds, setBusySeconds] = useState(0);
+  useEffect(() => {
+    if (!busy) {
+      setBusySeconds(0);
+      return;
+    }
+    const start = Date.now();
+    const id = window.setInterval(() => setBusySeconds(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => window.clearInterval(id);
+  }, [busy]);
+  const busyPhaseLabel =
+    busySeconds < 2 ? "Reading your data..."
+    : busySeconds < 6 ? "Understanding your request..."
+    : busySeconds < 20 ? "Running the analysis..."
+    : "Still working - a complex request (like a multi-table merge) can take up to a minute...";
 
   const otherSources = otherDataSources || [];
   const anchorMultiSheet = hasMultipleTables(datasourceKind || "", datasourceSchema);
@@ -473,6 +647,7 @@ export default function ChatPanel({
               )}
               {renderMessageContent(t.content)}
             </div>
+            {t.role === "assistant" && t.steps && t.steps.length > 0 && <StepsTrace steps={t.steps} />}
             {t.rowsBefore != null && (
               <div className="mt-1.5 flex flex-wrap gap-2 text-[11px]">
                 <span className="bg-surface2 border border-border rounded-full px-2.5 py-1">
@@ -489,6 +664,8 @@ export default function ChatPanel({
                 {renderInlineBold(t.insight, "insight")}
               </div>
             )}
+            {t.role === "assistant" && t.selfCritique && <SelfCritiqueNote text={t.selfCritique} />}
+            {t.role === "assistant" && t.results && t.results.length > 1 && <MultiResultCards entries={t.results} />}
             {t.role === "assistant" && (t.action === "analyze" || t.action === "transform") && t.messageId && !t.continueAction && (
               <div className="mt-1.5">
                 {!t.verifyStatus ? (
@@ -603,7 +780,7 @@ export default function ChatPanel({
         {busy && (
           <div className="text-sm text-muted flex items-center gap-2">
             <span className="inline-block w-2 h-2 rounded-full bg-primary animate-pulse" />
-            GD360 is working...
+            {busyPhaseLabel}
           </div>
         )}
         <div ref={bottomRef} />
