@@ -243,6 +243,30 @@ class ChatResponse(BaseModel):
     # Workspace.tsx runPrompt, which now returns this field's value
     # instead of just "did the HTTP call succeed."
     ok: bool = True
+    # 2026-09-28 (transparency round): a real, honest trace of what this
+    # turn actually did while it was running - see models.Message.steps'
+    # own docstring. None (the common case: one clean attempt, nothing
+    # noteworthy to report) means the frontend simply shows no "Show what
+    # I did" toggle for this turn, rather than an empty one.
+    steps: Optional[list] = None
+    # 2026-09-28 (multi-result round): when a request genuinely asks for
+    # several distinct analyses in one go (e.g. "build the forecast,
+    # profit, and segments models"), the engine can now produce more than
+    # one chart/table in a single answer - see ai_engine._build_result_entry
+    # and models.Message.results. Each entry is {label, chart_spec,
+    # chart_type, result_columns, result_rows, result_row_count,
+    # result_truncated} - the same shape the single-result fields below
+    # already use, just one per named piece. None/empty means this turn
+    # produced exactly one result, same as before this round - the single
+    # top-level chart_spec/result_* fields below are always still populated
+    # from the first entry, so nothing that only reads those needs to
+    # change.
+    results: Optional[list] = None
+    # A real, honest caveat about whether THIS result is actually
+    # trustworthy - see the "Honest self-critique for anything model-like"
+    # rule in ai_engine.SYSTEM_PROMPT. None means nothing was fitted or
+    # predicted (a plain aggregation/chart), so there is nothing to caveat.
+    self_critique: Optional[str] = None
     action: str = "analyze"
     chart_spec: Optional[dict] = None
     # The chart type actually rendered (e.g. "bar", "scatter") - the
