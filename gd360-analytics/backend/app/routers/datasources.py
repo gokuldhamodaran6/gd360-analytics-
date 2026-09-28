@@ -843,6 +843,10 @@ def get_data_flow(
             "parent_version_ids": v.parent_version_ids,
             "step_count": len(v.cleaning_log or []),
             "created_at": v.created_at,
+            # Flow tab transparency round - see models.DatasetVersion.
+            # duration_ms/method_summary's own docstring.
+            "duration_ms": v.duration_ms,
+            "method_summary": v.method_summary,
             **_annotation_fields(annotations, v.id),
         }
         for v in versions
@@ -905,6 +909,10 @@ def get_data_flow(
                 "created_at": m.created_at,
                 "sources": m.sources,
                 "new_version_id": m.new_version_id,
+                # Flow tab transparency round - see models.Message.
+                # duration_ms/method_summary's own docstring.
+                "duration_ms": m.duration_ms,
+                "method_summary": m.method_summary,
                 **_annotation_fields(annotations, m.id),
             })
 
