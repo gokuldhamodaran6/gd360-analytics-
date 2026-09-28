@@ -313,35 +313,30 @@ function Pager({ page, totalPages, onChange }: { page: number; totalPages: numbe
   );
 }
 
-// 2026-09-28 (collapsible icon rail): Gokul's own explicit ask, after
-// flagging that the always-full-width rail ate into the dense
-// chart-building canvas (Workspace.tsx) more than anywhere else - a
-// manual, user-controlled collapse/expand toggle, remembered across visits
-// via localStorage (never auto-collapsed/expanded per page - he chose this
-// over that alternative explicitly). Namespaced key so it can't collide
-// with anything else this app (or a future one sharing the same origin in
-// dev) might put in localStorage. Every read/write is wrapped in try/catch
-// and falls back to the in-memory default (expanded) - this is a real
-// browser app so localStorage genuinely persists, but private-browsing/
-// blocked-storage still has to not crash the sidebar.
-const SIDEBAR_COLLAPSED_STORAGE_KEY = "gd360:sidebar-collapsed";
-
-function readStoredSidebarCollapsed(): boolean {
-  try {
-    return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function writeStoredSidebarCollapsed(collapsed: boolean): void {
-  try {
-    window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? "1" : "0");
-  } catch {
-    // Private browsing / blocked storage / unavailable localStorage - the
-    // in-memory state (see AppSidebar's own useState) still works for the
-    // rest of this session, it just won't be remembered next visit.
-  }
+// 2026-09-28 (collapsible icon rail, round 2 - Gokul's own explicit
+// follow-up after trying round 1): round 1 made the collapsed/expanded
+// state a single flag remembered globally across the whole app - collapse
+// it once on the busy Workspace.tsx analysis canvas and it stayed
+// collapsed on Dashboards too, which is exactly backwards from what he
+// wants. He asked for this instead: Dashboards should default OPEN
+// (that's where he wants to see full labels/workspace context), while
+// every other page - the chat/analysis canvas (Workspace.tsx) included -
+// should default to the small icon-only rail, and this should switch
+// automatically as he navigates, not stay stuck on whatever he last
+// manually picked. So the collapsed/expanded state is now DERIVED from
+// the current route every time it changes, not read from localStorage -
+// isDashboardsPath mirrors the exact same pathname check SidebarNav
+// already uses to highlight the Dashboards nav link (startsWith
+// "/dashboards" or "/dashboard-builder" - see that link's own comment for
+// why dashboard-builder counts as "being in Dashboards" too), so "which
+// pages count as Dashboards" can never drift out of sync between the nav
+// highlight and this default. The manual toggle button still works - a
+// person can still collapse Dashboards or expand the analysis canvas for
+// the page they're currently looking at - it just no longer PERSISTS that
+// override once they navigate elsewhere; the next page always starts from
+// its own route's sensible default again.
+function isDashboardsPath(pathname: string): boolean {
+  return pathname.startsWith("/dashboards") || pathname.startsWith("/dashboard-builder");
 }
 
 function initials(nameOrEmail: string): string {
@@ -1225,23 +1220,27 @@ export default function AppSidebar({
   // changes of its own.
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  // 2026-09-28 (collapsible icon rail): desktop-only, manual toggle -
-  // Gokul's own explicit ask after flagging the always-full-width rail on
-  // every page (worst on the dense Workspace.tsx analysis canvas), and his
-  // own explicit choice of this over an "auto-hide on the analysis page
-  // only" alternative. Read once on mount from localStorage (see
-  // readStoredSidebarCollapsed above this component); every existing
-  // user's first load after this ships has nothing stored yet, so this
-  // starts expanded - today's look - never a surprise auto-collapse.
-  const [collapsed, setCollapsed] = useState<boolean>(() => readStoredSidebarCollapsed());
+  // 2026-09-28 (collapsible icon rail, round 2): desktop-only. Starts from
+  // this route's own default (see isDashboardsPath above) - expanded on
+  // Dashboards, collapsed everywhere else, the analysis canvas
+  // (Workspace.tsx) included. The toggle button still lets a person flip
+  // it for the page they're currently on (setCollapsed below), but the
+  // effect right after this re-applies the route's own default every time
+  // location.pathname actually changes - so navigating to a new page
+  // always starts from that page's sensible default again, rather than
+  // carrying over whatever was manually picked on the page before it.
+  const [collapsed, setCollapsed] = useState<boolean>(() => !isDashboardsPath(location.pathname));
 
-  const toggleCollapsed = () => {
-    setCollapsed((prev) => {
-      const next = !prev;
-      writeStoredSidebarCollapsed(next);
-      return next;
-    });
-  };
+  useEffect(() => {
+    setCollapsed(!isDashboardsPath(location.pathname));
+    // Deliberately only re-runs on an actual navigation (pathname change),
+    // not on every render - this is what lets the toggle button below
+    // still override the state WHILE the person stays on one page, without
+    // this effect immediately snapping it back.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname]);
+
+  const toggleCollapsed = () => setCollapsed((prev) => !prev);
 
   useEffect(() => setMobileOpen(false), [location.pathname]);
 
