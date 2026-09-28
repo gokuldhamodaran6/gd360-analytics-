@@ -1,174 +1,117 @@
 """
-Phase 5, Batch A (2026-09-28, "Data governance & quality" roadmap): create,
-list, re-run, and delete automated data-quality checks on a connected data
-source's columns - see models.DataQualityRule's own docstring for exactly
-what a rule is and services/quality_checks.run_quality_rule for how one is
-actually evaluated.
+Phase 5, Batch A (2026-09-28, "Data governance & quality" roadmap): actually
+evaluates one models.DataQualityRule against its data source's real, current
+data - see that model's own docstring for what each rule_type means and the
+exact shape of rule_config it expects.
 
-Nested under /datasources/{datasource_id}/..., the same style
-routers/dashboard_builder.py already uses for nesting under
-/dashboards/{id}/... - one router, one consistent prefix, every route below
-takes datasource_id as its first path parameter.
+run_quality_rule never crashes: an unreadable column, a source that can't be
+loaded, or any other unexpected failure is caught and turned into an honest
+last_status="error" with a human-readable last_message, never an unhandled
+500 that would leave the rule's stored result silently stale. Every number
+it writes (last_checked_row_count, last_failing_row_count) is genuinely
+computed from the real DataFrame this call just loaded - never guessed,
+estimated, or carried over from a previous run.
 
-Access follows this app's existing two-tier convention exactly (see
-services/workspace_access.py): creating/deleting a rule needs "editable"
-tier (can_edit_datasource); viewing the list, checking the cheap status
-summary, and re-running an existing rule only need "view" tier
-(can_access_datasource) - a workspace viewer can re-check a number that's
-already there, same as they can already re-run nothing else destructive,
-but can't add or remove what gets checked.
+This function does NOT call db.commit() itself - see its own docstring
+below for why the caller (routers/quality_checks.py) controls the
+transaction, the same convention services/audit.log_audit_event follows.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from __future__ import annotations
+
+from datetime import datetime
+
+import pandas as pd
 from sqlalchemy.orm import Session
 
-from .. import models, schemas
-from ..database import get_db
-from ..deps import get_current_user
-from ..services import audit, workspace_access
-from ..services.quality_checks import run_quality_rule
-
-router = APIRouter(prefix="/datasources", tags=["quality-checks"])
+from .. import models
+from .data_loader import load_dataframe
 
 
-def _get_accessible_datasource(db: Session, user: models.User, datasource_id: str) -> models.DataSource:
-    ds = db.query(models.DataSource).filter(models.DataSource.id == datasource_id).first()
-    if not ds or not workspace_access.can_access_datasource(db, ds, user):
-        raise HTTPException(404, "Datasource not found.")
-    return ds
+def run_quality_rule(db: Session, rule: models.DataQualityRule) -> models.DataQualityRule:
+    """Loads `rule`'s data source fresh (via data_loader.load_dataframe,
+    the one shared function every other read path in this app already
+    uses) and re-evaluates `rule` against it right now, overwriting every
+    last_* field on `rule` with a fresh, real result. `db.add(rule)` stages
+    the change; the CALLER commits (this function never does), so a
+    router's own db.commit() persists both the rule's own creation/edit and
+    this first run atomically, exactly the audit-event pattern
+    services/audit.py already follows."""
+    ds = rule.datasource
+    now = datetime.utcnow()
 
+    try:
+        df = load_dataframe(ds, db=db)
+    except Exception as e:
+        rule.last_status = "error"
+        rule.last_message = f"Could not load this data source's data: {e}"
+        rule.last_checked_row_count = None
+        rule.last_failing_row_count = None
+        rule.last_run_at = now
+        db.add(rule)
+        return rule
 
-def _get_editable_datasource(db: Session, user: models.User, datasource_id: str) -> models.DataSource:
-    ds = _get_accessible_datasource(db, user, datasource_id)
-    if not workspace_access.can_edit_datasource(db, ds, user):
-        raise HTTPException(403, "You have view-only access to this data source.")
-    return ds
+    if rule.column_name not in df.columns:
+        rule.last_status = "error"
+        rule.last_message = f"Column '{rule.column_name}' was not found in the current data."
+        rule.last_checked_row_count = len(df)
+        rule.last_failing_row_count = None
+        rule.last_run_at = now
+        db.add(rule)
+        return rule
 
+    column = df[rule.column_name]
+    total = len(df)
+    config = rule.rule_config or {}
 
-def _rule_out(db: Session, rule: models.DataQualityRule) -> schemas.QualityRuleOut:
-    creator = db.query(models.User).filter(models.User.id == rule.owner_id).first()
-    return schemas.QualityRuleOut(
-        id=rule.id,
-        datasource_id=rule.datasource_id,
-        column_name=rule.column_name,
-        rule_type=rule.rule_type,
-        rule_config=rule.rule_config or {},
-        created_at=rule.created_at,
-        last_run_at=rule.last_run_at,
-        last_status=rule.last_status,
-        last_checked_row_count=rule.last_checked_row_count,
-        last_failing_row_count=rule.last_failing_row_count,
-        last_message=rule.last_message,
-        created_by_name=creator.full_name if creator else None,
-        created_by_email=creator.email if creator else None,
-    )
+    try:
+        if rule.rule_type == "not_null":
+            failing = int(column.isna().sum())
+        elif rule.rule_type == "unique":
+            # Counts every row that is a duplicate of an earlier value
+            # (i.e. every occurrence past the first of a repeated value) -
+            # the simpler of two reasonable definitions, and the one that
+            # reads most naturally as "N rows failed uniqueness" rather
+            # than "N distinct values were repeated". NaN values are left
+            # in the duplicate check (pandas treats repeated NaNs as
+            # duplicates of each other by default) rather than special-
+            # cased out - several blank cells in a column that's supposed
+            # to be unique are themselves a legitimate uniqueness problem,
+            # not something this rule should silently ignore.
+            failing = int(column.duplicated().sum())
+        elif rule.rule_type == "min_value":
+            threshold = config.get("min")
+            if threshold is None:
+                raise ValueError("This rule has no minimum value configured.")
+            numeric = pd.to_numeric(column, errors="coerce")
+            failing = int(((numeric.notna()) & (numeric < float(threshold))).sum())
+        elif rule.rule_type == "max_value":
+            threshold = config.get("max")
+            if threshold is None:
+                raise ValueError("This rule has no maximum value configured.")
+            numeric = pd.to_numeric(column, errors="coerce")
+            failing = int(((numeric.notna()) & (numeric > float(threshold))).sum())
+        elif rule.rule_type == "allowed_values":
+            allowed = config.get("values") or []
+            allowed_set = set(allowed)
+            # A blank/NaN value always fails this rule - a null is never
+            # itself one of the explicitly allowed values (see this
+            # model's own docstring).
+            failing = int((~column.isin(allowed_set) | column.isna()).sum())
+        else:
+            raise ValueError(f"Unknown rule type '{rule.rule_type}'.")
+    except Exception as e:
+        rule.last_status = "error"
+        rule.last_message = f"Could not evaluate this rule: {e}"
+        rule.last_checked_row_count = total
+        rule.last_failing_row_count = None
+        rule.last_run_at = now
+        db.add(rule)
+        return rule
 
-
-def _get_owned_rule(db: Session, ds: models.DataSource, rule_id: str) -> models.DataQualityRule:
-    rule = (
-        db.query(models.DataQualityRule)
-        .filter(models.DataQualityRule.id == rule_id, models.DataQualityRule.datasource_id == ds.id)
-        .first()
-    )
-    if not rule:
-        raise HTTPException(404, "That quality check no longer exists.")
-    return rule
-
-
-@router.post("/{datasource_id}/quality-rules", response_model=schemas.QualityRuleOut, status_code=201)
-def create_quality_rule(
-    datasource_id: str,
-    payload: schemas.CreateQualityRuleRequest,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
-):
-    """Creates a new rule and immediately runs it once, so the panel never
-    shows a freshly-created check with no result yet."""
-    ds = _get_editable_datasource(db, user, datasource_id)
-    rule = models.DataQualityRule(
-        datasource_id=ds.id,
-        owner_id=user.id,
-        column_name=payload.column_name.strip(),
-        rule_type=payload.rule_type,
-        rule_config=payload.rule_config or {},
-    )
+    rule.last_checked_row_count = total
+    rule.last_failing_row_count = failing
+    rule.last_status = "fail" if failing > 0 else "pass"
+    rule.last_run_at = now
+    rule.last_message = "All rows passed" if failing == 0 else f"{failing} of {total} rows failed"
     db.add(rule)
-    db.flush()
-    run_quality_rule(db, rule)
-    audit.log_audit_event(
-        db, actor=user, action="quality_rule_created", workspace_id=ds.workspace_id,
-        target_type="quality_rule", target_id=rule.id,
-    )
-    db.commit()
-    db.refresh(rule)
-    return _rule_out(db, rule)
-
-
-@router.get("/{datasource_id}/quality-rules", response_model=list[schemas.QualityRuleOut])
-def list_quality_rules(
-    datasource_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
-):
-    """Every rule on this data source, each with its last STORED result -
-    never re-runs anything (see get_quality_status below for the even
-    cheaper polling endpoint that reads the same stored last_status)."""
-    ds = _get_accessible_datasource(db, user, datasource_id)
-    rules = (
-        db.query(models.DataQualityRule)
-        .filter(models.DataQualityRule.datasource_id == ds.id)
-        .order_by(models.DataQualityRule.created_at)
-        .all()
-    )
-    return [_rule_out(db, r) for r in rules]
-
-
-@router.post("/{datasource_id}/quality-rules/{rule_id}/run", response_model=schemas.QualityRuleOut)
-def run_quality_rule_now(
-    datasource_id: str,
-    rule_id: str,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
-):
-    """Re-runs one existing rule against the data source's current data -
-    "view" tier is enough here (a workspace viewer can re-check a number
-    that's already there), matching this app's existing view-vs-edit split
-    for anything that only reads/recomputes rather than creates or
-    destroys something."""
-    ds = _get_accessible_datasource(db, user, datasource_id)
-    rule = _get_owned_rule(db, ds, rule_id)
-    run_quality_rule(db, rule)
-    db.commit()
-    db.refresh(rule)
-    return _rule_out(db, rule)
-
-
-@router.delete("/{datasource_id}/quality-rules/{rule_id}", status_code=204)
-def delete_quality_rule(
-    datasource_id: str,
-    rule_id: str,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
-):
-    ds = _get_editable_datasource(db, user, datasource_id)
-    rule = _get_owned_rule(db, ds, rule_id)
-    db.delete(rule)
-    audit.log_audit_event(
-        db, actor=user, action="quality_rule_deleted", workspace_id=ds.workspace_id,
-        target_type="quality_rule", target_id=rule_id,
-    )
-    db.commit()
-    return None
-
-
-@router.get("/{datasource_id}/quality-status", response_model=schemas.QualityStatusOut)
-def get_quality_status(
-    datasource_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
-):
-    """Cheap, read-only summary computed purely from each rule's own
-    already-stored last_status - what a dashboard polls (once per data
-    source it uses) to decide whether to show a "quality checks are
-    failing" banner. Deliberately never triggers a live re-run of
-    anything: a dashboard rendering for a viewer must never silently kick
-    off real data-quality computation just because it happened to load."""
-    ds = _get_accessible_datasource(db, user, datasource_id)
-    rules = db.query(models.DataQualityRule).filter(models.DataQualityRule.datasource_id == ds.id).all()
-    failing = [r for r in rules if r.last_status == "fail"]
-    return schemas.QualityStatusOut(has_failing_rules=len(failing) > 0, failing_count=len(failing))
+    return rule
