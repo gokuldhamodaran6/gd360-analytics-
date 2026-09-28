@@ -273,6 +273,33 @@ def get_conversation_messages(
                 # the same messages a live one does (only analyze/transform
                 # turns that actually computed something).
                 "action": m.action,
+                # 2026-09-28 root-cause fix: this endpoint used to leave off
+                # the exact "sources manifest" _load_selected_tables built
+                # when this turn actually ran (see routers/chat.py
+                # _persist_and_respond, which already stores it on
+                # Message.sources - it was just never handed back here).
+                # Without it, Workspace.tsx's restore-on-refresh effect had
+                # no way to know what the real WORKING ON selection was for
+                # this conversation, and fell back to a crude "just the most
+                # recently created table for this whole data source"
+                # default - which is exactly the bug Gokul reported: every
+                # table past the first silently disappearing from WORKING ON
+                # on a page refresh. Exposing the real manifest here lets
+                # the frontend reconstruct the actual selection instead of
+                # guessing. new_version_id (already stored on Message the
+                # same way) rides along for the same reason.
+                "sources": m.sources,
+                "new_version_id": m.new_version_id,
+                # See models.Message.steps' own docstring - the real "what
+                # I did" trace, restored here too so reopening a saved
+                # conversation still shows it under each past turn.
+                "steps": m.steps,
+                # See models.Message.results/self_critique's own docstrings
+                # - restored here too so reopening a saved conversation
+                # still shows every card of a multi-result answer, and its
+                # honest caveat, not just the first one.
+                "results": m.results,
+                "self_critique": m.self_critique,
                 "created_at": m.created_at,
             }
             for m in messages
