@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
-  api, chatApi, conversationApi, datasourceApi, dashboardApi, workspaceApi,
-  DatasetVersion, DataSourceSummary, DataFlow, DashboardSummary, WorkspaceSummary,
+  api, chatApi, conversationApi, datasourceApi, dashboardApi, dashboardBuilderApi, workspaceApi,
+  DatasetVersion, DataSourceSummary, DataFlow, DashboardSummary, DashboardBuilderSummary, WorkspaceSummary,
 } from "../api/client";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
@@ -124,6 +124,101 @@ function SparkleIcon({ className = "w-4 h-4" }: { className?: string }) {
       <path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M18 6l-2.5 2.5M8.5 15.5 6 18" />
       <circle cx="12" cy="12" r="2.5" />
     </svg>
+  );
+}
+
+// 2026-09-28 (senior-UX round): the "View Dashboard(s)" button's icon -
+// same 2x2-grid mark BuildDashboardModal.tsx's "Create your own" tile
+// uses, kept as its own private copy here the same way SparkleIcon above
+// already is.
+function GridIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7" height="7" rx="1" />
+      <rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" />
+      <rect x="14" y="14" width="7" height="7" rx="1" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  );
+}
+
+// 2026-09-28 (senior-UX round): a real, specific complaint - once a
+// dashboard was built from this chat, there was no way back to it from
+// the SAME chat; the only path was leaving it entirely and hunting for it
+// by name in the global Dashboards list. This is that path back, right in
+// the same header "Build Dashboard" already lives in - one dashboard
+// navigates straight there on click, more than one opens the same
+// click-outside dropdown pattern SaveChartMenu above already uses.
+// Renders nothing at all when this chat hasn't built one yet (the empty-
+// list case), so "Build Dashboard" stays the only, obvious next step
+// until there's actually something to come back to.
+function LinkedDashboardsMenu({ dashboards }: { dashboards: DashboardBuilderSummary[] }) {
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (!boxRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  if (dashboards.length === 0) return null;
+
+  const goTo = (id: string) => {
+    setOpen(false);
+    navigate(`/dashboard-builder/${id}`);
+  };
+
+  if (dashboards.length === 1) {
+    return (
+      <button
+        type="button"
+        className="btn-secondary text-sm flex items-center gap-1.5"
+        onClick={() => goTo(dashboards[0].id)}
+        title={dashboards[0].name}
+      >
+        <GridIcon /> View Dashboard
+      </button>
+    );
+  }
+
+  return (
+    <div className="relative" ref={boxRef}>
+      <button
+        type="button"
+        className="btn-secondary text-sm flex items-center gap-1.5"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <GridIcon /> View Dashboards ({dashboards.length}) <ChevronDownIcon />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-2 w-64 dash-card bg-surface shadow-2xl border border-border p-1.5 z-30">
+          {dashboards.map((d) => (
+            <button
+              key={d.id}
+              type="button"
+              className="w-full text-left text-xs rounded-lg px-2.5 py-2 hover:bg-base/60 transition flex items-center justify-between gap-2"
+              onClick={() => goTo(d.id)}
+            >
+              <span className="truncate">{d.name}</span>
+              {d.is_published && <span className="text-[10px] text-accent shrink-0">Published</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -356,6 +451,36 @@ export default function Workspace() {
   // Gokul asked to appear once an analysis is done - opens the AI/blank
   // choice modal, same header row as "Save chart to dashboard".
   const [buildDashboardOpen, setBuildDashboardOpen] = useState(false);
+  // 2026-09-28 (senior-UX round): every v2 dashboard already built from
+  // THIS conversation, so the header can offer a way straight back to it
+  // (LinkedDashboardsMenu above) instead of it becoming unreachable from
+  // its own source chat the moment the build finishes. Refetched whenever
+  // conversationId changes (a fresh conversation, or resuming a different
+  // one) - a brand-new build always navigates away immediately (see
+  // BuildDashboardModal's goToBuild), so there's no in-place case where
+  // this list changes without conversationId also changing underneath it.
+  const [linkedDashboards, setLinkedDashboards] = useState<DashboardBuilderSummary[]>([]);
+  useEffect(() => {
+    if (!conversationId) {
+      setLinkedDashboards([]);
+      return;
+    }
+    let cancelled = false;
+    dashboardBuilderApi
+      .listByConversation(conversationId)
+      .then((list) => {
+        if (!cancelled) setLinkedDashboards(list);
+      })
+      // Best-effort only - this just quietly leaves the button off rather
+      // than blocking or scaring anyone off the rest of the page over a
+      // transient failure here.
+      .catch(() => {
+        if (!cancelled) setLinkedDashboards([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
 
   // Inline rename of the data source itself - the "Analyzing: <name>"
   // header, right next to the pencil icon. Mirrors the same
@@ -1779,7 +1904,21 @@ export default function Workspace() {
           >
             <span aria-hidden>+</span> Add data
           </button>
-          {chartSpec && centerTab === "chart" && (
+          {/* 2026-09-28 (senior-UX round): this used to be gated on
+              `centerTab === "chart"` too, on top of chartSpec - so the
+              instant Gokul clicked over to the Data (or Flow/Quality
+              checks/Access) tab, both "Save chart" AND "Build Dashboard"
+              would vanish from the header entirely, even though neither
+              action has anything to do with which tab happens to be
+              selected (Build Dashboard in particular runs a whole fresh
+              AI plan against the data source, not "whatever's currently
+              on screen"). That was a real foundation-level bug, not a
+              styling one: an action's availability was tied to an
+              unrelated piece of UI state. Now gated only on chartSpec
+              existing at all (i.e. this analysis has produced something
+              to save/build from yet) - both actions stay put no matter
+              which of the 5 tabs is active. */}
+          {chartSpec && (
             <>
               {saveMsg && <span className="text-xs text-accent">{saveMsg}</span>}
               <SaveChartMenu
@@ -1789,6 +1928,11 @@ export default function Workspace() {
                 dsName={dsName}
                 onSaved={setSaveMsg}
               />
+              {/* 2026-09-28: the way back to a dashboard already built
+                  from this chat - see LinkedDashboardsMenu's own comment
+                  for the gap this closes. Renders nothing until one
+                  actually exists. */}
+              <LinkedDashboardsMenu dashboards={linkedDashboards} />
               {/* 2026-09-24 (Dashboard Builder Phase 1): the real-time,
                   publishable dashboard entry point - deliberately separate
                   from "Save chart" above (that still only ever pins THIS
