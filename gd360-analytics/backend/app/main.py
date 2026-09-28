@@ -8,7 +8,7 @@ from .config import get_settings
 from .database import init_db
 from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, admin, conversations, goku,
-    connections, workspaces, folders, jobs, models_library, experiments, quality_checks, governance,
+    connections, workspaces, folders, jobs, experiments, quality_checks, governance,
     data_access_rules, ml_models,
 )
 from .services.scheduler import start_scheduler
@@ -136,7 +136,6 @@ app.include_router(connections.router)
 app.include_router(workspaces.router)
 app.include_router(folders.router)
 app.include_router(jobs.router)
-app.include_router(models_library.router)
 app.include_router(experiments.router)
 app.include_router(experiments.public_router)
 # Phase 5, Batch A (2026-09-28, data governance & quality): quality_checks
@@ -153,10 +152,7 @@ app.include_router(governance.router)
 # "editable" tier every other write on a data source's own row uses.
 app.include_router(data_access_rules.router)
 # 2026-09-28 (ML Models round): the real ML feature - train/predict/score
-# with a real scikit-learn model, entirely separate from routers/
-# models_library.py's /models (promoted, reusable data TABLES) - see
-# models.MLModel's own docstring for why the naming is deliberately never
-# the same word.
+# with a real scikit-learn model.
 app.include_router(ml_models.router)
 
 
