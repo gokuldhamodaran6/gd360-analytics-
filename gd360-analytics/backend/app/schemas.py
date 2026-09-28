@@ -200,6 +200,12 @@ class DataSourceOut(BaseModel):
     read_only: bool
     schema_cache: Optional[dict] = None
     created_at: datetime
+    # 2026-09-28 (streaming/webhook ingestion round): the last time this
+    # source actually received a real webhook event - always None for
+    # every non-"streaming" kind. The frontend's "live" pulsing-dot
+    # indicator is purely a function of this timestamp (see
+    # DataSources.tsx) - never a separately-guessed status.
+    last_event_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -797,3 +803,91 @@ class BulkMoveConversationsRequest(BaseModel):
     # The folder to move every listed Project into - None files them back
     # to "no folder" (the Projects page's default, unfiled view).
     folder_id: Optional[str] = None
+
+
+# ---------- Scheduled auto-refresh + background jobs (2026-09-28) ----------
+# See services/scheduler.py's own module docstring for the full design:
+# per-DASHBOARD refresh intervals (not per-block - see models.Dashboard's
+# own docstring for why), executed by reusing the exact same
+# ask_ai_block/build_manual_block recompute logic the manual, on-demand
+# block editor already uses - never a second implementation of it.
+REFRESH_INTERVALS = ("off", "15m", "1h", "6h", "daily")
+
+
+class DashboardScheduleOut(BaseModel):
+    """One row of the Jobs page's own schedule table - one per
+    layout_version==2 dashboard this person can at least view, its current
+    refresh setting, and its most recent run (if it has ever run at all)."""
+    dashboard_id: str
+    dashboard_name: str
+    source_label: Optional[str] = None
+    refresh_interval: str = "off"  # "off" | "15m" | "1h" | "6h" | "daily"
+    next_refresh_at: Optional[datetime] = None
+    last_refreshed_at: Optional[datetime] = None
+    # The most recent JobRun for this dashboard, if any - lets the Jobs
+    # page's table show a live status pill/duration per dashboard without a
+    # second request per row.
+    last_run_status: Optional[str] = None
+    last_run_duration_seconds: Optional[float] = None
+    last_run_error: Optional[str] = None
+    # Whether the CALLER (not just anyone) can change this schedule or hit
+    # "Run now" - a workspace "viewer" can see this row but not act on it,
+    # same "editable" tier every other write action on a shared dashboard
+    # already checks (see routers/dashboards.py).
+    can_edit: bool
+
+
+class UpdateDashboardScheduleRequest(BaseModel):
+    refresh_interval: str = Field(min_length=1)  # must be one of REFRESH_INTERVALS
+
+
+class JobRunOut(BaseModel):
+    id: str
+    dashboard_id: Optional[str] = None
+    job_type: str  # "scheduled_refresh" | "manual_refresh"
+    target_label: str
+    source_label: Optional[str] = None
+    status: str  # "running" | "success" | "failed"
+    error_message: Optional[str] = None
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    duration_seconds: Optional[float] = None
+    next_run_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class JobRunsPage(BaseModel):
+    runs: list[JobRunOut]
+    total: int
+    page: int
+    page_size: int
+
+
+# ---------- Streaming (webhook) ingestion (2026-09-28) ----------
+# The honest, achievable version of "real-time ingestion" for a small SaaS
+# product - a per-source secret webhook URL an external system (Zapier, a
+# script, another app) posts JSON rows to - not a Kafka/message-broker
+# integration this app has no infrastructure to run. See
+# routers/datasources.py's connect_streaming/ingest_webhook_event and
+# models.StreamedEvent for the full design.
+class DataSourceCreateStreaming(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class StreamingDataSourceOut(DataSourceOut):
+    """Returned ONLY right after creation (or right after a deliberate
+    regenerate) - never again afterwards, the same "never returned to the
+    client after creation" rule every other credential in this app already
+    follows (see this file's own module note on DataSourceCreateDB/
+    DataSourceCreateWarehouse). The frontend shows this once, in a
+    "copy this somewhere safe" panel, exactly like a workspace's invite
+    link/token."""
+    webhook_url: str
+    webhook_secret: str
+
+
+class StreamedEventIngestResult(BaseModel):
+    accepted: int
+    received_at: datetime
