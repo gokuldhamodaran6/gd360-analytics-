@@ -1758,3 +1758,35 @@ export const governanceApi = {
       .get<AuditLogPage>(`/workspaces/${workspaceId}/audit-log`, { params: { page, page_size: pageSize } })
       .then((r) => r.data),
 };
+
+// ---- Phase 5, Batch B (data governance & quality - row/column
+// permissions) - a data source owner restricting what their workspace's
+// "member"/"viewer" role tiers see of the data: hide a column entirely, or
+// restrict a column to an explicit allow-list of values (row filtering).
+// See backend models.DataAccessRule and routers/data_access_rules.py for
+// the full design; owner-only, stricter than every other write on a data
+// source's own row (see that router's own module docstring). ----
+
+export type AccessRuleRole = "member" | "viewer";
+export type AccessRuleKind = "row" | "column";
+
+export interface AccessRule {
+  id: string;
+  datasource_id: string;
+  role: AccessRuleRole;
+  kind: AccessRuleKind;
+  column_name: string;
+  allowed_values: (string | number | boolean)[] | null;
+  created_at: string;
+  created_by_id: string;
+  created_by_name: string | null;
+}
+
+export const accessRulesApi = {
+  list: (datasourceId: string) => api.get<AccessRule[]>(`/datasources/${datasourceId}/access-rules`).then((r) => r.data),
+  create: (
+    datasourceId: string,
+    payload: { role: AccessRuleRole; kind: AccessRuleKind; column_name: string; allowed_values?: (string | number | boolean)[] }
+  ) => api.post<AccessRule>(`/datasources/${datasourceId}/access-rules`, payload).then((r) => r.data),
+  delete: (datasourceId: string, ruleId: string) => api.delete(`/datasources/${datasourceId}/access-rules/${ruleId}`),
+};
