@@ -212,6 +212,13 @@ class DataSource(Base):
     quality_rules = relationship(
         "DataQualityRule", back_populates="datasource", cascade="all, delete-orphan",
     )
+    # Phase 5, Batch B (data governance & quality - row/column permissions):
+    # see DataAccessRule's own docstring below. Same back_populates +
+    # cascade="all, delete-orphan" style as quality_rules just above - an
+    # access rule only ever means anything relative to the exact data
+    # source it restricts, so deleting the data source correctly deletes
+    # every rule built on it rather than leaving orphan rows behind.
+    access_rules = relationship("DataAccessRule", cascade="all, delete-orphan")
 
 
 class DatasetVersion(Base):
@@ -1166,6 +1173,48 @@ class DataQualityRule(Base):
     last_message = Column(String, nullable=True)
 
     datasource = relationship("DataSource", back_populates="quality_rules")
+
+
+class DataAccessRule(Base):
+    """
+    Phase 5, Batch B (governance/data permissions): a data source owner's
+    restriction on what one workspace ROLE TIER (never a named individual -
+    see WorkspaceMember.role) can see of this data source's data. Two kinds:
+      - "column": column_name is hidden entirely from that role.
+      - "row": only rows whose column_name value is in allowed_values are
+        visible to that role (allowed_values null/empty means nothing
+        matches - the safe default is "show nothing" while a row rule with
+        no values yet is being set up, never "show everything").
+    Enforced by services/data_access_rules.py::filter_dataframe_for_role,
+    called right after every services/data_loader.load_dataframe (or
+    load_version_dataframe) call that could hand real row data back to a
+    non-owner - see that module's own docstring for the full list of call
+    sites and, critically, why warehouse/database SQL "pushdown" in
+    routers/chat.py must be skipped entirely (not filtered after the fact)
+    whenever a restricted role is asking.
+
+    Uniquely keyed on (datasource_id, role, kind, column_name) - creating a
+    second rule for the same (data source, role, kind, column) is rejected
+    by the router with a clear error rather than silently stacking; the UI
+    deletes the old one first to replace it. Only ever created/deleted by
+    the data source's own owner (see routers/data_access_rules.py) - never
+    self-service by the restricted member/viewer.
+    """
+    __tablename__ = "data_access_rules"
+    __table_args__ = (
+        UniqueConstraint("datasource_id", "role", "kind", "column_name", name="uq_access_rule_scope"),
+    )
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    datasource_id = Column(String, ForeignKey("datasources.id"), nullable=False)
+    role = Column(String, nullable=False)  # "member" | "viewer"
+    kind = Column(String, nullable=False)  # "row" | "column"
+    column_name = Column(String, nullable=False)
+    allowed_values = Column(JSON, nullable=True)  # only meaningful for kind == "row"
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by_id = Column(String, ForeignKey("users.id"), nullable=False)
+
+    datasource = relationship("DataSource", back_populates="access_rules")
 
 
 class AuditEvent(Base):
