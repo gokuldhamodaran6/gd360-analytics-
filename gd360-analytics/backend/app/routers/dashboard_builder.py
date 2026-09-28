@@ -354,7 +354,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas, security
 from ..database import get_db
 from ..deps import get_current_user
-from ..services import ai_engine, chart_builder, render_domains, workspace_access
+from ..services import ai_engine, chart_builder, data_access_rules, render_domains, workspace_access
 from ..services.ai_engine import _call_llm_resilient, _extract_json
 from ..services.data_loader import load_dataframe
 from .dashboards import _can_edit, _can_view
@@ -1362,6 +1362,7 @@ def generate_dashboard(
         ds = _resolve_datasource(db, user, models.Dashboard(source_conversation_id=conv.id))
         try:
             original_df = load_dataframe(ds, table=None, version="original", db=db)
+            original_df = data_access_rules.filter_dataframe_for_role(db, original_df, ds, user)
         except Exception as e:
             raise HTTPException(400, f"Could not load this data source: {e}")
 
@@ -1854,6 +1855,7 @@ def ask_ai_block(
 
     try:
         original_df = load_dataframe(ds, table=None, version="original", db=db)
+        original_df = data_access_rules.filter_dataframe_for_role(db, original_df, ds, user)
     except Exception as e:
         raise HTTPException(400, f"Could not load this dashboard's data: {e}")
 
@@ -1920,6 +1922,7 @@ def build_manual_block(
 
     try:
         df = load_dataframe(ds, table=None, version="original", db=db)
+        df = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
     except Exception as e:
         raise HTTPException(400, f"Could not load this dashboard's data: {e}")
 
@@ -2136,6 +2139,7 @@ def preview_filtered_blocks(
 
     try:
         df = load_dataframe(ds, table=None, version="original", db=db)
+        df = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
     except Exception:
         return schemas.FilteredBlocksOut(blocks=[], matched_rows=0)
 
