@@ -1,6 +1,7 @@
 """
 ORM models for the GD360 Analytics application database.
 """
+import secrets
 import uuid
 from datetime import datetime
 
@@ -967,3 +968,106 @@ class FlowAnnotation(Base):
     position_x = Column(Float, nullable=True)
     position_y = Column(Float, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Experiment(Base):
+    """
+    Phase 4 (2026-09-28, "Replacing the Data Team" roadmap - "A/B test
+    design, assignment, and tracking"): one running (or stopped) A/B test a
+    founder designs and runs from GD360 itself, rather than the earlier
+    "analyze a test already run elsewhere" workflow. Created by the
+    3-step wizard (metric -> variants -> launch - see
+    routers/experiments.py create_experiment) already fully "running" the
+    moment it's created; the wizard has no separate "save as draft, launch
+    later" step, so there is no draft state to model here at all.
+
+    owner_id/workspace_id follow the EXACT same split as DataSource.owner_id/
+    workspace_id and Dashboard.owner_id/workspace_id above: owner_id is
+    always who created this experiment, and never changes; workspace_id is a
+    SEPARATE, later, deliberate act that shares a whole row with a team, the
+    same way a brand-new DataSource or Dashboard stays personal-only until
+    someone explicitly shares it. This phase's router creates every
+    Experiment with workspace_id=None and builds NO endpoint that ever sets
+    it to anything else - sharing an experiment into a workspace is real,
+    plausible future work (Phase 5+), but it is a genuinely separate feature
+    (who can see/edit it, what "editable" should mean for a live test) and
+    is deliberately left unbuilt here rather than bolted on as a side effect
+    of creation.
+
+    public_key exists as a SEPARATE, purpose-built random field from `id`
+    for one specific reason: it is meant to be pasted directly into
+    client-side JavaScript on the founder's OWN external website (see
+    routers/experiments.py's module docstring for the full public
+    assign/convert security model), where literally any visitor can read it
+    straight out of the page's own source or network requests. `id` is what
+    every one of this app's own AUTHENTICATED UI URLs and API calls already
+    use to address this exact row - reusing that same string as the
+    public, visitor-facing identifier would mean an internal id and a
+    stranger-facing one are permanently the same value, with no way to ever
+    treat the public one as separately rotatable/revocable (e.g. "reissue a
+    fresh embed snippet without disturbing the row's own identity")
+    without a bigger change later. Splitting them from day one costs one
+    extra column now and avoids ever needing that split retrofitted under
+    live traffic. It is stored in PLAINTEXT, on purpose - it is not a
+    credential the way DataSource.encrypted_secret/webhook_secret_encrypted
+    are (see that model's own comment): it is functionally an unguessable
+    public id embedded in a public web page, not a secret whose disclosure
+    would expose anything beyond what a visitor to the founder's own site
+    can already see in their browser's network tab. Regenerated never (this
+    phase builds no "rotate" endpoint - a founder who needs a fresh one
+    today would delete and recreate the experiment, same as this phase's
+    scope for everything else).
+    """
+    __tablename__ = "experiments"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True)
+    name = Column(String, nullable=False)
+    metric_name = Column(String, nullable=False)
+    variant_a_name = Column(String, nullable=False, default="Control")
+    variant_b_name = Column(String, nullable=False, default="Treatment")
+    public_key = Column(String, unique=True, index=True, nullable=False, default=lambda: secrets.token_urlsafe(24))
+    status = Column(String, nullable=False, default="running")  # "running" | "stopped" - see this class's own docstring for why there is no "draft"
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    stopped_at = Column(DateTime, nullable=True)
+
+    assignments = relationship("ExperimentAssignment", cascade="all, delete-orphan")
+
+
+class ExperimentAssignment(Base):
+    """
+    One visitor's sticky variant assignment for one Experiment (Phase 4) -
+    see routers/experiments.py's public assign/convert endpoints for
+    exactly how a row here is created and read, and for the deterministic
+    sha256-hash-based 50/50 split that decides `variant`.
+
+    subject_id is whatever identifier the founder's OWN external website
+    already uses to recognize that one visitor across page loads (a cookie/
+    localStorage id, a logged-in customer id - anything stable) - this app
+    never issues or generates one itself, and never learns anything about
+    who that visitor actually is beyond this opaque, caller-supplied
+    string. `variant` is always the literal "a" or "b", never the display
+    name copied from Experiment.variant_a_name/variant_b_name - resolving
+    to a display name always happens at READ time, by joining back to the
+    parent Experiment, so nothing here ever needs to be updated in bulk if
+    those names were ever changed later.
+
+    converted_at is set exactly once, on the FIRST successful convert call
+    for this subject_id - see routers/experiments.py's convert_subject for
+    why every call after that is a harmless, deliberately silent no-op
+    (still 200 OK) rather than an error or a second row: a duplicate
+    conversion-pixel fire from a flaky connection, a page reload, or a
+    double click on the founder's own site must never inflate the
+    conversion count for either variant.
+    """
+    __tablename__ = "experiment_assignments"
+    __table_args__ = (UniqueConstraint("experiment_id", "subject_id", name="uq_experiment_subject"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    experiment_id = Column(String, ForeignKey("experiments.id"), nullable=False, index=True)
+    subject_id = Column(String, nullable=False)
+    variant = Column(String, nullable=False)  # "a" | "b"
+    assigned_at = Column(DateTime, default=datetime.utcnow)
+    converted_at = Column(DateTime, nullable=True)
