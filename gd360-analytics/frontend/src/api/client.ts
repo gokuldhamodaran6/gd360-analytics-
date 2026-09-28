@@ -128,6 +128,12 @@ export type DatasetVersion = {
   // reads this same list) to just the currently open conversation by
   // default - see Workspace.tsx's versionScope.
   conversation_id: string | null;
+  // Phase 2, feature 1 (shared, reusable models): whether this table has
+  // been promoted into a named, reusable "model" that shows up on the
+  // /models library page for anyone with access to it - see
+  // datasourceApi.promoteVersion/unpromoteVersion and modelsApi.list.
+  is_shared_model: boolean;
+  shared_model_description: string | null;
 };
 
 // One table this datasource's data flow through - exactly what
@@ -146,18 +152,37 @@ export type FlowSource = {
   sheet: string | null;
 };
 
+// Phase 2, feature 2 (persistent, editable semantic layer): a Flow-tab
+// card's own saved overrides - see backend models.FlowAnnotation. Every
+// field defaults to null when the card has never been annotated, meaning
+// "use the computed default (its real name, the dagre auto-layout
+// position)" exactly as the Flow tab always behaved before this feature
+// existed. Spread directly onto a FlowVersion/FlowNode below rather than a
+// separate parallel list, matching how the backend already embeds them.
+export type FlowAnnotationFields = {
+  display_label: string | null;
+  description: string | null;
+  position_x: number | null;
+  position_y: number | null;
+};
+
 // A saved table, with its full lineage - which table(s) it was built
 // from within THIS datasource (parent_version_ids can be several, e.g. a
 // prompt that merged two saved tables together). A version predating this
 // column may have parent_version_ids: null even though it does have a
 // single parent_version_id - DataFlowMap treats that the same as [id].
-export type FlowVersion = {
+export type FlowVersion = FlowAnnotationFields & {
   id: string;
   name: string;
   parent_version_id: string | null;
   parent_version_ids: string[] | null;
   step_count: number;
   created_at: string;
+  // Phase 2, feature 1: whether this table is a promoted shared model -
+  // drives feature 3's "Show across all data sources" toggle (only a
+  // promoted table can have cross-pipeline uses at all).
+  is_shared_model: boolean;
+  shared_model_description: string | null;
 };
 
 // One chart-producing or table-producing chat turn, anywhere in this data
@@ -165,7 +190,7 @@ export type FlowVersion = {
 // open) - the other half of the Flow map, alongside FlowVersion above.
 // `sources` is null for a turn saved before this feature existed; the map
 // falls back to treating those as sourced from "Original data".
-export type FlowNode = {
+export type FlowNode = FlowAnnotationFields & {
   message_id: string;
   conversation_id: string;
   conversation_title: string;
@@ -178,11 +203,30 @@ export type FlowNode = {
   new_version_id: string | null;
 };
 
+// Phase 2, feature 3 (data lineage across pipelines): one OTHER, separately
+// -connected data source's conversation that pulled in a promoted shared
+// model FROM the datasource whose Flow tab is currently open. See backend
+// routers/datasources.py get_data_flow's own `cross_pipeline` query param
+// and _cross_pipeline_uses for exactly how/why this is scoped to promoted
+// shared models only.
+export type CrossPipelineUse = {
+  version_id: string;
+  used_in_datasource_id: string;
+  used_in_datasource_name: string;
+  used_in_conversation_id: string;
+  used_in_conversation_title: string;
+  used_at: string;
+};
+
 export type DataFlow = {
   datasource_id: string;
   datasource_name: string;
   versions: FlowVersion[];
   nodes: FlowNode[];
+  // Always an array (never omitted) - empty either because
+  // cross_pipeline wasn't requested or because nothing was found. See
+  // CrossPipelineUse's own comment.
+  cross_pipeline_uses: CrossPipelineUse[];
 };
 
 // One column's aggregate, computed server-side over the full
@@ -302,6 +346,12 @@ export type DataSourceSummary = {
   // real webhook event. Drives the "live" pulsing-dot badge (see
   // pages/DataSources.tsx) - null/undefined means "never received one".
   last_event_at?: string | null;
+  // Phase 2, feature 4 (generic API/webhook PULL connector): only ever set
+  // for kind === "api" - the last time this source's URL was successfully
+  // fetched (at connect time, or a later manual refresh). Drives the "last
+  // refreshed X ago" / "never refreshed" text on its card (see
+  // pages/DataSources.tsx) - never a fabricated value.
+  api_last_refreshed_at?: string | null;
 };
 
 // 2026-09-28 (streaming/webhook ingestion round): what connect_streaming/
@@ -387,7 +437,47 @@ export const datasourceApi = {
   // Flow tab's data-lineage map (components/DataFlowMap.tsx). See
   // backend routers/datasources.py get_data_flow for exactly what this
   // reads back (nothing is computed fresh server-side either).
-  getFlow: (id: string) => api.get<DataFlow>(`/datasources/${id}/flow`).then((r) => r.data),
+  // `crossPipeline` (Phase 2, feature 3) additionally asks the backend to
+  // compute cross_pipeline_uses - left false, that key always comes back
+  // as an empty array rather than the (potentially app-wide) lookup ever
+  // running unasked.
+  getFlow: (id: string, crossPipeline = false) =>
+    api.get<DataFlow>(`/datasources/${id}/flow`, { params: { cross_pipeline: crossPipeline || undefined } }).then((r) => r.data),
+
+  // Phase 2, feature 2: upserts one Flow-tab card's persistent annotation -
+  // any subset of the four fields, see backend upsert_flow_annotation.
+  updateFlowAnnotation: (
+    id: string,
+    nodeKey: string,
+    patch: { display_label?: string | null; description?: string | null; position_x?: number; position_y?: number }
+  ) =>
+    api
+      .patch<FlowAnnotationFields & { node_key: string; updated_at: string }>(
+        `/datasources/${id}/flow/annotations/${encodeURIComponent(nodeKey)}`,
+        patch
+      )
+      .then((r) => r.data),
+
+  // Phase 2, feature 1: promotes/un-promotes a saved table into a named,
+  // reusable "model" - see modelsApi.list below for where a promoted one
+  // then shows up.
+  promoteVersion: (id: string, versionId: string, description: string) =>
+    api
+      .post<{ id: string; is_shared_model: boolean; shared_model_description: string | null; promoted_at: string | null }>(
+        `/datasources/${id}/versions/${versionId}/promote`,
+        { description }
+      )
+      .then((r) => r.data),
+
+  unpromoteVersion: (id: string, versionId: string) =>
+    api.delete<{ id: string; is_shared_model: boolean }>(`/datasources/${id}/versions/${versionId}/promote`).then((r) => r.data),
+
+  // Phase 2, feature 4: connects a generic read-only REST API source, and
+  // manually re-fetches it later - see backend connect_api/refresh_api.
+  createApi: (payload: { name: string; url: string; auth_header_name?: string; auth_header_value?: string; json_path?: string }) =>
+    api.post<DataSourceSummary>("/datasources/api", payload).then((r) => r.data),
+
+  refreshApi: (id: string) => api.post<DataSourceSummary>(`/datasources/${id}/api/refresh`).then((r) => r.data),
 
   // The natural-language filter bar: turns a plain-English request into
   // the same structured filters the manual filter panel produces - see
@@ -1446,6 +1536,29 @@ export type JobRun = {
 };
 
 export type JobRunsPage = { runs: JobRun[]; total: number; page: number; page_size: number };
+
+// Phase 2, feature 1 (shared, reusable models): one row of the /models
+// library page - see backend schemas.SharedModelOut and
+// routers/models_library.py.
+export type SharedModel = {
+  id: string;
+  name: string;
+  description: string | null;
+  datasource_id: string;
+  datasource_name: string;
+  created_at: string;
+  promoted_at: string | null;
+  step_count: number;
+  // Only ever present when this version's own cleaning_log already
+  // recorded a rows_after figure - never computed fresh by the backend
+  // just to fill this in, so a promoted-as-is original table (no cleaning
+  // steps at all) legitimately has this as null.
+  row_count: number | null;
+};
+
+export const modelsApi = {
+  list: () => api.get<SharedModel[]>("/models").then((r) => r.data),
+};
 
 export const jobsApi = {
   // Every dashboard this person can see, one row per dashboard, whether or
