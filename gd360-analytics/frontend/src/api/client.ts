@@ -1790,3 +1790,76 @@ export const accessRulesApi = {
   ) => api.post<AccessRule>(`/datasources/${datasourceId}/access-rules`, payload).then((r) => r.data),
   delete: (datasourceId: string, ruleId: string) => api.delete(`/datasources/${datasourceId}/access-rules/${ruleId}`),
 };
+
+// ---- 2026-09-28 (ML Models round) - the real ML feature: train, list,
+// view, predict with, bulk-score with, retrain and delete a real
+// scikit-learn model. See backend models.MLModel/MLPrediction and
+// routers/ml_models.py for the full design. Always "ML Model(s)" here -
+// never just "Model(s)" - to stay permanently distinct from SharedModel/
+// modelsApi above (routers/models_library.py's promoted, reusable data
+// TABLES, which have nothing to do with machine learning). ----
+
+export type MLTaskType = "classification" | "regression";
+export type MLModelStatus = "training" | "ready" | "failed";
+
+export type MLExcludedColumn = { column: string; reason: string };
+
+// Keys depend on task_type - classification: accuracy/precision/recall/f1
+// (each 0-1); regression: mae/rmse/r2. Always real, computed numbers from
+// the model's own held-out test split - never fabricated (see
+// services/ml_training.py's own module docstring).
+export type MLClassificationMetrics = { accuracy: number; precision: number; recall: number; f1: number };
+export type MLRegressionMetrics = { mae: number; rmse: number; r2: number };
+export type MLMetrics = Partial<MLClassificationMetrics & MLRegressionMetrics>;
+
+export type MLModel = {
+  id: string;
+  datasource_id: string;
+  datasource_name: string;
+  name: string;
+  description: string | null;
+  task_type: MLTaskType | null;
+  target_column: string;
+  feature_columns: string[] | null;
+  excluded_columns: MLExcludedColumn[] | null;
+  algorithm: string | null;
+  metrics: MLMetrics | null;
+  status: MLModelStatus;
+  error_message: string | null;
+  trained_row_count: number | null;
+  created_at: string;
+  trained_at: string | null;
+  prediction_count: number;
+  last_predicted_at: string | null;
+  owner_id: string;
+  // Resolved server-side (owner_id === the caller) - the frontend hides
+  // the delete button entirely for anyone else, matching the backend's own
+  // creator-only enforcement (see routers/ml_models.py delete_ml_model).
+  can_delete: boolean;
+};
+
+export type TrainMLModelPayload = {
+  datasource_id: string;
+  target_column: string;
+  // Omitted (or undefined) means "auto-select every usable column" - the
+  // wizard's zero-configuration default path (see
+  // services/ml_training.select_features).
+  feature_columns?: string[] | null;
+  name: string;
+  description?: string | null;
+};
+
+export type PredictResult = { predicted_value: string | number | boolean | null; confidence: number | null };
+export type ScoreTableResult = { new_version_id: string; new_version_name: string; row_count: number };
+
+export const mlModelsApi = {
+  train: (payload: TrainMLModelPayload) => api.post<MLModel>("/ml-models/train", payload).then((r) => r.data),
+  list: () => api.get<MLModel[]>("/ml-models").then((r) => r.data),
+  get: (id: string) => api.get<MLModel>(`/ml-models/${id}`).then((r) => r.data),
+  predict: (id: string, inputValues: Record<string, unknown>) =>
+    api.post<PredictResult>(`/ml-models/${id}/predict`, { input_values: inputValues }).then((r) => r.data),
+  score: (id: string, table?: string | null) =>
+    api.post<ScoreTableResult>(`/ml-models/${id}/score`, { table: table || undefined }).then((r) => r.data),
+  retrain: (id: string) => api.post<MLModel>(`/ml-models/${id}/retrain`).then((r) => r.data),
+  delete: (id: string) => api.delete(`/ml-models/${id}`).then(() => undefined),
+};
