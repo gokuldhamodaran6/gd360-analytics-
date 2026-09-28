@@ -1542,6 +1542,38 @@ def _infer_chart_type(prompt: str, result: Any, chart_type: str | None) -> str:
 # doing it a second time.
 _SKIP_PREP_NOTE = "(This table has already been prepared specifically for this analysis - skip preparation and analyze it directly.)"
 
+# 2026-09-28 (dashboard-builder "Build with AI" fix): the goal-driven
+# dashboard wizard (routers/dashboard_builder.py's generate_dashboard, the
+# "Build with AI" modal) plans several blocks from one plain-English
+# description, then runs every one of them through analyze() in a tight
+# unattended loop - there is no chat window open, no person watching, and
+# no way for a clarifying question to ever reach anyone. Before this note
+# existed, a block whose own self-contained prompt turned out ambiguous
+# (e.g. a planned prompt like "aggregate by month, region, or product" -
+# genuinely open to three different readings) would trigger the normal,
+# correct-in-chat action="clarify" rule elsewhere in this prompt, and
+# dashboard_builder.py had no choice but to silently drop that block -
+# if every planned block did this, the whole dashboard build failed with
+# a generic "couldn't build anything" message that gave no hint why, even
+# though nothing was actually wrong with the data or the description.
+# This note overrides the clarify rule specifically for that one caller:
+# analyze(unattended=True) appends it to the user turn (and to the retry
+# guidance, so a second attempt does not get invited to clarify either),
+# so the model commits to its single best, clearly-stated assumption
+# instead - dashboard_builder.py also now surfaces that assumption/
+# question back in its own error detail if a block is still skipped, so a
+# real failure is at least visible instead of silent (see this file's own
+# module docstring for that half of the fix).
+_UNATTENDED_NOTE = (
+    "(Context: this one block is being built automatically as part of a dashboard, with no person "
+    "available right now to answer a clarifying question - do NOT set action=\"clarify\" here under any "
+    "circumstance. If something about this request is ambiguous (which column, which time grouping, "
+    "which threshold), pick the single most reasonable, defensible default yourself, proceed with a real "
+    "action=\"analyze\"/\"transform\" result, and state the assumption you made in one short, plain "
+    "sentence at the start of narrative so the person reviewing this dashboard block can see exactly what "
+    "you assumed and ask for it differently later if they want something else.)"
+)
+
 
 # ---------------------------------------------------------------------------
 # Deterministic "cross-tab" fast path - no AI, no sandbox, just pandas.
@@ -1990,6 +2022,7 @@ def analyze(
     skip_prep: bool = False,
     original_df: pd.DataFrame | None = None,
     durable_repeat: tuple[str, str, str, str | None] | None = None,
+    unattended: bool = False,
 ) -> dict:
     """
     Main entrypoint. `tables` maps display name -> DataFrame for every table
@@ -2033,6 +2066,14 @@ def analyze(
     column succeeds in one pass instead of the AI just repeating a
     clarifying question the person already answered by naming the data
     they wanted used.
+
+    `unattended`, when True, tells the model no person is available to
+    answer a clarifying question for this specific call - see
+    _UNATTENDED_NOTE above for exactly what this changes and why it
+    exists (routers/dashboard_builder.py's goal-driven "Build with AI"
+    wizard is the caller that needs it; the normal chat flow, and the
+    dashboard builder's own single-block "Ask AI", both leave this False
+    since a person genuinely is there to answer in those cases).
 
     If the first attempt fails (sandbox error, wrong result shape, or an
     unrenderable chart), the model is given one retry with the exact error
@@ -2204,6 +2245,8 @@ def analyze(
         user_content += f"\n\nThe user also explicitly wants these chart customizations applied: {json.dumps(chart_override)}"
     if skip_prep:
         user_content += f"\n\n{_SKIP_PREP_NOTE}"
+    if unattended:
+        user_content += f"\n\n{_UNATTENDED_NOTE}"
     messages.append({"role": "user", "content": user_content})
 
     # 2026-09-28: a real, honest trace of what actually happened this turn -
@@ -2292,10 +2335,19 @@ def analyze(
                 "Running that did not work. The error was:\n"
                 f"{retry_detail}\n\n"
                 "Please reconsider the request. If your approach had a mistake, fix it and respond "
-                "with corrected JSON (same schema as before). If you genuinely cannot tell what the "
-                "person wants without more information, respond with action=\"clarify\" and ask ONE "
-                "short, specific question instead."
+                "with corrected JSON (same schema as before). "
             )
+            if unattended:
+                guidance += (
+                    "This is still running unattended (see the earlier note) - do not respond with "
+                    "action=\"clarify\" here either; pick your best reasonable assumption, say so "
+                    "plainly in narrative, and give a real result instead."
+                )
+            else:
+                guidance += (
+                    "If you genuinely cannot tell what the person wants without more information, "
+                    "respond with action=\"clarify\" and ask ONE short, specific question instead."
+                )
         retry_messages = retry_messages + [
             {"role": "assistant", "content": json.dumps(current_plan)},
             {"role": "user", "content": guidance},
