@@ -355,7 +355,6 @@ from .. import models, schemas, security
 from ..database import get_db
 from ..deps import get_current_user
 from ..services import ai_engine, chart_builder, data_access_rules, render_domains, workspace_access
-from ..services.ai_engine import _call_llm_resilient, _extract_json
 from ..services.data_loader import load_dataframe
 from .dashboards import _can_edit, _can_view
 
@@ -707,14 +706,30 @@ def _generate_goal_plan(goal: str, conversation_title: str, column_summary: str)
     fallback_title = (goal[:80] or "New dashboard").strip() or "New dashboard"
     fallback_blocks = _fallback_goal_plan(goal)
     try:
-        raw = _call_llm_resilient(
-            _build_goal_plan_messages(goal, conversation_title, column_summary), max_tokens=1200
+        # 2026-09-28: was a bare _call_llm_resilient(..., max_tokens=1200)
+        # with no retry at all - real logs showed a detailed goal (naming
+        # SARIMA/Prophet/LightGBM, which gives a reasoning model genuinely
+        # more to work through) burning that whole 1200-token budget on
+        # hidden reasoning and coming back empty, which silently fell all
+        # the way through to fallback_blocks below (a single block asking
+        # the ENTIRE raw goal verbatim - a much bigger ask than the model
+        # had just failed at, at the default 3000-token budget instead of
+        # 1200). ai_engine._plan_with_retry is the exact same "retry once
+        # with a plain-language nudge before giving up" protection the
+        # main chat's own plan call already relies on safely - reusing it
+        # here, at that same 3000-token budget, gives this planning call
+        # a real second chance instead of none.
+        parsed = ai_engine._plan_with_retry(
+            _build_goal_plan_messages(goal, conversation_title, column_summary), max_tokens=3000
         )
-        parsed = _extract_json(raw)
-    except Exception:
-        # Transient AI hiccup, missing/invalid key, malformed JSON - degrade
+    except Exception as e:
+        # Transient AI hiccup, missing/invalid key, still-malformed JSON
+        # after ai_engine._plan_with_retry's own internal retry - degrade
         # to a single block asking the goal verbatim rather than failing
-        # the whole "Build with AI" action.
+        # the whole "Build with AI" action. Logged (this used to be
+        # completely silent) so a future failure here is diagnosable from
+        # real logs instead of guessed at again.
+        print(f"[dashboard_builder] goal-plan LLM call failed for goal={goal[:200]!r}: {e}")
         return fallback_title, fallback_blocks
 
     title = str(parsed.get("dashboard_title") or fallback_title).strip()[:80] or fallback_title
@@ -742,12 +757,21 @@ def _generate_plan(conversation_title: str, entries: list[dict]) -> tuple[str, l
     fallback_title = (conversation_title or "New dashboard").strip() or "New dashboard"
     fallback_blocks = _fallback_plan(entries)
     try:
-        raw = _call_llm_resilient(_build_plan_messages(conversation_title, entries), max_tokens=1200)
-        parsed = _extract_json(raw)
-    except Exception:
-        # Transient AI hiccup, missing/invalid key, malformed JSON - any of
-        # these degrade to the deterministic fallback rather than failing
-        # the whole "Build with AI" action.
+        # 2026-09-28: same fix as _generate_goal_plan above - was a bare,
+        # unprotected 1200-token call with no retry; now goes through
+        # ai_engine._plan_with_retry at the same 3000-token budget the
+        # main chat's plan call already uses safely, so a conversation
+        # with many/complex turns gets a real second attempt instead of
+        # silently degrading to the deterministic (still fine, just less
+        # tailored) fallback on the very first hiccup.
+        parsed = ai_engine._plan_with_retry(_build_plan_messages(conversation_title, entries), max_tokens=3000)
+    except Exception as e:
+        # Transient AI hiccup, missing/invalid key, still-malformed JSON
+        # after the internal retry - any of these degrade to the
+        # deterministic fallback rather than failing the whole "Build
+        # with AI" action. Logged (previously silent) for the same reason
+        # as _generate_goal_plan above.
+        print(f"[dashboard_builder] rearrange-plan LLM call failed for conversation={conversation_title[:120]!r}: {e}")
         return fallback_title, fallback_blocks
 
     title = str(parsed.get("dashboard_title") or fallback_title).strip()[:80] or fallback_title
