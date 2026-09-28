@@ -14,6 +14,7 @@ import DataSources from "./pages/DataSources";
 import Models from "./pages/Models";
 import Jobs from "./pages/Jobs";
 import Experiments from "./pages/Experiments";
+import Governance from "./pages/Governance";
 import NewProject from "./pages/NewProject";
 import AdminDashboard from "./pages/AdminDashboard";
 import Profile from "./pages/Profile";
@@ -125,6 +126,12 @@ export default function App() {
           AppSidebar.tsx's own nav entry for this, placed right after
           Models exactly like the sidebar. */}
       <Route path="/experiments" element={<Protected><Experiments /></Protected>} />
+      {/* Phase 5, Batch A (2026-09-28, data governance & quality): see
+          AppSidebar.tsx's own nav entry for this, placed right after
+          Experiments exactly like the sidebar. Owner-only - the backend
+          403s a non-owner, and Governance.tsx shows a plain message for
+          that instead of a raw error. */}
+      <Route path="/governance" element={<Protected><Governance /></Protected>} />
       <Route path="/admin" element={<Protected><AdminDashboard /></Protected>} />
       <Route path="/profile" element={<Protected><Profile /></Protected>} />
       {/* Public and standalone (no <Protected> wrapper): opened in a new
