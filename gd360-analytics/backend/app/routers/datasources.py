@@ -1,6 +1,7 @@
 """
 Datasource management: connect a database (Postgres/MySQL/SQL Server/
-MongoDB/Supabase), a data warehouse (BigQuery, Snowflake), or upload a
+MongoDB/Supabase), a data warehouse (BigQuery, Snowflake), a "streaming"
+webhook source (2026-09-28 - see connect_streaming below), or upload a
 file (CSV/Excel). Credentials are encrypted before storage and never
 returned to the client after creation. Every connection is tested and
 introspected (read-only) before being saved.
@@ -12,11 +13,13 @@ saved tables, and a download/export of any of them as CSV or Excel.
 import io
 import json
 import os
+import secrets
 import time
 from collections import defaultdict
+from datetime import datetime
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 import requests
@@ -320,6 +323,123 @@ def connect_warehouse(
     db.commit()
     db.refresh(ds)
     return ds
+
+
+def _webhook_url(datasource_id: str) -> str:
+    return f"{settings.BACKEND_BASE_URL}/datasources/{datasource_id}/ingest"
+
+
+@router.post("/streaming", response_model=schemas.StreamingDataSourceOut, status_code=201)
+def connect_streaming(
+    payload: schemas.DataSourceCreateStreaming,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """The honest, achievable version of "real-time ingestion" for a small
+    SaaS product - NOT a Kafka/message-broker integration, which this app
+    has no infrastructure to run or operate. Creates a kind=="streaming"
+    DataSource with a freshly-generated secret bearer token (encrypted at
+    rest exactly like every other kind's own credential - see
+    security.encrypt_secret), and hands back a webhook URL + that secret
+    ONCE, right here, for the person to paste into whatever system will
+    push events at it (Zapier, a small script, another app's own outbound
+    webhook setting). Nothing is tested/introspected here the way a
+    database or warehouse connection is above - there is nothing to
+    connect to yet, only an endpoint waiting to receive its first event
+    (see ingest_webhook_event and models.StreamedEvent)."""
+    secret = secrets.token_urlsafe(32)
+    ds = models.DataSource(
+        owner_id=user.id,
+        name=payload.name,
+        kind="streaming",
+        connection_info={},
+        webhook_secret_encrypted=security.encrypt_secret(secret),
+        read_only=True,
+        schema_cache={},
+    )
+    db.add(ds)
+    db.commit()
+    db.refresh(ds)
+    return schemas.StreamingDataSourceOut(
+        id=ds.id, name=ds.name, kind=ds.kind, connection_info=ds.connection_info,
+        read_only=ds.read_only, schema_cache=ds.schema_cache, created_at=ds.created_at,
+        last_event_at=ds.last_event_at, webhook_url=_webhook_url(ds.id), webhook_secret=secret,
+    )
+
+
+@router.post("/{datasource_id}/webhook/regenerate", response_model=schemas.StreamingDataSourceOut)
+def regenerate_webhook_secret(
+    datasource_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
+):
+    """Owner-only (same "administrative action on the row itself" tier as
+    delete_datasource below - see _get_owned_datasource's own docstring):
+    mints a brand-new secret and immediately invalidates the old one, the
+    same way a workspace's own invite_token is regenerated
+    (routers/workspaces.py). Whatever was using the old secret starts
+    getting 401s from ingest_webhook_event until it's updated with the new
+    one - deliberate, not a bug: this is the only way to revoke a leaked or
+    no-longer-trusted webhook secret."""
+    ds = _get_owned_datasource(db, user, datasource_id)
+    if ds.kind != "streaming":
+        raise HTTPException(400, "This isn't a streaming (webhook) data source.")
+    secret = secrets.token_urlsafe(32)
+    ds.webhook_secret_encrypted = security.encrypt_secret(secret)
+    db.commit()
+    db.refresh(ds)
+    return schemas.StreamingDataSourceOut(
+        id=ds.id, name=ds.name, kind=ds.kind, connection_info=ds.connection_info,
+        read_only=ds.read_only, schema_cache=ds.schema_cache, created_at=ds.created_at,
+        last_event_at=ds.last_event_at, webhook_url=_webhook_url(ds.id), webhook_secret=secret,
+    )
+
+
+@router.post("/{datasource_id}/ingest", response_model=schemas.StreamedEventIngestResult, status_code=201)
+def ingest_webhook_event(
+    datasource_id: str,
+    rows: list[dict] = Body(...),
+    x_webhook_secret: str = Header(..., alias="X-Webhook-Secret"),
+    db: Session = Depends(get_db),
+):
+    """The webhook itself - deliberately NOT behind get_current_user (the
+    caller is Zapier, a script, or another app, never a signed-in GD360
+    user), protected instead by the per-source secret bearer token minted
+    in connect_streaming/regenerate_webhook_secret above, sent back as the
+    X-Webhook-Secret header. Accepts a plain JSON array of row objects -
+    whatever shape the caller wants, never validated against a fixed
+    schema (see models.StreamedEvent's own docstring for why) - and
+    appends them as one row in this source's append-only event log,
+    advancing last_event_at so the "live" indicator picks it up
+    immediately. This is a real, working ingestion endpoint, not a
+    simulated one: every call here genuinely persists to Postgres before
+    responding."""
+    ds = db.query(models.DataSource).filter(models.DataSource.id == datasource_id).first()
+    if not ds or ds.kind != "streaming" or not ds.webhook_secret_encrypted:
+        # 404, not 401/403 - matching this app's usual "don't confirm a
+        # real streaming source exists at this id" info-non-leak
+        # convention (see services/workspace_access.py's own module note)
+        # for a caller that doesn't already know the right secret.
+        raise HTTPException(404, "Streaming data source not found.")
+    try:
+        real_secret = security.decrypt_secret(ds.webhook_secret_encrypted)
+    except Exception:
+        raise HTTPException(500, "This source's webhook secret could not be read - ask its owner to regenerate it.")
+    # Constant-time comparison - a webhook secret is a bearer credential
+    # exactly like a password, and a naive `==` here would leak how many
+    # leading characters of a guessed secret are already correct through
+    # response-timing differences.
+    if not secrets.compare_digest(x_webhook_secret, real_secret):
+        raise HTTPException(401, "Invalid webhook secret.")
+    if not rows:
+        raise HTTPException(400, "Expected a non-empty JSON array of row objects.")
+    if len(rows) > 5000:
+        raise HTTPException(400, "Too many rows in one call (max 5000) - split into smaller batches.")
+
+    event = models.StreamedEvent(datasource_id=ds.id, payload=rows, row_count=len(rows))
+    ds.last_event_at = datetime.utcnow()
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    return schemas.StreamedEventIngestResult(accepted=len(rows), received_at=event.received_at)
 
 
 @router.post("/file", response_model=schemas.DataSourceOut, status_code=201)
