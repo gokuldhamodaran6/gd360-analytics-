@@ -49,6 +49,19 @@ function DashboardsIcon({ className = "w-[18px] h-[18px]" }: { className?: strin
   );
 }
 
+// 2026-09-28 (scheduled auto-refresh + background jobs round): the Jobs
+// page's own nav entry, between Dashboards and Data Sources - a scheduled
+// refresh is "a dashboard doing something automatically", which reads
+// closer to Dashboards than to browsing/connecting data.
+function JobsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3.5 2" />
+    </svg>
+  );
+}
+
 // 2026-09-23 (sidebar redesign round): a third top-level nav entry, for the
 // new /data page - every connected source, browsable by category, replaces
 // this sidebar's old always-expanded flat list.
@@ -1005,6 +1018,16 @@ function SidebarNav({
         >
           <DashboardsIcon />
           Dashboards
+        </Link>
+        <Link
+          to="/jobs"
+          onClick={onNavigate}
+          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
+            pathname.startsWith("/jobs") ? "bg-primary text-white" : "text-text hover:bg-surface2"
+          }`}
+        >
+          <JobsIcon />
+          Jobs
         </Link>
         <Link
           to="/data"
