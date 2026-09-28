@@ -912,32 +912,6 @@ class StreamedEventIngestResult(BaseModel):
     received_at: datetime
 
 
-# ---------- Phase 2, feature 1: shared, reusable models ----------
-# A DatasetVersion promoted into a named, reusable "model" - see
-# models.DatasetVersion's own docstring and routers/datasources.py
-# promote_version/unpromote_version, and routers/models_library.py for the
-# GET /models listing built from these.
-class PromoteVersionRequest(BaseModel):
-    description: str = Field(min_length=1, max_length=2000)
-
-
-class SharedModelOut(BaseModel):
-    id: str
-    name: str
-    description: Optional[str] = None
-    datasource_id: str
-    datasource_name: str
-    created_at: datetime
-    promoted_at: Optional[datetime] = None
-    step_count: int
-    # The row count AFTER the last recorded cleaning/prep step, if this
-    # version's own cleaning_log already has one - never computed fresh by
-    # loading and counting the full CSV on every /models list call (see
-    # routers/models_library.py's own comment). None when no such figure is
-    # already sitting in stored data - left out rather than guessed.
-    row_count: Optional[int] = None
-
-
 # ---------- Phase 2, feature 2: persistent Flow-tab annotations ----------
 # A partial update to one FlowAnnotation - see models.FlowAnnotation's own
 # docstring and routers/datasources.py upsert_flow_annotation. Every field
@@ -1172,8 +1146,8 @@ class GovernanceOverviewOut(BaseModel):
 # services/ml_training.py for how training/prediction/scoring actually
 # work. Always called "ML Model"/"ML Models" in every field and endpoint
 # name here - never just "Model(s)" - to keep this permanently distinct
-# from SharedModelOut above, which is a promoted, reusable data TABLE and
-# has nothing to do with machine learning.
+# from Saved Tables (routers/datasources.py's version listing), which are
+# reusable data TABLES and have nothing to do with machine learning.
 class TrainMLModelRequest(BaseModel):
     datasource_id: str
     target_column: str = Field(min_length=1, max_length=200)
