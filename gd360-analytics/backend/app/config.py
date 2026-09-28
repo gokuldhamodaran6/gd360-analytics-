@@ -220,10 +220,30 @@ class Settings(BaseSettings):
     # instead of a generic one (see ai_engine.analyze's retry loop) - so
     # this higher ceiling is there to let legitimately-fine work finish
     # under real CPU pressure, not to wait longer on code that was always
-    # going to be slow. Kept well short of a full minute given the 512MB
-    # memory ceiling - a sandboxed child process held alive longer under
-    # real traffic is memory held longer too.
-    SANDBOX_TIMEOUT_SECONDS: int = 30
+    # going to be slow.
+    #
+    # 2026-09-28 (multi-result round): raised from 30 to 45 after real
+    # production logs showed a genuinely legitimate multi-table merge
+    # timing out at 30s with no useful error - and separately, the new
+    # "multiple results in one answer" capability (see ai_engine.
+    # SYSTEM_PROMPT's "Multiple results in one answer" rule) can now ask
+    # one sandboxed run to build several distinct analyses (a forecast, a
+    # segmentation, a market-basket pass, and so on) in a single pass,
+    # which is legitimately more work than the single-chart case this
+    # limit was originally tuned for. This is paired with the same
+    # 2026-09-28 root-cause fix that requires `validate=` on every merge
+    # (see SYSTEM_PROMPT) - a genuinely broken/exploding merge now fails
+    # in milliseconds instead of eating the full timeout, so most of what
+    # used to silently consume this budget no longer does, which is what
+    # makes raising the ceiling here safe rather than just slower-to-fail.
+    # Kept below a full minute for two reasons that still apply: the
+    # 512MB memory ceiling on a sandboxed child process, and this backend
+    # running with a single worker (WEB_CONCURRENCY=1, confirmed via
+    # startup logs) - since sandboxed code execution blocks that one
+    # worker while it runs, a longer ceiling also means a longer worst-case
+    # wait for any OTHER person's request queued behind a slow one, not
+    # just a longer wait for the slow request itself.
+    SANDBOX_TIMEOUT_SECONDS: int = 45
     MAX_UPLOAD_MB: int = 50
     RATE_LIMIT_PER_MINUTE: int = 30  # per-user AI calls/minute, protects the free AI tier
 
