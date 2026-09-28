@@ -40,3 +40,16 @@ email-validator==2.2.0
 # APScheduler's current stable 3.x release (the 4.x line is still alpha as
 # of this writing) and needs no extra system dependencies.
 apscheduler==3.10.4
+# 2026-09-28 (ML Models round): the real, deterministic ML core behind
+# services/ml_training.py - real train/test splits, real scikit-learn
+# models (LogisticRegression/RandomForestClassifier/LinearRegression/
+# RandomForestRegressor), real computed metrics. 1.5.2 is a current stable
+# release built against this file's already-pinned numpy==1.26.4/
+# scipy==1.13.1 (both are already installed for pandas' own use - no new
+# system packages needed beyond this Dockerfile's existing gcc/libpq-dev).
+# joblib is scikit-learn's own recommended serializer - used to turn a
+# fitted Pipeline into the raw bytes stored on MLModel.model_artifact (see
+# that model's own docstring for why bytes-in-Postgres rather than a
+# separate model registry/blob store).
+scikit-learn==1.5.2
+joblib==1.4.2
