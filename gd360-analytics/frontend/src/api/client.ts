@@ -954,13 +954,17 @@ export type DashboardTemplate = {
 // used. The shapes the backend actually sends, verbatim from
 // routers/dashboard_builder.py's _block_config/_ai_result_to_block/
 // _run_manual_recipe:
-//   chart: { chart_spec: any; result_columns?: any; result_rows?: any; recipe?: ManualRecipe }
+//   chart: { chart_spec: any; result_columns?: any; result_rows?: any; recipe?: ManualRecipe;
+//            forecast_enabled?: boolean; anomalies_enabled?: boolean; anomaly_count?: number | null }
 //     (result_columns/result_rows are only present when this chart has
 //     tidy data attached - that's what makes restyle_block possible; a
 //     chart block from before this existed may omit them. `recipe` is
 //     only present on a block built with "Build manually" - that's what
 //     makes it respond to a cross-filter at all, see dashboardBuilderApi.
-//     previewFiltered below)
+//     previewFiltered below. forecast_enabled/anomalies_enabled/
+//     anomaly_count are set by setBlockAnalysis below - anomaly_count is
+//     null until the anomalies toggle has actually been turned on at least
+//     once, then an honest int (possibly 0) after that)
 //   table: { columns: string[]; rows: Record<string, any>[]; truncated: boolean; recipe?: ManualRecipe }
 //   kpi:   { value: number | string | null; label: string; recipe?: ManualRecipe }
 //   text:  { text: string }
@@ -1371,6 +1375,23 @@ export const dashboardBuilderApi = {
   setBlockAccentColor: (dashboardId: string, blockId: string, color: string | null) =>
     api
       .patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}/accent-color`, { color })
+      .then((r) => r.data),
+
+  // 2026-09-28: the "Show forecast" / "Show anomalies" chart-block kebab-
+  // menu toggles - see the backend endpoint's own docstring for why this
+  // is separate from restyleBlock/setBlockAccentColor (an analysis LENS
+  // on an already-built chart_spec, not a data recompute or a chart-type
+  // rebuild). Both flags are sent together every call, even when only one
+  // changed, since the backend always needs the full current state of
+  // both toggles to rebuild the figure correctly - the caller is expected
+  // to pass the OTHER flag's current value through unchanged.
+  setBlockAnalysis: (
+    dashboardId: string,
+    blockId: string,
+    flags: { forecast_enabled: boolean; anomalies_enabled: boolean }
+  ) =>
+    api
+      .patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}/analysis`, flags)
       .then((r) => r.data),
 
   // ---- Round 4 (2026-09-25): branding/customization - logo, brand
