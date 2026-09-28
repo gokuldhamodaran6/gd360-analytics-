@@ -56,7 +56,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_user
-from ..services import workspace_access
+from ..services import audit, workspace_access
 
 router = APIRouter(prefix="/dashboards", tags=["dashboards"])
 
@@ -173,6 +173,11 @@ def create_dashboard(
         owner_id=user.id, name=payload.name.strip()[:80] or "Untitled dashboard", workspace_id=payload.workspace_id
     )
     db.add(dash)
+    db.flush()
+    audit.log_audit_event(
+        db, actor=user, action="dashboard_created", workspace_id=dash.workspace_id,
+        target_type="dashboard", target_id=dash.id,
+    )
     db.commit()
     db.refresh(dash)
     return _dashboard_out(db, dash, user)
@@ -284,6 +289,10 @@ def delete_dashboard(dashboard_id: str, db: Session = Depends(get_db), user: mod
     d = _get_viewable(db, user, dashboard_id)
     if not _can_delete(db, d, user):
         raise HTTPException(403, "Only the dashboard's creator or the workspace owner can delete it.")
+    audit.log_audit_event(
+        db, actor=user, action="dashboard_deleted", workspace_id=d.workspace_id,
+        target_type="dashboard", target_id=d.id,
+    )
     db.delete(d)
     db.commit()
     return None
