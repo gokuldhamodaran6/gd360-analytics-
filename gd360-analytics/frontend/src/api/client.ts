@@ -610,7 +610,37 @@ export type ConversationMessage = {
   suggestions: { charts?: any[]; stats?: any[]; follow_up?: { label: string; prompt: string }[] } | null;
   needs_clarification: boolean;
   action: "analyze" | "transform" | "clarify" | "explain" | null;
+  // 2026-09-28: the real WORKING ON selection this turn actually ran
+  // against (see backend routers/chat.py _load_selected_tables' own
+  // "sources manifest" docstring for the exact shape) plus which new
+  // saved table it produced, if any - both already stored on Message
+  // server-side, exposed here so Workspace.tsx's restore-on-refresh
+  // effect can rebuild the real selection instead of guessing at it.
+  sources: { kind: "original" | "sheet" | "version"; label: string; datasource_id: string | null; version_id: string | null; sheet: string | null }[] | null;
+  new_version_id: string | null;
+  // See backend models.Message.steps' own docstring - the real "what I
+  // did" trace, restored here so it still shows under a past turn too.
+  steps: { label: string; detail?: string | null }[] | null;
+  // 2026-09-28 (multi-result round): the extra chart/table cards beyond
+  // the first, and the honest trustworthiness caveat - see backend
+  // models.Message.results/self_critique and ai_engine._build_result_entry
+  // for the exact shape of one entry.
+  results: ResultEntry[] | null;
+  self_critique: string | null;
   created_at: string;
+};
+
+// One named chart/table card of a multi-result answer (see
+// ai_engine._build_result_entry) - the same shape the top-level
+// chart_spec/result_* fields already use, just labeled and one of several.
+export type ResultEntry = {
+  label: string;
+  chart_spec: any;
+  chart_type: string | null;
+  result_columns: any;
+  result_rows: any;
+  result_row_count: number | null;
+  result_truncated: boolean;
 };
 
 export type ConversationDetail = {
