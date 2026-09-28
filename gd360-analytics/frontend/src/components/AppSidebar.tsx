@@ -92,34 +92,17 @@ function SearchIcon({ className = "w-4 h-4" }: { className?: string }) {
 // of layered cards - "reusable, built-on-top-of" - kept distinct from
 // DashboardsIcon's bar chart and DataSourcesIcon's database cylinder.
 //
-// Renamed "Models" -> "Saved Tables" in the nav label only (2026-09-28, ML
-// Models round) - this page (routers/models_library.py /models,
-// pages/Models.tsx) has never had anything to do with machine learning; it
-// is a gallery of promoted/reusable saved data TABLES. That naming
-// collision is exactly why it kept getting mistaken for an ML feature -
-// see the real one, ML Models below, whose own nav entry now sits right
-// next to this one so the difference is obvious from the sidebar itself.
-// The component/icon name (ModelsIcon) and route (/models) are unchanged
-// on purpose - this is a human-facing label fix only, not a URL/identifier
-// rename (see this round's own build notes).
-function ModelsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 3l8 4-8 4-8-4 8-4z" />
-      <path d="M4 11l8 4 8-4" />
-      <path d="M4 15l8 4 8-4" />
-    </svg>
-  );
-}
-
-// 2026-09-28 (ML Models round): the real ML feature's own nav entry - see
-// models.MLModel's own docstring for why this is deliberately never called
-// just "Models" anywhere in this app. Placed right after "Saved Tables" so
-// the two visually adjacent, differently-labeled entries make the
-// distinction obvious at a glance. A simple sparkle/circuit-node glyph -
-// "something computed/inferred" - kept distinct from every icon above it
-// (a stack of layered cards, a flask, a shield) rather than reusing a
-// generic chart/brain cliché.
+// 2026-09-28 (ML Models round, later same day): the real ML feature's own
+// nav entry - see models.MLModel's own docstring for the full history.
+// (This app used to also have a "Saved Tables" entry right here - a
+// gallery of promoted/reusable saved data TABLES with nothing to do with
+// machine learning. It was removed the same day once the confusing
+// "Saved Tables" vs. "ML Models" naming collision made clear it wasn't
+// pulling its weight, especially since it duplicated a capability chat's
+// own cross-datasource picker already provided for free.) A simple
+// sparkle/circuit-node glyph - "something computed/inferred" - kept
+// distinct from every icon above it (a flask, a shield) rather than
+// reusing a generic chart/brain cliché.
 function MLModelsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -134,12 +117,11 @@ function MLModelsIcon({ className = "w-[18px] h-[18px]" }: { className?: string 
 }
 
 // Phase 4 (2026-09-28, Experimentation / A/B testing): the /experiments
-// page's own nav entry, placed right after Models - the two newest
-// "Replacing the Data Team" roadmap features sit adjacent in this
-// data-oriented group. A flask, distinct from every icon above it
-// (DashboardsIcon's bar chart, DataSourcesIcon's database cylinder,
-// ModelsIcon's stacked layers) - "testing/experimenting" reads clearly as
-// its own thing rather than a variant of any of those.
+// page's own nav entry - one of the "Replacing the Data Team" roadmap
+// features in this data-oriented group. A flask, distinct from every icon
+// above it (DashboardsIcon's bar chart, DataSourcesIcon's database
+// cylinder, MLModelsIcon's sparkle nodes) - "testing/experimenting" reads
+// clearly as its own thing rather than a variant of any of those.
 function ExperimentsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -1170,21 +1152,8 @@ function SidebarNav({
           <DataSourcesIcon />
           {!collapsed && "Data Sources"}
         </Link>
-        {/* Phase 2, feature 1: right after Data Sources - see ModelsIcon's
-            own comment above for why it sits here. Label reads "Saved
-            Tables" (2026-09-28) - route/component name unchanged, see that
-            comment for why. */}
-        <Link
-          to="/models"
-          onClick={onNavigate}
-          title={collapsed ? "Saved Tables" : undefined}
-          className={linkClass(pathname.startsWith("/models") && !pathname.startsWith("/ml-models"))}
-        >
-          <ModelsIcon />
-          {!collapsed && "Saved Tables"}
-        </Link>
-        {/* 2026-09-28 (ML Models round): the real ML feature, right next to
-            "Saved Tables" above - see MLModelsIcon's own comment for why. */}
+        {/* 2026-09-28 (ML Models round): the real ML feature, right after
+            Data Sources - see MLModelsIcon's own comment for why. */}
         <Link
           to="/ml-models"
           onClick={onNavigate}
@@ -1194,8 +1163,8 @@ function SidebarNav({
           <MLModelsIcon />
           {!collapsed && "ML Models"}
         </Link>
-        {/* Phase 4 (2026-09-28, Experimentation / A/B testing): right after
-            Models - see ExperimentsIcon's own comment above for why. */}
+        {/* Phase 4 (2026-09-28, Experimentation / A/B testing): see
+            ExperimentsIcon's own comment above for why. */}
         <Link
           to="/experiments"
           onClick={onNavigate}
