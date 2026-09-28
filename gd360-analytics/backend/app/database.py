@@ -122,6 +122,13 @@ _NEW_COLUMNS = [
     # file's own note above, a new table needs no entry here at all
     # (create_all() already creates it).
     ("datasources", "api_last_refreshed_at", "TIMESTAMP"),
+    # Phase 5, Batch A (2026-09-28, data governance & quality): see
+    # models.DataSource's own docstring for what these two mean.
+    # data_quality_rules and audit_events are brand NEW tables added the
+    # same round - per this file's own note above, a new table needs no
+    # entry here at all (create_all() already creates it).
+    ("datasources", "governance_last_reviewed_at", "TIMESTAMP"),
+    ("datasources", "governance_last_reviewed_by_id", "TEXT"),
 ]
 
 
