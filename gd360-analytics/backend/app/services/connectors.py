@@ -15,7 +15,11 @@ warehouses (BigQuery, Snowflake), and two OAuth "live" connectors -
 Google Sheets and Microsoft Excel (OneDrive/SharePoint). The connector
 interface is intentionally generic (`load_dataframe`, `introspect_schema`)
 so new backends (a generic REST ERP/CRM connector, etc.) can be added as
-additional classes without touching the rest of the app -
+additional classes without touching the rest of the app - ApiConnector
+(Phase 2, feature 4) is exactly that promise exercised for a generic REST
+API, though it is deliberately a fetch-once, snapshot-and-store connector
+rather than a read-every-time one (see its own class docstring for why),
+so it does not follow the load_dataframe/introspect_schema shape at all.
 BigQueryConnector was the first connector to actually exercise that
 promise (a service-account JSON key instead of host/port/username/
 password), and SnowflakeConnector reuses it again with its own
@@ -40,10 +44,12 @@ metered billing, so those two exist purely for speed and memory safety.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
+import socket
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import pandas as pd
 import requests
@@ -703,6 +709,179 @@ class FileConnector:
             df = self.load_dataframe(sheet_name=sheet)
             schema[sheet] = [{"name": c, "type": str(df[c].dtype)} for c in df.columns]
         return schema
+
+
+def _assert_public_url(url: str) -> None:
+    """SSRF guard for ApiConnector (Phase 2, feature 4) - this is the FIRST
+    connector in this app that fetches a URL the person themselves typed
+    in, rather than one this app already knows is a fixed, trusted
+    third-party host (Google/Microsoft's own OAuth endpoints in
+    oauth_tokens.py, Render's own API in render_domains.py). Without this
+    check, "connect an API" would double as a general-purpose way for any
+    signed-in GD360 user to make GD360's OWN backend issue a request to
+    anywhere it can reach - most dangerously, a cloud metadata endpoint
+    (e.g. the near-universal 169.254.169.254, which on many clouds hands
+    back real, sensitive credentials to whatever is running on that
+    machine with no auth of its own beyond "the request came from inside"),
+    or any other internal-only service this backend's own network can
+    reach but a stranger on the public internet cannot.
+
+    Rejects a non-http(s) scheme, then resolves the hostname and rejects it
+    if ANY resolved address is loopback, link-local (this is what blocks
+    the cloud metadata address above), private, reserved, unspecified, or
+    multicast - i.e., anything that isn't an ordinary public internet
+    address. This resolve-then-check happens once, right before the real
+    request, not inside a redirect-following library step - `requests`
+    follows redirects by default and this function cannot see a redirect
+    target before requests itself resolves and connects to it, so a
+    malicious API that first returns 200 then redirects to an internal
+    address is not caught by this check alone; ApiConnector below also
+    disables redirect-following entirely (`allow_redirects=False`) so a
+    redirect response is surfaced as a plain, honest error instead of
+    silently followed anywhere. A DNS answer could still theoretically
+    change between this check and the instant `requests` itself connects
+    (classic "DNS rebinding") - a real, known limitation of a resolve-then-
+    connect check with no way to pin the exact IP `requests` connects to
+    without a custom transport adapter; stated here plainly rather than
+    implied to be airtight, and an acceptable, proportionate defense for
+    this app's actual threat model (a signed-in, already-authenticated
+    GD360 user probing their own backend's network) rather than a
+    fully adversarial one."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("The URL must start with http:// or https://.")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("That URL has no host to connect to.")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        addrinfo = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as e:
+        raise ValueError(f"Could not resolve that host: {e}")
+    for family, _, _, _, sockaddr in addrinfo:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if (
+            ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved
+            or ip.is_unspecified or ip.is_multicast
+        ):
+            raise ValueError(
+                "That URL resolves to a private/internal address, which this connector will not fetch "
+                "(GD360 only connects to ordinary public internet APIs)."
+            )
+
+
+class ApiConnector:
+    """A generic, read-only REST/webhook PULL connector (Phase 2, feature 4)
+    - the complementary counterpart to the PUSH-based streaming webhook
+    added the previous round (see routers/datasources.py connect_streaming/
+    ingest_webhook_event and models.StreamedEvent): instead of waiting for
+    an external system to POST rows in, this reaches OUT to a REST API the
+    person already has (an internal API, a SaaS vendor's read API, a mock/
+    test endpoint - anything that returns JSON) and pulls a snapshot of it,
+    on demand, at connect time and again only on an explicit manual refresh
+    (see routers/datasources.py connect_api/refresh_api) - never on any
+    kind of automatic schedule (see refresh_api's own docstring for why).
+
+    Deliberately GET-only. There is no `method` parameter here at all, and
+    none is accepted anywhere upstream of this class either - this file's
+    own module docstring states GD360's one non-negotiable rule as "NEVER
+    writes to a customer source system", and a generic HTTP connector that
+    accepted an arbitrary method would be the one place in this whole app
+    that could be pointed at a POST/PUT/DELETE endpoint and used to mutate
+    someone's real system. Read-only is enforced structurally here (the
+    only HTTP call this class ever makes is requests.get), not by a
+    keyword-scanning check the way SQL/Mongo pushdown queries need (there
+    is no query language to scan - a GET request has no "verb" to smuggle
+    a write inside).
+
+    Every call is also checked by _assert_public_url above before it is
+    ever made, both here at connect time and again on every manual refresh
+    (refresh_api reconstructs a fresh ApiConnector each time rather than
+    reusing a saved one) - see that function's own docstring for exactly
+    what it blocks and its one honestly-stated limitation.
+
+    Fetches the whole response body itself (via `iter_content`, not
+    `resp.json()` directly) so an oversized response is caught and rejected
+    before it is ever fully parsed - the JSON-connector equivalent of
+    settings.MAX_UPLOAD_MB capping a plain file upload (see
+    routers/datasources.py upload_file). Every failure - a timeout, a
+    non-2xx status, an oversized body, invalid JSON, no array found at the
+    given path - raises a plain ValueError with the real underlying reason,
+    which the caller turns into an HTTPException(400, ...); this class
+    never reports a fabricated success.
+    """
+
+    _TIMEOUT_SECONDS = 15
+    _MAX_RESPONSE_BYTES = 25 * 1024 * 1024  # 25 MB - see class docstring.
+
+    def __init__(self, url: str, headers: dict[str, str] | None = None, json_path: str | None = None):
+        self.url = url
+        self.headers = headers or {}
+        self.json_path = (json_path or "").strip() or None
+
+    def fetch_dataframe(self) -> pd.DataFrame:
+        """Performs exactly ONE real `requests.get` and returns the
+        flattened (via pandas.json_normalize) result as a DataFrame."""
+        _assert_public_url(self.url)
+        try:
+            resp = requests.get(
+                self.url, headers=self.headers, timeout=self._TIMEOUT_SECONDS, stream=True, allow_redirects=False,
+            )
+        except requests.exceptions.Timeout:
+            raise ValueError(f"The request timed out after {self._TIMEOUT_SECONDS} seconds.")
+        except requests.exceptions.RequestException as e:
+            raise ValueError(f"Could not reach that URL: {e}")
+
+        chunks: list[bytes] = []
+        total = 0
+        try:
+            for chunk in resp.iter_content(chunk_size=65536):
+                total += len(chunk)
+                if total > self._MAX_RESPONSE_BYTES:
+                    raise ValueError(
+                        f"That response is larger than the {self._MAX_RESPONSE_BYTES // (1024 * 1024)}MB this "
+                        "connector will read - point it at a smaller or paginated endpoint."
+                    )
+                chunks.append(chunk)
+        finally:
+            resp.close()
+        body = b"".join(chunks)
+
+        if not (200 <= resp.status_code < 300):
+            snippet = body[:300].decode("utf-8", errors="replace").strip()
+            raise ValueError(f"The API returned HTTP {resp.status_code}" + (f": {snippet}" if snippet else "."))
+
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"The response was not valid JSON: {e}")
+
+        records = self._extract_array(payload)
+        return pd.json_normalize(records)
+
+    def _extract_array(self, payload: Any) -> list:
+        """Walks `self.json_path` (dot-separated keys, e.g. "data.items")
+        to find the array of records to tabularize. With no json_path set,
+        the response body itself must already be that array."""
+        if self.json_path is None:
+            if isinstance(payload, list):
+                return payload
+            raise ValueError(
+                "The response is a JSON object, not an array of records - set a JSON path "
+                '(e.g. "data.items") to the key that holds the array.'
+            )
+        node = payload
+        for raw_key in self.json_path.split("."):
+            key = raw_key.strip()
+            if not key:
+                continue
+            if isinstance(node, dict) and key in node:
+                node = node[key]
+            else:
+                raise ValueError(f"Could not find \"{self.json_path}\" in the response - check the JSON path.")
+        if not isinstance(node, list):
+            raise ValueError(f"\"{self.json_path}\" is not a list of records in the response.")
+        return node
 
 
 def _rows_to_dataframe(rows: list[list]) -> pd.DataFrame:
