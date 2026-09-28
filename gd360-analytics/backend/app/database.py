@@ -138,6 +138,13 @@ _NEW_COLUMNS = [
     # new table needs no entry here at all (create_all() already creates
     # both). See models.MLModel/MLPrediction's own docstrings for what they
     # hold.
+    # 2026-09-28 (transparency round): see models.Message.steps' own
+    # docstring for what this holds.
+    ("messages", "steps", "JSON"),
+    # 2026-09-28 (multi-result round): see models.Message.results and
+    # models.Message.self_critique's own docstrings for what these hold.
+    ("messages", "results", "JSON"),
+    ("messages", "self_critique", "TEXT"),
 ]
 
 
