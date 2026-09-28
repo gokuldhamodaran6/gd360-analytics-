@@ -68,23 +68,6 @@ const KIND_STYLE: Record<FlowCardKind, {
       </svg>
     ),
   },
-  // Phase 2, feature 3: a promoted shared model being used FORWARD, by some
-  // other data source's conversation - see flowGraph.ts's own comment on
-  // why this is a distinct kind from "external" rather than reusing it.
-  // Violet on purpose: matches the color this same round already picked
-  // for the API/webhook connector tile (DataSourceForm.tsx), so "violet"
-  // reads consistently as "this round's new, cross-boundary concept"
-  // wherever it shows up in the app.
-  cross_pipeline: {
-    light: "#7c5cf0", dark: "#9b81f5", label: "Used in another data source",
-    icon: (
-      <svg viewBox="0 0 20 20" width="15" height="15" fill="none">
-        <rect x="2.5" y="7" width="7" height="7" rx="1.4" stroke="currentColor" strokeWidth="1.4" />
-        <rect x="10.5" y="3" width="7" height="7" rx="1.4" stroke="currentColor" strokeWidth="1.4" />
-        <path d="M9.5 9.5L13 6.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-      </svg>
-    ),
-  },
 };
 
 function FlowCard({ data, selected }: NodeProps<Node<FlowCardData, "card">>) {
@@ -136,17 +119,10 @@ const nodeTypes = { card: FlowCard };
 export type FlowJumpTarget =
   | { type: "jump-source"; datasourceId: string; sheet: string | null }
   | { type: "jump-version"; datasourceId: string; versionId: string }
-  | { type: "jump-chart"; conversationId: string; messageId: string }
-  // Phase 2, feature 3: clicking a "Used in <other data source>" card -
-  // there is no cross-datasource deep link to a specific conversation/chart
-  // (same reasoning as Models.tsx's "Open" action), so this always lands on
-  // that OTHER data source's own Flow tab, where its own history - including
-  // that exact use - is already visible.
-  | { type: "jump-datasource-flow"; datasourceId: string };
+  | { type: "jump-chart"; conversationId: string; messageId: string };
 
 export default function DataFlowMap({
   flow, loading, error, currentDatasourceId, currentConversationId, onJump,
-  crossPipeline, onCrossPipelineChange,
 }: {
   flow: DataFlow | null;
   loading: boolean;
@@ -160,13 +136,6 @@ export default function DataFlowMap({
   // lets them deliberately ask for the full picture when they want it.
   currentConversationId: string | null;
   onJump: (target: FlowJumpTarget) => void;
-  // Phase 2, feature 3: whether Workspace.tsx's own getFlow call is
-  // currently asking the backend for cross_pipeline_uses too - owned by
-  // the parent (not local state here) because flipping it means refetching
-  // with a different query param, not just re-filtering data already on
-  // hand (unlike `scope` above, which only ever slices the same response).
-  crossPipeline: boolean;
-  onCrossPipelineChange: (next: boolean) => void;
 }) {
   const [scope, setScope] = useState<"conversation" | "all">("conversation");
   const effectiveScope = scope === "conversation" && currentConversationId ? currentConversationId : null;
@@ -330,21 +299,6 @@ export default function DataFlowMap({
             Preview
           </button>
         </div>
-
-        {/* Phase 2, feature 3: off by default - see backend get_data_flow's
-            own cross_pipeline param docstring for why this is never
-            computed unasked (an app-wide Message.sources scan). Scoped to
-            promoted shared models only; see flowGraph.ts's own comment on
-            why this can never become a universal graph of every table
-            anyone has ever touched. */}
-        <button
-          type="button"
-          className={crossPipeline ? "flow-scope-toggle__btn flow-scope-toggle__btn--active flow-cross-toggle" : "flow-scope-toggle__btn flow-cross-toggle"}
-          onClick={() => onCrossPipelineChange(!crossPipeline)}
-          title="Show every other data source's conversation that reused one of this data source's shared models"
-        >
-          Show across all data sources
-        </button>
       </div>
 
       {mode === "edit" && (
@@ -525,7 +479,6 @@ const FLOW_CSS = `
   --flow-external: #2a78d6;
   --flow-table: #eb6834;
   --flow-chart: #1baf7a;
-  --flow-cross_pipeline: #7c5cf0;
   background: rgb(var(--color-surface));
 }
 :root[data-theme="dark"] .flow-map-root,
@@ -534,7 +487,6 @@ const FLOW_CSS = `
   --flow-external: #3987e5;
   --flow-table: #d95926;
   --flow-chart: #199e70;
-  --flow-cross_pipeline: #9b81f5;
 } }
 .flow-map-root .react-flow { --xy-background-color: transparent; }
 .flow-bg { opacity: 0.55; }
@@ -664,7 +616,6 @@ const FLOW_CSS = `
   box-shadow: 0 4px 14px rgba(0,0,0,0.2);
   backdrop-filter: blur(6px);
 }
-.flow-cross-toggle { white-space: nowrap; }
 .flow-edit-hint {
   position: absolute;
   top: 56px;
