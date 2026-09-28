@@ -133,6 +133,11 @@ _NEW_COLUMNS = [
     # data_access_rules is a brand NEW table added this round - per this
     # file's own note above, a new table needs no entry here at all
     # (create_all() already creates it).
+    # 2026-09-28 (ML Models round): ml_models and ml_predictions are both
+    # brand NEW tables added this round - per this file's own note above, a
+    # new table needs no entry here at all (create_all() already creates
+    # both). See models.MLModel/MLPrediction's own docstrings for what they
+    # hold.
 ]
 
 
