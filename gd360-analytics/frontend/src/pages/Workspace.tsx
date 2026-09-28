@@ -496,9 +496,6 @@ export default function Workspace() {
   const [flow, setFlow] = useState<DataFlow | null>(null);
   const [flowLoading, setFlowLoading] = useState(false);
   const [flowError, setFlowError] = useState("");
-  // Phase 2, feature 3: off by default - see get_data_flow's own docstring
-  // for why cross_pipeline_uses is never computed unless explicitly asked.
-  const [crossPipeline, setCrossPipeline] = useState(false);
   const [resuming, setResuming] = useState(!!resumeConversationId);
   const [styleOpen, setStyleOpen] = useState(false);
   const [customizeSeed, setCustomizeSeed] = useState<CustomizeSeed | null>(null);
@@ -1191,7 +1188,7 @@ export default function Workspace() {
     setFlowLoading(true);
     setFlowError("");
     datasourceApi
-      .getFlow(datasourceId, crossPipeline)
+      .getFlow(datasourceId)
       .then((data) => {
         if (!cancelled) setFlow(data);
       })
@@ -1204,12 +1201,7 @@ export default function Workspace() {
     return () => {
       cancelled = true;
     };
-    // Phase 2, feature 3: `crossPipeline` is in this effect's own dependency
-    // list on purpose - flipping DataFlowMap.tsx's "Show across all data
-    // sources" toggle needs a real refetch (a different query param, a
-    // whole extra server-side lookup), unlike the map's `scope` toggle,
-    // which only ever re-slices the same response already on hand.
-  }, [centerTab, datasourceId, dataRefreshKey, crossPipeline]);
+  }, [centerTab, datasourceId, dataRefreshKey]);
 
   // What clicking a card on the Flow map does - a live shortcut back to
   // wherever that origin, table, or chart actually lives (see the
@@ -1247,16 +1239,6 @@ export default function Workspace() {
       setVersionScope("all");
       setActiveVersionId(target.versionId);
       setSourceIds([target.versionId]);
-      return;
-    }
-    if (target.type === "jump-datasource-flow") {
-      // Phase 2, feature 3: a cross-pipeline "Used in <other data source>"
-      // card - always a different datasource by construction (see backend
-      // _cross_pipeline_uses's own scoping), so this always navigates,
-      // never tries to switch tabs in place. `?tab=flow` is read by this
-      // same page's own centerTab initial state above, so landing here
-      // opens straight on that other datasource's Flow tab.
-      navigate(`/workspace/${target.datasourceId}?tab=flow`);
       return;
     }
     // jump-chart
@@ -2042,8 +2024,6 @@ export default function Workspace() {
                 currentDatasourceId={datasourceId}
                 currentConversationId={conversationId}
                 onJump={handleFlowJump}
-                crossPipeline={crossPipeline}
-                onCrossPipelineChange={setCrossPipeline}
               />
             ) : centerTab === "quality" && datasourceId ? (
               <QualityChecksPanel datasourceId={datasourceId} />
