@@ -131,12 +131,34 @@ class DataSource(Base):
     # tab list both loading on first page view) can never both win the
     # race and create two duplicate "Version 1" tables.
     legacy_migrated_at = Column(DateTime, nullable=True)
+    # 2026-09-28 (streaming/webhook ingestion round): only ever set for
+    # kind == "streaming" - the per-source bearer secret an external system
+    # (Zapier, a small script, another app - whatever is pushing events)
+    # must send back on every POST /datasources/{id}/ingest call. Encrypted
+    # at rest with the exact same security.encrypt_secret/decrypt_secret
+    # helper every other kind's own credential already uses in this column
+    # family (see connect_database/connect_warehouse in
+    # routers/datasources.py) - a webhook secret is just as much a real
+    # credential as a database password, even though it authenticates
+    # INBOUND traffic rather than an outbound connection this app makes
+    # itself. Regenerable (see regenerate_webhook_secret) the same way a
+    # workspace's own invite_token is - if it's ever lost or leaked, a
+    # fresh one invalidates the old one immediately.
+    webhook_secret_encrypted = Column(Text, nullable=True)
+    # Last time this source actually received a real webhook event - the
+    # ONLY thing that ever advances this column (see ingest_webhook_event).
+    # Drives the "live" pulsing-dot indicator on the Data Sources page
+    # (shown when this is within the last few minutes) - deliberately
+    # never backdated, defaulted, or simulated, so "live" only ever means a
+    # real event genuinely arrived recently, never a fabricated status.
+    last_event_at = Column(DateTime, nullable=True)
 
     owner = relationship("User", back_populates="datasources")
     versions = relationship(
         "DatasetVersion", back_populates="datasource", cascade="all, delete-orphan",
         order_by="DatasetVersion.position",
     )
+    streamed_events = relationship("StreamedEvent", cascade="all, delete-orphan")
 
 
 class DatasetVersion(Base):
@@ -447,6 +469,39 @@ class Dashboard(Base):
     background_image = Column(LargeBinary, nullable=True)
     background_image_content_type = Column(String, nullable=True)
 
+    # 2026-09-28 (scheduled auto-refresh round): optional automatic refresh
+    # for a layout_version==2 (Dashboard Builder) dashboard - see
+    # services/scheduler.py's own module docstring for the full design and
+    # services/scheduler.refresh_dashboard for what actually happens on a
+    # refresh. Chosen at the DASHBOARD level rather than per-block: every
+    # block on a dashboard is already built against the exact same one
+    # data source (see _resolve_datasource in routers/dashboard_builder.py -
+    # a dashboard has no notion of "this block's data comes from somewhere
+    # else"), so "refresh this dashboard" and "recompute every block on it
+    # that can be safely recomputed unattended" are the same real-world
+    # action a person would actually ask for. A per-block schedule would
+    # only mean picking the same interval over and over, block by block,
+    # for zero real benefit, while multiplying how many rows the 60-second
+    # tick has to scan every minute. refresh_interval is None ("off" - the
+    # value on every pre-existing row, since this feature never existed
+    # before this round) or one of "15m" | "1h" | "6h" | "daily".
+    refresh_interval = Column(String, nullable=True)
+    # When the next scheduled refresh is due - recomputed every time this
+    # dashboard actually finishes a refresh (see services/scheduler.py
+    # compute_next_refresh_at), always measured from that real completion
+    # time, not from whenever someone happened to change the interval - so
+    # switching from "1h" to "6h" right after a refresh waits the full new
+    # 6 hours from that refresh, never less. NULL whenever refresh_interval
+    # is NULL (no schedule set at all).
+    next_refresh_at = Column(DateTime, nullable=True)
+    # When a refresh (scheduled OR a manual "Run now" click) last actually
+    # completed for this dashboard - the Jobs page's own "Last run" column.
+    # Distinct from any one block's DashboardBlock.data_updated_at above -
+    # this is the dashboard-level rollup, set once per refresh run
+    # regardless of how many (or which) of its blocks were actually
+    # recomputed that time.
+    last_refreshed_at = Column(DateTime, nullable=True)
+
     owner = relationship("User", back_populates="dashboards")
     charts = relationship("SavedChart", back_populates="dashboard", cascade="all, delete-orphan")
     pages = relationship(
@@ -725,3 +780,89 @@ class LearnedAnswer(Base):
     hit_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     last_used_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
+
+
+class JobRun(Base):
+    """One execution record of a background dashboard-refresh job - the
+    Jobs page's entire run history (2026-09-28). Logged for both a
+    scheduled tick (services/scheduler.py's 60-second loop) and an
+    on-demand "Run now" click (routers/jobs.py run_now) through the exact
+    same services.scheduler.refresh_dashboard function, so a row here
+    always reflects something that genuinely ran against real data - never
+    a simulated or sampled event.
+
+    job_type is "scheduled_refresh" | "manual_refresh" - which of the two
+    triggered this run. target_label/source_label are the dashboard's name
+    and its data source's name AT THE TIME this ran, denormalized on
+    purpose: a dashboard (or its data source) can be renamed or deleted
+    later, and a job history entry should still read sensibly then, not
+    show a blank or a dangling id. status starts as "running" the moment
+    this row is created (before anything else happens - see
+    refresh_dashboard), so a process crash mid-run still leaves an honest
+    "running" row behind rather than no record at all, and settles to
+    "success" or "failed" once the run actually finishes. error_message is
+    only ever set on "failed". next_run_at snapshots what
+    Dashboard.next_refresh_at was recomputed to right after this run,
+    purely so the Jobs page can show "Next run: ..." on each history row
+    without a second query back to the live Dashboard.
+
+    dashboard_id is nullable (not NOT NULL) in case a dashboard is deleted
+    after being refreshed - the run history for it is kept rather than
+    cascading away, since "what happened, and when" stays true even after
+    the thing it happened to is gone; a deleted dashboard's rows just stop
+    being reachable through the Jobs page's own per-dashboard listing
+    (which resolves visibility through the live Dashboard row) and only
+    ever showed up there historically through target_label anyway."""
+    __tablename__ = "job_runs"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    dashboard_id = Column(String, ForeignKey("dashboards.id"), nullable=True, index=True)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    job_type = Column(String, nullable=False)  # "scheduled_refresh" | "manual_refresh"
+    target_label = Column(String, nullable=False)
+    source_label = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="running")  # "running" | "success" | "failed"
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    finished_at = Column(DateTime, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+
+    @property
+    def duration_seconds(self) -> float | None:
+        """None while status=="running" (finished_at not set yet) - the
+        Jobs page shows a live spinner instead of a duration for those
+        rows rather than a fabricated 0.0s."""
+        if self.finished_at is None:
+            return None
+        return (self.finished_at - self.started_at).total_seconds()
+
+
+class StreamedEvent(Base):
+    """One inbound batch received by a "streaming" DataSource's webhook
+    ingestion endpoint (routers/datasources.py ingest_webhook_event,
+    2026-09-28). See DataSource.kind == "streaming" and that endpoint's own
+    docstring for the full design and why this is a real, honestly-scoped
+    webhook buffer rather than a fake Kafka/message-broker integration -
+    there is no message-queue infrastructure behind this, just an
+    authenticated HTTP endpoint appending rows to this table.
+
+    `payload` is the exact JSON array of row objects the caller posted,
+    stored as-is - never reshaped, typed, or validated against a fixed
+    schema, since a streaming source has no fixed columns the way a
+    connected database does (whatever is pushing events is free to send
+    whatever shape it wants, and may change shape over time). `row_count`
+    is len(payload) at receipt time, kept alongside it purely so a listing
+    of recent events can show "42 rows" without re-parsing the JSON blob
+    every time. This is a plain, append-only log for now - a live "N events
+    received" / "is this source live" signal - not yet wired into the
+    chat/analysis pipeline as a queryable table; doing that honestly (a
+    real schema, a real load path in services/data_loader.py) is a
+    separate, larger piece of future work, not something to silently fake
+    here."""
+    __tablename__ = "streamed_events"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    datasource_id = Column(String, ForeignKey("datasources.id"), nullable=False, index=True)
+    payload = Column(JSON, nullable=False)
+    row_count = Column(Integer, default=0, nullable=False)
+    received_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
