@@ -1870,6 +1870,15 @@ def ask_ai_block(
         raise HTTPException(422, result.get("clarifying_question") or "Could you rephrase that question?")
 
     actual_type, config = _ai_result_to_block(result, block.type)
+    # 2026-09-28 (scheduled auto-refresh round): remembers the exact prompt
+    # this block was built from, alongside its computed content - a
+    # manually-built block already carries everything needed to safely
+    # recompute it unattended (its stored `recipe` - see build_manual_block
+    # below), but until now an AI-built block carried only its RESULT, with
+    # no way for services/scheduler.py's automatic refresh to know what
+    # question to re-ask. This is purely additive: nothing here changes
+    # what ask_ai_block itself returns or how this block renders today.
+    config["ai_prompt"] = payload.prompt.strip()
     block.type = actual_type
     block.config = config
     block.data_updated_at = datetime.utcnow()
