@@ -16,12 +16,48 @@ import { workspaceApi, WorkspaceSummary } from "../api/client";
 // page (InviteJoin.tsx) all read/write which workspace is active.
 export const ACTIVE_WORKSPACE_KEY = "gd360_active_workspace";
 
+// 2026-09-28 (hotfix): every caller of this hook used to be a page already
+// wrapped in <Protected> (see App.tsx), so a valid session was always
+// guaranteed by the time this effect ran - until CommandPalette.tsx started
+// calling useWorkspaceNav() too, mounted unconditionally at the app root
+// for EVERY route, including the signed-out Landing page and Login/Register
+// (see App.tsx's own comment on why CommandPalette lives outside <Routes>).
+// For a signed-out visitor there is no token, GET /workspaces requires one
+// (routers/workspaces.py's list_workspaces takes get_current_user), so the
+// fetch below 401'd on every single page load - and client.ts's response
+// interceptor treats any non-login 401 as an expired session and hard-
+// navigates to /login (`window.location.href`, a real full-page reload).
+// On /login, CommandPalette mounts again, fires the same unauthenticated
+// call, 401s again, reloads again - a real, live-breaking loop that reset
+// the page out from under anyone before they could type into the login
+// form. The fix is narrow: skip this hook's own fetch entirely when there
+// is no token to send, exactly the same check client.ts's own request
+// interceptor already uses - every OTHER caller (a page inside <Protected>)
+// always has a token by the time it renders, so this changes nothing for
+// them; only the signed-out CommandPalette case is affected.
+function hasSessionToken(): boolean {
+  try {
+    return !!localStorage.getItem("gd360_token");
+  } catch {
+    return false;
+  }
+}
+
 export function useWorkspaceNav() {
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>("");
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(true);
 
   useEffect(() => {
+    if (!hasSessionToken()) {
+      // Signed out (or not yet signed in) - nothing to fetch, and nothing
+      // to retry once a token does appear, since AuthProvider does a full
+      // context re-render (and every Protected page remounts) on login.
+      setWorkspaces([]);
+      setActiveWorkspaceId("");
+      setLoadingWorkspaces(false);
+      return;
+    }
     (async () => {
       setLoadingWorkspaces(true);
       const list = await workspaceApi.list().catch(() => []);
