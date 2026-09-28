@@ -117,6 +117,18 @@ function ExperimentsIcon({ className = "w-[18px] h-[18px]" }: { className?: stri
   );
 }
 
+// Phase 5, Batch A (2026-09-28, "Data governance & quality" roadmap): the
+// /governance page - access review + audit log, owner-only (see this
+// file's own SidebarNav for the visibility gate).
+function GovernanceIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3l7 3v5c0 4.5-3 8.2-7 9.5-4-1.3-7-5-7-9.5V6l7-3z" />
+      <path d="M9.5 12l1.8 1.8L15 10" />
+    </svg>
+  );
+}
+
 // 2026-09-23, round two of Gokul's own explicit design feedback: this
 // popup's "Your data" tab used to just be a tiny muted "FILES" label over a
 // plain flat list - no way to filter by category at all, next to a "New
@@ -1148,6 +1160,25 @@ function SidebarNav({
           <ExperimentsIcon />
           {!collapsed && "Experiments"}
         </Link>
+        {/* Phase 5, Batch A (2026-09-28, data governance & quality): the
+            audit log/access-review page is owner-only (the backend 403s a
+            non-owner - see routers/governance.py), and `workspaces` here
+            already carries the current signed-in person's own `role` in
+            each one (see WorkspaceSummary), so this link is gated on being
+            the ACTIVE workspace's owner rather than always shown - no
+            invasive prop plumbing needed, both `workspaces` and
+            `activeWorkspaceId` are already passed into this component. */}
+        {workspaces.find((w) => w.id === activeWorkspaceId)?.role === "owner" && (
+          <Link
+            to="/governance"
+            onClick={onNavigate}
+            title={collapsed ? "Governance" : undefined}
+            className={linkClass(pathname.startsWith("/governance"))}
+          >
+            <GovernanceIcon />
+            {!collapsed && "Governance"}
+          </Link>
+        )}
       </div>
 
       {/* 2026-09-23, round three (Gokul's own explicit ask): the sidebar's
