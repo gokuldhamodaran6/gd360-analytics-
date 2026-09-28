@@ -11,7 +11,6 @@ import DashboardView from "./pages/DashboardView";
 import DashboardBuilderView from "./pages/DashboardBuilderView";
 import PublicDashboardView from "./pages/PublicDashboardView";
 import DataSources from "./pages/DataSources";
-import Models from "./pages/Models";
 import MLModels from "./pages/MLModels";
 import MLModelDetail from "./pages/MLModelDetail";
 import Jobs from "./pages/Jobs";
@@ -116,16 +115,12 @@ export default function App() {
           someone who has never signed in and never will. */}
       <Route path="/d/:slug" element={<PublicDashboardView />} />
       <Route path="/data" element={<Protected><DataSources /></Protected>} />
-      {/* Phase 2, feature 1: the shared, reusable models library - see
-          AppSidebar.tsx's own nav entry for this, placed right after
-          Data Sources exactly like the sidebar. Nav label reads "Saved
-          Tables" (2026-09-28) - route/component name unchanged, see that
-          file's own comment for why. */}
-      <Route path="/models" element={<Protected><Models /></Protected>} />
       {/* 2026-09-28 (ML Models round): the real ML feature - see
-          AppSidebar.tsx's own nav entry for this, placed right next to
-          "Saved Tables" above so the two are visually adjacent and their
-          difference is obvious from the nav itself. */}
+          AppSidebar.tsx's own nav entry for this, placed right after
+          Data Sources. (The "Saved Tables" feature that used to sit here
+          was removed the same day, once it turned out to duplicate a
+          capability chat's own cross-datasource picker already provided
+          for free, while confusingly sitting right next to this one.) */}
       <Route path="/ml-models" element={<Protected><MLModels /></Protected>} />
       <Route path="/ml-models/:id" element={<Protected><MLModelDetail /></Protected>} />
       {/* 2026-09-28 (scheduled auto-refresh + background jobs round): the
@@ -133,8 +128,8 @@ export default function App() {
           between Dashboards and Data Sources exactly like the sidebar. */}
       <Route path="/jobs" element={<Protected><Jobs /></Protected>} />
       {/* Phase 4 (2026-09-28, Experimentation / A/B testing): see
-          AppSidebar.tsx's own nav entry for this, placed right after
-          Models exactly like the sidebar. */}
+          AppSidebar.tsx's own nav entry for this, placed exactly like the
+          sidebar. */}
       <Route path="/experiments" element={<Protected><Experiments /></Protected>} />
       {/* Phase 5, Batch A (2026-09-28, data governance & quality): see
           AppSidebar.tsx's own nav entry for this, placed right after
