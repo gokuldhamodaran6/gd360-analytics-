@@ -113,9 +113,9 @@ export default function Models() {
         <TopNav hideLogo />
         <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8">
           <div className="mb-6">
-            <h1 className="text-2xl font-bold tracking-tight">Models</h1>
+            <h1 className="text-2xl font-bold tracking-tight">Saved Tables</h1>
             <p className="text-sm text-muted mt-1">
-              Prepared tables promoted into reusable, named models - browsable here from any data source you have
+              Prepared tables promoted into reusable, named tables - browsable here from any data source you have
               access to, not just wherever each one was originally built.
             </p>
           </div>
