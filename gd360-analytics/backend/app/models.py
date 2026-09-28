@@ -249,26 +249,15 @@ class DatasetVersion(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    # Phase 2, feature 1 (shared, reusable models): a version is normally
-    # scoped to just the one datasource it lives on - promoting it (see
-    # routers/datasources.py promote_version/unpromote_version) marks it as
-    # a reusable, named "model" that shows up for anyone with access to it
-    # on the new /models library page (routers/models_library.py),
-    # regardless of which datasource's Data tab they'd otherwise have had
-    # to go find it on. is_shared_model/shared_model_description are the
-    # two fields the roadmap called for; shared_model_promoted_at is one
-    # small addition beyond that literal list - without it, the only
-    # candidate timestamp to show as "promoted on" on a model's card would
-    # be `updated_at` above, which this SAME row already reuses for a plain
-    # rename or any other edit (SQLAlchemy's onupdate fires on ANY UPDATE
-    # to the row, not just a promote), so it would silently start lying
-    # ("promoted 2 minutes ago") the moment someone renamed an
-    # already-promoted table. A dedicated, honestly-scoped timestamp - set
-    # exactly once per promote, cleared on un-promote - costs one more
-    # column via the same no-migration-tool _NEW_COLUMNS mechanism
-    # everything else in this file already uses, and is the only way to
-    # show a genuinely accurate "promoted on" date rather than an
-    # approximate one that can drift for an unrelated reason.
+    # 2026-09-28: the "promote to shared model" feature (Saved Tables /
+    # models_library.py) these three columns belonged to was removed -
+    # it turned out to duplicate a capability chat's own cross-datasource
+    # "+ Add more data" picker already provided for free (any table, not
+    # just a promoted one), while adding its own confusing "shared model"
+    # concept right next to the real ML Models feature. Left in place,
+    # unused, rather than dropped: there's no migration tool in this app
+    # (see _NEW_COLUMNS below) to safely drop a column, and these are
+    # harmless dead weight, not a liability, sitting here.
     is_shared_model = Column(Boolean, default=False, nullable=False, server_default="false")
     shared_model_description = Column(Text, nullable=True)
     shared_model_promoted_at = Column(DateTime, nullable=True)
@@ -1278,14 +1267,17 @@ class AuditEvent(Base):
 class MLModel(Base):
     """
     2026-09-28 (ML Models round): a trained, ready-to-use machine learning
-    model - the real ML feature this app has never had before, as opposed
-    to routers/models_library.py's "Saved Tables" (pages/Models.tsx, still
-    named ModelsIcon/`/models` internally), which are just reusable data
-    TABLES and have nothing to do with machine learning. That naming
-    collision is exactly why this table - and every user-facing string
-    about it - is always called "ML Models" or "ML Model", never just
-    "Models" or "Model", anywhere in this app (see this round's own build
-    notes for the fresh code audit that first flagged the confusion).
+    model - the real ML feature this app has never had before. Earlier
+    this same day, this app also had a "Saved Tables" feature (promoted,
+    reusable data TABLES - nothing to do with machine learning) sitting
+    right next to this one in the sidebar under a confusingly similar
+    name; it was removed shortly after this feature shipped, once that
+    naming collision (plus the fact "Saved Tables" duplicated a capability
+    chat's own cross-datasource picker already provided for free) made it
+    clear it wasn't earning its place. This table - and every user-facing
+    string about it - is still always called "ML Models" or "ML Model",
+    never just "Models" or "Model", as a matter of habit even though the
+    collision it was guarding against is gone.
 
     Training is entirely deterministic - a small, fixed, well-tested
     shortlist of real scikit-learn algorithms per task_type (see
