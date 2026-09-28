@@ -1371,28 +1371,56 @@ def generate_dashboard(
 
         kpi_items: list[dict] = []
         other_items: list[dict] = []
+        # 2026-09-28: real production evidence (a goal like "aggregate by
+        # month, region, or product" - genuinely open to three different
+        # readings) showed every planned block getting silently dropped
+        # here because analyze()'s own, correct-in-chat action="clarify"
+        # rule fired for each one - there is no person in this loop to
+        # answer a clarifying question, so unattended=True below tells the
+        # model to commit to its best reasonable assumption and produce a
+        # real result instead (see ai_engine._UNATTENDED_NOTE for exactly
+        # what this changes). skipped_reasons is the defense-in-depth half
+        # of the same fix: if a block is STILL skipped anyway (an
+        # unhandled exception, or the model asking to clarify despite the
+        # instruction above), keep the real reason instead of throwing it
+        # away, so a total failure below can tell the person WHAT actually
+        # went wrong on real blocks, not just a generic "couldn't build
+        # anything" with no clue why.
+        skipped_reasons: list[str] = []
         for position, spec in enumerate(block_specs):
             try:
                 result = ai_engine.analyze(
                     spec["prompt"], {"Original data": original_df}, history=[], guided=False,
-                    skip_prep=False, original_df=original_df,
+                    skip_prep=False, original_df=original_df, unattended=True,
                 )
             except Exception as e:
                 print(f"[dashboard_builder] goal-driven block build failed for {spec['prompt']!r}: {e}")
+                skipped_reasons.append(f'"{spec["title"]}": {e}')
                 continue
             if result.get("needs_clarification"):
+                question = result.get("clarifying_question") or "needed more information than was given"
+                print(
+                    f"[dashboard_builder] goal-driven block asked to clarify despite unattended=True "
+                    f"for {spec['prompt']!r}: {question}"
+                )
+                skipped_reasons.append(f'"{spec["title"]}": {question}')
                 continue
             actual_type, config = _ai_result_to_block(result, spec["type"])
             item = {"type": actual_type, "title": spec["title"], "config": config, "position": position}
             (kpi_items if actual_type == "kpi" else other_items).append(item)
 
         if not kpi_items and not other_items:
-            raise HTTPException(
-                400,
+            detail = (
                 "GD360 couldn't build anything from that description - try naming which numbers or "
                 "breakdowns matter most (e.g. \"revenue by region this quarter, and our top 5 "
-                "customers\"), then try again.",
+                "customers\"), then try again."
             )
+            if skipped_reasons:
+                # Show up to 3 real reasons rather than an unbounded list -
+                # enough to actually explain what happened without turning
+                # this modal's error box into a wall of text.
+                detail += " Specifically: " + "; ".join(skipped_reasons[:3])
+            raise HTTPException(400, detail)
 
         dashboard = models.Dashboard(owner_id=user.id, name=title, layout_version=2, source_conversation_id=conv.id)
         db.add(dashboard)
