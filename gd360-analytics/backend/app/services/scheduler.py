@@ -63,7 +63,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..database import SessionLocal
-from . import ai_engine
+from . import ai_engine, chart_builder
 from .data_loader import load_dataframe
 
 logger = logging.getLogger("gd360.scheduler")
@@ -135,6 +135,17 @@ def refresh_dashboard(db: Session, dashboard: models.Dashboard, job_type: str) -
                 config = block.config or {}
                 recipe = config.get("recipe")
                 ai_prompt = config.get("ai_prompt")
+                # Captured BEFORE either branch below replaces block.config
+                # wholesale - both _run_manual_recipe and _ai_result_to_block
+                # return a fresh config built only from the recomputed data,
+                # with no idea these presentation-only fields (set through
+                # their own separate endpoints - set_block_accent_color and
+                # set_block_analysis) exist at all, so a scheduled refresh
+                # would otherwise silently erase them every single time a
+                # dashboard on a schedule recomputes.
+                old_accent_color = config.get("accent_color")
+                old_forecast = bool(config.get("forecast_enabled"))
+                old_anomalies = bool(config.get("anomalies_enabled"))
                 try:
                     if recipe:
                         actual_type, new_config, _default_title = _run_manual_recipe(
@@ -158,8 +169,45 @@ def refresh_dashboard(db: Session, dashboard: models.Dashboard, job_type: str) -
                         block.type = actual_type
                         block.config = new_config
                         block.data_updated_at = datetime.utcnow()
-                    # Else: no recipe, no remembered prompt - nothing safe
-                    # to recompute unattended, leave it alone.
+                    else:
+                        # No recipe, no remembered prompt - nothing safe to
+                        # recompute unattended, leave it alone entirely
+                        # (including whatever presentation fields it has).
+                        continue
+
+                    # Carry the presentation-only fields forward onto the
+                    # freshly recomputed config - a scheduled refresh must
+                    # never silently turn off a person's accent color or
+                    # forecast/anomaly toggles just because the underlying
+                    # data changed.
+                    if old_accent_color:
+                        # Pure presentation, no re-render needed - same
+                        # one-line merge set_block_accent_color itself uses.
+                        block.config["accent_color"] = old_accent_color
+                    if (old_forecast or old_anomalies) and block.config.get("chart_spec"):
+                        try:
+                            new_spec, anomaly_count = chart_builder.apply_analysis_overlays(
+                                block.config["chart_spec"], old_forecast, old_anomalies
+                            )
+                            block.config["chart_spec"] = new_spec
+                            block.config["forecast_enabled"] = old_forecast
+                            block.config["anomalies_enabled"] = old_anomalies
+                            block.config["anomaly_count"] = anomaly_count
+                        except Exception as overlay_err:
+                            # A scheduled refresh must never crash or abort
+                            # over a presentation overlay - same "log and
+                            # skip" philosophy as the rest of this function.
+                            # The block's real, freshly recomputed data is
+                            # kept exactly as-is; only the overlay is left
+                            # off, honestly reflected by leaving the flags
+                            # False rather than claiming they're still on.
+                            logger.warning(
+                                "[scheduler] block %s on dashboard %s: couldn't reapply "
+                                "forecast/anomaly overlay after refresh: %s",
+                                block.id, dashboard.id, overlay_err,
+                            )
+                            block.config["forecast_enabled"] = False
+                            block.config["anomalies_enabled"] = False
                 except Exception as e:
                     logger.warning(
                         "[scheduler] block %s on dashboard %s failed to refresh: %s", block.id, dashboard.id, e
