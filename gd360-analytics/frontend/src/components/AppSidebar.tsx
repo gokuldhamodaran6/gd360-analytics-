@@ -84,6 +84,23 @@ function SearchIcon({ className = "w-4 h-4" }: { className?: string }) {
   );
 }
 
+// Phase 2, feature 1 (shared, reusable models): the /models library page's
+// own nav entry, placed right after Data Sources - a promoted model is one
+// step further removed from "browsing connections" than Data Sources
+// itself, but still squarely about data rather than analysis/dashboards,
+// so it reads best as the last item in this data-oriented group. A stack
+// of layered cards - "reusable, built-on-top-of" - kept distinct from
+// DashboardsIcon's bar chart and DataSourcesIcon's database cylinder.
+function ModelsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3l8 4-8 4-8-4 8-4z" />
+      <path d="M4 11l8 4 8-4" />
+      <path d="M4 15l8 4 8-4" />
+    </svg>
+  );
+}
+
 // 2026-09-23, round two of Gokul's own explicit design feedback: this
 // popup's "Your data" tab used to just be a tiny muted "FILES" label over a
 // plain flat list - no way to filter by category at all, next to a "New
@@ -1038,6 +1055,18 @@ function SidebarNav({
         >
           <DataSourcesIcon />
           Data Sources
+        </Link>
+        {/* Phase 2, feature 1: right after Data Sources - see ModelsIcon's
+            own comment above for why it sits here. */}
+        <Link
+          to="/models"
+          onClick={onNavigate}
+          className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition ${
+            pathname.startsWith("/models") ? "bg-primary text-white" : "text-text hover:bg-surface2"
+          }`}
+        >
+          <ModelsIcon />
+          Models
         </Link>
       </div>
 
