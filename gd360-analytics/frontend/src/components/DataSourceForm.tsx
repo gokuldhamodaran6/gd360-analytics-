@@ -122,6 +122,22 @@ export function FileSpreadsheetIcon({ className }: { className?: string }) {
   );
 }
 
+// Generic line-art icon (not a brand mark - there is no single "webhook"
+// brand to draw the way Postgres/MySQL/etc have real logos) for the
+// "Streaming (Webhook)" connector, 2026-09-28 - matches WarehouseIcon/
+// DatabaseIcon/FileSpreadsheetIcon's own outline style so all the connector
+// tiles read as one consistent set.
+export function WebhookIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 16.5a3.5 3.5 0 1 1-3.4-4.3" />
+      <path d="M8 8a4 4 0 0 1 7.6 1.8L12 16" />
+      <circle cx="6" cy="15.5" r="3.5" />
+      <circle cx="18" cy="7" r="1.6" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 function ShieldIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -254,6 +270,12 @@ export type CreatedDataSource = {
   kind: string;
   created_at: string;
   schema_cache?: Record<string, unknown> | null;
+  // 2026-09-28 (streaming/webhook ingestion round): only ever set on the
+  // response from POST /datasources/streaming (or its regenerate
+  // endpoint) - shown ONCE in the "Connected" panel below, never fetched
+  // again afterward. Absent for every other kind.
+  webhook_url?: string;
+  webhook_secret?: string;
 };
 
 // Icon + label + brand color for a kind that might be a database (in
@@ -268,6 +290,10 @@ export function connectionKindMeta(kind: string) {
     CONNECT_KINDS.find((c) => c.value === kind);
   if (found) return { label: found.label, color: found.color, Logo: found.Logo };
   if (kind === "excel") return { label: "Excel file", color: "#1D6F42", Logo: FileSpreadsheetIcon };
+  // 2026-09-28 (streaming/webhook ingestion round): a generic orange - not
+  // borrowed from any real brand, since there's no single "webhook" brand
+  // to match the way Postgres/MySQL/etc tiles do.
+  if (kind === "streaming") return { label: "Streaming (Webhook)", color: "#f97316", Logo: WebhookIcon };
   return { label: "CSV file", color: "#64748b", Logo: FileSpreadsheetIcon };
 }
 
@@ -353,6 +379,60 @@ export function hasMultipleTables(kind: string, schemaCache: Record<string, unkn
   return keys.length > 1 || (keys.length === 1 && keys[0] !== "columns");
 }
 
+// 2026-09-28 (streaming/webhook ingestion round): the "Connected" panel's
+// content for a "streaming" source, in place of the usual "Available data"
+// table list (there are no tables to browse yet - only an endpoint waiting
+// for its first event). Shown once, right after creation or a deliberate
+// regenerate - see connectionKindMeta/CreatedDataSource's own comments for
+// why this never comes back from a plain list/get afterward.
+function WebhookCredentialsPanel({ url, secret }: { url: string; secret: string }) {
+  const [copied, setCopied] = useState<"url" | "secret" | null>(null);
+
+  const copy = async (value: string, which: "url" | "secret") => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(which);
+      setTimeout(() => setCopied(null), 1500);
+    } catch {
+      // Clipboard API can be blocked in some browser contexts - fail
+      // quietly, the value is still visible and selectable by hand.
+    }
+  };
+
+  return (
+    <div className="mt-5">
+      <div className="text-sm font-semibold mb-1">Your webhook</div>
+      <div className="text-xs text-muted mb-3 leading-relaxed">
+        Paste this URL and secret into whatever system will push events here (Zapier, a small script,
+        another app's own outbound webhook setting). The secret is shown only this once - if it's lost,
+        regenerate a new one from the Data Sources page (this immediately invalidates the old one).
+      </div>
+      <div className="space-y-3">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-1">Webhook URL</div>
+          <div className="flex items-center gap-2">
+            <input readOnly className="input text-xs flex-1 font-mono" value={url} onFocus={(e) => e.target.select()} />
+            <button type="button" className="btn-secondary text-xs px-3 py-2.5 shrink-0" onClick={() => copy(url, "url")}>
+              {copied === "url" ? "Copied!" : "Copy"}
+            </button>
+          </div>
+        </div>
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-1">
+            Secret &middot; send as the <code className="font-mono">X-Webhook-Secret</code> header
+          </div>
+          <div className="flex items-center gap-2">
+            <input readOnly className="input text-xs flex-1 font-mono" value={secret} onFocus={(e) => e.target.select()} />
+            <button type="button" className="btn-secondary text-xs px-3 py-2.5 shrink-0" onClick={() => copy(secret, "secret")}>
+              {copied === "secret" ? "Copied!" : "Copy"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // `onCreated` is handed the datasource the server just created (id, name,
 // kind, created_at) once the person confirms in the "Connected" panel that
 // they want to jump into it - the homepage uses that id to jump straight
@@ -367,7 +447,7 @@ export default function DataSourceForm({
   onCreated: (ds: { id: string; name: string; kind: string; created_at: string }) => void;
   onConnected?: (ds: CreatedDataSource) => void;
 }) {
-  const [mode, setMode] = useState<"db" | "warehouse" | "connect" | "file">("db");
+  const [mode, setMode] = useState<"db" | "warehouse" | "connect" | "file" | "streaming">("db");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // Which OAuth tile ("Connect" mode) is mid-redirect, if any - only ever
@@ -422,6 +502,10 @@ export default function DataSourceForm({
   // File form state
   const [fileName, setFileName] = useState("");
   const [file, setFile] = useState<File | null>(null);
+
+  // Streaming (webhook) form state - 2026-09-28. Just a name; there is
+  // nothing to test/introspect before creating it (see submitStreaming).
+  const [streamName, setStreamName] = useState("");
 
   // "Connected" confirmation panel: shown right after a successful connect
   // or upload, before handing off to the workspace, so the person can see
@@ -608,6 +692,27 @@ export default function DataSourceForm({
     }
   };
 
+  // 2026-09-28 (streaming/webhook ingestion round): creates the connector,
+  // then hands off to the SAME "Connected" confirmation panel every other
+  // kind uses - showConnectedPanel doesn't need to change at all, since it
+  // already just stores whatever the server returned (webhook_url/
+  // webhook_secret included) and the panel itself branches on
+  // connectedDs.kind === "streaming" to show them (see below).
+  const submitStreaming = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const { data } = await api.post("/datasources/streaming", { name: streamName });
+      setStreamName("");
+      showConnectedPanel(data);
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Could not create the streaming source.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // Unlike every other tile in this form, clicking a "Connect" tile never
   // opens a popout form here at all - it sends the whole browser tab to
   // that provider's own sign-in/consent page (Google or Microsoft), which
@@ -652,13 +757,18 @@ export default function DataSourceForm({
           slots, the active one lifted onto its own pill - instead of three
           independently-sized buttons that used to wrap unevenly and never
           lined up with each other. */}
-      <div className="grid grid-cols-4 gap-1 p-1 mb-6 rounded-xl bg-surface2 border border-border">
+      <div className="grid grid-cols-5 gap-1 p-1 mb-6 rounded-xl bg-surface2 border border-border">
         {(
           [
             { key: "db" as const, label: "Database", Icon: DatabaseIcon },
             { key: "warehouse" as const, label: "Warehouse", Icon: WarehouseIcon },
             { key: "connect" as const, label: "Connect", Icon: GoogleSheetsLogo },
             { key: "file" as const, label: "Upload file", Icon: FileSpreadsheetIcon },
+            // 2026-09-28 (streaming/webhook ingestion round): the honest,
+            // achievable version of "real-time ingestion" - see this tile's
+            // own panel below for why this is a webhook, not a Kafka
+            // integration.
+            { key: "streaming" as const, label: "Streaming", Icon: WebhookIcon },
           ]
         ).map((m) => (
           <button
@@ -777,7 +887,7 @@ export default function DataSourceForm({
           </div>
           <div className="text-[11px] text-muted mt-4 text-center">More live connectors are coming soon.</div>
         </div>
-      ) : (
+      ) : mode === "file" ? (
         <form onSubmit={submitFile} className="space-y-4">
           <div>
             <label className="text-sm text-muted mb-1 block">Name</label>
@@ -788,6 +898,35 @@ export default function DataSourceForm({
             <input className="input" type="file" accept=".csv,.xlsx,.xls" required onChange={(e) => setFile(e.target.files?.[0] || null)} />
           </div>
           <button className="btn-primary" type="submit" disabled={busy}>{busy ? "Uploading..." : "Upload"}</button>
+        </form>
+      ) : (
+        // 2026-09-28 (streaming/webhook ingestion round): the honest,
+        // achievable version of "real-time ingestion" for a product this
+        // size - a per-source secret webhook URL that an external system
+        // (Zapier, a small script, another app) posts JSON rows to,
+        // NOT a Kafka/message-broker integration this app has no
+        // infrastructure to run. There's nothing to test/introspect before
+        // creating it (unlike a database/warehouse) - the URL and secret
+        // only exist once this is created, shown in the "Connected" panel
+        // right after (see below).
+        <form onSubmit={submitStreaming} className="space-y-4">
+          <div className="text-xs text-muted leading-relaxed">
+            Creates a unique webhook URL + secret you paste into whatever system will push events at GD360 -
+            Zapier, a small script, or another app's own outbound webhook setting.
+          </div>
+          <div>
+            <label className="text-sm text-muted mb-1 block">Name</label>
+            <input
+              className="input"
+              value={streamName}
+              onChange={(e) => setStreamName(e.target.value)}
+              placeholder="Checkout events"
+              required
+            />
+          </div>
+          <button className="btn-primary" type="submit" disabled={busy || !streamName.trim()}>
+            {busy ? "Creating…" : "Create webhook"}
+          </button>
         </form>
       )}
     </div>
@@ -1165,6 +1304,9 @@ export default function DataSourceForm({
             <CheckIcon className="w-4 h-4 text-accent shrink-0" />
           </div>
 
+          {connectedDs.kind === "streaming" && connectedDs.webhook_url && connectedDs.webhook_secret ? (
+            <WebhookCredentialsPanel url={connectedDs.webhook_url} secret={connectedDs.webhook_secret} />
+          ) : (
           <div className="mt-5">
             <div className="text-sm font-semibold mb-1">Available data</div>
             <div className="text-xs text-muted mb-3 leading-relaxed">
@@ -1212,6 +1354,7 @@ export default function DataSourceForm({
               </div>
             )}
           </div>
+          )}
 
           <div className="flex items-center gap-3 mt-6">
             <button type="button" className="btn-secondary flex-1" onClick={closeConnectedPanel}>
