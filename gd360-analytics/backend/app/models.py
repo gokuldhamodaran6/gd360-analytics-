@@ -6,7 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Column, String, DateTime, ForeignKey, Text, JSON, Boolean, Integer, LargeBinary, BigInteger,
-    UniqueConstraint, Index,
+    Float, UniqueConstraint, Index,
 )
 from sqlalchemy.orm import relationship
 
@@ -152,6 +152,19 @@ class DataSource(Base):
     # never backdated, defaulted, or simulated, so "live" only ever means a
     # real event genuinely arrived recently, never a fabricated status.
     last_event_at = Column(DateTime, nullable=True)
+    # Phase 2, feature 4 (generic API/webhook PULL connector): only ever
+    # set for kind == "api" - the last time a real `requests.get` against
+    # this source's URL (see services/connectors.ApiConnector) actually
+    # succeeded and this row's file_data/schema_cache were overwritten with
+    # the fresh result - set at connect time (the first fetch IS a
+    # successful refresh) and again on every manual POST
+    # /datasources/{id}/api/refresh (routers/datasources.py refresh_api).
+    # Deliberately never backdated/defaulted/guessed - null means "never
+    # successfully fetched" and the Data Sources page says exactly that
+    # rather than inventing a time. This is manual-only, on purpose - see
+    # refresh_api's own docstring for why it is NOT wired into
+    # services/scheduler.py's 60-second auto-refresh loop this round.
+    api_last_refreshed_at = Column(DateTime, nullable=True)
 
     owner = relationship("User", back_populates="datasources")
     versions = relationship(
@@ -159,6 +172,12 @@ class DataSource(Base):
         order_by="DatasetVersion.position",
     )
     streamed_events = relationship("StreamedEvent", cascade="all, delete-orphan")
+    # Phase 2, feature 2 (persistent Flow-tab annotations) - see
+    # FlowAnnotation's own docstring below. Cascades on delete the same way
+    # streamed_events above does: an annotation only ever means anything
+    # relative to a live datasource's own Flow map, so it has nothing left
+    # to say once that datasource is gone.
+    flow_annotations = relationship("FlowAnnotation", cascade="all, delete-orphan")
 
 
 class DatasetVersion(Base):
@@ -188,6 +207,30 @@ class DatasetVersion(Base):
     position = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Phase 2, feature 1 (shared, reusable models): a version is normally
+    # scoped to just the one datasource it lives on - promoting it (see
+    # routers/datasources.py promote_version/unpromote_version) marks it as
+    # a reusable, named "model" that shows up for anyone with access to it
+    # on the new /models library page (routers/models_library.py),
+    # regardless of which datasource's Data tab they'd otherwise have had
+    # to go find it on. is_shared_model/shared_model_description are the
+    # two fields the roadmap called for; shared_model_promoted_at is one
+    # small addition beyond that literal list - without it, the only
+    # candidate timestamp to show as "promoted on" on a model's card would
+    # be `updated_at` above, which this SAME row already reuses for a plain
+    # rename or any other edit (SQLAlchemy's onupdate fires on ANY UPDATE
+    # to the row, not just a promote), so it would silently start lying
+    # ("promoted 2 minutes ago") the moment someone renamed an
+    # already-promoted table. A dedicated, honestly-scoped timestamp - set
+    # exactly once per promote, cleared on un-promote - costs one more
+    # column via the same no-migration-tool _NEW_COLUMNS mechanism
+    # everything else in this file already uses, and is the only way to
+    # show a genuinely accurate "promoted on" date rather than an
+    # approximate one that can drift for an unrelated reason.
+    is_shared_model = Column(Boolean, default=False, nullable=False, server_default="false")
+    shared_model_description = Column(Text, nullable=True)
+    shared_model_promoted_at = Column(DateTime, nullable=True)
 
     datasource = relationship("DataSource", back_populates="versions")
 
@@ -866,3 +909,61 @@ class StreamedEvent(Base):
     payload = Column(JSON, nullable=False)
     row_count = Column(Integer, default=0, nullable=False)
     received_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class FlowAnnotation(Base):
+    """One user-set override for exactly one card on one datasource's Flow
+    tab (Phase 2, feature 2) - a business-friendly display name, a free-text
+    description, and/or a manually-dragged layout position, persisted so it
+    survives leaving and reopening the tab, unlike today's Flow map (see
+    routers/datasources.py get_data_flow / components/DataFlowMap.tsx),
+    which recomputes its whole graph fresh on every load with no memory of
+    anything a person set on it before.
+
+    `node_key` is deliberately a plain string, not a second foreign key
+    pointing at one specific table - a Flow-tab card is one of two
+    genuinely different kinds of thing (see lib/flowGraph.ts's own
+    FlowCardKind): a saved/prepared TABLE, identified by its real
+    DatasetVersion.id, or a CHART/analysis card, identified by the
+    Message.id of the assistant turn that produced it. Reusing whichever id
+    already, uniquely identifies that exact node elsewhere in this app -
+    rather than inventing a third, parallel id scheme just for annotations -
+    is what lets get_data_flow embed these fields directly onto the
+    existing version/node entries it already returns (see that endpoint),
+    with nothing extra for the frontend to join client-side. A node_key is
+    NOT itself a foreign key to dataset_versions/messages: a version or
+    message can be deleted (see delete_version) without this app needing to
+    also go hunt down and delete any annotation that happened to reference
+    it - an orphaned annotation for an id that no longer appears in a given
+    /flow response is simply never read back, exactly like a SavedView
+    scoped to a table that no longer exists.
+
+    One row per (datasource_id, node_key) - enforced by the unique
+    constraint below - upserted in place by
+    PATCH /datasources/{id}/flow/annotations/{node_key} rather than ever
+    accumulating a history of edits, since only the CURRENT label/
+    description/position is ever meaningful here, the same "just store and
+    return the latest state" contract models.SavedView.config already
+    follows for a different per-viewer... except this one is shared team-
+    wide the moment the datasource itself is (editable tier - see
+    _get_editable_datasource), matching how a saved table's own name is a
+    shared, collaborative fact about the data, not a private display
+    preference.
+
+    position_x/position_y are NULL until someone in Edit mode actually
+    drags that card - null means "let the existing dagre auto-layout
+    (lib/flowGraph.ts layoutNodes) keep deciding, exactly as it does today
+    for everyone who never opens Edit mode", never a fabricated (0, 0)
+    default that would silently stack every unedited card on top of each
+    other."""
+    __tablename__ = "flow_annotations"
+    __table_args__ = (UniqueConstraint("datasource_id", "node_key", name="uq_flow_annotation_node"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    datasource_id = Column(String, ForeignKey("datasources.id"), nullable=False, index=True)
+    node_key = Column(String, nullable=False)
+    display_label = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
+    position_x = Column(Float, nullable=True)
+    position_y = Column(Float, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
