@@ -1,10 +1,12 @@
 """
 Datasource management: connect a database (Postgres/MySQL/SQL Server/
 MongoDB/Supabase), a data warehouse (BigQuery, Snowflake), a "streaming"
-webhook source (2026-09-28 - see connect_streaming below), or upload a
-file (CSV/Excel). Credentials are encrypted before storage and never
-returned to the client after creation. Every connection is tested and
-introspected (read-only) before being saved.
+webhook source (2026-09-28 - see connect_streaming below), a generic
+read-only "api" REST/webhook PULL connector (Phase 2, feature 4 - see
+connect_api/refresh_api below), or upload a file (CSV/Excel). Credentials
+are encrypted before storage and never returned to the client after
+creation. Every connection is tested and introspected (read-only) before
+being saved.
 
 Also exposes the data-preparation surface: a paginated table preview of the
 original data or any saved/named table, listing/renaming/deleting those
@@ -29,9 +31,12 @@ from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
 from ..services import ai_engine, workspace_access
-from ..services.connectors import SQLConnector, MongoConnector, FileConnector, BigQueryConnector, SnowflakeConnector
+from ..services.connectors import (
+    SQLConnector, MongoConnector, FileConnector, BigQueryConnector, SnowflakeConnector, ApiConnector,
+)
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, ensure_legacy_migrated, warm_cache, default_table_for_preview,
+    dataframe_to_csv_bytes,
 )
 
 router = APIRouter(prefix="/datasources", tags=["datasources"])
@@ -442,6 +447,154 @@ def ingest_webhook_event(
     return schemas.StreamedEventIngestResult(accepted=len(rows), received_at=event.received_at)
 
 
+def _api_headers(auth_header_name: str | None, auth_header_value: str | None) -> dict:
+    if auth_header_name and auth_header_value:
+        return {auth_header_name: auth_header_value}
+    return {}
+
+
+def _api_schema_and_bytes(df) -> tuple[dict, bytes]:
+    """Shared by connect_api/refresh_api below: the exact same single-table
+    {"columns": [...]} schema_cache shape a plain CSV upload already uses
+    (see upload_file's own single-sheet branch) - an API response always
+    flattens (via pandas.json_normalize) to one table, never several, so
+    there is no multi-sheet-style {tableName: [...]} shape to consider
+    here the way a multi-sheet Excel upload has."""
+    schema = {"columns": [{"name": str(c), "type": str(df[c].dtype)} for c in df.columns]}
+    return schema, dataframe_to_csv_bytes(df)
+
+
+@router.post("/api", response_model=schemas.DataSourceOut, status_code=201)
+def connect_api(
+    payload: schemas.DataSourceCreateApi,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """A new data source kind, "api" (Phase 2, feature 4): connects to any
+    REST API that returns JSON, read-only, GET requests only - see
+    services/connectors.ApiConnector's own docstring for exactly why this
+    never accepts a method, and this file's own module docstring for this
+    app's one non-negotiable "never writes to a customer source system"
+    rule that design enforces.
+
+    On create, performs exactly ONE real fetch (see ApiConnector.
+    fetch_dataframe) so a bad URL/path/credential is caught right here with
+    a clear, honest error - never a fabricated success - the same "test
+    before saving" discipline connect_database/connect_warehouse above
+    already follow for their own kinds. The flattened result is stored
+    exactly the way an uploaded CSV/Excel file stores its bytes (file_data
+    as CSV bytes, schema_cache built the same way - see
+    _api_schema_and_bytes above), so every later read of it (preview, chat
+    analysis, export) goes through data_loader.py's ordinary file-based
+    path with no special-casing beyond recognizing kind=="api" there.
+
+    auth_header_value (if given) is encrypted at rest via
+    security.encrypt_secret into the same encrypted_secret column every
+    other kind's own credential already uses (documented per-kind, the same
+    way BigQuery reuses it for a whole service-account JSON) - never
+    returned by this or any other endpoint after creation. auth_header_name
+    itself is not a secret (it is a header NAME, like "Authorization", not
+    a value) and is kept in connection_info alongside url/json_path."""
+    if not (payload.url.startswith("http://") or payload.url.startswith("https://")):
+        raise HTTPException(400, "The URL must start with http:// or https://.")
+
+    connector = ApiConnector(
+        payload.url, headers=_api_headers(payload.auth_header_name, payload.auth_header_value),
+        json_path=payload.json_path,
+    )
+    try:
+        df = connector.fetch_dataframe()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"Could not read that API: {e}")
+
+    schema, file_bytes = _api_schema_and_bytes(df)
+    connection_info: dict = {"url": payload.url, "json_path": payload.json_path or None}
+    if payload.auth_header_name:
+        connection_info["auth_header_name"] = payload.auth_header_name
+
+    ds = models.DataSource(
+        owner_id=user.id,
+        name=payload.name,
+        kind="api",
+        connection_info=connection_info,
+        encrypted_secret=security.encrypt_secret(payload.auth_header_value) if payload.auth_header_value else None,
+        file_data=file_bytes,
+        read_only=True,
+        schema_cache=schema,
+        api_last_refreshed_at=datetime.utcnow(),
+    )
+    db.add(ds)
+    db.commit()
+    db.refresh(ds)
+    # Seeds the in-process cache with the parse this request already did -
+    # see upload_file's own identical comment just below for why this is
+    # always safe/worthwhile.
+    warm_cache(ds.id, df)
+    return ds
+
+
+@router.post("/{datasource_id}/api/refresh", response_model=schemas.DataSourceOut)
+def refresh_api(
+    datasource_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
+):
+    """Re-runs the exact same fetch-and-flatten logic connect_api used at
+    creation, and overwrites file_data/schema_cache with the fresh result -
+    the ONLY way an "api" source's data ever changes after it is first
+    connected. Sets api_last_refreshed_at to the real time this genuinely
+    just succeeded - never backdated or defaulted (see
+    models.DataSource's own docstring on that column).
+
+    Deliberately manual-only this round: there is no button or setting
+    anywhere that makes this run on its own. Wiring an "api" source into
+    services/scheduler.py's existing 60-second dashboard-refresh loop is
+    real, separate future work - that loop today only ever recomputes
+    DASHBOARD BLOCKS built on top of a data source's data (see that file's
+    own module docstring), never a data source's own underlying data, and
+    giving it a second, different kind of thing to refresh on a timer needs
+    its own design and testing pass (how often is safe to hit someone
+    else's API automatically, what happens to a dashboard mid-recompute if
+    the fetch underneath it changes shape, etc.) rather than a one-line
+    addition slipped into this round."""
+    ds = _get_editable_datasource(db, user, datasource_id)
+    if ds.kind != "api":
+        raise HTTPException(400, "This isn't an API data source.")
+    info = ds.connection_info or {}
+    url = info.get("url")
+    if not url:
+        raise HTTPException(400, "This data source has no URL on file - remove it and reconnect instead.")
+
+    headers = {}
+    auth_header_name = info.get("auth_header_name")
+    if auth_header_name and ds.encrypted_secret:
+        try:
+            headers[auth_header_name] = security.decrypt_secret(ds.encrypted_secret)
+        except Exception:
+            raise HTTPException(500, "This source's auth header value could not be read - remove it and reconnect with a fresh value.")
+
+    connector = ApiConnector(url, headers=headers, json_path=info.get("json_path"))
+    try:
+        df = connector.fetch_dataframe()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"Could not read that API: {e}")
+
+    schema, file_bytes = _api_schema_and_bytes(df)
+    ds.schema_cache = schema
+    ds.file_data = file_bytes
+    ds.api_last_refreshed_at = datetime.utcnow()
+    db.commit()
+    db.refresh(ds)
+    # Overwrites the in-process cache entry this exact same request's fetch
+    # just made stale - see data_loader.warm_cache's own comment for why
+    # this call is what keeps the "file_data is write-once" cache correct
+    # in the one case (this endpoint) where it genuinely isn't.
+    warm_cache(ds.id, df)
+    return ds
+
+
 @router.post("/file", response_model=schemas.DataSourceOut, status_code=201)
 async def upload_file(
     name: str = Form(...),
@@ -586,13 +739,185 @@ def list_versions(datasource_id: str, db: Session = Depends(get_db), user: model
             "step_count": len(v.cleaning_log or []),
             "created_at": v.created_at,
             "conversation_id": conv_by_version.get(v.id),
+            # Phase 2, feature 1: lets the Data tab's own version tab strip
+            # show a "Shared" badge on an already-promoted table, and offer
+            # "Un-promote" instead of "Promote to shared model" for it - see
+            # promote_version/unpromote_version below.
+            "is_shared_model": bool(v.is_shared_model),
+            "shared_model_description": v.shared_model_description,
         }
         for v in versions
     ]
 
 
+@router.post("/{datasource_id}/versions/{version_id}/promote")
+def promote_version(
+    datasource_id: str,
+    version_id: str,
+    payload: schemas.PromoteVersionRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Marks a saved/prepared table as a reusable, named "shared model"
+    (Phase 2, feature 1) - it starts showing up on the /models library page
+    for anyone with access to it (routers/models_library.py), instead of
+    only being discoverable by going to find it on this one datasource's
+    own Data tab. Editable tier (same as rename_version/delete_version
+    below) - a workspace "viewer" can see a promoted model but not promote
+    or un-promote one themselves.
+
+    Re-promoting an already-promoted version is allowed and simply replaces
+    its description and refreshes shared_model_promoted_at - there is no
+    separate "edit description" endpoint, matching how this app already
+    treats PublishDashboardRequest (routers/dashboard_builder.py): every
+    call fully states the state this thing should be in going forward,
+    never a partial "leave the old value" ambiguity."""
+    ds = _get_editable_datasource(db, user, datasource_id)
+    v = _get_owned_version(db, ds, version_id)
+    v.is_shared_model = True
+    v.shared_model_description = payload.description.strip()[:2000] or None
+    v.shared_model_promoted_at = datetime.utcnow()
+    db.commit()
+    db.refresh(v)
+    return {
+        "id": v.id,
+        "is_shared_model": v.is_shared_model,
+        "shared_model_description": v.shared_model_description,
+        "promoted_at": v.shared_model_promoted_at,
+    }
+
+
+@router.delete("/{datasource_id}/versions/{version_id}/promote")
+def unpromote_version(
+    datasource_id: str, version_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
+):
+    """Un-promotes a shared model - it disappears from the /models library
+    listing immediately (that listing filters on is_shared_model directly -
+    see routers/models_library.py), even though the underlying saved table
+    itself is completely untouched and keeps working exactly as it did
+    before it was ever promoted. Editable tier, same as promote_version
+    above."""
+    ds = _get_editable_datasource(db, user, datasource_id)
+    v = _get_owned_version(db, ds, version_id)
+    v.is_shared_model = False
+    v.shared_model_description = None
+    v.shared_model_promoted_at = None
+    db.commit()
+    return {"id": v.id, "is_shared_model": False}
+
+
+def _flow_annotations_by_key(db: Session, datasource_id: str) -> dict[str, models.FlowAnnotation]:
+    """Every FlowAnnotation set on this datasource's Flow map, keyed by its
+    own node_key (a DatasetVersion.id or a Message.id - see
+    models.FlowAnnotation's own docstring) - one cheap query, joined onto
+    the version/node entries below in Python rather than the frontend
+    having to fetch and join a second, parallel list itself."""
+    rows = db.query(models.FlowAnnotation).filter(models.FlowAnnotation.datasource_id == datasource_id).all()
+    return {r.node_key: r for r in rows}
+
+
+def _annotation_fields(annotations: dict[str, models.FlowAnnotation], node_key: str) -> dict:
+    a = annotations.get(node_key)
+    if not a:
+        return {"display_label": None, "description": None, "position_x": None, "position_y": None}
+    return {
+        "display_label": a.display_label, "description": a.description,
+        "position_x": a.position_x, "position_y": a.position_y,
+    }
+
+
+def _cross_pipeline_uses(
+    db: Session, user: models.User, ds: models.DataSource, versions: list[models.DatasetVersion]
+) -> list[dict]:
+    """Phase 2, feature 3 (data lineage across pipelines) - for every
+    promoted shared model (see models.DatasetVersion.is_shared_model) among
+    THIS datasource's own versions, finds every real Message anywhere in
+    the app whose recorded input sources (Message.sources - see that
+    column's own docstring for its exact shape, and chat.py
+    _load_selected_tables for how a version id from a DIFFERENT,
+    separately-connected data source ends up recorded there in the first
+    place) name that version's id, where that message's own conversation
+    belongs to a DIFFERENT data source than this one.
+
+    Deliberately scoped to PROMOTED SHARED MODELS ONLY, never every table
+    anyone has ever touched - a universal "who used what, anywhere" graph
+    across every datasource in the whole app would be both a real privacy
+    problem (surfacing one person's/workspace's private analysis history to
+    someone who merely owns a table they happened to reuse) and far more
+    than one round's work to build and scope correctly; a promoted model is
+    the one case where a person has already made a deliberate, explicit
+    choice to make a table reusable outside its own datasource; that
+    single, checkable flag is what makes this feature bounded rather than
+    an ever-growing whole-app lineage crawl.
+
+    Also privacy-scoped on the READING side, not just the writing side:
+    a hit is only ever included if the CALLING user can already access the
+    OTHER data source it was used from (the same accessible-datasource rule
+    every other read in this file already enforces via
+    workspace_access.can_access_datasource) - never revealing a stranger's
+    conversation title or datasource name just because they happened to
+    reuse a model someone in the caller's own workspace promoted.
+
+    No JSON-contains database operator is used here (there isn't one that
+    works identically across this app's own sqlite-for-local-dev and
+    Postgres-in-production - see database.py's own module docstring) - this
+    loads every Message that recorded ANY sources at all and filters in
+    Python. Small-SaaS scale today, same as this app's own PushdownQueryLog
+    audit trail and "Double-check this" verification counters, which take
+    the identical approach; revisit with a real JSON/GIN index the day this
+    table is large enough for that to matter."""
+    shared_ids = {v.id for v in versions if v.is_shared_model}
+    if not shared_ids:
+        return []
+
+    candidates = db.query(models.Message).filter(models.Message.sources.isnot(None)).all()
+    hits: list[tuple[str, models.Message]] = []
+    seen: set[tuple[str, str]] = set()
+    for m in candidates:
+        for src in (m.sources or []):
+            if not isinstance(src, dict):
+                continue
+            vid = src.get("version_id")
+            if vid in shared_ids and (vid, m.id) not in seen:
+                seen.add((vid, m.id))
+                hits.append((vid, m))
+    if not hits:
+        return []
+
+    conv_ids = {m.conversation_id for _, m in hits}
+    convs = {c.id: c for c in db.query(models.Conversation).filter(models.Conversation.id.in_(conv_ids)).all()}
+    other_ds_ids = {c.datasource_id for c in convs.values() if c.datasource_id and c.datasource_id != ds.id}
+    other_ds_by_id = {
+        d.id: d for d in db.query(models.DataSource).filter(models.DataSource.id.in_(other_ds_ids)).all()
+    } if other_ds_ids else {}
+
+    results = []
+    for vid, m in hits:
+        conv = convs.get(m.conversation_id)
+        if not conv or not conv.datasource_id or conv.datasource_id == ds.id:
+            continue
+        other_ds = other_ds_by_id.get(conv.datasource_id)
+        if not other_ds or not workspace_access.can_access_datasource(db, other_ds, user):
+            continue
+        results.append({
+            "version_id": vid,
+            "used_in_datasource_id": other_ds.id,
+            "used_in_datasource_name": other_ds.name,
+            "used_in_conversation_id": conv.id,
+            "used_in_conversation_title": conv.title,
+            "used_at": m.created_at,
+        })
+    results.sort(key=lambda r: r["used_at"], reverse=True)
+    return results
+
+
 @router.get("/{datasource_id}/flow")
-def get_data_flow(datasource_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+def get_data_flow(
+    datasource_id: str,
+    cross_pipeline: bool = False,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
     """Every saved table and every chart/analysis ever built for this data
     source, across every past conversation - the raw material for the
     Flow tab's data-lineage map (frontend components/DataFlowMap.tsx).
@@ -601,7 +926,17 @@ def get_data_flow(datasource_id: str, db: Session = Depends(get_db), user: model
     (Message.sources / Message.new_version_id - see models.py for what
     those hold) and what each DatasetVersion already carries
     (parent_version_id/parent_version_ids), so this stays cheap to call
-    even for a data source with a long history."""
+    even for a data source with a long history.
+
+    Phase 2 additions: every version/node entry below also embeds its own
+    persistent annotation fields (display_label/description/position_x/
+    position_y - see models.FlowAnnotation) directly, defaulting to null
+    when unannotated, rather than a separate parallel structure the
+    frontend has to join client-side (feature 2). `cross_pipeline=true`
+    additionally computes cross_pipeline_uses - see _cross_pipeline_uses
+    above (feature 3); left false (the default, and what every existing
+    caller keeps getting), this key is always an empty list rather than
+    omitted, so the response shape never changes based on the flag."""
     ds = _get_accessible_datasource(db, user, datasource_id)
     ensure_legacy_migrated(db, ds)
 
@@ -611,6 +946,7 @@ def get_data_flow(datasource_id: str, db: Session = Depends(get_db), user: model
         .order_by(models.DatasetVersion.position, models.DatasetVersion.created_at)
         .all()
     )
+    annotations = _flow_annotations_by_key(db, ds.id)
     version_out = [
         {
             "id": v.id,
@@ -619,9 +955,13 @@ def get_data_flow(datasource_id: str, db: Session = Depends(get_db), user: model
             "parent_version_ids": v.parent_version_ids,
             "step_count": len(v.cleaning_log or []),
             "created_at": v.created_at,
+            "is_shared_model": bool(v.is_shared_model),
+            "shared_model_description": v.shared_model_description,
+            **_annotation_fields(annotations, v.id),
         }
         for v in versions
     ]
+    cross_pipeline_uses = _cross_pipeline_uses(db, user, ds, versions) if cross_pipeline else []
 
     # Every conversation ever built on this data source, not just the
     # caller's own - once ds itself has passed the accessible-datasource
@@ -634,7 +974,10 @@ def get_data_flow(datasource_id: str, db: Session = Depends(get_db), user: model
         .all()
     )
     if not conversations:
-        return {"datasource_id": ds.id, "datasource_name": ds.name, "versions": version_out, "nodes": []}
+        return {
+            "datasource_id": ds.id, "datasource_name": ds.name, "versions": version_out, "nodes": [],
+            "cross_pipeline_uses": cross_pipeline_uses,
+        }
 
     conv_by_id = {c.id: c for c in conversations}
     all_msgs = (
@@ -678,9 +1021,69 @@ def get_data_flow(datasource_id: str, db: Session = Depends(get_db), user: model
                 "created_at": m.created_at,
                 "sources": m.sources,
                 "new_version_id": m.new_version_id,
+                **_annotation_fields(annotations, m.id),
             })
 
-    return {"datasource_id": ds.id, "datasource_name": ds.name, "versions": version_out, "nodes": nodes}
+    return {
+        "datasource_id": ds.id, "datasource_name": ds.name, "versions": version_out, "nodes": nodes,
+        "cross_pipeline_uses": cross_pipeline_uses,
+    }
+
+
+@router.patch("/{datasource_id}/flow/annotations/{node_key}", response_model=schemas.FlowAnnotationOut)
+def upsert_flow_annotation(
+    datasource_id: str,
+    node_key: str,
+    payload: schemas.FlowAnnotationUpdate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Upserts one Flow-tab card's persistent annotation (Phase 2, feature
+    2) - `node_key` is the exact same real id the card already uses
+    elsewhere (a DatasetVersion.id for a table card, a Message.id for a
+    chart card - see models.FlowAnnotation's own docstring), any SUBSET of
+    display_label/description/position_x/position_y. Editable tier, same as
+    every other write action on this datasource (rename/delete a saved
+    table, create/delete a saved view) - a workspace "viewer" can see an
+    annotation (it's already embedded in GET .../flow above) but not set
+    one.
+
+    Called by the Flow tab's own Edit mode: dragging a card persists
+    position_x/position_y once per completed drag gesture (the frontend's
+    onNodeDragStop, which - like react-grid-layout's onDragStop the
+    Dashboard Builder canvas already uses, see routers/dashboard_builder.py
+    update_block's own docstring - only ever fires once a drag gesture
+    actually finishes, never on every intermediate frame while a card is
+    still moving), and double-clicking a card's inline rename/describe
+    control persists display_label/description."""
+    ds = _get_editable_datasource(db, user, datasource_id)
+    if (
+        payload.display_label is None and payload.description is None
+        and payload.position_x is None and payload.position_y is None
+    ):
+        raise HTTPException(400, "Nothing to update - set at least one of display_label, description, position_x, position_y.")
+
+    ann = (
+        db.query(models.FlowAnnotation)
+        .filter(models.FlowAnnotation.datasource_id == ds.id, models.FlowAnnotation.node_key == node_key)
+        .first()
+    )
+    if not ann:
+        ann = models.FlowAnnotation(datasource_id=ds.id, node_key=node_key)
+        db.add(ann)
+
+    if payload.display_label is not None:
+        ann.display_label = payload.display_label.strip()[:120] or None
+    if payload.description is not None:
+        ann.description = payload.description.strip()[:2000] or None
+    if payload.position_x is not None:
+        ann.position_x = payload.position_x
+    if payload.position_y is not None:
+        ann.position_y = payload.position_y
+
+    db.commit()
+    db.refresh(ann)
+    return ann
 
 
 @router.patch("/{datasource_id}/versions/{version_id}")
