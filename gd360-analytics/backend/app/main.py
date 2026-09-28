@@ -8,8 +8,9 @@ from .config import get_settings
 from .database import init_db
 from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, admin, conversations, goku,
-    connections, workspaces, folders,
+    connections, workspaces, folders, jobs,
 )
+from .services.scheduler import start_scheduler
 
 settings = get_settings()
 
@@ -133,6 +134,7 @@ app.include_router(goku.router)
 app.include_router(connections.router)
 app.include_router(workspaces.router)
 app.include_router(folders.router)
+app.include_router(jobs.router)
 
 
 @app.on_event("startup")
@@ -149,6 +151,13 @@ def on_startup():
             "environment variable before starting in production."
         )
     init_db()
+    # 2026-09-28 (scheduled auto-refresh round): starts the in-process
+    # 60-second dashboard-refresh loop - see services/scheduler.py's own
+    # module docstring for exactly what this does and its one real
+    # limitation (it only runs while this web process is actually up; see
+    # that file for the full explanation, worth reading before assuming
+    # scheduled refreshes are as reliable as a real always-on worker).
+    start_scheduler()
 
 
 @app.get("/health")
