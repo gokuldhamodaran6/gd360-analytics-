@@ -22,7 +22,7 @@ from .. import models, schemas, security
 from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
-from ..services import captcha
+from ..services import audit, captcha
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -97,6 +97,9 @@ def register(payload: schemas.UserCreate, request: Request, db: Session = Depend
     db.add(personal_ws)
     db.flush()
     db.add(models.WorkspaceMember(workspace_id=personal_ws.id, user_id=user.id, role="owner"))
+    audit.log_audit_event(
+        db, actor=user, action="signup", workspace_id=personal_ws.id, target_type="user", target_id=user.id,
+    )
     db.commit()
 
     token = security.create_access_token(subject=user.id)
@@ -128,6 +131,7 @@ def login(payload: schemas.UserLogin, request: Request, db: Session = Depends(ge
 
     user.failed_login_attempts = 0
     user.locked_until = None
+    audit.log_audit_event(db, actor=user, action="login")
     db.commit()
     db.refresh(user)
 
