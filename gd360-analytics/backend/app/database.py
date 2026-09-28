@@ -96,6 +96,18 @@ _NEW_COLUMNS = [
     # exactly which code paths advance it (never a plain drag/resize/
     # rename, and never a chart restyle).
     ("dashboard_blocks", "data_updated_at", "TIMESTAMP"),
+    # 2026-09-28 (scheduled auto-refresh round): see models.Dashboard's own
+    # docstring for what each of these means.
+    ("dashboards", "refresh_interval", "TEXT"),
+    ("dashboards", "next_refresh_at", "TIMESTAMP"),
+    ("dashboards", "last_refreshed_at", "TIMESTAMP"),
+    # 2026-09-28 (streaming/webhook ingestion round): see
+    # models.DataSource's own docstring for what each of these means.
+    # job_runs and streamed_events are brand NEW tables added the same
+    # round - per this file's own note above, a new table needs no entry
+    # here at all (create_all() already creates it).
+    ("datasources", "webhook_secret_encrypted", "TEXT"),
+    ("datasources", "last_event_at", "TIMESTAMP"),
 ]
 
 
