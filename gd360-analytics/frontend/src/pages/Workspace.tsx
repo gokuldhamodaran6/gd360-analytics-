@@ -1954,6 +1954,8 @@ export default function Workspace() {
       <BuildDashboardModal
         open={buildDashboardOpen}
         conversationId={conversationId}
+        currentDatasourceId={datasourceId || null}
+        currentDatasourceName={dsName}
         onClose={() => setBuildDashboardOpen(false)}
       />
 
