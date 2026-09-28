@@ -1,6 +1,6 @@
 import { FormEvent, useState } from "react";
 import { createPortal } from "react-dom";
-import { api, connectionsApi, OAuthProvider } from "../api/client";
+import { api, connectionsApi, datasourceApi, OAuthProvider } from "../api/client";
 
 // Real brand marks (path data + official color from the Simple Icons
 // project, MIT licensed - simpleicons.org), shown purely so a database
@@ -134,6 +134,20 @@ export function WebhookIcon({ className }: { className?: string }) {
       <path d="M8 8a4 4 0 0 1 7.6 1.8L12 16" />
       <circle cx="6" cy="15.5" r="3.5" />
       <circle cx="18" cy="7" r="1.6" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+// Generic line-art icon (not a brand mark - there is no single "REST API"
+// brand, any more than there was for the streaming webhook above) for the
+// new "API" connector tile (Phase 2, feature 4) - a pair of curly braces to
+// read distinctly as "JSON API" next to WebhookIcon's plug-and-socket,
+// even though both connectors are, under the hood, plain HTTP.
+export function ApiIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 4c-2 0-2 2-2 4s0 3-2 4c2 1 2 2 2 4s0 4 2 4" />
+      <path d="M16 4c2 0 2 2 2 4s0 3 2 4c-2 1-2 2-2 4s0 4-2 4" />
     </svg>
   );
 }
@@ -294,6 +308,11 @@ export function connectionKindMeta(kind: string) {
   // borrowed from any real brand, since there's no single "webhook" brand
   // to match the way Postgres/MySQL/etc tiles do.
   if (kind === "streaming") return { label: "Streaming (Webhook)", color: "#f97316", Logo: WebhookIcon };
+  // Phase 2, feature 4: a generic violet, distinct from streaming's orange
+  // (same "no single real brand to match" reasoning) so the two read as
+  // clearly different connectors at a glance - streaming is PUSH (someone
+  // else posts events in), this is PULL (GD360 reaches out and fetches).
+  if (kind === "api") return { label: "API / Webhook", color: "#8b5cf6", Logo: ApiIcon };
   return { label: "CSV file", color: "#64748b", Logo: FileSpreadsheetIcon };
 }
 
@@ -447,7 +466,7 @@ export default function DataSourceForm({
   onCreated: (ds: { id: string; name: string; kind: string; created_at: string }) => void;
   onConnected?: (ds: CreatedDataSource) => void;
 }) {
-  const [mode, setMode] = useState<"db" | "warehouse" | "connect" | "file" | "streaming">("db");
+  const [mode, setMode] = useState<"db" | "warehouse" | "connect" | "file" | "streaming" | "api">("db");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // Which OAuth tile ("Connect" mode) is mid-redirect, if any - only ever
@@ -506,6 +525,16 @@ export default function DataSourceForm({
   // Streaming (webhook) form state - 2026-09-28. Just a name; there is
   // nothing to test/introspect before creating it (see submitStreaming).
   const [streamName, setStreamName] = useState("");
+
+  // API/webhook PULL connector form state (Phase 2, feature 4). Unlike
+  // streaming above, this DOES test/introspect before creating it (see
+  // submitApi) - it's a real, one-time GET, not a fire-and-forget endpoint
+  // waiting for someone else to push to.
+  const [apiName, setApiName] = useState("");
+  const [apiUrl, setApiUrl] = useState("");
+  const [apiAuthHeaderName, setApiAuthHeaderName] = useState("");
+  const [apiAuthHeaderValue, setApiAuthHeaderValue] = useState("");
+  const [apiJsonPath, setApiJsonPath] = useState("");
 
   // "Connected" confirmation panel: shown right after a successful connect
   // or upload, before handing off to the workspace, so the person can see
@@ -713,6 +742,36 @@ export default function DataSourceForm({
     }
   };
 
+  // API/webhook PULL connector (Phase 2, feature 4): unlike streaming
+  // above, this really does test the connection before saving - one real
+  // GET, right now, against the URL given (see backend connect_api) - so a
+  // bad URL/path/credential is caught here with a clear error instead of
+  // silently creating a data source that will never load anything.
+  const submitApi = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      // createApi already unwraps the axios response (see client.ts - it
+      // resolves straight to the DataSourceSummary, not a `{ data }`
+      // envelope, unlike the plain `api.post` calls used elsewhere in this
+      // file for endpoints that don't go through datasourceApi).
+      const data = await datasourceApi.createApi({
+        name: apiName,
+        url: apiUrl,
+        auth_header_name: apiAuthHeaderName.trim() || undefined,
+        auth_header_value: apiAuthHeaderValue.trim() || undefined,
+        json_path: apiJsonPath.trim() || undefined,
+      });
+      setApiName(""); setApiUrl(""); setApiAuthHeaderName(""); setApiAuthHeaderValue(""); setApiJsonPath("");
+      showConnectedPanel(data);
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Could not read that API. Check the URL, JSON path, and any auth header.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // Unlike every other tile in this form, clicking a "Connect" tile never
   // opens a popout form here at all - it sends the whole browser tab to
   // that provider's own sign-in/consent page (Google or Microsoft), which
@@ -757,7 +816,7 @@ export default function DataSourceForm({
           slots, the active one lifted onto its own pill - instead of three
           independently-sized buttons that used to wrap unevenly and never
           lined up with each other. */}
-      <div className="grid grid-cols-5 gap-1 p-1 mb-6 rounded-xl bg-surface2 border border-border">
+      <div className="grid grid-cols-3 sm:grid-cols-6 gap-1 p-1 mb-6 rounded-xl bg-surface2 border border-border">
         {(
           [
             { key: "db" as const, label: "Database", Icon: DatabaseIcon },
@@ -769,6 +828,11 @@ export default function DataSourceForm({
             // own panel below for why this is a webhook, not a Kafka
             // integration.
             { key: "streaming" as const, label: "Streaming", Icon: WebhookIcon },
+            // Phase 2, feature 4: the complementary PULL half of the
+            // connector family above - GD360 reaches out and fetches a
+            // REST API's JSON, read-only, instead of waiting for one to
+            // push events in.
+            { key: "api" as const, label: "API", Icon: ApiIcon },
           ]
         ).map((m) => (
           <button
@@ -898,6 +962,78 @@ export default function DataSourceForm({
             <input className="input" type="file" accept=".csv,.xlsx,.xls" required onChange={(e) => setFile(e.target.files?.[0] || null)} />
           </div>
           <button className="btn-primary" type="submit" disabled={busy}>{busy ? "Uploading..." : "Upload"}</button>
+        </form>
+      ) : mode === "api" ? (
+        // Phase 2, feature 4: a generic, read-only REST API connector -
+        // GET only, always (see backend services/connectors.ApiConnector
+        // for exactly why). Unlike the streaming tile above, this one DOES
+        // test/introspect the connection before saving - the same
+        // "Available data" confirmation panel every other introspectable
+        // connector already shows (see showConnectedPanel), not the
+        // webhook-credentials-only panel, since there's a real response to
+        // browse here rather than an endpoint still waiting for its first
+        // event.
+        <form onSubmit={submitApi} className="space-y-4">
+          <div className="text-xs text-muted leading-relaxed">
+            Connects to any REST API that returns JSON - read-only, GET requests only. GD360 fetches it once now to
+            confirm it works, and you can refresh it manually any time afterward from the Data Sources page.
+          </div>
+          <div>
+            <label className="text-sm text-muted mb-1 block">Name</label>
+            <input className="input" required value={apiName} onChange={(e) => setApiName(e.target.value)} placeholder="Orders API" />
+          </div>
+          <div>
+            <label className="text-sm text-muted mb-1 block">URL</label>
+            <input
+              className="input"
+              required
+              type="url"
+              value={apiUrl}
+              onChange={(e) => setApiUrl(e.target.value)}
+              placeholder="https://api.example.com/v1/orders"
+            />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="text-sm text-muted mb-1 block">Auth header name (optional)</label>
+              <input
+                className="input"
+                value={apiAuthHeaderName}
+                onChange={(e) => setApiAuthHeaderName(e.target.value)}
+                placeholder="Authorization"
+              />
+            </div>
+            <div>
+              <label className="text-sm text-muted mb-1 block">Auth header value (optional)</label>
+              <input
+                className="input"
+                type="password"
+                value={apiAuthHeaderValue}
+                onChange={(e) => setApiAuthHeaderValue(e.target.value)}
+                placeholder="Bearer ..."
+              />
+            </div>
+          </div>
+          <div>
+            <label className="text-sm text-muted mb-1 block">JSON path (optional)</label>
+            <input
+              className="input"
+              value={apiJsonPath}
+              onChange={(e) => setApiJsonPath(e.target.value)}
+              placeholder="data.items"
+            />
+            <div className="text-[11px] text-muted mt-1 leading-relaxed">
+              Only needed when the array of records is nested inside the response, e.g. <code className="font-mono">{"{ data: { items: [...] } }"}</code>
+              {" "}needs <code className="font-mono">data.items</code>. Leave blank when the response body is already the array itself.
+            </div>
+          </div>
+          <div className="text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
+            Read-only, always. GD360 only ever sends a GET request here, never writes anything back - and your auth
+            header value (if any) is encrypted at rest.
+          </div>
+          <button className="btn-primary" type="submit" disabled={busy || !apiName.trim() || !apiUrl.trim()}>
+            {busy ? "Connecting…" : "Test & connect"}
+          </button>
         </form>
       ) : (
         // 2026-09-28 (streaming/webhook ingestion round): the honest,
