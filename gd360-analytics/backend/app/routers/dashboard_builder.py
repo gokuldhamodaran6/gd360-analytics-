@@ -1711,6 +1711,55 @@ def create_from_template(
     return _builder_out(db, dashboard, user)
 
 
+# 2026-09-28 (senior-UX round): a real, specific gap Gokul flagged - once
+# a dashboard was built from a chat analysis, there was no way back to it
+# from that SAME chat. BuildDashboardModal navigates away to the new
+# dashboard right after building it, but coming back to this conversation
+# later (a new visit, a page refresh, a different chart in the same chat)
+# left no trace it even happened - the only path back was leaving the
+# chat entirely and hunting for it by name in the global Dashboards list.
+# Workspace.tsx calls this once a conversation is loaded (and again any
+# time it's revisited) so it can show a "View Dashboard(s)" entry point
+# right next to "Build Dashboard" in the same header, instead of the
+# dashboard silently vanishing from view the moment the build finishes.
+# Deliberately its own small query rather than reusing generate_dashboard's
+# any-Dashboard-with-this-source_conversation_id logic inline - see
+# DashboardBuilderSummaryOut's own docstring for why this stays summary-only.
+@router.get("/by-conversation/{conversation_id}", response_model=list[schemas.DashboardBuilderSummaryOut])
+def list_dashboards_for_conversation(
+    conversation_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
+):
+    conv = db.query(models.Conversation).filter(models.Conversation.id == conversation_id).first()
+    if not conv or not workspace_access.can_access_conversation(db, conv, user):
+        raise HTTPException(404, "Conversation not found.")
+
+    rows = (
+        db.query(models.Dashboard)
+        .filter(models.Dashboard.source_conversation_id == conv.id, models.Dashboard.layout_version == 2)
+        .order_by(models.Dashboard.created_at.desc())
+        .all()
+    )
+    out: list[schemas.DashboardBuilderSummaryOut] = []
+    for d in rows:
+        # Same view-tier check _get_dashboard_v2 uses for a single
+        # dashboard - a v2 row this person can no longer actually open
+        # (e.g. shared into a workspace they've since left) is silently
+        # left out rather than listed as a dead link.
+        if not _can_view(db, d, user):
+            continue
+        share = d.share
+        out.append(schemas.DashboardBuilderSummaryOut(
+            id=d.id,
+            name=d.name,
+            created_at=d.created_at,
+            page_count=len(d.pages),
+            block_count=sum(len(p.blocks) for p in d.pages),
+            can_edit=_can_edit(db, d, user),
+            is_published=bool(share and share.published_at),
+        ))
+    return out
+
+
 @router.get("/{dashboard_id}", response_model=schemas.DashboardBuilderOut)
 def get_builder_dashboard(
     dashboard_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
