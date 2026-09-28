@@ -297,6 +297,22 @@ export type DataSourceSummary = {
   read_only: boolean;
   schema_cache?: Record<string, unknown> | null;
   created_at: string;
+  // 2026-09-28 (streaming/webhook ingestion round): only ever set for
+  // kind === "streaming" - the last time this source actually received a
+  // real webhook event. Drives the "live" pulsing-dot badge (see
+  // pages/DataSources.tsx) - null/undefined means "never received one".
+  last_event_at?: string | null;
+};
+
+// 2026-09-28 (streaming/webhook ingestion round): what connect_streaming/
+// regenerate_webhook_secret return - a normal DataSourceSummary PLUS the
+// webhook URL and secret, shown to the person exactly ONCE right after
+// creation (or a deliberate regenerate) and never fetchable again after
+// that, same as every other credential in this app (see DataSourceForm's
+// own module note).
+export type StreamingDataSourceCreated = DataSourceSummary & {
+  webhook_url: string;
+  webhook_secret: string;
 };
 
 export const datasourceApi = {
@@ -422,6 +438,20 @@ export const datasourceApi = {
   // connectionsApi below), and available anywhere else a "delete this data
   // source" action is added later.
   delete: (id: string) => api.delete(`/datasources/${id}`),
+
+  // 2026-09-28 (streaming/webhook ingestion round): creates the
+  // kind==="streaming" connector - see StreamingDataSourceCreated's own
+  // comment for why the webhook URL/secret only ever come back from this
+  // call and regenerateWebhookSecret below, never from a plain list/get.
+  createStreaming: (name: string) =>
+    api.post<StreamingDataSourceCreated>("/datasources/streaming", { name }).then((r) => r.data),
+
+  // Mints a brand-new webhook secret, immediately invalidating the old
+  // one - owner-only, same tier as delete() above. Used from the Data
+  // Sources page when a person has lost their original secret or wants to
+  // revoke a leaked one.
+  regenerateWebhookSecret: (id: string) =>
+    api.post<StreamingDataSourceCreated>(`/datasources/${id}/webhook/regenerate`).then((r) => r.data),
 
   downloadExport: async (id: string, versionId: string | null, format: "csv" | "xlsx", table?: string | null) => {
     const res = await api.get(`/datasources/${id}/export`, {
@@ -1378,4 +1408,62 @@ export const publicDashboardApi = {
         password: password || undefined,
       })
       .then((r) => r.data.access_token),
+};
+
+// ---- Scheduled auto-refresh + background jobs (2026-09-28, pages/Jobs.tsx)
+// - see backend routers/jobs.py's own module docstring for the full
+// design. Per-DASHBOARD schedules (not per-block - see backend
+// models.Dashboard's own docstring for why), backed by the exact same
+// recompute logic the manual "Ask AI"/"Build manually" block editor
+// already uses. ----
+export type RefreshInterval = "off" | "15m" | "1h" | "6h" | "daily";
+
+export type DashboardSchedule = {
+  dashboard_id: string;
+  dashboard_name: string;
+  source_label: string | null;
+  refresh_interval: RefreshInterval;
+  next_refresh_at: string | null;
+  last_refreshed_at: string | null;
+  last_run_status: "running" | "success" | "failed" | null;
+  last_run_duration_seconds: number | null;
+  last_run_error: string | null;
+  can_edit: boolean;
+};
+
+export type JobRun = {
+  id: string;
+  dashboard_id: string | null;
+  job_type: "scheduled_refresh" | "manual_refresh";
+  target_label: string;
+  source_label: string | null;
+  status: "running" | "success" | "failed";
+  error_message: string | null;
+  started_at: string;
+  finished_at: string | null;
+  duration_seconds: number | null;
+  next_run_at: string | null;
+};
+
+export type JobRunsPage = { runs: JobRun[]; total: number; page: number; page_size: number };
+
+export const jobsApi = {
+  // Every dashboard this person can see, one row per dashboard, whether or
+  // not it has a schedule turned on yet - the Jobs page's main table.
+  listSchedules: () => api.get<DashboardSchedule[]>("/jobs/schedules").then((r) => r.data),
+  // "off" turns scheduling off entirely (next_refresh_at goes back to
+  // null) - never a separate "disable" call, mirroring how the backend
+  // itself treats "off" as just another refresh_interval value.
+  updateSchedule: (dashboardId: string, refreshInterval: RefreshInterval) =>
+    api
+      .patch<DashboardSchedule>(`/jobs/schedules/${dashboardId}`, { refresh_interval: refreshInterval })
+      .then((r) => r.data),
+  // Runs this dashboard's refresh right now, outside its own schedule (or
+  // with none set at all) - logged into the same run history as any
+  // scheduled tick. Returns the JobRun this click just created.
+  runNow: (dashboardId: string) => api.post<JobRun>(`/jobs/schedules/${dashboardId}/run-now`).then((r) => r.data),
+  // The run-history table underneath the schedule table - newest first,
+  // paginated.
+  listRuns: (page = 1, pageSize = 20) =>
+    api.get<JobRunsPage>("/jobs/runs", { params: { page, page_size: pageSize } }).then((r) => r.data),
 };
