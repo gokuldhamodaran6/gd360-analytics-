@@ -1165,3 +1165,87 @@ class GovernanceDataSourceOut(BaseModel):
 
 class GovernanceOverviewOut(BaseModel):
     datasources: list[GovernanceDataSourceOut]
+
+
+# ---------- 2026-09-28 (ML Models round) ----------
+# See models.MLModel/MLPrediction's own docstrings for the full design and
+# services/ml_training.py for how training/prediction/scoring actually
+# work. Always called "ML Model"/"ML Models" in every field and endpoint
+# name here - never just "Model(s)" - to keep this permanently distinct
+# from SharedModelOut above, which is a promoted, reusable data TABLE and
+# has nothing to do with machine learning.
+class TrainMLModelRequest(BaseModel):
+    datasource_id: str
+    target_column: str = Field(min_length=1, max_length=200)
+    # None (the default, and what this phase's own wizard sends in its
+    # zero-configuration path) means "let the backend pick every usable
+    # column automatically" - see services/ml_training.select_features.
+    # When given, only these are ever considered, and each one still goes
+    # through the exact same exclusion logic (see that function's own
+    # docstring) - an explicitly requested column can still legitimately
+    # end up in excluded_columns.
+    feature_columns: Optional[list[str]] = None
+    name: str = Field(min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=2000)
+
+
+class MLExcludedColumn(BaseModel):
+    column: str
+    reason: str
+
+
+class MLModelOut(BaseModel):
+    id: str
+    datasource_id: str
+    datasource_name: str
+    name: str
+    description: Optional[str] = None
+    task_type: Optional[str] = None  # "classification" | "regression" | None (not trained yet)
+    target_column: str
+    feature_columns: Optional[list[str]] = None
+    excluded_columns: Optional[list[MLExcludedColumn]] = None
+    algorithm: Optional[str] = None
+    # Keys depend on task_type - see services/ml_training.py's own module
+    # docstring for exactly which. Always real, computed numbers - never
+    # fabricated (see this app's own "never fabricate a stat" discipline).
+    metrics: Optional[dict] = None
+    status: str  # "training" | "ready" | "failed"
+    error_message: Optional[str] = None
+    trained_row_count: Optional[int] = None
+    created_at: datetime
+    trained_at: Optional[datetime] = None
+    prediction_count: int
+    last_predicted_at: Optional[datetime] = None
+    # Whoever trained this model, resolved server-side (same convention as
+    # QualityRuleOut.created_by_name) - also what the frontend uses to
+    # decide whether to show the delete button at all (creator-only).
+    owner_id: str
+    can_delete: bool
+
+
+class PredictRequest(BaseModel):
+    # Column name -> raw value typed into the "Try it" form - loosely typed
+    # (a plain dict), same convention as DataQualityRule.rule_config/
+    # DashboardBlock.config elsewhere in this file; services/ml_training.py
+    # is the one place that ever reads inside it.
+    input_values: dict
+
+
+class PredictOut(BaseModel):
+    predicted_value: Any
+    # None for a regression model, or a classification model whose winning
+    # algorithm doesn't expose predict_proba - never a fabricated number.
+    confidence: Optional[float] = None
+
+
+class ScoreTableRequest(BaseModel):
+    # Which table/sheet of the SAME datasource to score - None scores the
+    # datasource's own original data, matching datasourceApi.preview's own
+    # "no table means the default one" convention on the frontend.
+    table: Optional[str] = None
+
+
+class ScoreTableOut(BaseModel):
+    new_version_id: str
+    new_version_name: str
+    row_count: int
