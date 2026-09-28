@@ -11,6 +11,7 @@ import DashboardView from "./pages/DashboardView";
 import DashboardBuilderView from "./pages/DashboardBuilderView";
 import PublicDashboardView from "./pages/PublicDashboardView";
 import DataSources from "./pages/DataSources";
+import Models from "./pages/Models";
 import Jobs from "./pages/Jobs";
 import NewProject from "./pages/NewProject";
 import AdminDashboard from "./pages/AdminDashboard";
@@ -111,6 +112,10 @@ export default function App() {
           someone who has never signed in and never will. */}
       <Route path="/d/:slug" element={<PublicDashboardView />} />
       <Route path="/data" element={<Protected><DataSources /></Protected>} />
+      {/* Phase 2, feature 1: the shared, reusable models library - see
+          AppSidebar.tsx's own nav entry for this, placed right after
+          Data Sources exactly like the sidebar. */}
+      <Route path="/models" element={<Protected><Models /></Protected>} />
       {/* 2026-09-28 (scheduled auto-refresh + background jobs round): the
           Jobs page - see AppSidebar.tsx's own nav entry for this, placed
           between Dashboards and Data Sources exactly like the sidebar. */}
