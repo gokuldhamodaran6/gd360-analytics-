@@ -30,7 +30,7 @@ from .. import models, schemas, security
 from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
-from ..services import ai_engine, workspace_access
+from ..services import ai_engine, audit, workspace_access
 from ..services.connectors import (
     SQLConnector, MongoConnector, FileConnector, BigQueryConnector, SnowflakeConnector, ApiConnector,
 )
@@ -247,6 +247,11 @@ def connect_database(
         schema_cache=schema,
     )
     db.add(ds)
+    db.flush()
+    audit.log_audit_event(
+        db, actor=user, action="datasource_connected", workspace_id=ds.workspace_id,
+        target_type="datasource", target_id=ds.id, metadata={"kind": ds.kind},
+    )
     db.commit()
     db.refresh(ds)
     return ds
@@ -325,6 +330,11 @@ def connect_warehouse(
         )
 
     db.add(ds)
+    db.flush()
+    audit.log_audit_event(
+        db, actor=user, action="datasource_connected", workspace_id=ds.workspace_id,
+        target_type="datasource", target_id=ds.id, metadata={"kind": ds.kind},
+    )
     db.commit()
     db.refresh(ds)
     return ds
@@ -363,6 +373,11 @@ def connect_streaming(
         schema_cache={},
     )
     db.add(ds)
+    db.flush()
+    audit.log_audit_event(
+        db, actor=user, action="datasource_connected", workspace_id=ds.workspace_id,
+        target_type="datasource", target_id=ds.id, metadata={"kind": ds.kind},
+    )
     db.commit()
     db.refresh(ds)
     return schemas.StreamingDataSourceOut(
@@ -526,6 +541,11 @@ def connect_api(
         api_last_refreshed_at=datetime.utcnow(),
     )
     db.add(ds)
+    db.flush()
+    audit.log_audit_event(
+        db, actor=user, action="datasource_connected", workspace_id=ds.workspace_id,
+        target_type="datasource", target_id=ds.id, metadata={"kind": ds.kind},
+    )
     db.commit()
     db.refresh(ds)
     # Seeds the in-process cache with the parse this request already did -
@@ -650,6 +670,11 @@ async def upload_file(
         schema_cache=schema,
     )
     db.add(ds)
+    db.flush()
+    audit.log_audit_event(
+        db, actor=user, action="datasource_connected", workspace_id=ds.workspace_id,
+        target_type="datasource", target_id=ds.id, metadata={"kind": ds.kind},
+    )
     db.commit()
     db.refresh(ds)
     # Seeds the in-process cache with the parse(s) this request already
@@ -1677,6 +1702,10 @@ def delete_datasource(datasource_id: str, db: Session = Depends(get_db), user: m
     # has nothing useful to say once the data it was about is gone, so it
     # is deleted outright here instead of detached.
     db.query(models.GokuMessage).filter(models.GokuMessage.datasource_id == datasource_id).delete()
+    audit.log_audit_event(
+        db, actor=user, action="datasource_deleted", workspace_id=ds.workspace_id,
+        target_type="datasource", target_id=ds.id,
+    )
     db.delete(ds)
     db.commit()
     return None
