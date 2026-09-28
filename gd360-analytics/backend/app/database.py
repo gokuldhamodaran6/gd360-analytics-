@@ -108,6 +108,20 @@ _NEW_COLUMNS = [
     # here at all (create_all() already creates it).
     ("datasources", "webhook_secret_encrypted", "TEXT"),
     ("datasources", "last_event_at", "TIMESTAMP"),
+    # Phase 2, feature 1 (shared, reusable models): see
+    # models.DatasetVersion's own docstring for what each of these means.
+    # dataset_versions is an existing table (live since before this round),
+    # so - unlike flow_annotations below - its new columns need the normal
+    # ALTER-TABLE treatment here.
+    ("dataset_versions", "is_shared_model", "BOOLEAN DEFAULT FALSE"),
+    ("dataset_versions", "shared_model_description", "TEXT"),
+    ("dataset_versions", "shared_model_promoted_at", "TIMESTAMP"),
+    # Phase 2, feature 4 (generic API/webhook PULL connector): see
+    # models.DataSource's own docstring for what this means. flow_annotations
+    # (feature 2) is a brand NEW table added the same round - per this
+    # file's own note above, a new table needs no entry here at all
+    # (create_all() already creates it).
+    ("datasources", "api_last_refreshed_at", "TIMESTAMP"),
 ]
 
 
