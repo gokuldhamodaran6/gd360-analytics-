@@ -1412,7 +1412,22 @@ export default function Workspace() {
       }
 
       if (data.insight) setLastInsight(data.insight);
-      return true;
+      // 2026-09-28 root-cause fix: an exhausted-retries failure (every
+      // attempt timed out, or errored, and the AI gave up) still comes
+      // back as an ordinary HTTP 200 - the assistant bubble just above
+      // already shows that friendly "I was not able to..." narrative, so
+      // this call genuinely reached the server and got a real response,
+      // it just is not a completed result. Returning true here regardless
+      // used to tell callers (see GokuChat.tsx runActionPrompt) that this
+      // step succeeded, which sent them straight into asking Goku to
+      // follow up on a step that never actually finished - producing the
+      // confusing "that finished in the main chat, but Goku could not
+      // follow up" message even though nothing had finished. `data.ok`
+      // (see backend schemas.ChatResponse) is the real signal: false only
+      // for that exhausted-failure case, true for a normal result AND for
+      // a genuine clarifying question. No extra error banner here - the
+      // failure narrative is already visible as this turn's own message.
+      return data.ok !== false;
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Something went wrong. Please try again.");
       return false;
