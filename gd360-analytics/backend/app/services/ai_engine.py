@@ -1120,15 +1120,34 @@ def friendly_ai_error(e: Exception) -> str:
     )
 
 
-def _plan_with_retry(messages: list[dict]) -> dict:
+def _plan_with_retry(messages: list[dict], max_tokens: int = 3000) -> dict:
     """Calls the model and parses its JSON plan, retrying once with a
     plain-language nudge if the first reply came back empty or was not
     valid JSON (this happens occasionally with reasoning models that use
     up their budget thinking rather than answering). Only after a second
-    failed attempt do we surface a friendly error to the user."""
+    failed attempt do we surface a friendly error to the user.
+
+    `max_tokens` defaults to the same 3000 this function has always used
+    for the main chat's own plan call (unchanged for every existing
+    caller that doesn't pass it). 2026-09-28 (dashboard-builder "Build
+    with AI" fix, part 2): routers/dashboard_builder.py's two planning
+    calls (_generate_goal_plan, _generate_plan) used to bypass this
+    function entirely and call _call_llm_resilient directly with only
+    max_tokens=1200 and NO retry-on-empty protection at all - real
+    production logs (a goal naming SARIMA/Prophet/LightGBM by name, which
+    gives a reasoning model genuinely more to think through before it can
+    write valid JSON) showed this exact 1200-token, no-retry combination
+    failing outright with _EmptyModelResponse, silently falling back to a
+    single block whose "prompt" was the entire raw, unscoped goal text -
+    which then ALSO failed the same way when it reached analyze() with a
+    much bigger single-block code-generation task than usual. Both
+    callers now go through this function instead, at the same generous
+    3000-token budget the main chat's plan call already relies on safely,
+    so a genuinely complex multi-block goal gets the same real retry
+    protection a normal chat question always has."""
     raw = ""
     try:
-        raw = _call_llm_resilient(messages)
+        raw = _call_llm_resilient(messages, max_tokens=max_tokens)
         return _extract_json(raw)
     except (ValueError, _EmptyModelResponse):
         pass
@@ -1145,7 +1164,7 @@ def _plan_with_retry(messages: list[dict]) -> dict:
         },
     ]
     try:
-        raw = _call_llm_resilient(retry_messages)
+        raw = _call_llm_resilient(retry_messages, max_tokens=max_tokens)
         return _extract_json(raw)
     except (ValueError, _EmptyModelResponse):
         raise RuntimeError(
