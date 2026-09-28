@@ -5,10 +5,9 @@ see models.MLModel/MLPrediction's own docstrings for the full design and
 services/ml_training.py for how training/prediction/scoring actually work.
 
 Always "ML Model(s)" in every route/response/docstring here - never just
-"Model(s)" - to stay permanently distinct from routers/models_library.py's
-/models (promoted, reusable data TABLES, nothing to do with machine
-learning) - see models.MLModel's own docstring for why that naming
-collision matters.
+"Model(s)" - a naming collision with the old "Saved Tables" feature (since
+removed - see models.MLModel's own docstring) made that distinction matter
+enough to keep the habit even now that the other feature is gone.
 
 Access follows this app's existing two-tier convention exactly (see
 services/workspace_access.py), the same split routers/quality_checks.py
@@ -162,11 +161,10 @@ def train_ml_model(
 def list_ml_models(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     """Every ML model this caller can at least view, across EVERY data
     source they have access to - their own, plus anything shared into a
-    workspace they're a member of - newest-trained first. Mirrors
-    routers/models_library.py list_shared_models's exact cross-datasource
-    access-filter pattern (workspace_access.datasource_access_filter)
-    rather than inventing a second, parallel access model just for this
-    gallery."""
+    workspace they're a member of - newest-trained first. Uses this app's
+    standard cross-datasource access-filter pattern
+    (workspace_access.datasource_access_filter) rather than inventing a
+    second, parallel access model just for this gallery."""
     ds_ids = {
         row[0]
         for row in db.query(models.DataSource.id).filter(workspace_access.datasource_access_filter(db, user)).all()
