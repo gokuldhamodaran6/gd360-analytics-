@@ -753,6 +753,19 @@ class SetBlockAccentColorRequest(BaseModel):
     color: Optional[str] = None
 
 
+# 2026-09-28: the "Show forecast" / "Show anomalies" chart-block toggles -
+# see routers/dashboard_builder.py's set_block_analysis for why this is its
+# own endpoint (an analysis LENS applied to an already-built chart_spec,
+# not a data recompute) rather than routed through the generic update_block.
+# Both flags are sent together every time, even though only one may have
+# changed - the endpoint (and chart_builder.apply_analysis_overlays) always
+# needs to know the full, current state of both toggles to rebuild the
+# figure correctly.
+class SetBlockAnalysisRequest(BaseModel):
+    forecast_enabled: bool
+    anomalies_enabled: bool
+
+
 # ---------- Cross-filtering (2026-09-24, Phase 2b) ----------
 class ApplyFiltersRequest(BaseModel):
     filters: list[FilterCriterion] = Field(default_factory=list, max_length=8)
