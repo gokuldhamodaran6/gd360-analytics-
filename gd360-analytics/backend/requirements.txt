@@ -33,3 +33,10 @@ python-calamine==0.8.2
 # (>=2.21.0) is far looser, so this satisfies both with no other change.
 requests==2.32.4
 email-validator==2.2.0
+# 2026-09-28 (scheduled auto-refresh round): a lightweight in-process job
+# scheduler - there is no separate worker process/dyno in this app, so
+# services/scheduler.py starts a BackgroundScheduler on its own thread
+# inside this same web process at startup (see main.py). 3.10.4 is
+# APScheduler's current stable 3.x release (the 4.x line is still alpha as
+# of this writing) and needs no extra system dependencies.
+apscheduler==3.10.4
