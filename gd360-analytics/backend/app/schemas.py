@@ -231,6 +231,18 @@ class ChatResponse(BaseModel):
     message_id: str
     role: str = "assistant"
     reply_text: str
+    # 2026-09-28 root-cause fix: false only when nothing real actually
+    # happened - every retry was exhausted and reply_text is one of the
+    # generic "I was not able to..." failure narratives (see ai_engine.
+    # _no_result / _TRANSFORM_FAILURE_NARRATIVE / _ANALYZE_FAILURE_
+    # NARRATIVE). A genuine clarifying question is still ok=True - the
+    # model just needs more information, which is a normal turn, not a
+    # failure. Before this field existed, this response's HTTP 200 status
+    # was the ONLY signal the frontend had, so a friendly-but-empty
+    # failure narrative looked identical to a real result - see
+    # Workspace.tsx runPrompt, which now returns this field's value
+    # instead of just "did the HTTP call succeed."
+    ok: bool = True
     action: str = "analyze"
     chart_spec: Optional[dict] = None
     # The chart type actually rendered (e.g. "bar", "scatter") - the
