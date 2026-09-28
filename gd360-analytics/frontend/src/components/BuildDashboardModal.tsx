@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { dashboardBuilderApi, type DashboardTemplate, type DashboardTemplateBlock } from "../api/client";
+import { dashboardBuilderApi, datasourceApi, type DashboardTemplate, type DashboardTemplateBlock, type DataSourceSummary } from "../api/client";
 
 // 2026-09-28: raised from 500 - real usage showed people pasting a
 // genuinely detailed, multi-part description (several metrics/models named
@@ -187,6 +187,18 @@ export default function BuildDashboardModal({
   const [creatingBlank, setCreatingBlank] = useState(false);
   const [error, setError] = useState("");
 
+  // 2026-09-28 (datasource picker round): real usage showed the goal-
+  // driven build silently inheriting whatever data source happened to be
+  // behind the currently-open chat, which is not necessarily the one the
+  // person actually meant. "" (the default) keeps that original
+  // conversation-derived behavior exactly as it always worked - picking
+  // one here sends it as an explicit override instead (see
+  // dashboardBuilderApi.generate). Fetched lazily the first time the
+  // goal step is reached, same pattern as the template gallery below.
+  const [datasources, setDatasources] = useState<DataSourceSummary[] | null>(null);
+  const [datasourcesLoading, setDatasourcesLoading] = useState(false);
+  const [selectedDatasourceId, setSelectedDatasourceId] = useState("");
+
   // 2026-09-25 (Round 5, template gallery) - the catalog for the
   // "templates" step. Fetched lazily the first time that step is
   // reached (not on every open) since most opens of this modal never
@@ -204,8 +216,24 @@ export default function BuildDashboardModal({
       setStep("choose");
       setGoal("");
       setError("");
+      setSelectedDatasourceId("");
     }
   }, [open]);
+
+  useEffect(() => {
+    if (step !== "goal" || datasources !== null || datasourcesLoading) return;
+    setDatasourcesLoading(true);
+    datasourceApi
+      .list()
+      .then((list) => setDatasources(list))
+      // Best-effort only - the picker just quietly stays hidden/empty if
+      // this fails; it's never required to build (an unpicked build falls
+      // back to the exact original conversation-derived resolution), so a
+      // transient failure here shouldn't block or scare anyone off the
+      // main "Build with AI" flow.
+      .catch(() => setDatasources([]))
+      .finally(() => setDatasourcesLoading(false));
+  }, [step, datasources, datasourcesLoading]);
 
   useEffect(() => {
     if (step !== "templates" || templates !== null || templatesLoading) return;
@@ -220,12 +248,12 @@ export default function BuildDashboardModal({
 
   if (!open) return null;
 
-  const goToBuild = async (goalText: string) => {
+  const goToBuild = async (goalText: string, datasourceId?: string) => {
     if (!conversationId) return;
     setBuilding(true);
     setError("");
     try {
-      const dash = await dashboardBuilderApi.generate(conversationId, goalText);
+      const dash = await dashboardBuilderApi.generate(conversationId, goalText, datasourceId);
       onClose();
       navigate(`/dashboard-builder/${dash.id}`);
     } catch (err: any) {
@@ -401,11 +429,40 @@ export default function BuildDashboardModal({
               {goal.length}/{_GOAL_MAX_LEN}
             </div>
 
-            <div className="flex items-center gap-2.5 mt-2">
+            {/* 2026-09-28 (datasource picker round): lets the person name
+                exactly which connected data source this build should run
+                against, instead of always silently inheriting whatever
+                data source happens to be behind the currently-open chat -
+                real usage showed that guess landing on the wrong dataset.
+                Hidden entirely once there's nothing to pick from (0 or 1
+                data source), since the default already resolves correctly
+                in that case. */}
+            {!datasourcesLoading && datasources && datasources.length > 1 && (
+              <div className="mt-3">
+                <label className="text-[11px] font-medium text-muted mb-1 block">
+                  Data source <span className="font-normal">(optional - defaults to this analysis&rsquo;s own data)</span>
+                </label>
+                <select
+                  className="input text-sm w-full"
+                  value={selectedDatasourceId}
+                  onChange={(e) => setSelectedDatasourceId(e.target.value)}
+                  disabled={building}
+                >
+                  <option value="">Use this analysis&rsquo;s own data source</option>
+                  {datasources.map((ds) => (
+                    <option key={ds.id} value={ds.id}>
+                      {ds.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2.5 mt-3">
               <button
                 type="button"
                 disabled={building || !goal.trim()}
-                onClick={() => goToBuild(goal.trim())}
+                onClick={() => goToBuild(goal.trim(), selectedDatasourceId || undefined)}
                 className="btn-primary text-sm flex-1 disabled:opacity-50"
               >
                 {building ? "Building…" : "Build dashboard"}
