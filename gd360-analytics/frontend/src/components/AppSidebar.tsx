@@ -85,18 +85,50 @@ function SearchIcon({ className = "w-4 h-4" }: { className?: string }) {
 }
 
 // Phase 2, feature 1 (shared, reusable models): the /models library page's
-// own nav entry, placed right after Data Sources - a promoted model is one
+// own nav entry, placed right after Data Sources - a promoted table is one
 // step further removed from "browsing connections" than Data Sources
 // itself, but still squarely about data rather than analysis/dashboards,
 // so it reads best as the last item in this data-oriented group. A stack
 // of layered cards - "reusable, built-on-top-of" - kept distinct from
 // DashboardsIcon's bar chart and DataSourcesIcon's database cylinder.
+//
+// Renamed "Models" -> "Saved Tables" in the nav label only (2026-09-28, ML
+// Models round) - this page (routers/models_library.py /models,
+// pages/Models.tsx) has never had anything to do with machine learning; it
+// is a gallery of promoted/reusable saved data TABLES. That naming
+// collision is exactly why it kept getting mistaken for an ML feature -
+// see the real one, ML Models below, whose own nav entry now sits right
+// next to this one so the difference is obvious from the sidebar itself.
+// The component/icon name (ModelsIcon) and route (/models) are unchanged
+// on purpose - this is a human-facing label fix only, not a URL/identifier
+// rename (see this round's own build notes).
 function ModelsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 3l8 4-8 4-8-4 8-4z" />
       <path d="M4 11l8 4 8-4" />
       <path d="M4 15l8 4 8-4" />
+    </svg>
+  );
+}
+
+// 2026-09-28 (ML Models round): the real ML feature's own nav entry - see
+// models.MLModel's own docstring for why this is deliberately never called
+// just "Models" anywhere in this app. Placed right after "Saved Tables" so
+// the two visually adjacent, differently-labeled entries make the
+// distinction obvious at a glance. A simple sparkle/circuit-node glyph -
+// "something computed/inferred" - kept distinct from every icon above it
+// (a stack of layered cards, a flask, a shield) rather than reusing a
+// generic chart/brain cliché.
+function MLModelsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="2.5" />
+      <circle cx="4.5" cy="6" r="1.6" />
+      <circle cx="19.5" cy="6" r="1.6" />
+      <circle cx="4.5" cy="18" r="1.6" />
+      <circle cx="19.5" cy="18" r="1.6" />
+      <path d="M9.9 10.3L6 7.3M14.1 10.3L18 7.3M9.9 13.7L6 16.7M14.1 13.7L18 16.7" />
     </svg>
   );
 }
@@ -1139,15 +1171,28 @@ function SidebarNav({
           {!collapsed && "Data Sources"}
         </Link>
         {/* Phase 2, feature 1: right after Data Sources - see ModelsIcon's
-            own comment above for why it sits here. */}
+            own comment above for why it sits here. Label reads "Saved
+            Tables" (2026-09-28) - route/component name unchanged, see that
+            comment for why. */}
         <Link
           to="/models"
           onClick={onNavigate}
-          title={collapsed ? "Models" : undefined}
-          className={linkClass(pathname.startsWith("/models"))}
+          title={collapsed ? "Saved Tables" : undefined}
+          className={linkClass(pathname.startsWith("/models") && !pathname.startsWith("/ml-models"))}
         >
           <ModelsIcon />
-          {!collapsed && "Models"}
+          {!collapsed && "Saved Tables"}
+        </Link>
+        {/* 2026-09-28 (ML Models round): the real ML feature, right next to
+            "Saved Tables" above - see MLModelsIcon's own comment for why. */}
+        <Link
+          to="/ml-models"
+          onClick={onNavigate}
+          title={collapsed ? "ML Models" : undefined}
+          className={linkClass(pathname.startsWith("/ml-models"))}
+        >
+          <MLModelsIcon />
+          {!collapsed && "ML Models"}
         </Link>
         {/* Phase 4 (2026-09-28, Experimentation / A/B testing): right after
             Models - see ExperimentsIcon's own comment above for why. */}
