@@ -2022,6 +2022,15 @@ export default function Workspace() {
             datasourceSchema={dsInfo?.schema_cache}
             otherDataSources={otherDataSources}
             conversationId={conversationId}
+            // 2026-09-29 (visual polish round): the same real
+            // linkedDashboards data LinkedDashboardsMenu already renders in
+            // the header, and the same "Build Dashboard" modal the header
+            // button already opens - reused here, not duplicated, so the
+            // in-chat dashboard tie-in strip can never drift out of sync
+            // with what the header itself shows.
+            linkedDashboards={linkedDashboards}
+            onOpenBuildDashboard={() => setBuildDashboardOpen(true)}
+            onOpenDashboard={(id) => navigate(`/dashboard-builder/${id}`)}
           />
         </div>
 
