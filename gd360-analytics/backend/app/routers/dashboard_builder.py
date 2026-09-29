@@ -853,11 +853,28 @@ def _block_config(message: models.Message, requested_type: str) -> tuple[str, di
     }
 
 
+# 2026-09-29 (design revamp): a freshly bulk-generated chart's own legend
+# (chart_builder.py always turns one on for 2+ series - see chart_builder's
+# closing update_layout) plus its title/axis-label bands genuinely need
+# more than 6 grid rows (6 * ROW_UNIT_PX=48 ~= 288px of cell, minus the
+# block card's own header bar and padding, was landing BELOW Plotly's own
+# ~380px floor - see frontend lib/chartStyle.ts's suggestedChartMinHeight -
+# so a bulk-generated chart routinely rendered with its bottom axis/ticks
+# clipped off inside the card's overflow-hidden edge, exactly like Gokul's
+# own screenshot of this dashboard showed. Bumped to 8 rows (~480px of
+# cell) so the common case fits without anyone having to drag-resize it
+# open first; see _default_block_size below for the matching bump on a
+# block added one at a time after generation, and DashboardCanvas.tsx's
+# BlockCard for the one-time auto-grow that still catches the rarer chart
+# that needs even more room than this (a many-entry legend, a tilted axis).
+_OTHER_ITEM_HEIGHT = 8
+
+
 def _layout_blocks(kpi_items: list[dict], other_items: list[dict]) -> list[dict]:
     """Deterministic 12-column grid placement - see this file's own module
     docstring for why this is never left to the AI. KPI tiles (3 columns
     wide) fill a row up to 4 across, then charts/tables (6 columns wide,
-    2 across) fill the rows below."""
+    2 across, _OTHER_ITEM_HEIGHT rows tall) fill the rows below."""
     laid_out = []
     x = y = 0
     for item in kpi_items:
@@ -873,8 +890,8 @@ def _layout_blocks(kpi_items: list[dict], other_items: list[dict]) -> list[dict]
     for item in other_items:
         if x + 6 > _GRID_COLUMNS:
             x = 0
-            y += 6
-        laid_out.append({**item, "x": x, "y": y, "w": 6, "h": 6})
+            y += _OTHER_ITEM_HEIGHT
+        laid_out.append({**item, "x": x, "y": y, "w": 6, "h": _OTHER_ITEM_HEIGHT})
         x += 6
 
     return laid_out
@@ -892,7 +909,35 @@ def _ai_result_to_block(result: dict, requested_type: str) -> tuple[str, dict]:
     purely because of a type mismatch between what was asked for and what
     the question actually produced (e.g. asking a "chart" block "what is
     total revenue?" - a single number, not a chart - still fills the block
-    in as a kpi rather than erroring)."""
+    in as a kpi rather than erroring).
+
+    2026-09-29 (design revamp): every real shape below (chart/kpi/table -
+    not the final plain-text fallback, which already IS the narrative) also
+    keeps analyze()'s own written explanation of what it found, under
+    config["ai_explanation"], when one exists - never fabricated or
+    reworded here, exactly whatever ai_engine.analyze() itself wrote for
+    this turn, or simply omitted when it returned no narrative. This is
+    what DashboardCanvas.tsx's BlockCard "Explain" affordance reads, so a
+    person looking at a chart/number/table on their own dashboard can see
+    the same plain-English read of it the AI already gave once, instead of
+    having to re-ask."""
+    return _attach_ai_explanation(result, _ai_result_to_block_shape(result, requested_type))
+
+
+def _attach_ai_explanation(result: dict, shaped: tuple[str, dict]) -> tuple[str, dict]:
+    actual_type, config = shaped
+    narrative = (result.get("narrative") or "").strip()
+    # The plain-text fallback's own {"text": narrative or "No result."} IS
+    # the narrative already (see _ai_result_to_block_shape's own final
+    # return) - stamping it a second time onto the same block as
+    # ai_explanation would be pure duplication, so this only ever adds the
+    # key for a real chart/kpi/table shape.
+    if narrative and actual_type != "text":
+        config = {**config, "ai_explanation": narrative}
+    return actual_type, config
+
+
+def _ai_result_to_block_shape(result: dict, requested_type: str) -> tuple[str, dict]:
     chart_spec = result.get("chart_spec")
     cols = result.get("result_columns") or []
     rows = result.get("result_rows") or []
@@ -1006,7 +1051,11 @@ def _default_block_size(block_type: str) -> tuple[int, int]:
         return 12, 2
     if block_type == "divider":
         return 12, 1
-    return 6, 6  # chart / table / donut / avatar_list
+    # 2026-09-29 (design revamp): see _OTHER_ITEM_HEIGHT's own comment above
+    # _layout_blocks - the same clipped-chart problem applies to a block
+    # added one at a time via the "+ Add block" popover, so it gets the
+    # same taller default.
+    return 6, _OTHER_ITEM_HEIGHT  # chart / table / donut / avatar_list
 
 
 def _place_new_block(page: models.DashboardPage, block_type: str) -> tuple[int, int, int, int]:
@@ -1549,6 +1598,23 @@ def generate_dashboard(
                 skipped_reasons.append(f'"{spec["title"]}": {question}')
                 continue
             actual_type, config = _ai_result_to_block(result, spec["type"])
+            # 2026-09-29 (design revamp): _ai_result_to_block's own fallback
+            # cascade lands on a plain "text" block, carrying whatever
+            # narrative analyze() wrote, only when this plan item didn't
+            # resolve to a real chart/kpi/table - and that text IS still a
+            # useful summary block when analyze() actually wrote one. But
+            # when it did NOT (a genuinely empty/failed turn, where
+            # _ai_result_to_block's own "No result." placeholder is the
+            # only thing in it), keeping that block just plants an
+            # unexplained blank "Note" on the dashboard - exactly what was
+            # reported as always turning up on the last page with no
+            # visible reason. Skip it the same way every other unbuildable
+            # plan item in this loop is already skipped (append + continue)
+            # instead of manufacturing a hollow placeholder block.
+            if actual_type == "text" and not (result.get("narrative") or "").strip():
+                print(f"[dashboard_builder] goal-driven block produced no real result for {spec['prompt']!r}, skipping")
+                skipped_reasons.append(f'"{spec["title"]}": produced no result to show')
+                continue
             # 2026-09-28 (Hex-parity round): a plainly forecast-labeled
             # chart block gets the real dashed-projection + confidence-
             # band overlay automatically - see _maybe_add_forecast_overlay
@@ -2103,6 +2169,17 @@ def ask_ai_block(
         raise HTTPException(422, result.get("clarifying_question") or "Could you rephrase that question?")
 
     actual_type, config = _ai_result_to_block(result, block.type)
+    # 2026-09-29 (design revamp): if the person's own question here already
+    # says "forecast"/"predict"/"projection" ("forecast next quarter's
+    # shipping delay"), turn the forecast overlay on automatically, the
+    # same nudge generate_dashboard's bulk/goal-driven path already gets
+    # from _maybe_add_forecast_overlay - so a single "Ask AI" block honors
+    # the same "the user shouldn't have to know the Show-forecast toggle
+    # exists" rule the bulk path follows. block.title is usually still
+    # blank at this point (it only gets set a few lines below when empty),
+    # so pass the prompt as both title and prompt - the keyword check reads
+    # them concatenated either way.
+    config = _maybe_add_forecast_overlay({"title": block.title or "", "prompt": payload.prompt}, actual_type, config)
     # 2026-09-28 (scheduled auto-refresh round): remembers the exact prompt
     # this block was built from, alongside its computed content - a
     # manually-built block already carries everything needed to safely
