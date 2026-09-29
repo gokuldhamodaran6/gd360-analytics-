@@ -1197,10 +1197,33 @@ export type ManualRecipe = {
   max_value?: number | null;
 };
 
-// One active cross-filter selection - (which column, which value). Lives
-// ONLY in the frontend's own component state per viewer, per page - see
+// 2026-09-29 (Hex-level filters round): the SAME operator vocabulary the
+// Data tab's own Excel-style column filter panel already uses
+// (DataTable.tsx has its own local copy of this exact shape; backend
+// routers/datasources.py's _apply_column_filter is what actually reads
+// it) - reused here rather than reinvented, so a dashboard filter (page-
+// wide or per-chart) gets multi-select, text conditions, a numeric
+// comparison OR RANGE, a date range, and a boolean toggle, the same as
+// the Data tab always has. Kept as its own copy (not imported from
+// DataTable.tsx) so this feature can evolve without risking a regression
+// on that already-working component - matching this codebase's own
+// established "kept as its own copy" convention (see backend
+// routers/dashboard_builder.py's rate limiter for the same reasoning).
+export type FilterTextOp = "contains" | "not_contains" | "equals" | "not_equals" | "starts_with" | "ends_with" | "is_empty" | "is_not_empty";
+export type FilterNumberOp = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "between";
+export type ColumnFilterSpec =
+  | { type: "values"; include: (string | number | boolean | null)[] }
+  | { type: "text"; op: FilterTextOp; value: string }
+  | { type: "number"; op: FilterNumberOp; value: string; value2?: string }
+  | { type: "date"; from: string | null; to: string | null }
+  | { type: "boolean"; value: "true" | "false" };
+
+// One active cross-filter selection - either on the page-wide filter bar
+// or (2026-09-29) scoped to just one block ("per-chart filtering" - see
+// previewFiltered's `blockFilters` param below). Lives ONLY in the
+// frontend's own component state per viewer, per page - see
 // previewFiltered's own docs for why this is never persisted anywhere.
-export type FilterCriterion = { column: string; value: string | number | boolean };
+export type FilterCriterion = { column: string; spec: ColumnFilterSpec };
 
 // What previewFiltered returns for one block it successfully recomputed -
 // same (type, config) shape as everywhere else, keyed by the block's id
@@ -1471,11 +1494,15 @@ export const dashboardBuilderApi = {
   // for how it's derived. Returned alongside blocks (not just blocks
   // alone, like before) so the caller can show an honest "Showing N rows"
   // next to the filter controls - see lib/useDashboardFilters.ts.
-  previewFiltered: (dashboardId: string, pageId: string, filters: FilterCriterion[]) =>
+  // 2026-09-29 (Hex-level filters round): `blockFilters`, keyed by block
+  // id, is "per-chart filtering" - extra criteria applied ONLY to that
+  // one block's own recompute, on top of `filters` for everyone else.
+  // Optional/omitted behaves exactly as before this round.
+  previewFiltered: (dashboardId: string, pageId: string, filters: FilterCriterion[], blockFilters?: Record<string, FilterCriterion[]>) =>
     api
       .post<{ blocks: FilteredBlock[]; matched_rows: number }>(
         `/dashboard-builder/${dashboardId}/pages/${pageId}/preview-filtered`,
-        { filters }
+        { filters, block_filters: blockFilters || {} }
       )
       .then((r) => ({ blocks: r.data.blocks, matchedRows: r.data.matched_rows })),
 
