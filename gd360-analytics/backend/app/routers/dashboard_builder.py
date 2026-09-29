@@ -356,6 +356,7 @@ from ..database import get_db
 from ..deps import get_current_user
 from ..services import ai_engine, chart_builder, data_access_rules, render_domains, workspace_access
 from ..services.data_loader import load_dataframe
+from .chat import _load_selected_tables, _other_sources_catalog
 from .dashboards import _can_edit, _can_view
 
 router = APIRouter(prefix="/dashboard-builder", tags=["dashboard-builder"])
@@ -1483,19 +1484,64 @@ def generate_dashboard(
         # away, so a total failure below can tell the person WHAT actually
         # went wrong on real blocks, not just a generic "couldn't build
         # anything" with no clue why.
+        # Automatic cross-source context (2026-09-29 - see routers/chat.py's
+        # identical mechanism, which this reuses): the same lightweight,
+        # access-checked list of every OTHER data source this person has
+        # connected - not just the one "Build with AI" resolved above -
+        # so a planned block that needs a table outside this dashboard's
+        # own data source (e.g. a goal naming "refund rate" when refunds
+        # live in a separately-connected source) gets it automatically
+        # instead of either being silently skipped (the old behavior: it
+        # would fail/clarify and land in skipped_reasons) or the person
+        # having to notice and manually switch which data source this
+        # whole dashboard is built from.
+        exclude_ids = {ds.id}
+        catalog = _other_sources_catalog(db, user, exclude_ids)
+
         skipped_reasons: list[str] = []
         for position, spec in enumerate(block_specs):
             try:
                 result = ai_engine.analyze(
                     spec["prompt"], {"Original data": original_df}, history=[], guided=False,
-                    skip_prep=False, original_df=original_df, unattended=True,
+                    skip_prep=False, original_df=original_df, unattended=True, catalog=catalog,
                 )
             except Exception as e:
                 print(f"[dashboard_builder] goal-driven block build failed for {spec['prompt']!r}: {e}")
                 skipped_reasons.append(f'"{spec["title"]}": {e}')
                 continue
-            if result.get("needs_clarification"):
-                question = result.get("clarifying_question") or "needed more information than was given"
+
+            if result.get("action") == "needs_data" and result.get("needs_datasource_ids"):
+                # See routers/chat.py's identical block for the full
+                # reasoning - loads the named source(s) for real (through
+                # the exact same "ds:" mechanism, so the same access
+                # checks apply) and asks again, once, with it available.
+                # `catalog` is not passed on this retry, so it cannot loop.
+                extra_ids = [str(i) for i in result["needs_datasource_ids"] if i and str(i) not in exclude_ids]
+                expanded = None
+                if extra_ids:
+                    try:
+                        expanded = _load_selected_tables(
+                            db, user, ds, ["original"] + [f"ds:{i}:original" for i in extra_ids]
+                        )
+                    except HTTPException as e:
+                        print(
+                            f"[dashboard_builder] could not auto-load {extra_ids} for block "
+                            f"{spec['prompt']!r}: {e.detail}"
+                        )
+                if expanded:
+                    block_tables = expanded[0]
+                    try:
+                        result = ai_engine.analyze(
+                            spec["prompt"], block_tables, history=[], guided=False,
+                            skip_prep=False, original_df=original_df, unattended=True,
+                        )
+                    except Exception as e:
+                        print(f"[dashboard_builder] goal-driven block build failed after auto-loading data for {spec['prompt']!r}: {e}")
+                        skipped_reasons.append(f'"{spec["title"]}": {e}')
+                        continue
+
+            if result.get("needs_clarification") or result.get("action") == "needs_data":
+                question = result.get("clarifying_question") or "needed data that could not be found or loaded"
                 print(
                     f"[dashboard_builder] goal-driven block asked to clarify despite unattended=True "
                     f"for {spec['prompt']!r}: {question}"
