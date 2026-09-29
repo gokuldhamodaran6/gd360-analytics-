@@ -141,6 +141,29 @@ function PaletteIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   );
 }
 
+// 2026-09-29 (design revamp): "from which project this dashboard created"
+// - a small folder glyph for the "Built from" Project link.
+function FolderIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+    </svg>
+  );
+}
+
+// "merge with other dashboards in the same project" - two shapes flowing
+// into one.
+function MergeIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M7 3v6a4 4 0 0 0 4 4h6" />
+      <path d="M7 21v-6a4 4 0 0 1 4-4" />
+      <path d="m14 6 3-3 3 3" />
+      <path d="m14 18 3 3 3-3" />
+    </svg>
+  );
+}
+
 // 2026-09-24 (Phase 3): manages the "who can view it" list for a PRIVATE
 // share - add-by-email plus a remove button per row. Deliberately usable
 // even before the dashboard has ever been published: dashboardBuilderApi
@@ -636,6 +659,86 @@ function BrandingPanel({
 
           <div className="text-[11px] text-muted leading-relaxed pt-2.5 border-t border-border">
             Applies everywhere this dashboard is viewed - here, in Preview, and on the published link.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 2026-09-29 (design revamp): "merge with other dashboards in the same
+// project" - Gokul's own words. Only ever rendered when this dashboard
+// actually HAS sibling dashboards to offer (see DashboardBuilderOut.
+// sibling_dashboards's own backend comment for exactly what "same
+// project" means - every other real dashboard built from this same
+// source chat conversation) - a dashboard with no source conversation, or
+// the only dashboard built from its own conversation so far, never shows
+// this button at all rather than showing one that opens to an empty,
+// useless list. Same dropdown-button shape as PublishPanel right below,
+// for visual consistency in this same header row.
+function MergeDashboardsPanel({ dash, onChange }: { dash: DashboardBuilderDetail; onChange: (d: DashboardBuilderDetail) => void }) {
+  const [open, setOpen] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (!boxRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  if (!dash.can_edit || dash.sibling_dashboards.length === 0) return null;
+
+  const merge = async (sourceId: string) => {
+    if (busyId) return;
+    setBusyId(sourceId);
+    setError("");
+    try {
+      onChange(await dashboardBuilderApi.mergeFrom(dash.id, sourceId));
+      setOpen(false);
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || "Couldn't merge that dashboard in. Please try again.");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="relative" ref={boxRef}>
+      <button type="button" className="btn-secondary text-xs flex items-center gap-1.5" onClick={() => setOpen((o) => !o)}>
+        <MergeIcon /> Merge dashboards
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-2 w-80 dash-card bg-surface shadow-2xl border border-border p-3 z-30 space-y-2">
+          <div className="text-sm font-semibold">Merge in from this project</div>
+          <p className="text-[11px] text-muted leading-relaxed">
+            Pull another dashboard&apos;s pages into this one, as new tabs here. The other dashboard is left exactly
+            as it is - nothing is removed from it.
+          </p>
+          {error && <div className="text-[11px] text-amber-500 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2 py-1.5">{error}</div>}
+          <div className="max-h-64 overflow-y-auto -mx-1 px-1 space-y-1">
+            {dash.sibling_dashboards.map((sib) => (
+              <div key={sib.id} className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-surface2/60 transition">
+                <div className="min-w-0">
+                  <div className="text-xs font-medium truncate">{sib.name}</div>
+                  <div className="text-[10px] text-muted">
+                    {sib.page_count} page{sib.page_count === 1 ? "" : "s"} · {sib.block_count} block{sib.block_count === 1 ? "" : "s"}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={busyId !== null}
+                  className="btn-secondary text-[11px] px-2 py-1 shrink-0 disabled:opacity-50"
+                  onClick={() => merge(sib.id)}
+                >
+                  {busyId === sib.id ? "Merging…" : "Merge in"}
+                </button>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -1439,6 +1542,22 @@ function DashboardBuilderViewBody({
             <div className="text-xs text-muted mt-1.5">
               {dash.is_published ? "Published - anyone with the link can view it" : "Not published yet - only you can see this"}
             </div>
+            {/* 2026-09-29 (design revamp): "i want a option like see from
+                which project this dashboard created" - links back to the
+                exact chat analysis this dashboard was generated from (see
+                DashboardBuilderOut.source_conversation_title's own backend
+                comment). Only shown when that Project still exists -
+                omitted, not a dead link, for a dashboard started blank or
+                whose source chat has since been deleted. */}
+            {dash.source_conversation_title && dash.source_conversation_datasource_id && (
+              <Link
+                to={`/workspace/${dash.source_conversation_datasource_id}?conversation=${dash.source_conversation_id}`}
+                className="text-xs text-muted hover:text-primary transition mt-1 inline-flex items-center gap-1"
+                title="Open the chat analysis this dashboard was built from"
+              >
+                <FolderIcon className="w-3 h-3" /> Built from &ldquo;{dash.source_conversation_title}&rdquo;
+              </Link>
+            )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {dash.can_edit && (
@@ -1466,6 +1585,7 @@ function DashboardBuilderViewBody({
               backgroundImageUrl={backgroundImageUrl}
               onAssetChanged={bumpBranding}
             />
+            <MergeDashboardsPanel dash={dash} onChange={handleDashChange} />
             <PublishPanel dash={dash} onChange={handleDashChange} />
           </div>
         </div>
