@@ -247,6 +247,21 @@ class Settings(BaseSettings):
     MAX_UPLOAD_MB: int = 50
     RATE_LIMIT_PER_MINUTE: int = 30  # per-user AI calls/minute, protects the free AI tier
 
+    # 2026-09-29 (parallel-pieces round): when a request genuinely calls for
+    # several INDEPENDENT analyses at once (see ai_engine's result_pieces
+    # plan field), how many of them run at the same time instead of one
+    # after another. Deliberately conservative - this app's Render instance
+    # is a confirmed 0.5 CPU / 512MB box (see SANDBOX_TIMEOUT_SECONDS's own
+    # comment above), and each concurrent piece is its own full sandboxed
+    # child process (see services/sandbox.py). 2 was chosen with Gokul
+    # directly (2026-09-29): real memory-safety headroom on this plan, a
+    # genuine if modest wall-clock improvement (pieces overlap their
+    # process-startup/import cost even when they end up sharing the same
+    # half a CPU core for the actual computation), and zero added OOM risk
+    # to the single worker process serving every other request. Raise this
+    # only after upgrading the Render plan's CPU/memory - not before.
+    PARALLEL_PIECES_MAX_WORKERS: int = 2
+
     # --- White-label custom domains (Dashboard Builder Phase 4, 2026-09-24) ---
     # Both are required for the "custom domain" publish option to work at
     # all - see services/render_domains.py for exactly how they're used.
