@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { PALETTES, SIGNATURE_COLORS, PaletteId } from "../lib/chartStyle";
 import "react-grid-layout/css/styles.css";
 import { ReactGridLayout as RGL, WidthProvider } from "react-grid-layout/legacy";
 import {
@@ -53,6 +54,31 @@ import { DashboardFilterState } from "../lib/useDashboardFilters";
 // viewing it (DashboardBlockGrid) or editing it (this component).
 const ROW_UNIT_PX = 48;
 const GRID_COLUMNS = 12;
+
+// 2026-09-29 (design revamp): the flat backend default heights a fresh
+// chart block has ever shipped with for its `h` grid units - 6 rows from
+// before this round (backend/app/routers/dashboard_builder.py's
+// _OTHER_ITEM_HEIGHT/_default_block_size, still true of every chart block
+// created before this round) and 8 rows from this round onward. BlockCard's
+// one-time auto-grow (see handleChartMinHeight below) only ever touches a
+// chart block whose CURRENT h is still exactly one of these - the moment a
+// person drags a chart's own corner to any other height, that becomes the
+// new "untouched" baseline forever (this set intentionally never grows to
+// include it), so auto-grow can never quietly re-fight a deliberate resize
+// on a later page reload.
+const CHART_DEFAULT_HEIGHTS = new Set([6, 8]);
+// Rough per-row pixel cost once react-grid-layout's own row margin is
+// folded in (margin={[16,16]} below - a 16px gap sits between every pair
+// of adjacent rows). Matches DashboardBlocks.tsx's own ROW_UNIT_PX.
+const ROW_MARGIN_PX = 16;
+// A chart block's own chrome that sits OUTSIDE the Plot element ChartCanvas
+// sizes to suggestedChartMinHeight: BlockCard's title/kebab header bar
+// (~33px incl. its border) plus ChartCanvas's own `.dash-card` padding
+// (`p-4` = 16px top + 16px bottom). Deliberately a little generous (an
+// approximation documented as one, not measured live via a ref) so the
+// one-time auto-grow below rounds UP to a card that comfortably fits the
+// chart rather than one just barely tall enough.
+const CHART_CARD_CHROME_PX = 72;
 const ReactGridLayout = WidthProvider(RGL);
 
 // No automatic collision avoidance this round (see the backend module
@@ -142,6 +168,17 @@ function CheckIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
 // ChartCanvas.tsx already uses for a chart's export menu, so a block's
 // header reads as just its title - same actions, one click behind a menu
 // instead of four buttons competing for attention on every single card.
+// 2026-09-29 (design revamp): "Explain this chart" affordance - see
+// BlockCard's explainOpen popover below for where this is used.
+function InfoIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5" />
+      <circle cx="12" cy="8" r="0.5" fill="currentColor" />
+    </svg>
+  );
+}
 function KebabIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="currentColor">
@@ -216,6 +253,21 @@ const ADD_BLOCK_GROUPS: { label: string; types: DashboardBlockType[] }[] = [
 // build_manual_block can produce (everything except "text" and "filter",
 // which are edited directly rather than computed from a recipe).
 const MANUAL_BUILD_TYPES: ManualBlockType[] = ["kpi", "table", "chart", "gauge", "donut", "sparkline", "avatar_list"];
+
+// 2026-09-29 (design revamp): the same palette choices the live Workspace
+// chart's own Style panel already offers (lib/chartStyle.ts's PALETTES),
+// plus "original" (GD360's validated Signature palette, SIGNATURE_COLORS -
+// see that file's own comment for why this exact 8-hue set is what "Ask
+// AI"/"Build manually" charts already start out painted with by default).
+// A dashboard chart previously had no way to change this at all - this is
+// only ever a palette CHOICE, never a place to free-hand a custom hex (the
+// full custom-color/per-series picker stays Workspace-only, where there is
+// room for it); "Signature" is listed first since it's the default every
+// chart already starts on.
+const COLOR_PALETTE_OPTIONS: { id: PaletteId; name: string; colors: string[] }[] = [
+  { id: "original", name: "Signature", colors: SIGNATURE_COLORS },
+  ...PALETTES,
+];
 
 const RESTYLE_OPTIONS: { value: RestyleChartType; label: string }[] = [
   { value: "bar", label: "Bar" },
@@ -510,8 +562,37 @@ function StylePanel({
     }
   };
 
+  // 2026-09-29 (design revamp): the palette choice lives at
+  // block.config.chart_style.paletteId - a small, additive corner of this
+  // block's config (read by DashboardBlocks.tsx's BlockChart, see its own
+  // comment) - so this reads and writes ONLY that one nested key, always
+  // spreading the block's real existing config first. update_block's
+  // `config` field is a wholesale REPLACE, not a merge (see routers/
+  // dashboard_builder.py's update_block) - omitting the spread here would
+  // silently wipe this chart's own chart_spec/result_columns/result_rows
+  // the moment a person picked a color.
+  const [colorBusy, setColorBusy] = useState(false);
+  const [colorError, setColorError] = useState("");
+  const activePaletteId: PaletteId = block.config?.chart_style?.paletteId || "original";
+
+  const pickPalette = async (paletteId: PaletteId) => {
+    if (paletteId === activePaletteId || colorBusy) return;
+    setColorBusy(true);
+    setColorError("");
+    try {
+      const updated = await dashboardBuilderApi.updateBlock(dashboardId, block.id, {
+        config: { ...block.config, chart_style: { ...block.config?.chart_style, paletteId } },
+      });
+      onDone(updated);
+    } catch {
+      setColorError("Couldn't change this chart's colors.");
+    } finally {
+      setColorBusy(false);
+    }
+  };
+
   return (
-    <div className="no-drag flex flex-col gap-2 p-3 h-full">
+    <div className="no-drag flex flex-col gap-3 p-3 h-full overflow-auto">
       <div className="flex items-center justify-between">
         <div className="text-xs font-semibold text-muted flex items-center gap-1.5">
           <PaletteIcon className="w-3.5 h-3.5" /> Chart style
@@ -520,27 +601,62 @@ function StylePanel({
           Cancel
         </button>
       </div>
-      {!hasTidyData ? (
-        <div className="text-xs text-muted leading-relaxed">
-          This chart doesn&apos;t have restyle data attached yet (it was built before this option existed). Ask GD360&apos;s AI to
-          rebuild it, or build a new chart block, to enable style options.
-        </div>
-      ) : (
-        <div className="grid grid-cols-2 gap-2">
-          {RESTYLE_OPTIONS.map((o) => (
+
+      <div className="flex flex-col gap-1.5">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">Colors</div>
+        <div className="grid grid-cols-2 gap-1.5">
+          {COLOR_PALETTE_OPTIONS.map((p) => (
             <button
-              key={o.value}
+              key={p.id}
               type="button"
-              disabled={busy !== null}
-              className="text-xs px-2 py-1.5 rounded-lg border border-border text-muted hover:text-text hover:bg-surface2 transition disabled:opacity-50"
-              onClick={() => restyle(o.value)}
+              disabled={colorBusy}
+              className={`flex items-center gap-1.5 text-xs px-2 py-1.5 rounded-lg border transition disabled:opacity-50 ${
+                activePaletteId === p.id
+                  ? "border-primary bg-primary/10 text-text"
+                  : "border-border text-muted hover:text-text hover:bg-surface2"
+              }`}
+              onClick={() => pickPalette(p.id)}
             >
-              {busy === o.value ? "Applying…" : o.label}
+              <span className="flex -space-x-0.5 shrink-0">
+                {p.colors.slice(0, 4).map((c, i) => (
+                  <span
+                    key={i}
+                    className="w-2.5 h-2.5 rounded-full border border-surface"
+                    style={{ backgroundColor: c }}
+                  />
+                ))}
+              </span>
+              <span className="truncate">{p.name}</span>
             </button>
           ))}
         </div>
-      )}
-      {error && <div className="text-xs text-amber-500 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-1.5">{error}</div>}
+        {colorError && <div className="text-[11px] text-amber-500">{colorError}</div>}
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">Chart type</div>
+        {!hasTidyData ? (
+          <div className="text-xs text-muted leading-relaxed">
+            This chart doesn&apos;t have restyle data attached yet (it was built before this option existed). Ask GD360&apos;s AI to
+            rebuild it, or build a new chart block, to enable type options.
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-2">
+            {RESTYLE_OPTIONS.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                disabled={busy !== null}
+                className="text-xs px-2 py-1.5 rounded-lg border border-border text-muted hover:text-text hover:bg-surface2 transition disabled:opacity-50"
+                onClick={() => restyle(o.value)}
+              >
+                {busy === o.value ? "Applying…" : o.label}
+              </button>
+            ))}
+          </div>
+        )}
+        {error && <div className="text-xs text-amber-500 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-1.5">{error}</div>}
+      </div>
     </div>
   );
 }
@@ -606,7 +722,13 @@ function BlockCard({
   const [deleting, setDeleting] = useState(false);
   // 2026-09-25d (elite pass) - see KebabIcon above.
   const [menuOpen, setMenuOpen] = useState(false);
+  // 2026-09-29 (design revamp) - see InfoIcon above and the "ai_explanation"
+  // comment on _ai_result_to_block in dashboard_builder.py for where this
+  // text comes from: analyze()'s own real, already-generated narrative for
+  // this exact block, never a second AI call and never fabricated here.
+  const [explainOpen, setExplainOpen] = useState(false);
   const filtersActive = Boolean(filterState && filterState.activeFilters.length > 0);
+  const explanation = (filterState?.overrides[block.id]?.config ?? block.config)?.ai_explanation as string | undefined;
 
   useEffect(() => setTitleDraft(block.title || ""), [block.id, block.title]);
   useEffect(() => setTextDraft(block.config?.text || ""), [block.id, block.config?.text]);
@@ -676,6 +798,51 @@ function BlockCard({
     onChange(d);
   };
 
+  // 2026-09-29 (design revamp): a fresh chart block used to land at a flat
+  // grid size regardless of what its chart actually needed, and anything
+  // taller than that card simply got clipped off (BlockCard/ChartCanvas are
+  // both overflow-hidden) - the literal bug behind Gokul's own screenshot
+  // of a bar chart's bottom axis cut off. This grows the card ONCE, the
+  // first time this chart's real content reports how tall it actually
+  // needs to be (see ChartCanvas's onMinHeight - ultimately from
+  // lib/chartStyle.ts's suggestedChartMinHeight), so a person never has to
+  // drag-resize a brand new chart open just to see the whole thing. The
+  // `autoFitDone` ref (not a Set/effect-cleanup) is enough on its own to
+  // fire only once per card: BlockCard remounts fresh per block.id (this
+  // grid item's own React key), so a fresh ref naturally comes with it.
+  const autoFitDone = useRef(false);
+  const handleChartMinHeight = useCallback(
+    (px: number) => {
+      if (autoFitDone.current) return;
+      if (!CHART_DEFAULT_HEIGHTS.has(block.h)) return; // already a deliberate, non-default size - never touch it
+      autoFitDone.current = true;
+      const neededPx = px + CHART_CARD_CHROME_PX;
+      const rowsNeeded = Math.ceil((neededPx + ROW_MARGIN_PX) / (ROW_UNIT_PX + ROW_MARGIN_PX));
+      const newH = Math.min(rowsNeeded, 20);
+      if (newH > block.h) {
+        dashboardBuilderApi.updateBlock(dashboardId, block.id, { h: newH }).then(onChange).catch(() => {
+          // Low-stakes and silent, same reasoning as setAccentColor above -
+          // worst case the card just stays at its original size, exactly
+          // as if this feature didn't run at all.
+        });
+      }
+    },
+    [block.h, block.id, dashboardId, onChange]
+  );
+
+  // 2026-09-29 (design revamp): the honest signal routers/dashboard_builder
+  // .py's own module docstring already promised ("the frontend says so
+  // rather than silently pretending they responded" - Phase 2b, point 2)
+  // but never actually shipped on this side. Only a block built via "Build
+  // manually" carries a `recipe` (see that docstring for exactly why an
+  // AI-built block can't safely be cross-filtered the same way) - so while
+  // a filter is active, every OTHER data-bearing block just keeps quietly
+  // showing its original, unfiltered numbers with no indication anything
+  // was skipped, which is exactly what read as "the filter doesn't work at
+  // all" rather than "this one block isn't filter-aware yet."
+  const isFilterableType = ["chart", "table", "kpi", "gauge", "donut", "sparkline", "avatar_list"].includes(block.type);
+  const notFilterAware = filtersActive && isFilterableType && !block.config?.recipe;
+
   return (
     <div className="card h-full flex flex-col overflow-hidden border-2 border-transparent hover:border-primary/30 transition">
       <div className="no-drag flex items-center gap-1.5 px-2 py-1.5 border-b border-border shrink-0 bg-surface2/60">
@@ -690,6 +857,33 @@ function BlockCard({
         <span className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-surface border border-border text-muted shrink-0">
           {BLOCK_TYPE_LABEL[block.type]}
         </span>
+        {explanation && (
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              className="dash-chart-menu-btn"
+              aria-label="Explain this chart"
+              aria-haspopup="dialog"
+              aria-expanded={explainOpen}
+              title="Explain this chart"
+              onClick={() => {
+                setMenuOpen(false);
+                setExplainOpen((o) => !o);
+              }}
+            >
+              <InfoIcon />
+            </button>
+            {explainOpen && (
+              <div
+                role="dialog"
+                aria-label="Explanation"
+                className="no-drag absolute right-0 top-full mt-1 w-64 card bg-surface shadow-2xl border border-border p-3 z-20 text-xs leading-relaxed text-foreground"
+              >
+                {explanation}
+              </div>
+            )}
+          </div>
+        )}
         <div className="relative shrink-0">
           <button
             type="button"
@@ -697,7 +891,10 @@ function BlockCard({
             aria-label="Block options"
             aria-haspopup="menu"
             aria-expanded={menuOpen}
-            onClick={() => setMenuOpen((o) => !o)}
+            onClick={() => {
+              setExplainOpen(false);
+              setMenuOpen((o) => !o);
+            }}
           >
             <KebabIcon />
           </button>
@@ -736,7 +933,7 @@ function BlockCard({
                   disabled={filtersActive}
                   title={
                     filtersActive
-                      ? "Restyling is disabled while a filter is active - it would overwrite this filtered view with the chart's real, unfiltered data."
+                      ? "Chart style is disabled while a filter is active - changing the chart type would overwrite this filtered view with the chart's real, unfiltered data."
                       : undefined
                   }
                   className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
@@ -814,6 +1011,15 @@ function BlockCard({
         </div>
       )}
 
+      {notFilterAware && (
+        <div
+          className="no-drag text-[11px] text-muted bg-surface2/70 border-b border-border px-2.5 py-1 shrink-0"
+          title="This block was built with Ask AI, which can't be safely re-run against filtered data on every filter change. Rebuild it with Build manually to make it respond to this page's filters."
+        >
+          Not updated by this filter (built with Ask AI)
+        </div>
+      )}
+
       <div className="flex-1 min-h-0">
         {panel === "ask" && <AskAiPanel dashboardId={dashboardId} block={block} onDone={onDone} onClose={() => setPanel("none")} />}
         {panel === "manual" && (
@@ -853,7 +1059,13 @@ function BlockCard({
                 onAccentColorChange={setAccentColor}
               />
             )}
-            {block.type === "chart" && <BlockChart title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
+            {block.type === "chart" && (
+              <BlockChart
+                title={block.title}
+                config={filterState?.overrides[block.id]?.config ?? block.config}
+                onMinHeight={handleChartMinHeight}
+              />
+            )}
             {block.type === "gauge" && (
               <GaugeBlock
                 title={block.title}
