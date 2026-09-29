@@ -83,6 +83,31 @@ export function ChipCloseIcon({ className = "w-3 h-3" }: { className?: string })
   );
 }
 
+// 2026-09-29 (visual polish round): the same two glyphs DataFlowMap.tsx's
+// own KIND_STYLE already uses for its "Prepared table"/"Chart & insight"
+// cards - reused here, not redrawn, so a table result and a chart result
+// look like the same kind of thing whether you're looking at the Flow tab
+// or a chat result card (see index.css's own --kind-table/--kind-chart
+// comment for the rest of this round's reasoning).
+function TableKindIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" width="14" height="14" fill="none">
+      <rect x="2.5" y="3.5" width="15" height="13" rx="1.6" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M2.5 8h15M8 3.5v13" stroke="currentColor" strokeWidth="1.4" />
+    </svg>
+  );
+}
+function ChartKindIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" width="14" height="14" fill="none">
+      <path d="M3 16.5V3M3 16.5h14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      <rect x="6" y="10.5" width="2.4" height="6" rx="0.6" fill="currentColor" />
+      <rect x="10.2" y="6.5" width="2.4" height="10" rx="0.6" fill="currentColor" />
+      <rect x="14.4" y="8.8" width="2.4" height="7.7" rx="0.6" fill="currentColor" />
+    </svg>
+  );
+}
+
 export type FollowUpSuggestion = { label: string; prompt: string };
 
 export type ChatTurn = {
@@ -291,7 +316,11 @@ function ShowCalculation({
         onClick={() => setOpen((o) => !o)}
       >
         <span className={`inline-block transition-transform ${open ? "rotate-90" : ""}`}>&#9656;</span>
-        {open ? "Hide calculation" : "Show calculation"}
+        {/* 2026-09-29 (visual polish round): matches the approved "GD360
+            Flow View Redesign" mockup's own wording for this exact toggle
+            ("Show how this was calculated" / "Hide calculation") rather
+            than the shorter placeholder copy this shipped with in Phase 4. */}
+        {open ? "Hide calculation" : "Show how this was calculated"}
       </button>
       {open && (
         <div className="mt-1.5 space-y-1">
@@ -357,10 +386,44 @@ function ResultCard({
   const rows: any[] = Array.isArray(entry.result_rows) ? entry.result_rows : [];
   const columns: { name: string }[] = Array.isArray(entry.result_columns) ? entry.result_columns : [];
   const alreadySelected = !!entry.version_id && !!sourceIds && sourceIds.includes(entry.version_id);
+  // 2026-09-29 (visual polish round): the same source/table/chart kind
+  // coding the Flow tab already uses (see index.css's --kind-table/
+  // --kind-chart) - a card either produced a chart (entry.chart_spec set)
+  // or is a plain table result, never both, so this is a real, honest
+  // classification of what's actually in the card, not a cosmetic label.
+  const kind: "table" | "chart" = entry.chart_spec ? "chart" : "table";
+  const durationLabel =
+    entry.duration_ms == null
+      ? null
+      : entry.duration_ms < 1000
+      ? `${entry.duration_ms}ms`
+      : `${(entry.duration_ms / 1000).toFixed(1)}s`;
   return (
-    <div className="rounded-xl border border-border bg-surface2/60 overflow-hidden">
-      <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-border">
-        <span className="text-[11px] font-semibold text-fg/80 truncate">{entry.label}</span>
+    <div
+      className={`rounded-xl border border-border bg-surface2/60 overflow-hidden ${
+        kind === "chart" ? "result-kind-chart" : "result-kind-table"
+      }`}
+    >
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border">
+        <span
+          className={`inline-flex items-center justify-center h-5 w-5 rounded-md shrink-0 ${
+            kind === "chart" ? "result-kind-icon-chart" : "result-kind-icon-table"
+          }`}
+        >
+          {kind === "chart" ? <ChartKindIcon /> : <TableKindIcon />}
+        </span>
+        <span className="text-[11px] font-semibold text-fg/80 truncate flex-1 min-w-0">{entry.label}</span>
+        {/* A real, measured wall-clock time for this exact piece (see
+            ResultEntry.duration_ms's own docstring) - null and omitted
+            whenever this card shares one script with the rest of the
+            answer, since there is nothing to honestly attribute per-card
+            in that case (see ShowCalculation's sharedCode note below). */}
+        {durationLabel && (
+          <span className="result-timing-badge inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-medium shrink-0">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+            {durationLabel}
+          </span>
+        )}
         <div className="flex items-center gap-2 shrink-0">
           {entry.chart_spec && columns.length > 0 && (
             <button
@@ -427,6 +490,20 @@ function ResultCard({
           </div>
         ) : (
           <div className="text-[11px] text-muted px-1 py-2">No rows to show.</div>
+        )}
+        {/* 2026-09-29 (visual polish round): a real, named-table chip -
+            entry.version_name only exists when this piece was genuinely
+            saved as its own table (see ResultEntry.version_id's own
+            docstring), so this never shows an invented name, and a card
+            whose result could not be saved as a table (e.g. a bare scalar)
+            simply has no chip, same as the "Use this table" button above. */}
+        {entry.version_name && (
+          <div className="flex flex-wrap gap-1.5 px-1 pt-1.5">
+            <span className="result-chip-table inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-mono">
+              <span className="h-1.5 w-1.5 rounded-full bg-current" />
+              {entry.version_name}
+            </span>
+          </div>
         )}
         <ShowCalculation
           method={entry.method_summary}
@@ -501,6 +578,92 @@ function MultiResultCards({
   );
 }
 
+// 2026-09-29 (visual polish round): a real, honest version of the "GD360
+// Flow View Redesign" mockup's dashboard-tie-in footer. That mockup's own
+// copy ("Every analysis above is already a dashboard block") describes a
+// capability GD360 does not actually have: nothing in this chat gets added
+// to a dashboard automatically - every dashboard here still comes from a
+// deliberate "Build Dashboard" or "Save chart" action (see
+// BuildDashboardModal.tsx / Workspace.tsx's own dashboardApi.saveChart),
+// and that stays true after this round. So rather than reskin the
+// mockup's claim as-is, this strip always says one of two things that are
+// actually true right now: a dashboard already exists for this exact chat
+// (real name + real block_count from dashboardBuilderApi.byConversation,
+// the same data LinkedDashboardsMenu in Workspace.tsx already fetches -
+// never invented), or none does yet and the same "Build Dashboard" flow
+// the header button already offers is one tap away, right where the
+// result actually is. Visually this borrows the mockup's idea (a strip
+// under the results, an icon, a CTA) but its colors come from this app's
+// own already-settled "verified/computed" mark (--color-primary, the same
+// emerald .verify-bar and .btn-primary already use) instead of the
+// mockup's literal near-black bar - see index.css's own comment on
+// .dashboard-tie-in for the reasoning.
+function DashboardTieIn({
+  dashboards, onOpenBuildDashboard, onOpenDashboard,
+}: {
+  dashboards: { id: string; name: string; block_count: number }[];
+  onOpenBuildDashboard?: () => void;
+  onOpenDashboard?: (id: string) => void;
+}) {
+  if (dashboards.length === 0) {
+    if (!onOpenBuildDashboard) return null;
+    return (
+      <div className="dashboard-tie-in rounded-xl px-3.5 py-2.5 flex items-center gap-3">
+        <span className="dashboard-tie-in__icon shrink-0 h-7 w-7 rounded-lg flex items-center justify-center">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <rect x="1.5" y="1.5" width="6" height="6" rx="1.4" stroke="currentColor" strokeWidth="1.4" />
+            <rect x="8.5" y="1.5" width="6" height="6" rx="1.4" stroke="currentColor" strokeWidth="1.4" />
+            <rect x="1.5" y="8.5" width="6" height="6" rx="1.4" stroke="currentColor" strokeWidth="1.4" />
+            <rect x="8.5" y="8.5" width="6" height="6" rx="1.4" stroke="currentColor" strokeWidth="1.4" />
+          </svg>
+        </span>
+        <div className="flex-1 min-w-0 text-[11.5px] text-fg/80 leading-snug">
+          Nothing from this chat is on a dashboard yet.
+        </div>
+        <button
+          type="button"
+          className="btn-primary text-[11px] px-3 py-1.5 shrink-0"
+          onClick={onOpenBuildDashboard}
+        >
+          Build Dashboard
+        </button>
+      </div>
+    );
+  }
+  const first = dashboards[0];
+  const totalBlocks = dashboards.reduce((sum, d) => sum + d.block_count, 0);
+  return (
+    <div className="dashboard-tie-in rounded-xl px-3.5 py-2.5 flex items-center gap-3">
+      <span className="dashboard-tie-in__icon shrink-0 h-7 w-7 rounded-lg flex items-center justify-center">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <rect x="1.5" y="1.5" width="13" height="13" rx="2.5" stroke="currentColor" strokeWidth="1.3" />
+          <path d="M4.5 8.5L7 11L11.5 5.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </span>
+      <div className="flex-1 min-w-0 text-[11.5px] text-fg/80 leading-snug">
+        {dashboards.length === 1 ? (
+          <>
+            <span className="font-semibold">"{first.name}"</span> has {totalBlocks} block{totalBlocks === 1 ? "" : "s"} built from this chat so far.
+          </>
+        ) : (
+          <>
+            <span className="font-semibold">{dashboards.length} dashboards</span> built from this chat, {totalBlocks} block{totalBlocks === 1 ? "" : "s"} total.
+          </>
+        )}
+      </div>
+      {onOpenDashboard && (
+        <button
+          type="button"
+          className="btn-secondary text-[11px] px-3 py-1.5 shrink-0"
+          onClick={() => onOpenDashboard(first.id)}
+        >
+          {dashboards.length === 1 ? "View dashboard" : "View dashboards"} &rarr;
+        </button>
+      )}
+    </div>
+  );
+}
+
 // Turns "**bold**" markers into real bold text instead of showing the
 // literal asterisks - used for both the narrative/answer bubble and the
 // Insight box, since a structured answer (e.g. "**Key insight:** ...
@@ -543,6 +706,7 @@ export default function ChatPanel({
   turns, onSend, busy, onApproveTransform, onRejectTransform, onCustomizeTransform, onContinueAnalysis, customizeSeed,
   versions, sourceIds, onSourceIdsChange, onVerify, verifyingIndex, analysisMode, onAnalysisModeChange,
   datasourceKind, datasourceSchema, otherDataSources, conversationId,
+  linkedDashboards, onOpenBuildDashboard, onOpenDashboard,
 }: {
   turns: ChatTurn[];
   onSend: (prompt: string) => void;
@@ -594,6 +758,24 @@ export default function ChatPanel({
   // it, into one flat list - precisely the confusion visibleVersions was
   // already built to prevent for this chat's own primary data source.
   conversationId?: string | null;
+  // 2026-09-29 (visual polish round): every real dashboard already built
+  // from this exact chat (see Workspace.tsx's own linkedDashboards state,
+  // fetched from dashboardBuilderApi.byConversation) - undefined/empty
+  // means genuinely none yet, never "not loaded", since Workspace.tsx
+  // always resolves this to [] once it knows there's nothing linked.
+  // Drives the honest DashboardTieIn strip rendered under the messages.
+  linkedDashboards?: { id: string; name: string; block_count: number }[];
+  // Opens the exact same "Build Dashboard" modal the header's own button
+  // already opens (see Workspace.tsx's buildDashboardOpen state) - omitted
+  // entirely (not just disabled) when the caller doesn't wire it up, so
+  // DashboardTieIn simply doesn't render its call-to-action rather than
+  // showing a button that does nothing.
+  onOpenBuildDashboard?: () => void;
+  // Navigates to an existing linked dashboard by id (Workspace.tsx wires
+  // this to its own `navigate` call, since ChatPanel itself has no router
+  // dependency) - only ever called with an id already present in
+  // linkedDashboards, never a guessed or partial one.
+  onOpenDashboard?: (id: string) => void;
 }) {
   const [text, setText] = useState("");
   const [workingOnOpen, setWorkingOnOpen] = useState(false);
@@ -950,6 +1132,23 @@ export default function ChatPanel({
         )}
         <div ref={bottomRef} />
       </div>
+
+      {/* 2026-09-29 (visual polish round): shown once, pinned above the
+          input rather than scrolling away with the messages - only once
+          this chat has actually produced something a dashboard could be
+          built from (a real analysis/transform turn, or a named multi-
+          result card), never on an empty or purely-clarifying chat. See
+          DashboardTieIn's own comment for why its copy never claims
+          anything is "already wired in". */}
+      {turns.some((t) => t.role === "assistant" && (t.action === "analyze" || (t.results && t.results.length > 0))) && (
+        <div className="px-3 pt-2">
+          <DashboardTieIn
+            dashboards={linkedDashboards || []}
+            onOpenBuildDashboard={onOpenBuildDashboard}
+            onOpenDashboard={onOpenDashboard}
+          />
+        </div>
+      )}
 
       <div className="border-t border-border">
         {/* ---- WORKING ON: one chip per selected table, not a single
