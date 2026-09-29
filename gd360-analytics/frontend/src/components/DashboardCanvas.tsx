@@ -1490,6 +1490,7 @@ function BlockCard({
                 // color along, so without this overlay a custom color
                 // would visibly vanish for as long as a filter is active.
                 config={{ ...(filterState?.overrides[block.id]?.config ?? block.config), accent_color: block.config?.accent_color }}
+                compareValue={filterState?.overrides[block.id] ? block.config?.value : undefined}
                 editable
                 onAccentColorChange={setAccentColor}
               />
