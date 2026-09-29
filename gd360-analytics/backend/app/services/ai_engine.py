@@ -418,6 +418,22 @@ Rules:
   for flows between stages, "gauge" for a single KPI. Only reach for one of these when the result genuinely has
   the shape it needs (e.g. sankey needs source/target/value columns) - never force data into a chart type it
   does not fit.
+- 2026-09-29 (design revamp): before finishing a "bar" (or "grouped_bar"/"stacked_bar") chart, check the real
+  spread of the values you are about to plot against their own common baseline - if every category's value
+  sits within roughly 5% of the group's mean (e.g. four values all around 2,000-2,010, or all around
+  60%-63%), a bar chart from zero will draw every bar at visually the same height, which tells the reader
+  nothing even though the underlying numbers do genuinely differ. This app already prints the exact value on
+  every bar of a short bar chart automatically (frontend/src/lib/chartStyle.ts's default styling), so a
+  simple flat-looking bar chart still lets someone read the real, small differences off the labels - never
+  shrink or truncate the axis to exaggerate the bars instead, which misrepresents the data. But if the
+  request is really about which category is highest/lowest or by how much, rather than the absolute scale
+  itself, prefer a chart type that foregrounds the ranking/delta directly instead of a plain bar chart - e.g.
+  a horizontal bar sorted by value so the ranking reads at a glance, or, when there is a clear reference point
+  to compare against (an overall average, a target, a prior period), computing and charting the DEVIATION
+  from that reference (result columns like "category" and "days_vs_average") rather than the raw totals, so
+  the chart's own scale is naturally sized to the differences that actually matter. Never silently leave a
+  "looks flat, tells the reader nothing" bar chart as the final answer when a ranked or delta-based view of
+  the same data would make the real pattern obvious at a glance.
 - When the request describes one named variable's effect on another - "impact of X on Y", "does X affect Y",
   "influence of X on Y", "how does X drive Y", "relationship between X and Y" - the variable named as the
   cause/driver (X) MUST end up as one of the (at most two) columns in `result`, and as x_label: never reduce
