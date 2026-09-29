@@ -61,29 +61,42 @@ export const PALETTES: { id: Exclude<PaletteId, "original" | "custom">; name: st
  
 // GD360's own default palette - what "Signature, GD360 default" (the first
 // option in the Style panel, id "original") actually paints instead of
-// leaving whatever flat, single AI-picked color came back untouched. Led
-// by our brand violet and teal, then widened with six more hues chosen and
-// ordered specifically so every ADJACENT pair (how colors actually sit next
-// to each other on a bar/line/pie chart) stays tell-apart for colorblind
-// readers, not just pleasant to a typical eye - validated with the
-// data-viz skill's palette checker rather than picked by eye. Three of the
-// eight (aqua, magenta, yellow) run a little low-contrast on a plain white
-// surface by themselves, which is exactly why every chart that uses this
-// palette also gets a direct value label and a legend (see below) - the
-// color is never the only way to read the chart.
+// leaving whatever flat, single AI-picked color came back untouched.
+//
+// 2026-09-29 (design revamp, dashboard-block chart pass): replaces the
+// previous 8-hue set (led by a violet that never matched this app's own
+// "no violet, no teal, one signature hue" brand rule in index.css, and
+// whose worst adjacent pair - the aqua/magenta-equivalent slot - measured
+// Delta E 1.8, unreadable to someone with deuteranopia) with the exact same
+// validated 8 hues, in the exact same order, as backend/app/services/
+// chart_builder.py's own PALETTE constant. The two used to drift apart:
+// chart_builder.py got the safe palette in an earlier round of this same
+// revamp, but every chart on the actual Dashboard Builder canvas is
+// re-colored client-side by this file (see colorsForStyle/paletteColors
+// below), so the unsafe palette kept shipping to every real dashboard block
+// regardless of what the backend sent. Fixed here so both paths agree.
+// Run against the dataviz skill's own validator
+// (scripts/validate_palette.js) at these exact 8 values/order: adjacent-
+// pair worst-case colorblind separation (protan/deutan/tritan) Delta E 8.4,
+// worst-case normal-vision separation Delta E 19.3 - both clear the
+// published floors. A chart with 9+ real categories still folds the extras
+// into "Other" or a facet grid rather than reusing an unvalidated 9th/10th
+// hue (see extendedColorAt below for the one deliberate exception: an
+// existing chart with more colorable items than the palette has hues
+// extends it with hue/lightness-shifted variants, never a random cycle).
 // Exported (not just used locally) so any other screen that needs GD360's
 // own validated categorical order - e.g. the admin dashboard's breakdown
 // charts - can reuse the exact same fixed hue sequence instead of a second
 // hardcoded copy that could drift out of sync with this one.
 export const SIGNATURE_COLORS = [
-  "#4A3AA7", // violet - brand primary family
-  "#1BAF7A", // aqua/teal - brand accent family
-  "#EB6834", // orange
-  "#2A78D6", // blue
-  "#E87BA4", // magenta
-  "#EDA100", // amber
-  "#1F8A3C", // green
-  "#E34948", // red
+  "#3987e5", // blue
+  "#d95926", // orange
+  "#199e70", // aqua
+  "#c98500", // yellow
+  "#d55181", // magenta
+  "#008300", // green
+  "#9085e9", // violet
+  "#e66767", // red
 ];
  
 // Exposed so the Style panel can use the same brand violet as the default
@@ -183,7 +196,15 @@ function extendedColorAt(base: string[], i: number): string {
   return hslToHex(newH, Math.min(100, Math.max(35, s)), newL);
 }
  
-const FONT_FAMILY = '-apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif';
+// 2026-09-29 (design revamp): leads with Geist, the same brand font every
+// other piece of chrome in this app already renders in (see the app-wide
+// `font-sans` mapping in tailwind.config.js and the Geist <link> in
+// index.html) - a chart used to fall back straight to the OS system font,
+// which is exactly what made a chart embedded in an otherwise Geist-set
+// dashboard read as a pasted-in, slightly foreign element. The rest of the
+// stack is kept as a real fallback for the (very unlikely) case Geist
+// hasn't finished loading yet.
+const FONT_FAMILY = 'Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif';
  
 const TILT_ANGLES: Record<ChartStyle["xAxisTilt"], number> = {
   none: 0,
