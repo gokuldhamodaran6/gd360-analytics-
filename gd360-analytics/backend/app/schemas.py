@@ -304,6 +304,19 @@ class ChatResponse(BaseModel):
     # re-sends "prompt" with skip_prep=true and source_version_ids=
     # [version_id] to run the analysis against the just-prepared table.
     continue_action: Optional[dict] = None
+    # 2026-09-29 (plain-language findings round): the real method label and
+    # the real code that produced THIS answer, plus how long the whole turn
+    # actually took - all three were already computed every turn (Phase 1)
+    # and already saved onto Message for the Flow tab, but never actually
+    # included in the live chat response before now, so a "Show calculation"
+    # toggle right under an answer had nothing to show without navigating
+    # away to the Flow tab first. None only when nothing meaningful
+    # classified (see ai_engine._derive_method_summary's own fallback) or
+    # this turn is a paused prep-only step (see routers/chat.py's
+    # persisted_code note) - never a fabricated label or a made-up duration.
+    method_summary: Optional[str] = None
+    code: Optional[str] = None
+    duration_ms: Optional[int] = None
 
 
 # ---------- Verify ("Double-check this") ----------
