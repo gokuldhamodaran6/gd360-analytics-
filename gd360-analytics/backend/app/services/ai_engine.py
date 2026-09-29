@@ -2651,10 +2651,25 @@ def _run_analyze_with_prep(
             prompt, piece_results, plan, chart_override
         )
         if entries:
+            # 2026-09-29 (plain-language findings round): every piece here
+            # ran as its own genuinely separate sandboxed call (see
+            # _run_pieces_concurrently), so - unlike the shared-script branch
+            # further below - both a real per-piece finding AND a real
+            # per-piece method/code/duration are all genuinely available.
+            # See _attach_entry_insights' own docstring for why this used to
+            # only ever compute one insight (from `first_value`, the primary
+            # piece) instead of one per entry.
+            raw_values = {label: meta.get("value") for label, meta in piece_results.items()}
+            _attach_entry_insights(prompt, entries, raw_values, rows_after)
+            for entry in entries:
+                piece_meta = piece_results.get(entry.get("label")) or {}
+                piece_code = piece_meta.get("code")
+                entry["code"] = piece_code
+                entry["duration_ms"] = piece_meta.get("duration_ms")
+                entry["method_summary"] = _derive_method_summary("analyze", None, piece_code) if piece_code else None
+                entry["shared_code"] = False
             primary = entries[0]
-            summary = result_to_summary(first_value)
-            summary["source_row_count"] = rows_after
-            insight = _generate_insight(prompt, summary)
+            insight = primary.get("insight")
             combined_narrative = f"**Data prep:** {prep_narrative}\n\n**Analysis:** {plan.get('narrative') or 'Here is your analysis.'}"
             combined_code = (
                 f"{prep_code}\n\n"
@@ -2746,10 +2761,29 @@ def _run_analyze_with_prep(
                 if as_table is not None:
                     named_tables[str(entry_label)] = as_table
         if entries:
+            # 2026-09-29 (plain-language findings round): this branch's
+            # pieces all came from ONE shared script (`code`/`combined_code`
+            # here, `df = result` etc.) - unlike the result_pieces branch
+            # above, there is no way to know which lines belong to which
+            # label, so (same honest limitation Phase 2 already documented
+            # for duration_ms/method_summary here) every entry's "code" is
+            # that SAME shared script, not something unique to just it -
+            # shared_code=True tells the frontend to say so rather than
+            # implying a precision this path cannot actually offer. A real,
+            # per-entry INSIGHT is still fully available though (result_to_
+            # summary/_generate_insight work from each piece's own actual
+            # computed value, same as the result_pieces branch) - only the
+            # code/duration attribution is shared, not the finding itself.
+            raw_values = {str(k): v for k, v in result.items()}
+            _attach_entry_insights(prompt, entries, raw_values, rows_after)
+            shared_method_summary = _derive_method_summary("analyze", None, combined_code)
+            for entry in entries:
+                entry["code"] = combined_code
+                entry["duration_ms"] = None
+                entry["method_summary"] = shared_method_summary
+                entry["shared_code"] = True
             primary = entries[0]
-            summary = result_to_summary(next(iter(result.values())))
-            summary["source_row_count"] = rows_after
-            insight = _generate_insight(prompt, summary)
+            insight = primary.get("insight")
             return {
                 "needs_clarification": False,
                 "clarifying_question": None,
@@ -2963,6 +2997,53 @@ def _entries_from_pieces(
     return entries, named_tables, named_table_timing, first_value
 
 
+# Ordered from most to least specific - the first real match wins, since a
+# step can easily contain more than one of these calls (e.g. a merge
+# followed by a groupby) and the first substantive operation is usually
+# what best explains what this step was actually for.
+#
+# 2026-09-29 (plain-language findings round): moved here from
+# routers/chat.py, unchanged, so ai_engine itself can classify a single
+# piece's own code inline while building that piece's multi-result entry
+# (see _entries_from_pieces below) instead of only ever being usable after
+# the fact, from chat.py, on a whole turn's combined code. chat.py still
+# calls this (as ai_engine._derive_method_summary) for exactly the same
+# whole-turn classification it always did - nothing about ITS behavior
+# changes, this is purely a relocation to make the same one classifier
+# reachable from both places rather than forking a second copy that could
+# drift out of sync with the first.
+_METHOD_PATTERNS: list[tuple[str, str]] = [
+    (r"\bmerge\(|\.join\(", "Joined tables"),
+    (r"\bgroupby\(", "Grouped & aggregated"),
+    (r"linregress|LinearRegression|np\.polyfit|\blstsq\(", "Fit a trend/forecast model"),
+    (r"KMeans|k-?means|\bcluster", "Clustered rows into segments"),
+    (r"\.corr\(", "Correlation analysis"),
+    (r"drop_duplicates|dropna|fillna", "Cleaned & de-duplicated rows"),
+    (r"\.pivot|pivot_table", "Pivoted data into a summary table"),
+    (r"resample\(|\.rolling\(", "Time-series aggregation"),
+    (r"zscore|z_score|\.std\(\)|\.abs\(\)\s*>", "Flagged outliers"),
+    (r"\.sort_values\(", "Sorted & ranked rows"),
+]
+
+
+def _derive_method_summary(action: str | None, chart_type: str | None, code: str | None) -> str | None:
+    """A short, honest one-line description of what this turn's (or, since
+    2026-09-29, this ONE piece's) code actually did - read straight off the
+    real pandas/python code that ran, never invented or guessed from the
+    prompt text. When the code doesn't match any recognized pattern this
+    falls back to a generic, still-true label rather than fabricating a
+    specific one."""
+    if code:
+        for pattern, label in _METHOD_PATTERNS:
+            if re.search(pattern, code):
+                return label
+    if action == "transform":
+        return "Cleaned & prepared data"
+    if chart_type:
+        return f"Built a {chart_type.replace('_', ' ')} chart"
+    return None
+
+
 def _build_result_entry(prompt: str, label: str, value: Any, plan: dict, chart_override: dict | None) -> dict | None:
     """Builds one named entry of a multi-result answer (see
     "Multiple results in one answer" in SYSTEM_PROMPT) - one chart-or-table
@@ -3011,10 +3092,24 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
             prompt, piece_results, plan, chart_override
         )
         if entries:
+            # See _attach_entry_insights' own docstring, and the identical
+            # comment in _run_analyze_with_prep's result_pieces branch -
+            # each piece here ran as its own genuinely separate sandboxed
+            # call, so a real per-piece finding AND real per-piece
+            # method/code/duration are both genuinely available, not just
+            # for the primary/first one.
+            raw_values = {label: meta.get("value") for label, meta in piece_results.items()}
+            source_row_count = int(len(next(iter(tables.values()))))
+            _attach_entry_insights(prompt, entries, raw_values, source_row_count)
+            for entry in entries:
+                piece_meta = piece_results.get(entry.get("label")) or {}
+                piece_code = piece_meta.get("code")
+                entry["code"] = piece_code
+                entry["duration_ms"] = piece_meta.get("duration_ms")
+                entry["method_summary"] = _derive_method_summary("analyze", None, piece_code) if piece_code else None
+                entry["shared_code"] = False
             primary = entries[0]
-            summary = result_to_summary(first_value)
-            summary["source_row_count"] = int(len(next(iter(tables.values()))))
-            insight = _generate_insight(prompt, summary)
+            insight = primary.get("insight")
             combined_code = "\n\n".join(
                 f"# --- {label} (ran independently, in parallel) ---\n{meta['code']}"
                 for label, meta in piece_results.items() if meta.get("code")
@@ -3088,10 +3183,23 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
                 if as_table is not None:
                     named_tables[str(entry_label)] = as_table
         if entries:
+            # See the identical comment in _run_analyze_with_prep's
+            # dict-in-`code` branch: every entry here shares ONE script
+            # (`code`), so its code/method-summary is that shared script,
+            # not something unique to just it (shared_code=True says so) -
+            # but each entry's INSIGHT is still real and its own, computed
+            # from that entry's own actual value.
+            raw_values = {str(k): v for k, v in result.items()}
+            source_row_count = int(len(next(iter(tables.values()))))
+            _attach_entry_insights(prompt, entries, raw_values, source_row_count)
+            shared_method_summary = _derive_method_summary("analyze", None, code)
+            for entry in entries:
+                entry["code"] = code
+                entry["duration_ms"] = None
+                entry["method_summary"] = shared_method_summary
+                entry["shared_code"] = True
             primary = entries[0]
-            summary = result_to_summary(next(iter(result.values())))
-            summary["source_row_count"] = int(len(next(iter(tables.values()))))
-            insight = _generate_insight(prompt, summary)
+            insight = primary.get("insight")
             return {
                 "needs_clarification": False,
                 "clarifying_question": None,
@@ -3334,6 +3442,78 @@ def _generate_insight(prompt: str, summary: dict) -> str:
         if "429" in last_error_text or "rate_limit" in last_error_text.lower() or "tokens per day" in last_error_text.lower():
             break
     return _fallback_insight(summary)
+
+
+def _attach_entry_insights(
+    prompt: str, entries: list[dict], raw_values_by_label: dict[str, Any], source_row_count: int,
+) -> None:
+    """2026-09-29 (plain-language findings round): before this, only the
+    single PRIMARY entry of a multi-result turn ever got a real "Key
+    insight" (see the lone `insight = _generate_insight(...)` call that used
+    to sit next to each of this function's 4 call sites, computed only from
+    `next(iter(result.values()))`/`first_value`) - every OTHER named result
+    in the same answer (e.g. "Customer segments", "Anomalies flagged"
+    alongside a primary "Demand forecast") showed only a bare chart/table,
+    with no plain-English finding of its own. That was the actual gap this
+    phase's roadmap entry named: "every RESULT gets a real one-line
+    plain-English summary from the real numbers" - Phase 1-3 already built
+    real timing, real chaining, and real bounded concurrency, but never gave
+    every result its own finding, only the turn's first one.
+
+    Mutates each dict in `entries` in place, setting "insight": str - using
+    the exact same no-fabrication pipeline already used for the
+    single-result/primary case (result_to_summary -> _generate_insight,
+    which itself falls back to the fully-deterministic _fallback_insight on
+    any provider failure) for every entry, never a new or looser one.
+
+    Runs one such call per entry CONCURRENTLY, bounded by
+    settings.INSIGHT_MAX_CONCURRENT, rather than one after another - a
+    multi-result turn can have several named pieces, and serializing N
+    multi-second LLM calls would make a "give me the forecast, profit, and
+    segments models" question feel much slower than before this round. See
+    that setting's own comment in config.py for why this bound is about
+    outbound-request concurrency to the AI provider, not this Render
+    instance's CPU/memory the way PARALLEL_PIECES_MAX_WORKERS is - an
+    insight call is a lightweight HTTPS request this process just waits on,
+    not a local child process, so the OOM/CPU-contention reasoning behind
+    that other bound does not apply here."""
+    if not entries:
+        return
+    summaries: dict[str, dict] = {}
+    for entry in entries:
+        label = entry.get("label")
+        value = raw_values_by_label.get(label)
+        if value is None:
+            continue
+        summary = result_to_summary(value)
+        summary["source_row_count"] = source_row_count
+        summaries[label] = summary
+    insights: dict[str, str] = {}
+    if summaries:
+        max_workers = max(1, min(settings.INSIGHT_MAX_CONCURRENT, len(summaries)))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_generate_insight, prompt, s): label for label, s in summaries.items()}
+            for fut in futures:
+                label = futures[fut]
+                try:
+                    insights[label] = fut.result()
+                except Exception as e:
+                    # _generate_insight itself already never raises (its own
+                    # try/except falls back to _fallback_insight) - this only
+                    # guards against the thread orchestration itself failing,
+                    # which should not happen in practice. Falls back to the
+                    # same deterministic, always-grounded template rather
+                    # than leaving this one entry with no finding at all.
+                    print(f"[ai_engine] insight generation for {label!r} raised unexpectedly: {e}")
+                    insights[label] = _fallback_insight(summaries[label])
+    # Every entry gets a real "insight" key set explicitly - None (not a
+    # missing key) for the one theoretical case where its own label never
+    # had a matching raw value at all (raw_values_by_label out of sync with
+    # entries, which every real call site above builds from the exact same
+    # source dict, so this should not happen in practice) - so the frontend
+    # never has to distinguish "key absent" from "genuinely no finding."
+    for entry in entries:
+        entry["insight"] = insights.get(entry.get("label"))
 
 
 def _reverify_via_replan(
