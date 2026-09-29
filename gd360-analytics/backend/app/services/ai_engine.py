@@ -35,7 +35,7 @@ import pandas as pd
 import requests
 
 from ..config import get_settings
-from .chart_builder import build_figure, result_to_summary, result_to_tidy
+from .chart_builder import build_figure, result_to_dataframe, result_to_summary, result_to_tidy
 from .chart_suggester import profile_dataframe, suggest_charts, suggest_stats
 from .sandbox import run_sandboxed
 
@@ -2050,7 +2050,16 @@ def analyze(
     with: needs_clarification, clarifying_question, action, narrative,
     chart_spec, insight, cleaned_df (set for a transform, or for an analyze
     that had to prepare its own table first), rows_before/after,
-    nulls_before/after, suggested_charts, suggested_stats.
+    nulls_before/after, suggested_charts, suggested_stats. When the request
+    genuinely asked for several distinct analyses at once (see "Multiple
+    results in one answer" in SYSTEM_PROMPT), also: results (one
+    chat-display card per named piece - see _build_result_entry) and
+    named_tables (2026-09-28 named-results round: the same pieces as real,
+    full, untruncated DataFrames, keyed by the same label - what
+    routers/chat.py._save_named_results turns into real, saved, selectable
+    tables so a later question can pick "Customer segments" or "Demand
+    forecast" by name, the same way it can already pick any other saved
+    table).
 
     `durable_repeat`, when given, is (action, narrative, code, chart_type)
     for this exact same question this same person already answered
@@ -2649,10 +2658,27 @@ def _run_analyze_with_prep(
         # practice, since a multi-model request almost always also needs a
         # prep step) prep_code + code combination.
         entries = []
+        # 2026-09-28 (named-results round): alongside the display-only
+        # `entries` above (each one truncated/JSON-shaped for the chat
+        # card), also keep the REAL, full, untruncated DataFrame behind
+        # each successfully-charted piece - see result_to_dataframe. This
+        # is what lets routers/chat.py._save_named_results turn "Demand
+        # forecast", "Customer segments", etc. into their own real, saved,
+        # selectable tables (chainable in a later question, exactly like
+        # the primary prepped table already is) instead of the six pieces
+        # only ever existing as chat-response cards that vanish once the
+        # conversation scrolls past them. Only entries that actually made
+        # it into `entries` (i.e. had real rows) are included here, and
+        # only when the underlying value is genuinely tabular - see
+        # result_to_dataframe's own docstring for what it skips.
+        named_tables: dict[str, pd.DataFrame] = {}
         for entry_label, entry_value in result.items():
             entry = _build_result_entry(prompt, entry_label, entry_value, plan, chart_override)
             if entry:
                 entries.append(entry)
+                as_table = result_to_dataframe(entry_value)
+                if as_table is not None:
+                    named_tables[str(entry_label)] = as_table
         if entries:
             primary = entries[0]
             summary = result_to_summary(next(iter(result.values())))
@@ -2681,6 +2707,7 @@ def _run_analyze_with_prep(
                 "result_row_count": primary["result_row_count"],
                 "result_truncated": primary["result_truncated"],
                 "results": entries,
+                "named_tables": named_tables or None,
             }
         out = _no_result(profile, _ANALYZE_FAILURE_NARRATIVE)
         out["action"] = "analyze"
@@ -2801,10 +2828,24 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
         # DataFrame/Series `result` (the overwhelming majority of requests)
         # never enters this branch at all.
         entries = []
+        # See the identical named_tables block in _run_analyze_with_prep
+        # above for the full rationale - same behavior here, for a
+        # multi-result answer that did not need its own prep step first.
+        # This is actually the MORE common of the two paths in practice
+        # (a request like "build the forecast, profit, and segments
+        # models" usually reads straight from the selected table with no
+        # separate preparation step), and, before this round, was the one
+        # multi-result path where NOTHING got saved as a real table at
+        # all - only the primary prepped-table path (above) ever called
+        # _save_cleaning_result, since cleaned_df is never set here.
+        named_tables: dict[str, pd.DataFrame] = {}
         for entry_label, entry_value in result.items():
             entry = _build_result_entry(prompt, entry_label, entry_value, plan, chart_override)
             if entry:
                 entries.append(entry)
+                as_table = result_to_dataframe(entry_value)
+                if as_table is not None:
+                    named_tables[str(entry_label)] = as_table
         if entries:
             primary = entries[0]
             summary = result_to_summary(next(iter(result.values())))
@@ -2832,6 +2873,7 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
                 "result_row_count": primary["result_row_count"],
                 "result_truncated": primary["result_truncated"],
                 "results": entries,
+                "named_tables": named_tables or None,
             }
         # Every entry in the dict was empty/uncharted-able - treat this the
         # same as any other "ran but produced nothing usable" failure below,
