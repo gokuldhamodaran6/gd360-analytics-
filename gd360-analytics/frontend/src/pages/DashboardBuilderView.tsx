@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { dashboardBuilderApi, DashboardBuilderDetail, DashboardBuilderPage, WorkspaceSummary, qualityChecksApi } from "../api/client";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
-import { DashboardBlockGrid, DataFreshnessBadge } from "../components/DashboardBlocks";
+import { DashboardBlockGrid, DataFreshnessBadge, describeFilterSpec, isSpecActive } from "../components/DashboardBlocks";
 import DashboardCanvas from "../components/DashboardCanvas";
 import { useDashboardFilters } from "../lib/useDashboardFilters";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
@@ -1638,12 +1638,13 @@ function DashboardBuilderViewBody({
               .filter((b) => b.type === "filter" && b.config?.column)
               .map((b) => {
                 const val = filterState.values[b.id];
+                const active = isSpecActive(val);
                 const label = b.title || b.config?.column || "Filter";
                 return (
                   <span key={b.id} className="flex items-center gap-1.5">
                     <span aria-hidden="true" className="text-border">&middot;</span>
                     <span>{label}:</span>
-                    <span className={val ? "text-text font-medium" : ""}>{val || "All"}</span>
+                    <span className={active ? "text-text font-medium" : ""}>{describeFilterSpec(val)}</span>
                   </span>
                 );
               })}
