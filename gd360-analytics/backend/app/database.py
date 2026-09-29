@@ -155,6 +155,10 @@ _NEW_COLUMNS = [
     ("dataset_versions", "method_summary", "TEXT"),
     ("messages", "duration_ms", "INTEGER"),
     ("messages", "method_summary", "TEXT"),
+    # 2026-09-29 (design revamp): single-level per-block undo - see
+    # models.DashboardBlock.previous_config's own docstring for exactly
+    # what this holds and when it's set/cleared.
+    ("dashboard_blocks", "previous_config", "JSON"),
 ]
 
 
