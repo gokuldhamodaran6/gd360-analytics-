@@ -441,6 +441,39 @@ def _apply_filters(df: pd.DataFrame, filters: list) -> pd.DataFrame:
     return df
 
 
+# 2026-09-29 (thought-leader filters round): the reverse of
+# chart_builder.build_figure's own chart_type vocabulary (_RESTYLE_CHART_
+# TYPES above) - reads it back off an already-built Plotly spec's first
+# real trace, purely so preview_filtered_blocks can rebuild an AI-built
+# chart AS THE SAME TYPE it already is when a filter changes its data,
+# never switching it to some other type as a side effect of filtering.
+# Deliberately narrow and honest: recognizes only the same six types a
+# person could pick from restyle_block's own dropdown, and returns None -
+# never a guess - for anything else (a heatmap, a funnel, a many-series
+# chart, or any shape this hasn't been taught to recognize). The caller
+# treats None exactly like a block with no recipe at all: left out of the
+# filtered response, still showing its real, unfiltered content.
+def _detect_restyle_chart_type(chart_spec: dict) -> str | None:
+    data = chart_spec.get("data") if isinstance(chart_spec, dict) else None
+    if not data:
+        return None
+    trace = data[0] if isinstance(data[0], dict) else {}
+    t = trace.get("type")
+    if t == "bar":
+        return "horizontal_bar" if trace.get("orientation") == "h" else "bar"
+    if t == "pie":
+        return "pie"
+    if t == "scatter":
+        fill = trace.get("fill")
+        if fill and fill != "none":
+            return "area"
+        mode = trace.get("mode") or ""
+        if "lines" in mode:
+            return "line"
+        return "scatter"
+    return None
+
+
 def _safe_float(v: Any, default: float = 0.0) -> float:
     """Coerces a pandas/numpy scalar to a plain, JSON-safe Python float,
     substituting `default` for NaN/None/anything non-numeric rather than
@@ -817,7 +850,33 @@ def _block_config(message: models.Message, requested_type: str) -> tuple[str, di
     """Returns (actual_type, config) - actual_type can differ from
     requested_type when the requested type doesn't fit what this message
     actually has (e.g. the AI asked for "chart" on a turn with no
-    chart_spec), so the block never ends up empty."""
+    chart_spec), so the block never ends up empty.
+
+    2026-09-29 (design revamp): also stamps config["ai_explanation"] from
+    this message's own already-written `insight` (the same short,
+    genuinely-computed finding the ORIGINAL flat dashboards.py view has
+    long shown as "Insight: ..." under a chart - see DashboardView.tsx -
+    and the live chat panel shows the same way). This is what makes the
+    "explain this" icon actually show up on a bulk AI-generated dashboard's
+    blocks, which _ai_result_to_block/_attach_ai_explanation (the OTHER
+    block-shaping path, used by ask_ai_block/the goal-driven generate path)
+    never touches, since a bulk-from-chat-history dashboard never calls
+    that function at all - see this file's module docstring. Never
+    fabricated or reworded here, exactly whatever ai_engine.analyze()
+    wrote for that original chat turn, or simply omitted when that turn
+    has no insight."""
+    return _attach_block_config_explanation(message, _block_config_shape(message, requested_type))
+
+
+def _attach_block_config_explanation(message: models.Message, shaped: tuple[str, dict]) -> tuple[str, dict]:
+    actual_type, config = shaped
+    explanation = (message.insight or "").strip()
+    if explanation:
+        config = {**config, "ai_explanation": explanation}
+    return actual_type, config
+
+
+def _block_config_shape(message: models.Message, requested_type: str) -> tuple[str, dict]:
     if requested_type == "chart" and message.chart_spec:
         # 2026-09-24 (Phase 2): a chart block also keeps the tidy
         # result_columns/result_rows it was built from, when this message
@@ -870,11 +929,21 @@ def _block_config(message: models.Message, requested_type: str) -> tuple[str, di
 _OTHER_ITEM_HEIGHT = 8
 
 
-def _layout_blocks(kpi_items: list[dict], other_items: list[dict]) -> list[dict]:
+def _layout_blocks(kpi_items: list[dict], other_items: list[dict], y_offset: int = 0) -> list[dict]:
     """Deterministic 12-column grid placement - see this file's own module
     docstring for why this is never left to the AI. KPI tiles (3 columns
     wide) fill a row up to 4 across, then charts/tables (6 columns wide,
-    2 across, _OTHER_ITEM_HEIGHT rows tall) fill the rows below."""
+    2 across, _OTHER_ITEM_HEIGHT rows tall) fill the rows below.
+
+    y_offset (2026-09-29, thought-leader filters round): how many grid
+    rows to start below y=0 - every row this function itself computes is
+    still relative to 0, then shifted down by this amount at the end. The
+    one caller today passes _FILTER_ROW_HEIGHT here whenever
+    _suggest_filter_columns found something to put in a real top-of-page
+    filter row (see _layout_filter_row below) - leaving that row's own
+    space untouched by this function's own KPI/chart math, and 0 (the
+    default, unchanged from before this existed) for every dashboard with
+    no auto-suggested filters."""
     laid_out = []
     x = y = 0
     for item in kpi_items:
@@ -894,7 +963,93 @@ def _layout_blocks(kpi_items: list[dict], other_items: list[dict]) -> list[dict]
         laid_out.append({**item, "x": x, "y": y, "w": 6, "h": _OTHER_ITEM_HEIGHT})
         x += 6
 
+    if y_offset:
+        laid_out = [{**item, "y": item["y"] + y_offset} for item in laid_out]
     return laid_out
+
+
+# 2026-09-29 (thought-leader filters round): "we as a professional thought
+# leaders to them when we build dashboard we should have build filters
+# which they want to see... like hex how it gave... overall filter in
+# top" - Gokul's own words. _FILTER_ROW_HEIGHT is deliberately shorter
+# than a KPI row (3) - a filter block is just a label + one dropdown, not
+# a number/chart worth showing, and matches _default_block_size("filter")
+# below.
+_FILTER_ROW_HEIGHT = 2
+_MAX_AUTO_FILTERS = 2
+
+
+def _layout_filter_row(filter_items: list[dict]) -> list[dict]:
+    """Lays out 1-2 auto-suggested filter blocks in their own dedicated
+    row pinned at y=0, the actual top of the page - full width (12
+    columns) split evenly across however many were suggested (see
+    _suggest_filter_columns, capped at _MAX_AUTO_FILTERS) - the "overall
+    filter in top" a professional BI build already has by default,
+    instead of leaving a person to notice a filter option exists at all
+    and add one by hand later. Every OTHER block on the page is laid out
+    starting _FILTER_ROW_HEIGHT rows below this one (see _layout_blocks'
+    own y_offset) so this row never overlaps anything."""
+    n = len(filter_items)
+    if n == 0:
+        return []
+    w = _GRID_COLUMNS // n
+    return [{**item, "x": i * w, "y": 0, "w": w, "h": _FILTER_ROW_HEIGHT} for i, item in enumerate(filter_items)]
+
+
+def _suggest_filter_columns(df: pd.DataFrame, max_filters: int = _MAX_AUTO_FILTERS) -> list[str]:
+    """Picks up to `max_filters` genuinely useful columns to auto-add as
+    top-of-page filter blocks when a dashboard is generated, instead of
+    requiring a person to notice a filter is even possible and add one
+    themselves via "+ Add block" afterward (they still can, for anything
+    beyond these first one or two - see this function's own caller sites).
+
+    _apply_filters/FilterControl (see their own docstrings) only support
+    a single-select "equals" filter over a column's own distinct values -
+    never a numeric/date RANGE - so a good candidate here is a column with
+    a genuinely small, human-scannable number of distinct values (a
+    region, category, status, year) - never a near-unique column (an id,
+    a name, a raw timestamp, a free-text field), which would turn into an
+    unusably long dropdown and isn't what a filter is for. This never
+    fabricates a filter that doesn't fit what the mechanism actually
+    supports today - it only ever picks real columns that are honestly
+    good candidates for the one filter TYPE this app has.
+
+    Ranked by ascending cardinality (fewest, most meaningful buckets
+    first), so the single most useful slicer is suggested first when only
+    one filter is being added."""
+    n_rows = len(df)
+    if n_rows == 0:
+        return []
+    candidates: list[tuple[int, str]] = []
+    for col in df.columns:
+        series = df[col]
+        try:
+            nunique = int(series.nunique(dropna=True))
+        except TypeError:
+            continue  # an unhashable column type (rare) can't be a dropdown filter at all
+        # A genuinely useful slicer has more than one value to choose
+        # between, but few enough to scan in a dropdown, and nowhere near
+        # one-row-per-value (that's an id/name column, not a category) -
+        # 40 is the same "low cardinality" ballpark this codebase already
+        # treats as "grouping-worthy" elsewhere (see chart_builder.py).
+        if nunique < 2 or nunique > 40:
+            continue
+        if nunique > max(20, n_rows * 0.5):
+            continue  # still too close to one-per-row even under 40, on a small table
+        candidates.append((nunique, col))
+    candidates.sort(key=lambda t: t[0])
+    return [col for _, col in candidates[:max_filters]]
+
+
+def _filter_block_items(columns: list[str]) -> list[dict]:
+    """The plain {type, title, config} shape _layout_filter_row/
+    _layout_blocks both expect - config matches exactly what a person
+    manually adding a filter block and picking a column from
+    FilterColumnPicker would end up with (see _default_block_config's own
+    "filter" case), so an auto-suggested filter behaves identically to a
+    hand-added one in every other way (restyle, delete, and - the actual
+    point - responding to preview_filtered_blocks) from this point on."""
+    return [{"type": "filter", "title": col, "config": {"column": col}} for col in columns]
 
 
 # ---------- Phase 2: turning one ai_engine.analyze() result into a block ----------
@@ -1295,11 +1450,31 @@ def _get_block(db: Session, dashboard: models.Dashboard, block_id: str) -> model
     return block
 
 
+# 2026-09-29 (design revamp): "just now i changed something and i cannot
+# able to get that old version back" - a single-level undo. Called at the
+# top of every one of the six endpoints that overwrite block.config
+# (update_block, ask_ai_block, build_manual_block, restyle_block,
+# set_block_accent_color, set_block_analysis), BEFORE they touch config,
+# so block.previous_config always holds exactly what config was one change
+# ago. Deliberately just one level (see models.DashboardBlock.
+# previous_config's own docstring for why) - snapshotting again here on
+# the very next change is what makes it "one step back," not a full
+# history stack. A plain reference assignment (not a deep copy) is safe
+# here specifically because every one of those six call sites always
+# REPLACES config with a brand new dict (a wholesale reassignment or a
+# `{**block.config, ...}` spread) rather than mutating the existing dict
+# in place - so the old dict this snapshot points to is never touched
+# again after this runs.
+def _snapshot_block_config(block: models.DashboardBlock) -> None:
+    block.previous_config = {"type": block.type, "config": block.config}
+
+
 def _page_out(page: models.DashboardPage) -> schemas.DashboardPageOut:
     blocks = [
         schemas.DashboardBlockOut(
             id=b.id, type=b.type, title=b.title, x=b.x, y=b.y, w=b.w, h=b.h,
             config=b.config, position=b.position, data_updated_at=b.data_updated_at,
+            can_undo=b.previous_config is not None,
         )
         for b in sorted(page.blocks, key=lambda b: b.position)
     ]
@@ -1362,16 +1537,74 @@ def _resolve_datasource_for_read(db: Session, user: models.User, d: models.Dashb
     return ds
 
 
+def _dashboards_for_conversation(
+    db: Session, conversation_id: str, user: models.User, exclude_dashboard_id: str | None = None
+) -> list[schemas.DashboardBuilderSummaryOut]:
+    """Every real (layout_version==2), currently-viewable-by-this-user
+    dashboard built from this one conversation ("Project") - shared by
+    list_dashboards_for_conversation below (the chat side's "View
+    Dashboards" menu) and _builder_out's own sibling_dashboards field (the
+    dashboard side's "merge with other dashboards in the same project"
+    picker), so the two surfaces can never quietly disagree about which
+    dashboards belong to the same Project."""
+    rows = (
+        db.query(models.Dashboard)
+        .filter(models.Dashboard.source_conversation_id == conversation_id, models.Dashboard.layout_version == 2)
+        .order_by(models.Dashboard.created_at.desc())
+        .all()
+    )
+    out: list[schemas.DashboardBuilderSummaryOut] = []
+    for d in rows:
+        if d.id == exclude_dashboard_id:
+            continue
+        # Same view-tier check _get_dashboard_v2 uses for a single
+        # dashboard - a v2 row this person can no longer actually open
+        # (e.g. shared into a workspace they've since left) is silently
+        # left out rather than listed as a dead link.
+        if not _can_view(db, d, user):
+            continue
+        share = d.share
+        out.append(schemas.DashboardBuilderSummaryOut(
+            id=d.id,
+            name=d.name,
+            created_at=d.created_at,
+            page_count=len(d.pages),
+            block_count=sum(len(p.blocks) for p in d.pages),
+            can_edit=_can_edit(db, d, user),
+            is_published=bool(share and share.published_at),
+        ))
+    return out
+
+
 def _builder_out(db: Session, d: models.Dashboard, user: models.User) -> schemas.DashboardBuilderOut:
     pages = [_page_out(p) for p in sorted(d.pages, key=lambda p: p.position)]
     share = d.share
     ds = _dashboard_datasource(db, d)
+    # 2026-09-29 (design revamp): "from which project this dashboard
+    # created" + "merge with other dashboards in the same project" - see
+    # DashboardBuilderOut's own field comments for exactly what each of
+    # these three feeds. source_conv is looked up directly (not through
+    # _resolve_datasource, which already 404-swallows a deleted source) so
+    # a dashboard whose original conversation was since deleted just gets
+    # None here rather than an error - the dashboard itself still renders
+    # fine either way, it simply has nothing to link back to.
+    source_conv = (
+        db.query(models.Conversation).filter(models.Conversation.id == d.source_conversation_id).first()
+        if d.source_conversation_id else None
+    )
+    sibling_dashboards = (
+        _dashboards_for_conversation(db, d.source_conversation_id, user, exclude_dashboard_id=d.id)
+        if d.source_conversation_id else []
+    )
     return schemas.DashboardBuilderOut(
         id=d.id,
         name=d.name,
         layout_version=d.layout_version,
         created_at=d.created_at,
         source_conversation_id=d.source_conversation_id,
+        source_conversation_title=source_conv.title if source_conv else None,
+        source_conversation_datasource_id=source_conv.datasource_id if source_conv else None,
+        sibling_dashboards=sibling_dashboards,
         datasource_id=ds.id if ds else None,
         datasource_name=ds.name if ds else None,
         pages=pages,
@@ -1643,12 +1876,29 @@ def generate_dashboard(
         dashboard = models.Dashboard(owner_id=user.id, name=title, layout_version=2, source_conversation_id=conv.id)
         db.add(dashboard)
         db.flush()
+        # 2026-09-29 (thought-leader filters round): a real live dataframe
+        # (original_df) is already loaded above for this goal-driven path -
+        # see _suggest_filter_columns' own docstring for the honest,
+        # never-fabricated heuristic behind which columns get suggested.
+        # Computed once, reused for every page below (they all come from
+        # this same data source) - best-effort: an odd dtype that trips
+        # nunique() just means no filters get suggested, never a failed
+        # dashboard build over this bonus feature.
+        try:
+            suggested_filter_cols = _suggest_filter_columns(original_df)
+        except Exception as e:
+            print(f"[dashboard_builder] filter suggestion skipped: {e}")
+            suggested_filter_cols = []
         for page_position, page_name in enumerate(page_order):
             page = models.DashboardPage(dashboard_id=dashboard.id, name=page_name, position=page_position)
             db.add(page)
             db.flush()
             items = page_items[page_name]
-            for block_position, item in enumerate(_layout_blocks(items["kpi"], items["other"])):
+            filter_row = _layout_filter_row(_filter_block_items(suggested_filter_cols))
+            laid_out = filter_row + _layout_blocks(
+                items["kpi"], items["other"], y_offset=_FILTER_ROW_HEIGHT if filter_row else 0
+            )
+            for block_position, item in enumerate(laid_out):
                 db.add(models.DashboardBlock(
                     page_id=page.id,
                     type=item["type"], title=item["title"],
@@ -1708,14 +1958,42 @@ def generate_dashboard(
         item = {"type": actual_type, "title": b["title"], "config": config, "position": position}
         (kpi_items if actual_type == "kpi" else other_items).append(item)
 
-    for item in _layout_blocks(kpi_items, other_items):
+    # 2026-09-29 (thought-leader filters round): unlike the goal-driven
+    # path above, this chat-history path never otherwise loads a live
+    # dataframe at all (every block here is reshaped from already-stored
+    # message data) - so a real one is loaded here specifically to look
+    # for good filter candidates, best-effort: conv.datasource_id can be
+    # null (a conversation predating datasources, or one whose source was
+    # since deleted), and any load/access failure just means no filters
+    # get suggested rather than a failed dashboard generation.
+    suggested_filter_cols: list[str] = []
+    if conv.datasource_id:
+        try:
+            hist_ds = db.query(models.DataSource).filter(models.DataSource.id == conv.datasource_id).first()
+            if hist_ds and workspace_access.can_edit_datasource(db, hist_ds, user):
+                hist_df = load_dataframe(hist_ds, table=None, version="original", db=db)
+                hist_df = data_access_rules.filter_dataframe_for_role(db, hist_df, hist_ds, user)
+                suggested_filter_cols = _suggest_filter_columns(hist_df)
+        except Exception as e:
+            print(f"[dashboard_builder] filter suggestion skipped: {e}")
+
+    filter_row = _layout_filter_row(_filter_block_items(suggested_filter_cols))
+    for filter_position, item in enumerate(filter_row):
+        db.add(models.DashboardBlock(
+            page_id=page.id,
+            type=item["type"], title=item["title"],
+            x=item["x"], y=item["y"], w=item["w"], h=item["h"],
+            config=item["config"], position=filter_position,
+        ))
+    position_offset = len(filter_row)
+    for item in _layout_blocks(kpi_items, other_items, y_offset=_FILTER_ROW_HEIGHT if filter_row else 0):
         db.add(models.DashboardBlock(
             page_id=page.id,
             type=item["type"],
             title=item["title"],
             x=item["x"], y=item["y"], w=item["w"], h=item["h"],
             config=item["config"],
-            position=item["position"],
+            position=item["position"] + position_offset,
         ))
 
     db.commit()
@@ -1804,19 +2082,50 @@ def create_from_template(
     db.add(dashboard)
     db.flush()
 
+    # 2026-09-29 (thought-leader filters round): same auto-suggested
+    # top-of-page filter row generate_dashboard's own two paths get - see
+    # _suggest_filter_columns' own docstring. A template's own blocks are
+    # still blank stubs at this point (_default_block_config - nothing is
+    # built yet), but the data source itself is already known, so there is
+    # already a real, honest basis to suggest from. Best-effort exactly
+    # like the chat-history path above: no data source, or a load/access
+    # failure, just means no filters get suggested.
+    suggested_filter_cols: list[str] = []
+    if conv.datasource_id:
+        try:
+            tmpl_ds = db.query(models.DataSource).filter(models.DataSource.id == conv.datasource_id).first()
+            if tmpl_ds and workspace_access.can_edit_datasource(db, tmpl_ds, user):
+                tmpl_df = load_dataframe(tmpl_ds, table=None, version="original", db=db)
+                tmpl_df = data_access_rules.filter_dataframe_for_role(db, tmpl_df, tmpl_ds, user)
+                suggested_filter_cols = _suggest_filter_columns(tmpl_df)
+        except Exception as e:
+            print(f"[dashboard_builder] filter suggestion skipped: {e}")
+
     for page_position, page_def in enumerate(template["pages"]):
         page = models.DashboardPage(dashboard_id=dashboard.id, name=page_def["name"], position=page_position)
         db.add(page)
         db.flush()
-        for block_position, block_def in enumerate(page_def["blocks"]):
+        filter_row = _layout_filter_row(_filter_block_items(suggested_filter_cols))
+        y_shift = _FILTER_ROW_HEIGHT if filter_row else 0
+        block_position = 0
+        for item in filter_row:
+            db.add(models.DashboardBlock(
+                page_id=page.id,
+                type=item["type"], title=item["title"],
+                x=item["x"], y=item["y"], w=item["w"], h=item["h"],
+                config=item["config"], position=block_position,
+            ))
+            block_position += 1
+        for block_def in page_def["blocks"]:
             db.add(models.DashboardBlock(
                 page_id=page.id,
                 type=block_def["type"],
                 title=block_def.get("title"),
-                x=block_def["x"], y=block_def["y"], w=block_def["w"], h=block_def["h"],
+                x=block_def["x"], y=block_def["y"] + y_shift, w=block_def["w"], h=block_def["h"],
                 config=_default_block_config(block_def["type"]),
                 position=block_position,
             ))
+            block_position += 1
 
     db.commit()
     db.refresh(dashboard)
@@ -1845,31 +2154,7 @@ def list_dashboards_for_conversation(
     if not conv or not workspace_access.can_access_conversation(db, conv, user):
         raise HTTPException(404, "Conversation not found.")
 
-    rows = (
-        db.query(models.Dashboard)
-        .filter(models.Dashboard.source_conversation_id == conv.id, models.Dashboard.layout_version == 2)
-        .order_by(models.Dashboard.created_at.desc())
-        .all()
-    )
-    out: list[schemas.DashboardBuilderSummaryOut] = []
-    for d in rows:
-        # Same view-tier check _get_dashboard_v2 uses for a single
-        # dashboard - a v2 row this person can no longer actually open
-        # (e.g. shared into a workspace they've since left) is silently
-        # left out rather than listed as a dead link.
-        if not _can_view(db, d, user):
-            continue
-        share = d.share
-        out.append(schemas.DashboardBuilderSummaryOut(
-            id=d.id,
-            name=d.name,
-            created_at=d.created_at,
-            page_count=len(d.pages),
-            block_count=sum(len(p.blocks) for p in d.pages),
-            can_edit=_can_edit(db, d, user),
-            is_published=bool(share and share.published_at),
-        ))
-    return out
+    return _dashboards_for_conversation(db, conv.id, user)
 
 
 @router.get("/{dashboard_id}", response_model=schemas.DashboardBuilderOut)
@@ -1878,6 +2163,73 @@ def get_builder_dashboard(
 ):
     d = _get_dashboard_v2(db, user, dashboard_id)
     return _builder_out(db, d, user)
+
+
+# 2026-09-29 (design revamp): "merge with other dashboards in the same
+# project" - Gokul's own words. Deliberately scoped to dashboards that
+# share the exact same source_conversation_id (the same chat "Project" -
+# see DashboardBuilderOut.sibling_dashboards's own comment for why that's
+# what "same project" means here): merging is only ever offered between
+# dashboards the person can already see listed as siblings of each other,
+# never an arbitrary dashboard-id typed in from anywhere else, so this
+# re-checks that same-conversation constraint server-side too rather than
+# trusting whatever the frontend's own picker happened to show.
+#
+# ADDITIVE, never destructive: every page (and every block on it) from
+# `source_dashboard_id` is COPIED into `dashboard_id` as brand new rows,
+# appended after this dashboard's existing pages - the source dashboard
+# itself is left completely untouched, so merging is safe to try and easy
+# to walk back (just delete the newly-added page(s) again) rather than an
+# irreversible one-way combine. Each merged-in page's name is suffixed
+# with where it came from ("Overview (from Q3 Forecast)") - two
+# dashboards from the same chat can easily both have a page called
+# "Overview", and silently landing two same-named, unrelated page tabs
+# next to each other on the merged result would be far more confusing
+# than one honestly-labeled extra word.
+@router.post("/{dashboard_id}/merge-from/{source_dashboard_id}", response_model=schemas.DashboardBuilderOut, status_code=201)
+def merge_dashboard(
+    dashboard_id: str,
+    source_dashboard_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    target = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    source = db.query(models.Dashboard).filter(models.Dashboard.id == source_dashboard_id).first()
+    if not source or source.layout_version != 2 or not _can_view(db, source, user):
+        raise HTTPException(404, "The dashboard to merge from wasn't found.")
+    if source.id == target.id:
+        raise HTTPException(400, "A dashboard can't be merged into itself.")
+    if not target.source_conversation_id or target.source_conversation_id != source.source_conversation_id:
+        raise HTTPException(400, "You can only merge dashboards that were built from the same chat Project.")
+
+    next_position = (max((p.position for p in target.pages), default=-1)) + 1
+    for src_page in sorted(source.pages, key=lambda p: p.position):
+        new_page = models.DashboardPage(
+            dashboard_id=target.id,
+            name=f"{src_page.name} (from {source.name})",
+            position=next_position,
+            background_color=src_page.background_color,
+        )
+        db.add(new_page)
+        db.flush()
+        next_position += 1
+        for src_block in src_page.blocks:
+            db.add(models.DashboardBlock(
+                page_id=new_page.id,
+                type=src_block.type,
+                title=src_block.title,
+                x=src_block.x, y=src_block.y, w=src_block.w, h=src_block.h,
+                config=src_block.config,
+                position=src_block.position,
+                data_updated_at=src_block.data_updated_at,
+                # previous_config deliberately NOT copied - an undo snapshot
+                # from the source dashboard means nothing on this brand new
+                # copy, which has no "last change" of its own yet to revert.
+            ))
+
+    db.commit()
+    db.refresh(target)
+    return _builder_out(db, target, user)
 
 
 # 2026-09-25 (Round 2): there was previously no way at all to rename a v2
@@ -2097,6 +2449,7 @@ def update_block(
     if payload.title is not None:
         block.title = payload.title.strip()[:120] or None
     if payload.config is not None:
+        _snapshot_block_config(block)
         block.config = payload.config
         # A real content change (a text block's body, a filter block's
         # column) - not a position/title-only edit, which leaves this
@@ -2116,6 +2469,40 @@ def delete_block(
     d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
     block = _get_block(db, d, block_id)
     db.delete(block)
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.post("/{dashboard_id}/blocks/{block_id}/undo", response_model=schemas.DashboardBuilderOut)
+def undo_block(
+    dashboard_id: str, block_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
+):
+    """"i want a option in each chart like undo or redo because just now i
+    changed something and i cannot able to get that old version back" -
+    swaps this block's config (and type, see models.DashboardBlock.
+    previous_config's own docstring for why type comes along too) back to
+    whatever _snapshot_block_config captured right before its most recent
+    change, across any of the six endpoints that make one. Position/size
+    (x/y/w/h) and title are deliberately left untouched - those are never
+    snapshotted in the first place (only a content/style change is), so a
+    drag/resize/rename a person made after the content edit they want to
+    undo is kept exactly as they left it, not silently reverted along with
+    it. Single-level by design: this clears previous_config on the way
+    out, so undo is not itself undoable - a second click with nothing left
+    to revert to 400s with a clear message rather than silently doing
+    nothing."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    block = _get_block(db, d, block_id)
+
+    snapshot = block.previous_config
+    if not snapshot:
+        raise HTTPException(400, "There's no previous version of this block to undo back to.")
+
+    block.type = snapshot.get("type") or block.type
+    block.config = snapshot.get("config") or {}
+    block.previous_config = None
+
     db.commit()
     db.refresh(d)
     return _builder_out(db, d, user)
@@ -2189,6 +2576,7 @@ def ask_ai_block(
     # question to re-ask. This is purely additive: nothing here changes
     # what ask_ai_block itself returns or how this block renders today.
     config["ai_prompt"] = payload.prompt.strip()
+    _snapshot_block_config(block)
     block.type = actual_type
     block.config = config
     block.data_updated_at = datetime.utcnow()
@@ -2258,6 +2646,7 @@ def build_manual_block(
     except Exception as e:
         raise HTTPException(400, f"Couldn't compute that: {e}")
 
+    _snapshot_block_config(block)
     block.type = actual_type
     block.config = config
     block.data_updated_at = datetime.utcnow()
@@ -2310,6 +2699,7 @@ def restyle_block(
     except Exception as e:
         raise HTTPException(400, f"Couldn't restyle to that chart type: {e}")
 
+    _snapshot_block_config(block)
     block.config = {**block.config, "chart_spec": new_spec}
     if title != block.title:
         block.title = title
@@ -2346,6 +2736,7 @@ def set_block_accent_color(
     if color and not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
         raise HTTPException(400, "Color must be a hex value like #1a7a5c, or empty to reset it.")
 
+    _snapshot_block_config(block)
     block.config = {**(block.config or {}), "accent_color": color or None}
 
     db.commit()
@@ -2400,6 +2791,7 @@ def set_block_analysis(
     except ValueError as e:
         raise HTTPException(400, str(e))
 
+    _snapshot_block_config(block)
     block.config = {
         **(block.config or {}),
         "chart_spec": new_spec,
@@ -2427,15 +2819,34 @@ def preview_filtered_blocks(
     never exposed on the public link). Only view access to the dashboard
     is required (not edit) - filtering is not editing.
 
-    Every filterable block on this page (one with a stored `recipe` - see
-    build_manual_block) is recomputed against the data filtered by
-    `payload.filters` and returned; every other block on the page (AI-
-    built, text, the filter blocks themselves) is simply left out of the
-    response, and the frontend leaves whatever it's currently showing for
-    those alone. A block that fails to recompute for any reason (a filter
-    happens to remove every matching row, a stale group-by column, etc.)
-    is also just left out, rather than failing the whole request over one
-    block - the frontend's existing content for it stays put."""
+    Every filterable block on this page is recomputed against the data
+    filtered by `payload.filters` and returned; every other block on the
+    page (a kpi with no recorded aggregation to re-derive, text, the
+    filter blocks themselves) is simply left out of the response, and the
+    frontend leaves whatever it's currently showing for those alone. A
+    block that fails to recompute for any reason (a filter happens to
+    remove every matching row, a stale group-by column, etc.) is also
+    just left out, rather than failing the whole request over one block -
+    the frontend's existing content for it stays put.
+
+    2026-09-29 (thought-leader filters round): "chart wise filters" -
+    Gokul's own words. Two ways a block responds to a filter now, not
+    just one:
+      - a stored `recipe` (build_manual_block) - unchanged from before,
+        recomputed straight from the live, filtered `df` below.
+      - no recipe, but real tidy result_columns/result_rows are still
+        attached (an AI-built table or chart - see _block_config/
+        _ai_result_to_block, both of which store this alongside
+        chart_spec) - filtered directly from that block's OWN already-
+        computed rows (never a live re-query, never a second AI call), so
+        this is always a real subset of what analyze() actually found,
+        never a fabricated or re-guessed number. Deliberately excludes
+        "kpi": a kpi's config.value is a single number with no recorded
+        aggregation function (sum/avg/count/...) attached to it, so there
+        is no honest way to know what a "filtered" version of it should
+        even mean - showing SOME number there anyway would risk it being
+        the wrong one, worse than the honest "not filter-aware yet"
+        status quo it keeps instead."""
     d = _get_dashboard_v2(db, user, dashboard_id)  # view access only
     page = next((p for p in d.pages if p.id == page_id), None)
     if not page:
@@ -2451,18 +2862,62 @@ def preview_filtered_blocks(
     except Exception:
         return schemas.FilteredBlocksOut(blocks=[], matched_rows=0)
 
-    df = _apply_filters(df, payload.filters[:_MAX_FILTERS_PER_REQUEST])
+    active_filters = payload.filters[:_MAX_FILTERS_PER_REQUEST]
+    df = _apply_filters(df, active_filters)
 
     out: list[schemas.FilteredBlockOut] = []
     for block in page.blocks:
         recipe = (block.config or {}).get("recipe")
-        if not recipe:
+        if recipe:
+            try:
+                actual_type, config, _default_title = _run_manual_recipe(df, recipe, existing_title=block.title)
+            except Exception:
+                continue
+            out.append(schemas.FilteredBlockOut(id=block.id, type=actual_type, config=config))
+            continue
+
+        if block.type not in ("table", "chart"):
+            continue
+        cols = (block.config or {}).get("result_columns")
+        rows = (block.config or {}).get("result_rows")
+        if not cols or not rows:
             continue
         try:
-            actual_type, config, _default_title = _run_manual_recipe(df, recipe, existing_title=block.title)
+            block_df = pd.DataFrame(rows, columns=[c["name"] for c in cols])
+            block_df = _apply_filters(block_df, active_filters)
         except Exception:
             continue
-        out.append(schemas.FilteredBlockOut(id=block.id, type=actual_type, config=config))
+
+        if block.type == "table":
+            out.append(schemas.FilteredBlockOut(
+                id=block.id, type="table",
+                config={
+                    "columns": [c.get("name") for c in cols],
+                    "rows": block_df.to_dict("records")[:_MAX_TABLE_ROWS_PER_BLOCK],
+                    "truncated": len(block_df) > _MAX_TABLE_ROWS_PER_BLOCK,
+                },
+            ))
+            continue
+
+        # A chart block: rebuild the SAME chart type it already is,
+        # detected from its own current chart_spec (see
+        # _detect_restyle_chart_type's own docstring) - never guessed,
+        # and never silently switched to a different type just because a
+        # filter changed. A type this can't confidently recognize (a
+        # heatmap, a funnel, a many-series chart outside the plain
+        # restyle vocabulary) is left out here exactly like a block with
+        # no recipe always has been - it keeps showing its real,
+        # unfiltered content rather than a mis-rebuilt one.
+        chart_type = _detect_restyle_chart_type((block.config or {}).get("chart_spec") or {})
+        if not chart_type:
+            continue
+        try:
+            new_spec = chart_builder.build_figure(block_df, chart_type, title=block.title or "")
+        except Exception:
+            continue
+        out.append(schemas.FilteredBlockOut(
+            id=block.id, type="chart", config={**(block.config or {}), "chart_spec": new_spec}
+        ))
 
     # 2026-09-25e (elite pass): `df` above already has payload.filters
     # applied (or is the untouched full dataset when payload.filters is
