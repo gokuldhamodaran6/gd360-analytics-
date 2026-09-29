@@ -383,6 +383,37 @@ body {
   background: linear-gradient(90deg, var(--dash-card-accent-color, rgb(var(--color-accent))), transparent 85%);
 }
 
+/* 2026-09-29 (design revamp): the mockup's KPI-tile hover "light effect"
+   that the real app was missing - a soft glow that blooms in from the same
+   accent hue as the tile's own top hairline above, rather than a plain
+   border-color change. Pure CSS (no pointer-tracking JS, nothing fabricated
+   - purely a hover treatment), so it costs nothing and degrades safely:
+   every element it touches (.dash-card--accented, already applied to
+   KpiTile/GaugeBlock/SparklineBlock in DashboardBlocks.tsx) already sets
+   position:relative here and overflow-hidden on its own wrapping div, so
+   the glow's ::after never leaks past the tile's own rounded corners.
+   Opacity-only transition (no size/position animation) keeps this cheap
+   even with many tiles hovered in quick succession while browsing a
+   dashboard. */
+.dash-card--accented::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  /* color-mix (not a `var(...) / alpha` slash, which only works on a
+     space-separated rgb() triplet) so this works whether
+     --dash-card-accent-color holds a "#rrggbb" custom hex or a resolved
+     "rgb(var(--dash-accent-N))" function string - both are valid <color>
+     inputs to color-mix regardless of which form set it. */
+  background: radial-gradient(220px 160px at 85% -10%, color-mix(in srgb, var(--dash-card-accent-color, rgb(var(--color-accent))) 16%, transparent), transparent 70%);
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  pointer-events: none;
+}
+.dash-card--accented:hover::after {
+  opacity: 1;
+}
+
 /* The filter block's control - previously the app-wide `.input` treatment
    (a plain bordered rectangle, same as a text field), which is exactly the
    "boxy native dropdown" the competitor comparison called out. This keeps
