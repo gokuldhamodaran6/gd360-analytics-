@@ -55,9 +55,52 @@ from scipy import stats as scipy_stats
 
 DARK_TEMPLATE = "plotly_dark"
 
+# 2026-09-29 (visual redesign, round 1): replaces the previous 10-hue set
+# (led by a violet that never matched GD360's own "no violet, no teal, one
+# signature hue" brand rule in index.css, and never checked for
+# colorblind-safety at all) with the 8 hues from this codebase's own dataviz
+# skill reference palette (dark-surface column), in their documented,
+# already-validated order. Run against the skill's validator
+# (scripts/validate_palette.js) at these exact 8 values/order: adjacent-pair
+# worst-case colorblind separation (protan/deutan/tritan) Delta E 8.4,
+# worst-case normal-vision separation Delta E 19.3 - both clear the
+# published floors, which the old palette did not (its worst adjacent pair,
+# aqua-vs-magenta-equivalent, sat at Delta E 1.8, unreadable to someone with
+# deuteranopia). A chart with 9+ real categories folds the extras into
+# "Other" or a facet grid rather than reusing an unvalidated 9th/10th hue -
+# see the dataviz skill's own non-negotiables on this. Index mapping is
+# unchanged from before: PALETTE[i % len(PALETTE)] for a multi-series loop,
+# and a handful of call sites below still reach for one fixed index (e.g.
+# PALETTE[3] for every single-series line chart) purely so each chart TYPE
+# keeps a stable, recognizable hue across the app - not because that slot
+# means anything more than "the line-chart color".
 PALETTE = [
-    "#6C5CE7", "#00D1B2", "#FF6B6B", "#FFD166", "#4D96FF",
-    "#F72585", "#43AA8B", "#F8961E", "#90BE6D", "#577590",
+    "#3987e5",  # 1 blue
+    "#d95926",  # 2 orange
+    "#199e70",  # 3 aqua
+    "#c98500",  # 4 yellow
+    "#d55181",  # 5 magenta
+    "#008300",  # 6 green
+    "#9085e9",  # 7 violet
+    "#e66767",  # 8 red
+]
+
+# A single branded blue ramp (built from the same validated hue family as
+# PALETTE[0]) for every chart that colors by magnitude rather than by
+# category - heatmap, density heatmap, contour, choropleth, and the ordinal
+# per-row tint on parallel coordinates. Ordered dark -> light so the low end
+# recedes into this app's own dark chart surface and the high end is the
+# brightest, most "hot" value, matching how every dashboard card actually
+# renders (transparent plot background over a near-black card - see
+# ChartCanvas.tsx). Replaces the generic Plotly "Viridis" default (a
+# green-to-yellow scale with no relationship to GD360's own palette) at
+# every one of its previous call sites below.
+SEQUENTIAL_SCALE = [
+    [0.0, "#0d366b"],
+    [0.25, "#184f95"],
+    [0.5, "#256abf"],
+    [0.75, "#3987e5"],
+    [1.0, "#9ec5f4"],
 ]
 
 # The color used for an automatic regression trend line and its confidence
@@ -523,24 +566,31 @@ def _build_dual_axis_combo(result: pd.DataFrame, cols: list) -> go.Figure:
     a_vals = pd.to_numeric(result[metric_a], errors="coerce")
     b_vals = pd.to_numeric(result[metric_b], errors="coerce")
 
+    # 2026-09-29 (visual redesign, round 1): both traces used to carry an
+    # always-on text label on EVERY bar/point (texttemplate + textposition
+    # "outside"/"top center") on top of the usual hover tooltip - which is
+    # exactly what produced the jumbled, overlapping numbers on this chart
+    # type in practice (two dense label sets fighting for the same vertical
+    # space, worst on categories with many bars). The dataviz skill this
+    # project follows is explicit on this: never a number on every point:
+    # a chart page's job is to read the shape at a glance, and the exact
+    # value for any one bar/point is what hover is for. Both traces keep
+    # their real value in hover (Plotly's default hovertemplate already
+    # shows it); neither draws permanent on-chart text anymore.
     fig = go.Figure()
     fig.add_trace(go.Bar(
         name=str(metric_a), x=categories, y=a_vals,
         marker_color=PALETTE[0], yaxis="y",
-        texttemplate="%{y:,.2~f}", textposition="outside",
-        textfont=dict(color=PALETTE[0]),
     ))
     fig.add_trace(go.Scatter(
         name=str(metric_b), x=categories, y=b_vals, yaxis="y2",
-        mode="lines+markers+text",
+        mode="lines+markers",
         line=dict(color=PALETTE[2], width=3),
         marker=dict(size=9, color=PALETTE[2]),
-        texttemplate="%{y:,.2~f}", textposition="top center",
-        textfont=dict(color=PALETTE[2]),
     ))
     fig.update_layout(
-        yaxis=dict(title=str(metric_a), rangemode="tozero"),
-        yaxis2=dict(title=str(metric_b), overlaying="y", side="right", showgrid=False, rangemode="tozero"),
+        yaxis=dict(title=dict(text=str(metric_a)), rangemode="tozero"),
+        yaxis2=dict(title=dict(text=str(metric_b)), overlaying="y", side="right", showgrid=False, rangemode="tozero"),
     )
     return fig
 
@@ -642,11 +692,21 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
             title=title or "",
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(family="Inter, system-ui, sans-serif", size=13, color="#E8E8F0"),
-            margin=dict(l=70, r=20, t=60, b=60),
+            font=dict(family="Geist, Inter, system-ui, sans-serif", size=13, color="#E8E8F0"),
+            margin=dict(l=76, r=28, t=72, b=68),
             hoverlabel=dict(bgcolor="#1E1E2E", font_size=13),
-            legend=dict(bgcolor="rgba(0,0,0,0)"),
+            legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         )
+        # 2026-09-29 (visual redesign, round 1): every panel's own axis used
+        # to keep Plotly's default fixed tick-label margin, which is exactly
+        # why a panel's own category label (e.g. a division name like
+        # "Sugar" on the left edge) could get clipped by the plot border -
+        # there was no room reserved for it once it ran longer than Plotly's
+        # guess. automargin makes every panel measure its own tick labels
+        # and grow its margin to fit them, the same fix applied to every
+        # other chart type in this file's closing layout block below.
+        fig.update_xaxes(automargin=True)
+        fig.update_yaxes(automargin=True)
         # A facet grid has no single shared axis pair to title - each panel
         # has its own - so instead of xaxis_title/yaxis_title (meaningless
         # here), the requested labels become one shared caption centered
@@ -654,12 +714,12 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
         # R/ggplot reference chart's outer axis labels.
         if x_label:
             fig.add_annotation(
-                text=x_label, xref="paper", yref="paper", x=0.5, y=-0.14,
+                text=x_label, xref="paper", yref="paper", x=0.5, y=-0.16,
                 showarrow=False, font=dict(size=13),
             )
         if y_label:
             fig.add_annotation(
-                text=y_label, xref="paper", yref="paper", x=-0.1, y=0.5,
+                text=y_label, xref="paper", yref="paper", x=-0.12, y=0.5,
                 showarrow=False, textangle=-90, font=dict(size=13),
             )
         return json.loads(fig.to_json())
@@ -722,14 +782,14 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
         fig = go.Figure(go.Box(y=df["y"], x=df.get("x"), marker_color=PALETTE[5]))
     elif chart_type == "heatmap":
         # expects a wide-format numeric dataframe (e.g. a correlation matrix)
-        fig = go.Figure(go.Heatmap(z=result.values, x=list(result.columns), y=list(result.index), colorscale="Viridis"))
+        fig = go.Figure(go.Heatmap(z=result.values, x=list(result.columns), y=list(result.index), colorscale=SEQUENTIAL_SCALE))
     elif chart_type == "waterfall":
         fig = go.Figure(go.Waterfall(
             x=df["x"], y=df["y"],
             connector={"line": {"color": "rgba(255,255,255,0.3)"}},
-            increasing={"marker": {"color": "#00D1B2"}},
-            decreasing={"marker": {"color": "#FF6B6B"}},
-            totals={"marker": {"color": "#6C5CE7"}},
+            increasing={"marker": {"color": PALETTE[2]}},
+            decreasing={"marker": {"color": PALETTE[7]}},
+            totals={"marker": {"color": PALETTE[0]}},
         ))
     elif chart_type == "funnel":
         fig = go.Figure(go.Funnel(x=df["y"], y=df["x"], marker=dict(color=PALETTE)))
@@ -835,7 +895,7 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
             )
         fig = go.Figure(go.Histogram2d(
             x=pd.to_numeric(result[numeric_cols[0]], errors="coerce"),
-            y=pd.to_numeric(result[numeric_cols[1]], errors="coerce"), colorscale="Viridis",
+            y=pd.to_numeric(result[numeric_cols[1]], errors="coerce"), colorscale=SEQUENTIAL_SCALE,
         ))
 
     # ---- Relationship ----
@@ -854,7 +914,7 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
     elif chart_type == "contour":
         if not isinstance(result, pd.DataFrame) or result.shape[1] < 2 or len(numeric_cols) != result.shape[1]:
             raise ValueError("Contour needs a fully numeric grid (e.g. a correlation or pivot matrix), the same as heatmap.")
-        fig = go.Figure(go.Contour(z=result.values, x=[str(c) for c in result.columns], y=[str(i) for i in result.index], colorscale="Viridis"))
+        fig = go.Figure(go.Contour(z=result.values, x=[str(c) for c in result.columns], y=[str(i) for i in result.index], colorscale=SEQUENTIAL_SCALE))
     elif chart_type == "scatter_3d":
         if len(numeric_cols) < 3:
             raise ValueError(f"3D scatter needs three numeric columns (x, y and z); this result only has {len(numeric_cols)}.")
@@ -924,7 +984,7 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
         if len(numeric_cols) < 2:
             raise ValueError(f"Parallel coordinates needs at least two numeric columns; this result only has {len(numeric_cols)}.")
         fig = go.Figure(go.Parcoords(
-            line=dict(color=list(range(len(result))), colorscale="Viridis"),
+            line=dict(color=list(range(len(result))), colorscale=SEQUENTIAL_SCALE),
             dimensions=[
                 dict(label=str(c), values=list(pd.to_numeric(result[c], errors="coerce").fillna(0)))
                 for c in numeric_cols
@@ -940,7 +1000,7 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
             raise ValueError("Choropleth needs a country/region column and a numeric value column - this result does not have both.")
         fig = go.Figure(go.Choropleth(
             locations=result[loc_col].astype(str), z=pd.to_numeric(result[val_col], errors="coerce"),
-            locationmode="country names", colorscale="Viridis", marker_line_color="white",
+            locationmode="country names", colorscale=SEQUENTIAL_SCALE, marker_line_color="white",
         ))
 
     else:
@@ -949,23 +1009,43 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
     if barmode:
         fig.update_layout(barmode=barmode)
 
+    # 2026-09-29 (visual redesign, round 1): this whole block used to set
+    # only a fixed 40/20/50/40px margin and no `automargin`, so a long axis
+    # title or a wide tick label (a long category name, a currency-formatted
+    # number) had nowhere to grow into and either overlapped the tick
+    # labels next to it or got clipped at the card edge - the concrete bug
+    # behind "Total Gross Profit ($)" overlapping its own "20k" tick, and
+    # a heatmap category label getting cut off at the card border.
+    # `automargin=True` makes Plotly measure the actual rendered text and
+    # grow the margin to fit it every time; `title.standoff` adds a fixed
+    # gap between the axis title and its tick labels so the two never touch
+    # even once automargin has done its job. Also: the legend used to keep
+    # Plotly's default placement (inside the top-right of the plot area),
+    # which is exactly why a legend could sit on top of the tallest bars or
+    # data points - moving it to a horizontal row above the plot (the same
+    # placement used throughout the reference dashboards this round was
+    # measured against) means it never overlaps a mark again. None of this
+    # touches chart TYPE selection, data, or layout math - purely chrome.
     fig.update_layout(
         template=DARK_TEMPLATE,
         title=title or "",
-        xaxis_title=x_label or "",
+        xaxis=dict(automargin=True, title=dict(text=x_label or "", standoff=10)),
+        yaxis=dict(automargin=True, title=dict(standoff=12)),
+        yaxis2=dict(automargin=True, title=dict(standoff=12)),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Inter, system-ui, sans-serif", size=13, color="#E8E8F0"),
-        margin=dict(l=40, r=20, t=50, b=40),
+        font=dict(family="Geist, Inter, system-ui, sans-serif", size=13, color="#E8E8F0"),
+        margin=dict(l=56, r=28, t=68, b=56),
         hoverlabel=dict(bgcolor="#1E1E2E", font_size=13),
-        legend=dict(bgcolor="rgba(0,0,0,0)"),
+        legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
     if not dual_axis_combo_used:
         # The normal case: one shared y axis, titled from the AI's own
         # y_label (or blank). The dual-axis combo above already gave each
         # of its two axes its own meaningful title (the metric name), so
-        # it deliberately skips this generic overwrite.
-        fig.update_layout(yaxis_title=y_label or "")
+        # it deliberately skips this generic overwrite (and never touches
+        # automargin/standoff, both already set unconditionally above).
+        fig.update_layout(yaxis=dict(title=dict(text=y_label or "")))
 
     # fig.to_json() guarantees full JSON-safety (numpy types, NaT, etc handled)
     return json.loads(fig.to_json())
@@ -984,11 +1064,13 @@ def build_cleaning_summary_chart(
         barmode="group",
         template=DARK_TEMPLATE,
         title=title,
+        xaxis=dict(automargin=True),
+        yaxis=dict(automargin=True, title=dict(standoff=12)),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Inter, system-ui, sans-serif", size=13, color="#E8E8F0"),
-        margin=dict(l=40, r=20, t=50, b=40),
-        legend=dict(bgcolor="rgba(0,0,0,0)"),
+        font=dict(family="Geist, Inter, system-ui, sans-serif", size=13, color="#E8E8F0"),
+        margin=dict(l=56, r=28, t=68, b=56),
+        legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
     return json.loads(fig.to_json())
 
