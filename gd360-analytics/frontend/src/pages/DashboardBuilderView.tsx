@@ -395,6 +395,29 @@ function BrandingPanel({
   const logoInputRef = useRef<HTMLInputElement>(null);
   const bgInputRef = useRef<HTMLInputElement>(null);
 
+  // 2026-09-29 (design revamp): fixes the reported "branding colors has a
+  // bug". Root cause - a native <input type="color"> fires onChange on
+  // EVERY drag tick (often dozens per second while dragging the picker),
+  // and this panel used to send a full updateBranding PATCH per tick with
+  // no debounce, reading the swatch's own displayed value straight off the
+  // server-confirmed `dash` prop with nothing guarding response order. A
+  // slower early tick's response landing AFTER a later tick's faster one
+  // would silently snap the swatch back to an older color mid-drag. Fixed
+  // two ways together: colorDraft gives the input instant, purely local
+  // visual feedback independent of the network at all (so dragging itself
+  // never stutters), while colorTimer debounces the actual PATCH to once
+  // per field ~350ms after the last change, and colorSeq drops any
+  // response that isn't from the newest request for that same field.
+  const [colorDraft, setColorDraft] = useState<Partial<Record<"brand_primary_color" | "brand_accent_color" | "background_color", string>>>({});
+  const colorTimer = useRef<Partial<Record<string, ReturnType<typeof setTimeout>>>>({});
+  const colorSeq = useRef<Partial<Record<string, number>>>({});
+  useEffect(() => {
+    const timers = colorTimer.current;
+    return () => {
+      Object.values(timers).forEach((t) => t && clearTimeout(t));
+    };
+  }, []);
+
   if (!dash.can_edit) return null;
 
   const run = async (fn: () => Promise<DashboardBuilderDetail>, touchesAsset = true) => {
@@ -423,8 +446,50 @@ function BrandingPanel({
 
   const setStyle = (style: "default" | "color" | "image") =>
     run(() => dashboardBuilderApi.updateBranding(dash.id, { background_style: style }), false);
-  const setColor = (field: "brand_primary_color" | "brand_accent_color" | "background_color", value: string) =>
-    run(() => dashboardBuilderApi.updateBranding(dash.id, { [field]: value }), false);
+
+  const setColor = (field: "brand_primary_color" | "brand_accent_color" | "background_color", value: string) => {
+    setColorDraft((d) => ({ ...d, [field]: value }));
+    const timer = colorTimer.current[field];
+    if (timer) clearTimeout(timer);
+    const seq = (colorSeq.current[field] || 0) + 1;
+    colorSeq.current[field] = seq;
+    colorTimer.current[field] = setTimeout(async () => {
+      setBusy(true);
+      setError("");
+      try {
+        const result = await dashboardBuilderApi.updateBranding(dash.id, { [field]: value });
+        if (colorSeq.current[field] !== seq) return; // a newer edit to this field already superseded this request
+        onChange(result);
+        setColorDraft((d) => {
+          const next = { ...d };
+          delete next[field];
+          return next;
+        });
+      } catch (err: any) {
+        if (colorSeq.current[field] !== seq) return;
+        setError(err?.response?.data?.detail || "Couldn't update branding. Please try again.");
+      } finally {
+        if (colorSeq.current[field] === seq) setBusy(false);
+      }
+    }, 350);
+  };
+  // Reset ("brand_primary_color"/"brand_accent_color" cleared together) and
+  // the background-color field's own reset bypass the field-level debounce
+  // above entirely - clear any pending draft/timer for the affected
+  // field(s) so a stale debounced write can never re-apply a color right
+  // after the person explicitly reset it.
+  const clearColorDraft = (...fields: Array<"brand_primary_color" | "brand_accent_color" | "background_color">) => {
+    fields.forEach((f) => {
+      const timer = colorTimer.current[f];
+      if (timer) clearTimeout(timer);
+      colorSeq.current[f] = (colorSeq.current[f] || 0) + 1; // invalidate any in-flight request for this field
+    });
+    setColorDraft((d) => {
+      const next = { ...d };
+      fields.forEach((f) => delete next[f]);
+      return next;
+    });
+  };
 
   const activeStyle = dash.background_style || "default";
 
@@ -475,7 +540,7 @@ function BrandingPanel({
               <input
                 type="color"
                 title="Primary color"
-                value={dash.brand_primary_color || "#147a5c"}
+                value={colorDraft.brand_primary_color ?? dash.brand_primary_color ?? "#147a5c"}
                 onChange={(e) => setColor("brand_primary_color", e.target.value)}
                 className="w-7 h-7 rounded-full border-0 bg-transparent cursor-pointer p-0"
               />
@@ -485,7 +550,7 @@ function BrandingPanel({
               <input
                 type="color"
                 title="Accent color"
-                value={dash.brand_accent_color || "#6ec9aa"}
+                value={colorDraft.brand_accent_color ?? dash.brand_accent_color ?? "#6ec9aa"}
                 onChange={(e) => setColor("brand_accent_color", e.target.value)}
                 className="w-7 h-7 rounded-full border-0 bg-transparent cursor-pointer p-0"
               />
@@ -496,7 +561,10 @@ function BrandingPanel({
                 type="button"
                 disabled={busy}
                 className="text-xs text-muted hover:text-text transition disabled:opacity-50"
-                onClick={() => run(() => dashboardBuilderApi.updateBranding(dash.id, { brand_primary_color: "", brand_accent_color: "" }), false)}
+                onClick={() => {
+                  clearColorDraft("brand_primary_color", "brand_accent_color");
+                  run(() => dashboardBuilderApi.updateBranding(dash.id, { brand_primary_color: "", brand_accent_color: "" }), false);
+                }}
               >
                 Reset
               </button>
@@ -525,7 +593,7 @@ function BrandingPanel({
               <input
                 type="color"
                 title="Background color"
-                value={dash.background_color || "#0a0a0b"}
+                value={colorDraft.background_color ?? dash.background_color ?? "#0a0a0b"}
                 onChange={(e) => setColor("background_color", e.target.value)}
                 className="w-7 h-7 rounded-full border-0 bg-transparent cursor-pointer p-0"
               />
