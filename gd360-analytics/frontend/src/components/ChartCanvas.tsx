@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Plot, { Plotly } from "../lib/plotly";
 import { useTheme } from "../api/ThemeContext";
 import { suggestedChartMinHeight } from "../lib/chartStyle";
@@ -55,6 +55,7 @@ export default function ChartCanvas({
   chartSpec,
   title,
   dashPremium,
+  onMinHeight,
 }: {
   chartSpec: any;
   title?: string;
@@ -65,6 +66,14 @@ export default function ChartCanvas({
   // live Workspace chat chart and the old v1 DashboardView, both of which
   // never pass it.
   dashPremium?: boolean;
+  // 2026-09-29 (design revamp): reports this chart's own real, computed
+  // minimum pixel height (see suggestedChartMinHeight below) any time it
+  // changes - purely an FYI callback, never read back to affect anything
+  // rendered here. Only DashboardCanvas.tsx's BlockCard passes this, to
+  // auto-grow a freshly-added chart block's grid card ONCE so the chart
+  // never opens clipped inside a too-short card (see BlockCard's own
+  // handleChartMinHeight) - a no-op everywhere else that renders a chart.
+  onMinHeight?: (px: number) => void;
 }) {
   const graphDivRef = useRef<any>(null);
   const [downloading, setDownloading] = useState("");
@@ -125,6 +134,16 @@ export default function ChartCanvas({
     : undefined;
 
   const c = THEME_CHROME[theme];
+
+  // 2026-09-29 (design revamp): computed once per render, not re-derived
+  // inline at the Plot below, so the exact same number both sizes the
+  // chart's own minHeight AND (via the effect below) is handed up to
+  // BlockCard's one-time auto-grow - the two can never quietly disagree.
+  const minHeightPx = suggestedChartMinHeight(chartSpec);
+  useEffect(() => {
+    onMinHeight?.(minHeightPx);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [minHeightPx]);
 
   // Every axis key present on the spec - just "xaxis"/"yaxis" for almost
   // every chart, but a faceted/small-multiples grid (chart_builder.py's
@@ -263,7 +282,7 @@ export default function ChartCanvas({
           // - see chartStyle.ts's suggestedChartMinHeight. A plain chart
           // with no legend (or a short one) still gets the same 380px floor
           // this always used, so nothing changes for the common case.
-          style={{ width: "100%", height: "100%", minHeight: suggestedChartMinHeight(chartSpec) }}
+          style={{ width: "100%", height: "100%", minHeight: minHeightPx }}
           useResizeHandler
           // 2026-09-25c (elite pass): a dashPremium chart already has its
           // own "..." export menu (see the header above) - Plotly's own
