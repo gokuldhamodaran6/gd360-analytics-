@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import ChartCanvas from "./ChartCanvas";
-import { datasourceApi, DashboardBlock, DashboardBlockType } from "../api/client";
+import { datasourceApi, DashboardBlock, DashboardBlockType, ColumnFilterSpec, FilterTextOp, FilterNumberOp, FilterCriterion } from "../api/client";
 import { DashboardFilterState } from "../lib/useDashboardFilters";
 import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
 
@@ -802,37 +803,242 @@ export function AvatarListBlock({ title, config }: { title: string | null; confi
   );
 }
 
-// 2026-09-24 (Dashboard Builder Phase 2b): a filter block's own control -
-// a plain dropdown of that column's distinct values (reusing the existing
-// Data-tab distinct-values endpoint, same as the Excel-style filter panel
-// in DataTable.tsx uses - no new backend endpoint just for this list).
-// Used both here (Preview mode) and inside DashboardCanvas's BlockCard
-// (edit mode) - one control, one behavior, everywhere it's interactive.
-// The SELECTED VALUE is never fetched from or written to the server; it
-// comes in as `value` and goes out through `onChange` - see
-// lib/useDashboardFilters.ts for where that state actually lives.
-export function FilterControl({
-  block,
-  datasourceId,
-  value,
-  onChange,
-}: {
-  block: DashboardBlock;
-  datasourceId: string | null;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const column: string | null = block.config?.column || null;
-  const [values, setValues] = useState<{ value: string | number | boolean | null; count: number }[]>([]);
-  const [loading, setLoading] = useState(false);
+// 2026-09-29 (Hex-level filters round): "ranges, multi-select, per-chart
+// filtering... beyond the current single-column equality filter" - the
+// user's own words, reacting to the fact that a filter block used to be a
+// plain dropdown of exact values with no way to express "between $100 and
+// $300" or "West OR East" in one filter. dtypeGroup/isSpecActive/
+// describeFilterSpec/ColumnFilterSpecEditor below are the shared engine
+// behind BOTH a filter block's own control (FilterControl, just below)
+// and per-chart filtering (DashboardCanvas.tsx's BlockFilterButton) - one
+// operator vocabulary, reused everywhere a person picks a filter, not two
+// that could drift apart. This mirrors DataTable.tsx's own local
+// ColumnFilterSpec/dtypeGroup (same shape, same backend
+// _apply_column_filter reads it) - kept as its own copy here rather than
+// imported from that file, matching this codebase's established "kept as
+// its own copy" convention (see backend routers/dashboard_builder.py's
+// rate limiter for the same reasoning) so this feature can evolve without
+// risking a regression on the already-working Data tab.
+function dtypeGroup(dtype: string): "number" | "date" | "boolean" | "text" {
+  const d = (dtype || "").toLowerCase();
+  if (d.startsWith("bool")) return "boolean";
+  if (d.startsWith("int") || d.startsWith("float") || d.startsWith("uint") || d.startsWith("double")) return "number";
+  if (d.startsWith("datetime") || d.startsWith("date")) return "date";
+  return "text";
+}
 
+export function isSpecActive(spec: ColumnFilterSpec | null | undefined): boolean {
+  if (!spec) return false;
+  if (spec.type === "values") return (spec.include || []).length > 0;
+  if (spec.type === "text") return spec.op === "is_empty" || spec.op === "is_not_empty" || Boolean(spec.value);
+  if (spec.type === "number") return spec.op === "between" ? Boolean(spec.value && spec.value2) : Boolean(spec.value);
+  if (spec.type === "date") return Boolean(spec.from) || Boolean(spec.to);
+  if (spec.type === "boolean") return spec.value === "true" || spec.value === "false";
+  return false;
+}
+
+const TEXT_OP_LABELS: Record<FilterTextOp, string> = {
+  contains: "contains", not_contains: "does not contain", equals: "is exactly",
+  not_equals: "is not", starts_with: "starts with", ends_with: "ends with",
+  is_empty: "is blank", is_not_empty: "is not blank",
+};
+const NUMBER_OP_LABELS: Record<FilterNumberOp, string> = {
+  eq: "=", neq: "≠", gt: "greater than", gte: "at least", lt: "less than", lte: "at most", between: "between",
+};
+
+export function describeFilterSpec(spec: ColumnFilterSpec | null | undefined): string {
+  if (!isSpecActive(spec) || !spec) return "All";
+  if (spec.type === "values") {
+    const n = (spec.include || []).length;
+    if (n === 1) return String(spec.include[0] ?? "(Blanks)");
+    return `${n} selected`;
+  }
+  if (spec.type === "text") {
+    const opLabel = TEXT_OP_LABELS[spec.op];
+    return spec.op === "is_empty" || spec.op === "is_not_empty" ? opLabel : `${opLabel} "${spec.value}"`;
+  }
+  if (spec.type === "number") {
+    if (spec.op === "between") return `${spec.value}–${spec.value2}`;
+    return `${NUMBER_OP_LABELS[spec.op]} ${spec.value}`;
+  }
+  if (spec.type === "date") {
+    if (spec.from && spec.to) return `${spec.from} → ${spec.to}`;
+    if (spec.from) return `on/after ${spec.from}`;
+    if (spec.to) return `on/before ${spec.to}`;
+  }
+  if (spec.type === "boolean") return spec.value === "true" ? "True" : "False";
+  return "All";
+}
+
+function useColumnDtype(datasourceId: string | null, column: string | null, knownDtype?: string): string {
+  const [dtype, setDtype] = useState(knownDtype || "");
   useEffect(() => {
-    if (!column || !datasourceId) {
-      setValues([]);
+    if (knownDtype) {
+      setDtype(knownDtype);
       return;
     }
+    if (!datasourceId || !column) return;
     let cancelled = false;
-    setLoading(true);
+    // A cheap (limit=1) call purely to read this data source's dtypes -
+    // the same endpoint DashboardCanvas.tsx already calls once for its own
+    // column picker (datasourceApi.preview), reused here for callers (like
+    // Preview mode) that don't already have that dtype in hand.
+    datasourceApi
+      .preview(datasourceId, null, 1, 0)
+      .then((p) => {
+        if (!cancelled) setDtype(p.dtypes[column] || "");
+      })
+      .catch(() => {
+        if (!cancelled) setDtype("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [datasourceId, column, knownDtype]);
+  return dtype;
+}
+
+function TextConditionEditor({
+  spec,
+  onChange,
+}: {
+  spec: { type: "text"; op: FilterTextOp; value: string } | null;
+  onChange: (spec: ColumnFilterSpec | null) => void;
+}) {
+  const s = spec || { type: "text" as const, op: "contains" as FilterTextOp, value: "" };
+  const needsValue = s.op !== "is_empty" && s.op !== "is_not_empty";
+  return (
+    <>
+      <select className="dash-select w-full text-xs" value={s.op} onChange={(e) => onChange({ ...s, op: e.target.value as FilterTextOp })}>
+        {(Object.keys(TEXT_OP_LABELS) as FilterTextOp[]).map((op) => (
+          <option key={op} value={op}>
+            {TEXT_OP_LABELS[op]}
+          </option>
+        ))}
+      </select>
+      {needsValue && (
+        <input
+          className="input text-xs py-1.5"
+          value={s.value}
+          placeholder="Value…"
+          onChange={(e) => onChange({ ...s, value: e.target.value })}
+        />
+      )}
+      {isSpecActive(s) && (
+        <button type="button" className="text-[11px] text-muted hover:text-text self-start" onClick={() => onChange(null)}>
+          Clear
+        </button>
+      )}
+    </>
+  );
+}
+
+function NumberConditionEditor({ spec, onChange }: { spec: ColumnFilterSpec | null; onChange: (spec: ColumnFilterSpec | null) => void }) {
+  const numSpec = spec?.type === "number" ? spec : { type: "number" as const, op: "between" as FilterNumberOp, value: "", value2: "" };
+  return (
+    <>
+      <select className="dash-select w-full text-xs" value={numSpec.op} onChange={(e) => onChange({ ...numSpec, op: e.target.value as FilterNumberOp })}>
+        {(Object.keys(NUMBER_OP_LABELS) as FilterNumberOp[]).map((op) => (
+          <option key={op} value={op}>
+            {NUMBER_OP_LABELS[op]}
+          </option>
+        ))}
+      </select>
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          className="input text-xs py-1.5 flex-1 min-w-0"
+          placeholder={numSpec.op === "between" ? "Min" : "Value"}
+          value={numSpec.value}
+          onChange={(e) => onChange({ ...numSpec, value: e.target.value })}
+        />
+        {numSpec.op === "between" && (
+          <input
+            type="number"
+            className="input text-xs py-1.5 flex-1 min-w-0"
+            placeholder="Max"
+            value={numSpec.value2 || ""}
+            onChange={(e) => onChange({ ...numSpec, value2: e.target.value })}
+          />
+        )}
+      </div>
+      {isSpecActive(numSpec) && (
+        <button type="button" className="text-[11px] text-muted hover:text-text self-start" onClick={() => onChange(null)}>
+          Clear
+        </button>
+      )}
+    </>
+  );
+}
+
+function DateConditionEditor({ spec, onChange }: { spec: ColumnFilterSpec | null; onChange: (spec: ColumnFilterSpec | null) => void }) {
+  const dateSpec = spec?.type === "date" ? spec : { type: "date" as const, from: null, to: null };
+  return (
+    <>
+      <label className="text-[11px] text-muted">From</label>
+      <input type="date" className="input text-xs py-1.5" value={dateSpec.from || ""} onChange={(e) => onChange({ ...dateSpec, from: e.target.value || null })} />
+      <label className="text-[11px] text-muted mt-1">To</label>
+      <input type="date" className="input text-xs py-1.5" value={dateSpec.to || ""} onChange={(e) => onChange({ ...dateSpec, to: e.target.value || null })} />
+      {isSpecActive(dateSpec) && (
+        <button type="button" className="text-[11px] text-muted hover:text-text self-start mt-1" onClick={() => onChange(null)}>
+          Clear
+        </button>
+      )}
+    </>
+  );
+}
+
+// The actual type-aware operator picker - Values (multi-select checklist)
+// + Condition (a comparison/range appropriate to the column's real dtype).
+// Shared by FilterControl (a filter block's own control) and
+// DashboardCanvas.tsx/DashboardBlocks.tsx's per-chart filter popover
+// (BlockFilterButton).
+//
+// 2026-09-29 (round 2 of the Hex-level filters work): "the options given
+// are not accurate... not suitable for the chart" - the first version of
+// this editor only ever offered the Values (multi-select) tab for a TEXT
+// column, forcing a numeric or date column into range/comparison-only
+// mode. That's wrong for a lot of real business data: a "Year" or
+// "Quarter" column is often stored as a plain int, and a specific-dates
+// multi-select ("Jan 3, Jan 17, Feb 2") is a completely reasonable ask a
+// pure from/to range can't express. Every dtype group now gets BOTH tabs -
+// Values always works (the distinct-values endpoint has no dtype
+// restriction), Condition is the one thing that's still genuinely
+// type-specific (a number wants a comparison/between, a date wants a
+// range, text wants contains/equals/etc). Only a boolean column, which has
+// exactly two possible values, skips the tabs entirely for a plain
+// True/False toggle - a "Values" checklist of two items would just be the
+// same choice with extra clicks.
+export function ColumnFilterSpecEditor({
+  datasourceId,
+  column,
+  dtype,
+  spec,
+  onChange,
+}: {
+  datasourceId: string | null;
+  column: string;
+  dtype?: string;
+  spec: ColumnFilterSpec | null;
+  onChange: (spec: ColumnFilterSpec | null) => void;
+}) {
+  const resolvedDtype = useColumnDtype(datasourceId, column, dtype);
+  const group = dtypeGroup(resolvedDtype);
+  // Defaults to whichever tab already has an active spec (so reopening a
+  // filter that's set as a range doesn't silently land on the empty
+  // Values tab), otherwise the tab that's the more natural first move for
+  // this dtype - Values for text, Condition (a range) for number/date.
+  const [tab, setTab] = useState<"values" | "condition">(
+    spec?.type === "values" ? "values" : spec ? "condition" : group === "text" ? "values" : "condition"
+  );
+  const [values, setValues] = useState<{ value: string | number | boolean | null; count: number }[]>([]);
+  const [loadingValues, setLoadingValues] = useState(false);
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    if (group === "boolean" || !datasourceId) return;
+    let cancelled = false;
+    setLoadingValues(true);
     datasourceApi
       .getColumnDistinctValues(datasourceId, column, null, { limit: 200 })
       .then((res) => {
@@ -842,12 +1048,337 @@ export function FilterControl({
         if (!cancelled) setValues([]);
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setLoadingValues(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [column, datasourceId]);
+  }, [datasourceId, column, group]);
+
+  const include = spec?.type === "values" ? spec.include : [];
+  const toggleValue = (v: string | number | boolean | null) => {
+    const key = String(v);
+    const has = include.some((x) => String(x) === key);
+    const next = has ? include.filter((x) => String(x) !== key) : [...include, v];
+    onChange(next.length ? { type: "values", include: next } : null);
+  };
+  const filteredValues = search ? values.filter((v) => String(v.value ?? "").toLowerCase().includes(search.toLowerCase())) : values;
+
+  if (group === "boolean") {
+    const val = spec?.type === "boolean" ? spec.value : null;
+    return (
+      <div className="p-2.5 flex flex-col gap-1.5 min-w-[180px]">
+        {(["true", "false"] as const).map((v) => (
+          <button
+            key={v}
+            type="button"
+            className={`text-xs px-2.5 py-1.5 rounded-lg border text-left transition ${
+              val === v ? "border-primary bg-primary/10 text-primary" : "border-border text-muted hover:bg-surface2"
+            }`}
+            onClick={() => onChange(val === v ? null : { type: "boolean", value: v })}
+          >
+            {v === "true" ? "True" : "False"}
+          </button>
+        ))}
+        {val && (
+          <button type="button" className="text-[11px] text-muted hover:text-text self-start" onClick={() => onChange(null)}>
+            Clear
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  const conditionLabel = group === "number" ? "Range" : group === "date" ? "Range" : "Condition";
+
+  return (
+    <div className="flex flex-col min-w-[220px] max-w-[280px]">
+      <div className="flex border-b border-border text-[11px]">
+        <button
+          type="button"
+          className={`flex-1 px-2 py-1.5 ${tab === "values" ? "text-primary border-b-2 border-primary font-medium" : "text-muted"}`}
+          onClick={() => setTab("values")}
+        >
+          Values
+        </button>
+        <button
+          type="button"
+          className={`flex-1 px-2 py-1.5 ${tab === "condition" ? "text-primary border-b-2 border-primary font-medium" : "text-muted"}`}
+          onClick={() => setTab("condition")}
+        >
+          {conditionLabel}
+        </button>
+      </div>
+      {tab === "values" ? (
+        <div className="p-2 flex flex-col gap-1.5">
+          <input className="input text-xs py-1.5" placeholder="Search values…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <div className="max-h-44 overflow-y-auto flex flex-col gap-0.5">
+            {loadingValues ? (
+              <div className="text-[11px] text-muted px-1 py-1">Loading…</div>
+            ) : filteredValues.length === 0 ? (
+              <div className="text-[11px] text-muted px-1 py-1">No values.</div>
+            ) : (
+              filteredValues.map((v) => (
+                <label key={String(v.value)} className="flex items-center gap-1.5 text-xs px-1 py-1 rounded hover:bg-surface2 cursor-pointer">
+                  <input type="checkbox" checked={include.some((x) => String(x) === String(v.value))} onChange={() => toggleValue(v.value)} />
+                  <span className="truncate flex-1">{v.value === null ? "(Blanks)" : String(v.value)}</span>
+                  <span className="text-muted tabular-nums">{v.count}</span>
+                </label>
+              ))
+            )}
+          </div>
+          {include.length > 0 && (
+            <button type="button" className="text-[11px] text-muted hover:text-text self-start" onClick={() => onChange(null)}>
+              Clear ({include.length})
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="p-2.5 flex flex-col gap-2">
+          {group === "number" && <NumberConditionEditor spec={spec} onChange={onChange} />}
+          {group === "date" && <DateConditionEditor spec={spec} onChange={onChange} />}
+          {group === "text" && <TextConditionEditor spec={spec?.type === "text" ? spec : null} onChange={onChange} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChevronIcon({ className = "w-3 h-3" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2}>
+      <path d="M5 7.5L10 12.5L15 7.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function FilterIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 5h16l-6 7.5V19l-4 2v-8.5L4 5Z" />
+    </svg>
+  );
+}
+
+// A tiny local column-listing hook - name + dtype for every column in a
+// data source, the same shape DashboardCanvas.tsx's own ColumnInfo already
+// uses for its manual-build/filter-column pickers. Reused by
+// BlockFilterButton below so per-chart filtering works in BOTH edit mode
+// (which already has this list from its own fetch - passed in via the
+// `columns` prop to skip a duplicate call) and Preview mode (which has no
+// such list yet - this hook fetches it lazily the first time it's needed).
+function useDataSourceColumns(datasourceId: string | null): { name: string; dtype: string }[] {
+  const [columns, setColumns] = useState<{ name: string; dtype: string }[]>([]);
+  useEffect(() => {
+    if (!datasourceId) {
+      setColumns([]);
+      return;
+    }
+    let cancelled = false;
+    datasourceApi
+      .preview(datasourceId, null, 1, 0)
+      .then((p) => {
+        if (!cancelled) setColumns(p.columns.map((name) => ({ name, dtype: p.dtypes[name] || "" })));
+      })
+      .catch(() => {
+        if (!cancelled) setColumns([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [datasourceId]);
+  return columns;
+}
+
+// 2026-09-29 (Hex-level filters round): "per-chart filtering" - Gokul's
+// own words, alongside "ranges" and "multi-select," naming exactly what
+// the old single-column-equality filter mechanism couldn't do. This is a
+// SEPARATE filter row from the page-wide filter bar (the "filter" block
+// type above): a person adds one or more column criteria here that apply
+// ONLY to this one block, on top of whatever the page-wide filter bar
+// already shows - never affecting any other block on the page. Exactly as
+// ephemeral as the page-wide filters themselves (see
+// lib/useDashboardFilters.ts's own module comment) - never persisted to
+// this block's stored config, gone on the next page load.
+//
+// 2026-09-29 (round 2): moved here from DashboardCanvas.tsx (where it
+// first shipped, edit-mode only) and given a `columns` prop that's now
+// OPTIONAL - DashboardCanvas already has the datasource's column list from
+// its own fetch and passes it straight in; DashboardBlockGrid (Preview
+// mode, see below) doesn't have one yet, so this self-fetches it via
+// useDataSourceColumns instead. Same component, same behavior, in both
+// edit AND Preview - "the whole dashboard has to have individual...
+// filter... as well" applies everywhere a chart is actually shown, not
+// just while it's being built. Deliberately still NOT offered on the
+// public/no-login link, for the same reason page-wide cross-filtering
+// isn't either - see backend routers/dashboard_builder.py's module
+// docstring (Phase 2b, point 3): recomputing against a customer's own
+// connected data source from an unauthenticated link with no rate
+// limiting is a real cost/security question, not one this shares.
+export function BlockFilterButton({
+  datasourceId,
+  columns: columnsProp,
+  criteria,
+  onChange,
+}: {
+  datasourceId: string | null;
+  columns?: { name: string; dtype: string }[];
+  criteria: FilterCriterion[];
+  onChange: (criteria: FilterCriterion[]) => void;
+}) {
+  const fetchedColumns = useDataSourceColumns(columnsProp ? null : datasourceId);
+  const columns = columnsProp || fetchedColumns;
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const [draftColumn, setDraftColumn] = useState("");
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  const POPOVER_WIDTH = 260;
+
+  const toggle = () => {
+    setOpen((wasOpen) => {
+      const next = !wasOpen;
+      if (next && btnRef.current) {
+        const rect = btnRef.current.getBoundingClientRect();
+        const left = Math.min(Math.max(rect.right - POPOVER_WIDTH, 8), window.innerWidth - POPOVER_WIDTH - 8);
+        setPos({ top: rect.bottom + 6, left });
+      } else {
+        setDraftColumn("");
+      }
+      return next;
+    });
+  };
+
+  const usedColumns = new Set(criteria.map((c) => c.column));
+  const availableColumns = columns.filter((c) => !usedColumns.has(c.name));
+
+  const updateSpec = (column: string, spec: ColumnFilterSpec | null) => {
+    const withoutThis = criteria.filter((c) => c.column !== column);
+    onChange(spec ? [...withoutThis, { column, spec }] : withoutThis);
+    if (!spec) setDraftColumn("");
+  };
+
+  return (
+    <div className="shrink-0">
+      <button
+        ref={btnRef}
+        type="button"
+        className={`dash-chart-menu-btn flex items-center gap-0.5 ${criteria.length > 0 ? "text-primary" : ""}`}
+        aria-label="Filter this block"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={criteria.length > 0 ? `${criteria.length} filter${criteria.length === 1 ? "" : "s"} on this block only` : "Filter this block only"}
+        onClick={toggle}
+      >
+        <FilterIcon />
+        {criteria.length > 0 && <span className="text-[9px] font-semibold tabular-nums">{criteria.length}</span>}
+      </button>
+      {open &&
+        pos &&
+        createPortal(
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+            <div
+              className="fixed z-50 card bg-surface shadow-2xl border border-border overflow-hidden flex flex-col"
+              style={{ top: pos.top, left: pos.left, width: POPOVER_WIDTH }}
+            >
+              <div className="px-3 py-2 border-b border-border text-[11px] font-semibold uppercase tracking-wide text-muted">
+                Filter just this block
+              </div>
+              {criteria.length > 0 && (
+                <div className="p-2 flex flex-col gap-2 border-b border-border">
+                  {criteria.map((c) => (
+                    <div key={c.column} className="flex flex-col gap-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-medium text-text truncate">{c.column}</span>
+                        <button type="button" className="text-[11px] text-muted hover:text-red-400" onClick={() => updateSpec(c.column, null)}>
+                          Remove
+                        </button>
+                      </div>
+                      <ColumnFilterSpecEditor
+                        datasourceId={datasourceId}
+                        column={c.column}
+                        dtype={columns.find((col) => col.name === c.column)?.dtype}
+                        spec={c.spec}
+                        onChange={(spec) => updateSpec(c.column, spec)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="p-2">
+                {draftColumn ? (
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-text truncate">{draftColumn}</span>
+                      <button type="button" className="text-[11px] text-muted hover:text-text" onClick={() => setDraftColumn("")}>
+                        Cancel
+                      </button>
+                    </div>
+                    <ColumnFilterSpecEditor
+                      datasourceId={datasourceId}
+                      column={draftColumn}
+                      dtype={columns.find((col) => col.name === draftColumn)?.dtype}
+                      spec={null}
+                      onChange={(spec) => updateSpec(draftColumn, spec)}
+                    />
+                  </div>
+                ) : availableColumns.length === 0 ? (
+                  <div className="text-[11px] text-muted italic px-1 py-1">
+                    {criteria.length === 0 ? "No columns available." : "Every column already has a filter on this block."}
+                  </div>
+                ) : (
+                  <select className="input text-xs py-1.5 w-full" value="" onChange={(e) => setDraftColumn(e.target.value)}>
+                    <option value="">+ Add a filter…</option>
+                    {availableColumns.map((c) => (
+                      <option key={c.name} value={c.name}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            </div>
+          </>,
+          document.body
+        )}
+    </div>
+  );
+}
+
+// 2026-09-24 (Dashboard Builder Phase 2b), rewritten 2026-09-29 (Hex-level
+// filters round): a filter block's own control. Used both here (Preview
+// mode) and inside DashboardCanvas's BlockCard (edit mode) - one control,
+// one behavior, everywhere it's interactive. Was a plain equality dropdown
+// until this round; now a compact summary button that opens
+// ColumnFilterSpecEditor in a portaled popover, so the same control
+// expresses a range, a multi-select, or a text condition - not just
+// "equals" - depending on the target column's real dtype. The SELECTED
+// SPEC is never fetched from or written to the server; it comes in as
+// `value` and goes out through `onChange` - see lib/useDashboardFilters.ts
+// for where that state actually lives.
+export function FilterControl({
+  block,
+  datasourceId,
+  value,
+  onChange,
+}: {
+  block: DashboardBlock;
+  datasourceId: string | null;
+  value: ColumnFilterSpec | null;
+  onChange: (spec: ColumnFilterSpec | null) => void;
+}) {
+  const column: string | null = block.config?.column || null;
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+
+  const togglePopover = () => {
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect();
+      setPos({ top: r.bottom + 6, left: Math.min(r.left, window.innerWidth - 300) });
+    }
+    setOpen((o) => !o);
+  };
 
   // 2026-09-25e (elite pass): a filter used to be its own small dash-card -
   // a bordered, backgrounded box, same chrome as a KPI tile - which is
@@ -858,25 +1389,48 @@ export function FilterControl({
   // its label and its control sitting straight on the page, so several of
   // them placed in a row read as one continuous, premium filter strip
   // instead of N separate boxes.
+  //
+  // 2026-09-29 (round 2 of the Hex-level filters work): "our current style
+  // of given options... is very bad" - the plain bordered `dash-select`
+  // look read as a generic form control, not a filter. Now a real pill:
+  // rounded-full, a small filter-funnel icon, and - the one thing that
+  // actually signals state at a glance - an accent border/fill the moment
+  // a real criterion is set, so a glance across the filter row shows
+  // exactly which filters are active without reading any text.
+  const active = isSpecActive(value);
   return (
     <div className="h-full flex flex-col justify-center gap-1.5 min-w-0">
       <label className="text-[13px] font-medium text-muted truncate">{block.title || column || "Filter"}</label>
       {!column ? (
         <div className="text-xs text-muted italic">Not set up yet.</div>
       ) : (
-        <select
-          className="dash-select w-full"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          disabled={loading}
-        >
-          <option value="">All</option>
-          {values.map((v) => (
-            <option key={String(v.value)} value={String(v.value)}>
-              {String(v.value)} ({v.count})
-            </option>
-          ))}
-        </select>
+        <div className="relative min-w-0">
+          <button
+            ref={btnRef}
+            type="button"
+            className={`w-full flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs transition ${
+              active
+                ? "border-primary/70 bg-primary/10 text-primary font-medium"
+                : "border-border bg-surface2/60 text-muted hover:border-primary/40 hover:text-text"
+            }`}
+            onClick={togglePopover}
+          >
+            <FilterIcon className="w-3 h-3 shrink-0" />
+            <span className="truncate flex-1 text-left">{describeFilterSpec(value)}</span>
+            <ChevronIcon className="w-3 h-3 shrink-0 opacity-60" />
+          </button>
+          {open &&
+            pos &&
+            createPortal(
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+                <div className="fixed z-50 card bg-surface shadow-2xl border border-border overflow-hidden" style={{ top: pos.top, left: pos.left }}>
+                  <ColumnFilterSpecEditor datasourceId={datasourceId} column={column} spec={value} onChange={onChange} />
+                </div>
+              </>,
+              document.body
+            )}
+        </div>
       )}
     </div>
   );
@@ -916,6 +1470,16 @@ export function DashboardBlockGrid({
     return <div className="text-sm text-muted py-10 text-center">This page has no blocks yet.</div>;
   }
 
+  // 2026-09-29 (round 2 of the Hex-level filters work): "the whole
+  // dashboard has to have individual graphic filter and overall as well" -
+  // per-chart filtering (BlockFilterButton) used to only be reachable from
+  // edit mode. Same eligibility rule DashboardCanvas.tsx's BlockCard
+  // already uses (a stored `recipe`, or real tidy result_columns/rows on a
+  // chart/table) - a block that can't be recomputed under the page-wide
+  // filter bar can't be recomputed under its own extra one either.
+  const respondsToFilters = (b: DashboardBlock) =>
+    Boolean(b.config?.recipe) || (["chart", "table"].includes(b.type) && Boolean(b.config?.result_columns && b.config?.result_rows));
+
   const renderBlock = (b: DashboardBlock) => {
     // A block currently recomputed by an active cross-filter (Phase 2b) -
     // overrides only ever cover a block with a stored `recipe` (see
@@ -948,8 +1512,8 @@ export function DashboardBlockGrid({
             <FilterControl
               block={b}
               datasourceId={datasourceId || null}
-              value={filterState.values[b.id] || ""}
-              onChange={(v) => filterState.setFilterValue(b.id, v)}
+              value={filterState.values[b.id] ?? null}
+              onChange={(spec) => filterState.setFilterValue(b.id, spec)}
             />
           ) : (
             <StaticFilterNote block={b} />
@@ -963,12 +1527,30 @@ export function DashboardBlockGrid({
   // top-to-bottom / left-to-right the way it was laid out on the real
   // grid, each block full width with a sensible natural height for its
   // type. Same blocks, same data - just readable on a real phone.
+  // A small, subtle overlay in the block's own top-right corner - the same
+  // BlockFilterButton edit mode uses, so "filter just this chart" is one
+  // click away everywhere a chart is actually shown, not just while it's
+  // being built. Never shown on a filter block itself (nothing to further
+  // filter there) or when filterState/datasourceId are absent (the public/
+  // no-login link - see BlockFilterButton's own comment for why).
+  const filterOverlay = (b: DashboardBlock) =>
+    filterState && datasourceId && b.type !== "filter" && respondsToFilters(b) ? (
+      <div className="absolute top-1.5 right-1.5 z-10 opacity-70 hover:opacity-100 transition">
+        <BlockFilterButton
+          datasourceId={datasourceId}
+          criteria={filterState.blockFilters[b.id] || []}
+          onChange={(criteria) => filterState.setBlockFilters(b.id, criteria)}
+        />
+      </div>
+    ) : null;
+
   if (narrow) {
     const ordered = [...blocks].sort((a, b) => a.y - b.y || a.x - b.x);
     return (
       <div className="flex flex-col gap-4">
         {ordered.map((b) => (
-          <div key={b.id} style={{ minHeight: STACK_MIN_HEIGHT[b.type] ?? 200 }}>
+          <div key={b.id} className="relative" style={{ minHeight: STACK_MIN_HEIGHT[b.type] ?? 200 }}>
+            {filterOverlay(b)}
             {renderBlock(b)}
           </div>
         ))}
@@ -987,11 +1569,13 @@ export function DashboardBlockGrid({
       {blocks.map((b) => (
         <div
           key={b.id}
+          className="relative"
           style={{
             gridColumn: `${b.x + 1} / span ${b.w}`,
             gridRow: `${b.y + 1} / span ${b.h}`,
           }}
         >
+          {filterOverlay(b)}
           {renderBlock(b)}
         </div>
       ))}
