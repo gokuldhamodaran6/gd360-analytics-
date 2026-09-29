@@ -340,6 +340,7 @@ each new column means.
     adds.
 """
 import copy
+import gc
 import re
 import secrets
 import time
@@ -1086,6 +1087,54 @@ def _filter_block_items(columns: list[str]) -> list[dict]:
     hand-added one in every other way (restyle, delete, and - the actual
     point - responding to preview_filtered_blocks) from this point on."""
     return [{"type": "filter", "title": col, "config": {"column": col}} for col in columns]
+
+
+def _block_item_columns(item: dict) -> set[str]:
+    """The real column names one goal-driven page ITEM's own AI-analyzed
+    content actually touches, read from exactly the same config shapes
+    _ai_result_to_block_shape already writes - never guessed or inferred
+    from a title/prompt. A chart block carries config["result_columns"]
+    (a list of {"name":..., "role":...} dicts - the same tidy-column
+    shape ai_engine.analyze itself returns); a table block carries
+    config["columns"] (a plain list of name strings) instead - different
+    key, same underlying idea. KPI/gauge/donut/sparkline/avatar_list
+    blocks carry neither (see preview_filtered_blocks' own docstring on
+    exactly why a bare AI-built KPI has no tidy data left to filter by) -
+    this correctly returns an empty set for one rather than pretending to
+    know what column its single number came from."""
+    config = item.get("config") or {}
+    names = {c.get("name") for c in (config.get("result_columns") or []) if isinstance(c, dict) and c.get("name")}
+    names.update(c for c in (config.get("columns") or []) if isinstance(c, str))
+    return names
+
+
+def _page_relevant_filter_columns(
+    candidates: list[str], page_items: dict[str, list[dict]], max_filters: int = _MAX_AUTO_FILTERS
+) -> list[str]:
+    """2026-09-29 (per-page filter relevance round): real complaint -
+    every page of a multi-page goal-driven dashboard showed the exact
+    same auto-suggested filter pair (e.g. "Country/Region"/"Division"),
+    even a page like "Product Affinity" whose charts have nothing to do
+    with either column, because the old code computed one global filter
+    pair from the whole dataset and reused it identically on every page
+    (see this function's only caller, generate_dashboard's goal-driven
+    branch). `candidates` is a WIDER pool of genuinely filter-worthy
+    columns (still the same honest low/mid-cardinality heuristic as
+    _suggest_filter_columns - this never widens what counts as a
+    reasonable filter column, only how many are considered) - this picks
+    the first `max_filters` of THOSE that some real chart/table block on
+    THIS page actually references (via _block_item_columns), so a page
+    gets filters that can actually move something on it. Falls back to
+    the first `max_filters` global candidates only when this page has no
+    usable signal at all (e.g. an all-KPI overview page, where no block
+    carries column info to check against) - a page that could otherwise
+    show a real, page-relevant filter is never left worse off than the
+    old blanket behavior, only pages that can be precise now are."""
+    used: set[str] = set()
+    for item in page_items.get("kpi", []) + page_items.get("other", []):
+        used |= _block_item_columns(item)
+    relevant = [c for c in candidates if c in used]
+    return relevant[:max_filters] if relevant else candidates[:max_filters]
 
 
 # ---------- Phase 2: turning one ai_engine.analyze() result into a block ----------
@@ -1880,9 +1929,29 @@ def generate_dashboard(
             # visible reason. Skip it the same way every other unbuildable
             # plan item in this loop is already skipped (append + continue)
             # instead of manufacturing a hollow placeholder block.
-            if actual_type == "text" and not (result.get("narrative") or "").strip():
-                print(f"[dashboard_builder] goal-driven block produced no real result for {spec['prompt']!r}, skipping")
-                skipped_reasons.append(f'"{spec["title"]}": produced no result to show')
+            # 2026-09-29 (leaked-failure-message fix): real production
+            # evidence - a market-basket-analysis goal put a block titled
+            # "Top Recommended Items for Best-Selling Products" onto a
+            # live dashboard whose entire visible content was ai_engine's
+            # own internal RETRY-EXHAUSTED failure message ("I was not
+            # able to turn this into a chart the way you described, even
+            # after trying a second approach...") - a real, non-empty
+            # string, so the emptiness check above alone let it through.
+            # These two constants are ai_engine's OWN, exact, literal
+            # "nothing real happened" sentinels (see analyze()'s retry
+            # loop and _no_result's own docstring) - never templated with
+            # per-request text, so comparing for an exact match is precise
+            # and can't accidentally catch a real narrative that merely
+            # mentions "chart" or "approach".
+            narrative_text = (result.get("narrative") or "").strip()
+            is_failure_sentinel = narrative_text in (
+                ai_engine._ANALYZE_FAILURE_NARRATIVE,
+                ai_engine._TRANSFORM_FAILURE_NARRATIVE,
+            )
+            if actual_type == "text" and (not narrative_text or is_failure_sentinel):
+                reason = "produced no result to show" if not narrative_text else "could not build this the way it was described, even after retrying"
+                print(f"[dashboard_builder] goal-driven block produced no real result for {spec['prompt']!r}, skipping ({reason})")
+                skipped_reasons.append(f'"{spec["title"]}": {reason}')
                 continue
             # 2026-09-28 (Hex-parity round): a plainly forecast-labeled
             # chart block gets the real dashed-projection + confidence-
@@ -1895,6 +1964,32 @@ def generate_dashboard(
                 page_items[page_name] = {"kpi": [], "other": []}
             item = {"type": actual_type, "title": spec["title"], "config": config, "position": position}
             (page_items[page_name]["kpi"] if actual_type == "kpi" else page_items[page_name]["other"]).append(item)
+            # 2026-09-29 (memory-safety round): real production evidence -
+            # a "market-basket analysis" goal against a real, multi-item-
+            # per-order dataset crashed the whole backend instance mid-
+            # request (502 + instance restart, confirmed via Render's own
+            # memory metrics: this box runs its ~400MB idle baseline out of
+            # a hard 512MB container ceiling before this endpoint even
+            # starts, per sandbox.py's own RLIMIT_AS comment on this same
+            # instance). Each analyze() call above forks a new sandboxed
+            # child process (see services/sandbox.py) that inherits this
+            # PARENT process's current memory via copy-on-write - so a
+            # multi-block goal (up to 10 planned blocks) that leaves large,
+            # no-longer-needed objects (`result`'s cleaned_df/named_tables,
+            # which can be full untruncated DataFrames - see
+            # ai_engine.analyze's own docstring) referenced in this loop's
+            # locals only grows what every SUBSEQUENT block's fork has to
+            # inherit. Dropping the reference and forcing a collection here,
+            # right after this block's real output (`item`) has already
+            # been extracted from it, keeps the parent's own footprint from
+            # ratcheting up block-over-block - it cannot fix a single
+            # block's own sandboxed computation exceeding what's left of
+            # the container's real RAM (that individual cap is
+            # sandbox.py's job, not this loop's), but it removes THIS
+            # loop's own contribution to the problem, which is the part
+            # actually within this endpoint's control.
+            del result
+            gc.collect()
 
         if not page_order:
             detail = (
@@ -1912,25 +2007,30 @@ def generate_dashboard(
         dashboard = models.Dashboard(owner_id=user.id, name=title, layout_version=2, source_conversation_id=conv.id)
         db.add(dashboard)
         db.flush()
-        # 2026-09-29 (thought-leader filters round): a real live dataframe
-        # (original_df) is already loaded above for this goal-driven path -
-        # see _suggest_filter_columns' own docstring for the honest,
-        # never-fabricated heuristic behind which columns get suggested.
-        # Computed once, reused for every page below (they all come from
-        # this same data source) - best-effort: an odd dtype that trips
-        # nunique() just means no filters get suggested, never a failed
-        # dashboard build over this bonus feature.
+        # 2026-09-29 (thought-leader filters round; widened in the
+        # per-page filter relevance round the same day): a real live
+        # dataframe (original_df) is already loaded above for this
+        # goal-driven path - see _suggest_filter_columns' own docstring
+        # for the honest, never-fabricated heuristic behind which
+        # columns are even eligible. Computed once (best-effort - an odd
+        # dtype that trips nunique() just means no filters get
+        # suggested, never a failed dashboard build over this bonus
+        # feature), but this is now a wider CANDIDATE POOL, not the
+        # final pair - _page_relevant_filter_columns below picks each
+        # page's own subset of it, so pages stop all showing the exact
+        # same filters regardless of what they actually contain.
         try:
-            suggested_filter_cols = _suggest_filter_columns(original_df)
+            filter_candidates = _suggest_filter_columns(original_df, max_filters=8)
         except Exception as e:
             print(f"[dashboard_builder] filter suggestion skipped: {e}")
-            suggested_filter_cols = []
+            filter_candidates = []
         for page_position, page_name in enumerate(page_order):
             page = models.DashboardPage(dashboard_id=dashboard.id, name=page_name, position=page_position)
             db.add(page)
             db.flush()
             items = page_items[page_name]
-            filter_row = _layout_filter_row(_filter_block_items(suggested_filter_cols))
+            page_filter_cols = _page_relevant_filter_columns(filter_candidates, items)
+            filter_row = _layout_filter_row(_filter_block_items(page_filter_cols))
             laid_out = filter_row + _layout_blocks(
                 items["kpi"], items["other"], y_offset=_FILTER_ROW_HEIGHT if filter_row else 0
             )
