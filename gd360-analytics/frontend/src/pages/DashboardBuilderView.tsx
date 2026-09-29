@@ -1626,28 +1626,62 @@ function DashboardBuilderViewBody({
             lib/useDashboardFilters.ts) plus every filter block's current
             state, not just the ones actively set, so at rest it reads as
             a clear summary of what's being shown rather than only
-            appearing once something is filtered. */}
+            appearing once something is filtered.
+
+            2026-09-29 (Hex-reference filter-bar round): an ACTIVE filter
+            is now a real removable chip (click × to clear just that one),
+            not just bolded text - the reference mockup's own "Q3 ×"
+            token - plus a "Reset filters" action that clears every
+            page-wide filter at once (filterState.resetFilters, one state
+            update + one request - see its own comment for why this isn't
+            just a loop over setFilterValue). An inactive filter block
+            stays plain text ("Division: All") exactly as before - nothing
+            to remove yet. */}
         {activePage && filterState.matchedRows !== null && (
-          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 mb-2 text-[11px] text-muted">
-            <span
-              className={`w-1.5 h-1.5 rounded-full shrink-0 ${filterState.loading ? "bg-accent animate-pulse" : "bg-accent/40"}`}
-            />
-            <span className="font-semibold text-text tabular-nums">{filterState.matchedRows.toLocaleString()}</span>
-            <span>row{filterState.matchedRows === 1 ? "" : "s"} match</span>
-            {activePage.blocks
-              .filter((b) => b.type === "filter" && b.config?.column)
-              .map((b) => {
-                const val = filterState.values[b.id];
-                const active = isSpecActive(val);
-                const label = b.title || b.config?.column || "Filter";
-                return (
-                  <span key={b.id} className="flex items-center gap-1.5">
-                    <span aria-hidden="true" className="text-border">&middot;</span>
-                    <span>{label}:</span>
-                    <span className={active ? "text-text font-medium" : ""}>{describeFilterSpec(val)}</span>
-                  </span>
-                );
-              })}
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 mb-2">
+            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-muted">
+              <span
+                className={`w-1.5 h-1.5 rounded-full shrink-0 ${filterState.loading ? "bg-accent animate-pulse" : "bg-accent/40"}`}
+              />
+              <span className="font-semibold text-text tabular-nums">{filterState.matchedRows.toLocaleString()}</span>
+              <span>row{filterState.matchedRows === 1 ? "" : "s"} match</span>
+              {activePage.blocks
+                .filter((b) => b.type === "filter" && b.config?.column)
+                .map((b) => {
+                  const val = filterState.values[b.id];
+                  const active = isSpecActive(val);
+                  const label = b.title || b.config?.column || "Filter";
+                  if (!active) {
+                    return (
+                      <span key={b.id} className="flex items-center gap-1.5">
+                        <span aria-hidden="true" className="text-border">&middot;</span>
+                        <span>{label}: {describeFilterSpec(val)}</span>
+                      </span>
+                    );
+                  }
+                  return (
+                    <button
+                      key={b.id}
+                      type="button"
+                      onClick={() => filterState.setFilterValue(b.id, null)}
+                      title={`Clear ${label} filter`}
+                      className="flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 font-medium text-primary hover:bg-primary/20 transition"
+                    >
+                      <span>{label}: {describeFilterSpec(val)}</span>
+                      <span aria-hidden="true">&times;</span>
+                    </button>
+                  );
+                })}
+            </div>
+            {activePage.blocks.some((b) => b.type === "filter" && isSpecActive(filterState.values[b.id])) && (
+              <button
+                type="button"
+                onClick={filterState.resetFilters}
+                className="text-[11px] text-muted hover:text-text transition shrink-0"
+              >
+                Reset filters
+              </button>
+            )}
           </div>
         )}
 
