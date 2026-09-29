@@ -59,8 +59,19 @@ respond with ONLY a single JSON object (no markdown fences, no prose outside the
 schema:
 
 {
-  "action": "clarify" | "transform" | "analyze" | "explain",
+  "action": "clarify" | "transform" | "analyze" | "explain" | "needs_data",
+                            // "needs_data": ONLY when this question clearly needs a table listed under "OTHER
+                            // DATA SOURCES YOU HAVE ACCESS TO" below (not yet loaded into `tables`), and none
+                            // of the currently loaded table(s) can answer it even after a reasonable merge -
+                            // see the "Automatically finding data in another connected source" rule below for
+                            // exactly when to use this instead of "clarify". Set needs_datasource_ids below
+                            // and leave prep_code/code/chart_type/title null.
   "clarifying_question": string | null,   // required if action == "clarify", else null
+  "needs_datasource_ids": [string] | null, // REQUIRED (non-empty) when action == "needs_data", else null - the
+                            // exact "id" value(s) copied from the "OTHER DATA SOURCES YOU HAVE ACCESS TO" list
+                            // below for the table(s) this question actually needs. The person never sees this
+                            // value directly - the app loads that data automatically and asks you again with
+                            // it available, so do not ALSO ask a clarifying question about which data to use.
   "prep_narrative": string | null,        // REQUIRED (a real, non-empty explanation) when action == "analyze",
                             // else null. See "Preparing the data before every analyze answer" below - 2-4
                             // plain-English sentences on exactly which columns you kept/derived for THIS
@@ -154,6 +165,18 @@ schema:
 }
 
 Rules:
+- Automatically finding data in another connected source (2026-09-29): when the currently loaded table(s) do
+  not contain what this question needs, but the "OTHER DATA SOURCES YOU HAVE ACCESS TO" list below (when
+  present) names a table that clearly does - by its name and/or its listed columns - respond with
+  action="needs_data" and needs_datasource_ids set to that table's exact "id" from the list (more than one id
+  is fine if the question genuinely needs more than one of them together). Do this INSTEAD OF action="clarify"
+  whenever the missing data is actually sitting in that list - asking the person "which data source should I
+  use" when the answer is already visible to you in that list is exactly the kind of unnecessary back-and-forth
+  this exists to remove. Only fall back to action="clarify" when the question is genuinely ambiguous even with
+  that list in front of you (e.g. two very differently-named tables in it could both plausibly be what "the
+  sales data" means), or when nothing in the list looks relevant at all. Never invent an id that is not
+  literally in that list, and never pick action="needs_data" for a table that is already loaded into `tables`
+  above - use it directly instead, that is not what this action is for.
 - Multiple results in one answer: when the request genuinely asks for several distinct analyses at once (e.g.
   "build the demand forecast, profit prediction, shipping-time model, customer segments, product
   recommendations, and anomaly detection", or any request naming more than one clearly separate thing to
@@ -1258,6 +1281,38 @@ def _dataset_schema_text(tables: dict[str, pd.DataFrame]) -> str:
     return "\n\n".join(blocks)
 
 
+_CATALOG_MAX_COLUMNS = 25
+
+
+def _catalog_text(catalog: list[dict] | None) -> str:
+    """Renders the lightweight list of OTHER data sources this person has
+    access to but has not loaded into this turn - just names and column
+    names, never the actual data - so the model can recognize when a
+    question needs a table it was not explicitly handed and say so (see
+    the "needs_data" action and the "Automatically finding data in
+    another connected source" rule) instead of either guessing with the
+    wrong table or asking a clarifying question whose answer is sitting
+    right here. `catalog` is built by routers/chat.py's
+    _other_sources_catalog (only it has DB access) as a list of {"id",
+    "name", "columns": [str, ...]}. Empty string when there is nothing to
+    show (no other sources, or none with a usable schema) - this costs
+    nothing extra when it does not apply, the same way
+    _schema_with_fallback's own note does."""
+    if not catalog:
+        return ""
+    lines = [
+        "\n\nOTHER DATA SOURCES YOU HAVE ACCESS TO (not loaded into `tables` for this turn - see the "
+        "\"needs_data\" action and its rule above if this question actually needs one of these):"
+    ]
+    for entry in catalog:
+        cols = entry.get("columns") or []
+        shown = ", ".join(str(c) for c in cols[:_CATALOG_MAX_COLUMNS])
+        if len(cols) > _CATALOG_MAX_COLUMNS:
+            shown += f", ... and {len(cols) - _CATALOG_MAX_COLUMNS} more"
+        lines.append(f"  - id={entry['id']!r}, name={entry['name']!r}: {shown or '(no columns listed)'}")
+    return "\n".join(lines)
+
+
 def _schema_with_fallback(
     tables: dict[str, pd.DataFrame], original_df: pd.DataFrame | None
 ) -> tuple[dict[str, pd.DataFrame], str, str]:
@@ -2073,6 +2128,7 @@ def analyze(
     original_df: pd.DataFrame | None = None,
     durable_repeat: tuple[str, str, str, str | None] | None = None,
     unattended: bool = False,
+    catalog: list[dict] | None = None,
 ) -> dict:
     """
     Main entrypoint. `tables` maps display name -> DataFrame for every table
@@ -2137,6 +2193,21 @@ def analyze(
     If the first attempt fails (sandbox error, wrong result shape, or an
     unrenderable chart), the model is given one retry with the exact error
     attached before any of that reaches the caller - see module docstring.
+
+    `catalog`, when given (routers/chat.py's _other_sources_catalog),
+    lists every OTHER data source this person has connected but did not
+    select for this turn - just names and column names, never actual
+    data - see _catalog_text. This is what lets a question be answered
+    from a table the person never explicitly picked: the model can
+    respond with action="needs_data" naming which one it needs (see the
+    "Automatically finding data in another connected source" rule in
+    SYSTEM_PROMPT) instead of guessing with the wrong table or asking the
+    person a clarifying question whose answer was already sitting right
+    here. That response is handed straight back to routers/chat.py (this
+    function never loads another datasource itself - it has no DB
+    access) which loads the real data and calls analyze() again with it
+    available; None/empty just means no such rerouting is possible this
+    turn, exactly the app's whole behavior before this existed.
     """
     df = next(iter(tables.values()))  # the primary table - profiling/suggestions are based on this one
     profile = profile_dataframe(df)
@@ -2290,6 +2361,9 @@ def analyze(
         )
     if fallback_note:
         user_content += fallback_note
+    catalog_text = _catalog_text(catalog)
+    if catalog_text:
+        user_content += catalog_text
     hint = INTENT_HINTS.get(intent or "")
     if hint:
         user_content += f"\n\n(Context: {hint})"
@@ -2332,6 +2406,19 @@ def analyze(
 
     plan = _plan_with_retry(messages)
     result = _execute_plan(prompt, tables, profile, plan, chart_override, guided)
+
+    if result.get("action") == "needs_data" and result.get("needs_datasource_ids"):
+        # See the "Automatically finding data in another connected
+        # source" rule - the model recognized the answer needs a table it
+        # was not handed and named it from the catalog above instead of
+        # guessing or asking the person. routers/chat.py is the only
+        # thing that can actually load another datasource (this module
+        # has no DB access) - it loads it for real and calls analyze()
+        # again with it available. This never enters the self-healing
+        # retry loop below since nothing failed; it is a normal, expected
+        # outcome of a normal question, not an error to recover from.
+        result["steps"] = steps
+        return result
 
     # Self-healing retry loop. Give the model up to _MAX_EXECUTION_RETRIES
     # extra chances to see exactly what went wrong with its own plan/code
@@ -2460,6 +2547,29 @@ def _execute_plan(
             "",
             needs_clarification=True,
             clarifying_question=plan.get("clarifying_question") or "Could you clarify what you would like to do?",
+            ok=True,
+        )
+
+    if action == "needs_data":
+        # The model determined the current table(s) cannot answer this
+        # question but a table listed in the "OTHER DATA SOURCES" catalog
+        # can - see the "Automatically finding data in another connected
+        # source" rule. This module has no DB access, so the actual load
+        # is handed straight back to analyze()'s caller rather than run
+        # through the sandbox at all.
+        ids = plan.get("needs_datasource_ids")
+        ids = [str(i) for i in ids if i] if isinstance(ids, list) else []
+        if ids:
+            result = _no_result(profile, "", ok=True)
+            result["action"] = "needs_data"
+            result["needs_datasource_ids"] = ids
+            return result
+        # Said it needs another source but did not actually name one -
+        # nothing the caller could load without an id, so this falls back
+        # to a real clarifying question instead of a silent no-op.
+        return _no_result(
+            profile, "", needs_clarification=True,
+            clarifying_question=plan.get("clarifying_question") or "Which data source should I use for this?",
             ok=True,
         )
 
