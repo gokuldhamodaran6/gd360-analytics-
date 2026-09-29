@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PALETTES, SIGNATURE_COLORS, PaletteId } from "../lib/chartStyle";
+import { PALETTES, SIGNATURE_COLORS, PaletteId, colorableLabels } from "../lib/chartStyle";
 import "react-grid-layout/css/styles.css";
 import { ReactGridLayout as RGL, WidthProvider } from "react-grid-layout/legacy";
 import {
@@ -179,6 +179,14 @@ function InfoIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
     </svg>
   );
 }
+function UndoIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 7 3 12l5 5" />
+      <path d="M3 12h11a6 6 0 0 1 0 12h-1" />
+    </svg>
+  );
+}
 function KebabIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="currentColor">
@@ -259,11 +267,13 @@ const MANUAL_BUILD_TYPES: ManualBlockType[] = ["kpi", "table", "chart", "gauge",
 // plus "original" (GD360's validated Signature palette, SIGNATURE_COLORS -
 // see that file's own comment for why this exact 8-hue set is what "Ask
 // AI"/"Build manually" charts already start out painted with by default).
-// A dashboard chart previously had no way to change this at all - this is
-// only ever a palette CHOICE, never a place to free-hand a custom hex (the
-// full custom-color/per-series picker stays Workspace-only, where there is
-// room for it); "Signature" is listed first since it's the default every
-// chart already starts on.
+// A dashboard chart previously had no way to change this at all; it can
+// now also drop into a "Custom" mode with one swatch per bar/slice/series
+// (StylePanel below, right next to this list) - the same per-trace picker
+// the live chat chart editor's own Style panel (ChartStylePanel.tsx) has
+// always had, ported here now that this panel has room for it too.
+// "Signature" is listed first since it's the default every chart already
+// starts on.
 const COLOR_PALETTE_OPTIONS: { id: PaletteId; name: string; colors: string[] }[] = [
   { id: "original", name: "Signature", colors: SIGNATURE_COLORS },
   ...PALETTES,
@@ -591,6 +601,108 @@ function StylePanel({
     }
   };
 
+  // 2026-09-29 (design revamp): per-bar/per-slice/per-series custom colors -
+  // the one piece of the live chat chart editor's own Style panel
+  // (ChartStylePanel.tsx's "Custom colors, pick your own" mode) that this
+  // dashboard-block version never had, even though the underlying
+  // mechanism (ChartStyle.customColors, read by applyChartStyle via
+  // colorableLabels - see chartStyle.ts) already exists and is already
+  // wired up on the render side (DashboardBlocks.tsx's BlockChart merges
+  // block.config.chart_style straight into the same applyChartStyle call
+  // the live chart uses) - this panel was simply never given the UI to
+  // set it. colorLabels is exactly this chart's own real colorable things
+  // (one swatch per bar/slice/series, never a padded fixed count), same
+  // function the live editor uses, so a 3-bar chart gets 3 swatches and a
+  // 10-bar chart gets 10.
+  const colorLabels = useMemo(() => colorableLabels(block.config?.chart_spec), [block.config?.chart_spec]);
+  const activeCustomColors: string[] = block.config?.chart_style?.customColors || [];
+  // Same drag-safe pattern as BrandingPanel's colorDraft/colorTimer/
+  // colorSeq in DashboardBuilderView.tsx (see that file's own comment for
+  // the exact race this fixes): a native <input type="color"> can fire
+  // onChange many times while a person drags inside the OS color picker,
+  // and sending one un-debounced updateBlock PATCH per tick let a slower
+  // early response land AFTER a later one and silently snap a swatch back
+  // to an older color mid-drag. customColorDraft gives each swatch
+  // instant, purely local visual feedback; customColorTimer debounces the
+  // actual PATCH to ~350ms after the last change per swatch index; and
+  // customColorSeq drops any response that isn't from the newest request
+  // for that same index.
+  const [customColorDraft, setCustomColorDraft] = useState<Record<number, string>>({});
+  // Mirrors customColorDraft synchronously (state updates are async/batched,
+  // and the debounced PATCH below needs the truly-latest set of pending
+  // edits at fire time, not whatever was in scope when its timer was
+  // scheduled) - this is what lets two swatches changed within the same
+  // ~350ms window both end up in the array a PATCH actually sends, instead
+  // of the second one's request clobbering the first one's still-in-flight
+  // change.
+  const customColorDraftRef = useRef<Record<number, string>>({});
+  const customColorTimer = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
+  const customColorSeq = useRef<Record<number, number>>({});
+  useEffect(() => {
+    const timers = customColorTimer.current;
+    return () => {
+      Object.values(timers).forEach((t) => t && clearTimeout(t));
+    };
+  }, []);
+
+  const pickCustomPalette = async () => {
+    if (activePaletteId === "custom" || colorBusy) return;
+    setColorBusy(true);
+    setColorError("");
+    try {
+      // Same seed-from-Signature fallback the live chart editor's own
+      // setCustomColor uses when no custom colors have been picked yet -
+      // so switching into "Custom" starts from real, already-on-the-chart
+      // colors instead of every swatch defaulting to the same one shade.
+      const seeded =
+        activeCustomColors.length > 0
+          ? activeCustomColors
+          : colorLabels.map((_, i) => SIGNATURE_COLORS[i % SIGNATURE_COLORS.length]);
+      const updated = await dashboardBuilderApi.updateBlock(dashboardId, block.id, {
+        config: { ...block.config, chart_style: { ...block.config?.chart_style, paletteId: "custom", customColors: seeded } },
+      });
+      onDone(updated);
+    } catch {
+      setColorError("Couldn't change this chart's colors.");
+    } finally {
+      setColorBusy(false);
+    }
+  };
+
+  const setCustomColor = (i: number, hex: string) => {
+    customColorDraftRef.current = { ...customColorDraftRef.current, [i]: hex };
+    setCustomColorDraft(customColorDraftRef.current);
+    const timer = customColorTimer.current[i];
+    if (timer) clearTimeout(timer);
+    const seq = (customColorSeq.current[i] || 0) + 1;
+    customColorSeq.current[i] = seq;
+    customColorTimer.current[i] = setTimeout(async () => {
+      const base = activeCustomColors.length ? [...activeCustomColors] : colorLabels.map((_, k) => SIGNATURE_COLORS[k % SIGNATURE_COLORS.length]);
+      while (base.length < colorLabels.length) base.push(SIGNATURE_COLORS[base.length % SIGNATURE_COLORS.length]);
+      // Fold in every still-pending local edit (not just this swatch's own),
+      // so a PATCH fired for swatch i doesn't clobber a sibling swatch
+      // that was also changed - but not yet server-confirmed - in the same
+      // debounce window. See customColorDraftRef's own comment above.
+      Object.entries(customColorDraftRef.current).forEach(([idx, val]) => {
+        const n = Number(idx);
+        while (base.length <= n) base.push(SIGNATURE_COLORS[base.length % SIGNATURE_COLORS.length]);
+        base[n] = val;
+      });
+      try {
+        const updated = await dashboardBuilderApi.updateBlock(dashboardId, block.id, {
+          config: { ...block.config, chart_style: { ...block.config?.chart_style, paletteId: "custom", customColors: base } },
+        });
+        if (customColorSeq.current[i] !== seq) return; // a newer edit to this swatch already superseded this request
+        onDone(updated);
+        delete customColorDraftRef.current[i];
+        setCustomColorDraft({ ...customColorDraftRef.current });
+      } catch {
+        if (customColorSeq.current[i] !== seq) return;
+        setColorError("Couldn't change this chart's colors.");
+      }
+    }, 350);
+  };
+
   return (
     <div className="no-drag flex flex-col gap-3 p-3 h-full overflow-auto">
       <div className="flex items-center justify-between">
@@ -629,8 +741,57 @@ function StylePanel({
               <span className="truncate">{p.name}</span>
             </button>
           ))}
+          {/* 2026-09-29 (design revamp): "Custom" - the same per-bar/
+              per-slice/per-series picker the live chat chart editor
+              already offers (ChartStylePanel.tsx), now here too. Spans
+              both grid columns since its label ("Custom") reads oddly
+              squeezed at half width next to a 4-dot swatch preview. */}
+          <button
+            type="button"
+            disabled={colorBusy}
+            className={`col-span-2 flex items-center gap-1.5 text-xs px-2 py-1.5 rounded-lg border transition disabled:opacity-50 ${
+              activePaletteId === "custom"
+                ? "border-primary bg-primary/10 text-text"
+                : "border-border text-muted hover:text-text hover:bg-surface2"
+            }`}
+            onClick={pickCustomPalette}
+          >
+            <span
+              className="w-3 h-3 rounded-full border border-surface shrink-0"
+              style={{ background: "conic-gradient(red, yellow, lime, cyan, blue, magenta, red)" }}
+            />
+            <span className="truncate">Custom, pick your own colors</span>
+          </button>
         </div>
         {colorError && <div className="text-[11px] text-amber-500">{colorError}</div>}
+
+        {activePaletteId === "custom" && (
+          <div className="mt-1 grid grid-cols-3 gap-2">
+            {colorLabels.length === 0 ? (
+              <div className="col-span-3 text-[11px] text-muted leading-relaxed">
+                This chart doesn&apos;t have separate bars/slices/series to color individually - try a chart type
+                with more than one category first.
+              </div>
+            ) : (
+              colorLabels.map((label, i) => {
+                const swatchValue = customColorDraft[i] ?? activeCustomColors[i] ?? SIGNATURE_COLORS[i % SIGNATURE_COLORS.length];
+                return (
+                  <div key={i} className="flex flex-col items-center gap-1 min-w-0">
+                    <input
+                      type="color"
+                      value={swatchValue}
+                      onChange={(e) => setCustomColor(i, e.target.value)}
+                      className="w-7 h-7 rounded-md border border-border bg-transparent cursor-pointer p-0"
+                    />
+                    <span className="text-[9px] text-muted text-center truncate w-full" title={label}>
+                      {label}
+                    </span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex flex-col gap-1.5">
@@ -762,6 +923,31 @@ function BlockCard({
     }
   };
 
+  // 2026-09-29 (design revamp): "i want a option i each chart like undo
+  // or redo because just now i chaange somethingand i cannot able to get
+  // that old version back" - single-level undo, see undoBlock's own
+  // comment in api/client.ts. Shown/enabled only when block.can_undo (the
+  // server's own signal that a snapshot actually exists), so this never
+  // sits there clickable-but-useless; a failure here IS shown, the same
+  // as setAnalysis above, since "nothing happened" with no explanation
+  // would look like the feature is broken rather than there being
+  // genuinely nothing left to undo.
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [undoError, setUndoError] = useState("");
+  const undo = async () => {
+    if (undoBusy) return;
+    setUndoBusy(true);
+    setUndoError("");
+    try {
+      onChange(await dashboardBuilderApi.undoBlock(dashboardId, block.id));
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      setUndoError(typeof detail === "string" ? detail : "Couldn't undo this block's last change.");
+    } finally {
+      setUndoBusy(false);
+    }
+  };
+
   // 2026-09-25h (inline editing round): best-effort - a failed save just
   // leaves the swatch showing whatever color it already had, which is
   // low-stakes enough not to need a scary inline error for something this
@@ -833,15 +1019,25 @@ function BlockCard({
   // 2026-09-29 (design revamp): the honest signal routers/dashboard_builder
   // .py's own module docstring already promised ("the frontend says so
   // rather than silently pretending they responded" - Phase 2b, point 2)
-  // but never actually shipped on this side. Only a block built via "Build
-  // manually" carries a `recipe` (see that docstring for exactly why an
-  // AI-built block can't safely be cross-filtered the same way) - so while
-  // a filter is active, every OTHER data-bearing block just keeps quietly
-  // showing its original, unfiltered numbers with no indication anything
-  // was skipped, which is exactly what read as "the filter doesn't work at
-  // all" rather than "this one block isn't filter-aware yet."
+  // but never actually shipped on this side. 2026-09-29 (thought-leader
+  // filters round): "chart wise filters" - a "Build manually" block's own
+  // `recipe` is no longer the ONLY way a block responds to this page's
+  // filter - a table/chart block built with Ask AI (or bulk-generated)
+  // now also responds, as long as it still has its own tidy
+  // result_columns/result_rows attached (see preview_filtered_blocks'
+  // own backend docstring for exactly what that extension does and why
+  // it deliberately stops short of a kpi, whose single value has no
+  // recorded aggregation to honestly re-derive from a filtered subset).
+  // So the real, still-true gap this banner should flag has narrowed to:
+  // a kpi/gauge/donut/sparkline/avatar_list (none of these have a
+  // recipe-free filtered path), OR a chart/table built before
+  // result_columns/result_rows were even stored (an old block with
+  // neither a recipe nor tidy data to filter).
   const isFilterableType = ["chart", "table", "kpi", "gauge", "donut", "sparkline", "avatar_list"].includes(block.type);
-  const notFilterAware = filtersActive && isFilterableType && !block.config?.recipe;
+  const hasTidyResultData = Boolean(block.config?.result_columns && block.config?.result_rows);
+  const respondsToFilters =
+    Boolean(block.config?.recipe) || (["chart", "table"].includes(block.type) && hasTidyResultData);
+  const notFilterAware = filtersActive && isFilterableType && !respondsToFilters;
 
   return (
     <div className="card h-full flex flex-col overflow-hidden border-2 border-transparent hover:border-primary/30 transition">
@@ -989,6 +1185,20 @@ function BlockCard({
                   {block.config?.anomalies_enabled && <CheckIcon className="w-3.5 h-3.5 text-primary" />}
                 </button>
               )}
+              {block.can_undo && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={undoBusy}
+                  className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors flex items-center gap-2 disabled:opacity-50"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    undo();
+                  }}
+                >
+                  <UndoIcon className="w-3.5 h-3.5" /> {undoBusy ? "Undoing…" : "Undo last change"}
+                </button>
+              )}
               <button
                 type="button"
                 role="menuitem"
@@ -1011,12 +1221,22 @@ function BlockCard({
         </div>
       )}
 
+      {undoError && (
+        <div className="no-drag text-xs text-amber-500 bg-amber-500/10 border-b border-amber-500/30 px-2.5 py-1.5 shrink-0">
+          {undoError}
+        </div>
+      )}
+
       {notFilterAware && (
         <div
           className="no-drag text-[11px] text-muted bg-surface2/70 border-b border-border px-2.5 py-1 shrink-0"
-          title="This block was built with Ask AI, which can't be safely re-run against filtered data on every filter change. Rebuild it with Build manually to make it respond to this page's filters."
+          title={
+            block.type === "kpi"
+              ? "This kpi's value has no recorded sum/average/count to honestly recompute from filtered data - rebuild it with Build manually to make it respond to this page's filters."
+              : "This block was built before this option existed, so it has no data of its own to filter from - ask AI to rebuild it, or build it manually, to make it respond to this page's filters."
+          }
         >
-          Not updated by this filter (built with Ask AI)
+          Not updated by this filter
         </div>
       )}
 
