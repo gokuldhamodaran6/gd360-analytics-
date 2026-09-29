@@ -1276,6 +1276,9 @@ export default function Workspace() {
           steps: m.steps || null,
           results: m.results || null,
           selfCritique: m.self_critique || null,
+          methodSummary: m.method_summary || null,
+          code: m.code || null,
+          durationMs: m.duration_ms ?? null,
         }));
         setTurns(restored);
 
@@ -1520,6 +1523,13 @@ export default function Workspace() {
         // backend schemas.ChatResponse.results/self_critique.
         results: data.results || null,
         selfCritique: data.self_critique || null,
+        // 2026-09-29 (plain-language findings round): the real method/code/
+        // duration behind this turn - see backend schemas.ChatResponse's
+        // identical fields. Renders as a collapsed "Show calculation"
+        // toggle right under the Insight box (see ChatPanel.tsx).
+        methodSummary: data.method_summary || null,
+        code: data.code || null,
+        durationMs: data.duration_ms ?? null,
       }]);
 
       if (data.action === "transform") {
