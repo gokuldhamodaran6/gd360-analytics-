@@ -267,16 +267,51 @@ function AccentSwatch({
 // rather than a generic config write). No custom color set = exactly the
 // same automatic palette as before, so every existing dashboard looks
 // unchanged until someone actually clicks the swatch.
+// 2026-09-29 (Hex-reference delta round): `compareValue` is the block's
+// own REAL, persisted (unfiltered) value - passed in ONLY when a filter
+// is actually active for this block right now (see this component's two
+// call sites: DashboardCanvas.tsx's BlockCard and
+// DashboardBlockGrid.renderBlock above, both of which already hold the
+// distinction between a block's real config and its live filter
+// override for the accent-color overlay, and now reuse that same
+// distinction here). This is a genuinely computed "how did applying
+// this filter change the number" comparison, never an invented
+// "vs last quarter" - this app has no reliable period concept for an
+// arbitrary connected dataset, and fabricating one would violate the
+// same rule that keeps every other number on this app honest. So the
+// label reads "vs unfiltered" - true regardless of what the filter
+// actually is - and the whole delta line is simply omitted (not shown
+// as "—" or 0%) whenever there is no real second number to compare
+// against: no filter active, the baseline wasn't a finite number, or
+// the baseline was exactly 0 (a percent change from zero is undefined,
+// not "infinite%").
+function KpiDelta({ current, compareValue }: { current: number; compareValue: unknown }) {
+  if (typeof compareValue !== "number" || !Number.isFinite(compareValue) || compareValue === 0) return null;
+  const pct = ((current - compareValue) / Math.abs(compareValue)) * 100;
+  if (!Number.isFinite(pct)) return null;
+  const direction = pct > 0.05 ? "up" : pct < -0.05 ? "down" : "flat";
+  const colorClass = direction === "up" ? "text-emerald-500" : direction === "down" ? "text-red-400" : "text-muted";
+  const arrow = direction === "up" ? "▲" : direction === "down" ? "▼" : "•";
+  return (
+    <div className={`flex items-center gap-1 text-xs font-medium ${colorClass}`}>
+      <span aria-hidden="true">{arrow}</span>
+      <span>{Math.abs(pct).toLocaleString(undefined, { maximumFractionDigits: 1 })}% vs unfiltered</span>
+    </div>
+  );
+}
+
 export function KpiTile({
   title,
   config,
   editable,
   onAccentColorChange,
+  compareValue,
 }: {
   title: string | null;
   config: any;
   editable?: boolean;
   onAccentColorChange?: (color: string | null) => void;
+  compareValue?: unknown;
 }) {
   const raw = config?.value;
   const isNumber = typeof raw === "number" && Number.isFinite(raw);
@@ -304,7 +339,10 @@ export function KpiTile({
           <Icon className="w-[18px] h-[18px]" />
         </span>
       </div>
-      <div className="dash-kpi-value text-3xl font-bold truncate">{display}</div>
+      <div className="flex flex-col gap-1.5">
+        <div className="dash-kpi-value text-3xl font-bold truncate">{display}</div>
+        {isNumber && <KpiDelta current={raw} compareValue={compareValue} />}
+      </div>
 
       {editable && onAccentColorChange && (
         <AccentSwatch customColor={customColor} accentCss={accentCss} onAccentColorChange={onAccentColorChange} />
@@ -1497,7 +1535,13 @@ export function DashboardBlockGrid({
             sparkline) need this overlay - donut/avatar_list have no single
             "block accent" concept (see their own render functions above),
             so they're left reading straight off config like before. */}
-        {type === "kpi" && <KpiTile title={b.title} config={{ ...config, accent_color: b.config?.accent_color }} />}
+        {type === "kpi" && (
+          <KpiTile
+            title={b.title}
+            config={{ ...config, accent_color: b.config?.accent_color }}
+            compareValue={override ? b.config?.value : undefined}
+          />
+        )}
         {type === "table" && <BlockTable title={b.title} config={{ ...config, accent_color: b.config?.accent_color }} />}
         {type === "chart" && <BlockChart title={b.title} config={config} />}
         {type === "text" && <TextBlock title={b.title} config={config} />}
