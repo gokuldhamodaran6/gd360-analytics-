@@ -262,6 +262,20 @@ class Settings(BaseSettings):
     # only after upgrading the Render plan's CPU/memory - not before.
     PARALLEL_PIECES_MAX_WORKERS: int = 2
 
+    # 2026-09-29 (plain-language findings round): how many per-result
+    # "insight" calls (see ai_engine._attach_entry_insights) run at the same
+    # time when one multi-result turn has several named results, each now
+    # getting its own real, grounded finding instead of only the first one.
+    # Unlike PARALLEL_PIECES_MAX_WORKERS just above, this has NOTHING to do
+    # with this Render instance's CPU/memory - an insight call is a single
+    # outbound HTTPS request to the configured AI provider that this process
+    # just waits on, not a local child process, so it doesn't touch the
+    # OOM/CPU-contention risk that number exists to manage. This bound
+    # exists only so one large multi-result turn (e.g. "build me 6 models")
+    # doesn't fire a big, bursty batch of simultaneous requests at the AI
+    # provider - a request-shaping courtesy, not a local safety limit.
+    INSIGHT_MAX_CONCURRENT: int = 3
+
     # --- White-label custom domains (Dashboard Builder Phase 4, 2026-09-24) ---
     # Both are required for the "custom domain" publish option to work at
     # all - see services/render_domains.py for exactly how they're used.
