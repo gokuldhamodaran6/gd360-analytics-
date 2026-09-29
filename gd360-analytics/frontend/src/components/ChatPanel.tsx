@@ -141,6 +141,15 @@ export type ChatTurn = {
   // rule in ai_engine.SYSTEM_PROMPT) - null/undefined means nothing was
   // fitted or predicted, so there is nothing to caveat.
   selfCritique?: string | null;
+  // 2026-09-29 (plain-language findings round): the real method label, the
+  // real code that ran, and how long this whole turn actually took - see
+  // backend schemas.ChatResponse's identical fields. Rendered as a
+  // collapsed "Show calculation" toggle (see ShowCalculation below) right
+  // under the Insight box - never fabricated, and simply omitted (the
+  // toggle itself doesn't render) when nothing real is available.
+  methodSummary?: string | null;
+  code?: string | null;
+  durationMs?: number | null;
 };
 
 export type CustomizeSeed = { text: string; nonce: number };
@@ -250,6 +259,65 @@ function StepsTrace({ steps }: { steps: { label: string; detail?: string | null 
   );
 }
 
+// 2026-09-29 (plain-language findings round): a collapsed "Show
+// calculation" toggle for the real method + code + timing behind a result -
+// mirrors StepsTrace's own collapsed-by-default pattern just above, for the
+// same reason: never clutters the normal view, but the real mechanics are
+// one click away for anyone who wants to check the work rather than just
+// trust the plain-English finding above it. method/code/durationMs are
+// exactly what actually ran (backend ai_engine._derive_method_summary / the
+// real code string / a real measured wall-clock time) - never fabricated,
+// and this renders nothing at all when neither method nor code is
+// available. sharedCode marks a multi-result card whose code is the ONE
+// script that also produced every OTHER result in the same answer (see
+// ai_engine's dict-in-`code` multi-result path), rather than something
+// unique to just this card, so the label says so instead of implying a
+// precision that code path cannot actually offer.
+function ShowCalculation({
+  method, code, durationMs, sharedCode,
+}: {
+  method?: string | null;
+  code?: string | null;
+  durationMs?: number | null;
+  sharedCode?: boolean | null;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!method && !code) return null;
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        className="text-[11px] text-muted hover:text-fg font-medium flex items-center gap-1"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className={`inline-block transition-transform ${open ? "rotate-90" : ""}`}>&#9656;</span>
+        {open ? "Hide calculation" : "Show calculation"}
+      </button>
+      {open && (
+        <div className="mt-1.5 space-y-1">
+          {(method || durationMs != null) && (
+            <div className="text-[11px] text-fg/80 flex flex-wrap items-center gap-1.5">
+              {method && <span className="font-medium">{method}</span>}
+              {durationMs != null && (
+                <span className="text-muted">
+                  {method ? "· " : ""}
+                  ran in {durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`}
+                </span>
+              )}
+            </div>
+          )}
+          {sharedCode && (
+            <div className="text-[10px] text-muted italic">
+              This is the shared script that also produced the other result(s) in this answer.
+            </div>
+          )}
+          {code && <CodeBlock code={code} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // A real, computed caveat about whether THIS result is actually
 // trustworthy (see ChatTurn.selfCritique's own docstring) - shown as an
 // amber callout, the same visual language a careful analyst's own written
@@ -320,6 +388,12 @@ function ResultCard({
           )}
         </div>
       </div>
+      {entry.insight && (
+        <div className="px-3 py-1.5 text-[11px] bg-accent/10 border-b border-accent/20 whitespace-pre-wrap">
+          <span className="font-semibold text-accent">Insight: </span>
+          {renderInlineBold(entry.insight, `${entry.label}-insight`)}
+        </div>
+      )}
       <div className="p-2">
         {entry.chart_spec && !showTable ? (
           <div style={{ height: 220 }}>
@@ -354,6 +428,12 @@ function ResultCard({
         ) : (
           <div className="text-[11px] text-muted px-1 py-2">No rows to show.</div>
         )}
+        <ShowCalculation
+          method={entry.method_summary}
+          code={entry.code}
+          durationMs={entry.duration_ms}
+          sharedCode={entry.shared_code}
+        />
       </div>
     </div>
   );
@@ -743,6 +823,9 @@ export default function ChatPanel({
                 <span className="font-semibold text-accent">Insight: </span>
                 {renderInlineBold(t.insight, "insight")}
               </div>
+            )}
+            {t.role === "assistant" && (
+              <ShowCalculation method={t.methodSummary} code={t.code} durationMs={t.durationMs} />
             )}
             {t.role === "assistant" && t.selfCritique && <SelfCritiqueNote text={t.selfCritique} />}
             {t.role === "assistant" && t.results && t.results.length > 1 && (
