@@ -637,6 +637,14 @@ export type ConversationMessage = {
   // for the exact shape of one entry.
   results: ResultEntry[] | null;
   self_critique: string | null;
+  // 2026-09-29 (plain-language findings round): the real method label, the
+  // real code that ran, and how long this whole turn actually took - see
+  // backend schemas.ChatResponse's identical fields. Restored here too so
+  // reopening a saved conversation still shows a "Show calculation" toggle
+  // under a past turn, not only a freshly-sent live one.
+  method_summary: string | null;
+  code: string | null;
+  duration_ms: number | null;
   created_at: string;
 };
 
@@ -672,6 +680,32 @@ export type ResultEntry = {
   // computing every piece together) - those all finish at the same instant
   // by construction, so there is nothing real to stagger.
   completed_offset_ms?: number | null;
+  // 2026-09-29 (plain-language findings round): a real, grounded plain-
+  // English finding for THIS one card specifically (see backend
+  // ai_engine._attach_entry_insights) - before this, only the turn's first/
+  // primary result ever got one; every other named result showed a bare
+  // chart/table with no finding of its own. Computed from this card's own
+  // real numbers the exact same no-fabrication way the single-result
+  // Insight box always has been. null only in the (essentially impossible
+  // in practice) case that this card's own raw value could not be matched
+  // up for insight generation - never a placeholder or invented text.
+  insight?: string | null;
+  // The real method label and the real code that produced this card - see
+  // schemas.ChatResponse's identical top-level fields for the full
+  // rationale. duration_ms is this card's own real measured wall-clock
+  // time when it ran as its own independent piece (see
+  // completed_offset_ms above) - null when shared_code is true, since the
+  // dict-in-`code` multi-result path has no way to attribute one shared
+  // script's total time to any single card without overstating precision
+  // it doesn't have (see ai_engine's own comment on this). shared_code
+  // marks that case: true means `code` is the ONE script that also
+  // produced every other card in this same answer, not something unique to
+  // just this one - the "Show calculation" UI says so rather than implying
+  // a false per-card precision.
+  method_summary?: string | null;
+  code?: string | null;
+  duration_ms?: number | null;
+  shared_code?: boolean | null;
 };
 
 export type ConversationDetail = {
