@@ -521,6 +521,27 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
             duration_ms=duration_ms, method_summary=method_summary,
         )
 
+    # Named-results round (2026-09-28): when this turn's `results` are
+    # several distinct, named analyses (see ai_engine's "Multiple results
+    # in one answer"), also save each one as its own real, selectable
+    # table - chained off the table it was actually built from (the new
+    # prep table just saved above, when there was one; otherwise whatever
+    # was originally selected for this turn) - and fold each saved
+    # table's id/name back into the matching `results` entry the person
+    # already sees, so the chat reply can show "Saved as <name>" right on
+    # that card instead of the saving happening invisibly.
+    results_out = result.get("results")
+    named_tables = result.get("named_tables")
+    if named_tables:
+        parent_ids = [new_version.id] if new_version else ([v.id for v in source_versions] or None)
+        saved_named = _save_named_results(db, ds, parent_ids, payload.prompt, named_tables)
+        by_label = {s["label"]: s for s in saved_named}
+        if results_out:
+            results_out = [
+                {**entry, **{k: v for k, v in by_label.get(entry.get("label"), {}).items() if k != "label"}}
+                for entry in results_out
+            ]
+
     reply_text = result.get("clarifying_question") or result.get("narrative") or "Done."
     if result.get("rows_before") is not None:
         rows_before = result.get("rows_before")
@@ -577,7 +598,7 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         sources=sources_manifest,
         ok=result.get("ok", True),
         steps=result.get("steps") or None,
-        results=result.get("results") or None,
+        results=results_out or None,
         self_critique=result.get("self_critique") or None,
         duration_ms=duration_ms,
         method_summary=method_summary,
@@ -970,6 +991,89 @@ def _save_cleaning_result(
     db.commit()
     db.refresh(version)
     return version
+
+
+def _save_named_results(
+    db: Session, ds: models.DataSource, parent_ids: list[str] | None, prompt: str, named_tables: dict,
+) -> list[dict]:
+    """2026-09-28 (named-results round): when one question genuinely asked
+    for several distinct analyses at once (see ai_engine's "Multiple
+    results in one answer" and the named_tables key its analyze() now
+    returns for that case), each named piece becomes its own real, saved,
+    selectable DatasetVersion here - not just a chat-response card that
+    disappears once the conversation scrolls past it. This is what makes a
+    multi-analysis answer genuinely CHAINABLE: "Demand forecast",
+    "Customer segments", "Anomalies flagged", and so on each show up in
+    the Data tab and the WORKING ON table picker exactly like any other
+    saved table, and a later question can pick one of them by name as its
+    starting point - the same thing Hex's notebook gives you for free by
+    making every named cell a real object, now true here too.
+
+    Named the same way _save_cleaning_result above names a single saved
+    table, except each piece keeps its own label (e.g. "Customer
+    segments") instead of a name derived from the shared prompt - six
+    tables from one prompt sharing one prompt-derived name would be
+    indistinguishable in the Data tab, which defeats the entire point of
+    this feature. All positions are reserved up front from a single query
+    (rather than one query per piece, as calling _save_cleaning_result in
+    a loop would do) so N tables saved from the same turn always land in a
+    stable, gapless order.
+
+    duration_ms and method_summary are deliberately left null on every
+    piece here, even though the caller (routers/chat.py's /chat endpoint)
+    has a real duration_ms/method_summary for the turn as a whole: that
+    number is the combined time for EVERY piece together (plus the AI
+    planning round-trip), not this one piece's own share of it, and the
+    method classifier only ever looked at the whole combined script, not
+    which lines belong to which named piece - attaching either to an
+    individual piece would overstate how precisely either was actually
+    measured for that specific table. Both stay null here, the same
+    honest "not measured for this path" null Phase 1 already uses
+    elsewhere, rather than a real-looking number that isn't actually
+    accurate at this granularity. (whole-turn duration_ms/method_summary
+    is still passed through and used - see caller.)
+    """
+    if not named_tables:
+        return []
+    log_entry_base = {
+        "prompt": prompt,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    max_position = (
+        db.query(func.max(models.DatasetVersion.position))
+        .filter(models.DatasetVersion.datasource_id == ds.id)
+        .scalar()
+        or 0
+    )
+    saved: list[dict] = []
+    position = max_position
+    for label, df in named_tables.items():
+        position += 1
+        name = label if len(label) <= 34 else f"{label[:34].rstrip()}…"
+        version = models.DatasetVersion(
+            datasource_id=ds.id,
+            name=name,
+            parent_version_id=parent_ids[0] if parent_ids else None,
+            parent_version_ids=parent_ids,
+            data=dataframe_to_csv_bytes(df),
+            cleaning_log=[{
+                **log_entry_base,
+                "summary": f"One of {len(named_tables)} results from this analysis: {label}",
+                "label": label,
+            }],
+            position=position,
+            duration_ms=None,
+            method_summary=None,
+        )
+        db.add(version)
+        saved.append({"label": label, "version": version})
+    db.commit()
+    for entry in saved:
+        db.refresh(entry["version"])
+    return [
+        {"label": e["label"], "version_id": e["version"].id, "version_name": e["version"].name}
+        for e in saved
+    ]
 
 
 def _get_or_create_conversation(
