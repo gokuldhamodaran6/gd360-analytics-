@@ -270,23 +270,55 @@ function SelfCritiqueNote({ text }: { text: string }) {
 // renders for a single result. A card with no chart_spec (see
 // ai_engine._build_result_entry - a wider reference table that could not
 // be charted) shows its table alone instead, never an empty box.
-function ResultCard({ entry }: { entry: ResultEntry }) {
+function ResultCard({
+  entry, sourceIds, onSourceIdsChange,
+}: {
+  entry: ResultEntry;
+  // 2026-09-28 (named-results round): when this specific piece was saved
+  // as its own real table (entry.version_id set - see
+  // routers/chat.py._save_named_results), "Use this table" adds it to the
+  // WORKING ON selection the same way picking it from the Data tab would,
+  // so the person can chain straight off "Customer segments" or "Demand
+  // forecast" without leaving the chat. Both optional: a caller that
+  // doesn't want this wired up (or a card with nothing saved to use)
+  // simply doesn't get the button.
+  sourceIds?: string[];
+  onSourceIdsChange?: (ids: string[]) => void;
+}) {
   const [showTable, setShowTable] = useState(!entry.chart_spec);
   const rows: any[] = Array.isArray(entry.result_rows) ? entry.result_rows : [];
   const columns: { name: string }[] = Array.isArray(entry.result_columns) ? entry.result_columns : [];
+  const alreadySelected = !!entry.version_id && !!sourceIds && sourceIds.includes(entry.version_id);
   return (
     <div className="rounded-xl border border-border bg-surface2/60 overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border">
-        <span className="text-[11px] font-semibold text-fg/80">{entry.label}</span>
-        {entry.chart_spec && columns.length > 0 && (
-          <button
-            type="button"
-            className="text-[10px] text-muted hover:text-fg font-medium"
-            onClick={() => setShowTable((s) => !s)}
-          >
-            {showTable ? "Show chart" : "Show table"}
-          </button>
-        )}
+      <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-border">
+        <span className="text-[11px] font-semibold text-fg/80 truncate">{entry.label}</span>
+        <div className="flex items-center gap-2 shrink-0">
+          {entry.chart_spec && columns.length > 0 && (
+            <button
+              type="button"
+              className="text-[10px] text-muted hover:text-fg font-medium"
+              onClick={() => setShowTable((s) => !s)}
+            >
+              {showTable ? "Show chart" : "Show table"}
+            </button>
+          )}
+          {entry.version_id && onSourceIdsChange && (
+            <button
+              type="button"
+              className="text-[10px] font-medium disabled:cursor-default text-accent hover:opacity-80 disabled:opacity-60"
+              disabled={alreadySelected}
+              title={
+                alreadySelected
+                  ? "Already selected for your next question"
+                  : "Saved as its own table - use it as the starting point for your next question"
+              }
+              onClick={() => onSourceIdsChange([...(sourceIds || []), entry.version_id as string])}
+            >
+              {alreadySelected ? "✓ Selected" : "Use this table →"}
+            </button>
+          )}
+        </div>
       </div>
       <div className="p-2">
         {entry.chart_spec && !showTable ? (
@@ -331,11 +363,17 @@ function ResultCard({ entry }: { entry: ResultEntry }) {
 // ChatTurn.results' own docstring) - this is what gives one request
 // several distinct, clearly-labeled results in one turn instead of only
 // ever the single chart the rest of this file was built around.
-function MultiResultCards({ entries }: { entries: ResultEntry[] }) {
+function MultiResultCards({
+  entries, sourceIds, onSourceIdsChange,
+}: {
+  entries: ResultEntry[];
+  sourceIds?: string[];
+  onSourceIdsChange?: (ids: string[]) => void;
+}) {
   return (
     <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
       {entries.map((entry, i) => (
-        <ResultCard key={i} entry={entry} />
+        <ResultCard key={i} entry={entry} sourceIds={sourceIds} onSourceIdsChange={onSourceIdsChange} />
       ))}
     </div>
   );
@@ -665,7 +703,9 @@ export default function ChatPanel({
               </div>
             )}
             {t.role === "assistant" && t.selfCritique && <SelfCritiqueNote text={t.selfCritique} />}
-            {t.role === "assistant" && t.results && t.results.length > 1 && <MultiResultCards entries={t.results} />}
+            {t.role === "assistant" && t.results && t.results.length > 1 && (
+              <MultiResultCards entries={t.results} sourceIds={sourceIds} onSourceIdsChange={onSourceIdsChange} />
+            )}
             {t.role === "assistant" && (t.action === "analyze" || t.action === "transform") && t.messageId && !t.continueAction && (
               <div className="mt-1.5">
                 {!t.verifyStatus ? (
