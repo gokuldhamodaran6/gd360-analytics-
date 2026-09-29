@@ -300,6 +300,15 @@ def get_conversation_messages(
                 # honest caveat, not just the first one.
                 "results": m.results,
                 "self_critique": m.self_critique,
+                # 2026-09-29 (plain-language findings round): the real
+                # method/code/duration behind this turn (see
+                # schemas.ChatResponse's own comment on these three) -
+                # restored here too so reopening a saved conversation keeps
+                # showing "Show calculation" under a past turn, not just a
+                # freshly-sent live one.
+                "method_summary": m.method_summary,
+                "code": m.code,
+                "duration_ms": m.duration_ms,
                 "created_at": m.created_at,
             }
             for m in messages
