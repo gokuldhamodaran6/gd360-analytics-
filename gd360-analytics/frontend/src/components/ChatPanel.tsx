@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 import { DatasetVersion, DataSourceSummary, datasourceApi, ResultEntry } from "../api/client";
 import ChartCanvas from "./ChartCanvas";
 import { hasMultipleTables, connectionKindMeta } from "./DataSourceForm";
@@ -363,6 +363,39 @@ function ResultCard({
 // ChatTurn.results' own docstring) - this is what gives one request
 // several distinct, clearly-labeled results in one turn instead of only
 // ever the single chart the rest of this file was built around.
+// A per-card reveal delay in ms, small enough to read as "these arrived
+// one after another" rather than a sluggish wait. Real gaps between
+// pieces (see StaggeredCard below) are capped at this so one unusually
+// slow piece among several fast ones doesn't hold up the whole reveal -
+// capping the ANIMATION pacing is a presentation choice, not a claim
+// about how long anything actually took.
+const MAX_REVEAL_STAGGER_MS = 1400;
+
+// 2026-09-29 (parallel-pieces round): reveals its card after a delay
+// matching how long AFTER THE FASTEST PIECE this one actually finished
+// computing (entry.completed_offset_ms, normalized so the fastest piece
+// in the batch gets 0 delay) - not a fabricated animation timing. By the
+// time the browser has this response at all, every piece already finished
+// (there is no live streaming here - see the Phase 3 delivery notes), so
+// this replays the REAL relative gaps between completions starting from
+// "now" instead of pretending nothing happened until the whole batch was
+// done. An entry with no completed_offset_ms (the older dict-in-`code`
+// multi-result path, where every piece genuinely does finish at the same
+// instant) renders immediately, exactly as before this round.
+function StaggeredCard({ delayMs, children }: { delayMs: number; children: ReactNode }) {
+  const [visible, setVisible] = useState(delayMs <= 0);
+  useEffect(() => {
+    if (delayMs <= 0) return;
+    const t = setTimeout(() => setVisible(true), delayMs);
+    return () => clearTimeout(t);
+  }, [delayMs]);
+  return (
+    <div className={`transition-opacity duration-300 ${visible ? "opacity-100" : "opacity-0"}`}>
+      {children}
+    </div>
+  );
+}
+
 function MultiResultCards({
   entries, sourceIds, onSourceIdsChange,
 }: {
@@ -370,11 +403,20 @@ function MultiResultCards({
   sourceIds?: string[];
   onSourceIdsChange?: (ids: string[]) => void;
 }) {
+  const offsets = entries.map((e) => e.completed_offset_ms ?? null);
+  const known = offsets.filter((o): o is number => o != null);
+  const minOffset = known.length ? Math.min(...known) : 0;
   return (
     <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
-      {entries.map((entry, i) => (
-        <ResultCard key={i} entry={entry} sourceIds={sourceIds} onSourceIdsChange={onSourceIdsChange} />
-      ))}
+      {entries.map((entry, i) => {
+        const raw = entry.completed_offset_ms;
+        const delayMs = raw == null ? 0 : Math.min(raw - minOffset, MAX_REVEAL_STAGGER_MS);
+        return (
+          <StaggeredCard key={i} delayMs={delayMs}>
+            <ResultCard entry={entry} sourceIds={sourceIds} onSourceIdsChange={onSourceIdsChange} />
+          </StaggeredCard>
+        );
+      })}
     </div>
   );
 }
