@@ -21,6 +21,9 @@ import {
   BlockChart,
   TextBlock,
   FilterControl,
+  BlockFilterButton,
+  isSpecActive,
+  describeFilterSpec,
   GaugeBlock,
   DonutBlock,
   SparklineBlock,
@@ -222,6 +225,10 @@ function UndoIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
     </svg>
   );
 }
+
+// FilterIcon and BlockFilterButton (per-chart filtering) now live in
+// DashboardBlocks.tsx, shared with Preview mode - see their own comments
+// there for why (2026-09-29, Hex-level filters round 2).
 function KebabIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="currentColor">
@@ -1240,6 +1247,14 @@ function BlockCard({
         <span className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-surface border border-border text-muted shrink-0">
           {BLOCK_TYPE_LABEL[block.type]}
         </span>
+        {respondsToFilters && datasourceId && filterState && (
+          <BlockFilterButton
+            datasourceId={datasourceId}
+            columns={columns}
+            criteria={filterState.blockFilters[block.id] || []}
+            onChange={(criteria) => filterState.setBlockFilters(block.id, criteria)}
+          />
+        )}
         {explanation && (
           <div className="shrink-0">
             <button
@@ -1424,14 +1439,27 @@ function BlockCard({
 
       {notFilterAware && (
         <div
-          className="no-drag text-[11px] text-muted bg-surface2/70 border-b border-border px-2.5 py-1 shrink-0"
+          className="no-drag flex items-center justify-between gap-2 text-[11px] text-muted bg-surface2/70 border-b border-border px-2.5 py-1 shrink-0"
           title={
             block.type === "kpi"
               ? "This kpi's value has no recorded sum/average/count to honestly recompute from filtered data - rebuild it with Build manually to make it respond to this page's filters."
-              : "This block was built before this option existed, so it has no data of its own to filter from - ask AI to rebuild it, or build it manually, to make it respond to this page's filters."
+              : "This block was built before this option existed, so it has no data of its own to filter from - rebuild it with Build manually to make it respond to this page's filters."
           }
         >
-          Not updated by this filter
+          <span className="truncate">Not updated by this filter</span>
+          {/* 2026-09-29 (round 2): the banner used to just explain the gap -
+              now it's one click to close it. "Build manually" always stores
+              a recipe (see dashboard_builder.py's manual-build path), and a
+              stored recipe is exactly what respondsToFilters checks for
+              above, so rebuilding through this panel is a real, honest fix
+              for this exact block - never a guess at its old AI aggregation. */}
+          <button
+            type="button"
+            className="no-drag shrink-0 text-[10px] font-semibold uppercase tracking-wide text-primary hover:underline"
+            onClick={() => setPanel("manual")}
+          >
+            Fix this
+          </button>
         </div>
       )}
 
@@ -1517,8 +1545,8 @@ function BlockCard({
                       <FilterControl
                         block={block}
                         datasourceId={datasourceId || null}
-                        value={filterState.values[block.id] || ""}
-                        onChange={(v) => filterState.setFilterValue(block.id, v)}
+                        value={filterState.values[block.id] ?? null}
+                        onChange={(spec) => filterState.setFilterValue(block.id, spec)}
                       />
                     ) : (
                       <div className="no-drag text-[11px] text-muted italic">Loading filter…</div>
