@@ -662,6 +662,16 @@ export type ResultEntry = {
   // it still shows as a chat card, it just is not chainable.
   version_id?: string | null;
   version_name?: string | null;
+  // 2026-09-29 (parallel-pieces round): when this piece ran as its own
+  // independent sandboxed call (see ai_engine's result_pieces plan field),
+  // this is really when it finished relative to when the whole batch
+  // started - not a fabricated stagger. ChatPanel.tsx's MultiResultCards
+  // uses it to reveal each card at roughly the real moment it became
+  // available, instead of only ever revealing all of them together.
+  // Undefined/null for a piece that ran the older way (one shared script
+  // computing every piece together) - those all finish at the same instant
+  // by construction, so there is nothing real to stagger.
+  completed_offset_ms?: number | null;
 };
 
 export type ConversationDetail = {
