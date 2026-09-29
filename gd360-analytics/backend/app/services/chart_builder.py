@@ -30,14 +30,31 @@ would reach for these by reflex rather than plotting the bare numbers:
     not "is there a relationship here", which is almost always the real
     question behind a scatter plot request.
   - "bar"/"column" against a result that actually carries TWO numeric
-    metrics per category (e.g. an average transaction count next to an
-    average dollar amount) automatically becomes a dual-axis combo instead
-    of a single flat bar - metric one as bars on the left axis, metric two
-    as an annotated line on its own right-hand axis (see
-    `_build_dual_axis_combo`). Forcing two differently-scaled metrics onto
-    one shared axis is how a $72 line and a 5.7 count end up looking like a
-    flat line at the bottom of the chart; giving the second metric its own
-    axis is what makes both readable at once.
+    metrics per category (e.g. total sales next to a customer count)
+    automatically becomes a two-panel small-multiples comparison instead of
+    a single flat bar - metric one in the left panel, metric two in the
+    right panel, each on its own correctly-scaled axis, both panels sharing
+    the same category order (see `_build_metric_comparison_panels`).
+
+    2026-09-29 (round 5, real-bug fix): this used to be a DUAL-AXIS combo
+    (one bar trace + one line trace sharing the same plot, metric two on a
+    secondary y2 axis) - the standard "combo chart" pattern, but one this
+    codebase's own dataviz skill explicitly flags as a non-negotiable
+    anti-pattern ("Never a dual-axis chart... two measures of different
+    scale -> two charts, small multiples, or indexed to a common base").
+    Diagnosed directly against a live, already-broken dashboard: the old
+    dual-axis version (a) pulled its category labels from `result.index`
+    instead of the actual dimension column, so a normal 0..n RangeIndex
+    silently replaced real category names ("At Risk", "Champions") with
+    "0", "1", "2", "3" on the x-axis, and (b) with data labels on (which
+    `defaultChartStyle` in chartStyle.ts turns on by default for exactly
+    this chart shape), the bar's "outside" label and the line's "top
+    center" label land at nearly the same pixel position for a category
+    where both metrics are near their own axis's max - producing the
+    garbled, overlapping numbers a real dashboard was showing in
+    production. Small multiples sidesteps both: each panel has only one
+    trace (no label collision is even possible) and real category labels
+    straight from the dimension column, never the row index.
 """
 from __future__ import annotations
 
@@ -551,47 +568,45 @@ def apply_analysis_overlays(chart_spec: dict, forecast_enabled: bool, anomalies_
     return json.loads(fig.to_json()), anomaly_count
 
 
-def _build_dual_axis_combo(result: pd.DataFrame, cols: list) -> go.Figure:
+def _build_metric_comparison_panels(result: pd.DataFrame, cols: list) -> go.Figure:
     """When a result naturally carries two numeric metrics per category
-    (e.g. an average transaction count alongside an average dollar spend),
-    a single shared axis is nearly always the wrong call - whichever metric
-    has the smaller scale ends up a sliver next to the other, or a flat
-    line along the bottom. This is the fix: metric one draws as bars on the
-    left axis, metric two as an annotated line on its own right-hand axis -
-    the same combo-chart pattern a working analyst reaches for whenever two
-    related-but-differently-scaled numbers need to be read side by side
-    against the same categories."""
+    (e.g. a customer count alongside a total-sales figure), a single shared
+    axis is nearly always the wrong call - whichever metric has the smaller
+    scale ends up a sliver next to the other. This used to reach for a
+    dual-axis combo (bars + a secondary-axis line); it now draws two small
+    side-by-side single-axis panels instead, one metric per panel, real
+    category labels down/across both - the dataviz skill's own recommended
+    fix for two differently-scaled measures ("two charts, small multiples,
+    or indexed to a common base"), and the only version of this chart that
+    cannot produce an overlapping data label, since each panel only ever
+    has one trace.
+
+    Categories come from the DataFrame's own first non-numeric column when
+    one exists (the real dimension - e.g. "Segment") rather than
+    `result.index`, which is almost always just a default 0..n RangeIndex
+    after a groupby().reset_index() - reading the index here is exactly
+    what silently turned real category names into "0", "1", "2", "3" in
+    the dual-axis version this replaces."""
     metric_a, metric_b = cols[0], cols[1]
-    categories = [str(v) for v in result.index]
+    dimension_col = next((c for c in result.columns if c not in (metric_a, metric_b)), None)
+    if dimension_col is not None and not pd.api.types.is_numeric_dtype(result[dimension_col]):
+        categories = [str(v) for v in result[dimension_col]]
+    else:
+        categories = [str(v) for v in result.index]
     a_vals = pd.to_numeric(result[metric_a], errors="coerce")
     b_vals = pd.to_numeric(result[metric_b], errors="coerce")
 
-    # 2026-09-29 (visual redesign, round 1): both traces used to carry an
-    # always-on text label on EVERY bar/point (texttemplate + textposition
-    # "outside"/"top center") on top of the usual hover tooltip - which is
-    # exactly what produced the jumbled, overlapping numbers on this chart
-    # type in practice (two dense label sets fighting for the same vertical
-    # space, worst on categories with many bars). The dataviz skill this
-    # project follows is explicit on this: never a number on every point:
-    # a chart page's job is to read the shape at a glance, and the exact
-    # value for any one bar/point is what hover is for. Both traces keep
-    # their real value in hover (Plotly's default hovertemplate already
-    # shows it); neither draws permanent on-chart text anymore.
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        name=str(metric_a), x=categories, y=a_vals,
-        marker_color=PALETTE[0], yaxis="y",
-    ))
-    fig.add_trace(go.Scatter(
-        name=str(metric_b), x=categories, y=b_vals, yaxis="y2",
-        mode="lines+markers",
-        line=dict(color=PALETTE[2], width=3),
-        marker=dict(size=9, color=PALETTE[2]),
-    ))
-    fig.update_layout(
-        yaxis=dict(title=dict(text=str(metric_a)), rangemode="tozero"),
-        yaxis2=dict(title=dict(text=str(metric_b)), overlaying="y", side="right", showgrid=False, rangemode="tozero"),
+    fig = make_subplots(rows=1, cols=2, subplot_titles=[str(metric_a), str(metric_b)], horizontal_spacing=0.12)
+    fig.add_trace(
+        go.Bar(name=str(metric_a), x=categories, y=a_vals, marker_color=PALETTE[0], showlegend=False),
+        row=1, col=1,
     )
+    fig.add_trace(
+        go.Bar(name=str(metric_b), x=categories, y=b_vals, marker_color=PALETTE[2], showlegend=False),
+        row=1, col=2,
+    )
+    fig.update_yaxes(automargin=True, rangemode="tozero")
+    fig.update_xaxes(automargin=True)
     return fig
 
 
@@ -725,6 +740,14 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
         return json.loads(fig.to_json())
 
     numeric_cols = _numeric_cols(result)
+    # True for a genuine [category, value] (or wider) tidy table - the shape
+    # every chart type in this app normally works from, and the signal the
+    # "histogram" branch below uses to tell an already-aggregated result
+    # (must never be re-counted by Plotly) apart from genuinely raw,
+    # unbinned data (a single value column, safe to hand to a real
+    # Plotly Histogram trace for it to bin itself) - see that branch's own
+    # comment for the concrete bug this was diagnosed against.
+    is_pretidied_table = isinstance(result, pd.DataFrame) and result.shape[1] >= 2
 
     if isinstance(result, pd.Series):
         df = result.reset_index()
@@ -743,22 +766,47 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
 
     fig = None
     barmode = None
-    # Set when the dual-axis combo path below is used - its two axes each
-    # already carry their own meaningful title (the metric name), so the
-    # generic yaxis_title=y_label applied near the bottom of this function
-    # must be skipped for it rather than blanking the left axis title out.
-    dual_axis_combo_used = False
+    # Set when the two-panel metric-comparison path below is used - each of
+    # its panels already carries its own heading (the metric name, drawn as
+    # a subplot title), so the generic yaxis_title=y_label applied near the
+    # bottom of this function would be meaningless for a 2-panel figure (it
+    # would only ever label the left panel) and must be skipped entirely.
+    # (Named for what it draws now - two side-by-side single-axis panels,
+    # never a shared/secondary axis - see _build_metric_comparison_panels's
+    # own docstring for why the old dual-axis version was replaced.)
+    multi_panel_used = False
 
     # ---- Core / everyday chart types (unchanged from the original set) ----
     if chart_type in ("bar", "column"):
-        # A result that genuinely carries two numeric metrics per category
-        # (not just a single value plus its own index) gets the dual-axis
-        # combo treatment automatically - see _build_dual_axis_combo above.
-        # A single numeric column (the overwhelmingly common case) renders
-        # exactly as before.
-        if isinstance(result, pd.DataFrame) and len(numeric_cols) >= 2:
-            fig = _build_dual_axis_combo(result, numeric_cols[:2])
-            dual_axis_combo_used = True
+        # A result that genuinely carries two numeric METRICS per a
+        # separate, real CATEGORY (e.g. "Segment" + "Customer Count" +
+        # "Total Sales" - three columns, one of them the dimension) gets
+        # the two-panel comparison treatment automatically - see
+        # _build_metric_comparison_panels above.
+        #
+        # 2026-09-29 (round 5, real-bug fix): this used to trigger off
+        # `len(numeric_cols) >= 2` alone, which also fired on a plain
+        # 2-column [x, y] table where BOTH columns happen to be numeric -
+        # e.g. "Units" (1, 2, 3...) against "Average Gross Profit" per
+        # unit, where "Units" is really the x-axis dimension, not a
+        # second metric to plot side by side. With no non-numeric column
+        # left over once the two "metrics" are named,
+        # _build_metric_comparison_panels' own dimension_col lookup found
+        # nothing and fell back to result.index (0, 1, 2...) - silently
+        # replacing the real Units values with a meaningless row-position
+        # count, live-DB-confirmed on two production blocks ("Gross
+        # Profit vs Units Sold", "Average Gross Profit by Order Volume
+        # (Units)"). Requiring a genuine leftover non-numeric column
+        # before treating this as a two-METRIC comparison at all sends a
+        # plain two-numeric-column table down the ordinary single-series
+        # bar path below instead, where "Units" renders as the real x-axis
+        # it always was.
+        has_real_dimension_column = isinstance(result, pd.DataFrame) and any(
+            not pd.api.types.is_numeric_dtype(result[c]) for c in result.columns if c not in numeric_cols[:2]
+        )
+        if isinstance(result, pd.DataFrame) and len(numeric_cols) >= 2 and has_real_dimension_column:
+            fig = _build_metric_comparison_panels(result, numeric_cols[:2])
+            multi_panel_used = True
         else:
             fig = go.Figure(go.Bar(x=df["x"], y=df["y"], marker_color=PALETTE[0]))
     elif chart_type == "line":
@@ -777,7 +825,29 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
         # chart - added on top of, never instead of, the actual data.
         _add_trend_overlay(fig, df["x"], df["y"])
     elif chart_type == "histogram":
-        fig = go.Figure(go.Histogram(x=df["x"] if df["x"].dtype != object else df["y"], marker_color=PALETTE[2]))
+        # 2026-09-29 (round 5, real-bug fix): a real Plotly Histogram trace
+        # only ever accepts raw, unbinned values and does its OWN counting/
+        # binning client-side - it has no way to accept a pre-computed
+        # count. Diagnosed directly against a live, already-broken
+        # dashboard: the AI's own pandas code, asked for a "distribution",
+        # had already bucketed the data itself (into meaningfully-named
+        # bins like "0-30 days") and computed the real count per bucket -
+        # exactly the pre-tidied 2-column [category, value] shape every
+        # other chart type in this app works from. Handing that to
+        # go.Histogram(x=<the 4 bucket-name strings>) made Plotly re-count
+        # occurrences of each bucket NAME in that 4-row array - which is
+        # always exactly 1, since each bucket appears once - silently
+        # replacing every real count (245, 400, 451, 3948 in the diagnosed
+        # case) with a flat bar of height 1. A genuine histogram (binning
+        # many raw individual values Plotly has not seen counted yet) is
+        # only possible when the caller handed back a single value column
+        # with no separate count/category pairing - `is_pretidied_table`
+        # (computed above from the ORIGINAL result, before the x/y
+        # normalization every chart type shares) is exactly that check.
+        if is_pretidied_table:
+            fig = go.Figure(go.Bar(x=df["x"], y=df["y"], marker_color=PALETTE[2]))
+        else:
+            fig = go.Figure(go.Histogram(x=df["x"] if df["x"].dtype != object else df["y"], marker_color=PALETTE[2]))
     elif chart_type == "box":
         fig = go.Figure(go.Box(y=df["y"], x=df.get("x"), marker_color=PALETTE[5]))
     elif chart_type == "heatmap":
@@ -1019,13 +1089,19 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
     # `automargin=True` makes Plotly measure the actual rendered text and
     # grow the margin to fit it every time; `title.standoff` adds a fixed
     # gap between the axis title and its tick labels so the two never touch
-    # even once automargin has done its job. Also: the legend used to keep
-    # Plotly's default placement (inside the top-right of the plot area),
-    # which is exactly why a legend could sit on top of the tallest bars or
-    # data points - moving it to a horizontal row above the plot (the same
-    # placement used throughout the reference dashboards this round was
-    # measured against) means it never overlaps a mark again. None of this
-    # touches chart TYPE selection, data, or layout math - purely chrome.
+    # even once automargin has done its job. None of this touches chart
+    # TYPE selection, data, or layout math - purely chrome.
+    #
+    # 2026-09-29 (round 5, legend position): moved from a horizontal row
+    # ABOVE the plot to one BELOW it, centered - the same placement Gokul's
+    # own reference dashboard (a Hex data app) uses on every one of its
+    # charts. The old above-plot position had a real, concrete failure mode
+    # on a two-metric-per-category chart: a legend with two long entries,
+    # left-anchored at the top, could run rightward into that same region's
+    # own axis furniture (a secondary axis's tick labels/title, or a wide
+    # right-margin number) - exactly the "legend overlapping the 70k label"
+    # bug seen on a live dual-axis chart. A bottom-centered legend has nothing
+    # else competing for that space on any chart type, dual-axis or not.
     fig.update_layout(
         template=DARK_TEMPLATE,
         title=title or "",
@@ -1035,16 +1111,17 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         font=dict(family="Geist, Inter, system-ui, sans-serif", size=13, color="#E8E8F0"),
-        margin=dict(l=56, r=28, t=68, b=56),
+        margin=dict(l=56, r=28, t=68, b=64),
         hoverlabel=dict(bgcolor="#1E1E2E", font_size=13),
-        legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
     )
-    if not dual_axis_combo_used:
+    if not multi_panel_used:
         # The normal case: one shared y axis, titled from the AI's own
-        # y_label (or blank). The dual-axis combo above already gave each
-        # of its two axes its own meaningful title (the metric name), so
-        # it deliberately skips this generic overwrite (and never touches
-        # automargin/standoff, both already set unconditionally above).
+        # y_label (or blank). The two-panel comparison chart above already
+        # gives each panel its own heading (the metric name, as a subplot
+        # title), so it deliberately skips this generic single-axis
+        # overwrite (and never touches automargin/standoff, both already
+        # set unconditionally above for every panel).
         fig.update_layout(yaxis=dict(title=dict(text=y_label or "")))
 
     # fig.to_json() guarantees full JSON-safety (numpy types, NaT, etc handled)
