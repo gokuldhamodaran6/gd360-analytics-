@@ -1007,13 +1007,29 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
     const type = t.type;
     const extra = multiSeries ? "<extra>%{fullData.name}</extra>" : "<extra></extra>";
     const h = t.orientation === "h";
-    if (type === "bar" || type === "histogram") {
+    if (type === "bar") {
       // Reads the same precomputed, tiny-value-safe text the on-bar label
       // below is built from (see formatValueSmart) - so hovering a bar
       // always reports its real value, never a rounded "0.00" that
       // contradicts what the label (or a near-invisible sliver of a bar)
       // actually represents.
       t.hovertemplate = `${h ? "%{y}" : "%{x}"}<br><b>%{text}</b>${extra}`;
+    } else if (type === "histogram") {
+      // 2026-09-29 (design revamp bugfix): a real Plotly histogram trace
+      // only ever carries the RAW, unbinned x values (chart_builder.py
+      // sends go.Histogram(x=df["x"], ...) with no y array at all -
+      // Plotly computes the bin edges/counts itself, client-side, at
+      // render time). The "bar" branch above reads t.text from t.x/t.y
+      // (see the data-labels loop below), which for a histogram is
+      // always empty - so its hovertemplate must never reference %{text}
+      // the way a plain bar's does, or Plotly has nothing to substitute
+      // and shows the literal string "%{text}" in the tooltip (the exact
+      // bug reported: a shipping-duration histogram's tooltip reading
+      // "2000 - 2004" then a literal "%{text}" underneath it). %{x} and
+      // %{y} are both real, computed-at-render-time values for a
+      // histogram (the bin's own range label and its count), so this
+      // uses those directly instead of a text array that can't exist.
+      t.hovertemplate = `%{x}<br><b>%{y}</b>${extra}`;
     } else if (BAR_LIKE_TYPES.has(type)) {
       t.hovertemplate = `${h ? "%{y}" : "%{x}"}<br><b>%{${h ? "x" : "y"}:${VALUE_FORMAT}}</b>${extra}`;
     } else if (type === "scatter" || type === undefined) {
@@ -1038,7 +1054,7 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
     } else if (type === "waterfall") {
       t.texttemplate = style.dataLabels ? `%{${t.orientation === "h" ? "x" : "y"}:${VALUE_FORMAT}}` : undefined;
       t.textposition = "outside";
-    } else if (type === "bar" || type === "histogram") {
+    } else if (type === "bar") {
       // Precomputed text (not a Plotly texttemplate/d3-format string) so a
       // genuinely tiny nonzero value - a p-value like 1.28e-62 - always
       // shows its real magnitude instead of silently rounding to "0" and
@@ -1056,6 +1072,21 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
       t.textposition = style.dataLabels ? "outside" : "none";
       t.cliponaxis = false;
       t.textfont = { ...(t.textfont || {}), family: FONT_FAMILY, weight: 650 };
+    } else if (type === "histogram") {
+      // 2026-09-29 (design revamp bugfix): a histogram trace only ever
+      // carries the raw, unbinned input values (see the hovertemplate
+      // branch above) - there is no one-value-per-bar array to read a
+      // label from before Plotly bins it client-side, and with
+      // potentially thousands of raw points, treating t.x as "one value
+      // per bar" the way the plain-bar branch above does would be both
+      // wrong (it's not binned yet) and produce a garbled wall of text.
+      // Plotly has no supported per-bin outside-text mode for histogram
+      // traces either, so this intentionally leaves text/textposition
+      // alone rather than fabricating one - the bin count is already
+      // shown on hover (see the hovertemplate branch above), which is
+      // the correct place for a per-bin number here.
+      delete t.texttemplate;
+      t.cliponaxis = false;
     } else if (type === "scatter" || type === undefined) {
       const baseMode = (t.mode || "lines+markers").replace("+text", "");
       t.mode = style.dataLabels ? `${baseMode}+text` : baseMode;
