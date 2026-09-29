@@ -3,16 +3,30 @@ import type { CSSProperties } from "react";
 import ThemeToggle from "../components/ThemeToggle";
 import { connectionKindMeta } from "../components/DataSourceForm";
 
-// 2026-09-25c (landing page elite pass): a full copy + chrome rewrite,
-// replacing the original earnest/explainer tone with the tighter,
-// declarative register asked for ("messaging like Google, Nvidia,
-// Apple") - short lines, one idea per sentence, real claims only.
-// Deliberately NOT added: customer counts, logos or testimonials - GD360
-// doesn't have real ones to show yet, and inventing them is exactly the
-// kind of thing that backfires the moment someone asks for a source. Once
-// there are real numbers or real quotes, they belong in a proper social-
-// proof section - this file has room for one (see the comment above the
-// final CTA) but doesn't fabricate one now.
+// 2026-09-25c (landing page elite pass) / 2026-09-29 (positioning
+// revamp): the product has grown well past "type a question, get a
+// chart" since the elite pass - a full dashboard builder with AI
+// auto-build, real governed SQL pushed down into a customer's own
+// warehouse, row/column access control, quality checks, dataset
+// versioning, lineage, and a live A/B testing tool are all real, shipped
+// features now (see the capability map doc for the full, honest,
+// code-verified breakdown of what's built vs. not - claude/gd360-
+// capability-map-2026-09-28.md). This pass widens the copy to say so,
+// while keeping the exact same discipline the 2026-09-25c pass set:
+// short lines, one idea per sentence, real claims only, nothing a
+// technical buyer or investor could poke a hole in on a diligence call.
+// Still deliberately NOT added: customer counts, logos, testimonials, or
+// revenue/traction numbers - GD360 doesn't have real ones yet, and
+// inventing them is exactly the kind of thing that costs more credibility
+// than it buys the moment someone asks for a source (see the capability
+// map's own "100% replace" caution - the same principle applies to
+// marketing claims, not just product ones). Once there are real numbers
+// or real quotes, they belong in a proper social-proof section - this
+// file has room for one (see the comment above the final CTA) but
+// doesn't fabricate one now. Also deliberately NOT claimed anywhere
+// below: machine learning / model training (the capability map confirms
+// this doesn't exist yet), a metric glossary/semantic layer, or
+// email/alerting - real, current gaps, not modesty.
 //
 // Visual system: reuses the same .dash-card/.dash-icon-chip/.dash-accent-N
 // premium chrome the Dashboard Builder round already shipped (see
@@ -20,23 +34,33 @@ import { connectionKindMeta } from "../components/DataSourceForm";
 // a second visual language for the marketing page - so the landing page
 // and the product it's selling finally look like the same thing.
 
-// Kept in sync with Dashboard.tsx's own CHART_TYPES list (the authenticated
-// homepage) so a person never sees a bigger, different claim once they log
-// in than what this, their very first page, already showed them.
+// Every one of these is a real chart_type branch in
+// services/chart_builder.py's build_figure (37 distinct types including
+// aliases) - this list picks 32 of the clearest, most recognizable names
+// rather than every internal alias (column/bar, ohlc/candlestick), so
+// "32+" here is a real floor, never a rounded-up guess.
 const CHART_TYPES = [
   "Bar", "Horizontal Bar", "Grouped Bar", "Stacked Bar",
   "Line", "Step Line", "Area", "Stacked Area",
-  "Pie", "Donut", "Scatter", "Bubble",
-  "Histogram", "Box", "Violin", "Heatmap",
-  "Waterfall", "Funnel", "Sankey", "Treemap",
-  "Sunburst", "Radar", "Gauge", "Candlestick",
+  "Pie", "Donut", "Scatter", "Bubble", "Scatter 3D",
+  "Histogram", "Box", "Violin", "Dot Plot",
+  "Heatmap", "Density Heatmap", "Contour", "Choropleth",
+  "Waterfall", "Funnel", "Funnel Area", "Sankey", "Treemap", "Icicle",
+  "Sunburst", "Radar", "Polar Bar", "Gauge", "Candlestick", "Parallel Coordinates",
 ];
 
 // The real connector logos already drawn for the "Connect data" picker
 // inside the app (see DataSourceForm.tsx) - reused here instead of a
 // separate marketing graphic, so this claim is provably true rather than
 // decorative: this is what you'll actually click on once you sign up.
-const CONNECTOR_KINDS = ["postgres", "mysql", "sqlserver", "mongodb", "supabase", "bigquery", "excel", "csv"];
+// Snowflake and Google Sheets added in the positioning revamp - both are
+// real, fully-built connectors (see DataSourceForm.tsx's own
+// WAREHOUSE_KINDS/CONNECT_KINDS) that the original 2026-09-25c list
+// simply hadn't caught up to yet.
+const CONNECTOR_KINDS = [
+  "postgres", "mysql", "sqlserver", "mongodb", "supabase",
+  "bigquery", "snowflake", "google_sheets", "excel", "csv",
+];
 
 const HOW_IT_WORKS = [
   {
@@ -99,35 +123,123 @@ function GuidedIcon({ className = "w-[18px] h-[18px]" }: { className?: string })
   );
 }
 
+// 2026-09-29 (positioning revamp): three new icons for the three new
+// FEATURES cards this round adds (dashboards, warehouse SQL, governance)
+// - same 24x24 viewBox / 1.75 stroke / round joins as every icon above,
+// so a new card never looks like it came from a different hand.
+function DashboardGridIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="8" height="10" rx="1.5" />
+      <rect x="13" y="3" width="8" height="6" rx="1.5" />
+      <rect x="13" y="11" width="8" height="10" rx="1.5" />
+      <rect x="3" y="15" width="8" height="6" rx="1.5" />
+    </svg>
+  );
+}
+
+function WarehouseIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <ellipse cx="12" cy="5" rx="8" ry="3" />
+      <path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
+      <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" />
+    </svg>
+  );
+}
+
+// A lock, not another shield - VerifiedIcon above already owns the
+// shield+checkmark shape for "verified answers," so governance/access
+// control gets its own distinct mark instead of looking like a restyled
+// duplicate of it.
+function LockIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="11" width="16" height="9" rx="2" />
+      <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+    </svg>
+  );
+}
+
 // Same 0..5 rotation DashboardBlocks.tsx's KpiTile uses (index.css's
 // --dash-accent-0..5) - hardcoded per item here rather than imported,
-// since there are only ever exactly 4 features and 4 trust points and a
-// shared hashing helper would be more code than the two fixed arrays it
-// replaces.
+// since these are small, fixed-length arrays and a shared hashing helper
+// would be more code than what it replaces.
+//
+// 2026-09-29 (positioning revamp): widened from 4 to 6 - the original
+// four were all true, but all pointed at one product surface (chat ->
+// chart). The two new cards (dashboards, governed warehouse SQL) are
+// real, shipped, and the two most concrete reasons GD360 now reads as a
+// platform rather than a single feature - see this file's own top
+// comment for the audit trail. Every accent 0-5 gets used exactly once,
+// same discipline as before.
 const FEATURES = [
   {
     accent: 0,
     title: "Ask. See it built.",
-    body: "Describe what you want, in plain English. GD360 picks the right chart from 24+ types, shapes the data, and renders it — live. No SQL. No drag-and-drop builder.",
+    body: "Describe what you want, in plain English. GD360 picks the right chart from 30+ types, shapes the data, and renders it — live. No SQL. No drag-and-drop builder.",
     Icon: PromptToChartIcon,
   },
   {
     accent: 1,
+    title: "Dashboards that build themselves.",
+    body: "Describe the goal and GD360 plans, builds and lays out a multi-page dashboard from your real data. Scheduled refresh, your own branding, a password-protected link or your own domain.",
+    Icon: DashboardGridIcon,
+  },
+  {
+    accent: 2,
+    title: "Real SQL. Your own warehouse.",
+    body: "Postgres, MySQL, SQL Server, MongoDB, Supabase, BigQuery, Snowflake — GD360 writes governed, read-only queries and runs them directly inside your own systems. Every query cost-capped and logged.",
+    Icon: WarehouseIcon,
+  },
+  {
+    accent: 3,
+    title: "Governed by design.",
+    body: "Row and column-level access control, so a viewer only ever sees what they're allowed to. Every credential encrypted, every outbound IP address published — reviewed end-to-end, not bolted on.",
+    Icon: LockIcon,
+  },
+  {
+    accent: 4,
     title: "Nothing hidden. Ever.",
     body: "Every prep step — duplicates removed, gaps handled, types fixed — written out in plain English, with the real row counts behind it. Never a black box.",
     Icon: CleanPrepIcon,
   },
   {
-    accent: 2,
+    accent: 5,
     title: "Trust, verified twice.",
     body: "Every insight is checked the moment it's written — then you can check it again yourself, anytime. One click re-audits the numbers before you act on them.",
     Icon: VerifiedIcon,
   },
+];
+
+// 2026-09-29 (positioning revamp): the investor-facing "platform breadth"
+// section - three disciplines, each grounded line-by-line in the
+// capability map doc (claude/gd360-capability-map-2026-09-28.md), which
+// itself is a code-verified, honest breakdown done specifically because
+// the app had grown past "chart tool" without the copy catching up.
+// Deliberately excludes anything the doc marks "Not built": no ML
+// training claim (confirmed absent from the codebase by direct search),
+// no semantic layer/metric glossary, no email delivery. The forecast
+// line says "trend forecasting" rather than implying a seasonality-aware
+// model, matching the doc's own explicit caution on that exact wording.
+const PLATFORM_PILLARS = [
   {
-    accent: 4,
-    title: "Never start from zero.",
-    body: "New to data? Goku shows you what to clean, what to explore, and what to ask next — built for people who've never opened a BI tool.",
-    Icon: GuidedIcon,
+    accent: 1,
+    title: "Data engineering, handled.",
+    body: "Real, read-only connections to Postgres, MySQL, SQL Server, MongoDB, Supabase, BigQuery and Snowflake — every query cost-capped and logged. Row and column-level access control. Encrypted credentials. A lineage map showing exactly how a number got from raw table to chart.",
+    Icon: WarehouseIcon,
+  },
+  {
+    accent: 5,
+    title: "Statistics that hold up.",
+    body: "Real hypothesis tests, outlier detection and trend forecasting, run with genuine statistical methods — never an invented number. Every dataset is versioned, so any analysis can be reproduced exactly, anytime.",
+    Icon: VerifiedIcon,
+  },
+  {
+    accent: 0,
+    title: "Analysis and dashboards, built.",
+    body: "AI-built, multi-page dashboards from a single goal. 30+ chart types. Governed SQL written and run directly inside your own warehouse. Every answer independently re-checked before you see it — and re-checkable again, anytime you want.",
+    Icon: PromptToChartIcon,
   },
 ];
 
@@ -135,12 +247,12 @@ const TRUST_POINTS = [
   {
     accent: 0,
     title: "Minutes. Not meetings.",
-    body: "Connect your data, get a finished, verified chart in minutes. No dashboard to build. No analyst to wait on. No learning curve.",
+    body: "Connect your data, get a finished, verified chart — or a full dashboard — in minutes. No analyst to wait on. No learning curve.",
   },
   {
     accent: 2,
-    title: "One tool. Every source.",
-    body: "Spreadsheets, CSV and Excel files, SQL and NoSQL databases — analyzed the same simple way. No more juggling five different tools.",
+    title: "One system. Every source.",
+    body: "Databases, warehouses, spreadsheets and files — connected, queried and governed the same simple way. No more juggling five different tools for one data team.",
   },
   {
     accent: 3,
@@ -212,6 +324,15 @@ function HeroProductPreview() {
         <div className="dash-card dash-card--accented p-3.5" style={{ "--dash-card-accent-color": "rgb(var(--dash-accent-2))" } as CSSProperties}>
           <div className="text-[9.5px] font-semibold uppercase tracking-wide text-muted">Total Earnings</div>
           <div className="dash-kpi-value text-xl font-bold mt-1.5">$1,684.00</div>
+          {/* 2026-09-29: illustrates the real per-chart-filter KPI delta
+              (DashboardBlocks.tsx's KpiDelta) with the exact same
+              arrow/color/"vs unfiltered" convention - a real, shipped
+              feature, shown here at hero-preview scale rather than left
+              undemonstrated. */}
+          <div className="flex items-center gap-1 text-[9px] font-medium text-emerald-500 mt-1">
+            <span aria-hidden="true">▲</span>
+            <span>8.3% vs unfiltered</span>
+          </div>
         </div>
         <div className="dash-card dash-card--accented p-3.5" style={{ "--dash-card-accent-color": "rgb(var(--dash-accent-1))" } as CSSProperties}>
           <div className="text-[9.5px] font-semibold uppercase tracking-wide text-muted">Unpaid Earnings</div>
@@ -302,17 +423,18 @@ export default function Landing() {
             <CheckMarkIcon className="w-3.5 h-3.5" /> Verified. Not guessed.
           </div>
           <h1 className="text-3xl sm:text-5xl md:text-6xl font-extrabold leading-tight tracking-tight">
-            Ask anything.
+            The AI data team for
             <br />
-            Know it&rsquo;s{" "}
+            teams who don&rsquo;t have{" "}
             <span className="relative inline-block whitespace-nowrap">
-              <span className="relative z-10">true.</span>
+              <span className="relative z-10">one.</span>
               <span aria-hidden className="absolute left-0 right-0 bottom-1 sm:bottom-2 h-[0.32em] bg-primary/[0.22] -z-0 rounded-sm" />
             </span>
           </h1>
           <p className="text-muted text-base sm:text-lg mt-6 max-w-2xl mx-auto leading-relaxed">
-            Connect any database, warehouse or file. Ask in plain English. Get a chart and an insight —
-            cleaned, computed and independently checked, never guessed. No SQL. No Python. No code.
+            Connect your database or warehouse. Ask in plain English. GD360 writes the governed SQL, builds the
+            dashboard, runs the statistics, and checks its own math before you see it — the repeatable work of a
+            data engineer, a data scientist, and an analyst, done in minutes instead of days. No SQL. No Python. No code.
           </p>
           <div className="flex items-center justify-center gap-3 mt-8 flex-wrap">
             <Link to="/register" className="btn-primary text-base px-6 py-3" style={{ borderRadius: "999px" }}>
@@ -400,6 +522,38 @@ export default function Landing() {
                 </div>
                 <div className="font-semibold mb-1.5">{s.title}</div>
                 <div className="text-sm text-muted leading-relaxed">{s.body}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* ---- Platform breadth ("one platform, three disciplines") ----
+            2026-09-29 (positioning revamp): the section built specifically
+            to answer "it's not anymore a chart app, it's a world-class AI
+            data team" - three real, code-verified disciplines rather than
+            a single feature list. No customer counts, logos or
+            testimonials here on purpose - see this file's top comment. */}
+        <div className="mb-10">
+          <div className="text-center max-w-2xl mx-auto mb-8">
+            <span className="text-[11px] font-bold tracking-[0.15em] text-accent">ONE PLATFORM, THREE DISCIPLINES</span>
+            <h2 className="text-2xl sm:text-3xl font-bold mt-3 tracking-tight">Not a chart tool. A data team.</h2>
+            <p className="text-muted mt-3 leading-relaxed">
+              GD360 automates the repeatable, well-defined work of a data engineer, a data scientist, and an
+              analyst — the same way every serious data platform does — and leaves the judgment calls to your team.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {PLATFORM_PILLARS.map((p) => (
+              <div
+                key={p.title}
+                className="dash-card dash-card--accented p-6"
+                style={{ "--dash-card-accent-color": `rgb(var(--dash-accent-${p.accent}))` } as CSSProperties}
+              >
+                <div className={`dash-icon-chip dash-accent-${p.accent} mb-4`}>
+                  <p.Icon />
+                </div>
+                <div className="font-semibold text-[17px] mb-1.5">{p.title}</div>
+                <div className="text-sm text-muted leading-relaxed">{p.body}</div>
               </div>
             ))}
           </div>
