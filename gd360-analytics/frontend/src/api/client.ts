@@ -651,6 +651,17 @@ export type ResultEntry = {
   result_rows: any;
   result_row_count: number | null;
   result_truncated: boolean;
+  // 2026-09-28 (named-results round): when this card's data was genuinely
+  // tabular (see backend chart_builder.result_to_dataframe), it was also
+  // saved as its own real, selectable table - see
+  // routers/chat.py._save_named_results. version_id is that table's id
+  // (the same id a WORKING ON entry or a Data-tab table carries), so a
+  // person can pick it as the starting point for their next question the
+  // same way they would pick any other saved table. Both null when this
+  // particular piece could not be saved as a table (e.g. a bare scalar) -
+  // it still shows as a chat card, it just is not chainable.
+  version_id?: string | null;
+  version_name?: string | null;
 };
 
 export type ConversationDetail = {
