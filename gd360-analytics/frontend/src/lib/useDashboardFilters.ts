@@ -56,6 +56,19 @@ export type DashboardFilterState = {
   // fill, a delete) so a stale override never lingers on a block whose
   // real content just changed underneath it.
   refresh: () => void;
+  // 2026-09-29 (Hex-reference filter-bar round): clears every page-wide
+  // filter block back to "All" in ONE state update and ONE preview
+  // request - the "Reset filters" affordance from the reference mockup.
+  // Deliberately does NOT touch per-chart filters (blockFilters) - those
+  // are a different, more targeted slice a person added on purpose for
+  // one specific chart, not part of "start over with the page-wide
+  // filter bar." Calling setFilterValue(id, null) once per active filter
+  // block in a loop would instead fire one network request per filter
+  // (each call closes over the `values` from before the loop started,
+  // so only the LAST call's clear would actually stick) - this exists
+  // specifically so clearing 3 filters at once behaves like one action,
+  // not three racing ones.
+  resetFilters: () => void;
   loading: boolean;
   // 2026-09-25e (elite pass): the real, server-counted number of rows
   // matching the current PAGE-WIDE filter selection (or the datasource's
@@ -183,6 +196,11 @@ export function useDashboardFilters(dashboardId: string, page: DashboardBuilderP
 
   const refresh = useCallback(() => runPreview(values, blockFilters), [values, blockFilters, runPreview]);
 
+  const resetFilters = useCallback(() => {
+    setValues({});
+    runPreview({}, blockFilters);
+  }, [blockFilters, runPreview]);
+
   return {
     values,
     blockFilters,
@@ -191,6 +209,7 @@ export function useDashboardFilters(dashboardId: string, page: DashboardBuilderP
     setFilterValue,
     setBlockFilters,
     refresh,
+    resetFilters,
     loading,
     matchedRows,
   };
