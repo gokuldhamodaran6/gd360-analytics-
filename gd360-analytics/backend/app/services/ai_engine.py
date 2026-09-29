@@ -2443,6 +2443,23 @@ def analyze(
     current_plan = plan
     attempt = 1
     needs_retry = result.pop("_retry_needed", False)
+    # 2026-09-29 root-cause fix: real production evidence already on file
+    # right here in this function documents that a SECOND consecutive
+    # timeout on the same request essentially never succeeds on a third
+    # try either - "the model retrying with the same (or an equally slow)
+    # approach and timing out again, identically, on the very next
+    # attempt (confirmed for two different real prompts)" (2026-09-23
+    # note below), and separately a real 3/3-attempts-all-timed-out case
+    # (2026-09-28 note further down). Despite that evidence already being
+    # on file, this loop still always spent a full third
+    # SANDBOX_TIMEOUT_SECONDS window (plus another LLM round trip) on a
+    # request pattern already shown twice in a row not to work - on this
+    # app's shared 0.5 CPU box that is worst-case 3 x 45s of sandboxed
+    # execution alone, before the person ever sees a response. is_timeout
+    # and timeout_streak below let this stop after the SECOND consecutive
+    # timeout instead of blindly trying a third time.
+    is_timeout = False
+    timeout_streak = 0
     while needs_retry and attempt <= _MAX_EXECUTION_RETRIES:
         retry_detail = result.pop("_retry_detail", "unknown error")
         print(f"[ai_engine] attempt {attempt} failed for prompt={prompt!r}: {retry_detail}")
@@ -2461,6 +2478,20 @@ def analyze(
         # dataset this size, and the fix for each - so the retry has an
         # actual chance of being faster, not just a repeat of attempt 1.
         is_timeout = "timed out" in retry_detail.lower()
+        timeout_streak = timeout_streak + 1 if is_timeout else 0
+        if is_timeout and timeout_streak >= 2:
+            # Stop now, without sending a third attempt - see the
+            # 2026-09-29 note above this loop for why a third try is not
+            # worth its own full timeout window here.
+            steps.append({
+                "label": "Stopped after two timeouts in a row",
+                "detail": (
+                    "This table/request is genuinely too slow to finish on this app's current server "
+                    "resources, not something a third identical-budget attempt was going to fix - see "
+                    "the honest message below instead of guessing at a third rewrite."
+                ),
+            })
+            break
         if is_timeout:
             guidance = (
                 "Running that did not finish in time and was stopped. On a dataset this size, that almost "
@@ -2527,6 +2558,30 @@ def analyze(
         # again from zero.
         failing_code = (current_plan or {}).get("code") or (current_plan or {}).get("prep_code") or "(no code in final plan)"
         print(f"[ai_engine] final failing code for prompt={prompt!r}:\n{failing_code}")
+        # 2026-09-29 root-cause fix: every exhausted-retry path used to
+        # return _TRANSFORM_FAILURE_NARRATIVE/_ANALYZE_FAILURE_NARRATIVE
+        # unconditionally - "I was not able to... could you say a bit
+        # more about what you would like to see" - EVEN when the real,
+        # final cause was a timeout, not any ambiguity in the request.
+        # That message tells the person their question was not
+        # understood, which is simply false in this case (the plan was
+        # valid and on-topic; the sandboxed run just did not finish in
+        # time on this app's shared 0.5 CPU box) - a genuinely confusing,
+        # actively misleading thing to say to someone whose real problem
+        # is "this table/request needs more compute than this app's
+        # current server has," not "rephrase your question." Overwriting
+        # it here, only for a genuine final timeout, says what actually
+        # happened and gives a concrete next step instead.
+        if is_timeout:
+            row_count = profile.get("row_count")
+            size_note = f" ({row_count:,} rows)" if isinstance(row_count, int) else ""
+            result["narrative"] = (
+                f"I understood the request, but this table{size_note} was too large for this specific "
+                "analysis to finish in time on this app's current server resources - this is a speed "
+                "limit, not a misunderstanding. Try narrowing it (a shorter date range, fewer columns "
+                "or categories, or a smaller breakdown) and I will run it again, or ask for a quicker "
+                "summary first (e.g. totals by month instead of by day) before drilling into detail."
+            )
     result.pop("_retry_needed", None)
     result.pop("_retry_detail", None)
     result["steps"] = steps
