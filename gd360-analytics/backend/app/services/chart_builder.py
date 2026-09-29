@@ -1052,6 +1052,35 @@ def result_to_tidy(result: Any, max_rows: int = 4000) -> dict | None:
     return {"columns": columns, "rows": rows, "row_count": row_count, "truncated": truncated}
 
 
+def result_to_dataframe(result: Any) -> pd.DataFrame | None:
+    """The full-fidelity counterpart to result_to_tidy above, for when a
+    result needs to become a real saved table (see routers/chat.py's
+    _save_named_results, 2026-09-28 named-results round) rather than a
+    JSON preview: same normalization (a Series' index becomes a real
+    "label" column instead of being dropped; a DataFrame's named index -
+    e.g. the result of a groupby - is pulled back into an ordinary column
+    too), but returns every row, not just the first max_rows, and skips
+    the JSON round-trip entirely since this is going straight into a CSV
+    snapshot, not a chat response. Returns None for the same "nothing
+    meaningfully tabular here" cases result_to_tidy does (a bare scalar, or
+    an empty/columnless frame) - there is nothing a real table could be
+    made from those."""
+    if isinstance(result, pd.Series):
+        df = result.reset_index()
+        if df.shape[1] == 2:
+            df.columns = ["label", "value"]
+    elif isinstance(result, pd.DataFrame):
+        df = result.reset_index() if result.index.name else result.copy()
+    else:
+        return None
+
+    if df.empty or df.shape[1] == 0:
+        return None
+
+    df.columns = [str(c) for c in df.columns]
+    return df
+
+
 def result_to_summary(result: Any, max_rows: int = 15) -> dict:
     """Compact, LLM-friendly summary of an analysis result, used for insight generation."""
     if isinstance(result, pd.Series):
