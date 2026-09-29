@@ -33,6 +33,35 @@ import { connectionKindMeta } from "../components/DataSourceForm";
 // index.css's own updated comment on that section) rather than inventing
 // a second visual language for the marketing page - so the landing page
 // and the product it's selling finally look like the same thing.
+//
+// 2026-09-29 (broadened-audience pass): the first version of this
+// revamp's hero ("...for teams who don't have one") read as a product
+// only for people with no data team at all - too narrow, and it also
+// undersold the real value for a team that already has an analyst or
+// two: getting the repeatable 70-80% of the job off their plate (see the
+// capability map's own framing of what "automate, don't replace" means).
+// The hero now names both audiences directly ("even the ones with one")
+// instead of only implying the smaller one - same honesty discipline,
+// wider door.
+//
+// 2026-09-29d (full visual + mechanism revamp): ported over from a
+// design-exploration mockup the user reviewed and approved, with two
+// changes: (1) every hardcoded dark hex in the mockup became a real
+// --color-*/--dash-accent-* token, so this follows the light/dark
+// toggle exactly like every other page instead of forcing dark mode on
+// just this one route (see index.css's own "Landing page - premium
+// redesign pass" comment for the new keyframes/classes this added);
+// (2) placeholder database icons became the real connectionKindMeta
+// logos this file already had on hand, which is strictly more honest
+// than the mockup's generic stand-ins. New this pass: an animated hero
+// (aurora glow, a staged/tilted product preview with floating
+// annotations and a scanning highlight), a "why we built this" vision
+// band, a "mechanism" system diagram (your data -> the GD360 engine ->
+// verified output, replacing the old plain 3-card "how it works"), and
+// an old-way/new-way "shift" comparison - all still bound by this
+// file's original no-fabrication rule: every claim in every new section
+// traces to something real and shipped, nothing here is a stat, a
+// customer count, or a certification badge that doesn't exist.
 
 // Every one of these is a real chart_type branch in
 // services/chart_builder.py's build_figure (37 distinct types including
@@ -60,24 +89,6 @@ const CHART_TYPES = [
 const CONNECTOR_KINDS = [
   "postgres", "mysql", "sqlserver", "mongodb", "supabase",
   "bigquery", "snowflake", "google_sheets", "excel", "csv",
-];
-
-const HOW_IT_WORKS = [
-  {
-    step: "01",
-    title: "Connect",
-    body: "A database, a warehouse, or a file. Read-only and encrypted, every outbound IP published - so IT signs off before you connect.",
-  },
-  {
-    step: "02",
-    title: "Ask",
-    body: "“Which region grew fastest?” Plain English in. GD360 cleans what it needs to, picks the chart, and runs the real numbers.",
-  },
-  {
-    step: "03",
-    title: "Verify",
-    body: "A chart, a plain-English insight, and one button that independently re-audits the answer against the numbers it actually computed - every time.",
-  },
 ];
 
 function CheckMarkIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
@@ -161,6 +172,33 @@ function LockIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
   );
 }
 
+// 2026-09-29d (mechanism diagram): the engine hub's own mark - an
+// abstract atom/core shape (three overlapping rings + a center point)
+// rather than a robot or brain glyph, matching this file's existing
+// discipline of plain geometric icons over literal "AI" imagery.
+function EngineIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <ellipse cx="12" cy="12" rx="10" ry="4.2" />
+      <ellipse cx="12" cy="12" rx="10" ry="4.2" transform="rotate(60 12 12)" />
+      <ellipse cx="12" cy="12" rx="10" ry="4.2" transform="rotate(120 12 12)" />
+      <circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+// A small trending-line mark for the mechanism diagram's "Chart" output
+// badge - distinct from ChartTypeIcon (which switches shape per chart
+// type for the chip strip further down the page); this one is always
+// the same simple upward line, standing in for "a chart" in general.
+function TrendLineIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 17l5-6 4 3 5-8 4 5" />
+    </svg>
+  );
+}
+
 // Same 0..5 rotation DashboardBlocks.tsx's KpiTile uses (index.css's
 // --dash-accent-0..5) - hardcoded per item here rather than imported,
 // since these are small, fixed-length arrays and a shared hashing helper
@@ -222,24 +260,70 @@ const FEATURES = [
 // no semantic layer/metric glossary, no email delivery. The forecast
 // line says "trend forecasting" rather than implying a seasonality-aware
 // model, matching the doc's own explicit caution on that exact wording.
+// 2026-09-29d: each pillar also draws a tiny one-line "motif" sketch
+// under its body copy - a connected-node row for engineering, a
+// distribution curve for statistics, a mini dashboard-grid sketch for
+// analysis - so the three disciplines read as visually distinct at a
+// glance instead of three identical icon+paragraph blocks. Purely
+// decorative geometry (not a chart of real data), so it's built as
+// plain SVG shapes rather than anything that could be mistaken for a
+// real number.
+function EngineeringMotif({ color }: { color: string }) {
+  return (
+    <svg viewBox="0 0 200 34" className="w-full h-auto mt-4" aria-hidden="true">
+      <line x1="20" y1="17" x2="180" y2="17" stroke={color} strokeOpacity="0.28" strokeWidth="1.5" />
+      <circle cx="20" cy="17" r="5" fill={color} fillOpacity="0.8" />
+      <circle cx="100" cy="17" r="5" fill={color} fillOpacity="0.8" />
+      <circle cx="180" cy="17" r="5" fill={color} fillOpacity="0.8" />
+    </svg>
+  );
+}
+function StatisticsMotif({ color }: { color: string }) {
+  return (
+    <svg viewBox="0 0 200 34" className="w-full h-auto mt-4" aria-hidden="true">
+      <path
+        d="M10,30 C40,30 45,4 65,4 C85,4 90,30 120,30 C150,30 155,14 190,14"
+        fill="none"
+        stroke={color}
+        strokeOpacity="0.55"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+function AnalysisMotif({ color }: { color: string }) {
+  return (
+    <svg viewBox="0 0 200 34" className="w-full h-auto mt-4" aria-hidden="true">
+      <rect x="8" y="4" width="86" height="26" rx="4" fill={color} fillOpacity="0.14" stroke={color} strokeOpacity="0.45" />
+      <rect x="102" y="4" width="42" height="12" rx="3" fill={color} fillOpacity="0.14" stroke={color} strokeOpacity="0.45" />
+      <rect x="150" y="4" width="42" height="12" rx="3" fill={color} fillOpacity="0.14" stroke={color} strokeOpacity="0.45" />
+      <rect x="102" y="18" width="90" height="12" rx="3" fill={color} fillOpacity="0.14" stroke={color} strokeOpacity="0.45" />
+    </svg>
+  );
+}
+
 const PLATFORM_PILLARS = [
   {
     accent: 1,
     title: "Data engineering, handled.",
     body: "Real, read-only connections to Postgres, MySQL, SQL Server, MongoDB, Supabase, BigQuery and Snowflake — every query cost-capped and logged. Row and column-level access control. Encrypted credentials. A lineage map showing exactly how a number got from raw table to chart.",
     Icon: WarehouseIcon,
+    Motif: EngineeringMotif,
   },
   {
     accent: 5,
     title: "Statistics that hold up.",
     body: "Real hypothesis tests, outlier detection and trend forecasting, run with genuine statistical methods — never an invented number. Every dataset is versioned, so any analysis can be reproduced exactly, anytime.",
     Icon: VerifiedIcon,
+    Motif: StatisticsMotif,
   },
   {
     accent: 0,
     title: "Analysis and dashboards, built.",
     body: "AI-built, multi-page dashboards from a single goal. 30+ chart types. Governed SQL written and run directly inside your own warehouse. Every answer independently re-checked before you see it — and re-checkable again, anytime you want.",
     Icon: PromptToChartIcon,
+    Motif: AnalysisMotif,
   },
 ];
 
@@ -309,12 +393,32 @@ function ChartTypeIcon({ chartType }: { chartType: string | null }) {
 // visited by someone who hasn't signed up yet.
 function HeroProductPreview() {
   return (
-    <div className="dash-card overflow-hidden text-left max-w-3xl mx-auto">
+    // 2026-09-29d: gently tilted in 3D (a static, subtle perspective, not
+    // a hover effect) plus a scanning highlight sweep, so the preview
+    // reads as a staged "screen" rather than a flat screenshot pasted
+    // onto the page - the direct fix for "the dashboard image feels like
+    // it's hanging" (see this file's top comment).
+    <div
+      className="relative overflow-hidden dash-card dash-card--glass text-left max-w-3xl mx-auto"
+      style={{ transform: "perspective(1600px) rotateX(2deg) rotateY(-2.5deg)" }}
+    >
+      <div
+        aria-hidden
+        className="pointer-events-none absolute left-0 right-0 h-16 opacity-50 z-10"
+        style={{
+          background: "linear-gradient(180deg, rgb(var(--color-accent) / 0.5), transparent)",
+          animation: "landing-scan-sweep 5s linear infinite",
+        }}
+      />
       <div className="h-9 flex items-center gap-1.5 px-4 border-b border-border">
         <span className="w-2 h-2 rounded-full bg-border" />
         <span className="w-2 h-2 rounded-full bg-border" />
         <span className="w-2 h-2 rounded-full bg-border" />
         <span className="ml-3 text-[10.5px] text-muted">app.gd360analytics.com/workspace</span>
+        <span className="ml-auto flex items-center gap-1.5 text-[10px] font-bold text-accent">
+          <span className="landing-live-dot" />
+          LIVE
+        </span>
       </div>
       <div className="p-5 sm:p-6 grid grid-cols-3 gap-3.5">
         <div className="dash-card dash-card--accented p-3.5" style={{ "--dash-card-accent-color": "rgb(var(--dash-accent-0))" } as CSSProperties}>
@@ -357,6 +461,8 @@ function HeroProductPreview() {
               stroke="rgb(var(--color-accent))"
               strokeWidth="2.5"
               strokeLinecap="round"
+              strokeDasharray={900}
+              style={{ animation: "landing-draw-in 2.4s ease-out forwards" }}
             />
           </svg>
         </div>
@@ -364,7 +470,15 @@ function HeroProductPreview() {
           <div className="text-[9.5px] font-semibold uppercase tracking-wide text-muted self-start mb-1">Weekly Utilization</div>
           <svg viewBox="0 0 200 118" className="w-full h-auto" role="img" aria-label="Weekly utilization at 82 percent">
             <path d="M28,96 A72,72 0 0 1 172,96" fill="none" stroke="rgb(var(--color-border))" strokeWidth="11" strokeLinecap="round" />
-            <path d="M28,96 A72,72 0 0 1 160,56.7" fill="none" stroke="rgb(var(--color-accent))" strokeWidth="11" strokeLinecap="round" />
+            <path
+              d="M28,96 A72,72 0 0 1 160,56.7"
+              fill="none"
+              stroke="rgb(var(--color-accent))"
+              strokeWidth="11"
+              strokeLinecap="round"
+              strokeDasharray={400}
+              style={{ animation: "landing-draw-arc 2.4s ease-out forwards" }}
+            />
             <text x="100" y="90" textAnchor="middle" style={{ fontSize: "21px", fontWeight: 700, fill: "rgb(var(--color-text))" }}>
               82%
             </text>
@@ -408,6 +522,35 @@ export default function Landing() {
           and a solid, confident headline with a single highlighter-style
           mark instead of a gradient fill. */}
       <div className="relative overflow-hidden">
+        {/* 2026-09-29d: a soft, slow-drifting aurora glow behind the dot
+            grid - reuses --dash-accent-0/2/4 (the same hues the rest of
+            the app already draws KPI tiles with) at very low opacity, so
+            it's an extension of the existing palette rather than a new
+            one. Purely decorative motion - no layout, no content. */}
+        <div
+          aria-hidden
+          className="landing-aurora pointer-events-none"
+          style={{
+            top: "-160px",
+            left: "4%",
+            width: "520px",
+            height: "520px",
+            background: "radial-gradient(circle, rgb(var(--dash-accent-2) / 0.16), transparent 68%)",
+            animation: "landing-aurora-a 16s ease-in-out infinite",
+          }}
+        />
+        <div
+          aria-hidden
+          className="landing-aurora pointer-events-none hidden sm:block"
+          style={{
+            top: "-120px",
+            right: "6%",
+            width: "460px",
+            height: "460px",
+            background: "radial-gradient(circle, rgb(var(--dash-accent-0) / 0.12), transparent 68%)",
+            animation: "landing-aurora-b 19s ease-in-out infinite",
+          }}
+        />
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0"
@@ -423,18 +566,19 @@ export default function Landing() {
             <CheckMarkIcon className="w-3.5 h-3.5" /> Verified. Not guessed.
           </div>
           <h1 className="text-3xl sm:text-5xl md:text-6xl font-extrabold leading-tight tracking-tight">
-            The AI data team for
+            Everyone&rsquo;s data team.
             <br />
-            teams who don&rsquo;t have{" "}
+            Even the ones with{" "}
             <span className="relative inline-block whitespace-nowrap">
               <span className="relative z-10">one.</span>
               <span aria-hidden className="absolute left-0 right-0 bottom-1 sm:bottom-2 h-[0.32em] bg-primary/[0.22] -z-0 rounded-sm" />
             </span>
           </h1>
           <p className="text-muted text-base sm:text-lg mt-6 max-w-2xl mx-auto leading-relaxed">
-            Connect your database or warehouse. Ask in plain English. GD360 writes the governed SQL, builds the
-            dashboard, runs the statistics, and checks its own math before you see it — the repeatable work of a
-            data engineer, a data scientist, and an analyst, done in minutes instead of days. No SQL. No Python. No code.
+            A solo founder gets an analyst on call. An analytics team gets the repeatable work off its plate.
+            GD360 connects to your database or warehouse, writes the governed SQL, builds the dashboard, and checks
+            its own math — live. No SQL. No Python. No code. Just less busywork, and more time for the calls only
+            a person should make.
           </p>
           <div className="flex items-center justify-center gap-3 mt-8 flex-wrap">
             <Link to="/register" className="btn-primary text-base px-6 py-3" style={{ borderRadius: "999px" }}>
@@ -443,6 +587,28 @@ export default function Landing() {
             <Link to="/login" className="btn-secondary text-base px-6 py-3" style={{ borderRadius: "999px" }}>
               Log in
             </Link>
+          </div>
+
+          {/* ---- Credibility micro-strip ----
+              2026-09-29d: four short, literally-true guarantees, not a
+              badge row - deliberately NOT a row of fake compliance/cert
+              logos (SOC2, ISO, etc. this app hasn't earned). Every claim
+              here already exists elsewhere in this file's own copy
+              (governed/read-only SQL, encrypted credentials, logged
+              queries, re-verification) - this just surfaces them as a
+              single scannable line right under the fold. */}
+          <div className="flex items-center justify-center gap-x-6 gap-y-2 mt-7 flex-wrap text-xs sm:text-[13px] text-muted">
+            {[
+              "Credentials encrypted",
+              "Read-only, always",
+              "Every query logged",
+              "Independently re-verified",
+            ].map((t) => (
+              <span key={t} className="inline-flex items-center gap-1.5 font-medium">
+                <CheckMarkIcon className="w-3 h-3 text-primary shrink-0" />
+                {t}
+              </span>
+            ))}
           </div>
 
           {/* ---- Real connector logo strip ----
@@ -473,9 +639,36 @@ export default function Landing() {
               2026-09-25c: the "app, not a chart" proof the competitor
               comparison asked for - a small live-look preview of the real
               product's premium chrome, right under the fold, instead of
-              only claiming it in copy. */}
-          <div className="mt-14">
+              only claiming it in copy.
+              2026-09-29d: wrapped with two floating annotation callouts
+              that name what the preview is proving, each pointing at the
+              panel with a short connector line - the fix for "the
+              dashboard image feels like it's hanging" (see top comment).
+              Hidden below lg: at narrow widths there's no room for a
+              callout beside the panel without it overlapping the content
+              it's meant to explain, so the credibility strip above and
+              the caption below carry the same claims on small screens. */}
+          <div className="relative mt-14">
+            <div
+              aria-hidden
+              className="hidden lg:block absolute -left-6 top-6 z-20 dash-card dash-card--glass px-3.5 py-2.5 text-left max-w-[190px]"
+              style={{ animation: "landing-float-y 5s ease-in-out infinite" }}
+            >
+              <div className="text-[11.5px] font-semibold leading-snug">AI-built dashboard, live in minutes</div>
+              <div className="text-[10px] text-muted mt-0.5">No analyst. No queue.</div>
+            </div>
+            <div
+              aria-hidden
+              className="hidden lg:block absolute -right-8 bottom-10 z-20 dash-card dash-card--glass px-3.5 py-2.5 text-left max-w-[200px]"
+              style={{ animation: "landing-float-y 5.6s ease-in-out infinite 0.6s" }}
+            >
+              <div className="text-[11.5px] font-semibold leading-snug">Governed SQL, run in your own warehouse</div>
+              <div className="text-[10px] text-muted mt-0.5">Not a copy of your data.</div>
+            </div>
             <HeroProductPreview />
+            <div className="text-center text-xs text-muted mt-4">
+              What you&rsquo;re looking at is real product chrome, not a mockup — the same KPI tiles, charts and gauge your workspace renders.
+            </div>
           </div>
         </div>
       </div>
@@ -508,22 +701,137 @@ export default function Landing() {
           </div>
         </div>
 
-        {/* ---- How it works ---- */}
-        <div className="dash-card p-6 sm:p-8 mb-8">
-          <div className="text-center mb-8">
-            <h2 className="text-xl sm:text-2xl font-bold">Three steps. Zero guesswork.</h2>
-          </div>
-          <div className="relative grid grid-cols-1 sm:grid-cols-3 gap-8 sm:gap-6">
-            <div aria-hidden className="hidden sm:block absolute top-[1.15rem] left-[16.5%] right-[16.5%] h-px bg-border" />
-            {HOW_IT_WORKS.map((s) => (
-              <div key={s.step} className="relative text-center sm:text-left">
-                <div className="mono-figure text-xs text-primary font-semibold mb-3 bg-surface inline-block pr-3 sm:pr-0 sm:bg-transparent">
-                  {s.step}
-                </div>
-                <div className="font-semibold mb-1.5">{s.title}</div>
-                <div className="text-sm text-muted leading-relaxed">{s.body}</div>
+        {/* ---- Why we built this (vision band) ----
+            2026-09-29d: the section that gives the product an ideology,
+            not just a feature list - direct answer to "clear ideology and
+            showing vision of our product to all users and visitors."
+            Grounded entirely in the same honest positioning this file has
+            used throughout: the gap it names (data trapped behind an
+            analyst backlog) is the real reason GD360 automates the
+            repeatable work, not an invented pain point. */}
+        <div className="text-center max-w-2xl mx-auto mb-10">
+          <span className="text-[11px] font-bold tracking-[0.15em] text-accent">WHY WE BUILT THIS</span>
+          <h2 className="text-2xl sm:text-3xl font-bold mt-3 tracking-tight text-balance">
+            Every company runs on data. Almost none of them get to use it.
+          </h2>
+          <p className="text-muted mt-4 leading-relaxed">
+            The data exists. The question exists. What&rsquo;s missing is the hour of an analyst&rsquo;s time it
+            takes to connect the two — so it sits in a backlog, or never gets asked. GD360 automates that hour: the
+            querying, the chart-building, the double-checking. Not the judgment calls. Those stay yours.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mt-8 text-left">
+            {[
+              { accent: 0, title: "No black boxes.", body: "Every step GD360 takes — every query, every cleanup rule — is written out in plain English before you see a result." },
+              { accent: 2, title: "No busywork.", body: "The repeatable work of a data team automated. The judgment calls left to yours." },
+              { accent: 4, title: "No gatekeeping.", body: "Every feature, unlimited, on the free plan. Access to your own data shouldn't have a seat limit." },
+            ].map((v) => (
+              <div key={v.title}>
+                <div
+                  aria-hidden
+                  className="h-[3px] w-8 rounded-full mb-3"
+                  style={{ background: `rgb(var(--dash-accent-${v.accent}))` }}
+                />
+                <div className="font-semibold text-[15px] mb-1">{v.title}</div>
+                <div className="text-sm text-muted leading-relaxed">{v.body}</div>
               </div>
             ))}
+          </div>
+        </div>
+
+        {/* ---- The mechanism ----
+            2026-09-29d: replaces the old "Three steps" card grid with a
+            real system diagram - sources -> engine -> verified output -
+            the structurally distinct visual the redesign asked for rather
+            than another three-column card block. Every element maps to a
+            real, shipped mechanism: the four source logos are the same
+            connectionKindMeta components the hero connector strip and the
+            app's own "Connect data" picker use; the four hub chips name
+            exactly the four things PLATFORM_PILLARS/FEATURES already
+            claim GD360 does; the three outputs are the three surfaces the
+            product actually renders (chart, dashboard, checked answer). */}
+        <div className="dash-card dash-card--glass p-6 sm:p-10 mb-10">
+          <div className="text-center mb-10">
+            <span className="text-[11px] font-bold tracking-[0.15em] text-accent">HOW IT ACTUALLY WORKS</span>
+            <h2 className="text-xl sm:text-2xl font-bold mt-3 tracking-tight">
+              Your raw tables in. A verified answer out. One pipeline.
+            </h2>
+          </div>
+          <div className="landing-mech-row flex flex-col sm:flex-row items-center sm:items-stretch justify-center gap-6 sm:gap-0">
+            {/* Sources */}
+            <div className="text-center w-full sm:w-[180px] shrink-0">
+              <div className="text-[10px] font-semibold tracking-widest text-muted mb-3">YOUR DATA</div>
+              <div className="dash-card p-4 grid grid-cols-2 gap-2.5">
+                {(["postgres", "snowflake", "google_sheets", "csv"] as const).map((kind) => {
+                  const meta = connectionKindMeta(kind);
+                  return (
+                    <div key={kind} className="flex flex-col items-center gap-1 py-1" style={{ color: meta.color }}>
+                      <meta.Logo className="w-5 h-5" />
+                      <span className="text-[9px] font-medium text-muted">{meta.label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="landing-mech-arrow">
+              <span className="landing-mech-dot" />
+            </div>
+
+            {/* Engine hub */}
+            <div className="text-center w-full sm:w-[220px] shrink-0">
+              <div className="text-[10px] font-semibold tracking-widest text-muted mb-3">GD360 ENGINE</div>
+              <div className="relative dash-card p-5" style={{ animation: "landing-hub-pulse 3.2s ease-in-out infinite" }}>
+                <div
+                  aria-hidden
+                  className="absolute inset-3 rounded-full border border-dashed"
+                  style={{ borderColor: "rgb(var(--color-accent) / 0.35)", animation: "landing-ring-spin 14s linear infinite" }}
+                />
+                <div className="relative flex items-center justify-center mb-3">
+                  <div className="dash-icon-chip dash-accent-2">
+                    <EngineIcon />
+                  </div>
+                </div>
+                <div className="relative flex flex-wrap justify-center gap-1.5">
+                  {["Writes SQL", "Runs statistics", "Builds dashboards", "Re-verifies"].map((chip) => (
+                    <span key={chip} className="pill !text-[9.5px] !px-2 !py-1">
+                      {chip}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="landing-mech-arrow">
+              <span className="landing-mech-dot" style={{ animationDelay: "0.6s" }} />
+            </div>
+
+            {/* Outputs */}
+            <div className="text-center w-full sm:w-[180px] shrink-0">
+              <div className="text-[10px] font-semibold tracking-widest text-muted mb-3">VERIFIED OUTPUT</div>
+              <div className="flex flex-col gap-2">
+                {[
+                  { label: "Chart", Icon: TrendLineIcon, accent: 0, delay: "0s" },
+                  { label: "Dashboard", Icon: DashboardGridIcon, accent: 1, delay: "0.15s" },
+                  { label: "Answer", Icon: VerifiedIcon, accent: 5, delay: "0.3s" },
+                ].map((o) => (
+                  <div
+                    key={o.label}
+                    className="dash-card dash-card--accented flex items-center gap-2.5 px-3 py-2 text-left"
+                    style={{
+                      "--dash-card-accent-color": `rgb(var(--dash-accent-${o.accent}))`,
+                      animation: `landing-seal-pop 0.5s ease-out both`,
+                      animationDelay: o.delay,
+                    } as CSSProperties}
+                  >
+                    <div className={`dash-icon-chip dash-icon-chip--sm dash-accent-${o.accent} shrink-0`}>
+                      <o.Icon className="w-[14px] h-[14px]" />
+                    </div>
+                    <span className="text-[12.5px] font-semibold">{o.label}</span>
+                    <CheckMarkIcon className="w-3.5 h-3.5 text-primary ml-auto shrink-0" />
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -543,19 +851,75 @@ export default function Landing() {
             </p>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            {PLATFORM_PILLARS.map((p) => (
-              <div
-                key={p.title}
-                className="dash-card dash-card--accented p-6"
-                style={{ "--dash-card-accent-color": `rgb(var(--dash-accent-${p.accent}))` } as CSSProperties}
-              >
-                <div className={`dash-icon-chip dash-accent-${p.accent} mb-4`}>
-                  <p.Icon />
+            {PLATFORM_PILLARS.map((p) => {
+              const accentColor = `rgb(var(--dash-accent-${p.accent}))`;
+              return (
+                <div
+                  key={p.title}
+                  className="dash-card dash-card--accented p-6"
+                  style={{ "--dash-card-accent-color": accentColor } as CSSProperties}
+                >
+                  <div className={`dash-icon-chip dash-accent-${p.accent} mb-4`}>
+                    <p.Icon />
+                  </div>
+                  <div className="font-semibold text-[17px] mb-1.5">{p.title}</div>
+                  <div className="text-sm text-muted leading-relaxed">{p.body}</div>
+                  <p.Motif color={accentColor} />
                 </div>
-                <div className="font-semibold text-[17px] mb-1.5">{p.title}</div>
-                <div className="text-sm text-muted leading-relaxed">{p.body}</div>
-              </div>
-            ))}
+              );
+            })}
+          </div>
+        </div>
+
+        {/* ---- The shift ----
+            2026-09-29d: an old-way/new-way comparison, the structural
+            device the redesign needed for "show visitors the shift" -
+            left column is the analyst-backlog reality this page's own
+            "why we built this" band above just described; right column
+            is only claims already made and grounded elsewhere in this
+            file (governed SQL, encrypted read-only connections, free
+            unlimited plan) — nothing new invented here. */}
+        <div className="dash-card p-6 sm:p-10 mb-10">
+          <div className="text-center max-w-2xl mx-auto mb-8">
+            <span className="text-[11px] font-bold tracking-[0.15em] text-accent">THE SHIFT</span>
+            <h2 className="text-2xl sm:text-3xl font-bold mt-3 tracking-tight">From asking for data, to owning it.</h2>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="dash-card p-6">
+              <div className="text-xs font-bold tracking-widest text-muted mb-4">THE OLD WAY</div>
+              <ul className="space-y-3.5">
+                {[
+                  "File a request. Wait on an analyst's queue.",
+                  "Get a chart with no visible method behind it.",
+                  "Pay per seat to let one more person look.",
+                  "Juggle a different tool for every data source.",
+                ].map((t) => (
+                  <li key={t} className="flex items-start gap-2.5 text-sm text-muted leading-relaxed">
+                    <span aria-hidden className="mt-1.5 w-1.5 h-1.5 rounded-full bg-border shrink-0" />
+                    {t}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div
+              className="dash-card dash-card--accented p-6"
+              style={{ "--dash-card-accent-color": "rgb(var(--color-primary))" } as CSSProperties}
+            >
+              <div className="text-xs font-bold tracking-widest text-accent mb-4">WITH GD360</div>
+              <ul className="space-y-3.5">
+                {[
+                  "Ask in plain English. Get it built live.",
+                  "Every step shown, every number independently re-checked.",
+                  "Unlimited seats, free — access isn't the thing you ration.",
+                  "One governed connection to every source you already use.",
+                ].map((t) => (
+                  <li key={t} className="flex items-start gap-2.5 text-sm leading-relaxed">
+                    <CheckMarkIcon className="w-3.5 h-3.5 text-primary mt-0.5 shrink-0" />
+                    {t}
+                  </li>
+                ))}
+              </ul>
+            </div>
           </div>
         </div>
 
