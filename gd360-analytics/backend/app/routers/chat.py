@@ -534,7 +534,10 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     named_tables = result.get("named_tables")
     if named_tables:
         parent_ids = [new_version.id] if new_version else ([v.id for v in source_versions] or None)
-        saved_named = _save_named_results(db, ds, parent_ids, payload.prompt, named_tables)
+        saved_named = _save_named_results(
+            db, ds, parent_ids, payload.prompt, named_tables,
+            named_table_timing=result.get("named_table_timing"),
+        )
         by_label = {s["label"]: s for s in saved_named}
         if results_out:
             results_out = [
@@ -995,6 +998,7 @@ def _save_cleaning_result(
 
 def _save_named_results(
     db: Session, ds: models.DataSource, parent_ids: list[str] | None, prompt: str, named_tables: dict,
+    named_table_timing: dict | None = None,
 ) -> list[dict]:
     """2026-09-28 (named-results round): when one question genuinely asked
     for several distinct analyses at once (see ai_engine's "Multiple
@@ -1019,22 +1023,23 @@ def _save_named_results(
     a loop would do) so N tables saved from the same turn always land in a
     stable, gapless order.
 
-    duration_ms and method_summary are deliberately left null on every
-    piece here, even though the caller (routers/chat.py's /chat endpoint)
-    has a real duration_ms/method_summary for the turn as a whole: that
-    number is the combined time for EVERY piece together (plus the AI
-    planning round-trip), not this one piece's own share of it, and the
-    method classifier only ever looked at the whole combined script, not
-    which lines belong to which named piece - attaching either to an
-    individual piece would overstate how precisely either was actually
-    measured for that specific table. Both stay null here, the same
-    honest "not measured for this path" null Phase 1 already uses
-    elsewhere, rather than a real-looking number that isn't actually
-    accurate at this granularity. (whole-turn duration_ms/method_summary
-    is still passed through and used - see caller.)
+    duration_ms/method_summary, per piece (2026-09-29 parallel-pieces
+    round): `named_table_timing`, when given, is
+    {label: {"duration_ms", "code"}} from ai_engine._run_pieces_concurrently
+    - each piece ran as its own separate, individually-timed sandboxed
+    call (see SYSTEM_PROMPT's result_pieces rule), so unlike the
+    dict-in-`code` multi-result path (still the only path for a piece NOT
+    in named_table_timing), a real, accurate duration_ms and a real
+    method_summary (derived from that ONE piece's own code, the same way
+    _derive_method_summary already classifies a single-result turn's code)
+    are both genuinely available here. Left null exactly as before for any
+    label with no entry in named_table_timing - the honest "not measured
+    for this path" null Phase 2 established, never a real-looking number
+    that isn't actually accurate at that granularity.
     """
     if not named_tables:
         return []
+    timing = named_table_timing or {}
     log_entry_base = {
         "prompt": prompt,
         "created_at": datetime.utcnow().isoformat(),
@@ -1050,6 +1055,10 @@ def _save_named_results(
     for label, df in named_tables.items():
         position += 1
         name = label if len(label) <= 34 else f"{label[:34].rstrip()}…"
+        piece_meta = timing.get(label) or {}
+        piece_duration_ms = piece_meta.get("duration_ms")
+        piece_code = piece_meta.get("code")
+        piece_method_summary = _derive_method_summary("analyze", None, piece_code) if piece_code else None
         version = models.DatasetVersion(
             datasource_id=ds.id,
             name=name,
@@ -1062,8 +1071,8 @@ def _save_named_results(
                 "label": label,
             }],
             position=position,
-            duration_ms=None,
-            method_summary=None,
+            duration_ms=piece_duration_ms,
+            method_summary=piece_method_summary,
         )
         db.add(version)
         saved.append({"label": label, "version": version})
