@@ -140,17 +140,48 @@ def run_sandboxed(code: str, tables: dict[str, pd.DataFrame], timeout: int = 20)
     parent_conn, child_conn = mp.Pipe()
     process = mp.Process(target=_child_worker, args=(code, tables, child_conn, timeout), daemon=True)
     process.start()
-    process.join(timeout)
-    elapsed = time.monotonic() - start
 
-    if process.is_alive():
-        process.terminate()
-        process.join(2)
-        print(f"[sandbox] timed out after {elapsed:.1f}s (limit {timeout}s)")
-        return None, f"Analysis code timed out after {timeout}s. Try a simpler request."
-
-    if parent_conn.poll():
+    # 2026-09-29 (parallel-pieces round): root-caused during Phase 3 testing
+    # - reproduced reliably (not a rare flake) whenever the selected
+    # table(s) had 3+ columns. The child genuinely finished fast and really
+    # did send its real result down the pipe (confirmed directly: the pipe
+    # had a correct, complete payload waiting), but the CHILD PROCESS ITSELF
+    # did not exit promptly afterward - almost certainly a native
+    # BLAS/OpenMP worker thread pulled in by a wider dataframe's pandas
+    # operation, which does not survive fork() in a working state and can
+    # leave the forked child unable to shut down cleanly, even though its
+    # actual Python code (and the answer it computed) already finished.
+    # The previous version of this function waited on `process.join(timeout)`
+    # - which waits for the CHILD PROCESS TO EXIT - before ever looking at
+    # the pipe, so it declared a timeout and threw away an already-correct,
+    # already-computed answer every single time this happened. Waiting on
+    # the PIPE itself (parent_conn.poll(timeout)) is the actual correctness
+    # fix: that is the real communication channel for "is an answer ready,"
+    # and it does not require the child process to have exited, only to
+    # have finished computing and called conn.send() - which is what
+    # genuinely marks the work as done. This was not something the
+    # dict-in-`code`/single-result paths had ever been caught by before
+    # (every dataframe this app runs against already has 3+ columns in
+    # practice, so this was very likely already silently costing a full
+    # timeout on some real production requests before failing) - Phase 3's
+    # parallel pieces just made it reproducible in testing by running more
+    # sandboxed calls back to back. Fixed here at the shared root, not
+    # worked around per-caller, so every caller of run_sandboxed benefits,
+    # not only the new parallel-pieces path.
+    if parent_conn.poll(timeout):
         status, payload = parent_conn.recv()
+        elapsed = time.monotonic() - start
+        # The answer is already in hand from the pipe above - this is just
+        # best-effort cleanup of the child process, not part of deciding
+        # whether the call succeeded. A short grace period covers the
+        # ordinary case (the process exits right after conn.close()); if it
+        # is still lingering after that (the native-thread situation this
+        # fix exists for), terminate it rather than waiting on it further.
+        if process.is_alive():
+            process.join(0.5)
+            if process.is_alive():
+                process.terminate()
+                process.join(2)
         if status == "ok":
             if elapsed > 3:
                 # Finished, but slower than any normal vectorized pandas
@@ -162,4 +193,12 @@ def run_sandboxed(code: str, tables: dict[str, pd.DataFrame], timeout: int = 20)
             return payload, None
         return None, payload
 
-    return None, "Sandbox process exited unexpectedly with no result."
+    # Nothing arrived on the pipe within the timeout budget - now it is a
+    # genuine timeout (the code itself did not finish in time), not just
+    # the child process being slow to exit after finishing.
+    elapsed = time.monotonic() - start
+    if process.is_alive():
+        process.terminate()
+        process.join(2)
+    print(f"[sandbox] timed out after {elapsed:.1f}s (limit {timeout}s)")
+    return None, f"Analysis code timed out after {timeout}s. Try a simpler request."
