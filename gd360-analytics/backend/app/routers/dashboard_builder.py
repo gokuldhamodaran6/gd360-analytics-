@@ -971,11 +971,28 @@ def _layout_blocks(kpi_items: list[dict], other_items: list[dict], y_offset: int
 # 2026-09-29 (thought-leader filters round): "we as a professional thought
 # leaders to them when we build dashboard we should have build filters
 # which they want to see... like hex how it gave... overall filter in
-# top" - Gokul's own words. _FILTER_ROW_HEIGHT is deliberately shorter
-# than a KPI row (3) - a filter block is just a label + one dropdown, not
-# a number/chart worth showing, and matches _default_block_size("filter")
-# below.
-_FILTER_ROW_HEIGHT = 2
+# top" - Gokul's own words.
+#
+# 2026-09-29 (round 5, real-bug fix): this was 2 rows (96px) until a
+# direct report - "the filter options is merging with other boxes and
+# also no proper alignment" - traced to real arithmetic, not a vague
+# styling complaint. The Dashboard Builder's edit-mode card (BlockCard in
+# DashboardCanvas.tsx) renders a filter block's header (~33px) PLUS its
+# own column picker PLUS the value control stacked below it - unlike the
+# live/Preview view, which only ever shows the compact value control
+# alone (see DashboardBlocks.tsx's FilterControl and its own
+# STACK_MIN_HEIGHT["filter"] = 88, tuned for exactly that one-control
+# case). 33 + picker + control never fit in 96px, so the block's own
+# `overflow-hidden` clipped it mid-control - the visual "merging" Gokul
+# saw. 3 rows (144px) - still a full row shorter than a KPI tile's own 3
+# rows would look if this used the *same* height, since a filter's
+# column picker collapses to a single compact line once a column is set
+# (see FilterColumnPicker's own comment in DashboardCanvas.tsx) - is the
+# smallest bump that keeps header + collapsed picker + control clear of
+# each other with real margin, not the bare minimum that just barely
+# avoids clipping again the next time a column name runs long. Matches
+# _default_block_size("filter") below, same as before.
+_FILTER_ROW_HEIGHT = 3
 _MAX_AUTO_FILTERS = 2
 
 
@@ -1198,7 +1215,7 @@ def _default_block_size(block_type: str) -> tuple[int, int]:
     if block_type == "text":
         return 6, 3
     if block_type == "filter":
-        return 3, 2
+        return 3, _FILTER_ROW_HEIGHT
     # 2026-09-25 (Round 15, element library): "heading" reads best as a
     # short full-width banner above whatever follows it; "divider" only
     # ever needs to be a thin full-width rule, the shortest a block can be.
