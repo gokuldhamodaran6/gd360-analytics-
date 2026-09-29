@@ -171,6 +171,62 @@ def _find_col(columns, *keywords) -> Any | None:
     return None
 
 
+# 2026-09-29 (round 6): the real 50 US states + DC, full name -> the
+# 2-letter USPS abbreviation Plotly's locationmode="USA-states" actually
+# requires. This exists specifically so a choropleth's location column is
+# NEVER handed to Plotly's locationmode="country names" without first being
+# checked against this table - see _resolve_us_state and the choropleth
+# branch of build_figure below for the real, live bug this prevents: Plotly's
+# "country names" matching is not a strict exact match the way its own docs
+# imply, it silently does a loose/partial match, so a real US state name that
+# happens to resemble a country's name gets SILENTLY drawn on that country
+# instead. Confirmed live on Gokul's own "Unique Customers by State"
+# dashboard block: "Indiana" (a state) rendered on India (the country)
+# because "Indiana" contains "India" as a substring, and "New Mexico" /
+# "Mexico" both landed on the country of Mexico the same way. This is a
+# documented, widely-reported quirk of Plotly's country-name matching, not
+# something specific to this app - the only real fix is to never let a
+# non-country string reach that locationmode at all.
+_US_STATE_NAMES: dict[str, str] = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
+    "california": "CA", "colorado": "CO", "connecticut": "CT", "delaware": "DE",
+    "florida": "FL", "georgia": "GA", "hawaii": "HI", "idaho": "ID",
+    "illinois": "IL", "indiana": "IN", "iowa": "IA", "kansas": "KS",
+    "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS",
+    "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV",
+    "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY",
+    "north carolina": "NC", "north dakota": "ND", "ohio": "OH", "oklahoma": "OK",
+    "oregon": "OR", "pennsylvania": "PA", "rhode island": "RI", "south carolina": "SC",
+    "south dakota": "SD", "tennessee": "TN", "texas": "TX", "utah": "UT",
+    "vermont": "VT", "virginia": "VA", "washington": "WA", "west virginia": "WV",
+    "wisconsin": "WI", "wyoming": "WY", "district of columbia": "DC",
+    "washington dc": "DC", "washington, dc": "DC",
+}
+_US_STATE_ABBRS = set(_US_STATE_NAMES.values())
+
+
+def _resolve_us_state(value: Any) -> str | None:
+    """EXACT (never fuzzy, never substring) match of a location string
+    against the real 50 US states + DC, by full name or by its own 2-letter
+    USPS abbreviation. Returns the 2-letter code Plotly's
+    locationmode="USA-states" requires, or None if `value` isn't
+    recognizably a US state at all - the caller never guesses past that
+    None (a non-match is always excluded from the map, never mismapped onto
+    the nearest-sounding place), which is the whole point of this
+    function existing separately from Plotly's own loose matching."""
+    s = str(value or "").strip()
+    if not s:
+        return None
+    key = s.lower().replace(".", "")
+    if key in _US_STATE_NAMES:
+        return _US_STATE_NAMES[key]
+    upper = s.upper()
+    if upper in _US_STATE_ABBRS:
+        return upper
+    return None
+
+
 def _series_or_first_col(obj: pd.DataFrame | pd.Series) -> pd.Series:
     if isinstance(obj, pd.Series):
         return obj
@@ -1068,10 +1124,103 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
         val_col = next((c for c in numeric_cols if c != loc_col), None)
         if not (loc_col and val_col):
             raise ValueError("Choropleth needs a country/region column and a numeric value column - this result does not have both.")
-        fig = go.Figure(go.Choropleth(
-            locations=result[loc_col].astype(str), z=pd.to_numeric(result[val_col], errors="coerce"),
-            locationmode="country names", colorscale=SEQUENTIAL_SCALE, marker_line_color="white",
-        ))
+
+        raw_locations = result[loc_col].astype(str).tolist()
+        raw_values = pd.to_numeric(result[val_col], errors="coerce").tolist()
+        resolved_states = [_resolve_us_state(v) for v in raw_locations]
+        us_state_count = sum(1 for s in resolved_states if s)
+
+        # Routing on whether the MAJORITY (not necessarily every single row)
+        # of real values are recognizable US states - not just "not 100%
+        # US" - is what still correctly renders a real US-states map for a
+        # column that also has a handful of genuinely non-US rows mixed in
+        # (e.g. a few Canadian provinces alongside 50 real US states, exactly
+        # what Gokul's own "State/Province" data has), rather than falling
+        # all the way back to the broken world/country path just because the
+        # data isn't 100% pure US.
+        if raw_locations and us_state_count / len(raw_locations) >= 0.5:
+            us_rows = [
+                (abbr, loc, val)
+                for abbr, loc, val in zip(resolved_states, raw_locations, raw_values)
+                if abbr is not None
+            ]
+            excluded = len(raw_locations) - len(us_rows)
+            fig = go.Figure(go.Choropleth(
+                locations=[r[0] for r in us_rows],
+                z=[r[2] for r in us_rows],
+                text=[r[1] for r in us_rows],
+                locationmode="USA-states",
+                colorscale=SEQUENTIAL_SCALE,
+                marker_line_color="#3A4560",
+                marker_line_width=0.6,
+                hovertemplate=f"<b>%{{text}}</b><br>{val_col}: %{{z:,.2~f}}<extra></extra>",
+                colorbar=dict(
+                    title=dict(text=val_col, font=dict(color="#E8E8F0", size=12)),
+                    outlinewidth=0, tickfont=dict(color="#E8E8F0", size=11), thickness=14,
+                ),
+            ))
+            # "albers usa" is the modern, purpose-built US projection every
+            # real BI tool (PowerBI, Hex, Tableau) uses for a states map -
+            # not the flat equirectangular default, which is what made the
+            # old world-scoped map look like a near-empty, low-effort globe
+            # for data that only ever had US (+ a few Canadian) locations in
+            # it. scope="usa" also means the map is never wasting space on
+            # the rest of the planet in the first place.
+            fig.update_geos(
+                scope="usa", projection_type="albers usa",
+                bgcolor="rgba(0,0,0,0)", landcolor="#161B29", showland=True,
+                showsubunits=True, subunitcolor="#3A4560",
+                showlakes=True, lakecolor="#161B29",
+            )
+            if excluded:
+                # Never silently drops real data - a location that isn't one
+                # of the 50 US states (a Canadian province, say) genuinely
+                # can't be drawn on a USA-scoped map, so this says so plainly
+                # instead of pretending the map is showing everything.
+                fig.add_annotation(
+                    text=f"+{excluded} location{'s' if excluded != 1 else ''} outside the 50 US states not shown on this map",
+                    xref="paper", yref="paper", x=0.5, y=-0.12, showarrow=False,
+                    font=dict(size=11, color="#8B93A8"),
+                )
+        else:
+            # Not state-level data (or too few resolvable US states for that
+            # to be the real shape) - treat this as a genuine country-level
+            # breakdown. A real US state name/abbreviation is always
+            # excluded from this path rather than ever being handed to
+            # locationmode="country names" - the exact substring-mismatch
+            # bug this whole branch exists to prevent, just in the other
+            # direction.
+            country_rows = [
+                (loc, val)
+                for abbr, loc, val in zip(resolved_states, raw_locations, raw_values)
+                if abbr is None
+            ]
+            if not country_rows:
+                raise ValueError("Choropleth needs at least one real country or US state name to plot - none of these values resolved to either.")
+            fig = go.Figure(go.Choropleth(
+                locations=[r[0] for r in country_rows],
+                z=[r[1] for r in country_rows],
+                locationmode="country names",
+                colorscale=SEQUENTIAL_SCALE,
+                marker_line_color="#3A4560",
+                marker_line_width=0.6,
+                hovertemplate=f"<b>%{{location}}</b><br>{val_col}: %{{z:,.2~f}}<extra></extra>",
+                colorbar=dict(
+                    title=dict(text=val_col, font=dict(color="#E8E8F0", size=12)),
+                    outlinewidth=0, tickfont=dict(color="#E8E8F0", size=11), thickness=14,
+                ),
+            ))
+            # fitbounds="locations" auto-zooms the projection to wherever the
+            # real data actually is, instead of always rendering the entire
+            # globe at a fixed zoom - the same "looks empty/low-effort" issue
+            # as the states case above, just for a country-level chart with
+            # only a handful of real countries in it.
+            fig.update_geos(
+                scope="world", projection_type="natural earth", fitbounds="locations",
+                bgcolor="rgba(0,0,0,0)", landcolor="#161B29", showland=True,
+                showcountries=True, countrycolor="#3A4560",
+                showlakes=True, lakecolor="#161B29",
+            )
 
     else:
         fig = go.Figure(go.Bar(x=df["x"], y=df["y"], marker_color=PALETTE[0]))
