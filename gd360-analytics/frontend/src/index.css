@@ -584,3 +584,131 @@ body {
   background: rgb(var(--color-primary) / 0.15);
   color: rgb(var(--color-primary));
 }
+
+/* ============================================================
+   Landing page - premium redesign pass (2026-09-29c)
+   Adds the animated hero (aurora glow, a staged/tilted product preview
+   with floating annotation callouts and a scanning highlight) and the
+   "mechanism" system diagram (a source cluster -> a pulsing engine hub
+   -> verified output, joined by an animated traveling dot) - see
+   Landing.tsx's own top comment for the full reasoning. Everything here
+   is built on the same --color-*/--dash-accent-* tokens the rest of the
+   app already uses, so it follows the light/dark toggle exactly like
+   every other page - unlike the dark-only design-exploration mockup
+   this was built from, nothing here is a hardcoded dark palette.
+   ============================================================ */
+@keyframes landing-aurora-a { 0%, 100% { transform: translate(0, 0) scale(1); } 50% { transform: translate(40px, -30px) scale(1.1); } }
+@keyframes landing-aurora-b { 0%, 100% { transform: translate(0, 0) scale(1); } 50% { transform: translate(-35px, 25px) scale(1.06); } }
+@keyframes landing-dot-pulse { 0%, 100% { opacity: 0.55; transform: scale(1); } 50% { opacity: 1; transform: scale(1.5); } }
+@keyframes landing-float-y { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+@keyframes landing-scan-sweep { 0% { transform: translateY(-10%); opacity: 0; } 12% { opacity: 0.5; } 88% { opacity: 0.5; } 100% { transform: translateY(230%); opacity: 0; } }
+@keyframes landing-draw-in { from { stroke-dashoffset: 900; } to { stroke-dashoffset: 0; } }
+@keyframes landing-draw-arc { from { stroke-dashoffset: 400; } to { stroke-dashoffset: 186; } }
+@keyframes landing-hub-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgb(var(--color-accent) / 0.4), 0 0 40px 6px rgb(var(--color-accent) / 0.3); }
+  50% { box-shadow: 0 0 0 14px rgb(var(--color-accent) / 0), 0 0 60px 10px rgb(var(--color-accent) / 0.45); }
+}
+@keyframes landing-ring-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes landing-seal-pop { 0% { transform: scale(0.85); opacity: 0.6; } 60% { transform: scale(1.06); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+@keyframes landing-arrow-dot { 0% { left: 4%; opacity: 0; } 18% { opacity: 1; } 82% { opacity: 1; } 100% { left: 96%; opacity: 0; } }
+@keyframes landing-glow-pulse {
+  0%, 100% { box-shadow: 0 1px 1px rgb(0 0 0 / 0.15), 0 0 0 1px rgb(var(--color-primary) / 0.2) inset, 0 0 0 0 rgb(var(--color-accent) / 0); }
+  50% { box-shadow: 0 1px 1px rgb(0 0 0 / 0.15), 0 0 0 1px rgb(var(--color-primary) / 0.2) inset, 0 0 34px 4px rgb(var(--color-accent) / 0.35); }
+}
+
+.landing-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: rgb(var(--color-accent));
+  display: inline-block;
+  animation: landing-dot-pulse 2.2s ease-in-out infinite;
+  box-shadow: 0 0 8px 1px rgb(var(--color-accent) / 0.7);
+}
+
+.landing-btn-glow {
+  animation: landing-glow-pulse 3.6s ease-in-out infinite;
+}
+
+/* Frosted-glass variant of .dash-card - translucent + blurred instead of
+   solid, used only where a see-through surface over the hero's aurora
+   glow (or the mechanism diagram's own background) reads as intentional
+   rather than where a normal opaque dash-card belongs. Same radius and
+   shadow language as .dash-card so it still reads as the same family. */
+.dash-card--glass {
+  background: rgb(var(--color-surface) / 0.72);
+  border: 1px solid rgb(var(--color-border) / 0.8);
+  border-radius: 20px;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 14px 32px -18px rgb(0 0 0 / 0.22);
+}
+
+.landing-aurora {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(10px);
+  pointer-events: none;
+}
+
+.landing-mech-arrow {
+  position: relative;
+  width: 48px;
+  height: 2px;
+  flex-shrink: 0;
+  align-self: center;
+  margin-top: 44px;
+  background: linear-gradient(90deg, transparent, rgb(var(--color-accent) / 0.55), transparent);
+}
+.landing-mech-arrow::after {
+  content: "";
+  position: absolute;
+  right: -1px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 6px solid rgb(var(--color-accent) / 0.6);
+}
+.landing-mech-dot {
+  position: absolute;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  border-radius: 999px;
+  background: rgb(var(--color-text));
+  box-shadow: 0 0 8px 2px rgb(var(--color-text) / 0.6);
+  animation: landing-arrow-dot 3.2s linear infinite;
+}
+
+@media (max-width: 640px) {
+  .landing-mech-row {
+    flex-direction: column;
+  }
+  .landing-mech-arrow {
+    width: 2px;
+    height: 32px;
+    margin-top: 0;
+    background: linear-gradient(180deg, transparent, rgb(var(--color-accent) / 0.55), transparent);
+  }
+  .landing-mech-arrow::after {
+    right: 50%;
+    top: auto;
+    bottom: -1px;
+    transform: translateX(50%);
+    border-top: 6px solid rgb(var(--color-accent) / 0.6);
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: none;
+  }
+  .landing-mech-dot {
+    left: 50%;
+    top: 4%;
+    margin-left: -3px;
+    animation-name: landing-arrow-dot-v;
+  }
+}
+@keyframes landing-arrow-dot-v { 0% { top: 4%; opacity: 0; } 18% { opacity: 1; } 82% { opacity: 1; } 100% { top: 96%; opacity: 0; } }
