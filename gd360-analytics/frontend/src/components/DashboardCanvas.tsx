@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import "react-grid-layout/css/styles.css";
 import { ReactGridLayout as RGL, WidthProvider } from "react-grid-layout/legacy";
 import {
@@ -197,6 +197,19 @@ const NO_DATA_TYPES: DashboardBlockType[] = ["text", "filter", "heading", "divid
 // dataTransfer text will never match one of these, so onDrop just no-ops.
 const ELEMENT_LIBRARY_TYPES: DashboardBlockType[] = [
   "chart", "table", "kpi", "gauge", "donut", "sparkline", "avatar_list", "text", "filter", "heading", "divider",
+];
+
+// 2026-09-29 (design revamp, add-block popover): the same eleven types
+// above, grouped for the compact popover this replaces the always-visible
+// row with (see the "Add block" trigger below) - purely a grouping/display
+// concern, never a second source of truth for which types exist: every
+// array here is a subset of ELEMENT_LIBRARY_TYPES, and onDrop's payload
+// check still validates against that one list regardless of which group a
+// dragged card came from.
+const ADD_BLOCK_GROUPS: { label: string; types: DashboardBlockType[] }[] = [
+  { label: "Data", types: ["chart", "table", "kpi"] },
+  { label: "Visual", types: ["gauge", "donut", "sparkline", "avatar_list"] },
+  { label: "Layout", types: ["text", "filter", "heading", "divider"] },
 ];
 
 // The "Build manually" form's own Type picker - every type
@@ -996,32 +1009,92 @@ export default function DashboardCanvas({
   // creates if the browser's own dataTransfer read comes back empty.
   const [draggingType, setDraggingType] = useState<DashboardBlockType | null>(null);
 
+  // 2026-09-29 (design revamp, add-block popover): replaces the old
+  // permanently-visible row of all eleven element-library buttons (still
+  // available in full below, just no longer sitting open above the canvas
+  // at all times) with a closed-by-default trigger + small categorized
+  // popover - the same real click-to-add and drag-onto-canvas behavior as
+  // before (addBlock/onDragStart/onDragEnd are untouched), just not taking
+  // up permanent header space or reading as an always-on wall of buttons.
+  const [addOpen, setAddOpen] = useState(false);
+  const addPopRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!addOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (addPopRef.current && !addPopRef.current.contains(e.target as Node)) setAddOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAddOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [addOpen]);
+
+  const addBlockAndClose = async (type: DashboardBlockType) => {
+    setAddOpen(false);
+    await addBlock(type);
+  };
+
   return (
     <div>
       <div className="mb-4">
-        <div className="text-xs text-muted mb-2">
-          {narrow ? "Add block:" : "Element library - drag a card onto the canvas, or click to add it at the bottom:"}
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {ELEMENT_LIBRARY_TYPES.map((t) => (
-            <button
-              key={t}
-              type="button"
-              disabled={adding}
-              draggable={!narrow && !adding}
-              className="dash-toolbtn disabled:opacity-50 cursor-grab active:cursor-grabbing"
-              title={narrow ? undefined : `Drag onto the canvas, or click to add "${BLOCK_TYPE_LABEL[t]}"`}
-              onClick={() => addBlock(t)}
-              onDragStart={(e) => {
-                setDraggingType(t);
-                e.dataTransfer.effectAllowed = "copy";
-                e.dataTransfer.setData("text/plain", t);
-              }}
-              onDragEnd={() => setDraggingType(null)}
+        <div className="relative inline-block" ref={addPopRef}>
+          <button
+            type="button"
+            className="dash-toolbtn disabled:opacity-50"
+            disabled={adding}
+            aria-haspopup="menu"
+            aria-expanded={addOpen}
+            onClick={() => setAddOpen((o) => !o)}
+          >
+            <PlusIcon className="w-3.5 h-3.5" /> Add block
+          </button>
+          {addOpen && (
+            <div
+              role="menu"
+              className="absolute left-0 top-full mt-1.5 w-[280px] card bg-surface shadow-2xl border border-border p-2.5 z-20 flex flex-col gap-2.5"
             >
-              <PlusIcon className="w-3.5 h-3.5" /> {BLOCK_TYPE_LABEL[t]}
-            </button>
-          ))}
+              {!narrow && (
+                <div className="text-[10px] text-muted leading-snug px-0.5">
+                  Click to add, or drag a card onto the canvas.
+                </div>
+              )}
+              {ADD_BLOCK_GROUPS.map((group) => (
+                <div key={group.label}>
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-muted px-0.5 mb-1">
+                    {group.label}
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {group.types.map((t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        disabled={adding}
+                        draggable={!narrow && !adding}
+                        className="text-xs px-2 py-1.5 rounded-lg border border-border text-muted hover:text-text hover:border-accent/40 hover:bg-accent/5 transition disabled:opacity-50 text-left cursor-grab active:cursor-grabbing"
+                        title={narrow ? undefined : `Drag onto the canvas, or click to add "${BLOCK_TYPE_LABEL[t]}"`}
+                        onClick={() => addBlockAndClose(t)}
+                        onDragStart={(e) => {
+                          setDraggingType(t);
+                          setAddOpen(false);
+                          e.dataTransfer.effectAllowed = "copy";
+                          e.dataTransfer.setData("text/plain", t);
+                        }}
+                        onDragEnd={() => setDraggingType(null)}
+                      >
+                        {BLOCK_TYPE_LABEL[t]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         {!dash.datasource_id && (
           <span className="text-[11px] text-muted mt-1.5 block">
