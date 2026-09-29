@@ -343,12 +343,23 @@ export function defaultChartStyle(spec?: any): ChartStyle {
     // A short headline bar comparison (few categories, one series) reads
     // best with its values right on the bars, the way every reference
     // "premium" chart shows a number above each bar. Longer series
-    // (histograms, many categories) stay uncluttered by default. A
-    // dual-axis combo (see isDualAxisComboSpec) always gets its values
-    // labeled too - the whole point of giving the second metric its own
-    // axis is to make its numbers readable, not just its shape.
-    dataLabels:
-      (singleCategorical && categoryCount(data[0]) > 0 && categoryCount(data[0]) <= 12) || isDualAxisComboSpec(data),
+    // (histograms, many categories) stay uncluttered by default.
+    //
+    // 2026-09-29 (round 5, real-bug fix): a dual-axis combo spec (see
+    // isDualAxisComboSpec) used to default to dataLabels ON, specifically
+    // to make its second metric's numbers readable - but on a live,
+    // already-broken dashboard this was exactly what produced garbled,
+    // overlapping text: the bar's "outside" label and the line's "top
+    // center" label land at nearly the same pixel position whenever both
+    // metrics are near their own axis's max for a category, since each
+    // axis auto-scales independently. The backend no longer generates this
+    // chart shape at all (see chart_builder.py's _build_metric_comparison_
+    // panels), but a dashboard built before that change can still have one
+    // stored - defaulting it to off here, relying on the unified hover box
+    // (already shows both values together - see hovermode below) instead
+    // of permanent on-chart text, is what the backend's OWN original
+    // design intended before this default silently overrode it.
+    dataLabels: singleCategorical && categoryCount(data[0]) > 0 && categoryCount(data[0]) <= 12,
     xAxisTilt: smartDefaultTilt(spec),
     fontSize: "medium",
   };
@@ -1088,9 +1099,19 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
       delete t.texttemplate;
       t.cliponaxis = false;
     } else if (type === "scatter" || type === undefined) {
+      // 2026-09-29 (round 5, belt-and-braces): a legacy dual-axis combo's
+      // line trace never gets permanent text, even if the person
+      // explicitly turns "Data labels" on for this chart - its points sit
+      // at nearly the same pixel position as the bar trace's own "outside"
+      // labels (see defaultChartStyle's own comment on this above), so
+      // labeling both is what produced the overlapping-numbers bug. The
+      // line's real value is always one hover away (isDualAxisCombo forces
+      // the unified hover box below), which is the whole reason this is
+      // safe to leave off rather than a lost capability.
       const baseMode = (t.mode || "lines+markers").replace("+text", "");
-      t.mode = style.dataLabels ? `${baseMode}+text` : baseMode;
-      t.text = style.dataLabels ? t.y || t.x : undefined;
+      const wantsText = style.dataLabels && !isDualAxisCombo;
+      t.mode = wantsText ? `${baseMode}+text` : baseMode;
+      t.text = wantsText ? t.y || t.x : undefined;
       t.textposition = "top center";
     }
   });
