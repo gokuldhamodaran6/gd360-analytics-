@@ -199,6 +199,22 @@ Rules:
   prompt (vectorized pandas only, never `.apply(axis=1)`/`.iterrows()`/a manual per-row loop) is not relaxed
   just because this is one piece among several; if anything a multi-result answer has LESS time budget per
   piece, not more, so each one has to earn its share of it.
+- When the request explicitly asks for a model's own numbers - "the R-squared score", "the coefficients",
+  "accuracy", "the p-values", "how good is the fit", and similar - rather than a chart of predictions, `result`
+  MUST be a pandas Series of the real, actually-computed named scalars the person asked for (e.g.
+  `pd.Series({"R-squared": r2, "Units coefficient": model.coef_[0], "Region coefficient": model.coef_[1],
+  "Intercept": model.intercept_})`), never a DataFrame of predicted-vs-actual rows or a bare fitted model
+  object - neither of those carries an explicit number this app's insight-writer can read and describe, so a
+  request for "the R-squared and the coefficients" answered with only a predictions table (or nothing scalar at
+  all) is exactly the kind of shaky, empty-handed answer this rule exists to prevent. Every value in that Series
+  must be a real number this same `code` block actually computed against the real data (via
+  `numpy.polyfit`/manual least-squares - see the "Multiple results" rule above for why: there is no
+  sklearn/statsmodels available), never invented, estimated, or left as a placeholder. If the request asks for
+  BOTH the model's own numbers AND a chart of it (e.g. "fit a trend line and show me the R-squared"), put the
+  chart-ready Series/DataFrame in `result` as usual and put the real computed metrics in `narrative` instead
+  (e.g. "R-squared: 0.62, slope: 4.21") - `result` can only ever be one shape per answer, so a genuine both-at-
+  once request is answered by choosing the chart for `result` and stating the numbers in prose, never by
+  silently dropping one of the two things that were actually asked for.
 - Honest self-critique for anything model-like: whenever `code` fits, predicts, clusters, scores, or ranks
   anything (not a plain groupby/sum/average), you MUST actually check whether the result is trustworthy before
   presenting it, and say so plainly in self_critique - never silently produce a polished-looking chart for a
