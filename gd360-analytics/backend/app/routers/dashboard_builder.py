@@ -358,6 +358,15 @@ from ..services import ai_engine, chart_builder, data_access_rules, render_domai
 from ..services.data_loader import load_dataframe
 from .chat import _load_selected_tables, _other_sources_catalog
 from .dashboards import _can_edit, _can_view
+# 2026-09-29 (Hex-level filters round): reuses the Data tab's own,
+# already-battle-tested column-filter engine (values/text/number/date/
+# boolean, including numeric & date RANGES and multi-select) rather than
+# hand-rolling a second, narrower one just for dashboards - see
+# _apply_filters below and FilterCriterion's own docstring in schemas.py.
+# No circular import risk: routers/datasources.py imports nothing from
+# this file, the same one-way relationship this file already has with
+# routers/chat.py and routers/dashboards.py (see the imports just above).
+from .datasources import _apply_column_filter
 
 router = APIRouter(prefix="/dashboard-builder", tags=["dashboard-builder"])
 
@@ -423,21 +432,31 @@ _MAX_FILTERS_PER_REQUEST = 8
 
 
 def _apply_filters(df: pd.DataFrame, filters: list) -> pd.DataFrame:
-    """Applies every (column, value) filter as an AND'd exact-match mask -
-    the same semantics as a PowerBI/Tableau slicer. Compares as strings
-    (`.astype(str)`) rather than trying to coerce the incoming JSON value
-    to the column's own dtype - simpler and more robust than dtype-
-    guessing, at the cost of exact float-equality edge cases, which is a
-    fine trade for a dropdown-driven exact-match filter. A filter whose
-    column isn't actually in this dataframe is skipped rather than
-    raising - defensive against a stale filter selection surviving a data
-    source change."""
+    """Applies every filter criterion in `filters`, AND'd together -
+    the same overall semantics as a PowerBI/Tableau slicer, but (2026-09-29,
+    "Hex-level filters" round) through the EXACT SAME operator engine as
+    the Data tab's own Excel-style column filter panel
+    (_apply_column_filter, imported from routers/datasources.py) instead
+    of a second, narrower implementation. Before this round, `filters` was
+    always a plain (column, value) equality pair; `spec` now carries
+    whatever shape that panel already sends - "values" (multi-select),
+    "text" (contains/equals/starts_with/etc), "number" (a comparison OR a
+    "between" RANGE), "date" (a range), "boolean" - which is what actually
+    gives dashboard filters ranges and multi-select, not just "equals".
+    A filter whose column isn't actually in this dataframe, or whose spec
+    is malformed or incompatible with the column's real dtype, is skipped
+    rather than raising - defensive against a stale filter selection
+    surviving a data source change, the same tradeoff the original
+    version of this function already made."""
     for f in filters:
         column = f.column if hasattr(f, "column") else f.get("column")
-        value = f.value if hasattr(f, "value") else f.get("value")
-        if column not in df.columns:
+        spec = f.spec if hasattr(f, "spec") else f.get("spec")
+        if not column or column not in df.columns:
             continue
-        df = df[df[column].astype(str) == str(value)]
+        try:
+            df = _apply_column_filter(df, column, spec)
+        except Exception:
+            continue
     return df
 
 
@@ -2863,7 +2882,20 @@ def preview_filtered_blocks(
         is no honest way to know what a "filtered" version of it should
         even mean - showing SOME number there anyway would risk it being
         the wrong one, worse than the honest "not filter-aware yet"
-        status quo it keeps instead."""
+        status quo it keeps instead.
+
+    2026-09-29 (Hex-level filters round): `payload.block_filters` -
+    "per-chart filtering." Extra criteria scoped to just ONE block,
+    layered on top of `payload.filters` for that block only - a chart can
+    now be sliced further than whatever the page-wide filter bar shows,
+    without that extra slice affecting any other block on the page. Every
+    criterion (page-wide or per-chart) also supports the Data tab's full
+    operator vocabulary now, not just equality - see FilterCriterion's own
+    docstring and _apply_filters above for the "ranges, multi-select"
+    part of this round. `matched_rows` below stays PAGE-WIDE only (never
+    narrowed by a per-chart filter) - it's meant to answer "how much of
+    the dataset does the page-wide filter bar currently show," which a
+    single chart's own extra slice has no bearing on."""
     d = _get_dashboard_v2(db, user, dashboard_id)  # view access only
     page = next((p for p in d.pages if p.id == page_id), None)
     if not page:
@@ -2882,12 +2914,22 @@ def preview_filtered_blocks(
     active_filters = payload.filters[:_MAX_FILTERS_PER_REQUEST]
     df = _apply_filters(df, active_filters)
 
+    # Per-chart filters - capped defensively (a real dashboard page has
+    # nowhere near this many blocks or per-block criteria; see
+    # ApplyFiltersRequest.block_filters' own docstring in schemas.py).
+    block_filters: dict[str, list] = {
+        block_id: crits[:_MAX_FILTERS_PER_REQUEST]
+        for block_id, crits in list(payload.block_filters.items())[:20]
+    }
+
     out: list[schemas.FilteredBlockOut] = []
     for block in page.blocks:
+        own_filters = block_filters.get(block.id) or []
         recipe = (block.config or {}).get("recipe")
         if recipe:
             try:
-                actual_type, config, _default_title = _run_manual_recipe(df, recipe, existing_title=block.title)
+                block_df = _apply_filters(df, own_filters)
+                actual_type, config, _default_title = _run_manual_recipe(block_df, recipe, existing_title=block.title)
             except Exception:
                 continue
             out.append(schemas.FilteredBlockOut(id=block.id, type=actual_type, config=config))
@@ -2902,6 +2944,7 @@ def preview_filtered_blocks(
         try:
             block_df = pd.DataFrame(rows, columns=[c["name"] for c in cols])
             block_df = _apply_filters(block_df, active_filters)
+            block_df = _apply_filters(block_df, own_filters)
         except Exception:
             continue
 
