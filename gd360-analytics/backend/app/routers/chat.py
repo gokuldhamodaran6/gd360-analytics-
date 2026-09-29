@@ -471,21 +471,106 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     if not payload.skip_prep:
         durable_repeat = learned_answers.find_learned_answer(db, user.id, tables, payload.prompt)
 
+    # Automatic cross-source context (2026-09-29): a lightweight, access-
+    # checked list of every OTHER data source this person has connected -
+    # names and column names only, never the actual data - so the model
+    # can recognize a question needs a table it was not explicitly handed
+    # and say so (action="needs_data") instead of guessing with the wrong
+    # table or asking the person to manually add it via "+ Add more data"
+    # when the answer to "which one" is already visible right here. See
+    # ai_engine.SYSTEM_PROMPT's "Automatically finding data in another
+    # connected source" rule and _other_sources_catalog's own docstring.
+    exclude_ids = {ds.id} | {m.get("datasource_id") for m in sources_manifest if m.get("datasource_id")}
+    catalog = _other_sources_catalog(db, user, exclude_ids)
+
     # Flow tab transparency round: a real wall-clock measurement of this
     # turn's own analyze/transform call - never estimated - threaded
     # through to whatever it ends up creating (a DatasetVersion and/or a
     # Message) below, purely so the Flow tab can show something truer
-    # than "recently" on its cards.
+    # than "recently" on its cards. Left running across the auto-expand
+    # retry just below (when it happens) since that is still genuinely
+    # part of this one turn's total work, not a separate one.
     _analyze_started_at = time.perf_counter()
     try:
         result = ai_engine.analyze(
             payload.prompt, tables, history=history, chart_override=payload.chart_override, intent=payload.intent,
             guided=(payload.analysis_mode == "guided"), skip_prep=payload.skip_prep, original_df=original_df,
-            durable_repeat=durable_repeat,
+            durable_repeat=durable_repeat, catalog=catalog,
         )
     except Exception as e:
         print(f"[chat] AI analysis failed: {e}")
         raise HTTPException(502, ai_engine.friendly_ai_error(e))
+
+    if result.get("action") == "needs_data" and result.get("needs_datasource_ids"):
+        # The model recognized this question needs a table from the
+        # catalog above and named its id(s) instead of guessing or asking
+        # the person - load it for real (through the exact same "ds:"
+        # mechanism the "+ Add more data" picker already uses, so it gets
+        # the same access checks and sheet/table resolution) and ask
+        # again, once, with it available. Never retried a second time -
+        # `catalog` is simply not passed on this second call below, so
+        # the model cannot ask for yet another source and loop.
+        extra_ids = [str(i) for i in result["needs_datasource_ids"] if i and str(i) not in exclude_ids]
+        expanded = None
+        if extra_ids:
+            try:
+                expanded = _load_selected_tables(
+                    db, user, ds, list(requested_ids) + [f"ds:{i}:original" for i in extra_ids], table=payload.table
+                )
+            except HTTPException as e:
+                print(f"[chat] Could not auto-load suggested datasource(s) {extra_ids}: {e.detail}")
+        if expanded:
+            tables, source_versions, original_df, sources_manifest = expanded
+            added_names = [m["label"] for m in sources_manifest if m.get("datasource_id") in extra_ids]
+            try:
+                result = ai_engine.analyze(
+                    payload.prompt, tables, history=history, chart_override=payload.chart_override,
+                    intent=payload.intent, guided=(payload.analysis_mode == "guided"), skip_prep=payload.skip_prep,
+                    original_df=original_df, durable_repeat=None,
+                )
+            except Exception as e:
+                print(f"[chat] AI analysis failed after auto-loading more data: {e}")
+                raise HTTPException(502, ai_engine.friendly_ai_error(e))
+            if result.get("action") == "needs_data":
+                # Defensive only - `catalog` is not passed on this second
+                # call, so the model has nothing left to name, but never
+                # let this internal marker itself reach the person as a
+                # bare "Done." if it happens anyway.
+                result = {
+                    **result,
+                    "action": "clarify",
+                    "needs_clarification": True,
+                    "clarifying_question": (
+                        "I was not able to find the right data for this one - could you tell me more about "
+                        "what you're looking for, or add the relevant source with \"+ Add more data\"?"
+                    ),
+                }
+            if added_names and result.get("action") != "clarify":
+                steps = [{
+                    "label": f"Automatically connected {', '.join(added_names)}",
+                    "detail": (
+                        "This question needed data from another one of your connected sources, so it was "
+                        "pulled in automatically instead of asking you to add it by hand first."
+                    ),
+                }] + list(result.get("steps") or [])
+                result["steps"] = steps
+        else:
+            # Named a source but it could not actually be loaded (no
+            # longer accessible, deleted, or every id was already
+            # loaded/invalid) - a plain, honest clarifying question beats
+            # ever letting this internal marker reach the person as an
+            # empty "Done." reply.
+            result = {
+                **result,
+                "action": "clarify",
+                "needs_clarification": True,
+                "clarifying_question": (
+                    "This looks like it needs data from another connected source, but I could not load it "
+                    "just now. Could you add it with \"+ Add more data\", or tell me more about what you're "
+                    "looking for?"
+                ),
+            }
+
     duration_ms = int((time.perf_counter() - _analyze_started_at) * 1000)
     method_summary = ai_engine._derive_method_summary(result.get("action"), result.get("chart_type"), result.get("code"))
 
@@ -605,6 +690,72 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         duration_ms=duration_ms,
         method_summary=method_summary,
     )
+
+
+_CATALOG_MAX_SOURCES = 20
+
+
+def _catalog_columns_from_schema_cache(schema_cache) -> list[str] | None:
+    """Best-effort column-name list from a DataSource.schema_cache for the
+    cross-source catalog handed to ai_engine.analyze (see its `catalog`
+    param and the "needs_data" action) - only for the single-table
+    {"columns": [{"name", "type"}, ...]} shape a plain CSV/Excel-single-
+    sheet/API/single-DB-table connection uses (see _api_schema_and_bytes
+    in routers/datasources.py and the plain CSV upload path). A warehouse
+    (BigQuery/Snowflake) or MongoDB source uses a different, multi-table
+    {name: [...]} shape (see _multi_table_schema_text/_mongo_schema_text
+    above) and is deliberately left out of the catalog for now: auto-
+    loading one of those needs a specific table/collection name chosen
+    first, not just "original", which this first version of automatic
+    cross-source lookup does not attempt - the "ds:" branch of
+    _load_selected_tables below only ever loads a source's single default
+    table. Returns None (not []) when this schema_cache is not that
+    single-table shape, so the caller can skip the source entirely rather
+    than show it with an empty or misleading column list."""
+    if not isinstance(schema_cache, dict):
+        return None
+    columns = schema_cache.get("columns")
+    if not isinstance(columns, list):
+        return None
+    return [str(c["name"]) for c in columns if isinstance(c, dict) and c.get("name") is not None]
+
+
+def _other_sources_catalog(db: Session, user: models.User, exclude_ids: set[str]) -> list[dict]:
+    """The lightweight "what else does this person have connected" list
+    handed to ai_engine.analyze so a question can be answered from a
+    table the person never explicitly selected for THIS turn - the same
+    "+ Add more data" tables the chat picker already lets them add by
+    hand, just also visible to the model itself instead of only to the
+    person (see the SYSTEM_PROMPT "Automatically finding data in another
+    connected source" rule). Every source is access-checked the same way
+    list_datasources checks them (owned, or shared into a workspace this
+    person is a member of) - this never shows or lets the model load
+    anything the person could not already see in their own "+ Add more
+    data" picker. Deliberately bounded: at most _CATALOG_MAX_SOURCES
+    sources (most recently created first, out of at most 200 considered),
+    never every source a heavy user has ever connected, and only the ones
+    with a usable single-table schema_cache (see
+    _catalog_columns_from_schema_cache) - a source with no schema_cache
+    yet, or one this helper cannot read, is silently left out rather than
+    shown with nothing useful in it."""
+    rows = (
+        db.query(models.DataSource)
+        .filter(workspace_access.datasource_access_filter(db, user))
+        .order_by(models.DataSource.created_at.desc())
+        .limit(200)
+        .all()
+    )
+    catalog: list[dict] = []
+    for row in rows:
+        if row.id in exclude_ids:
+            continue
+        columns = _catalog_columns_from_schema_cache(row.schema_cache)
+        if not columns:
+            continue
+        catalog.append({"id": row.id, "name": row.name, "columns": columns})
+        if len(catalog) >= _CATALOG_MAX_SOURCES:
+            break
+    return catalog
 
 
 def _load_selected_tables(
