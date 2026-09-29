@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import ChartCanvas from "./ChartCanvas";
 import { datasourceApi, DashboardBlock, DashboardBlockType } from "../api/client";
 import { DashboardFilterState } from "../lib/useDashboardFilters";
+import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
 
 // 2026-09-24 (Dashboard Builder Phase 1): the shared block-rendering layer
 // for a pages+blocks dashboard - used by BOTH the owner's editor view
@@ -387,7 +388,18 @@ export function BlockTable({
   );
 }
 
-export function BlockChart({ title, config }: { title: string | null; config: any }) {
+export function BlockChart({
+  title,
+  config,
+  onMinHeight,
+}: {
+  title: string | null;
+  config: any;
+  // 2026-09-29 (design revamp): forwarded straight through to ChartCanvas -
+  // see its own comment on this prop. Only BlockCard (DashboardCanvas.tsx)
+  // ever passes it.
+  onMinHeight?: (px: number) => void;
+}) {
   // 2026-09-28: an honest "checked, found none" hint for the "Show
   // anomalies" toggle - anomaly_count is only ever a real int (never
   // fabricated - see chart_builder.py's apply_analysis_overlays) once the
@@ -396,13 +408,37 @@ export function BlockChart({ title, config }: { title: string | null; config: an
   // that it was skipped. Same low-key italic caption style as this file's
   // other small inline notes (see TextBlock's "Empty note." above).
   const showNoAnomaliesHint = config?.anomalies_enabled && config?.anomaly_count === 0;
+
+  // 2026-09-29 (design revamp): a Dashboard Builder chart used to render
+  // straight off the backend's raw figure JSON - chart_builder.py's own
+  // fixed defaults (real fixes in their own right - see that file's round-1
+  // revamp comments - but never anything a person here could choose) with
+  // NONE of lib/chartStyle.ts's premium styling engine (rounded bars,
+  // smooth lines, palette choice, smart legend/margins) ever applied, the
+  // way the live Workspace chart (ExplorePanel.tsx) already gets it. Every
+  // dashboard chart now runs through that exact same engine: `chart_style`
+  // is an optional partial ChartStyle a person can set from this block's
+  // own "Chart style" panel (see StylePanel's Colors section in
+  // DashboardCanvas.tsx, which persists it via updateBlock) - anything left
+  // unset falls back to defaultChartStyle's own data-shape-aware defaults
+  // (e.g. no legend on a single-series chart), exactly as the Workspace
+  // chart already does. `title` is only ever used as a FALLBACK inside
+  // applyChartStyle (a real existing chart_spec.layout.title always wins),
+  // so this never overwrites a chart's own already-meaningful title with
+  // this block's shorter card-header title.
+  const styledSpec = useMemo(() => {
+    if (!config?.chart_spec) return config?.chart_spec;
+    const style: ChartStyle = { ...defaultChartStyle(config.chart_spec), ...(config?.chart_style || {}) };
+    return applyChartStyle(config.chart_spec, style, title || undefined);
+  }, [config?.chart_spec, config?.chart_style, title]);
+
   return (
     <div className="h-full flex flex-col">
       {showNoAnomaliesHint && (
         <div className="shrink-0 text-[11px] text-muted italic px-2 pt-1 pb-0.5">No unusual points detected.</div>
       )}
       <div className="flex-1 min-h-0">
-        <ChartCanvas chartSpec={config?.chart_spec} title={title || undefined} dashPremium />
+        <ChartCanvas chartSpec={styledSpec} title={title || undefined} dashPremium onMinHeight={onMinHeight} />
       </div>
     </div>
   );
