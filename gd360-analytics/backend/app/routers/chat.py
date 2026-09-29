@@ -12,7 +12,6 @@ The core AI analytics endpoint. Given a prompt + a datasource, it:
      clarifying question if the AI/system needs more info.
 """
 import json
-import re
 import time
 from collections import defaultdict, deque
 from datetime import datetime
@@ -488,7 +487,7 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         print(f"[chat] AI analysis failed: {e}")
         raise HTTPException(502, ai_engine.friendly_ai_error(e))
     duration_ms = int((time.perf_counter() - _analyze_started_at) * 1000)
-    method_summary = _derive_method_summary(result.get("action"), result.get("chart_type"), result.get("code"))
+    method_summary = ai_engine._derive_method_summary(result.get("action"), result.get("chart_type"), result.get("code"))
 
     # Learn from this turn for next time - only when it was a genuine,
     # freshly AI-planned success (never a clarifying question, never a
@@ -911,41 +910,15 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
     )
 
 
-# Ordered from most to least specific - the first real match wins, since a
-# step can easily contain more than one of these calls (e.g. a merge
-# followed by a groupby) and the first substantive operation is usually
-# what best explains what this step was actually for.
-_METHOD_PATTERNS: list[tuple[str, str]] = [
-    (r"\bmerge\(|\.join\(", "Joined tables"),
-    (r"\bgroupby\(", "Grouped & aggregated"),
-    (r"linregress|LinearRegression|np\.polyfit|\blstsq\(", "Fit a trend/forecast model"),
-    (r"KMeans|k-?means|\bcluster", "Clustered rows into segments"),
-    (r"\.corr\(", "Correlation analysis"),
-    (r"drop_duplicates|dropna|fillna", "Cleaned & de-duplicated rows"),
-    (r"\.pivot|pivot_table", "Pivoted data into a summary table"),
-    (r"resample\(|\.rolling\(", "Time-series aggregation"),
-    (r"zscore|z_score|\.std\(\)|\.abs\(\)\s*>", "Flagged outliers"),
-    (r"\.sort_values\(", "Sorted & ranked rows"),
-]
-
-
-def _derive_method_summary(action: str | None, chart_type: str | None, code: str | None) -> str | None:
-    """A short, honest one-line description of what this turn's code
-    actually did - read straight off the real pandas/python code that ran
-    (models.Message.code / the transform's own code), never invented or
-    guessed from the prompt text. Used only to give the Flow tab's cards
-    something more informative to show than the raw question; when the
-    code doesn't match any recognized pattern this falls back to a
-    generic, still-true label rather than fabricating a specific one."""
-    if code:
-        for pattern, label in _METHOD_PATTERNS:
-            if re.search(pattern, code):
-                return label
-    if action == "transform":
-        return "Cleaned & prepared data"
-    if chart_type:
-        return f"Built a {chart_type.replace('_', ' ')} chart"
-    return None
+# 2026-09-29 (plain-language findings round): _METHOD_PATTERNS and
+# _derive_method_summary used to live here - they moved to ai_engine.py
+# (unchanged) so that module can also classify one multi-result piece's own
+# code inline, right where that piece's real code is available (see
+# ai_engine._entries_from_pieces' use of it), instead of only ever being
+# usable after the fact, here, on a whole turn's combined code. Every call
+# site below now reads ai_engine._derive_method_summary instead of a local
+# copy - same function, same behavior, just one shared definition instead
+# of two that could silently drift apart.
 
 
 def _save_cleaning_result(
@@ -1058,7 +1031,7 @@ def _save_named_results(
         piece_meta = timing.get(label) or {}
         piece_duration_ms = piece_meta.get("duration_ms")
         piece_code = piece_meta.get("code")
-        piece_method_summary = _derive_method_summary("analyze", None, piece_code) if piece_code else None
+        piece_method_summary = ai_engine._derive_method_summary("analyze", None, piece_code) if piece_code else None
         version = models.DatasetVersion(
             datasource_id=ds.id,
             name=name,
@@ -1221,4 +1194,12 @@ def _persist_and_respond(
         new_version_id=new_version_id,
         new_version_name=new_version_name,
         continue_action=continue_action,
+        # 2026-09-29 (plain-language findings round): both were already
+        # computed for every turn (Phase 1) and already saved to Message -
+        # just never actually handed back in the live response, so "show
+        # calculation" had nothing to show without a page reload. See
+        # schemas.ChatResponse's own comment on these two fields.
+        method_summary=method_summary,
+        code=code,
+        duration_ms=duration_ms,
     )
