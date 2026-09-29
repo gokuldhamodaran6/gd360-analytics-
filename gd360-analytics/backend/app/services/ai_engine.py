@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from typing import Any
 
@@ -171,6 +172,20 @@ Rules:
   from scratch once per piece. Keep prep_code doing only genuine shared preparation; do the per-piece modeling
   in `code`. Only use this dict form when the request truly asks for more than one thing - a single question
   still gets a single DataFrame/Series in `result`, exactly as before.
+- Running independent pieces at the same time (2026-09-29): when a multi-result answer's pieces are genuinely
+  INDEPENDENT of each other - none of them needs another piece's computed table, only the shared prepared data -
+  prefer assigning a PYTHON LIST to `result_pieces` INSTEAD OF the dict-in-`code` form above: each item
+  `{"label": "...", "code": "..."}`, where each piece's `code` is a SEPARATE, SELF-CONTAINED snippet that
+  computes its own answer and assigns it to `result` (a DataFrame/Series) using only `df`/`tables` - never
+  referencing a variable another piece's code built, since these run at the same time as each other, not in the
+  order they appear in the list. This is genuinely faster for the person waiting: the engine runs up to
+  config.PARALLEL_PIECES_MAX_WORKERS of these pieces at once instead of one after another. Use the dict-in-`code`
+  form instead (never both) whenever a later piece genuinely needs an earlier piece's own computed table as a
+  real data dependency (e.g. piece 2 filters piece 1's flagged rows) - that is a real sequential dependency, not
+  just a convenience, and forcing it into result_pieces would silently produce a wrong or missing answer for
+  that piece. Do still put genuinely SHARED preparation (a merge, a filter, a cleaned/typed table every piece
+  starts from) into prep_code as before, exactly once - result_pieces is only for the independent modeling steps
+  that come after that shared preparation, not a replacement for it.
 - Keep every piece of a multi-result answer bounded and fast, especially market-basket/co-occurrence pieces:
   a naive `itertools.combinations` pass over every order's full item list, run once per order over a real
   order table, is exactly the kind of pattern that looks fine on a small sample and then times out for real -
@@ -2628,6 +2643,57 @@ def _run_analyze_with_prep(
     # from writing that reference in the first place.
     chart_tables = dict(tables)
     chart_tables[primary_name] = prepped
+
+    result_pieces = plan.get("result_pieces")
+    if isinstance(result_pieces, list) and result_pieces:
+        piece_results = _run_pieces_concurrently(result_pieces, chart_tables)
+        entries, named_tables, named_table_timing, first_value = _entries_from_pieces(
+            prompt, piece_results, plan, chart_override
+        )
+        if entries:
+            primary = entries[0]
+            summary = result_to_summary(first_value)
+            summary["source_row_count"] = rows_after
+            insight = _generate_insight(prompt, summary)
+            combined_narrative = f"**Data prep:** {prep_narrative}\n\n**Analysis:** {plan.get('narrative') or 'Here is your analysis.'}"
+            combined_code = (
+                f"{prep_code}\n\n"
+                "# --- preparation complete; each piece below ran independently, in parallel, against the prepared table ---\n"
+                + "\n\n".join(
+                    f"# --- {label} ---\n{meta['code']}"
+                    for label, meta in piece_results.items() if meta.get("code")
+                )
+            )
+            return {
+                "needs_clarification": False,
+                "clarifying_question": None,
+                "action": "analyze",
+                "narrative": combined_narrative,
+                "self_critique": (plan.get("self_critique") or "").strip() or None,
+                "chart_spec": primary["chart_spec"],
+                "chart_type": primary["chart_type"],
+                "insight": insight,
+                "cleaned_df": prepped,
+                "rows_before": rows_before,
+                "rows_after": rows_after,
+                "nulls_before": nulls_before,
+                "nulls_after": nulls_after,
+                "suggested_charts": suggest_charts(prepped_profile),
+                "suggested_stats": suggest_stats(prepped_profile),
+                "follow_up_suggestions": _sanitize_follow_ups(plan.get("follow_up_suggestions")),
+                "code": combined_code,
+                "result_columns": primary["result_columns"],
+                "result_rows": primary["result_rows"],
+                "result_row_count": primary["result_row_count"],
+                "result_truncated": primary["result_truncated"],
+                "results": entries,
+                "named_tables": named_tables or None,
+                "named_table_timing": named_table_timing or None,
+            }
+        # Every piece failed, or none had a usable label/code - fall
+        # through to the ordinary single-code path below exactly as if
+        # result_pieces had never been set.
+
     result, error = run_sandboxed(chart_code, chart_tables, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
 
     if error:
@@ -2768,6 +2834,135 @@ def _run_analyze_with_prep(
     }
 
 
+def _run_pieces_concurrently(pieces: list, chart_tables: dict[str, pd.DataFrame]) -> dict[str, dict]:
+    """2026-09-29 (parallel-pieces round): runs each of `pieces` (see the
+    result_pieces plan field in SYSTEM_PROMPT - a list of independent
+    {"label", "code"} snippets) in its own sandboxed call, up to
+    settings.PARALLEL_PIECES_MAX_WORKERS at the same time, instead of one
+    after another. This number was chosen deliberately conservatively with
+    Gokul (2026-09-29): this app's Render instance is a confirmed 0.5 CPU /
+    512MB box, and each concurrent piece is its own full sandboxed child
+    process (see services/sandbox.py) - safety and a genuine, if modest,
+    wall-clock improvement mattered more here than squeezing out maximum
+    theoretical parallelism this small a box cannot actually deliver on.
+
+    Returns {label: {"value", "error", "duration_ms", "completed_offset_ms",
+    "code"}} for every piece that had a real label and code - "value" is
+    None and "error" is set for a piece whose sandboxed code failed; the
+    caller treats that the same way a single-result answer already treats
+    an unusable piece (skip it, do not fail the whole answer over it - see
+    _build_result_entry's own docstring). duration_ms is this ONE piece's
+    own real measured wall-clock time - genuinely accurate per piece, since
+    (unlike the dict-in-`code` form) each piece here really did run as its
+    own isolated, individually-timed call. completed_offset_ms is when this
+    piece finished relative to when this whole batch started (not its own
+    duration) - what lets the chat UI reveal each result card at roughly
+    the real moment it actually became available, instead of only ever
+    revealing all of them together once the slowest one finishes."""
+    valid = [
+        p for p in (pieces or [])
+        if isinstance(p, dict) and str(p.get("label") or "").strip() and str(p.get("code") or "").strip()
+    ]
+    out: dict[str, dict] = {}
+    if not valid:
+        return out
+
+    def run_one(piece: dict) -> tuple[str, dict]:
+        label = str(piece["label"]).strip()
+        code = str(piece["code"])
+        piece_start = time.perf_counter()
+        value, error = run_sandboxed(code, chart_tables, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
+        duration_ms = int((time.perf_counter() - piece_start) * 1000)
+        # 2026-09-29: observed once in testing (not reproduced in ~15
+        # follow-up trials) - a piece coming back as "timed out" after only
+        # a few real milliseconds, nowhere near the actual timeout. That
+        # combination (the timeout message, but an implausibly short real
+        # duration) cannot be a genuine "this pandas code was too slow" -
+        # it is the signature of forking a new sandboxed child process from
+        # one of several worker THREADS at the exact wrong moment, a known
+        # rare interaction between Python's `multiprocessing` (fork) and
+        # `threading`, not anything wrong with the piece's own code. A
+        # single, cheap, isolated retry of just this one piece is the
+        # correct fix: it costs nothing in the overwhelmingly common case
+        # (a real result or a real, slow-code timeout, neither of which
+        # ever reaches this branch), and directly targets the one failure
+        # mode observed rather than retrying blindly.
+        if error and "timed out" in error.lower() and duration_ms < 2000:
+            print(f"[ai_engine] parallel piece {label!r} reported an implausibly fast timeout ({duration_ms}ms) - retrying once")
+            piece_start = time.perf_counter()
+            value, error = run_sandboxed(code, chart_tables, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
+            duration_ms = int((time.perf_counter() - piece_start) * 1000)
+        return label, {"value": value, "error": error, "duration_ms": duration_ms, "code": code}
+
+    batch_start = time.perf_counter()
+    max_workers = max(1, settings.PARALLEL_PIECES_MAX_WORKERS)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(run_one, p) for p in valid]
+        for fut in futures:
+            try:
+                label, meta = fut.result()
+            except Exception as e:
+                # run_sandboxed itself never raises (it always returns
+                # (value, error)) - this would only fire if the thread
+                # orchestration above it raised, which should not happen in
+                # practice. Skip just this one piece rather than losing the
+                # whole batch over it.
+                print(f"[ai_engine] a parallel piece's own thread raised: {e}")
+                continue
+            meta["completed_offset_ms"] = int((time.perf_counter() - batch_start) * 1000)
+            out[label] = meta
+    return out
+
+
+def _entries_from_pieces(
+    prompt: str, piece_results: dict[str, dict], plan: dict, chart_override: dict | None,
+) -> tuple[list, dict, dict, Any]:
+    """Turns _run_pieces_concurrently's raw per-piece output into the same
+    (entries, named_tables) shape the dict-in-`code` multi-result path
+    already builds (see _build_result_entry), plus named_table_timing - the
+    REAL per-piece duration_ms/code/completed_offset_ms this path uniquely
+    has available (the dict-in-`code` path cannot know which lines belong
+    to which label, so it has never been able to offer this). A piece whose
+    sandboxed code errored, or whose value had nothing meaningful to show,
+    is silently skipped here - same "one bad entry among six should never
+    cost the other five" behavior _build_result_entry's own docstring
+    already documents, just applied to pieces that ran as their own
+    separate sandboxed calls instead of lines within one shared script.
+    Also returns the first successful piece's raw value, needed by the
+    caller for result_to_summary/insight the same way the dict-in-`code`
+    path already uses `next(iter(result.values()))` for that."""
+    entries: list = []
+    named_tables: dict[str, pd.DataFrame] = {}
+    named_table_timing: dict[str, dict] = {}
+    first_value: Any = None
+    for label, meta in piece_results.items():
+        value = meta.get("value")
+        if meta.get("error") or value is None:
+            continue
+        entry = _build_result_entry(prompt, label, value, plan, chart_override)
+        if not entry:
+            continue
+        if first_value is None:
+            first_value = value
+        # completed_offset_ms rides along on the entry itself (not just
+        # named_table_timing below) so the chat UI can use it too - see
+        # ChatPanel.tsx's MultiResultCards, which staggers each card's
+        # reveal to roughly match when it actually finished computing,
+        # instead of only ever revealing all of them together once the
+        # slowest piece is done.
+        entry["completed_offset_ms"] = meta.get("completed_offset_ms")
+        entries.append(entry)
+        as_table = result_to_dataframe(value)
+        if as_table is not None:
+            named_tables[label] = as_table
+            named_table_timing[label] = {
+                "duration_ms": meta.get("duration_ms"),
+                "code": meta.get("code"),
+                "completed_offset_ms": meta.get("completed_offset_ms"),
+            }
+    return entries, named_tables, named_table_timing, first_value
+
+
 def _build_result_entry(prompt: str, label: str, value: Any, plan: dict, chart_override: dict | None) -> dict | None:
     """Builds one named entry of a multi-result answer (see
     "Multiple results in one answer" in SYSTEM_PROMPT) - one chart-or-table
@@ -2809,6 +3004,52 @@ def _build_result_entry(prompt: str, label: str, value: Any, plan: dict, chart_o
 
 
 def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, plan: dict, code: str, chart_override: dict | None) -> dict:
+    result_pieces = plan.get("result_pieces")
+    if isinstance(result_pieces, list) and result_pieces:
+        piece_results = _run_pieces_concurrently(result_pieces, tables)
+        entries, named_tables, named_table_timing, first_value = _entries_from_pieces(
+            prompt, piece_results, plan, chart_override
+        )
+        if entries:
+            primary = entries[0]
+            summary = result_to_summary(first_value)
+            summary["source_row_count"] = int(len(next(iter(tables.values()))))
+            insight = _generate_insight(prompt, summary)
+            combined_code = "\n\n".join(
+                f"# --- {label} (ran independently, in parallel) ---\n{meta['code']}"
+                for label, meta in piece_results.items() if meta.get("code")
+            )
+            return {
+                "needs_clarification": False,
+                "clarifying_question": None,
+                "action": "analyze",
+                "narrative": plan.get("narrative") or "Here is your analysis.",
+                "self_critique": (plan.get("self_critique") or "").strip() or None,
+                "chart_spec": primary["chart_spec"],
+                "chart_type": primary["chart_type"],
+                "insight": insight,
+                "rows_before": None,
+                "rows_after": None,
+                "nulls_before": None,
+                "nulls_after": None,
+                "suggested_charts": suggest_charts(profile),
+                "suggested_stats": suggest_stats(profile),
+                "follow_up_suggestions": _sanitize_follow_ups(plan.get("follow_up_suggestions")),
+                "code": combined_code,
+                "result_columns": primary["result_columns"],
+                "result_rows": primary["result_rows"],
+                "result_row_count": primary["result_row_count"],
+                "result_truncated": primary["result_truncated"],
+                "results": entries,
+                "named_tables": named_tables or None,
+                "named_table_timing": named_table_timing or None,
+            }
+        # Every piece failed, or none had a usable label/code - fall
+        # through to the ordinary single-code path below exactly as if
+        # result_pieces had never been set, rather than surfacing a
+        # failure for a request that may still have valid `code` to fall
+        # back on.
+
     result, error = run_sandboxed(code, tables, timeout=settings.SANDBOX_TIMEOUT_SECONDS)
 
     if error:
