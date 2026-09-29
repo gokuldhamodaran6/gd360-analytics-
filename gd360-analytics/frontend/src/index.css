@@ -491,3 +491,65 @@ body {
     radial-gradient(ellipse 640px 280px at 50% 0%, rgb(var(--color-accent) / 0.16), transparent 70%),
     rgb(var(--color-surface));
 }
+
+/* ============================================================
+   Chat result cards - visual polish pass (2026-09-29, Phase 5 of the Flow
+   & Analysis Revamp roadmap - "apply the mockup's card styling, timing
+   badges, and dashboard tie-in throughout, once the underlying capability
+   actually exists").
+
+   --kind-table/--kind-chart give ChatPanel.tsx's own result cards
+   (ResultCard/MultiResultCards) the exact same source/table/chart color
+   coding the Flow tab (DataFlowMap.tsx) already uses, so the whole app
+   reads as one visual language for "what kind of thing is this" instead
+   of two unrelated ones. Same hex values as DataFlowMap's own local
+   --flow-table/--flow-chart (light mode - see FLOW_CSS in that file), just
+   promoted to a root-level token so ChatPanel can share them too;
+   DataFlowMap.tsx keeps its own already-shipped local copies untouched, so
+   nothing there changes. Dark-mode values follow this file's existing
+   dark-is-the-bare-:root convention (see --dash-accent-* above) rather
+   than a `prefers-color-scheme` branch, matching how every other token in
+   this file already works.
+   ============================================================ */
+:root {
+  --kind-table: 217 89 38;
+  --kind-chart: 25 158 112;
+}
+:root[data-theme="light"] {
+  --kind-table: 235 104 52;
+  --kind-chart: 27 175 122;
+}
+.result-kind-table { border-top: 3px solid rgb(var(--kind-table)); }
+.result-kind-chart { border-top: 3px solid rgb(var(--kind-chart)); }
+.result-kind-icon-table { background: rgb(var(--kind-table) / 0.14); color: rgb(var(--kind-table)); }
+.result-kind-icon-chart { background: rgb(var(--kind-chart) / 0.14); color: rgb(var(--kind-chart)); }
+.result-timing-badge {
+  background: rgb(var(--color-surface2));
+  border: 1px solid rgb(var(--color-border));
+  color: rgb(var(--color-muted));
+}
+/* Named-table chip (entry.version_name - a real saved table, never a
+   placeholder) - always the "table" hue regardless of the card's own
+   chart/table kind, since it labels a produced TABLE either way, exactly
+   like the mockup's own chip row. */
+.result-chip-table {
+  background: rgb(var(--kind-table) / 0.1);
+  color: rgb(var(--kind-table));
+  border: 1px solid rgb(var(--kind-table) / 0.28);
+}
+
+/* The honest "dashboard tie-in" strip (ChatPanel.tsx's DashboardTieIn) -
+   reuses this app's own established "verified/computed" visual language
+   (the pine-emerald --color-primary accent + .btn-primary, same as
+   .verify-bar above) rather than the mockup's literal near-black footer,
+   since GD360's 2026-09-21 brand system already settled on emerald as the
+   one mark for "this is real and checked" - a second, unrelated dark-strip
+   treatment would compete with it instead of extending it. */
+.dashboard-tie-in {
+  background: rgb(var(--color-surface2) / 0.75);
+  border: 1px solid rgb(var(--color-border));
+}
+.dashboard-tie-in__icon {
+  background: rgb(var(--color-primary) / 0.15);
+  color: rgb(var(--color-primary));
+}
