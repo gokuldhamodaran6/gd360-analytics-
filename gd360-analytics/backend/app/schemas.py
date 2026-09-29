@@ -829,13 +829,33 @@ class AskAiBlockRequest(BaseModel):
 
 
 class FilterCriterion(BaseModel):
-    """One active cross-filter selection - (which column, which value).
-    See routers/dashboard_builder.py's module docstring (Phase 2b) for why
-    these are never persisted anywhere: a viewer's current filter
-    selections live only in the frontend's own React state and get sent
-    fresh on every preview-filtered call."""
+    """One active cross-filter selection - either on the page-wide filter
+    bar or (2026-09-29, "Hex-level filters" round) scoped to just ONE
+    block ("per-chart filtering" - see ApplyFiltersRequest.block_filters
+    below). `spec` reuses the EXACT SAME operator vocabulary as the Data
+    tab's own Excel-style column filter panel - routers/datasources.py's
+    _apply_column_filter / frontend DataTable.tsx's ColumnFilterSpec -
+    rather than inventing a second, narrower one just for dashboards:
+    multi-select ("values"), text contains/equals/starts_with/ends_with/
+    is_empty/etc, a numeric comparison OR RANGE ("between"), a date range,
+    or a boolean toggle. This is what actually adds ranges and multi-select
+    to dashboard filtering - the original version of this class only ever
+    supported a single scalar "equals" value.
+
+    Kept as a permissive dict (not a discriminated Pydantic union) for the
+    same reason _apply_column_filter's own docstring already accepts that
+    tradeoff on the Data tab side: a new operator added to that one shared
+    vocabulary later works here immediately, with zero schema change and
+    zero risk of the two vocabularies drifting apart from each other.
+
+    See routers/dashboard_builder.py's module docstring (Phase 2b, and the
+    2026-09-29 "Hex-level filters" round) for why none of this is ever
+    persisted anywhere except a filter block's own target `column` - a
+    viewer's actual filter selections (page-wide or per-chart) live only
+    in the frontend's own React state and are sent fresh on every
+    preview-filtered call."""
     column: str = Field(min_length=1)
-    value: str | int | float | bool
+    spec: dict
 
 
 class ManualBuildBlockRequest(BaseModel):
@@ -887,6 +907,19 @@ class SetBlockAnalysisRequest(BaseModel):
 # ---------- Cross-filtering (2026-09-24, Phase 2b) ----------
 class ApplyFiltersRequest(BaseModel):
     filters: list[FilterCriterion] = Field(default_factory=list, max_length=8)
+    # 2026-09-29 (Hex-level filters round): "per-chart filtering" - extra
+    # criteria scoped to just ONE block, layered on top of `filters` above
+    # for that block only, never affecting any other block on the page.
+    # Keyed by block id. Exactly as ephemeral as `filters` itself - see
+    # FilterCriterion's own docstring - a viewer sets these live in the
+    # editor/preview UI and they're gone on the next page load, never
+    # written to the dashboard's stored config. A dict's per-key list
+    # length isn't expressible as a Field constraint, so both the per-block
+    # criteria count and the number of blocks are capped in the endpoint
+    # itself (preview_filtered_blocks) rather than here - a real dashboard
+    # page has nowhere near enough blocks or per-block filters to hit
+    # either cap, so this is purely an abuse guard.
+    block_filters: dict[str, list[FilterCriterion]] = Field(default_factory=dict)
 
 
 class FilteredBlockOut(BaseModel):
