@@ -725,6 +725,29 @@ class DashboardBlock(Base):
     # simulated "live" signal, since this app has no auto-refreshing data
     # pipeline; a block's numbers only change when someone rebuilds them.
     data_updated_at = Column(DateTime, default=datetime.utcnow)
+    # 2026-09-29 (design revamp): a single-level "undo my last change"
+    # snapshot, taken right before any of the six endpoints that overwrite
+    # config (update_block, ask_ai_block, build_manual_block, restyle_block,
+    # set_block_accent_color, set_block_analysis - see routers/
+    # dashboard_builder.py's shared _snapshot_block_config helper, called
+    # at the top of every one of them) replaces it. Holds a small envelope
+    # {"type": <str>, "config": <dict>} rather than just the bare config -
+    # ask_ai_block/build_manual_block can also change `type` itself (e.g. a
+    # requested "chart" block that only had one row and came back as a
+    # "kpi" instead), and undoing only config while leaving the NEW type in
+    # place would leave the block showing content for the wrong renderer
+    # (a "chart" type with a kpi's {value,label} config). Deliberately just
+    # ONE level, not a full history table: this is meant to undo the one
+    # accidental edit that just happened ("just now i changed something and
+    # i cannot able to get that old version back"), not to be a version-
+    # control system - a second change after an undo overwrites this
+    # snapshot again the same way, so undo is not itself undoable (there is
+    # nothing left to revert TO). NULL until the block's config has been
+    # changed at least once since this column existed, and set back to NULL
+    # by undo_block itself once used, so the frontend's kebab-menu "Undo
+    # last change" option only ever shows when there is genuinely something
+    # to revert to.
+    previous_config = Column(JSON, nullable=True)
 
     page = relationship("DashboardPage", back_populates="blocks")
 
