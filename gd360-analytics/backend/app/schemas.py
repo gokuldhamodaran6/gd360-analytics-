@@ -578,6 +578,13 @@ class DashboardBlockOut(BaseModel):
     # backfilled with a guessed time - see models.DashboardBlock's own
     # docstring). Read by the frontend's DataFreshnessBadge.
     data_updated_at: Optional[datetime] = None
+    # 2026-09-29 (design revamp): whether models.DashboardBlock.previous_config
+    # currently holds a real snapshot this block's kebab-menu "Undo last
+    # change" option can revert to - never the snapshot itself (that would
+    # double this payload's size for every block on every load, for a
+    # feature only used right after an edit); the frontend just needs the
+    # yes/no to decide whether to show the option at all.
+    can_undo: bool = False
 
 
 class DashboardPageOut(BaseModel):
@@ -598,12 +605,57 @@ class DashboardShareEmailOut(BaseModel):
     email: str
 
 
+# 2026-09-28 (senior-UX round): the small, lightweight shape behind
+# GET /dashboard-builder/by-conversation/{conversation_id} - see that
+# endpoint's own docstring for the real problem this fixes (there was no
+# way to find a dashboard again from the same chat it was built from).
+# Deliberately NOT the full DashboardBuilderOut (pages/blocks/branding/
+# sharing) - the header menu this feeds only ever needs enough to list
+# and link to each dashboard, so this stays a cheap, summary-only query.
+# Defined here, above DashboardBuilderOut, because that class's own
+# sibling_dashboards field (2026-09-29, design revamp) is typed as a list
+# of these.
+class DashboardBuilderSummaryOut(BaseModel):
+    id: str
+    name: str
+    created_at: datetime
+    page_count: int
+    block_count: int
+    can_edit: bool
+    is_published: bool
+
+
 class DashboardBuilderOut(BaseModel):
     id: str
     name: str
     layout_version: int
     created_at: datetime
     source_conversation_id: Optional[str] = None
+    # 2026-09-29 (design revamp): "i want a option like see from which
+    # project this dashboard created" - models.Dashboard's own docstring
+    # already promised a "Built from: <title>" surface for
+    # source_conversation_id but the frontend never actually built it
+    # until now. title/datasource_id are resolved server-side (a dashboard
+    # itself never stores them, only the id) purely so
+    # DashboardBuilderView.tsx can render "Built from: <title>" as a real
+    # link - source_conversation_datasource_id is what that link needs
+    # (Workspace.tsx's route is /workspace/{datasourceId}?conversation=
+    # {conversationId}, not just the conversation id alone). Both None
+    # when source_conversation_id is None, or when that conversation has
+    # since been deleted - never fabricated, and the frontend just omits
+    # the link in that case rather than showing a dead one.
+    source_conversation_title: Optional[str] = None
+    source_conversation_datasource_id: Optional[str] = None
+    # 2026-09-29 (design revamp): "merge with other dashboards in the same
+    # project" - every OTHER real (layout_version==2), currently viewable
+    # dashboard built from this SAME source conversation, so the frontend
+    # can offer "pull this dashboard's pages into mine" without a second
+    # round-trip. Same DashboardBuilderSummaryOut shape as GET /by-
+    # conversation/{conversation_id} below (this reuses that same query,
+    # just scoped from the dashboard side rather than the conversation
+    # side) - always empty when source_conversation_id is None, or when
+    # this is the only dashboard built from that conversation so far.
+    sibling_dashboards: list[DashboardBuilderSummaryOut] = []
     # 2026-09-24 (Phase 2, the canvas): which data source this dashboard's
     # blocks are built against - resolved server-side from
     # source_conversation_id (see routers/dashboard_builder.py
@@ -650,23 +702,6 @@ class DashboardBuilderOut(BaseModel):
     background_color: Optional[str] = None
     has_logo: bool = False
     has_background_image: bool = False
-
-
-# 2026-09-28 (senior-UX round): the small, lightweight shape behind
-# GET /dashboard-builder/by-conversation/{conversation_id} - see that
-# endpoint's own docstring for the real problem this fixes (there was no
-# way to find a dashboard again from the same chat it was built from).
-# Deliberately NOT the full DashboardBuilderOut (pages/blocks/branding/
-# sharing) - the header menu this feeds only ever needs enough to list
-# and link to each dashboard, so this stays a cheap, summary-only query.
-class DashboardBuilderSummaryOut(BaseModel):
-    id: str
-    name: str
-    created_at: datetime
-    page_count: int
-    block_count: int
-    can_edit: bool
-    is_published: bool
 
 
 class PublishDashboardRequest(BaseModel):
