@@ -1039,6 +1039,11 @@ export type DashboardBlock = {
   // backend models.DashboardBlock's own docstring for exactly which
   // actions advance it (never a plain drag/resize/rename/restyle).
   data_updated_at?: string | null;
+  // 2026-09-29 (design revamp): whether this block has a single-level
+  // "undo last change" snapshot to revert to right now - see backend
+  // models.DashboardBlock.previous_config's own docstring. Drives whether
+  // DashboardCanvas.tsx's kebab menu shows an "Undo last change" option.
+  can_undo?: boolean;
 };
 
 export type DashboardBuilderPage = {
@@ -1084,6 +1089,19 @@ export type DashboardBuilderDetail = DashboardBranding & {
   // started blank (not possible yet in Phase 1, but the field already
   // exists on the model for when Phase 2 adds it).
   source_conversation_id: string | null;
+  // 2026-09-29 (design revamp): "from which project this dashboard
+  // created" - the Project's own title, and the data source id its own
+  // Workspace route needs (Workspace.tsx's URL is /workspace/
+  // {datasourceId}?conversation={conversationId}, not just the
+  // conversation id alone). Both null exactly when source_conversation_id
+  // is null, or when that Project has since been deleted.
+  source_conversation_title: string | null;
+  source_conversation_datasource_id: string | null;
+  // 2026-09-29 (design revamp): "merge with other dashboards in the same
+  // project" - every other dashboard built from this same source
+  // conversation that this person can currently see, for the merge
+  // picker. Always empty when source_conversation_id is null.
+  sibling_dashboards: DashboardBuilderSummary[];
   // 2026-09-24 (Phase 2): the data source this dashboard's blocks are (or
   // can be) built against, resolved server-side from source_conversation_id
   // - both null for a dashboard with no source conversation, or whose
@@ -1256,6 +1274,19 @@ export const dashboardBuilderApi = {
     api
       .get<DashboardBuilderSummary[]>(`/dashboard-builder/by-conversation/${conversationId}`)
       .then((r) => r.data),
+  // 2026-09-29 (design revamp): "merge with other dashboards in the same
+  // project" - copies every page (and its blocks) from sourceDashboardId
+  // into dashboardId as new pages, appended at the end. Additive only -
+  // the source dashboard is never modified or deleted. Only works between
+  // two dashboards that share the same source Project (see the backend
+  // endpoint's own docstring) - DashboardBuilderView.tsx only ever offers
+  // this dashboard's own sibling_dashboards as merge targets, so that's
+  // never actually a live constraint from the UI's side, just defense in
+  // depth server-side.
+  mergeFrom: (dashboardId: string, sourceDashboardId: string) =>
+    api
+      .post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/merge-from/${sourceDashboardId}`)
+      .then((r) => r.data),
   // 2026-09-25 (Round 2): there was previously no way to rename a v2
   // dashboard's own name at all - see backend update_dashboard.
   rename: (id: string, name: string) =>
@@ -1364,6 +1395,18 @@ export const dashboardBuilderApi = {
 
   deleteBlock: (dashboardId: string, blockId: string) =>
     api.delete<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}`).then((r) => r.data),
+
+  // 2026-09-29 (design revamp): single-level "undo last change" - reverts
+  // this block's config (and type, when the last change also changed
+  // that) back to whatever it was right before its most recent edit
+  // through any of the six content/style-changing endpoints. Only
+  // meaningful when block.can_undo is true; a 400 here ("There's no
+  // previous version...") means there's nothing left to revert to,
+  // either because nothing has changed yet or because undo was already
+  // used once for this edit (see backend models.DashboardBlock.
+  // previous_config's own docstring - it's one level, not a full stack).
+  undoBlock: (dashboardId: string, blockId: string) =>
+    api.post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}/undo`).then((r) => r.data),
 
   // Fills a block in by asking a plain-English question against this
   // dashboard's own data source - reuses the exact same AI pipeline the
