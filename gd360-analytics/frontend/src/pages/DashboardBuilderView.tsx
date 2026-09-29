@@ -151,6 +151,19 @@ function FolderIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   );
 }
 
+// 2026-09-29 (round 5): tiny "opens in a new tab" hint on the "Built from"
+// link, per Gokul's explicit ask - clicking it should open the source chat
+// as a reference alongside the dashboard, not navigate away from it.
+function ExternalLinkIcon({ className = "w-3 h-3" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+      <path d="M15 3h6v6" />
+      <path d="M10 14 21 3" />
+    </svg>
+  );
+}
+
 // "merge with other dashboards in the same project" - two shapes flowing
 // into one.
 function MergeIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
@@ -1552,10 +1565,13 @@ function DashboardBuilderViewBody({
             {dash.source_conversation_title && dash.source_conversation_datasource_id && (
               <Link
                 to={`/workspace/${dash.source_conversation_datasource_id}?conversation=${dash.source_conversation_id}`}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="text-xs text-muted hover:text-primary transition mt-1 inline-flex items-center gap-1"
-                title="Open the chat analysis this dashboard was built from"
+                title="Open the chat analysis this dashboard was built from in a new tab"
               >
                 <FolderIcon className="w-3 h-3" /> Built from &ldquo;{dash.source_conversation_title}&rdquo;
+                <ExternalLinkIcon className="w-2.5 h-2.5 opacity-60" />
               </Link>
             )}
           </div>
