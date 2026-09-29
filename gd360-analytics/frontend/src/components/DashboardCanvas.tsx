@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PALETTES, SIGNATURE_COLORS, PaletteId, colorableLabels } from "../lib/chartStyle";
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { PALETTES, SIGNATURE_COLORS, PaletteId, colorableLabels, defaultChartStyle } from "../lib/chartStyle";
 import "react-grid-layout/css/styles.css";
 import { ReactGridLayout as RGL, WidthProvider } from "react-grid-layout/legacy";
 import {
@@ -179,6 +180,40 @@ function InfoIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
     </svg>
   );
 }
+// 2026-09-29 (round 5, real-bug fix): "* is showing in bold words" - the
+// AI's own INSIGHT_SYSTEM_PROMPT (backend/app/services/ai_engine.py)
+// deliberately writes this exact text with **Key insight:**/
+// **Implication:**/**Next step:** markdown-bold labels (see that
+// prompt's own docstring, and _crosstab_narrative's matching
+// f"**Key insight:** ..." for the deterministic fallback path) - this
+// popover used to just dump the raw string, so a person saw the literal
+// ** characters instead of bold text. This renders exactly the one
+// markdown construct that prompt ever produces - a **bold** span, one
+// or more per line - nothing more: not a general markdown parser (this
+// text's whole real vocabulary is three bold labels followed by plain
+// sentences, per that prompt's own strict "nothing else before or after
+// it" instruction) and never dangerouslySetInnerHTML for text an AI
+// wrote - each line is built as real React text nodes instead.
+function renderExplanation(text: string): ReactNode {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, i) => (
+      <p key={i} className={i > 0 ? "mt-1.5" : undefined}>
+        {line.split(/(\*\*[^*]+\*\*)/g).map((part, j) =>
+          part.startsWith("**") && part.endsWith("**") ? (
+            <strong key={j} className="font-semibold text-text">
+              {part.slice(2, -2)}
+            </strong>
+          ) : (
+            <span key={j}>{part}</span>
+          )
+        )}
+      </p>
+    ));
+}
+
 function UndoIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -543,6 +578,72 @@ function ManualBuildPanel({
   );
 }
 
+// 2026-09-29 (round 5): the two switches themselves, split out of
+// StylePanel so the "current effective value" logic (computed default,
+// overridden by whatever the person has already explicitly toggled) lives
+// in one place. Mirrors pickPalette's PATCH shape exactly - spread
+// block.config first, then only the one nested chart_style key changes -
+// since update_block's `config` is a wholesale replace, not a merge.
+function DisplayTogglesRow({
+  dashboardId,
+  block,
+  onDone,
+}: {
+  dashboardId: string;
+  block: DashboardBlock;
+  onDone: (d: DashboardBuilderDetail) => void;
+}) {
+  const [busy, setBusy] = useState<"legend" | "labels" | null>(null);
+  const [error, setError] = useState("");
+  const computedDefault = useMemo(() => defaultChartStyle(block.config?.chart_spec), [block.config?.chart_spec]);
+  const effective = { ...computedDefault, ...(block.config?.chart_style || {}) };
+
+  const setFlag = async (key: "showLegend" | "dataLabels", value: boolean, which: "legend" | "labels") => {
+    setBusy(which);
+    setError("");
+    try {
+      const updated = await dashboardBuilderApi.updateBlock(dashboardId, block.id, {
+        config: { ...block.config, chart_style: { ...block.config?.chart_style, [key]: value } },
+      });
+      onDone(updated);
+    } catch {
+      setError("Couldn't change this chart's display options.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-text">Show legend</span>
+        <label className="switch">
+          <input
+            type="checkbox"
+            checked={Boolean(effective.showLegend)}
+            disabled={busy !== null}
+            onChange={(e) => setFlag("showLegend", e.target.checked, "legend")}
+          />
+          <span className="switch-track" />
+        </label>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-text">Data labels</span>
+        <label className="switch">
+          <input
+            type="checkbox"
+            checked={Boolean(effective.dataLabels)}
+            disabled={busy !== null}
+            onChange={(e) => setFlag("dataLabels", e.target.checked, "labels")}
+          />
+          <span className="switch-track" />
+        </label>
+      </div>
+      {error && <div className="text-[11px] text-amber-500">{error}</div>}
+    </div>
+  );
+}
+
 function StylePanel({
   dashboardId,
   block,
@@ -794,6 +895,26 @@ function StylePanel({
         )}
       </div>
 
+      {/* 2026-09-29 (round 5): "no options in style as well" - the live
+          chat's own ChartStylePanel.tsx already lets a person turn the
+          legend and permanent on-chart value labels on/off (ChartStyle.
+          showLegend/dataLabels); this dashboard-block version never had
+          that UI even though the underlying mechanism (block.config.
+          chart_style, merged over defaultChartStyle - see DashboardBlocks.
+          tsx's BlockChart) already supports it, so this was purely a
+          missing control, not a missing feature. The most direct way to
+          fix an overlapping/unreadable label on any chart - including an
+          older dual-axis-combo one this Style panel's own restyle options
+          can't convert away from - is to let the person just turn labels
+          off themselves, right here, rather than only via a system-wide
+          default. Reads its current on/off state from the same computed
+          default the chart itself renders with (defaultChartStyle) unless
+          the person has already explicitly set it. */}
+      <div className="flex flex-col gap-1.5">
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">Display</div>
+        <DisplayTogglesRow dashboardId={dashboardId} block={block} onDone={onDone} />
+      </div>
+
       <div className="flex flex-col gap-1.5">
         <div className="text-[10px] font-semibold uppercase tracking-wide text-muted">Chart type</div>
         {!hasTidyData ? (
@@ -822,6 +943,20 @@ function StylePanel({
   );
 }
 
+// 2026-09-29 (round 5, real-bug fix): "the filter options is merging with
+// other boxes and also no proper alignment" - traced to real arithmetic:
+// this control used to always show a full label-above-select stack
+// (~70-90px) sitting on top of FilterControl's OWN label-above-select
+// stack (~56-60px) inside a card whose body had well under that much
+// room (see _FILTER_ROW_HEIGHT's own comment in dashboard_builder.py for
+// the exact numbers), and the card's `overflow-hidden` clipped whatever
+// didn't fit. Once a column IS chosen, which column it's filtering on is
+// rarely touched again - so this collapses to one compact "Filtering on
+// X · Change" line the moment a column is set, freeing the vertical
+// room a person actually needs for the control they touch every time
+// (the value dropdown below). Paired with _FILTER_ROW_HEIGHT's bump from
+// 2 to 3 rows so there's real breathing room either way, not just the
+// bare minimum that stops clipping.
 function FilterColumnPicker({
   dashboardId,
   block,
@@ -835,21 +970,46 @@ function FilterColumnPicker({
 }) {
   const [column, setColumn] = useState<string>(block.config?.column || "");
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(!block.config?.column);
+
+  useEffect(() => {
+    setColumn(block.config?.column || "");
+    if (!block.config?.column) setEditing(true);
+  }, [block.id, block.config?.column]);
 
   const save = async (next: string) => {
     setColumn(next);
     setBusy(true);
     try {
-      onDone(await dashboardBuilderApi.updateBlock(dashboardId, block.id, { config: { column: next || null } }));
+      const updated = await dashboardBuilderApi.updateBlock(dashboardId, block.id, { config: { column: next || null } });
+      onDone(updated);
+      if (next) setEditing(false);
     } finally {
       setBusy(false);
     }
   };
 
+  if (!editing && column) {
+    return (
+      <div className="no-drag px-3 py-1.5 flex items-center justify-between gap-2">
+        <span className="text-[11px] text-muted truncate">
+          Filtering on <span className="text-text font-medium">{column}</span>
+        </span>
+        <button
+          type="button"
+          className="text-[11px] text-primary hover:underline shrink-0"
+          onClick={() => setEditing(true)}
+        >
+          Change
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <div className="no-drag p-3 flex flex-col gap-2 h-full">
-      <label className="text-[11px] text-muted uppercase tracking-wide">Filters on column</label>
-      <select className="input text-sm" value={column} disabled={busy} onChange={(e) => save(e.target.value)}>
+    <div className="no-drag px-3 py-2 flex items-center gap-2">
+      <label className="text-[11px] text-muted uppercase tracking-wide shrink-0">On</label>
+      <select className="input text-sm py-1.5 flex-1 min-w-0" value={column} disabled={busy} onChange={(e) => save(e.target.value)}>
         <option value="">Choose a column…</option>
         {columns.map((c) => (
           <option key={c.name} value={c.name}>
@@ -857,7 +1017,6 @@ function FilterColumnPicker({
           </option>
         ))}
       </select>
-      {!column && <div className="text-[11px] text-muted italic">Pick a column - this filter won&apos;t do anything until you do.</div>}
     </div>
   );
 }
@@ -888,6 +1047,34 @@ function BlockCard({
   // text comes from: analyze()'s own real, already-generated narrative for
   // this exact block, never a second AI call and never fabricated here.
   const [explainOpen, setExplainOpen] = useState(false);
+  // 2026-09-29 (round 5, real-bug fix): "for small field like kpi and i
+  // cannot able to read that suggestions about the blocks" - this popover
+  // used to be positioned with plain `absolute` inside the block's own
+  // header, which sits inside BlockCard's `overflow-hidden` card (see
+  // this component's own return below) - so on a small KPI tile the
+  // popover's own bottom/right edge got silently clipped by the card's
+  // boundary instead of the popover ever running off past it visibly.
+  // Portaling it to document.body and positioning it with real viewport
+  // coordinates (same pattern DataTable.tsx's own column-filter popover
+  // already uses) means its size is never constrained by whatever card it
+  // was opened from - a KPI tile gets exactly as much room to explain
+  // itself as a full chart does.
+  const explainBtnRef = useRef<HTMLButtonElement>(null);
+  const [explainPos, setExplainPos] = useState<{ top: number; left: number } | null>(null);
+  const EXPLAIN_WIDTH = 288;
+  const EXPLAIN_MARGIN = 8;
+  const toggleExplain = () => {
+    setMenuOpen(false);
+    setExplainOpen((wasOpen) => {
+      const next = !wasOpen;
+      if (next && explainBtnRef.current) {
+        const rect = explainBtnRef.current.getBoundingClientRect();
+        const left = Math.min(Math.max(rect.right - EXPLAIN_WIDTH, EXPLAIN_MARGIN), window.innerWidth - EXPLAIN_WIDTH - EXPLAIN_MARGIN);
+        setExplainPos({ top: rect.bottom + 4, left });
+      }
+      return next;
+    });
+  };
   const filtersActive = Boolean(filterState && filterState.activeFilters.length > 0);
   const explanation = (filterState?.overrides[block.id]?.config ?? block.config)?.ai_explanation as string | undefined;
 
@@ -1054,30 +1241,38 @@ function BlockCard({
           {BLOCK_TYPE_LABEL[block.type]}
         </span>
         {explanation && (
-          <div className="relative shrink-0">
+          <div className="shrink-0">
             <button
+              ref={explainBtnRef}
               type="button"
               className="dash-chart-menu-btn"
               aria-label="Explain this chart"
               aria-haspopup="dialog"
               aria-expanded={explainOpen}
               title="Explain this chart"
-              onClick={() => {
-                setMenuOpen(false);
-                setExplainOpen((o) => !o);
-              }}
+              onClick={toggleExplain}
             >
               <InfoIcon />
             </button>
-            {explainOpen && (
-              <div
-                role="dialog"
-                aria-label="Explanation"
-                className="no-drag absolute right-0 top-full mt-1 w-64 card bg-surface shadow-2xl border border-border p-3 z-20 text-xs leading-relaxed text-foreground"
-              >
-                {explanation}
-              </div>
-            )}
+            {explainOpen &&
+              explainPos &&
+              createPortal(
+                <div
+                  role="dialog"
+                  aria-label="Explanation"
+                  className="fixed card bg-surface shadow-2xl border border-border p-3 z-50 text-xs leading-relaxed text-foreground"
+                  style={{
+                    top: explainPos.top,
+                    left: explainPos.left,
+                    width: EXPLAIN_WIDTH,
+                    maxHeight: Math.min(400, window.innerHeight - explainPos.top - EXPLAIN_MARGIN),
+                    overflowY: "auto",
+                  }}
+                >
+                  {renderExplanation(explanation)}
+                </div>,
+                document.body
+              )}
           </div>
         )}
         <div className="relative shrink-0">
@@ -1305,12 +1500,19 @@ function BlockCard({
             )}
             {block.type === "avatar_list" && <AvatarListBlock title={block.title} config={filterState?.overrides[block.id]?.config ?? block.config} />}
             {block.type === "filter" && (
+              // 2026-09-29 (round 5, real-bug fix): the column picker is
+              // now `shrink-0` (it's a single compact line, or a chip once
+              // a column is set - see FilterColumnPicker's own comment)
+              // and the value control - the one thing a viewer actually
+              // touches every time - gets the remaining space and is
+              // vertically centered in it, instead of the old flex-1 on
+              // the PICKER leaving the control squeezed at the bottom.
               <div className="h-full flex flex-col divide-y divide-border">
-                <div className="flex-1 min-h-0">
+                <div className="shrink-0">
                   <FilterColumnPicker dashboardId={dashboardId} block={block} columns={columns} onDone={onChange} />
                 </div>
                 {block.config?.column && (
-                  <div className="shrink-0">
+                  <div className="flex-1 min-h-0 flex items-center px-3">
                     {filterState ? (
                       <FilterControl
                         block={block}
@@ -1319,7 +1521,7 @@ function BlockCard({
                         onChange={(v) => filterState.setFilterValue(block.id, v)}
                       />
                     ) : (
-                      <div className="no-drag text-[11px] text-muted italic p-3">Loading filter…</div>
+                      <div className="no-drag text-[11px] text-muted italic">Loading filter…</div>
                     )}
                   </div>
                 )}
