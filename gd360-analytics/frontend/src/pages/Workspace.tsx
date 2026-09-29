@@ -527,9 +527,55 @@ export default function Workspace() {
   // Flow tab, not its Data tab - the very first real deep-link-to-a-tab
   // this page has ever needed, so it's kept as a one-off initial-state read
   // rather than a whole synced-with-the-URL tab system.
-  const [centerTab, setCenterTab] = useState<"data" | "chart" | "flow" | "quality" | "access">(
-    searchParams.get("tab") === "flow" ? "flow" : "data"
-  );
+  // 2026-09-29 (reliability round, Gokul's own bug report: "whenever I
+  // refresh it is always showing the chart" - a page refresh threw away
+  // whatever tab was actually on screen). Root cause: the conversation-
+  // restore effect further down used to unconditionally force
+  // `setCenterTab("chart")` the instant it found any chart at all in the
+  // restored history - true for nearly every real conversation - so a
+  // refresh always landed on Chart no matter what the person had actually
+  // been looking at. Fixed at the root: which tab was last actually shown
+  // is now remembered per data source (localStorage, same pattern as
+  // CHAT_PANEL_WIDTH_KEY below), written every time `setCenterTab` fires -
+  // whether from a manual click or one of this file's own automatic
+  // post-answer jumps, since both are real "this is what's on screen now"
+  // moments worth remembering. `hadStoredCenterTab` below records whether
+  // THIS render's initial value came from a real memory of a specific tab
+  // (localStorage or an explicit `?tab=`/`?chart=` deep link) - the restore
+  // effect only falls back to its own "chart" default when it's false,
+  // i.e. genuinely nothing to go on yet (a brand-new browser/device on
+  // this data source), never overriding a real memory that already exists.
+  const centerTabStorageKey = (dsId: string | undefined) => (dsId ? `gd360_center_tab_${dsId}` : null);
+  const hadStoredCenterTab = useRef(false);
+  const [centerTab, setCenterTabState] = useState<"data" | "chart" | "flow" | "quality" | "access">(() => {
+    if (searchParams.get("tab") === "flow") {
+      hadStoredCenterTab.current = true;
+      return "flow";
+    }
+    try {
+      const key = centerTabStorageKey(datasourceId);
+      const stored = key ? localStorage.getItem(key) : null;
+      if (stored === "data" || stored === "chart" || stored === "flow" || stored === "quality" || stored === "access") {
+        hadStoredCenterTab.current = true;
+        return stored;
+      }
+    } catch {
+      // localStorage can be blocked (private browsing, locked-down
+      // browser) - falls through to the same "data" default this always
+      // had, just without the memory.
+    }
+    return "data";
+  });
+  const setCenterTab = (tab: "data" | "chart" | "flow" | "quality" | "access") => {
+    setCenterTabState(tab);
+    try {
+      const key = centerTabStorageKey(datasourceId);
+      if (key) localStorage.setItem(key, tab);
+    } catch {
+      // Soft failure, same as every other localStorage write in this file -
+      // the tab still switches, it just won't be remembered next visit.
+    }
+  };
   const [dataRefreshKey, setDataRefreshKey] = useState(0);
 
   // 2026-09-23, round eight (Gokul's own explicit ask: "i want our chart
@@ -641,6 +687,29 @@ export default function Workspace() {
       ? [ORIGINAL_SOURCE_ID, ...extraDatasourceIds.map((id) => otherDsSourceId(id))]
       : [ORIGINAL_SOURCE_ID]
   );
+  // 2026-09-29 (reliability round, Gokul's own bug report: connecting
+  // several data sources up front, then asking a question that only
+  // touched one of them, made every OTHER connected source silently
+  // disappear from the Data tab the moment the page reloaded). Tracks
+  // every OTHER data source id that has ever appeared in `sourceIds` this
+  // session, and only ever grows - see the effect just below for the full
+  // root-cause explanation and why this has to be separate from
+  // `sourceIds` itself.
+  const [connectedSourceDsIds, setConnectedSourceDsIds] = useState<string[]>(() => extraDatasourceIds);
+  useEffect(() => {
+    setConnectedSourceDsIds((prev) => {
+      const next = new Set(prev);
+      let changed = false;
+      sourceIds.forEach((id) => {
+        const otherId = otherDsIdFromSourceId(id);
+        if (otherId && !next.has(otherId)) {
+          next.add(otherId);
+          changed = true;
+        }
+      });
+      return changed ? Array.from(next) : prev;
+    });
+  }, [sourceIds]);
   const versionsInitRef = useRef<string | null>(null);
   // Guards the draft-prompt auto-send effect below against firing twice for
   // the same (datasourceId, draft) pair - re-renders happen several times
@@ -927,20 +996,29 @@ export default function Workspace() {
   const isViewingPrimaryInDataTab = !dataTabSourceId || dataTabSourceId === datasourceId;
   const activeDataTabSourceId = dataTabSourceId || datasourceId || "";
 
-  // Every OTHER connected source currently touched by WORKING ON's real
-  // selection (sourceIds) - not merely "connected to this account somewhere"
-  // (otherDataSources is every data source the person owns) - so the
-  // switcher row only ever shows sources that genuinely belong to THIS
-  // analysis, and grows/shrinks live as sources are added or removed from
-  // WORKING ON, exactly like the chip row already does.
+  // Every OTHER data source connected to THIS analysis - not merely
+  // "connected to this account somewhere" (otherDataSources is every data
+  // source the person owns). 2026-09-29 (reliability round): this used to
+  // be derived purely from WORKING ON's own live selection (sourceIds), so
+  // a source's tab/pill vanished the instant a question happened to run
+  // without it - most visibly right after a page reload, when the
+  // conversation-restore effect correctly narrows `sourceIds` down to
+  // whatever the last real message actually used (see that effect's own
+  // comment), which used to take the pill down with it even though the
+  // source itself was still very much part of the analysis. Now unions in
+  // `connectedSourceDsIds` (every other source id that has EVER appeared
+  // in `sourceIds` this session - see its own comment above), so a source
+  // stays visible here once connected, while `sourceIds` itself is still
+  // free to narrow or widen live for whatever the NEXT prompt will
+  // actually run against.
   const connectedOtherDsIds = useMemo(() => {
-    const s = new Set<string>();
+    const s = new Set<string>(connectedSourceDsIds);
     sourceIds.forEach((id) => {
       const otherId = otherDsIdFromSourceId(id);
       if (otherId) s.add(otherId);
     });
     return Array.from(s);
-  }, [sourceIds]);
+  }, [sourceIds, connectedSourceDsIds]);
   const connectedOtherDataSources = useMemo(
     () => otherDataSources.filter((d) => connectedOtherDsIds.includes(d.id)),
     [otherDataSources, connectedOtherDsIds]
@@ -1318,7 +1396,15 @@ export default function Workspace() {
           // conversation's most recent one.
           const targetChart = chartParam ? restoredCharts.find((c) => c.messageId === chartParam) : null;
           setActiveChartId((targetChart || restoredCharts[restoredCharts.length - 1]).id);
-          setCenterTab("chart");
+          // 2026-09-29 (reliability round): only jump to Chart here when
+          // there's genuinely nothing else to go on (a fresh browser/device
+          // with no remembered tab for this data source) or when a
+          // `?chart=` deep link explicitly asked for one specific chart -
+          // otherwise this restore leaves centerTab exactly as its own
+          // initial state already set it (see hadStoredCenterTab above),
+          // instead of unconditionally overriding whatever tab was
+          // actually on screen before the refresh.
+          if (targetChart || !hadStoredCenterTab.current) setCenterTab("chart");
         }
 
         const lastWithInsight = [...data.messages].reverse().find((m) => m.insight);
