@@ -1,4 +1,4 @@
-import { MLModel } from "../api/client";
+import { MLModel, MLQualityWarning } from "../api/client";
 
 // 2026-09-28 (ML Models round): every plain-language sentence this feature
 // shows about a trained model - the gallery card's one-liner, the wizard's
@@ -107,4 +107,55 @@ export function algorithmLabel(algorithm: string | null): string {
     random_forest_regressor: "Random Forest (regressor)",
   };
   return labels[algorithm] || algorithm;
+}
+
+// 2026-09-30 (leakage-guardrail round): every plain-language sentence for
+// a quality_warnings entry - same "one honest place, built from real
+// numbers, never a pre-written backend message" rule this whole file
+// follows for every other sentence in this feature (see this file's own
+// top comment). See backend models.MLModel.quality_warnings's own
+// docstring for what each `type` means and exactly how it's computed.
+export function qualityWarningText(w: MLQualityWarning): string {
+  if (w.type === "near_perfect_score") {
+    const metricName = w.metric === "accuracy" ? "accuracy" : "the amount of variance it explains (R²)";
+    const pct = w.value != null ? Math.round(Math.min(1, Math.max(0, w.value)) * 100) : null;
+    return (
+      `This model's real test-set ${metricName}${pct != null ? ` is about ${pct}%` : " is unusually high"} - ` +
+      "a result this close to perfect is unusual for real-world data, and often means one of the columns " +
+      "used to train it is mathematically derived from (or nearly identical to) what it's predicting, " +
+      "rather than a genuinely independent signal."
+    );
+  }
+  if (w.type === "dominant_feature") {
+    const pct = w.importance != null ? Math.round(Math.min(1, Math.max(0, w.importance)) * 100) : null;
+    return (
+      `"${w.feature}" alone accounts for${pct != null ? ` about ${pct}%` : " almost all"} of what this model ` +
+      "leans on to make every prediction. One column dominating this heavily is often a sign it's leaking " +
+      "the answer rather than genuinely predicting it - worth checking whether that column is something " +
+      "you'd actually know BEFORE the real-world outcome happens."
+    );
+  }
+  if (w.type === "high_correlation_feature") {
+    const pct = w.correlation != null ? Math.round(Math.abs(w.correlation) * 100) : null;
+    return (
+      `"${w.feature}" is${pct != null ? ` about ${pct}%` : " very highly"} correlated with what this model ` +
+      "predicts. That usually means it's derived from (or duplicates) the target rather than a real, " +
+      "independent predictor - check whether it should really be included."
+    );
+  }
+  return "This result has an unusual pattern worth a second look before trusting it.";
+}
+
+// A short label for a checkbox/badge next to a candidate feature in the
+// wizard's step 3 / the detail page's "change which columns are used"
+// panel - see backend services/ml_training._risk_for_correlation's own
+// docstring for the real, stated thresholds behind "high" vs "medium".
+export function featureRiskText(risk: "high" | "medium", correlation: number | null): string {
+  const pct = correlation != null ? Math.round(Math.abs(correlation) * 100) : null;
+  if (risk === "high") {
+    return pct != null
+      ? `Possible leakage - ${pct}% correlated with the target`
+      : "Possible leakage - very highly correlated with the target";
+  }
+  return pct != null ? `Worth a look - ${pct}% correlated with the target` : "Worth a look - highly correlated with the target";
 }
