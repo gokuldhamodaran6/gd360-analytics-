@@ -7,6 +7,7 @@ import {
   dashboardBuilderApi,
   datasourceApi,
   metricDefinitionsApi,
+  transformsApi,
   DashboardBuilderDetail,
   DashboardBuilderPage,
   DashboardBlock,
@@ -16,6 +17,8 @@ import {
   RestyleChartType,
   FilterCriterion,
   MetricDefinition,
+  DataTransform,
+  TransformPreview,
 } from "../api/client";
 import {
   KpiTile,
@@ -431,10 +434,6 @@ function ManualBuildPanel({
   onDone: (d: DashboardBuilderDetail) => void;
   onClose: () => void;
 }) {
-  const numericColumns = useMemo(
-    () => columns.filter((c) => /int|float|double|number|decimal/i.test(c.dtype)).map((c) => c.name),
-    [columns]
-  );
   const [metric, setMetric] = useState(columns[0]?.name || "");
   const [agg, setAgg] = useState<ManualAgg>("sum");
   const [groupBy, setGroupBy] = useState("");
@@ -485,8 +484,93 @@ function ManualBuildPanel({
     if (!canUseSavedMetric) setUseSavedMetric(false);
   }, [canUseSavedMetric]);
 
+  // 2026-09-30 (transformation layer v1): "Use a saved table" - builds
+  // THIS block from a saved transform's (see components/TransformsPanel.tsx
+  // and backend models.DataTransform) own derived table instead of this
+  // data source's raw data, resolved BEFORE either the saved-metric or the
+  // plain column+aggregation pick above - so unlike "Use a saved metric",
+  // this is available for every block type (table/chart/kpi/gauge/...) and
+  // sits ALONGSIDE that toggle, not instead of it: a kpi/gauge can combine
+  // both (a saved metric built from a saved table's own derived column).
+  // Lazily loaded once, the same "only once this panel is open" pattern as
+  // savedMetrics above.
+  const [savedTransforms, setSavedTransforms] = useState<DataTransform[] | null>(null);
+  const [useSavedTransform, setUseSavedTransform] = useState(false);
+  const [selectedTransformId, setSelectedTransformId] = useState("");
+  const [transformPreview, setTransformPreview] = useState<TransformPreview | null>(null);
+
+  useEffect(() => {
+    if (!datasourceId || savedTransforms !== null) return;
+    transformsApi
+      .list(datasourceId)
+      .then((list) => {
+        setSavedTransforms(list);
+        if (list.length > 0 && !selectedTransformId) setSelectedTransformId(list[0].id);
+      })
+      .catch(() => setSavedTransforms([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [datasourceId]);
+
+  // The selected transform's OWN output columns - fetched fresh (its live
+  // preview) whenever the pick changes, so the Column/Group-by dropdowns
+  // below offer what this saved table actually produces (which can differ
+  // completely from the raw data source's own columns - a group_by step
+  // replaces them outright) rather than the raw column list this panel
+  // was handed.
+  useEffect(() => {
+    if (!useSavedTransform || !datasourceId || !selectedTransformId) {
+      setTransformPreview(null);
+      return;
+    }
+    let cancelled = false;
+    transformsApi
+      .getData(datasourceId, selectedTransformId)
+      .then((p) => {
+        if (!cancelled) setTransformPreview(p);
+      })
+      .catch(() => {
+        if (!cancelled) setTransformPreview({ columns: [], rows: [], row_count: 0, truncated: false, error: "Couldn't load this table." });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [useSavedTransform, datasourceId, selectedTransformId]);
+
+  // The columns/aggregation pickers below always read from `effectiveColumns`
+  // rather than the raw `columns` prop directly - identical to the prop's
+  // own {name, dtype} shape, just sourced from the transform's live preview
+  // (dtype inferred from a sample value, since TransformPreviewOut is rows
+  // of plain values, not a schema) when a saved table is in use.
+  const effectiveColumns: ColumnInfo[] = useMemo(() => {
+    if (!useSavedTransform || !transformPreview || transformPreview.error) return columns;
+    return transformPreview.columns.map((name) => {
+      const sample = transformPreview.rows.find((r) => r[name] !== null && r[name] !== undefined)?.[name];
+      const dtype = typeof sample === "number" ? "float64" : typeof sample === "boolean" ? "bool" : "object";
+      return { name, dtype };
+    });
+  }, [useSavedTransform, transformPreview, columns]);
+  const numericColumns = useMemo(
+    () => effectiveColumns.filter((c) => /int|float|double|number|decimal/i.test(c.dtype)).map((c) => c.name),
+    [effectiveColumns]
+  );
+
+  // Switching the saved-table toggle (on, off, or to a different table)
+  // resets whatever column/group-by pick was made against the PREVIOUS
+  // column set - a stale pick from the raw data could easily not exist on
+  // the newly selected table's own output, and vice versa.
+  useEffect(() => {
+    if (effectiveColumns.length === 0) return;
+    setMetric((prev) => (effectiveColumns.some((c) => c.name === prev) ? prev : effectiveColumns[0].name));
+    setGroupBy((prev) => (effectiveColumns.some((c) => c.name === prev) ? prev : ""));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveColumns]);
+
   const build = async () => {
     if (busy) return;
+    if (useSavedTransform && !selectedTransformId) {
+      setError("Pick a saved table.");
+      return;
+    }
     if (useSavedMetric && canUseSavedMetric) {
       if (!selectedMetricId) {
         setError("Pick a saved metric.");
@@ -497,6 +581,7 @@ function ManualBuildPanel({
       try {
         const updated = await dashboardBuilderApi.buildManualBlock(dashboardId, block.id, {
           metric_id: selectedMetricId,
+          transform_id: useSavedTransform ? selectedTransformId : undefined,
           block_type: blockType,
           target_value: isGauge && targetValue.trim() !== "" ? Number(targetValue) : undefined,
           max_value: isGauge && maxValue.trim() !== "" ? Number(maxValue) : undefined,
@@ -520,6 +605,7 @@ function ManualBuildPanel({
     setError("");
     try {
       const updated = await dashboardBuilderApi.buildManualBlock(dashboardId, block.id, {
+        transform_id: useSavedTransform ? selectedTransformId : undefined,
         metric_column: metric,
         agg,
         group_by_column: needsGroupBy ? groupBy : undefined,
@@ -570,6 +656,41 @@ function ManualBuildPanel({
         ))}
       </div>
 
+      {/* 2026-09-30 (transformation layer v1): offered for EVERY block
+          type, unlike "Use a saved metric" below - see
+          components/TransformsPanel.tsx and backend models.DataTransform.
+          Swaps in a saved table's own derived data as what this block is
+          built FROM; the column/group-by pickers below then show THAT
+          table's own columns, and (for a kpi/gauge) it combines freely
+          with "Use a saved metric" - a metric can itself reference one of
+          this table's derived columns. Always recomputes live (services/
+          transforms.py), including across a page filter change and after
+          the table's own steps are later edited. */}
+      {savedTransforms && savedTransforms.length > 0 && (
+        <>
+          <label className="flex items-center gap-2 text-[11px] text-muted uppercase tracking-wide cursor-pointer">
+            <input type="checkbox" checked={useSavedTransform} onChange={(e) => setUseSavedTransform(e.target.checked)} />
+            Use a saved table
+          </label>
+          {useSavedTransform && (
+            <>
+              <select className="input text-sm" value={selectedTransformId} onChange={(e) => setSelectedTransformId(e.target.value)}>
+                {savedTransforms.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+              {transformPreview?.error && (
+                <div className="text-[11px] text-amber-500 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-1.5">
+                  {transformPreview.error}
+                </div>
+              )}
+            </>
+          )}
+        </>
+      )}
+
       {/* 2026-09-30 (semantic layer v1): only offered for a kpi/gauge tile -
           see components/MetricsPanel.tsx and backend models.MetricDefinition.
           Building from a saved metric always recomputes live (through
@@ -601,7 +722,7 @@ function ManualBuildPanel({
         <>
           <label className="text-[11px] text-muted uppercase tracking-wide">Column</label>
           <select className="input text-sm" value={metric} onChange={(e) => setMetric(e.target.value)}>
-            {columns.map((c) => (
+            {effectiveColumns.map((c) => (
               <option key={c.name} value={c.name}>
                 {c.name}
               </option>
@@ -627,7 +748,7 @@ function ManualBuildPanel({
           <label className="text-[11px] text-muted uppercase tracking-wide">Group by</label>
           <select className="input text-sm" value={groupBy} onChange={(e) => setGroupBy(e.target.value)}>
             <option value="">Choose a column…</option>
-            {columns
+            {effectiveColumns
               .filter((c) => c.name !== metric)
               .map((c) => (
                 <option key={c.name} value={c.name}>
