@@ -141,10 +141,13 @@ class DataSource(Base):
     # /datasources/{id}/description sets it, editable tier (see
     # FlowAnnotation's own docstring for why a descriptive fact like this
     # is shared/collaborative rather than owner-only, unlike rename_
-    # datasource above which stays owner-only). The one field
-    # services/catalog.py's account-wide search actually matches text
-    # against for a data source (alongside its name) - see that module's
-    # own docstring for the full data-catalog-v1 design.
+    # datasource above which stays owner-only).
+    # 2026-09-30 (Governance/Jobs redesign + Pipelines/Catalog removal
+    # round): the standalone Catalog page that used to search this field is
+    # gone (Gokul's own report - it duplicated the Projects filter and Data
+    # Sources page). This column and its PATCH endpoint are untouched -
+    # DataSources.tsx now carries the same inline "add/edit description"
+    # control the Catalog page used to.
     description = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     # Set the first time the old single-snapshot "cleaned_data" on this row
