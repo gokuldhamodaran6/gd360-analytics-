@@ -859,7 +859,21 @@ class FilterCriterion(BaseModel):
 
 
 class ManualBuildBlockRequest(BaseModel):
-    metric_column: str = Field(min_length=1)
+    # 2026-09-30 (semantic layer v1): metric_id, when set, builds this
+    # kpi/gauge block from a SAVED metric definition (models.
+    # MetricDefinition) instead of a fresh column+agg pick - see
+    # routers/dashboard_builder.py's build_manual_block for how the two
+    # paths differ (a metric-backed block always resolves live through
+    # services/metrics.py, even after a page filter change or an edit to
+    # the metric itself, rather than freezing a one-shot recipe the way a
+    # plain column+agg kpi/gauge already does). Mutually exclusive with
+    # metric_column/agg in practice (the frontend only ever sends one or
+    # the other) - metric_column/agg are therefore optional now, only
+    # required when metric_id is absent, checked in the endpoint itself
+    # rather than here since a Pydantic model can't express "required
+    # unless this OTHER field is set."
+    metric_id: Optional[str] = None
+    metric_column: Optional[str] = Field(default=None, min_length=1)
     agg: str = "sum"  # "sum" | "avg" | "count" | "min" | "max"
     group_by_column: Optional[str] = None
     block_type: str = "table"  # "kpi" | "table" | "chart" | "gauge" | "donut" | "sparkline" | "avatar_list"
@@ -1423,3 +1437,60 @@ class ScoreTableOut(BaseModel):
     new_version_id: str
     new_version_name: str
     row_count: int
+
+
+# ---------- Semantic layer v1 (2026-09-30) ----------
+# See models.MetricDefinition's own docstring for the full design and
+# services/metrics.py for how a metric is actually resolved. Schema
+# convention mirrors MLModel's own Create/Out split above exactly:
+# metric_column/agg/filters are the same fixed, small vocabulary
+# routers/dashboard_builder.py's manual-build form already uses (agg is
+# one of AGG_OPTIONS' five values; filters reuses FilterCriterion, the
+# same shape a dashboard's own cross-filters already use), so there is no
+# new filter vocabulary to learn here.
+
+class MetricDefinitionCreate(BaseModel):
+    datasource_id: str
+    name: str = Field(min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    metric_column: str = Field(min_length=1)
+    agg: str = "sum"  # "sum" | "avg" | "count" | "min" | "max"
+    filters: list[FilterCriterion] = Field(default_factory=list, max_length=8)
+
+
+class MetricDefinitionUpdate(BaseModel):
+    # A full-replace update (like ManualBuildBlockRequest, not a PATCH-
+    # style partial) - the metric editor form always has every field
+    # loaded already, so there is no case where a caller genuinely wants
+    # to leave one unspecified.
+    name: str = Field(min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    metric_column: str = Field(min_length=1)
+    agg: str = "sum"
+    filters: list[FilterCriterion] = Field(default_factory=list, max_length=8)
+
+
+class MetricDefinitionOut(BaseModel):
+    id: str
+    datasource_id: str
+    datasource_name: str
+    name: str
+    description: Optional[str] = None
+    metric_column: str
+    agg: str
+    filters: list[FilterCriterion] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+    owner_id: str
+    created_by_name: Optional[str] = None
+    # Resolved server-side, live, every time this metric is listed/fetched
+    # (services/metrics.resolve_metric_value against this data source's
+    # current data) - never a stale, cached number. None (with
+    # current_value_error explaining why) rather than a fabricated 0 when
+    # it can't currently be computed (e.g. the saved column was renamed).
+    current_value: Optional[float] = None
+    current_value_error: Optional[str] = None
+    # Same creator-only convention as MLModel.can_delete above - resolved
+    # server-side (owner_id === the caller) so the frontend never has to
+    # re-derive ownership logic itself.
+    can_delete: bool
