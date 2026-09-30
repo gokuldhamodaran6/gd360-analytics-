@@ -170,6 +170,12 @@ _NEW_COLUMNS = [
     ("ml_models", "version_number", "INTEGER DEFAULT 1"),
     ("ml_predictions", "model_version_id", "TEXT"),
     ("ml_predictions", "explanation", "JSON"),
+    # 2026-09-30 (data catalog v1): see models.DataSource.description's own
+    # comment. pipelines and pipeline_runs are both brand NEW tables added
+    # in the orchestration-v1 round just before this one - per this file's
+    # own note above, a new table needs no entry here at all
+    # (create_all() already creates it).
+    ("datasources", "description", "TEXT"),
 ]
 
 
