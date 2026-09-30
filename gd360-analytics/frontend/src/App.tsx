@@ -15,6 +15,7 @@ import MLModels from "./pages/MLModels";
 import MLModelDetail from "./pages/MLModelDetail";
 import Jobs from "./pages/Jobs";
 import Pipelines from "./pages/Pipelines";
+import Catalog from "./pages/Catalog";
 import Experiments from "./pages/Experiments";
 import Governance from "./pages/Governance";
 import NewProject from "./pages/NewProject";
@@ -134,6 +135,11 @@ export default function App() {
           can span multiple data sources/dashboards, unlike a Job's fixed
           one-dashboard scope - see models.Pipeline's own docstring). */}
       <Route path="/pipelines" element={<Protected><Pipelines /></Protected>} />
+      {/* 2026-09-30 (data catalog v1): the Catalog page - see
+          AppSidebar.tsx's own nav entry for this, placed right after
+          Pipelines (both sidebar and here). See services/catalog.py's own
+          module docstring for the full design. */}
+      <Route path="/catalog" element={<Protected><Catalog /></Protected>} />
       {/* Phase 4 (2026-09-28, Experimentation / A/B testing): see
           AppSidebar.tsx's own nav entry for this, placed exactly like the
           sidebar. */}
