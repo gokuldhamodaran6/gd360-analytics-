@@ -483,6 +483,17 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     exclude_ids = {ds.id} | {m.get("datasource_id") for m in sources_manifest if m.get("datasource_id")}
     catalog = _other_sources_catalog(db, user, exclude_ids)
 
+    # Semantic layer v1 (2026-09-30): this data source's own saved metric
+    # glossary, handed to ai_engine.analyze so a question naming one of
+    # these gets the exact same formula every dashboard KPI/gauge tile
+    # built from it already uses - see models.MetricDefinition's own
+    # docstring and services/metrics.py, the one shared place that
+    # formula is actually resolved. Deliberately not re-fetched on the
+    # auto-expand-with-more-data retry below (same as `catalog` is not),
+    # since that retry is scoped to whatever NEW datasource was just
+    # loaded, not this one.
+    metric_definitions = _metric_definitions_for_datasource(db, ds.id)
+
     # Flow tab transparency round: a real wall-clock measurement of this
     # turn's own analyze/transform call - never estimated - threaded
     # through to whatever it ends up creating (a DatasetVersion and/or a
@@ -495,7 +506,7 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         result = ai_engine.analyze(
             payload.prompt, tables, history=history, chart_override=payload.chart_override, intent=payload.intent,
             guided=(payload.analysis_mode == "guided"), skip_prep=payload.skip_prep, original_df=original_df,
-            durable_repeat=durable_repeat, catalog=catalog,
+            durable_repeat=durable_repeat, catalog=catalog, metric_definitions=metric_definitions,
         )
     except Exception as e:
         print(f"[chat] AI analysis failed: {e}")
@@ -587,6 +598,10 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         not result.get("needs_clarification")
         and not result.get("paused_for_continue")
         and not result.get("_answered_from_memory")
+        # Semantic layer v1: a metric-backed answer is already a static,
+        # exact definition (services/metrics.py) - there is nothing new
+        # to "learn" from re-running the same phrasing again.
+        and not result.get("_answered_from_metric_definition")
     ):
         learned_answers.save_learned_answer(
             db, user.id, tables, payload.prompt,
@@ -756,6 +771,27 @@ def _other_sources_catalog(db: Session, user: models.User, exclude_ids: set[str]
         if len(catalog) >= _CATALOG_MAX_SOURCES:
             break
     return catalog
+
+
+def _metric_definitions_for_datasource(db: Session, datasource_id: str) -> list[dict]:
+    """The saved metric glossary (models.MetricDefinition) for this one
+    data source, handed to ai_engine.analyze so a plain-English question
+    that names one of these metrics gets the exact same formula every
+    dashboard KPI/gauge tile built from it already uses - see
+    services/metrics.py, the one shared place that formula is actually
+    resolved. A small, cheap query (a data source's own metric glossary is
+    never large) - unlike _other_sources_catalog above, this never needs
+    pagination across every data source a person has, just this one."""
+    rows = (
+        db.query(models.MetricDefinition)
+        .filter(models.MetricDefinition.datasource_id == datasource_id)
+        .order_by(models.MetricDefinition.name.asc())
+        .all()
+    )
+    return [
+        {"id": m.id, "name": m.name, "metric_column": m.metric_column, "agg": m.agg, "filters": m.filters or []}
+        for m in rows
+    ]
 
 
 def _load_selected_tables(
