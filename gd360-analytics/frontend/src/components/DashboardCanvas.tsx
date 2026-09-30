@@ -1,6 +1,14 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { PALETTES, SIGNATURE_COLORS, PaletteId, colorableLabels, defaultChartStyle } from "../lib/chartStyle";
+import {
+  PALETTES,
+  SIGNATURE_COLORS,
+  PaletteId,
+  colorableLabels,
+  defaultChartStyle,
+  canForecastSpec,
+  canDetectAnomaliesSpec,
+} from "../lib/chartStyle";
 import "react-grid-layout/css/styles.css";
 import { ReactGridLayout as RGL, WidthProvider } from "react-grid-layout/legacy";
 import {
@@ -20,6 +28,7 @@ import {
   DataTransform,
   TransformPreview,
 } from "../api/client";
+import { useExclusiveOpen } from "../lib/useExclusiveOpen";
 import {
   KpiTile,
   BlockTable,
@@ -1265,17 +1274,35 @@ function BlockCard({
   filterState?: DashboardFilterState;
   onChange: (d: DashboardBuilderDetail) => void;
 }) {
-  const [panel, setPanel] = useState<"none" | "ask" | "manual" | "style">("none");
+  // 2026-09-30 (bug fix, Gokul's own report): menuOpen/panel/explainOpen
+  // used to be three independent local useState<boolean> (well, panel was a
+  // 4-value enum) - see lib/useExclusiveOpen.ts's own module docstring for
+  // the exact "old one doesn't close" bug that caused and why the fix is a
+  // page-wide registry rather than state lifted into DashboardCanvas. panel
+  // keeps its original 4-value shape (none/ask/manual/style) on the outside -
+  // every call site below (setPanel(panel === "ask" ? "none" : "ask"), the
+  // onClose callbacks, etc.) is untouched - only how it's backed changed.
+  const [panelOpen, setPanelOpenSlot] = useExclusiveOpen();
+  const [panelKind, setPanelKind] = useState<"ask" | "manual" | "style">("ask");
+  const panel: "none" | "ask" | "manual" | "style" = panelOpen ? panelKind : "none";
+  const setPanel = (next: "none" | "ask" | "manual" | "style") => {
+    if (next === "none") {
+      setPanelOpenSlot(false);
+    } else {
+      setPanelKind(next);
+      setPanelOpenSlot(true);
+    }
+  };
   const [titleDraft, setTitleDraft] = useState(block.title || "");
   const [textDraft, setTextDraft] = useState(block.config?.text || "");
   const [deleting, setDeleting] = useState(false);
   // 2026-09-25d (elite pass) - see KebabIcon above.
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useExclusiveOpen();
   // 2026-09-29 (design revamp) - see InfoIcon above and the "ai_explanation"
   // comment on _ai_result_to_block in dashboard_builder.py for where this
   // text comes from: analyze()'s own real, already-generated narrative for
   // this exact block, never a second AI call and never fabricated here.
-  const [explainOpen, setExplainOpen] = useState(false);
+  const [explainOpen, setExplainOpen] = useExclusiveOpen();
   // 2026-09-29 (round 5, real-bug fix): "for small field like kpi and i
   // cannot able to read that suggestions about the blocks" - this popover
   // used to be positioned with plain `absolute` inside the block's own
@@ -1306,6 +1333,23 @@ function BlockCard({
   };
   const filtersActive = Boolean(filterState && filterState.activeFilters.length > 0);
   const explanation = (filterState?.overrides[block.id]?.config ?? block.config)?.ai_explanation as string | undefined;
+  // 2026-09-30 bug fix (Gokul's own report, verbatim: "show anomoly and
+  // show forecast dont show for every chart only if it need show"): only
+  // offer "Show forecast" / "Show anomalies" in the kebab menu below when
+  // THIS block's own real chart_spec has a shape those toggles could
+  // honestly compute against - mirrors chart_builder.py's
+  // apply_analysis_overlays gating exactly (see canForecastSpec/
+  // canDetectAnomaliesSpec in chartStyle.ts), so a bar/pie/funnel-shaped
+  // chart never shows an option that would just 400 when clicked. Reads
+  // block.config directly (not the filtered override above) since the
+  // toggle itself acts on the block's real persisted config via
+  // setBlockAnalysis, same as the existing block.config?.forecast_enabled/
+  // anomalies_enabled reads further down.
+  const canForecast = useMemo(() => canForecastSpec(block.config?.chart_spec), [block.config?.chart_spec]);
+  const canDetectAnomalies = useMemo(
+    () => canDetectAnomaliesSpec(block.config?.chart_spec),
+    [block.config?.chart_spec]
+  );
 
   useEffect(() => setTitleDraft(block.title || ""), [block.id, block.title]);
   useEffect(() => setTextDraft(block.config?.text || ""), [block.id, block.config?.text]);
@@ -1578,8 +1622,13 @@ function BlockCard({
                   only (not kpi/sparkline/table/gauge) - see
                   chart_builder.py's apply_analysis_overlays for why: both
                   read off a Plotly trace's own x/y arrays, which only a
-                  chart block's chart_spec has. */}
-              {block.type === "chart" && (
+                  chart block's chart_spec has.
+                  2026-09-30: and even among chart blocks, only a chart
+                  whose own shape can honestly support a forecast (a line/
+                  area/step chart with 4+ points) - "show for every chart"
+                  meant a bar or pie chart offered this too, only to 400
+                  when clicked. See canForecast/canForecastSpec above. */}
+              {block.type === "chart" && canForecast && (
                 <button
                   type="button"
                   role="menuitemcheckbox"
@@ -1598,7 +1647,10 @@ function BlockCard({
                   {block.config?.forecast_enabled && <CheckIcon className="w-3.5 h-3.5 text-primary" />}
                 </button>
               )}
-              {block.type === "chart" && (
+              {/* 2026-09-30: same reasoning as "Show forecast" above - only
+                  offered when this chart's primary trace actually has a
+                  y-value array to inspect (a pie/donut/funnel doesn't). */}
+              {block.type === "chart" && canDetectAnomalies && (
                 <button
                   type="button"
                   role="menuitemcheckbox"
