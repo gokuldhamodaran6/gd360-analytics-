@@ -212,9 +212,17 @@ class DataSourceOut(BaseModel):
     # other kind, and None for an "api" source that has never successfully
     # fetched. See models.DataSource's own docstring.
     api_last_refreshed_at: Optional[datetime] = None
+    # 2026-09-30 (data catalog v1): see models.DataSource.description's
+    # own comment - a short, optional, human-written blurb, never
+    # computed or inferred.
+    description: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+
+class UpdateDataSourceDescriptionRequest(BaseModel):
+    description: Optional[str] = Field(default=None, max_length=2000)
 
 
 # ---------- Chat / AI ----------
@@ -1658,3 +1666,21 @@ class PipelineUpdate(BaseModel):
     description: Optional[str] = None
     steps: Optional[list[dict]] = None
     schedule_interval: Optional[str] = None
+
+
+# ---------- Data catalog v1 (2026-09-30) ----------
+# See services/catalog.py's own module docstring for the full design - a
+# single, account-wide, searchable inventory across every kind of asset
+# this app already has, built purely by reading real existing data (never
+# a separate index that could drift out of sync with it).
+class CatalogEntryOut(BaseModel):
+    asset_type: str  # "datasource" | "column" | "transform" | "metric" | "dashboard" | "pipeline"
+    id: str
+    name: str
+    subtitle: Optional[str] = None
+    description: Optional[str] = None
+    # The data source this entry belongs to, if any (None for a data
+    # source or dashboard/pipeline entry itself) - lets the catalog UI
+    # show "amount — on Orders API" for a column/transform/metric result.
+    parent_id: Optional[str] = None
+    parent_name: Optional[str] = None
