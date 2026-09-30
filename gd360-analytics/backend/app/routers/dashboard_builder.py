@@ -358,6 +358,7 @@ from ..deps import get_current_user
 from ..services import ai_engine, chart_builder, data_access_rules, render_domains, workspace_access
 from ..services.data_loader import load_dataframe
 from ..services.metrics import resolve_metric_value
+from ..services.transforms import apply_transform_steps
 from .chat import _load_selected_tables, _other_sources_catalog
 from .dashboards import _can_edit, _can_view
 # 2026-09-29 (Hex-level filters round): reuses the Data tab's own,
@@ -551,19 +552,26 @@ def _kpi_or_gauge_config(
 
 def _metric_kpi_or_gauge_config(
     metric: "models.MetricDefinition", block_type: str, df: pd.DataFrame,
-    target_value: Any = None, max_value: Any = None,
+    target_value: Any = None, max_value: Any = None, transform_id: str | None = None,
 ) -> tuple[str, dict, str]:
     """2026-09-30 (semantic layer v1): the metric-definition-backed
     counterpart to _run_manual_recipe's plain column+aggregation path -
     resolves a SAVED metric (models.MetricDefinition) live through
     services/metrics.resolve_metric_value against `df` (already page/
-    own-filtered by the caller - the metric's OWN saved filters are then
-    applied on top of that, inside resolve_metric_value), then builds the
+    own-filtered by the caller, and - 2026-09-30 transformation layer v1 -
+    already resolved from a saved transform first when transform_id is set,
+    see build_manual_block; the metric's OWN saved filters are then applied
+    on top of that, inside resolve_metric_value), then builds the
     identical kpi/gauge config shape via _kpi_or_gauge_config so the two
     ways of building a kpi/gauge tile are visually indistinguishable and,
     critically, always agree with each other and with this same metric's
     own current_value shown on its definition (routers/
     metric_definitions.py) - the entire point of a semantic layer.
+
+    `transform_id`, when given, is stored on the returned recipe alongside
+    metric_id purely so preview_filtered_blocks can re-resolve the same
+    saved transform (not just the same metric) on a later page-filter
+    recompute - see that function's own comment.
 
     Raises ValueError with a short, friendly message on anything the
     caller should show back as-is - an unsupported block type, or the
@@ -576,7 +584,10 @@ def _metric_kpi_or_gauge_config(
     value, error = resolve_metric_value(df, metric.metric_column, metric.agg, metric.filters)
     if error or value is None:
         raise ValueError(error or "Couldn't compute this metric for the current data.")
-    recipe = {"metric_id": metric.id, "block_type": block_type, "target_value": target_value, "max_value": max_value}
+    recipe = {
+        "metric_id": metric.id, "block_type": block_type, "target_value": target_value, "max_value": max_value,
+        "transform_id": transform_id,
+    }
     return _kpi_or_gauge_config(value, block_type, metric.name, recipe, target_value, max_value)
 
 
@@ -2808,6 +2819,27 @@ def build_manual_block(
     except Exception as e:
         raise HTTPException(400, f"Could not load this dashboard's data: {e}")
 
+    # 2026-09-30 (transformation layer v1): a saved transform (models.
+    # DataTransform) swaps in its own derived table as the working data for
+    # this block, BEFORE any page filter or metric/column pick is applied
+    # on top of it - "a tile built from a saved table," not just from this
+    # data source's raw data. See models.DataTransform's own docstring for
+    # why this always resolves live (services/transforms.py) rather than
+    # freezing a one-shot snapshot, and preview_filtered_blocks below for
+    # how it stays live across a page filter change AND a later edit to
+    # the transform itself.
+    if payload.transform_id:
+        transform = (
+            db.query(models.DataTransform)
+            .filter(models.DataTransform.id == payload.transform_id, models.DataTransform.datasource_id == ds.id)
+            .first()
+        )
+        if not transform:
+            raise HTTPException(404, "That saved table no longer exists.")
+        df, transform_error = apply_transform_steps(df, transform.steps or [])
+        if transform_error:
+            raise HTTPException(400, f'Could not build "{transform.name}": {transform_error}')
+
     if payload.filters:
         df = _apply_filters(df, payload.filters)
 
@@ -2828,7 +2860,7 @@ def build_manual_block(
             raise HTTPException(404, "That metric no longer exists.")
         try:
             actual_type, config, default_title = _metric_kpi_or_gauge_config(
-                metric, payload.block_type, df, payload.target_value, payload.max_value,
+                metric, payload.block_type, df, payload.target_value, payload.max_value, payload.transform_id,
             )
         except ValueError as e:
             raise HTTPException(400, str(e))
@@ -2848,6 +2880,12 @@ def build_manual_block(
             # range/target the person originally set, not a re-guessed one.
             "target_value": payload.target_value,
             "max_value": payload.max_value,
+            # 2026-09-30 (transformation layer v1): which saved transform
+            # (if any) this block's data comes from - see the resolution
+            # above and preview_filtered_blocks below, both of which
+            # re-apply it fresh on every recompute rather than baking its
+            # output into this recipe as a frozen snapshot.
+            "transform_id": payload.transform_id,
         }
         try:
             actual_type, config, default_title = _run_manual_recipe(df, recipe, existing_title=block.title)
@@ -3110,6 +3148,30 @@ def preview_filtered_blocks(
         # can't currently recompute: left out of the response, the
         # frontend's existing content for it stays put (see this
         # function's own docstring above).
+        # 2026-09-30 (transformation layer v1): a recipe built from a saved
+        # transform (recipe["transform_id"] set - see build_manual_block)
+        # is re-applied fresh here too, before either branch below runs -
+        # so editing the TRANSFORM's own steps, not just changing a page
+        # filter, is also reflected live the next time this page's filters
+        # are (re)applied. A transform that's since been deleted, or that
+        # now fails to resolve (e.g. a column it references was renamed),
+        # is treated exactly like any other block this endpoint can't
+        # currently recompute: left out of the response, the frontend's
+        # existing content for it stays put (see this function's own
+        # docstring above).
+        base_df = df
+        if recipe and recipe.get("transform_id"):
+            transform = (
+                db.query(models.DataTransform)
+                .filter(models.DataTransform.id == recipe["transform_id"], models.DataTransform.datasource_id == ds.id)
+                .first()
+            )
+            if not transform:
+                continue
+            base_df, transform_error = apply_transform_steps(df, transform.steps or [])
+            if transform_error:
+                continue
+
         if recipe and recipe.get("metric_id"):
             metric = (
                 db.query(models.MetricDefinition)
@@ -3119,10 +3181,10 @@ def preview_filtered_blocks(
             if not metric:
                 continue
             try:
-                block_df = _apply_filters(df, own_filters)
+                block_df = _apply_filters(base_df, own_filters)
                 actual_type, config, _default_title = _metric_kpi_or_gauge_config(
                     metric, recipe.get("block_type") or block.type, block_df,
-                    recipe.get("target_value"), recipe.get("max_value"),
+                    recipe.get("target_value"), recipe.get("max_value"), recipe.get("transform_id"),
                 )
             except Exception:
                 continue
@@ -3130,7 +3192,7 @@ def preview_filtered_blocks(
             continue
         if recipe:
             try:
-                block_df = _apply_filters(df, own_filters)
+                block_df = _apply_filters(base_df, own_filters)
                 actual_type, config, _default_title = _run_manual_recipe(block_df, recipe, existing_title=block.title)
             except Exception:
                 continue
