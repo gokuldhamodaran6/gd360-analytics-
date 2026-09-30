@@ -26,6 +26,7 @@ from ..database import get_db
 from ..deps import get_current_user
 from ..schemas_extra import ChatRequestFull, VerifyRequest
 from ..services import ai_engine, data_access_rules, learned_answers, workspace_access
+from ..services.transforms import apply_transform_steps, describe_transform
 from ..services.connectors import BigQueryConnector, SnowflakeConnector, SQLConnector, MongoConnector, QueryTooExpensive, ReadOnlyViolation
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, dataframe_to_csv_bytes, ensure_legacy_migrated, NeedsTableSelection,
@@ -494,6 +495,43 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     # loaded, not this one.
     metric_definitions = _metric_definitions_for_datasource(db, ds.id)
 
+    # Transformation layer v1 (2026-09-30): this data source's own saved
+    # transforms (models.DataTransform), each one resolved against the
+    # ORIGINAL data (already loaded above as `original_df`, best-effort).
+    # Handed to ai_engine.analyze as two SEPARATE things, not pre-merged
+    # into `tables` here - see that function's own transform_tables/
+    # transform_definitions docstring for exactly why (merging here first
+    # would make every one of these background saved tables count toward
+    # "more than one table was selected for this request", a framing meant
+    # for tables the person actually picked, not ones quietly available in
+    # the background). A transform that can't currently resolve (a column
+    # it references was renamed/removed, or the original data couldn't be
+    # loaded at all) is silently left out, exactly like `catalog`'s own "no
+    # usable schema, don't show it" tradeoff - never shown as a broken or
+    # partial table.
+    transform_tables: dict[str, object] = {}
+    transform_glossary: list[dict] = []
+    if original_df is not None:
+        transform_rows = (
+            db.query(models.DataTransform)
+            .filter(models.DataTransform.datasource_id == ds.id)
+            .order_by(models.DataTransform.name.asc())
+            .all()
+        )
+        for t in transform_rows:
+            result_df, error = apply_transform_steps(original_df, t.steps or [])
+            if error or result_df is None or result_df.empty:
+                continue
+            key = t.name
+            n = 2
+            while key in tables or key in transform_tables:
+                key = f"{t.name} ({n})"
+                n += 1
+            transform_tables[key] = result_df
+            transform_glossary.append({
+                "name": key, "description": t.description, "step_summary": describe_transform(t.steps or []),
+            })
+
     # Flow tab transparency round: a real wall-clock measurement of this
     # turn's own analyze/transform call - never estimated - threaded
     # through to whatever it ends up creating (a DatasetVersion and/or a
@@ -507,6 +545,7 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
             payload.prompt, tables, history=history, chart_override=payload.chart_override, intent=payload.intent,
             guided=(payload.analysis_mode == "guided"), skip_prep=payload.skip_prep, original_df=original_df,
             durable_repeat=durable_repeat, catalog=catalog, metric_definitions=metric_definitions,
+            transform_tables=transform_tables, transform_definitions=transform_glossary,
         )
     except Exception as e:
         print(f"[chat] AI analysis failed: {e}")
