@@ -1572,3 +1572,89 @@ class TransformPreviewOut(BaseModel):
     row_count: int = 0
     truncated: bool = False
     error: Optional[str] = None
+
+
+# ---------- Orchestration v1 (2026-09-30) ----------
+# See models.Pipeline's own docstring for the full design - a named,
+# saved, linear chain of a few whitelisted step types, run in strict
+# order. PIPELINE_STEP_TYPES/PIPELINE_SCHEDULE_INTERVALS are the single
+# source of truth both this file's own validation-by-convention and
+# routers/pipelines.py's explicit checks refer back to; kept separate from
+# schemas.REFRESH_INTERVALS above (rather than reusing it directly) since
+# a Pipeline's schedule is conceptually its own thing even though the
+# four real interval values happen to be identical to a Dashboard's.
+PIPELINE_STEP_TYPES = ("refresh_datasource", "rebuild_dashboard", "run_quality_checks")
+PIPELINE_SCHEDULE_INTERVALS = ("off", "15m", "1h", "6h", "daily")
+
+
+class PipelineStepResultOut(BaseModel):
+    """One entry of a PipelineRun.step_results list - see that model's own
+    docstring for exactly what each field means."""
+    index: int
+    type: Optional[str] = None
+    label: Optional[str] = None
+    status: str  # "success" | "failed"
+    detail: Optional[dict] = None
+    error: Optional[str] = None
+
+
+class PipelineRunOut(BaseModel):
+    id: str
+    pipeline_id: Optional[str] = None
+    run_type: str  # "scheduled" | "manual"
+    pipeline_name: str
+    status: str  # "running" | "success" | "failed"
+    error_message: Optional[str] = None
+    step_results: list[PipelineStepResultOut] = Field(default_factory=list)
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    duration_seconds: Optional[float] = None
+    next_run_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class PipelineRunsPage(BaseModel):
+    runs: list[PipelineRunOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class PipelineOut(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    steps: list[dict] = Field(default_factory=list)
+    # Plain-English one-liner per step (services/pipelines.describe_
+    # pipeline), resolved live from each step's current target name -
+    # never stale, same convention DataTransformOut.step_summary already
+    # established.
+    step_summary: list[str] = Field(default_factory=list)
+    schedule_interval: str = "off"
+    next_run_at: Optional[datetime] = None
+    last_run_at: Optional[datetime] = None
+    last_run_status: Optional[str] = None
+    can_edit: bool = True
+    can_delete: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PipelineCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: Optional[str] = None
+    steps: list[dict] = Field(default_factory=list)
+    schedule_interval: str = "off"
+    workspace_id: Optional[str] = None
+
+
+class PipelineUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = None
+    steps: Optional[list[dict]] = None
+    schedule_interval: Optional[str] = None
