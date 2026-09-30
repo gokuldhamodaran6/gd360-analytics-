@@ -1227,14 +1227,32 @@ def _ai_result_to_block(result: dict, requested_type: str) -> tuple[str, dict]:
 
 def _attach_ai_explanation(result: dict, shaped: tuple[str, dict]) -> tuple[str, dict]:
     actual_type, config = shaped
-    narrative = (result.get("narrative") or "").strip()
+    # 2026-09-30 bug fix (Gokul's own report, verbatim: "it us onlu showing
+    # data prep details not insights are there so oropel wont get
+    # clarity"): this used to stamp ai_explanation straight from
+    # result["narrative"], which on the prep+analyze path (the common case
+    # for a chart/kpi block) is literally "**Data prep:** <what columns/
+    # rows were kept>\n\n**Analysis:** <what was computed>" - a description
+    # of the STEPS taken, never the actual finding. That is exactly why the
+    # "Explain this chart" popover only ever showed data-prep detail.
+    #
+    # result["insight"] is the separate, already-generated "**Key
+    # insight:** ..." finding that cites the real computed number(s) (see
+    # _generate_insight/_fallback_insight) - the SAME field
+    # _attach_block_config_explanation above already uses correctly for the
+    # bulk-from-chat-history dashboard path. Prefer it here too, so both
+    # block-shaping paths show the same kind of explanation, and fall back
+    # to narrative only when a turn genuinely produced no insight (e.g. a
+    # direct chat answer with no computed result) so a block is never left
+    # with no explanation at all rather than a weaker one.
+    explanation = (result.get("insight") or result.get("narrative") or "").strip()
     # The plain-text fallback's own {"text": narrative or "No result."} IS
     # the narrative already (see _ai_result_to_block_shape's own final
     # return) - stamping it a second time onto the same block as
     # ai_explanation would be pure duplication, so this only ever adds the
     # key for a real chart/kpi/table shape.
-    if narrative and actual_type != "text":
-        config = {**config, "ai_explanation": narrative}
+    if explanation and actual_type != "text":
+        config = {**config, "ai_explanation": explanation}
     return actual_type, config
 
 
@@ -2948,7 +2966,25 @@ def restyle_block(
         raise HTTPException(400, f"Couldn't restyle to that chart type: {e}")
 
     _snapshot_block_config(block)
-    block.config = {**block.config, "chart_spec": new_spec}
+    # 2026-09-30 bug fix: build_figure above returns a brand new chart_spec
+    # with none of apply_analysis_overlays' forecast/anomaly traces on it -
+    # this used to just merge that fresh spec in, leaving a STALE
+    # forecast_enabled/anomalies_enabled=true sitting in config with no
+    # matching overlay actually drawn (e.g. restyle a line chart with
+    # forecast on to a bar chart: the toggle would still read "on" even
+    # though nothing was projected on the new bar chart, and switching back
+    # to a line chart later would show a checked-but-never-recomputed
+    # toggle). A restyle is a genuinely different chart, so any prior
+    # overlay decision no longer honestly applies to it - clear it the same
+    # way idempotent re-runs of apply_analysis_overlays already do, rather
+    # than carrying a flag forward that no longer matches what's drawn.
+    block.config = {
+        **block.config,
+        "chart_spec": new_spec,
+        "forecast_enabled": False,
+        "anomalies_enabled": False,
+        "anomaly_count": None,
+    }
     if title != block.title:
         block.title = title
 
