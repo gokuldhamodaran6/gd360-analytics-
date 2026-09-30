@@ -1468,6 +1468,16 @@ export const dashboardBuilderApi = {
       // below does. Mutually exclusive - the UI only ever sends one or
       // the other (see DashboardCanvas.tsx's ManualBuildPanel).
       metric_id?: string;
+      // 2026-09-30 (transformation layer v1): set transform_id to build
+      // this block from a SAVED TABLE (see transformsApi below) instead
+      // of this data source's raw data - resolved BEFORE metric_id/
+      // metric_column, so either can be layered on top of a transform's
+      // own derived columns. Always recomputes live (the transform's
+      // current steps, re-applied), including across a page filter change
+      // and after the transform itself is later edited - see
+      // dashboardBuilderApi's own module notes on metric_id above for the
+      // identical "never a frozen snapshot" guarantee.
+      transform_id?: string;
       metric_column?: string;
       agg?: ManualAgg;
       group_by_column?: string | null;
@@ -2094,4 +2104,85 @@ export const metricDefinitionsApi = {
     api.put<MetricDefinition>(`/datasources/${datasourceId}/metric-definitions/${metricId}`, payload).then((r) => r.data),
   delete: (datasourceId: string, metricId: string) =>
     api.delete(`/datasources/${datasourceId}/metric-definitions/${metricId}`).then(() => undefined),
+};
+
+// ---- Transformation layer v1 (2026-09-30) - a data source's own saved
+// tables: a named, ordered pipeline of small steps (filter, add a derived
+// column, keep only certain columns, rename a column, group + aggregate)
+// that turns the raw data into a new, reusable derived table. Reuse that
+// exact table on a dashboard block (DashboardCanvas.tsx's ManualBuildPanel,
+// same "Use a saved ___" pattern as metricDefinitionsApi above) and in chat
+// (backend services/ai_engine.py, entirely server-side). See backend
+// models.DataTransform's own docstring and services/transforms.py for the
+// full design and the exact shape of each step type. ----
+
+export type TransformStep = {
+  op: "filter" | "add_column" | "select_columns" | "rename_column" | "group_by";
+  // Every other field is op-specific - kept as a loose index signature
+  // (not five separate TS types unioned together) for the same reason the
+  // backend keeps TransformStep as a permissive dict rather than a
+  // discriminated Pydantic union: services/transforms.py's own validation
+  // is the single source of truth for what's valid, and this client's job
+  // is only to build and display these, never to validate them itself.
+  [key: string]: any;
+};
+
+export type DataTransform = {
+  id: string;
+  datasource_id: string;
+  datasource_name: string;
+  name: string;
+  description: string | null;
+  steps: TransformStep[];
+  // One plain-English line per step, in order - mirrors backend
+  // services/transforms.describe_transform, so this panel's own summary
+  // never disagrees with what the AI is told.
+  step_summary: string[];
+  created_at: string;
+  updated_at: string;
+  owner_id: string;
+  created_by_name: string | null;
+  // Resolved live, server-side, every time this transform is listed/
+  // fetched - never a stale cached result. null (with preview_error
+  // explaining why) rather than a fabricated empty table when it can't
+  // currently be computed.
+  preview_columns: string[] | null;
+  preview_row_count: number | null;
+  preview_error: string | null;
+  can_delete: boolean;
+};
+
+export type DataTransformPayload = {
+  name: string;
+  description?: string | null;
+  steps: TransformStep[];
+};
+
+export type TransformPreview = {
+  columns: string[];
+  rows: Record<string, unknown>[];
+  row_count: number;
+  truncated: boolean;
+  error: string | null;
+};
+
+export const transformsApi = {
+  list: (datasourceId: string) =>
+    api.get<DataTransform[]>(`/datasources/${datasourceId}/transforms`).then((r) => r.data),
+  create: (datasourceId: string, payload: DataTransformPayload) =>
+    api.post<DataTransform>(`/datasources/${datasourceId}/transforms`, payload).then((r) => r.data),
+  update: (datasourceId: string, transformId: string, payload: DataTransformPayload) =>
+    api.put<DataTransform>(`/datasources/${datasourceId}/transforms/${transformId}`, payload).then((r) => r.data),
+  delete: (datasourceId: string, transformId: string) =>
+    api.delete(`/datasources/${datasourceId}/transforms/${transformId}`).then(() => undefined),
+  // Live preview of UNSAVED steps while building/editing - posts the
+  // in-progress steps list directly rather than a saved transform id, so
+  // the builder's preview stays in sync with every edit before Save.
+  preview: (datasourceId: string, steps: TransformStep[]) =>
+    api.post<TransformPreview>(`/datasources/${datasourceId}/transforms/preview`, { steps }).then((r) => r.data),
+  // The real preview ROWS for an already-saved transform - used by
+  // ManualBuildPanel to populate its "which column" pickers from a saved
+  // transform's OWN output columns, not the raw data source's.
+  getData: (datasourceId: string, transformId: string) =>
+    api.get<TransformPreview>(`/datasources/${datasourceId}/transforms/${transformId}/data`).then((r) => r.data),
 };
