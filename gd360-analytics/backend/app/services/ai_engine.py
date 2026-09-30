@@ -2243,6 +2243,39 @@ def _metric_glossary_text(metric_definitions: list[dict] | None) -> str:
     )
 
 
+def _transform_glossary_text(transform_definitions: list[dict] | None) -> str:
+    """Appended to the LLM's user_content exactly the way _metric_glossary_
+    text's own note already is (see its call site in analyze()) - tells the
+    model WHAT each already-merged-into-`tables` saved-transform table
+    represents (its plain-English step summary), since the schema note
+    alone (column names/dtypes/example values - see _dataset_schema_text)
+    can't convey that a table's odd-looking derived column or already-
+    grouped shape is intentional and already correct, not something to
+    second-guess or recompute from the raw data instead. Never itself
+    computes anything - purely descriptive, driven from the exact same
+    step list services/transforms.apply_transform_steps actually ran, so
+    it never disagrees with what that table's rows actually are."""
+    if not transform_definitions:
+        return ""
+    lines = []
+    for t in transform_definitions:
+        name = t.get("name")
+        if not name:
+            continue
+        steps_text = "; ".join(t.get("step_summary") or []) or "no steps (same as the original data)"
+        desc = f" - {t.get('description')}" if t.get("description") else ""
+        lines.append(f'- tables["{name}"]{desc}: built by {steps_text}')
+    if not lines:
+        return ""
+    body = "\n".join(lines)
+    return (
+        "\n\nSAVED TABLES available in `tables` for this data source (this app's own transformation layer - "
+        "already computed for you; prefer referencing one of these directly with tables[\"<name>\"] over "
+        "re-deriving the same logic yourself when a question matches what one of them already represents):\n"
+        f"{body}"
+    )
+
+
 def analyze(
     prompt: str,
     tables: dict[str, pd.DataFrame],
@@ -2256,6 +2289,8 @@ def analyze(
     unattended: bool = False,
     catalog: list[dict] | None = None,
     metric_definitions: list[dict] | None = None,
+    transform_tables: dict[str, pd.DataFrame] | None = None,
+    transform_definitions: list[dict] | None = None,
 ) -> dict:
     """
     Main entrypoint. `tables` maps display name -> DataFrame for every table
@@ -2353,10 +2388,42 @@ def analyze(
     approximation. None/empty means no such glossary exists for this data
     source yet, exactly this app's whole behavior before this feature
     existed.
+
+    `transform_tables`/`transform_definitions` (2026-09-30, transformation
+    layer v1; routers/chat.py resolves both) are the sibling of
+    metric_definitions above for a saved DERIVED TABLE (models.
+    DataTransform) instead of a single metric value:
+    `transform_tables` is {name: already-computed DataFrame} for every
+    transform on this data source that currently resolves successfully -
+    merged into `tables` (see just below) so the model can reference it
+    directly as `tables["<name>"]`, real and already-correct, instead of
+    re-deriving the same logic itself; `transform_definitions` is the
+    parallel [{"name", "description", "step_summary"}] used purely for the
+    glossary note (_transform_glossary_text) telling the model WHAT each
+    one represents, since a schema listing alone (column names/dtypes)
+    can't convey that. Both None/empty means no saved transforms exist for
+    this data source yet, exactly this app's whole behavior before this
+    feature existed.
     """
     df = next(iter(tables.values()))  # the primary table - profiling/suggestions are based on this one
     profile = profile_dataframe(df)
     explicit_table_names = list(tables.keys())
+    # Transformation layer v1 (2026-09-30): saved transforms' already-
+    # computed output tables (routers/chat.py resolves them; see this
+    # function's own transform_tables/transform_definitions docstring
+    # below) are added to `tables` HERE - after explicit_table_names is
+    # captured, not before - so they show up in the schema note the model
+    # sees (via _schema_with_fallback just below) without being counted as
+    # part of "more than one table was selected for this request" (the
+    # multi-table merge framing a few lines down keys off
+    # explicit_table_names, and a background saved table the person never
+    # picked for this turn is not the same thing as a table they actually
+    # selected). A transform table never overwrites a same-named selected
+    # table - the person's own selection always wins.
+    if transform_tables:
+        for name, tdf in transform_tables.items():
+            if name not in tables:
+                tables[name] = tdf
     tables, explicit_schema_text, fallback_note = _schema_with_fallback(tables, original_df)
 
     # A deterministic shortcut for when the person is simply waving off
@@ -2531,6 +2598,9 @@ def analyze(
     glossary_text = _metric_glossary_text(metric_definitions)
     if glossary_text:
         user_content += glossary_text
+    transform_glossary_text = _transform_glossary_text(transform_definitions)
+    if transform_glossary_text:
+        user_content += transform_glossary_text
     hint = INTENT_HINTS.get(intent or "")
     if hint:
         user_content += f"\n\n(Context: {hint})"
