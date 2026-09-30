@@ -1668,19 +1668,13 @@ class PipelineUpdate(BaseModel):
     schedule_interval: Optional[str] = None
 
 
-# ---------- Data catalog v1 (2026-09-30) ----------
-# See services/catalog.py's own module docstring for the full design - a
-# single, account-wide, searchable inventory across every kind of asset
-# this app already has, built purely by reading real existing data (never
-# a separate index that could drift out of sync with it).
-class CatalogEntryOut(BaseModel):
-    asset_type: str  # "datasource" | "column" | "transform" | "metric" | "dashboard" | "pipeline"
-    id: str
-    name: str
-    subtitle: Optional[str] = None
-    description: Optional[str] = None
-    # The data source this entry belongs to, if any (None for a data
-    # source or dashboard/pipeline entry itself) - lets the catalog UI
-    # show "amount — on Orders API" for a column/transform/metric result.
-    parent_id: Optional[str] = None
-    parent_name: Optional[str] = None
+# ---------- Data catalog v1 (2026-09-30) - REMOVED (Governance/Jobs
+# redesign + Pipelines/Catalog removal round) ----------
+# CatalogEntryOut used to live here. Gokul's own report: the Catalog page
+# duplicated the Projects filter and Data Sources page and "leads to
+# confusion" - removed entirely (routers/catalog.py, services/catalog.py,
+# pages/Catalog.tsx all deleted). Its one real, non-redundant capability
+# (editing a data source's short description) was never defined here in
+# the first place - see UpdateDataSourceDescriptionRequest above, which
+# routers/datasources.py's own PATCH /datasources/{id}/description already
+# used independently of this file.
