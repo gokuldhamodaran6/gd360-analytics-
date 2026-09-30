@@ -159,6 +159,17 @@ _NEW_COLUMNS = [
     # models.DashboardBlock.previous_config's own docstring for exactly
     # what this holds and when it's set/cleared.
     ("dashboard_blocks", "previous_config", "JSON"),
+    # 2026-09-30 (model trustworthiness round): ml_models and ml_predictions
+    # are both existing tables (live since the 2026-09-28 ML Models round),
+    # so their new columns need the normal ALTER-TABLE treatment here - see
+    # models.MLModel/MLModelVersion/MLPrediction's own docstrings for what
+    # each one means. ml_model_versions is a brand NEW table added this same
+    # round - per this file's own note above, a new table needs no entry
+    # here at all (create_all() already creates it).
+    ("ml_models", "feature_importance", "JSON"),
+    ("ml_models", "version_number", "INTEGER DEFAULT 1"),
+    ("ml_predictions", "model_version_id", "TEXT"),
+    ("ml_predictions", "explanation", "JSON"),
 ]
 
 
