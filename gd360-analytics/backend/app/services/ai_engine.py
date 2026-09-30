@@ -38,6 +38,7 @@ import requests
 from ..config import get_settings
 from .chart_builder import build_figure, result_to_dataframe, result_to_summary, result_to_tidy
 from .chart_suggester import profile_dataframe, suggest_charts, suggest_stats
+from .metrics import describe_metric, match_metric_by_name, resolve_metric_value
 from .sandbox import run_sandboxed
 
 settings = get_settings()
@@ -2133,6 +2134,115 @@ def _try_deterministic_crosstab(prompt: str, df: pd.DataFrame, profile: dict) ->
     }
 
 
+_METRIC_AGG_CODE_FUNC = {"sum": "sum", "avg": "mean", "count": "count", "min": "min", "max": "max"}
+
+
+def _try_metric_definition(df: pd.DataFrame, profile: dict, metric: dict) -> dict | None:
+    """A deterministic (zero-LLM-call) answer for "what is my <metric>"-
+    style questions, once match_metric_by_name (services/metrics.py) has
+    already confirmed both that the question is asking for exactly one
+    saved metric's plain value AND that this metric has no filters (see
+    analyze()'s own call site) - only a filterless metric is answered
+    here; see this function's own docstring note below for why. Returns
+    None (never a partial/wrong answer) on any computation problem, so
+    the caller falls straight through to the ordinary AI-planned flow -
+    a metric with a typo'd/renamed column should surface as a normal
+    answer attempt, never a confusing dead end.
+
+    The `code` this returns is a plain, trivial one-liner
+    (`df[column].agg(func)`, no filters, since this only ever fires for a
+    filterless metric) - deliberately real, sandbox-executable code, not
+    a description of what ran, so "Double-check this" (verify_answer)
+    can re-run it for real and get the exact same number, exactly like
+    every other answer this app produces."""
+    metric_column, agg = metric.get("metric_column"), metric.get("agg")
+    value, error = resolve_metric_value(df, metric_column, agg, metric.get("filters"))
+    if error or value is None:
+        return None
+
+    name = metric.get("name") or "this metric"
+    formula_text = describe_metric(name, metric_column, agg)
+    display_value = f"{value:,.2f}" if isinstance(value, float) else f"{value:,}"
+    narrative = (
+        f"Your saved metric **{name}** is **{display_value}**, computed from its exact saved definition: "
+        f"{formula_text}."
+    )
+    insight = (
+        "This is a verified metric, not a fresh AI computation - it always uses this exact same formula "
+        "everywhere it appears in GD360, so it will match this same number on any dashboard KPI tile built "
+        "from it too."
+    )
+    try:
+        tidy = result_to_tidy(pd.DataFrame({name: [value]}))
+    except Exception:
+        tidy = None
+
+    code = (
+        f"# Resolved from the saved metric definition {name!r} (services/metrics.resolve_metric_value)\n"
+        f"result = df[{metric_column!r}].agg({_METRIC_AGG_CODE_FUNC.get(agg, 'sum')!r})\n"
+    )
+
+    return {
+        "needs_clarification": False,
+        "clarifying_question": None,
+        "action": "analyze",
+        "narrative": narrative,
+        "chart_spec": None,
+        "chart_type": None,
+        "insight": insight,
+        "result_columns": tidy["columns"] if tidy else None,
+        "result_rows": tidy["rows"] if tidy else None,
+        "result_row_count": tidy["row_count"] if tidy else None,
+        "result_truncated": tidy["truncated"] if tidy else False,
+        "rows_before": None,
+        "rows_after": None,
+        "nulls_before": None,
+        "nulls_after": None,
+        "suggested_charts": suggest_charts(profile),
+        "suggested_stats": suggest_stats(profile),
+        "follow_up_suggestions": [],
+        "code": code,
+        # See this app's save_learned_answer guard in routers/chat.py - a
+        # metric-backed answer is already a static, exact definition, so
+        # there is nothing new to "learn" from re-running the same
+        # phrasing again (mirrors _answered_from_memory just below).
+        "_answered_from_metric_definition": True,
+    }
+
+
+def _metric_glossary_text(metric_definitions: list[dict] | None) -> str:
+    """Appended to the LLM's user_content exactly the way _catalog_text's
+    cross-datasource note already is (see its own call site in analyze())
+    - the semantic layer's second guarantee, alongside
+    _try_metric_definition's zero-LLM-call exact shortcut above: even a
+    free-form question that also wants a breakdown/trend/comparison, or
+    that names a FILTERED metric (which the deterministic shortcut above
+    never handles), still gets told the EXACT column, aggregation, and
+    filter criteria this app already has on file for a metric it
+    references by name, rather than the model guessing its own
+    approximation of "Revenue" from whichever numeric column looks
+    plausible. Never itself computes anything - see
+    services/metrics.describe_metric for the one shared, honest
+    description text used here."""
+    if not metric_definitions:
+        return ""
+    lines = [
+        describe_metric(m.get("name"), m.get("metric_column"), m.get("agg"), m.get("filters"))
+        for m in metric_definitions
+        if m.get("name") and m.get("metric_column")
+    ]
+    if not lines:
+        return ""
+    body = "\n".join(f"- {line}" for line in lines)
+    return (
+        "\n\nSAVED METRIC DEFINITIONS for this data source (this app's own semantic layer - if the "
+        "user's question names one of these metrics, use EXACTLY this column, aggregation, and filter "
+        "criteria for it, never a different column or a looser filter, even if the question also asks "
+        "for a breakdown, trend, or comparison the metric definition alone doesn't cover):\n"
+        f"{body}"
+    )
+
+
 def analyze(
     prompt: str,
     tables: dict[str, pd.DataFrame],
@@ -2145,6 +2255,7 @@ def analyze(
     durable_repeat: tuple[str, str, str, str | None] | None = None,
     unattended: bool = False,
     catalog: list[dict] | None = None,
+    metric_definitions: list[dict] | None = None,
 ) -> dict:
     """
     Main entrypoint. `tables` maps display name -> DataFrame for every table
@@ -2224,6 +2335,24 @@ def analyze(
     access) which loads the real data and calls analyze() again with it
     available; None/empty just means no such rerouting is possible this
     turn, exactly the app's whole behavior before this existed.
+
+    `metric_definitions` (2026-09-30, semantic layer v1), when given
+    (routers/chat.py's _metric_definitions_for_datasource), is this data
+    source's own saved metric glossary - list[{"id", "name",
+    "metric_column", "agg", "filters"}], see models.MetricDefinition. Two
+    things happen with it, both purely additive: (1) a question that is
+    just asking for one FILTERLESS metric's plain value ("What is our
+    Revenue?") is answered directly via services/metrics.resolve_metric_value
+    with zero LLM call at all - see match_metric_by_name's own docstring
+    for exactly which phrasings qualify (deliberately narrow); (2) every
+    metric (filtered or not) is described to the model as a glossary note
+    (see _metric_glossary_text) so a free-form question that references
+    one by name - even one that also wants a breakdown/trend this app's
+    own deterministic shortcut can't represent - is told the EXACT
+    column/aggregation/filter to use for it, rather than guessing its own
+    approximation. None/empty means no such glossary exists for this data
+    source yet, exactly this app's whole behavior before this feature
+    existed.
     """
     df = next(iter(tables.values()))  # the primary table - profiling/suggestions are based on this one
     profile = profile_dataframe(df)
@@ -2307,6 +2436,25 @@ def analyze(
         if deterministic:
             return deterministic
 
+    # A deterministic shortcut for "what is my <saved metric>?"-style
+    # questions (2026-09-30, semantic layer v1) - see match_metric_by_name
+    # and _try_metric_definition's own docstrings for exactly which
+    # phrasings qualify and why. Only ever matched against a FILTERLESS
+    # metric: a filtered metric still benefits from this app's semantic
+    # layer, just via the glossary note appended to the AI-planned prompt
+    # below instead (_metric_glossary_text) - that path writes its own
+    # fresh, sandboxed code, so "Double-check this" (verify_answer) can
+    # always re-run it, which a hand-generated code string for an
+    # arbitrary saved filter combination could not honestly guarantee.
+    if len(explicit_table_names) == 1 and not chart_override and not guided and not skip_prep and metric_definitions:
+        filterless_metrics = [m for m in metric_definitions if not m.get("filters")]
+        if filterless_metrics:
+            metric_hit = match_metric_by_name(prompt, filterless_metrics)
+            if metric_hit:
+                deterministic_metric = _try_metric_definition(df, profile, metric_hit)
+                if deterministic_metric:
+                    return deterministic_metric
+
     # A deterministic shortcut for the exact same question being asked
     # again: rather than asking the model to write pandas code for it a
     # second time (which, even at low randomness, is still an AI decision
@@ -2380,6 +2528,9 @@ def analyze(
     catalog_text = _catalog_text(catalog)
     if catalog_text:
         user_content += catalog_text
+    glossary_text = _metric_glossary_text(metric_definitions)
+    if glossary_text:
+        user_content += glossary_text
     hint = INTENT_HINTS.get(intent or "")
     if hint:
         user_content += f"\n\n(Context: {hint})"
