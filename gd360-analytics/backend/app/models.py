@@ -1582,3 +1582,65 @@ class MLPrediction(Base):
 
     ml_model = relationship("MLModel", back_populates="predictions")
     model_version = relationship("MLModelVersion")
+
+
+class MetricDefinition(Base):
+    """
+    2026-09-30 (semantic layer v1 round): a named, reusable metric - "the
+    single highest-leverage gap" identified in this app's own competitive
+    gap analysis (claude/gd360-competitive-gap-analysis-2026-09-29.md,
+    gap #6). Define "Revenue" or "Active Users" ONCE, with an exact column,
+    aggregation, and filter criteria, and every consumer resolves it
+    through the exact same computation - see services/metrics.py's own
+    module docstring for the full list of consumers (a metric-backed
+    dashboard kpi/gauge tile, this metric's own live current-value display,
+    and services/ai_engine.py's chat integration) and why this is the ONE
+    place that computation lives.
+
+    Deliberately NOT a free-form formula string (e.g. "SUM(amount) WHERE
+    status='completed'") that would need its own expression parser and its
+    own code-execution surface - matching this app's existing "small fixed
+    whitelist, zero code-execution risk" philosophy that routers/
+    dashboard_builder.py's manual block building already established (see
+    that file's own _MANUAL_AGG_FUNCS) and services/ml_training.py's
+    training pipeline follows for the identical reason. agg is one of
+    exactly five values (services/metrics.AGG_FUNCS: sum/avg/count/min/
+    max) - the same five the manual dashboard-block builder already offers,
+    so "save this KPI as a reusable metric" is always a lossless, 1:1
+    translation. filters uses the exact same criterion shape (list of
+    {"column": str, "spec": {...}}) as a dashboard's own cross-filters
+    (see schemas.FilterCriterion) - the Data tab's own Excel-style column
+    filter vocabulary, not a second, narrower one invented just for this.
+
+    Scoped to datasource_id (not workspace_id) - the same split
+    DataQualityRule/DataAccessRule/MLModel already use for an identical
+    reason: a workspace member with edit access to a shared data source
+    can define a metric on it, attributed to themselves (owner_id), and
+    every other member with at least view access to that data source can
+    see and use it (routers/metric_definitions.py enforces this the same
+    two-tier way those other routers already do).
+
+    A metric's name is unique per data source (see __table_args__ below) -
+    two different metrics named "Revenue" on the SAME data source would
+    defeat the entire point (which formula does "Revenue" mean here?);
+    the same name on two DIFFERENT data sources is fine and expected (each
+    data source's own "Revenue" is its own thing).
+    """
+    __tablename__ = "metric_definitions"
+    __table_args__ = (UniqueConstraint("datasource_id", "name", name="uq_metric_definition_datasource_name"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    datasource_id = Column(String, ForeignKey("datasources.id"), nullable=False, index=True)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    metric_column = Column(String, nullable=False)
+    agg = Column(String, nullable=False, default="sum")  # "sum" | "avg" | "count" | "min" | "max"
+    # list[{"column": str, "spec": {...}}] - see this model's own docstring
+    # above; empty/None means "no filter, the whole data source."
+    filters = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    datasource = relationship("DataSource")
+    owner = relationship("User")
