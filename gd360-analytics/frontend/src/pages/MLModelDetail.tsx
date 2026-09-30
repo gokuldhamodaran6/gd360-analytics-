@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
-import { datasourceApi, DataSourceSummary, mlModelsApi, MLModel } from "../api/client";
+import { datasourceApi, DataSourceSummary, mlModelsApi, MLModel, MLModelVersion, PredictResult } from "../api/client";
 import { hasMultipleTables } from "../components/DataSourceForm";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
@@ -14,6 +14,15 @@ import { algorithmLabel, formatNumber, metricLabel, plainLanguageHeadline, statu
 // (with a confirmation dialog, since it overwrites), usage stats, and a
 // creator-only delete. Mirrors QualityChecksPanel.tsx/Governance.tsx's own
 // loading/error/forbidden-state conventions rather than inventing new ones.
+//
+// 2026-09-30 (model trustworthiness round): three additions, all built
+// from real backend numbers, none of them new visual language - "Top
+// drivers" (model.feature_importance, a real global weight per feature),
+// "Why this prediction" inside Try it (predictResult.explanation, a real
+// per-feature contribution for THIS one prediction - only ever present
+// for a linear/logistic model, honestly absent otherwise rather than
+// approximated), and "Version history" (lazy-loaded, same toggle pattern
+// as "Technical details" above) with a real "promote to active" rollback.
 
 function TrashIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
@@ -35,6 +44,25 @@ function StatusBadge({ status }: { status: MLModel["status"] }) {
   return <span className={`inline-flex items-center text-xs font-semibold uppercase tracking-wide px-2.5 py-1 rounded-full ${cls}`}>{statusLabel({ status })}</span>;
 }
 
+// 2026-09-30 (model trustworthiness round): one row of the "Top drivers"
+// panel - a real, normalized-to-100% share of this model's own global
+// feature_importance (see backend models.MLModel.feature_importance's own
+// docstring). Deliberately plain (a label, a filled track, a percentage) -
+// this is a share of the model's own reasoning, not a currency/count value,
+// so no dataviz color-by-series treatment is warranted here.
+function FeatureImportanceBar({ feature, importance }: { feature: string; importance: number }) {
+  const pct = Math.round(importance * 100);
+  return (
+    <div className="flex items-center gap-3">
+      <span className="text-xs w-36 sm:w-44 shrink-0 truncate" title={feature}>{feature}</span>
+      <div className="flex-1 h-2.5 bg-surface2 rounded-full overflow-hidden">
+        <div className="h-2.5 bg-primary rounded-full" style={{ width: `${Math.max(pct, 2)}%` }} />
+      </div>
+      <span className="text-xs font-semibold w-9 text-right shrink-0">{pct}%</span>
+    </div>
+  );
+}
+
 export default function MLModelDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -48,8 +76,17 @@ export default function MLModelDetail() {
   // "Try it"
   const [tryValues, setTryValues] = useState<Record<string, string>>({});
   const [predicting, setPredicting] = useState(false);
-  const [predictResult, setPredictResult] = useState<{ predicted_value: unknown; confidence: number | null } | null>(null);
+  const [predictResult, setPredictResult] = useState<PredictResult | null>(null);
   const [predictError, setPredictError] = useState("");
+
+  // Version history (2026-09-30, model trustworthiness round) - lazy-
+  // loaded the first time the section is opened, same pattern as
+  // showTechnical above.
+  const [showVersions, setShowVersions] = useState(false);
+  const [versions, setVersions] = useState<MLModelVersion[] | null>(null);
+  const [versionsError, setVersionsError] = useState("");
+  const [promotingVersionId, setPromotingVersionId] = useState<string | null>(null);
+  const [promoteError, setPromoteError] = useState("");
 
   // Score a table
   const [ds, setDs] = useState<DataSourceSummary | null>(null);
@@ -94,6 +131,30 @@ export default function MLModelDetail() {
 
   const multiTable = ds ? hasMultipleTables(ds.kind, ds.schema_cache) : false;
   const tableOptions = multiTable ? Object.keys(ds?.schema_cache || {}) : [];
+
+  useEffect(() => {
+    if (!showVersions || !id || versions !== null) return;
+    setVersionsError("");
+    mlModelsApi
+      .listVersions(id)
+      .then(setVersions)
+      .catch(() => setVersionsError("Couldn't load version history. Please try again."));
+  }, [showVersions, id, versions]);
+
+  const runPromote = async (versionId: string) => {
+    if (!id) return;
+    setPromotingVersionId(versionId);
+    setPromoteError("");
+    try {
+      const m = await mlModelsApi.promoteVersion(id, versionId);
+      setModel(m);
+      setVersions(null); // refetch - promoting itself appends a new "promoted" version row
+    } catch {
+      setPromoteError("Couldn't promote this version. Please try again.");
+    } finally {
+      setPromotingVersionId(null);
+    }
+  };
 
   const runPredict = async () => {
     if (!id) return;
@@ -209,6 +270,10 @@ export default function MLModelDetail() {
                 <div className="dash-card p-4 mb-6 border-red-500/30">
                   <div className="text-sm font-semibold text-red-500 mb-1">This model couldn&rsquo;t be trained</div>
                   <p className="text-sm text-muted leading-relaxed">{model.error_message}</p>
+                  <p className="text-xs text-muted leading-relaxed mt-2">
+                    If this model worked before, its last good version may still be saved &mdash; see
+                    &ldquo;Version history&rdquo; below to make it active again.
+                  </p>
                 </div>
               )}
 
@@ -247,6 +312,25 @@ export default function MLModelDetail() {
                     <span>Last used {timeAgo(model.last_predicted_at)}</span>
                     <span>&middot;</span>
                     <span>Trained {timeAgo(model.trained_at)}</span>
+                    <span>&middot;</span>
+                    <span>Version {model.version_number}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* ---- Top drivers (2026-09-30, model trustworthiness round) ---- */}
+              {model.status === "ready" && model.feature_importance && model.feature_importance.length > 0 && (
+                <div className="dash-card p-5 mb-6">
+                  <div className="font-semibold text-sm mb-1">Top drivers</div>
+                  <p className="text-xs text-muted mb-3 leading-relaxed">
+                    What this model leans on most, across every prediction it makes &mdash; not why any one specific
+                    prediction came out the way it did. Computed directly from the trained model&rsquo;s own real
+                    weights.
+                  </p>
+                  <div className="space-y-2.5">
+                    {model.feature_importance.map((f) => (
+                      <FeatureImportanceBar key={f.feature} feature={f.feature} importance={f.importance} />
+                    ))}
                   </div>
                 </div>
               )}
@@ -282,6 +366,35 @@ export default function MLModelDetail() {
                           <span className="text-muted"> &middot; {Math.round(predictResult.confidence * 100)}% confident</span>
                         )}
                       </div>
+                    )}
+                    {/* ---- Why this prediction (2026-09-30, model trustworthiness round) ---- */}
+                    {predictResult && predictResult.explanation && predictResult.explanation.length > 0 && (
+                      <div className="mb-3 text-xs bg-surface2 border border-border rounded-lg p-3 space-y-1.5">
+                        <div className="font-semibold text-text mb-1">Why this prediction</div>
+                        {predictResult.explanation.map((e) => {
+                          const up = e.contribution >= 0;
+                          return (
+                            <div key={e.feature} className="flex items-center justify-between gap-3">
+                              <span className="truncate">
+                                {e.feature}: <span className="font-medium text-text">{String(e.value)}</span>
+                              </span>
+                              <span className={`shrink-0 font-medium ${up ? "text-emerald-500" : "text-red-400"}`}>
+                                {up ? "▲" : "▼"} {up ? "pushed it up" : "pushed it down"} &middot; {formatNumber(e.contribution)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                        <p className="text-[11px] text-muted leading-relaxed pt-1">
+                          Computed from the model&rsquo;s own coefficients &times; this prediction&rsquo;s own
+                          values &mdash; the exact numbers the model used, not an approximation.
+                        </p>
+                      </div>
+                    )}
+                    {predictResult && !predictResult.explanation && (
+                      <p className="text-[11px] text-muted leading-relaxed mb-3">
+                        Per-prediction explanations like this are available for linear/logistic models. This model
+                        ({algorithmLabel(model.algorithm)}) shows the Top drivers panel above instead.
+                      </p>
                     )}
                     <button type="button" className="btn-primary text-sm disabled:opacity-50" disabled={predicting} onClick={runPredict}>
                       {predicting ? "Predicting…" : "Predict"}
@@ -324,8 +437,9 @@ export default function MLModelDetail() {
               <div className="dash-card p-5 mb-6">
                 <div className="font-semibold text-sm mb-1">Keep this model current</div>
                 <p className="text-xs text-muted mb-3">
-                  Retrains this model on the data source&rsquo;s latest data, replacing its current results.
-                  This doesn&rsquo;t keep a history of earlier versions.
+                  Retrains this model on the data source&rsquo;s latest data and makes the new result active.
+                  Your current version is saved first &mdash; see &ldquo;Version history&rdquo; below to bring it
+                  back at any time.
                 </p>
                 {retrainError && (
                   <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-3">{retrainError}</div>
@@ -336,9 +450,87 @@ export default function MLModelDetail() {
                   </button>
                 ) : (
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs text-muted">This will overwrite the current results. Are you sure?</span>
+                    <span className="text-xs text-muted">This makes the new result active. Are you sure?</span>
                     <button type="button" className="btn-primary text-xs" onClick={runRetrain}>Yes, retrain</button>
                     <button type="button" className="btn-secondary text-xs" onClick={() => setConfirmingRetrain(false)}>Cancel</button>
+                  </div>
+                )}
+              </div>
+
+              {/* ---- Version history (2026-09-30, model trustworthiness round) ---- */}
+              <div className="dash-card p-5 mb-6">
+                <div className="font-semibold text-sm mb-1">Version history</div>
+                <p className="text-xs text-muted mb-3">
+                  Every real training run of this model, newest first. Promoting an older version makes it active
+                  again immediately &mdash; no retraining involved.
+                </p>
+                <button
+                  type="button"
+                  className="text-xs font-semibold text-primary hover:underline"
+                  onClick={() => setShowVersions(!showVersions)}
+                >
+                  {showVersions ? "Hide version history" : "Show version history"}
+                </button>
+
+                {showVersions && (
+                  <div className="mt-3">
+                    {versionsError && (
+                      <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-2">{versionsError}</div>
+                    )}
+                    {promoteError && (
+                      <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-2">{promoteError}</div>
+                    )}
+                    {versions === null && !versionsError && <div className="text-xs text-muted">Loading&hellip;</div>}
+                    {versions !== null && versions.length === 0 && (
+                      <div className="text-xs text-muted">No version history yet.</div>
+                    )}
+                    {versions !== null && versions.length > 0 && (
+                      <div className="space-y-2">
+                        {versions.map((v) => (
+                          <div
+                            key={v.id}
+                            className={`text-xs rounded-lg p-3 border ${v.is_current ? "border-primary/40 bg-primary/5" : "border-border bg-surface2"}`}
+                          >
+                            <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold">Version {v.version_number}</span>
+                                {v.is_current && (
+                                  <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-primary/15 text-primary">
+                                    Active
+                                  </span>
+                                )}
+                                {v.created_reason === "promoted" && (
+                                  <span className="text-[10px] text-muted">promoted, no retraining</span>
+                                )}
+                              </div>
+                              {!v.is_current && (
+                                <button
+                                  type="button"
+                                  className="btn-secondary text-[11px] py-1 px-2 disabled:opacity-50"
+                                  disabled={promotingVersionId === v.id}
+                                  onClick={() => runPromote(v.id)}
+                                >
+                                  {promotingVersionId === v.id ? "Promoting…" : "Promote to active"}
+                                </button>
+                              )}
+                            </div>
+                            <div className="text-muted">
+                              {algorithmLabel(v.algorithm)} &middot; trained on{" "}
+                              {v.trained_row_count?.toLocaleString() ?? "an unknown number of"} rows &middot; {timeAgo(v.created_at)}
+                            </div>
+                            {v.metrics && (
+                              <div className="flex items-center gap-2 flex-wrap mt-1">
+                                {Object.entries(v.metrics).map(([k, val]) => (
+                                  <span key={k} className="px-1.5 py-0.5 rounded-full bg-surface2 border border-border">
+                                    {metricLabel(k)}: {typeof val === "number" ? formatNumber(val) : String(val)}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
