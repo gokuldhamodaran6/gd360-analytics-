@@ -133,6 +133,19 @@ class DataSource(Base):
     cleaned_updated_at = Column(DateTime, nullable=True)
     read_only = Column(Boolean, default=True)
     schema_cache = Column(JSON, default=dict)
+    # 2026-09-30 (data catalog v1): a short, plain-English blurb of what
+    # this data source actually is/holds - "the Stripe export our finance
+    # team refreshes every Monday", not a technical schema description
+    # (that's what schema_cache is for). Purely optional, purely
+    # descriptive, never computed or inferred - PATCH
+    # /datasources/{id}/description sets it, editable tier (see
+    # FlowAnnotation's own docstring for why a descriptive fact like this
+    # is shared/collaborative rather than owner-only, unlike rename_
+    # datasource above which stays owner-only). The one field
+    # services/catalog.py's account-wide search actually matches text
+    # against for a data source (alongside its name) - see that module's
+    # own docstring for the full data-catalog-v1 design.
+    description = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     # Set the first time the old single-snapshot "cleaned_data" on this row
     # is turned into a proper "Version 1" saved table. Guards that one-time
