@@ -332,6 +332,10 @@ export type DataSourceSummary = {
   // refreshed X ago" / "never refreshed" text on its card (see
   // pages/DataSources.tsx) - never a fabricated value.
   api_last_refreshed_at?: string | null;
+  // 2026-09-30 (data catalog v1): a short, optional, human-written blurb of
+  // what this data source is - see backend models.DataSource.description's
+  // own comment. Never computed or inferred, unlike schema_cache above.
+  description?: string | null;
 };
 
 // 2026-09-28 (streaming/webhook ingestion round): what connect_streaming/
@@ -478,6 +482,13 @@ export const datasourceApi = {
 
   rename: (id: string, name: string) =>
     api.patch<{ id: string; name: string }>(`/datasources/${id}`, { name }).then((r) => r.data),
+
+  // 2026-09-30 (data catalog v1): a short, plain-English blurb of what this
+  // data source actually is - editable tier (not owner-only, unlike rename
+  // above) - see backend models.DataSource.description's own comment.
+  // Passing an empty/whitespace-only string clears it back to null.
+  updateDescription: (id: string, description: string) =>
+    api.patch<DataSourceSummary>(`/datasources/${id}/description`, { description }).then((r) => r.data),
 
   renameVersion: (id: string, versionId: string, name: string) =>
     api.patch<{ id: string; name: string }>(`/datasources/${id}/versions/${versionId}`, { name }).then((r) => r.data),
@@ -2272,4 +2283,30 @@ export const pipelinesApi = {
     api
       .get<PipelineRunsPage>(`/pipelines/${pipelineId}/runs`, { params: { page, page_size: pageSize } })
       .then((r) => r.data),
+};
+
+// ---- Data catalog v1 (2026-09-30, pages/Catalog.tsx) - see backend
+// services/catalog.py's own module docstring for the full design: a
+// single, account-wide, LIVE-queried search across every kind of asset
+// this app has (never a separate index that could drift out of sync). ----
+export type CatalogAssetType = "datasource" | "column" | "transform" | "metric" | "dashboard" | "pipeline";
+
+export type CatalogEntry = {
+  asset_type: CatalogAssetType;
+  id: string;
+  name: string;
+  subtitle: string | null;
+  description: string | null;
+  // The data source this entry belongs to, if any - null for a data
+  // source/dashboard/pipeline entry itself. Lets the results list show
+  // "amount — on Orders API" for a column/transform/metric.
+  parent_id: string | null;
+  parent_name: string | null;
+};
+
+export const catalogApi = {
+  // `q` blank means "browse everything this person can see" (no column
+  // entries - see backend's own comment on why those only ever appear once
+  // there's something to actually search for).
+  search: (q: string) => api.get<CatalogEntry[]>("/catalog/search", { params: { q: q || undefined } }).then((r) => r.data),
 };
