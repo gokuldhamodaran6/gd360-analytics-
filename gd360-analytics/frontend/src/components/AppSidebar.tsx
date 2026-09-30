@@ -62,6 +62,22 @@ function JobsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
   );
 }
 
+// 2026-09-30 (orchestration v1): the Pipelines page's own nav entry,
+// right after Jobs - a linked chain of small nodes, distinct from the
+// clock-face Jobs icon above since a pipeline is several DIFFERENT
+// actions run in order, not one dashboard on a single timer.
+function PipelinesIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="5" cy="12" r="2.3" />
+      <circle cx="12" cy="6" r="2.3" />
+      <circle cx="19" cy="12" r="2.3" />
+      <circle cx="12" cy="18" r="2.3" />
+      <path d="M7 12h10M9.6 7.6l2.9 2.9M14.4 7.6l-2.9 2.9M9.6 16.4l2.9-2.9M14.4 16.4l-2.9-2.9" />
+    </svg>
+  );
+}
+
 // 2026-09-23 (sidebar redesign round): a third top-level nav entry, for the
 // new /data page - every connected source, browsable by category, replaces
 // this sidebar's old always-expanded flat list.
@@ -1142,6 +1158,15 @@ function SidebarNav({
         >
           <JobsIcon />
           {!collapsed && "Jobs"}
+        </Link>
+        <Link
+          to="/pipelines"
+          onClick={onNavigate}
+          title={collapsed ? "Pipelines" : undefined}
+          className={linkClass(pathname.startsWith("/pipelines"))}
+        >
+          <PipelinesIcon />
+          {!collapsed && "Pipelines"}
         </Link>
         <Link
           to="/data"
