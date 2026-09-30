@@ -18,6 +18,7 @@ import DataFlowMap, { FlowJumpTarget } from "../components/DataFlowMap";
 import BuildDashboardModal from "../components/BuildDashboardModal";
 import QualityChecksPanel from "../components/QualityChecksPanel";
 import AccessRulesPanel from "../components/AccessRulesPanel";
+import MetricsPanel from "../components/MetricsPanel";
 import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
 import {
   CLIENT_PIVOTABLE_TYPES, ExploreConfig, ResultColumn, buildExploreFigure, defaultExploreConfig,
@@ -547,7 +548,7 @@ export default function Workspace() {
   // this data source), never overriding a real memory that already exists.
   const centerTabStorageKey = (dsId: string | undefined) => (dsId ? `gd360_center_tab_${dsId}` : null);
   const hadStoredCenterTab = useRef(false);
-  const [centerTab, setCenterTabState] = useState<"data" | "chart" | "flow" | "quality" | "access">(() => {
+  const [centerTab, setCenterTabState] = useState<"data" | "chart" | "flow" | "quality" | "access" | "metrics">(() => {
     if (searchParams.get("tab") === "flow") {
       hadStoredCenterTab.current = true;
       return "flow";
@@ -555,7 +556,10 @@ export default function Workspace() {
     try {
       const key = centerTabStorageKey(datasourceId);
       const stored = key ? localStorage.getItem(key) : null;
-      if (stored === "data" || stored === "chart" || stored === "flow" || stored === "quality" || stored === "access") {
+      if (
+        stored === "data" || stored === "chart" || stored === "flow" || stored === "quality" ||
+        stored === "access" || stored === "metrics"
+      ) {
         hadStoredCenterTab.current = true;
         return stored;
       }
@@ -566,7 +570,7 @@ export default function Workspace() {
     }
     return "data";
   });
-  const setCenterTab = (tab: "data" | "chart" | "flow" | "quality" | "access") => {
+  const setCenterTab = (tab: "data" | "chart" | "flow" | "quality" | "access" | "metrics") => {
     setCenterTabState(tab);
     try {
       const key = centerTabStorageKey(datasourceId);
@@ -2186,6 +2190,17 @@ export default function Workspace() {
               >
                 Access
               </button>
+              {/* 2026-09-30 (semantic layer v1): this data source's own
+                  saved metric glossary - see components/MetricsPanel.tsx
+                  and backend models.MetricDefinition's own docstring. Same
+                  "always visible, panel handles its own view-only state"
+                  convention as Quality checks/Access above. */}
+              <button
+                className={`text-sm px-4 py-2 rounded-lg font-medium transition ${centerTab === "metrics" ? "bg-primary text-white" : "btn-secondary"}`}
+                onClick={() => setCenterTab("metrics")}
+              >
+                Metrics
+              </button>
             </div>
             <div className="flex items-center gap-3 shrink-0">
               {/* 2026-09-23, round four (Gokul's own explicit ask: "in chat
@@ -2352,6 +2367,8 @@ export default function Workspace() {
               <QualityChecksPanel datasourceId={datasourceId} />
             ) : centerTab === "access" && datasourceId ? (
               <AccessRulesPanel datasourceId={datasourceId} />
+            ) : centerTab === "metrics" && datasourceId ? (
+              <MetricsPanel datasourceId={datasourceId} />
             ) : (
               <div className="h-full flex flex-col gap-2 overflow-hidden">
                 {charts.length > 0 && (
