@@ -9,7 +9,7 @@ from .database import init_db
 from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, admin, conversations, goku,
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
-    data_access_rules, ml_models, metric_definitions, transforms, pipelines,
+    data_access_rules, ml_models, metric_definitions, transforms, pipelines, catalog,
 )
 from .services.scheduler import start_scheduler
 
@@ -163,6 +163,9 @@ app.include_router(transforms.router)
 # quality checks), run strictly in order, on demand or on a schedule - see
 # models.Pipeline's own docstring.
 app.include_router(pipelines.router)
+# 2026-09-30 (data catalog v1): a single, account-wide search across every
+# kind of asset this app has - see services/catalog.py's own docstring.
+app.include_router(catalog.router)
 
 
 @app.on_event("startup")
