@@ -1719,3 +1719,156 @@ class DataTransform(Base):
 
     datasource = relationship("DataSource")
     owner = relationship("User")
+
+
+class Pipeline(Base):
+    """
+    2026-09-30 (orchestration v1): a named, saved, ORDERED chain of a few
+    whitelisted actions run strictly in sequence - "run step B only after
+    step A succeeds" (claude/gd360-competitive-gap-analysis-2026-09-29.md
+    gap #5: "Orchestration (pipeline/job scheduling with dependencies)"),
+    the single biggest data-engineer-facing gap per
+    claude/gd360-capability-map-2026-09-28.md's own priority ranking, and
+    the gap routers/datasources.py's own refresh_api endpoint had already
+    named plainly before this round existed: "Wiring an 'api' source into
+    services/scheduler.py's existing... loop is real, separate future
+    work... needs its own design and testing pass."
+
+    Deliberately v1-scoped to a LINEAR chain, not a full dependency graph
+    (DAG) - no branching, no fan-out/fan-in, no retries/backfill. Real,
+    useful orchestration ("every morning: refresh this API source, then
+    rebuild this dashboard so its AI-answered blocks see the fresh data,
+    then re-check this source's quality rules and flag anything broken")
+    without the complexity of a general scheduler like Airflow/Dagster/
+    Prefect - matching this app's "smallest thing genuinely useful" build
+    discipline every prior phase has followed (see, e.g., DataTransform's
+    own docstring choosing five fixed step types over a free-form formula
+    language).
+
+    `steps` is a JSON list of small dicts, each one of a FIXED, reviewable
+    vocabulary of THREE step types - never a free-form script or arbitrary
+    code:
+      - "refresh_datasource": {"type": "refresh_datasource",
+        "datasource_id": "..."} - re-fetches an "api"-kind data source's
+        live snapshot (services/datasource_refresh.refresh_api_datasource,
+        the exact same logic routers/datasources.py's refresh_api "Run
+        now" button already uses by hand - only ever applies to
+        kind=="api" sources; every other kind is read live on every query
+        and has nothing to "refresh").
+      - "rebuild_dashboard": {"type": "rebuild_dashboard", "dashboard_id":
+        "..."} - reuses services/scheduler.refresh_dashboard wholesale
+        (the exact function the existing 60-second dashboard-only
+        scheduler and the Jobs page's own "Run now" already call), so a
+        pipeline-triggered rebuild behaves identically to those and is
+        logged into the same models.JobRun history too.
+      - "run_quality_checks": {"type": "run_quality_checks",
+        "datasource_id": "..."} - re-runs every models.DataQualityRule
+        already defined on that data source (services/quality_checks.
+        run_quality_rule, one call per rule) and fails this step (stopping
+        the chain) if any rule comes back "fail" or "error" - an honest
+        signal a broken chain should stop on, never silently swallowed.
+    See services/pipelines.py's STEP_HANDLERS for the authoritative
+    dispatch and exact behavior of each.
+
+    Applied in array order via services/pipelines.run_pipeline_steps,
+    which - UNLIKE services/transforms.apply_transform_steps - does not
+    discard prior work on a failure: each step here is a real,
+    already-happened side effect against the live database (an API fetch
+    actually ran, a dashboard actually recomputed), so a later step
+    failing never undoes an earlier step that already succeeded; it only
+    stops anything further in the chain from running this time.
+
+    NOT scoped to one datasource_id (unlike DataTransform/MetricDefinition)
+    because a chain's steps can each target a DIFFERENT data source or
+    dashboard - scoped to owner_id (+ optional workspace_id, mirroring
+    Dashboard's own optional workspace scoping) instead, matching this
+    app's existing two-tier access convention (services/workspace_access.py)
+    applied at the WORKSPACE-membership level rather than through one
+    parent datasource, the same way routers/jobs.py already scopes the
+    dashboard-schedule feature account-wide rather than per-datasource.
+
+    schedule_interval reuses the exact same four-value vocabulary
+    (schemas.REFRESH_INTERVALS / schemas.PIPELINE_SCHEDULE_INTERVALS,
+    minus "off") services/scheduler.py's dashboard auto-refresh already
+    established, and next_run_at/last_run_at are computed via that same
+    module's compute_next_refresh_at - one shared interval vocabulary and
+    clock, not two competing ones. See services/scheduler.py's _tick,
+    extended in this round to also find due Pipelines alongside due
+    Dashboards - still one 60-second loop, one HONEST LIMITATION (only
+    runs while this web process is awake - see that module's own
+    docstring, unchanged by this round).
+    """
+    __tablename__ = "pipelines"
+    __table_args__ = (UniqueConstraint("owner_id", "name", name="uq_pipeline_owner_name"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    steps = Column(JSON, nullable=False, default=list)
+    # None ("off") | "15m" | "1h" | "6h" | "daily" - see this model's own
+    # docstring above.
+    schedule_interval = Column(String, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+    last_run_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    owner = relationship("User")
+    workspace = relationship("Workspace")
+
+
+class PipelineRun(Base):
+    """One execution record of a Pipeline (see that model's own docstring)
+    - mirrors models.JobRun's own "created before any work happens, status
+    starts running, finally always sets finished_at" honesty pattern
+    exactly, generalized to a chain of MULTIPLE steps instead of one
+    dashboard refresh. pipeline_id is nullable (not NOT NULL) for the same
+    reason JobRun.dashboard_id is - a deleted pipeline keeps its run
+    history rather than cascading it away. pipeline_name is the pipeline's
+    name AT THE TIME this ran, denormalized on purpose (same as JobRun.
+    target_label), so a later rename - or the pipeline's own deletion -
+    never rewrites what an old run's history says it was.
+
+    step_results is a JSON list, one dict per step ACTUALLY ATTEMPTED
+    (never one for a step skipped after an earlier one already failed -
+    see services/pipelines.run_pipeline_steps), each shaped
+    {"index", "type", "label", "status", "detail", "error"} - "label" is
+    the target's real name AT THE TIME this step ran (e.g. the data
+    source's or dashboard's actual name), resolved live, never guessed or
+    left as a bare id; "detail" is a small dict of real, honest facts
+    about what that step actually did (e.g. {"rows": 4213, "columns": 9}
+    for a refresh, {"checked": 5, "failing": 0} for a quality-check pass) -
+    never a fabricated summary.
+
+    status is "running" | "success" | "failed" - "success" only when
+    EVERY step in the pipeline's steps list was attempted and succeeded;
+    a chain that stops partway through (one or more steps never reached)
+    is always "failed", even though the steps that did run may have
+    themselves succeeded - the step_results list itself is what shows
+    exactly how far it got, so nothing about a partial run is hidden
+    behind a single pass/fail flag."""
+    __tablename__ = "pipeline_runs"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    pipeline_id = Column(String, ForeignKey("pipelines.id"), nullable=True, index=True)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    run_type = Column(String, nullable=False)  # "scheduled" | "manual"
+    pipeline_name = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="running")  # "running" | "success" | "failed"
+    error_message = Column(Text, nullable=True)
+    step_results = Column(JSON, nullable=False, default=list)
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    finished_at = Column(DateTime, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+
+    @property
+    def duration_seconds(self) -> float | None:
+        """None while status=="running" (finished_at not set yet) - the
+        Pipelines page shows a live spinner instead of a duration for
+        those rows rather than a fabricated 0.0s, same convention
+        JobRun.duration_seconds already established."""
+        if self.finished_at is None:
+            return None
+        return (self.finished_at - self.started_at).total_seconds()
