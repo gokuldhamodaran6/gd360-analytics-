@@ -53,6 +53,21 @@ manually" by hand - it does not reimplement that logic a second time:
     existed) is left exactly as it is - the same "leave it alone rather
     than guess" rule Phase 2b's cross-filtering already established for an
     AI block with no recipe to safely re-run.
+
+2026-09-30 (orchestration v1): _tick below ALSO finds every models.Pipeline
+whose own schedule is due and runs it, right after the dashboards loop -
+same one 60-second loop, same in-process/HONEST LIMITATION above, unchanged.
+See services/pipelines.py for what a Pipeline actually is and how it runs
+(run_pipeline, called here exactly the way refresh_dashboard is called for
+a due dashboard - one at a time, one bad pipeline never blocking another,
+same as before). This is genuinely the same generalization
+routers/datasources.py's own refresh_api endpoint had already flagged as
+future work: "giving [this loop] a second, different kind of thing to
+refresh on a timer needs its own design and testing pass" - a Pipeline's
+"refresh_datasource" step type is what lets an API data source's own data
+join this scheduler's reach, without this loop ever refreshing one
+directly itself (still per-DASHBOARD or per-PIPELINE, never a data source
+on its own timer independent of either).
 """
 import logging
 from datetime import datetime, timedelta
@@ -245,7 +260,15 @@ def _tick() -> None:
     now, and refreshes each one in turn, one at a time (never in parallel -
     this app has no need for that at the volume a single small SaaS
     product's dashboards run at, and it keeps the log/JobRun ordering
-    simple and easy to reason about)."""
+    simple and easy to reason about) - then does the exact same thing for
+    every due Pipeline (2026-09-30, orchestration v1 - see this module's
+    own docstring)."""
+    # Local import: services/pipelines.py itself locally-imports
+    # compute_next_refresh_at/refresh_dashboard from this module (see its
+    # own comments) to avoid a circular import at module load time; this
+    # is the other half of that same avoidance.
+    from .pipelines import run_pipeline
+
     db = SessionLocal()
     try:
         now = datetime.utcnow()
@@ -268,6 +291,22 @@ def _tick() -> None:
                 # failing), so one dashboard's bad luck can never stop the
                 # rest of this tick's due dashboards from being checked.
                 logger.warning("[scheduler] tick failed for dashboard %s: %s", dashboard.id, e)
+
+        due_pipelines = (
+            db.query(models.Pipeline)
+            .filter(models.Pipeline.schedule_interval.isnot(None))
+            .filter(models.Pipeline.next_run_at.isnot(None))
+            .filter(models.Pipeline.next_run_at <= now)
+            .all()
+        )
+        for pipeline in due_pipelines:
+            try:
+                run_pipeline(db, pipeline, run_type="scheduled")
+            except Exception as e:
+                # Same belt-and-suspenders outer catch as the dashboards
+                # loop above - run_pipeline already records everything it
+                # can into the PipelineRun row itself.
+                logger.warning("[scheduler] tick failed for pipeline %s: %s", pipeline.id, e)
     finally:
         db.close()
 
