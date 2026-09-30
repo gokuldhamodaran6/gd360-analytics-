@@ -23,6 +23,22 @@ only one distinct value), train_model fails cleanly with a real, honest
 error_message rather than raising an unhandled exception or inventing a
 number - the same "never crash, never lie" contract
 services/quality_checks.run_quality_rule already follows.
+
+2026-09-30 (model trustworthiness round): three real additions, all read
+straight off objects scikit-learn already computes during training/
+prediction - never a new statistical technique, never an approximation
+dressed up as a real number. (1) _extract_feature_importance: a trained
+model's own GLOBAL feature importance (RandomForest*'s feature_importances_,
+or LogisticRegression/LinearRegression's coef_), mapped back onto real
+column names. (2) _explain_prediction: for a binary logistic/linear model
+only, the real per-feature contribution behind one SPECIFIC prediction
+(coefficient x this row's own value) - deliberately None for a random
+forest or a multiclass model rather than a fabricated approximation (full
+SHAP/LIME is real, separately-scoped future work - see the competitive gap
+analysis). (3) _record_version/models.MLModelVersion: every call into
+train_model that reaches status="ready" now appends a real, timestamped
+version snapshot instead of silently overwriting the previous one - see
+models.MLModelVersion's own docstring.
 """
 from __future__ import annotations
 
@@ -44,6 +60,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sqlalchemy import func
 
 from .. import models
 
@@ -229,6 +246,184 @@ def build_preprocessing_pipeline(df: pd.DataFrame, feature_columns: list[str]) -
     return ColumnTransformer(transformers, remainder="drop")
 
 
+def _original_feature_weights(preprocessing: ColumnTransformer, raw_weights: np.ndarray) -> dict[str, float]:
+    """2026-09-30 (model trustworthiness round): maps `raw_weights` (one
+    real weight per column of `preprocessing`'s fitted OUTPUT - e.g. a
+    RandomForest's own feature_importances_, or abs(LogisticRegression/
+    LinearRegression's coef_)) back onto this model's real, original
+    feature columns - summing a one-hot-encoded categorical column's
+    several dummy weights into one honest entry for that column, so
+    "plan_tier" reads as one number, never three confusing fragments
+    ("plan_tier_Pro"/"plan_tier_Basic"/"plan_tier_Enterprise").
+
+    Walks `preprocessing.transformers_` (the fitted ColumnTransformer's
+    own record of what it actually did, in the exact order it
+    concatenates output columns) rather than parsing a generated name
+    like "cat__plan_tier_Pro" back apart - a real column name can itself
+    contain underscores, so there is no honest way to un-parse that
+    string. A fitted OneHotEncoder's own `categories_` (one array per
+    input column, in the same order build_preprocessing_pipeline passed
+    them in) says exactly how many output columns each real categorical
+    column expanded into, with zero guessing."""
+    weights: dict[str, float] = {}
+    offset = 0
+    for name, transformer, columns in preprocessing.transformers_:
+        if name == "num":
+            for col in columns:
+                weights[col] = weights.get(col, 0.0) + float(raw_weights[offset])
+                offset += 1
+        elif name == "cat":
+            onehot = transformer.named_steps["onehot"]
+            for col, categories in zip(columns, onehot.categories_):
+                width = len(categories)
+                weights[col] = weights.get(col, 0.0) + float(np.sum(raw_weights[offset:offset + width]))
+                offset += width
+        # "remainder" (remainder="drop") produces zero output columns and
+        # is never anything but the literal string "drop" here - nothing
+        # to walk, so it's simply skipped rather than matched explicitly.
+    return weights
+
+
+def _extract_feature_importance(pipeline: Pipeline) -> list[dict] | None:
+    """2026-09-30 (model trustworthiness round): real, GLOBAL feature
+    importance for a freshly-fitted `pipeline` - see
+    models.MLModel.feature_importance's own docstring. Reads whichever
+    real attribute this winning algorithm actually exposes -
+    RandomForest*'s own feature_importances_ (already non-negative,
+    already meaningful as relative magnitudes), or LogisticRegression/
+    LinearRegression's own coef_ (made non-negative via abs() first,
+    since here only MAGNITUDE is being compared across features - see
+    explain_prediction below for where a coefficient's real SIGN is what
+    actually matters). Never invents a number for an algorithm that
+    exposes neither - returns None in that case, this module's own
+    "never fabricate, never crash" contract (see this module's own
+    docstring) applied to a hypothetical future candidate algorithm,
+    not any of the four this app trains today."""
+    estimator = pipeline.named_steps["model"]
+    if hasattr(estimator, "feature_importances_"):
+        raw = np.asarray(estimator.feature_importances_, dtype=float)
+    elif hasattr(estimator, "coef_"):
+        coef = np.asarray(estimator.coef_, dtype=float)
+        # LogisticRegression's coef_ is shape (1, n_features) for binary
+        # classification, (n_classes, n_features) for multiclass - either
+        # way, collapse to one real magnitude per feature by averaging the
+        # absolute weight across whichever classes exist.
+        raw = np.mean(np.abs(coef), axis=0) if coef.ndim > 1 else np.abs(coef)
+    else:
+        return None
+
+    weights = _original_feature_weights(pipeline.named_steps["preprocess"], raw)
+    total = sum(weights.values())
+    if total <= 0:
+        return None
+    return sorted(
+        ({"feature": f, "importance": w / total} for f, w in weights.items()),
+        key=lambda e: e["importance"], reverse=True,
+    )
+
+
+def _explain_prediction(
+    pipeline: Pipeline, algorithm: str | None, row: dict, feature_columns: list[str],
+) -> list[dict] | None:
+    """2026-09-30 (model trustworthiness round): the real, per-feature
+    contribution breakdown for ONE specific prediction - see
+    models.MLPrediction.explanation's own docstring for the full design.
+    `row` is this prediction's own already-coerced input values (see
+    _coerce_form_value) - the exact values the pipeline itself used.
+
+    Only ever computed for a binary logistic_regression or a
+    linear_regression winning algorithm. The honest reason: a linear
+    model's own coefficient times this row's own (preprocessed) value IS
+    the real number that model actually added toward (positive) or away
+    from (negative) its prediction for that feature - nothing
+    approximated. A random forest has no equivalent single real number
+    per feature per prediction without a genuinely different technique
+    (SHAP/LIME - a real, separately-scoped piece of work; see the
+    competitive gap analysis's own "model explainability" entry) - rather
+    than fabricate a plausible-looking number for a tree model, this
+    returns None, and the UI shows this model's real GLOBAL
+    feature_importance instead (see routers/ml_models.py/pages/
+    MLModelDetail.tsx). A multiclass logistic regression (coef_ holding
+    more than one class's row) returns None for the same reason: no
+    single feature-level number honestly describes "up or down" across
+    more than two classes at once."""
+    if algorithm not in ("logistic_regression", "linear_regression"):
+        return None
+
+    estimator = pipeline.named_steps["model"]
+    coef = np.asarray(estimator.coef_, dtype=float)
+    if coef.ndim > 1 and coef.shape[0] > 1:
+        return None
+    coef = coef.reshape(-1)
+
+    preprocessing = pipeline.named_steps["preprocess"]
+    X = pd.DataFrame([row], columns=feature_columns)
+    transformed = preprocessing.transform(X)
+    if hasattr(transformed, "toarray"):
+        transformed = transformed.toarray()
+    transformed = np.asarray(transformed, dtype=float)[0]
+
+    contributions: dict[str, float] = {}
+    offset = 0
+    for name, transformer, columns in preprocessing.transformers_:
+        if name == "num":
+            for col in columns:
+                contributions[col] = contributions.get(col, 0.0) + float(coef[offset] * transformed[offset])
+                offset += 1
+        elif name == "cat":
+            onehot = transformer.named_steps["onehot"]
+            for col, categories in zip(columns, onehot.categories_):
+                width = len(categories)
+                segment = coef[offset:offset + width] * transformed[offset:offset + width]
+                contributions[col] = contributions.get(col, 0.0) + float(np.sum(segment))
+                offset += width
+
+    return sorted(
+        ({"feature": f, "value": row.get(f), "contribution": c} for f, c in contributions.items()),
+        key=lambda e: abs(e["contribution"]), reverse=True,
+    )
+
+
+def _record_version(db, ml_model_row: models.MLModel) -> None:
+    """2026-09-30 (model trustworthiness round): appends one new
+    MLModelVersion snapshot of `ml_model_row`'s own just-updated fields
+    and makes it the current one - see that model's own docstring. Called
+    from train_model only on the success path (status == "ready"), so
+    both a model's very first training run and every later retrain go
+    through this exact same path - there is no separate, second place
+    that ever creates a version row. Flips every OTHER version of this
+    model to is_current=False first (there is normally at most one, but
+    this is written to be correct even if that is ever not true), then
+    keeps ml_model_row.version_number in sync with the new version's own
+    number."""
+    db.query(models.MLModelVersion).filter(
+        models.MLModelVersion.ml_model_id == ml_model_row.id,
+        models.MLModelVersion.is_current.is_(True),
+    ).update({"is_current": False})
+
+    previous_max = (
+        db.query(func.max(models.MLModelVersion.version_number))
+        .filter(models.MLModelVersion.ml_model_id == ml_model_row.id)
+        .scalar()
+        or 0
+    )
+    next_version = previous_max + 1
+    db.add(models.MLModelVersion(
+        ml_model_id=ml_model_row.id,
+        version_number=next_version,
+        is_current=True,
+        created_reason="trained",
+        algorithm=ml_model_row.algorithm,
+        feature_columns=ml_model_row.feature_columns,
+        excluded_columns=ml_model_row.excluded_columns,
+        model_artifact=ml_model_row.model_artifact,
+        metrics=ml_model_row.metrics,
+        feature_importance=ml_model_row.feature_importance,
+        trained_row_count=ml_model_row.trained_row_count,
+    ))
+    ml_model_row.version_number = next_version
+
+
 def _json_safe(value: Any) -> Any:
     """Converts a numpy scalar (what pandas/scikit-learn hand back from
     .predict()/.agg()/etc) into a plain Python type - neither this app's
@@ -379,10 +574,19 @@ def train_model(db, ml_model_row: models.MLModel, df: pd.DataFrame) -> None:
         ml_model_row.algorithm = best_name
         ml_model_row.model_artifact = buffer.getvalue()
         ml_model_row.metrics = metrics
+        # 2026-09-30 (model trustworthiness round): real, global feature
+        # importance - see models.MLModel.feature_importance's own
+        # docstring and _extract_feature_importance above.
+        ml_model_row.feature_importance = _extract_feature_importance(best_pipeline)
         ml_model_row.status = "ready"
         ml_model_row.error_message = None
         ml_model_row.trained_row_count = len(usable_df)
         ml_model_row.trained_at = datetime.utcnow()
+        # 2026-09-30 (model trustworthiness round): appends a real version
+        # snapshot instead of letting the assignments above be this
+        # model's only, silently-overwritten record of itself - see
+        # _record_version's own docstring.
+        _record_version(db, ml_model_row)
     except Exception as e:  # noqa: BLE001 - see this function's own docstring: never raise, always an honest failure
         _fail(ml_model_row, f"Training failed unexpectedly: {e}")
 
@@ -415,7 +619,7 @@ def _coerce_form_value(value: Any) -> Any:
         return value
 
 
-def predict_one(ml_model_row: models.MLModel, input_values: dict) -> tuple[Any, float | None]:
+def predict_one(ml_model_row: models.MLModel, input_values: dict) -> tuple[Any, float | None, list[dict] | None]:
     """Runs one prediction through `ml_model_row`'s fitted pipeline.
     Missing expected features in `input_values` are filled with None/NaN -
     the pipeline's own imputer (see build_preprocessing_pipeline) handles
@@ -423,10 +627,15 @@ def predict_one(ml_model_row: models.MLModel, input_values: dict) -> tuple[Any, 
     function raising over a form field someone left blank. Every value is
     also passed through _coerce_form_value first, so a plain HTML form's
     string input for a numeric feature doesn't break the pipeline's own
-    numeric transformers. Returns (predicted_value, confidence) -
-    confidence is predict_proba's top-class probability for a
-    classification model whose winning algorithm exposes one, else None
-    (never a fabricated number)."""
+    numeric transformers. Returns (predicted_value, confidence,
+    explanation) - confidence is predict_proba's top-class probability for
+    a classification model whose winning algorithm exposes one, else None
+    (never a fabricated number); explanation is the real per-feature
+    contribution breakdown from _explain_prediction (2026-09-30, model
+    trustworthiness round) - linear/logistic models only, else None (see
+    that function's own docstring). The fitted pipeline is loaded once
+    here and reused for both the prediction and the explanation, rather
+    than loading the same joblib artifact twice."""
     pipeline = joblib.load(io.BytesIO(ml_model_row.model_artifact))
     feature_columns = ml_model_row.feature_columns or []
     row = {col: _coerce_form_value(input_values.get(col)) for col in feature_columns}
@@ -442,7 +651,15 @@ def predict_one(ml_model_row: models.MLModel, input_values: dict) -> tuple[Any, 
         except Exception:
             confidence = None
 
-    return predicted_value, confidence
+    try:
+        explanation = _explain_prediction(pipeline, ml_model_row.algorithm, row, feature_columns)
+    except Exception:
+        # Same "never crash, never fabricate" contract as the rest of this
+        # module (see this module's own docstring) - a genuinely unusable
+        # explanation just means None, never a broken prediction response.
+        explanation = None
+
+    return predicted_value, confidence, explanation
 
 
 def score_dataframe(ml_model_row: models.MLModel, df: pd.DataFrame) -> pd.DataFrame:
