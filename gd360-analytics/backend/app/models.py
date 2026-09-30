@@ -1412,6 +1412,31 @@ class MLModel(Base):
     DataQualityRule already uses for the identical reason (a workspace
     member with edit access can train a model on a teammate's shared data
     source, attributed to themselves).
+
+    feature_importance (added 2026-09-30, model trustworthiness round):
+    real, computed global feature importance - list[{"feature": str,
+    "importance": float}], sorted highest first, weights normalized to
+    sum to 1.0 - see services/ml_training._extract_feature_importance for
+    exactly how each algorithm's own real attribute (RandomForest*'s
+    feature_importances_, LogisticRegression/LinearRegression's coef_) is
+    read and mapped back to the original column names (collapsing a
+    one-hot-encoded categorical column's several dummy weights back into
+    one entry per real column). This is GLOBAL importance - "what this
+    model leans on overall" - never a per-prediction explanation; see
+    MLPrediction.explanation below for the one thing this app can
+    honestly say about a SPECIFIC prediction, and services/
+    ml_training._explain_prediction's own docstring for exactly why that
+    is only ever computed for a linear/logistic model, never a random
+    forest.
+
+    version_number/versions (added 2026-09-30, model trustworthiness
+    round): this row always mirrors whichever MLModelVersion (below) has
+    is_current=True - every other part of this app (predict/score/the
+    detail page's headline stats) keeps reading MLModel exactly as
+    before, unaware MLModelVersion exists at all. A retrain no longer
+    overwrites this row's history away - see MLModelVersion's own
+    docstring and routers/ml_models.py retrain_ml_model/
+    promote_ml_model_version for what actually changed.
     """
     __tablename__ = "ml_models"
 
@@ -1428,6 +1453,8 @@ class MLModel(Base):
     algorithm = Column(String, nullable=True)  # e.g. "random_forest_classifier", set once training completes
     model_artifact = Column(LargeBinary, nullable=True)  # joblib-serialized fitted sklearn Pipeline
     metrics = Column(JSON, nullable=True)
+    # See this model's own docstring above - global, never per-prediction.
+    feature_importance = Column(JSON, nullable=True)
     status = Column(String, nullable=False, default="training")  # "training" | "ready" | "failed"
     error_message = Column(Text, nullable=True)
     trained_row_count = Column(Integer, nullable=True)
@@ -1435,9 +1462,67 @@ class MLModel(Base):
     trained_at = Column(DateTime, nullable=True)
     prediction_count = Column(Integer, nullable=False, default=0)
     last_predicted_at = Column(DateTime, nullable=True)
+    # Which MLModelVersion.version_number is currently active - starts at
+    # 1 for a model's own initial training run. See this model's own
+    # docstring above.
+    version_number = Column(Integer, nullable=False, default=1)
 
     datasource = relationship("DataSource")
     predictions = relationship("MLPrediction", cascade="all, delete-orphan")
+    versions = relationship(
+        "MLModelVersion", back_populates="ml_model", cascade="all, delete-orphan",
+        order_by="MLModelVersion.version_number.desc()",
+    )
+
+
+class MLModelVersion(Base):
+    """2026-09-30 (model trustworthiness round): one full, honest snapshot
+    of an MLModel every time training genuinely produces a usable model -
+    the fix for the exact limitation models.MLModel/routers/ml_models.py
+    used to state plainly: "retraining overwrites the previous model's
+    metrics/artifact with no history kept." It no longer does.
+
+    A row is appended here every time services/ml_training.train_model
+    finishes with status="ready" - the model's very first training run
+    included, so an never-retrained model still has exactly one version
+    (version_number=1), never zero. Retraining (routers/ml_models.py
+    retrain_ml_model) appends a new row at the next version_number and
+    flips is_current; it never edits or deletes an earlier version's row.
+    "Promote to active" (routers/ml_models.py promote_ml_model_version)
+    copies an older version's own fields back onto the live MLModel row
+    AND appends one more new version (created_reason="promoted") rather
+    than reaching back and re-activating history in place - so the
+    version list is always a true, append-only timeline of what this
+    model actually was, in the order it actually happened, and "what's
+    active right now" always has exactly one real answer.
+
+    Every column here is a snapshot of the matching MLModel column at the
+    moment this version was created - see that model's own docstring for
+    what each one means. is_current=True on exactly one version per
+    ml_model_id at any time; MLModel's own version_number/algorithm/
+    metrics/feature_importance/model_artifact/feature_columns/
+    excluded_columns/trained_row_count always match whichever version
+    that is, so nothing else in this app has to know this table exists."""
+    __tablename__ = "ml_model_versions"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    ml_model_id = Column(String, ForeignKey("ml_models.id"), nullable=False, index=True)
+    version_number = Column(Integer, nullable=False)
+    is_current = Column(Boolean, nullable=False, default=False)
+    # "trained": a real training/retraining run. "promoted": an earlier
+    # version was made active again with no new training involved. See
+    # this model's own docstring above.
+    created_reason = Column(String, nullable=False, default="trained")
+    algorithm = Column(String, nullable=True)
+    feature_columns = Column(JSON, nullable=True)
+    excluded_columns = Column(JSON, nullable=True)
+    model_artifact = Column(LargeBinary, nullable=True)
+    metrics = Column(JSON, nullable=True)
+    feature_importance = Column(JSON, nullable=True)
+    trained_row_count = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    ml_model = relationship("MLModel", back_populates="versions")
 
 
 class MLPrediction(Base):
@@ -1461,17 +1546,39 @@ class MLPrediction(Base):
     a classification model whose underlying winning algorithm actually
     supports predict_proba - null for every regression prediction, and null
     for a classification prediction from an algorithm that doesn't expose
-    one, rather than a fabricated confidence number."""
+    one, rather than a fabricated confidence number.
+
+    model_version_id (added 2026-09-30, model trustworthiness round):
+    which MLModelVersion was actually active at the moment this
+    prediction was made - set on every new prediction going forward,
+    left null on rows written before this column existed (an honest gap
+    rather than a guessed backfill). This is what makes a prediction's
+    lineage real: a model can be retrained a dozen times, and every past
+    prediction still honestly says which exact version produced it,
+    rather than silently being reattributed to whatever is active today.
+
+    explanation (added 2026-09-30, model trustworthiness round): the
+    real, computed per-feature contribution breakdown for THIS
+    prediction - list[{"feature": str, "value": Any, "contribution":
+    float}] - only ever populated for a linear/logistic winning
+    algorithm (see services/ml_training._explain_prediction's own
+    docstring for exactly why a random forest's prediction leaves this
+    null instead of a fabricated approximation)."""
     __tablename__ = "ml_predictions"
 
     id = Column(String, primary_key=True, default=gen_uuid)
     ml_model_id = Column(String, ForeignKey("ml_models.id"), nullable=False, index=True)
+    model_version_id = Column(String, ForeignKey("ml_model_versions.id"), nullable=True, index=True)
     input_values = Column(JSON, nullable=False)
     predicted_value = Column(JSON, nullable=False)  # the raw predicted value (string/number/bool)
     confidence = Column(Float, nullable=True)  # predict_proba's top-class probability, classification only
+    # Real per-feature contributions for THIS prediction - linear/logistic
+    # models only. See this model's own docstring above.
+    explanation = Column(JSON, nullable=True)
     # Never auto-filled - see this model's own docstring above.
     actual_value = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     created_by_id = Column(String, ForeignKey("users.id"), nullable=False)
 
     ml_model = relationship("MLModel", back_populates="predictions")
+    model_version = relationship("MLModelVersion")
