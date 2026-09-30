@@ -65,6 +65,15 @@ function CloseIcon({ className = "w-5 h-5" }: { className?: string }) {
   );
 }
 
+function EditIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+    </svg>
+  );
+}
+
 function DatabaseGlyph({ className = "w-4 h-4" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -233,6 +242,101 @@ function ApiRefreshControl({
   );
 }
 
+// 2026-09-30 (Governance/Jobs redesign + Pipelines/Catalog removal round):
+// ported over from the now-removed Catalog.tsx (its one real, non-
+// redundant capability - editing a data source's short description - see
+// AppSidebar.tsx's own removal comment). Same inline "add/edit
+// description" pattern, just typed against DataSourceSummary instead of
+// CatalogEntry and calling the exact same datasourceApi.updateDescription
+// endpoint the Catalog page always called.
+function DescriptionEditor({
+  ds,
+  onSaved,
+}: {
+  ds: DataSourceSummary;
+  onSaved: (updated: DataSourceSummary) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(ds.description || "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setValue(ds.description || "");
+  }, [ds.description]);
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-text transition"
+        onClick={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          setEditing(true);
+        }}
+      >
+        <EditIcon />
+        {ds.description ? "Edit description" : "Add a description"}
+      </button>
+    );
+  }
+
+  const save = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      const updated = await datasourceApi.updateDescription(ds.id, value);
+      onSaved(updated);
+      setEditing(false);
+    } catch {
+      setError("Couldn't save that. Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mt-1.5 w-full" onClick={(e) => e.stopPropagation()}>
+      <textarea
+        autoFocus
+        className="text-xs w-full bg-surface2 border border-border rounded-lg px-2.5 py-1.5 resize-none"
+        rows={2}
+        maxLength={2000}
+        placeholder="A short, plain-English blurb of what this data source is - e.g. the Stripe export our finance team refreshes every Monday"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onClick={(e) => e.stopPropagation()}
+      />
+      {error && <div className="text-[11px] text-red-400 mt-1">{error}</div>}
+      <div className="flex items-center gap-2 mt-1.5">
+        <button
+          type="button"
+          className="text-[11px] font-medium px-2.5 py-1 rounded-md bg-primary text-white hover:opacity-90 transition disabled:opacity-50"
+          disabled={saving}
+          onClick={save}
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+        <button
+          type="button"
+          className="text-[11px] font-medium px-2.5 py-1 rounded-md border border-border hover:bg-surface2 transition"
+          onClick={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            setValue(ds.description || "");
+            setEditing(false);
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function SourceCard({
   ds,
   viewMode,
@@ -242,10 +346,10 @@ function SourceCard({
   ds: DataSourceSummary;
   viewMode: "grid" | "list";
   onOpen: () => void;
-  // Only ever used for kind === "api" - updates this one card's row in the
-  // parent's own `sources` list in place after a successful manual
-  // refresh, so "last refreshed" reflects reality immediately without a
-  // full re-fetch of the whole page.
+  // Used for kind === "api" refreshes AND for a description save (2026-
+  // 09-30 round) - both update this one card's row in the parent's own
+  // `sources` list in place, so the UI reflects reality immediately
+  // without a full re-fetch of the whole page.
   onRefreshed: (updated: DataSourceSummary) => void;
 }) {
   const meta = connectionKindMeta(ds.kind);
@@ -275,6 +379,11 @@ function SourceCard({
           <span className="block text-sm font-medium truncate">{ds.name}</span>
         </span>
         {live && <LiveBadge />}
+        {ds.description && (
+          <span className="hidden md:inline-block text-xs text-muted truncate max-w-[220px]" title={ds.description}>
+            {ds.description}
+          </span>
+        )}
         {isApi && <ApiRefreshControl ds={ds} onRefreshed={onRefreshed} />}
         <span
           className="hidden sm:inline-block text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0"
@@ -312,6 +421,8 @@ function SourceCard({
         <span className="block text-sm font-semibold truncate">{ds.name}</span>
         {live && <LiveBadge />}
       </span>
+      {ds.description && <span className="text-xs text-muted line-clamp-2">{ds.description}</span>}
+      <DescriptionEditor ds={ds} onSaved={onRefreshed} />
       {isApi ? (
         <span className="mt-auto"><ApiRefreshControl ds={ds} onRefreshed={onRefreshed} /></span>
       ) : (
