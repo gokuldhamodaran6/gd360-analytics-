@@ -357,6 +357,7 @@ from ..database import get_db
 from ..deps import get_current_user
 from ..services import ai_engine, chart_builder, data_access_rules, render_domains, workspace_access
 from ..services.data_loader import load_dataframe
+from ..services.metrics import resolve_metric_value
 from .chat import _load_selected_tables, _other_sources_catalog
 from .dashboards import _can_edit, _can_view
 # 2026-09-29 (Hex-level filters round): reuses the Data tab's own,
@@ -508,6 +509,77 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
     return f if pd.notna(f) else default
 
 
+def _kpi_or_gauge_config(
+    value: Any, block_type: str, label: str, recipe: dict,
+    target_value: Any = None, max_value: Any = None,
+) -> tuple[str, dict, str]:
+    """2026-09-30 (semantic layer v1): the value -> kpi/gauge config shape,
+    pulled out of _run_manual_recipe's own kpi/gauge branch so it's ONE
+    shared implementation for both ways a kpi/gauge tile's number can now
+    be computed - a plain column+aggregation recipe (_run_manual_recipe
+    below) and a saved-metric-backed recipe (build_manual_block's
+    metric_id branch, and preview_filtered_blocks' matching recompute
+    branch) - rather than two copies that could quietly drift apart on
+    exactly the kind of tile a semantic layer exists to keep consistent.
+    `recipe` is stored on the returned config as-is (a plain column+agg
+    dict for the former, a {"metric_id": ...} dict for the latter) -
+    whichever shape it is is what tells preview_filtered_blocks which of
+    the two recompute paths to use on a filter change."""
+    if block_type == "kpi":
+        return "kpi", {"value": value, "label": label, "recipe": recipe}, label
+
+    # "gauge" - a plain number becomes a radial "value out of max, marked
+    # at target" read. target_value/max_value are both optional - a gauge
+    # is never left un-renderable just because neither was set.
+    numeric_value = _safe_float(value, 0.0)
+    resolved_target = _safe_float(target_value, None) if target_value is not None else None
+    resolved_max = _safe_float(max_value, None) if max_value is not None else None
+    if resolved_max is None:
+        basis = max(abs(numeric_value), abs(resolved_target or 0))
+        resolved_max = basis * 1.25 if basis > 0 else 1.0
+    if resolved_target is None:
+        resolved_target = resolved_max
+    resolved_min = min(0.0, numeric_value, resolved_target)
+    if resolved_max <= resolved_min:
+        resolved_max = resolved_min + 1.0
+    config = {
+        "value": numeric_value, "min": resolved_min, "max": resolved_max,
+        "target": resolved_target, "label": label, "recipe": recipe,
+    }
+    return "gauge", config, label
+
+
+def _metric_kpi_or_gauge_config(
+    metric: "models.MetricDefinition", block_type: str, df: pd.DataFrame,
+    target_value: Any = None, max_value: Any = None,
+) -> tuple[str, dict, str]:
+    """2026-09-30 (semantic layer v1): the metric-definition-backed
+    counterpart to _run_manual_recipe's plain column+aggregation path -
+    resolves a SAVED metric (models.MetricDefinition) live through
+    services/metrics.resolve_metric_value against `df` (already page/
+    own-filtered by the caller - the metric's OWN saved filters are then
+    applied on top of that, inside resolve_metric_value), then builds the
+    identical kpi/gauge config shape via _kpi_or_gauge_config so the two
+    ways of building a kpi/gauge tile are visually indistinguishable and,
+    critically, always agree with each other and with this same metric's
+    own current_value shown on its definition (routers/
+    metric_definitions.py) - the entire point of a semantic layer.
+
+    Raises ValueError with a short, friendly message on anything the
+    caller should show back as-is - an unsupported block type, or the
+    metric's own column/filters failing to resolve against this data
+    (e.g. a column it references was since renamed or removed) - matching
+    _run_manual_recipe's own error contract exactly, so build_manual_block
+    handles both paths with one try/except."""
+    if block_type not in ("kpi", "gauge"):
+        raise ValueError("A saved metric can only be used for a KPI or gauge block.")
+    value, error = resolve_metric_value(df, metric.metric_column, metric.agg, metric.filters)
+    if error or value is None:
+        raise ValueError(error or "Couldn't compute this metric for the current data.")
+    recipe = {"metric_id": metric.id, "block_type": block_type, "target_value": target_value, "max_value": max_value}
+    return _kpi_or_gauge_config(value, block_type, metric.name, recipe, target_value, max_value)
+
+
 def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | None = None) -> tuple[str, dict, str]:
     """The actual column + aggregation computation behind both
     build_manual_block (a fresh build) and preview_filtered_blocks (a
@@ -558,31 +630,9 @@ def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | Non
         # directly (this would otherwise 500 on commit).
         value = value.item() if hasattr(value, "item") else value
         default_title = f"{agg_label} of {metric_column}"
-        if block_type == "kpi":
-            return "kpi", {"value": value, "label": default_title, "recipe": recipe}, default_title
-
-        # "gauge" - a plain number becomes a radial "value out of max,
-        # marked at target" read. target_value/max_value are both
-        # optional (ManualBuildBlockRequest) - a gauge is never left
-        # un-renderable just because the person didn't type either one.
-        numeric_value = _safe_float(value, 0.0)
-        target = recipe.get("target_value")
-        resolved_target = _safe_float(target, None) if target is not None else None
-        resolved_max = recipe.get("max_value")
-        resolved_max = _safe_float(resolved_max, None) if resolved_max is not None else None
-        if resolved_max is None:
-            basis = max(abs(numeric_value), abs(resolved_target or 0))
-            resolved_max = basis * 1.25 if basis > 0 else 1.0
-        if resolved_target is None:
-            resolved_target = resolved_max
-        resolved_min = min(0.0, numeric_value, resolved_target)
-        if resolved_max <= resolved_min:
-            resolved_max = resolved_min + 1.0
-        config = {
-            "value": numeric_value, "min": resolved_min, "max": resolved_max,
-            "target": resolved_target, "label": default_title, "recipe": recipe,
-        }
-        return "gauge", config, default_title
+        return _kpi_or_gauge_config(
+            value, block_type, default_title, recipe, recipe.get("target_value"), recipe.get("max_value"),
+        )
 
     if not group_by_column:
         raise ValueError("Pick a column to group by for a table, chart, donut, sparkline, or top list.")
@@ -2761,26 +2811,50 @@ def build_manual_block(
     if payload.filters:
         df = _apply_filters(df, payload.filters)
 
-    recipe = {
-        "metric_column": payload.metric_column,
-        "agg": payload.agg,
-        "group_by_column": payload.group_by_column,
-        "block_type": payload.block_type,
-        "chart_type": payload.chart_type,
-        # 2026-09-25 (Round 3): only read when block_type == "gauge" - see
-        # _run_manual_recipe. Carried in the stored recipe itself (not a
-        # separate column) so a later cross-filter recompute
-        # (preview_filtered_blocks) reproduces the exact same gauge
-        # range/target the person originally set, not a re-guessed one.
-        "target_value": payload.target_value,
-        "max_value": payload.max_value,
-    }
-    try:
-        actual_type, config, default_title = _run_manual_recipe(df, recipe, existing_title=block.title)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(400, f"Couldn't compute that: {e}")
+    # 2026-09-30 (semantic layer v1): a saved metric (models.
+    # MetricDefinition) builds a kpi/gauge tile from THIS data source's
+    # own metric glossary instead of a fresh column+aggregation pick - see
+    # _metric_kpi_or_gauge_config's own docstring for why this always
+    # resolves live (through services/metrics.py) rather than freezing a
+    # one-shot number, and preview_filtered_blocks below for how it stays
+    # live across a page filter change too.
+    if payload.metric_id:
+        metric = (
+            db.query(models.MetricDefinition)
+            .filter(models.MetricDefinition.id == payload.metric_id, models.MetricDefinition.datasource_id == ds.id)
+            .first()
+        )
+        if not metric:
+            raise HTTPException(404, "That metric no longer exists.")
+        try:
+            actual_type, config, default_title = _metric_kpi_or_gauge_config(
+                metric, payload.block_type, df, payload.target_value, payload.max_value,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    else:
+        if not payload.metric_column:
+            raise HTTPException(400, "Pick a column, or a saved metric, to build from.")
+        recipe = {
+            "metric_column": payload.metric_column,
+            "agg": payload.agg,
+            "group_by_column": payload.group_by_column,
+            "block_type": payload.block_type,
+            "chart_type": payload.chart_type,
+            # 2026-09-25 (Round 3): only read when block_type == "gauge" - see
+            # _run_manual_recipe. Carried in the stored recipe itself (not a
+            # separate column) so a later cross-filter recompute
+            # (preview_filtered_blocks) reproduces the exact same gauge
+            # range/target the person originally set, not a re-guessed one.
+            "target_value": payload.target_value,
+            "max_value": payload.max_value,
+        }
+        try:
+            actual_type, config, default_title = _run_manual_recipe(df, recipe, existing_title=block.title)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            raise HTTPException(400, f"Couldn't compute that: {e}")
 
     _snapshot_block_config(block)
     block.type = actual_type
@@ -3026,6 +3100,34 @@ def preview_filtered_blocks(
     for block in page.blocks:
         own_filters = block_filters.get(block.id) or []
         recipe = (block.config or {}).get("recipe")
+        # 2026-09-30 (semantic layer v1): a metric-backed kpi/gauge
+        # (recipe["metric_id"] set - see build_manual_block) is looked up
+        # fresh here every time, not just recomputed from a frozen column/
+        # agg pair - so editing the metric's own definition, not just
+        # changing a page filter, is also reflected live the next time
+        # this page's filters are (re)applied. A metric that's since been
+        # deleted is treated exactly like any other block this endpoint
+        # can't currently recompute: left out of the response, the
+        # frontend's existing content for it stays put (see this
+        # function's own docstring above).
+        if recipe and recipe.get("metric_id"):
+            metric = (
+                db.query(models.MetricDefinition)
+                .filter(models.MetricDefinition.id == recipe["metric_id"], models.MetricDefinition.datasource_id == ds.id)
+                .first()
+            )
+            if not metric:
+                continue
+            try:
+                block_df = _apply_filters(df, own_filters)
+                actual_type, config, _default_title = _metric_kpi_or_gauge_config(
+                    metric, recipe.get("block_type") or block.type, block_df,
+                    recipe.get("target_value"), recipe.get("max_value"),
+                )
+            except Exception:
+                continue
+            out.append(schemas.FilteredBlockOut(id=block.id, type=actual_type, config=config))
+            continue
         if recipe:
             try:
                 block_df = _apply_filters(df, own_filters)
