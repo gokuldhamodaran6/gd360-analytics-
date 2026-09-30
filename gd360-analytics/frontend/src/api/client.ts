@@ -1984,6 +1984,45 @@ export type FeatureImportanceEntry = { feature: string; importance: number };
 // approximating it.
 export type PredictionExplanationEntry = { feature: string; value: string | number | boolean | null; contribution: number };
 
+// 2026-09-30 (leakage-guardrail round): real, threshold-based information
+// about an already-trained result worth a second look - see backend
+// models.MLModel.quality_warnings/services/ml_training.py's own module
+// docstring for the full story (a real, confirmed "predict Sales" leakage
+// case that motivated this) and lib/mlModelText.ts's own
+// qualityWarningText for how each type below becomes a plain sentence.
+// Every field here is a real number the backend already computed - this
+// type never carries a pre-written message.
+export type MLQualityWarningType = "near_perfect_score" | "dominant_feature" | "high_correlation_feature";
+export type MLQualityWarning = {
+  type: MLQualityWarningType;
+  metric?: "r2" | "accuracy" | null; // near_perfect_score only
+  value?: number | null; // near_perfect_score only - that metric's real value
+  feature?: string | null; // dominant_feature / high_correlation_feature only
+  importance?: number | null; // dominant_feature only - real share, 0-1
+  correlation?: number | null; // high_correlation_feature only - real, signed Pearson correlation
+};
+
+// The real, computed "would this column actually be used, and does it
+// look risky" answer for ONE candidate feature - see backend
+// services/ml_training.preview_features's own docstring. Only ever
+// carries a real `correlation`/`risk` for a REGRESSION target's numeric
+// candidates; both stay null for a classification target or a
+// non-numeric column, never a fabricated placeholder.
+export type MLFeatureRisk = "high" | "medium";
+export type MLFeatureCandidate = {
+  column: string;
+  is_numeric: boolean;
+  distinct_count: number;
+  correlation: number | null;
+  risk: MLFeatureRisk | null;
+};
+
+export type PreviewMLFeaturesResult = {
+  task_type: MLTaskType;
+  usable: MLFeatureCandidate[];
+  excluded: MLExcludedColumn[];
+};
+
 export type MLModel = {
   id: string;
   datasource_id: string;
@@ -1997,6 +2036,10 @@ export type MLModel = {
   algorithm: string | null;
   metrics: MLMetrics | null;
   feature_importance: FeatureImportanceEntry[] | null;
+  // See MLQualityWarning's own comment above. null for a model trained
+  // before this round existed; [] for one trained since with nothing to
+  // flag - only [] actually means "checked, and it's clean".
+  quality_warnings: MLQualityWarning[] | null;
   status: MLModelStatus;
   error_message: string | null;
   trained_row_count: number | null;
@@ -2024,6 +2067,10 @@ export type MLModelVersion = {
   algorithm: string | null;
   metrics: MLMetrics | null;
   feature_importance: FeatureImportanceEntry[] | null;
+  // This version's own real snapshot - see MLQualityWarning's own comment
+  // above. Travels with the version, so promoting an old one restores its
+  // own warnings too, never someone else's.
+  quality_warnings: MLQualityWarning[] | null;
   trained_row_count: number | null;
   created_at: string;
 };
@@ -2052,11 +2099,28 @@ export const mlModelsApi = {
   train: (payload: TrainMLModelPayload) => api.post<MLModel>("/ml-models/train", payload).then((r) => r.data),
   list: () => api.get<MLModel[]>("/ml-models").then((r) => r.data),
   get: (id: string) => api.get<MLModel>(`/ml-models/${id}`).then((r) => r.data),
+  // 2026-09-30 (leakage-guardrail round): the real, computed "what would
+  // training actually use, and does any of it look risky" answer, with
+  // zero side effects - no model is created or trained. See backend
+  // services/ml_training.preview_features's own docstring.
+  previewFeatures: (datasourceId: string, targetColumn: string) =>
+    api
+      .post<PreviewMLFeaturesResult>("/ml-models/preview-features", { datasource_id: datasourceId, target_column: targetColumn })
+      .then((r) => r.data),
   predict: (id: string, inputValues: Record<string, unknown>) =>
     api.post<PredictResult>(`/ml-models/${id}/predict`, { input_values: inputValues }).then((r) => r.data),
   score: (id: string, table?: string | null) =>
     api.post<ScoreTableResult>(`/ml-models/${id}/score`, { table: table || undefined }).then((r) => r.data),
-  retrain: (id: string) => api.post<MLModel>(`/ml-models/${id}/retrain`).then((r) => r.data),
+  // 2026-09-30 (leakage-guardrail round): `featureColumns` is optional and
+  // still defaults to the original, unchanged behavior (reuse whichever
+  // columns this model's last training run actually used) when omitted -
+  // see backend schemas.RetrainMLModelRequest's own comment for why this
+  // now exists: without it, changing an EXISTING model's feature set
+  // needed a direct database edit.
+  retrain: (id: string, featureColumns?: string[]) =>
+    api
+      .post<MLModel>(`/ml-models/${id}/retrain`, featureColumns ? { feature_columns: featureColumns } : undefined)
+      .then((r) => r.data),
   delete: (id: string) => api.delete(`/ml-models/${id}`).then(() => undefined),
   // 2026-09-30 (model trustworthiness round): see MLModelVersion's own
   // comment above and backend routers/ml_models.py.
