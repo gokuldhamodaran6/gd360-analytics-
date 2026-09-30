@@ -4,6 +4,7 @@ import ChartCanvas from "./ChartCanvas";
 import { datasourceApi, DashboardBlock, DashboardBlockType, ColumnFilterSpec, FilterTextOp, FilterNumberOp, FilterCriterion } from "../api/client";
 import { DashboardFilterState } from "../lib/useDashboardFilters";
 import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
+import { useExclusiveOpen } from "../lib/useExclusiveOpen";
 
 // 2026-09-24 (Dashboard Builder Phase 1): the shared block-rendering layer
 // for a pages+blocks dashboard - used by BOTH the owner's editor view
@@ -1266,7 +1267,11 @@ export function BlockFilterButton({
 }) {
   const fetchedColumns = useDataSourceColumns(columnsProp ? null : datasourceId);
   const columns = columnsProp || fetchedColumns;
-  const [open, setOpen] = useState(false);
+  // 2026-09-30 (bug fix) - see lib/useExclusiveOpen.ts's own module
+  // docstring: this popover previously had no idea another block's menu,
+  // explain popover, or filter popover was already open elsewhere on the
+  // page, so more than one could be open on screen at once.
+  const [open, setOpen] = useExclusiveOpen();
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const [draftColumn, setDraftColumn] = useState("");
   const btnRef = useRef<HTMLButtonElement | null>(null);
@@ -1406,7 +1411,9 @@ export function FilterControl({
   onChange: (spec: ColumnFilterSpec | null) => void;
 }) {
   const column: string | null = block.config?.column || null;
-  const [open, setOpen] = useState(false);
+  // 2026-09-30 (bug fix) - see lib/useExclusiveOpen.ts's own module
+  // docstring; same fix as BlockFilterButton above.
+  const [open, setOpen] = useExclusiveOpen();
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const btnRef = useRef<HTMLButtonElement | null>(null);
 
