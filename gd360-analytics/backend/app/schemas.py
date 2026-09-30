@@ -873,6 +873,18 @@ class ManualBuildBlockRequest(BaseModel):
     # rather than here since a Pydantic model can't express "required
     # unless this OTHER field is set."
     metric_id: Optional[str] = None
+    # 2026-09-30 (transformation layer v1): when set, this block is built
+    # from a SAVED transform's (models.DataTransform) output table instead
+    # of this data source's raw data - see routers/dashboard_builder.py's
+    # build_manual_block for exactly where this is resolved (BEFORE
+    # payload.filters and any metric_id/metric_column pick, so a transform
+    # can feed either path: a plain column+agg tile, or a metric-backed
+    # one, built on top of its derived columns). Like metric_id, this
+    # always resolves live (services/transforms.apply_transform_steps)
+    # rather than freezing a one-shot snapshot - editing the transform, not
+    # just changing a page filter, is reflected the next time this block is
+    # rebuilt or the page's filters are (re)applied.
+    transform_id: Optional[str] = None
     metric_column: Optional[str] = Field(default=None, min_length=1)
     agg: str = "sum"  # "sum" | "avg" | "count" | "min" | "max"
     group_by_column: Optional[str] = None
@@ -1494,3 +1506,69 @@ class MetricDefinitionOut(BaseModel):
     # server-side (owner_id === the caller) so the frontend never has to
     # re-derive ownership logic itself.
     can_delete: bool
+
+
+# ---------- Transformation layer v1 (2026-09-30) ----------
+# See models.DataTransform's own docstring for the full design and
+# services/transforms.py for how a transform is actually applied. `steps`
+# is kept as a permissive list[dict] rather than a discriminated Pydantic
+# union - the same tradeoff FilterCriterion.spec's own docstring already
+# accepts, for the same reason: five genuinely different step shapes, and
+# services/transforms.py's own validation (never executed as code, always
+# dispatched through its fixed op -> handler mapping) is the single source
+# of truth for what is and isn't a valid step.
+
+class DataTransformCreate(BaseModel):
+    datasource_id: str
+    name: str = Field(min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    steps: list[dict] = Field(default_factory=list, max_length=20)
+
+
+class DataTransformUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    steps: list[dict] = Field(default_factory=list, max_length=20)
+
+
+class DataTransformOut(BaseModel):
+    id: str
+    datasource_id: str
+    datasource_name: str
+    name: str
+    description: Optional[str] = None
+    steps: list[dict] = Field(default_factory=list)
+    # One plain-English line per step, in order - services/transforms.
+    # describe_transform - so the panel's own summary never disagrees with
+    # what the AI is told (services/ai_engine._transform_glossary_text).
+    step_summary: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+    owner_id: str
+    created_by_name: Optional[str] = None
+    # Resolved server-side, live, every time this transform is listed/
+    # fetched (services/transforms.apply_transform_steps against this data
+    # source's current data) - never a stale, cached result. None (with
+    # preview_error explaining why) rather than a fabricated empty table
+    # when it can't currently be computed (e.g. a referenced column was
+    # renamed or removed).
+    preview_columns: Optional[list[str]] = None
+    preview_row_count: Optional[int] = None
+    preview_error: Optional[str] = None
+    can_delete: bool
+
+
+class TransformPreviewRequest(BaseModel):
+    """Live preview of UNSAVED steps while building/editing a transform -
+    posts the in-progress `steps` list directly rather than a saved
+    transform id, so the builder's preview stays in sync with every edit
+    before the person ever clicks Save."""
+    steps: list[dict] = Field(default_factory=list, max_length=20)
+
+
+class TransformPreviewOut(BaseModel):
+    columns: list[str] = Field(default_factory=list)
+    rows: list[dict] = Field(default_factory=list)
+    row_count: int = 0
+    truncated: bool = False
+    error: Optional[str] = None
