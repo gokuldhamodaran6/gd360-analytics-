@@ -698,6 +698,30 @@ def rename_datasource(
     return {"id": ds.id, "name": ds.name}
 
 
+@router.patch("/{datasource_id}/description", response_model=schemas.DataSourceOut)
+def update_datasource_description(
+    datasource_id: str,
+    payload: schemas.UpdateDataSourceDescriptionRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """2026-09-30 (data catalog v1): a short, plain-English blurb of what
+    this data source is - see models.DataSource.description's own
+    comment. Editable tier (not owner-only, unlike rename_datasource
+    above) - a descriptive fact like this is a shared, collaborative
+    thing about the data, the same reasoning FlowAnnotation's own
+    docstring already gives for its per-node description field. Empty
+    string clears it back to None rather than storing a blank string, the
+    same "no falsy-but-present state" convention this app follows
+    elsewhere (e.g. Pipeline.schedule_interval's "off" -> None)."""
+    ds = _get_editable_datasource(db, user, datasource_id)
+    desc = (payload.description or "").strip()
+    ds.description = desc[:2000] if desc else None
+    db.commit()
+    db.refresh(ds)
+    return ds
+
+
 @router.get("/{datasource_id}/schema")
 def get_schema(datasource_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     ds = _get_accessible_datasource(db, user, datasource_id)
