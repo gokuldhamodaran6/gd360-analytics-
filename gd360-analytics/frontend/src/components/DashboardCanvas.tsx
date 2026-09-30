@@ -6,6 +6,7 @@ import { ReactGridLayout as RGL, WidthProvider } from "react-grid-layout/legacy"
 import {
   dashboardBuilderApi,
   datasourceApi,
+  metricDefinitionsApi,
   DashboardBuilderDetail,
   DashboardBuilderPage,
   DashboardBlock,
@@ -14,6 +15,7 @@ import {
   ManualBlockType,
   RestyleChartType,
   FilterCriterion,
+  MetricDefinition,
 } from "../api/client";
 import {
   KpiTile,
@@ -406,6 +408,7 @@ function ManualBuildPanel({
   dashboardId,
   block,
   columns,
+  datasourceId,
   activeFilters,
   onDone,
   onClose,
@@ -413,6 +416,13 @@ function ManualBuildPanel({
   dashboardId: string;
   block: DashboardBlock;
   columns: ColumnInfo[];
+  // 2026-09-30 (semantic layer v1): which data source this dashboard's
+  // data actually comes from - needed here only to offer "Use a saved
+  // metric" (metricDefinitionsApi.list) for a kpi/gauge block. Optional/
+  // absent is handled the same way BlockCard already treats it elsewhere
+  // on this page (a dashboard with no resolvable data source at all) -
+  // the toggle below simply never appears.
+  datasourceId?: string | null;
   // 2026-09-24 (Phase 2b): whatever cross-filter is currently selected on
   // this page, so a block (re)built here starts out correctly pre-filtered
   // instead of showing unfiltered data until the next filter change forces
@@ -444,9 +454,64 @@ function ManualBuildPanel({
   const needsNumeric = agg === "sum" || agg === "avg";
   const needsGroupBy = blockType !== "kpi" && blockType !== "gauge";
   const isGauge = blockType === "gauge";
+  const canUseSavedMetric = blockType === "kpi" || blockType === "gauge";
+
+  // 2026-09-30 (semantic layer v1): "Use a saved metric" - builds this
+  // kpi/gauge tile from a data source's own saved metric glossary
+  // (see components/MetricsPanel.tsx and backend models.MetricDefinition)
+  // instead of a fresh column+aggregation pick. Lazily loaded (only once
+  // this panel is actually showing a kpi/gauge block type) so opening the
+  // manual builder for a table/chart never makes this extra call.
+  const [savedMetrics, setSavedMetrics] = useState<MetricDefinition[] | null>(null);
+  const [useSavedMetric, setUseSavedMetric] = useState(false);
+  const [selectedMetricId, setSelectedMetricId] = useState("");
+
+  useEffect(() => {
+    if (!canUseSavedMetric || !datasourceId || savedMetrics !== null) return;
+    metricDefinitionsApi
+      .list(datasourceId)
+      .then((list) => {
+        setSavedMetrics(list);
+        if (list.length > 0 && !selectedMetricId) setSelectedMetricId(list[0].id);
+      })
+      .catch(() => setSavedMetrics([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canUseSavedMetric, datasourceId]);
+
+  // Switching away from kpi/gauge (or the block type changing under this
+  // panel) always falls back to the plain column+aggregation path - a
+  // saved metric only ever applies to a kpi/gauge tile in the first place.
+  useEffect(() => {
+    if (!canUseSavedMetric) setUseSavedMetric(false);
+  }, [canUseSavedMetric]);
 
   const build = async () => {
-    if (!metric || busy) return;
+    if (busy) return;
+    if (useSavedMetric && canUseSavedMetric) {
+      if (!selectedMetricId) {
+        setError("Pick a saved metric.");
+        return;
+      }
+      setBusy(true);
+      setError("");
+      try {
+        const updated = await dashboardBuilderApi.buildManualBlock(dashboardId, block.id, {
+          metric_id: selectedMetricId,
+          block_type: blockType,
+          target_value: isGauge && targetValue.trim() !== "" ? Number(targetValue) : undefined,
+          max_value: isGauge && maxValue.trim() !== "" ? Number(maxValue) : undefined,
+          filters: activeFilters && activeFilters.length > 0 ? activeFilters : undefined,
+        });
+        onDone(updated);
+      } catch (err: any) {
+        const detail = err?.response?.data?.detail;
+        setError(typeof detail === "string" ? detail : "Couldn't build that. Please check your choices.");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    if (!metric) return;
     if (needsGroupBy && !groupBy) {
       setError("Pick a column to group by for a table, chart, donut, sparkline, or top list.");
       return;
@@ -505,28 +570,59 @@ function ManualBuildPanel({
         ))}
       </div>
 
-      <label className="text-[11px] text-muted uppercase tracking-wide">Column</label>
-      <select className="input text-sm" value={metric} onChange={(e) => setMetric(e.target.value)}>
-        {columns.map((c) => (
-          <option key={c.name} value={c.name}>
-            {c.name}
-          </option>
-        ))}
-      </select>
-
-      <label className="text-[11px] text-muted uppercase tracking-wide">Aggregation</label>
-      <select className="input text-sm" value={agg} onChange={(e) => setAgg(e.target.value as ManualAgg)}>
-        {AGG_OPTIONS.map((o) => (
-          <option key={o.value} value={o.value} disabled={(o.value === "sum" || o.value === "avg") && numericColumns.length === 0}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-      {needsNumeric && !numericColumns.includes(metric) && (
-        <div className="text-[11px] text-amber-500">Sum/Average need a numeric column.</div>
+      {/* 2026-09-30 (semantic layer v1): only offered for a kpi/gauge tile -
+          see components/MetricsPanel.tsx and backend models.MetricDefinition.
+          Building from a saved metric always recomputes live (through
+          services/metrics.py), even after a page filter change or a later
+          edit to the metric itself, unlike the plain column+aggregation
+          path below, which freezes a one-shot recipe. */}
+      {canUseSavedMetric && savedMetrics && savedMetrics.length > 0 && (
+        <label className="flex items-center gap-2 text-[11px] text-muted uppercase tracking-wide cursor-pointer">
+          <input type="checkbox" checked={useSavedMetric} onChange={(e) => setUseSavedMetric(e.target.checked)} />
+          Use a saved metric
+        </label>
       )}
 
-      {needsGroupBy && (
+      {useSavedMetric && canUseSavedMetric ? (
+        <>
+          <label className="text-[11px] text-muted uppercase tracking-wide">Metric</label>
+          <select className="input text-sm" value={selectedMetricId} onChange={(e) => setSelectedMetricId(e.target.value)}>
+            {(savedMetrics || []).map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+          <div className="text-[11px] text-muted">
+            Always matches this metric's own saved definition - edit it from the Metrics tab, not here.
+          </div>
+        </>
+      ) : (
+        <>
+          <label className="text-[11px] text-muted uppercase tracking-wide">Column</label>
+          <select className="input text-sm" value={metric} onChange={(e) => setMetric(e.target.value)}>
+            {columns.map((c) => (
+              <option key={c.name} value={c.name}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+
+          <label className="text-[11px] text-muted uppercase tracking-wide">Aggregation</label>
+          <select className="input text-sm" value={agg} onChange={(e) => setAgg(e.target.value as ManualAgg)}>
+            {AGG_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value} disabled={(o.value === "sum" || o.value === "avg") && numericColumns.length === 0}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          {needsNumeric && !numericColumns.includes(metric) && (
+            <div className="text-[11px] text-amber-500">Sum/Average need a numeric column.</div>
+          )}
+        </>
+      )}
+
+      {needsGroupBy && !useSavedMetric && (
         <>
           <label className="text-[11px] text-muted uppercase tracking-wide">Group by</label>
           <select className="input text-sm" value={groupBy} onChange={(e) => setGroupBy(e.target.value)}>
@@ -578,7 +674,12 @@ function ManualBuildPanel({
 
       {error && <div className="text-xs text-amber-500 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-1.5">{error}</div>}
 
-      <button type="button" disabled={busy || !metric} className="btn-primary text-xs w-full mt-auto disabled:opacity-50" onClick={build}>
+      <button
+        type="button"
+        disabled={busy || (useSavedMetric && canUseSavedMetric ? !selectedMetricId : !metric)}
+        className="btn-primary text-xs w-full mt-auto disabled:opacity-50"
+        onClick={build}
+      >
         {busy ? "Building…" : "Build"}
       </button>
     </div>
@@ -1470,6 +1571,7 @@ function BlockCard({
             dashboardId={dashboardId}
             block={block}
             columns={columns}
+            datasourceId={datasourceId}
             activeFilters={filterState?.activeFilters}
             onDone={onDone}
             onClose={() => setPanel("none")}
