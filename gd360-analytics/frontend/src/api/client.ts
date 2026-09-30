@@ -2186,3 +2186,90 @@ export const transformsApi = {
   getData: (datasourceId: string, transformId: string) =>
     api.get<TransformPreview>(`/datasources/${datasourceId}/transforms/${transformId}/data`).then((r) => r.data),
 };
+
+// ---- Orchestration v1 (2026-09-30, pages/Pipelines.tsx) - see backend
+// models.Pipeline's own docstring for the full design: a named, saved,
+// LINEAR chain of a few whitelisted step types, run strictly in order,
+// on demand or on a schedule reusing the exact same four-value interval
+// vocabulary (RefreshInterval, above) the Jobs page's dashboard schedules
+// already use. ----
+export type PipelineStepType = "refresh_datasource" | "rebuild_dashboard" | "run_quality_checks";
+
+export type PipelineStep =
+  | { type: "refresh_datasource"; datasource_id: string }
+  | { type: "rebuild_dashboard"; dashboard_id: string }
+  | { type: "run_quality_checks"; datasource_id: string };
+
+export type PipelineStepResult = {
+  index: number;
+  type: string | null;
+  label: string | null;
+  status: "success" | "failed";
+  detail: Record<string, unknown> | null;
+  error: string | null;
+};
+
+export type PipelineRun = {
+  id: string;
+  pipeline_id: string | null;
+  run_type: "scheduled" | "manual";
+  pipeline_name: string;
+  status: "running" | "success" | "failed";
+  error_message: string | null;
+  step_results: PipelineStepResult[];
+  started_at: string;
+  finished_at: string | null;
+  duration_seconds: number | null;
+  next_run_at: string | null;
+};
+
+export type PipelineRunsPage = {
+  runs: PipelineRun[];
+  total: number;
+  page: number;
+  page_size: number;
+};
+
+export type Pipeline = {
+  id: string;
+  name: string;
+  description: string | null;
+  steps: PipelineStep[];
+  // Plain-English one-liner per step, resolved live from each step's
+  // current target name - same "always live, never stale" convention
+  // DataTransform.step_summary already established.
+  step_summary: string[];
+  schedule_interval: RefreshInterval; // "off" | "15m" | "1h" | "6h" | "daily"
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_run_status: "running" | "success" | "failed" | null;
+  can_edit: boolean;
+  can_delete: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PipelinePayload = {
+  name: string;
+  description?: string | null;
+  steps: PipelineStep[];
+  schedule_interval: RefreshInterval;
+  workspace_id?: string | null;
+};
+
+export const pipelinesApi = {
+  list: () => api.get<Pipeline[]>("/pipelines").then((r) => r.data),
+  get: (pipelineId: string) => api.get<Pipeline>(`/pipelines/${pipelineId}`).then((r) => r.data),
+  create: (payload: PipelinePayload) => api.post<Pipeline>("/pipelines", payload).then((r) => r.data),
+  update: (pipelineId: string, payload: Partial<PipelinePayload>) =>
+    api.put<Pipeline>(`/pipelines/${pipelineId}`, payload).then((r) => r.data),
+  delete: (pipelineId: string) => api.delete(`/pipelines/${pipelineId}`).then(() => undefined),
+  // Runs this pipeline's steps immediately, outside its own schedule (or
+  // with none set at all) - logged into the same run history as any
+  // scheduled tick. Returns the PipelineRun this click just created.
+  runNow: (pipelineId: string) => api.post<PipelineRun>(`/pipelines/${pipelineId}/run-now`).then((r) => r.data),
+  listRuns: (pipelineId: string, page = 1, pageSize = 20) =>
+    api
+      .get<PipelineRunsPage>(`/pipelines/${pipelineId}/runs`, { params: { page, page_size: pageSize } })
+      .then((r) => r.data),
+};
