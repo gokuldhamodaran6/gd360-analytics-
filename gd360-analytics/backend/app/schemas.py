@@ -1378,6 +1378,58 @@ class PredictionExplanationEntry(BaseModel):
     contribution: float
 
 
+# ---------- 2026-09-30 (leakage-guardrail round) ----------
+# See models.MLModel.quality_warnings/services/ml_training.py's own module
+# docstring for the full story (the "predict Sales" leakage case this
+# round exists because of) and services/ml_training.preview_features/
+# train_model for exactly how everything below is computed. Every field is
+# a real number already sitting in metrics/feature_importance/a real
+# pandas correlation - this schema never carries a pre-written sentence;
+# see frontend lib/mlModelText.ts's own docstring for why every plain-
+# language sentence in this feature is built in exactly one place, on the
+# frontend, from raw numbers like these.
+class MLQualityWarning(BaseModel):
+    # "near_perfect_score" | "dominant_feature" | "high_correlation_feature"
+    # - see services/ml_training.train_model's own comments for what
+    # triggers each one.
+    type: str
+    metric: Optional[str] = None       # near_perfect_score only: "r2" | "accuracy"
+    value: Optional[float] = None      # near_perfect_score only: that metric's real value
+    feature: Optional[str] = None      # dominant_feature / high_correlation_feature only
+    importance: Optional[float] = None  # dominant_feature only: that feature's real share (0-1)
+    correlation: Optional[float] = None  # high_correlation_feature only: real, signed Pearson correlation
+
+
+class MLFeatureCandidate(BaseModel):
+    # One real, computed row of a preview-features result - see
+    # services/ml_training.preview_features's own docstring.
+    column: str
+    is_numeric: bool
+    distinct_count: int
+    # Real Pearson correlation with the target - only ever computed for a
+    # REGRESSION target's numeric candidates (see preview_features's own
+    # docstring for why classification has no equivalent honest number
+    # here); None otherwise, never a fabricated placeholder.
+    correlation: Optional[float] = None
+    # "high" | "medium" | None - see services/ml_training._risk_for_
+    # correlation's own docstring for the exact, stated thresholds.
+    risk: Optional[str] = None
+
+
+class PreviewMLFeaturesRequest(BaseModel):
+    datasource_id: str
+    target_column: str = Field(min_length=1, max_length=200)
+
+
+class PreviewMLFeaturesResponse(BaseModel):
+    # Real, auto-detected from the target column's own values - see
+    # services/ml_training.infer_task_type. Never trained on; this is a
+    # preview, no MLModel row is created or touched by this endpoint.
+    task_type: str  # "classification" | "regression"
+    usable: list[MLFeatureCandidate]
+    excluded: list[MLExcludedColumn]
+
+
 class MLModelVersionOut(BaseModel):
     id: str
     version_number: int
@@ -1386,6 +1438,10 @@ class MLModelVersionOut(BaseModel):
     algorithm: Optional[str] = None
     metrics: Optional[dict] = None
     feature_importance: Optional[list[FeatureImportanceEntry]] = None
+    # See models.MLModel.quality_warnings's own docstring - this version's
+    # own real snapshot, travels with it (promoting an old version
+    # restores its own warnings too, never someone else's).
+    quality_warnings: Optional[list[MLQualityWarning]] = None
     trained_row_count: Optional[int] = None
     created_at: datetime
 
@@ -1409,6 +1465,11 @@ class MLModelOut(BaseModel):
     # see models.MLModel.feature_importance's own docstring. None for a
     # model trained before this round, or one still training/failed.
     feature_importance: Optional[list[FeatureImportanceEntry]] = None
+    # See models.MLModel.quality_warnings's own docstring. None for a
+    # model trained before this round existed; [] for one trained since
+    # with nothing to flag - the frontend treats both as "nothing to show"
+    # but only [] actually means "checked, and it's clean".
+    quality_warnings: Optional[list[MLQualityWarning]] = None
     status: str  # "training" | "ready" | "failed"
     error_message: Optional[str] = None
     trained_row_count: Optional[int] = None
@@ -1451,6 +1512,26 @@ class ScoreTableRequest(BaseModel):
     # datasource's own original data, matching datasourceApi.preview's own
     # "no table means the default one" convention on the frontend.
     table: Optional[str] = None
+
+
+# 2026-09-30 (leakage-guardrail round): request body for POST /ml-models/
+# {id}/retrain, now optional (a plain "Retrain with latest data" click
+# still sends no body at all, matching this endpoint's exact behavior
+# before this round). See routers/ml_models.py retrain_ml_model's own
+# docstring for why this exists: without it, the only way to change which
+# columns an EXISTING model uses was to edit feature_columns directly in
+# the database (exactly what this round's own live "predict Sales" fix
+# needed) - a real gap for a model someone wants to correct rather than
+# delete and recreate from scratch.
+class RetrainMLModelRequest(BaseModel):
+    # None (the default) means "reuse whichever real columns this model's
+    # last training run actually used" - the original, unchanged behavior.
+    # A list here narrows the CANDIDATE features before this retrain runs,
+    # same as feature_columns on the original POST /train - every one
+    # still goes through services/ml_training.select_features's exact same
+    # exclusion checks, so an explicitly requested column can still
+    # legitimately end up excluded.
+    feature_columns: Optional[list[str]] = None
 
 
 class ScoreTableOut(BaseModel):
