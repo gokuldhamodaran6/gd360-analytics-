@@ -9,7 +9,7 @@ from .database import init_db
 from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, admin, conversations, goku,
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
-    data_access_rules, ml_models,
+    data_access_rules, ml_models, metric_definitions,
 )
 from .services.scheduler import start_scheduler
 
@@ -154,6 +154,7 @@ app.include_router(data_access_rules.router)
 # 2026-09-28 (ML Models round): the real ML feature - train/predict/score
 # with a real scikit-learn model.
 app.include_router(ml_models.router)
+app.include_router(metric_definitions.router)
 
 
 @app.on_event("startup")
