@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+\import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useAuth } from "./api/AuthContext";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
@@ -14,8 +14,6 @@ import DataSources from "./pages/DataSources";
 import MLModels from "./pages/MLModels";
 import MLModelDetail from "./pages/MLModelDetail";
 import Jobs from "./pages/Jobs";
-import Pipelines from "./pages/Pipelines";
-import Catalog from "./pages/Catalog";
 import Experiments from "./pages/Experiments";
 import Governance from "./pages/Governance";
 import NewProject from "./pages/NewProject";
@@ -127,19 +125,17 @@ export default function App() {
       <Route path="/ml-models/:id" element={<Protected><MLModelDetail /></Protected>} />
       {/* 2026-09-28 (scheduled auto-refresh + background jobs round): the
           Jobs page - see AppSidebar.tsx's own nav entry for this, placed
-          between Dashboards and Data Sources exactly like the sidebar. */}
+          between Dashboards and Data Sources exactly like the sidebar.
+          2026-09-30 (Governance/Jobs redesign + Pipelines/Catalog removal
+          round, Gokul's own report): Jobs now has a second "Chains" tab
+          that absorbs the standalone Pipelines page's own real capability
+          (named, multi-step chains) - pages/Pipelines.tsx and its /pipelines
+          route are gone (the backend router/services.pipelines are
+          untouched; Jobs' Chains tab calls the exact same endpoints), and
+          the /catalog route and its entire page are gone outright too,
+          since that one genuinely duplicated the Projects filter and Data
+          Sources page. */}
       <Route path="/jobs" element={<Protected><Jobs /></Protected>} />
-      {/* 2026-09-30 (orchestration v1): the Pipelines page - see
-          AppSidebar.tsx's own nav entry for this, placed right after
-          Jobs (both are "background automation", but a Pipeline's steps
-          can span multiple data sources/dashboards, unlike a Job's fixed
-          one-dashboard scope - see models.Pipeline's own docstring). */}
-      <Route path="/pipelines" element={<Protected><Pipelines /></Protected>} />
-      {/* 2026-09-30 (data catalog v1): the Catalog page - see
-          AppSidebar.tsx's own nav entry for this, placed right after
-          Pipelines (both sidebar and here). See services/catalog.py's own
-          module docstring for the full design. */}
-      <Route path="/catalog" element={<Protected><Catalog /></Protected>} />
       {/* Phase 4 (2026-09-28, Experimentation / A/B testing): see
           AppSidebar.tsx's own nav entry for this, placed exactly like the
           sidebar. */}
