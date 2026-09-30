@@ -9,7 +9,7 @@ from .database import init_db
 from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, admin, conversations, goku,
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
-    data_access_rules, ml_models, metric_definitions, transforms, pipelines, catalog,
+    data_access_rules, ml_models, metric_definitions, transforms, pipelines,
 )
 from .services.scheduler import start_scheduler
 
@@ -163,9 +163,20 @@ app.include_router(transforms.router)
 # quality checks), run strictly in order, on demand or on a schedule - see
 # models.Pipeline's own docstring.
 app.include_router(pipelines.router)
-# 2026-09-30 (data catalog v1): a single, account-wide search across every
-# kind of asset this app has - see services/catalog.py's own docstring.
-app.include_router(catalog.router)
+# 2026-09-30 (Gokul's own bug report - Governance/Jobs redesign + Pipelines/
+# Catalog removal round): the standalone /catalog router is gone - Gokul's
+# own words were that it duplicated the Projects filter and Data Sources
+# page and "leads to confusion." Its one real, non-redundant capability
+# (editing a data source's short description) was never part of catalog.py
+# itself - it already lived on datasources.router (PATCH
+# /datasources/{id}/description, see that router's own endpoint) - so
+# nothing needed to move here; only the standalone search UI (pages/
+# Catalog.tsx) and this registration are gone. The standalone /pipelines
+# page is also gone from the sidebar (its real, unique capability - named,
+# multi-step chains, not just one dashboard's schedule - now lives in the
+# Jobs page's own "Chains" tab, see pages/Jobs.tsx), but this router stays
+# registered exactly as it was: Jobs' Chains tab calls the same
+# /pipelines/* endpoints unchanged.
 
 
 @app.on_event("startup")
