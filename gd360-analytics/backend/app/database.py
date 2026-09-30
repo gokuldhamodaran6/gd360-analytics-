@@ -176,6 +176,14 @@ _NEW_COLUMNS = [
     # own note above, a new table needs no entry here at all
     # (create_all() already creates it).
     ("datasources", "description", "TEXT"),
+    # 2026-09-30 (leakage-guardrail round): see models.MLModel/
+    # MLModelVersion.quality_warnings's own docstrings for what this holds.
+    # Both ml_models and ml_model_versions are existing tables (live since
+    # the 2026-09-28/2026-09-30 ML Models rounds), so this new column on
+    # each needs the normal ALTER-TABLE treatment here, same as
+    # feature_importance did just above.
+    ("ml_models", "quality_warnings", "JSON"),
+    ("ml_model_versions", "quality_warnings", "JSON"),
 ]
 
 
