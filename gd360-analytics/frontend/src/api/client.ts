@@ -1459,8 +1459,17 @@ export const dashboardBuilderApi = {
     dashboardId: string,
     blockId: string,
     payload: {
-      metric_column: string;
-      agg: ManualAgg;
+      // 2026-09-30 (semantic layer v1): set metric_id instead of
+      // metric_column/agg to build a kpi/gauge tile from a saved metric
+      // (see metricDefinitionsApi above) - it always recomputes live from
+      // that metric's own definition, including across a page filter
+      // change and after the metric itself is later edited, rather than
+      // freezing a one-shot number the plain column+aggregation path
+      // below does. Mutually exclusive - the UI only ever sends one or
+      // the other (see DashboardCanvas.tsx's ManualBuildPanel).
+      metric_id?: string;
+      metric_column?: string;
+      agg?: ManualAgg;
       group_by_column?: string | null;
       block_type: ManualBlockType;
       chart_type?: RestyleChartType | null;
@@ -2033,4 +2042,56 @@ export const mlModelsApi = {
   listVersions: (id: string) => api.get<MLModelVersion[]>(`/ml-models/${id}/versions`).then((r) => r.data),
   promoteVersion: (id: string, versionId: string) =>
     api.post<MLModel>(`/ml-models/${id}/versions/${versionId}/promote`).then((r) => r.data),
+};
+
+// ---- Semantic layer v1 (2026-09-30) - a data source's own saved metric
+// glossary: define "Revenue" or "Active Users" once with an exact column,
+// aggregation, and filter criteria, and reuse that exact definition on a
+// dashboard kpi/gauge tile (DashboardCanvas.tsx's ManualBuildPanel) and in
+// chat (backend services/ai_engine.py, entirely server-side - nothing
+// here to call for that part). See backend models.MetricDefinition's own
+// docstring and services/metrics.py for the full design. ----
+
+export type MetricAgg = "sum" | "avg" | "count" | "min" | "max";
+
+export type MetricDefinition = {
+  id: string;
+  datasource_id: string;
+  datasource_name: string;
+  name: string;
+  description: string | null;
+  metric_column: string;
+  agg: MetricAgg;
+  filters: FilterCriterion[];
+  created_at: string;
+  updated_at: string;
+  owner_id: string;
+  created_by_name: string | null;
+  // Resolved live, server-side, every time this metric is listed/fetched -
+  // never a stale cached number. null (with current_value_error explaining
+  // why) rather than a fabricated 0 when it can't currently be computed.
+  current_value: number | null;
+  current_value_error: string | null;
+  // Same creator-only convention as MLModel.can_delete - resolved
+  // server-side so this client never has to re-derive ownership logic.
+  can_delete: boolean;
+};
+
+export type MetricDefinitionPayload = {
+  name: string;
+  description?: string | null;
+  metric_column: string;
+  agg: MetricAgg;
+  filters?: FilterCriterion[];
+};
+
+export const metricDefinitionsApi = {
+  list: (datasourceId: string) =>
+    api.get<MetricDefinition[]>(`/datasources/${datasourceId}/metric-definitions`).then((r) => r.data),
+  create: (datasourceId: string, payload: MetricDefinitionPayload) =>
+    api.post<MetricDefinition>(`/datasources/${datasourceId}/metric-definitions`, payload).then((r) => r.data),
+  update: (datasourceId: string, metricId: string, payload: MetricDefinitionPayload) =>
+    api.put<MetricDefinition>(`/datasources/${datasourceId}/metric-definitions/${metricId}`, payload).then((r) => r.data),
+  delete: (datasourceId: string, metricId: string) =>
+    api.delete(`/datasources/${datasourceId}/metric-definitions/${metricId}`).then(() => undefined),
 };
