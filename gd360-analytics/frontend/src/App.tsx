@@ -14,6 +14,7 @@ import DataSources from "./pages/DataSources";
 import MLModels from "./pages/MLModels";
 import MLModelDetail from "./pages/MLModelDetail";
 import Jobs from "./pages/Jobs";
+import Pipelines from "./pages/Pipelines";
 import Experiments from "./pages/Experiments";
 import Governance from "./pages/Governance";
 import NewProject from "./pages/NewProject";
@@ -127,6 +128,12 @@ export default function App() {
           Jobs page - see AppSidebar.tsx's own nav entry for this, placed
           between Dashboards and Data Sources exactly like the sidebar. */}
       <Route path="/jobs" element={<Protected><Jobs /></Protected>} />
+      {/* 2026-09-30 (orchestration v1): the Pipelines page - see
+          AppSidebar.tsx's own nav entry for this, placed right after
+          Jobs (both are "background automation", but a Pipeline's steps
+          can span multiple data sources/dashboards, unlike a Job's fixed
+          one-dashboard scope - see models.Pipeline's own docstring). */}
+      <Route path="/pipelines" element={<Protected><Pipelines /></Protected>} />
       {/* Phase 4 (2026-09-28, Experimentation / A/B testing): see
           AppSidebar.tsx's own nav entry for this, placed exactly like the
           sidebar. */}
