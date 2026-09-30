@@ -1940,6 +1940,20 @@ export type MLClassificationMetrics = { accuracy: number; precision: number; rec
 export type MLRegressionMetrics = { mae: number; rmse: number; r2: number };
 export type MLMetrics = Partial<MLClassificationMetrics & MLRegressionMetrics>;
 
+// 2026-09-30 (model trustworthiness round): real, GLOBAL feature
+// importance - see backend models.MLModel.feature_importance's own
+// docstring. importance is normalized to sum to 1.0 across a model's own
+// list, so it always reads as "share of this model's own reasoning",
+// never an absolute unit.
+export type FeatureImportanceEntry = { feature: string; importance: number };
+
+// The real, per-feature contribution breakdown behind ONE specific
+// prediction - only ever present for a linear/logistic model. See
+// backend models.MLPrediction.explanation's own docstring for why a
+// random-forest prediction leaves this out entirely rather than
+// approximating it.
+export type PredictionExplanationEntry = { feature: string; value: string | number | boolean | null; contribution: number };
+
 export type MLModel = {
   id: string;
   datasource_id: string;
@@ -1952,6 +1966,7 @@ export type MLModel = {
   excluded_columns: MLExcludedColumn[] | null;
   algorithm: string | null;
   metrics: MLMetrics | null;
+  feature_importance: FeatureImportanceEntry[] | null;
   status: MLModelStatus;
   error_message: string | null;
   trained_row_count: number | null;
@@ -1959,11 +1974,28 @@ export type MLModel = {
   trained_at: string | null;
   prediction_count: number;
   last_predicted_at: string | null;
+  // Which version (see MLModelVersion below) is currently active.
+  version_number: number;
   owner_id: string;
   // Resolved server-side (owner_id === the caller) - the frontend hides
   // the delete button entirely for anyone else, matching the backend's own
   // creator-only enforcement (see routers/ml_models.py delete_ml_model).
   can_delete: boolean;
+};
+
+// 2026-09-30 (model trustworthiness round): one real, past snapshot of an
+// MLModel - see backend models.MLModelVersion's own docstring. Retraining
+// no longer discards the model that came before it; this is that history.
+export type MLModelVersion = {
+  id: string;
+  version_number: number;
+  is_current: boolean;
+  created_reason: "trained" | "promoted";
+  algorithm: string | null;
+  metrics: MLMetrics | null;
+  feature_importance: FeatureImportanceEntry[] | null;
+  trained_row_count: number | null;
+  created_at: string;
 };
 
 export type TrainMLModelPayload = {
@@ -1977,7 +2009,13 @@ export type TrainMLModelPayload = {
   description?: string | null;
 };
 
-export type PredictResult = { predicted_value: string | number | boolean | null; confidence: number | null };
+export type PredictResult = {
+  predicted_value: string | number | boolean | null;
+  confidence: number | null;
+  // See PredictionExplanationEntry's own comment above - null for a
+  // random-forest or multiclass winning algorithm, never fabricated.
+  explanation: PredictionExplanationEntry[] | null;
+};
 export type ScoreTableResult = { new_version_id: string; new_version_name: string; row_count: number };
 
 export const mlModelsApi = {
@@ -1990,4 +2028,9 @@ export const mlModelsApi = {
     api.post<ScoreTableResult>(`/ml-models/${id}/score`, { table: table || undefined }).then((r) => r.data),
   retrain: (id: string) => api.post<MLModel>(`/ml-models/${id}/retrain`).then((r) => r.data),
   delete: (id: string) => api.delete(`/ml-models/${id}`).then(() => undefined),
+  // 2026-09-30 (model trustworthiness round): see MLModelVersion's own
+  // comment above and backend routers/ml_models.py.
+  listVersions: (id: string) => api.get<MLModelVersion[]>(`/ml-models/${id}/versions`).then((r) => r.data),
+  promoteVersion: (id: string, versionId: string) =>
+    api.post<MLModel>(`/ml-models/${id}/versions/${versionId}/promote`).then((r) => r.data),
 };
