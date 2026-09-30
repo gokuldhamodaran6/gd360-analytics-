@@ -19,19 +19,39 @@ the real, append-only version history retrain_ml_model now builds (see
 models.MLModelVersion's own docstring) instead of the "no history is kept"
 limitation this file used to state plainly.
 
+2026-09-30 (leakage-guardrail round): a real, confirmed case of target
+leakage in a live model ("predict Sales" scoring r2=0.9999999999913826
+because two of its own auto-picked features were a simple arithmetic
+decomposition of Sales itself - see services/ml_training.py's own module
+docstring for the full story) exposed that this file had no way to see
+what a training run was ABOUT to use before committing to it, and no way
+to flag a suspicious RESULT after the fact either. Two additions close
+that gap, both "view" tier since neither trains or mutates anything:
+POST /preview-features (new) runs services/ml_training.preview_features
+against real data with zero side effects - no MLModel row created, no
+training run - so TrainModelWizard.tsx's step 3 can show real leakage-risk
+information BEFORE a person commits to training, not after. quality_
+warnings (already returned wherever an MLModelOut/MLModelVersionOut is)
+is real, threshold-based information about an ALREADY-trained result -
+see models.MLModel.quality_warnings's own docstring. retrain_ml_model also
+now optionally accepts a narrower feature_columns list (schemas.
+RetrainMLModelRequest), the one gap that made fixing that exact live model
+require a direct database edit rather than a real product action.
+
 Access follows this app's existing two-tier convention exactly (see
 services/workspace_access.py), the same split routers/quality_checks.py
 already uses for an identical reason - training/retraining/deleting/
 promoting a version are real building/destructive actions, predicting/
-scoring/viewing history are not:
+scoring/viewing history/previewing are not:
   - "editable" tier (can_edit_datasource): POST /train, POST /{id}/retrain,
     POST /{id}/versions/{version_id}/promote - promoting changes what
     predict/score actually do, same weight as a retrain.
   - "view" tier (can_access_datasource): GET /, GET /{id},
-    GET /{id}/versions, POST /{id}/predict, POST /{id}/score - a workspace
-    viewer can USE an already-trained model and see its real history,
-    same as they can already re-run an existing quality check, but can't
-    train, retrain, or promote a version.
+    GET /{id}/versions, POST /preview-features, POST /{id}/predict,
+    POST /{id}/score - a workspace viewer can USE an already-trained
+    model, see its real history, and preview what a hypothetical training
+    run would use, same as they can already re-run an existing quality
+    check, but can't train, retrain, or promote a version.
   - DELETE /{id} is narrower still - the model's own creator only
     (ml_model.owner_id == user.id), regardless of workspace role; not even
     the data source's own owner can delete another person's trained model
@@ -106,6 +126,11 @@ def _model_out(db: Session, ml_model: models.MLModel, user: models.User) -> sche
         algorithm=ml_model.algorithm,
         metrics=ml_model.metrics,
         feature_importance=ml_model.feature_importance,
+        # See models.MLModel.quality_warnings's own docstring - None stays
+        # None (a model trained before this round existed), never coerced
+        # into a fabricated empty list that would misread as "checked,
+        # clean".
+        quality_warnings=ml_model.quality_warnings,
         status=ml_model.status,
         error_message=ml_model.error_message,
         trained_row_count=ml_model.trained_row_count,
@@ -129,6 +154,48 @@ def _current_version(db: Session, ml_model_id: str) -> models.MLModelVersion | N
         .filter(models.MLModelVersion.ml_model_id == ml_model_id, models.MLModelVersion.is_current.is_(True))
         .first()
     )
+
+
+@router.post("/preview-features", response_model=schemas.PreviewMLFeaturesResponse)
+def preview_ml_features(
+    payload: schemas.PreviewMLFeaturesRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """2026-09-30 (leakage-guardrail round): the real, computed "what would
+    training actually use, and does any of it look risky" answer - WITHOUT
+    training anything. No MLModel row is created, nothing is written to
+    the database at all; this loads real data and runs services/
+    ml_training.preview_features against it, same as GET /{id}/versions
+    reads real history without changing anything. "view" tier
+    (can_access_datasource) rather than "editable" - this genuinely can't
+    mutate anything a viewer shouldn't be allowed to see the shape of, the
+    same reasoning GET /{id} already uses for an already-trained model.
+
+    Exists specifically so TrainModelWizard.tsx's step 3 can show real
+    leakage-risk information (a numeric feature highly correlated with a
+    regression target) BEFORE a person commits to training, not after -
+    the direct fix for the "predict Sales" case this whole round is named
+    after, where nothing in the product ever surfaced that Gross Profit/
+    Cost were about to go in as features until the (already leaked) result
+    came back. MLModelDetail.tsx's own "change which columns are used"
+    retrain flow reuses this exact same endpoint against an EXISTING
+    model's datasource/target_column, so the same real risk information is
+    available there too, not just at initial training."""
+    ds = _get_accessible_datasource(db, user, payload.datasource_id)
+
+    try:
+        df = load_dataframe(ds, db=db)
+        df = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
+    except Exception as e:
+        raise HTTPException(400, f"Could not load this data source's data: {e}")
+
+    try:
+        preview = ml_training.preview_features(df, payload.target_column)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    return schemas.PreviewMLFeaturesResponse(**preview)
 
 
 @router.post("/train", response_model=schemas.MLModelOut, status_code=201)
@@ -331,7 +398,12 @@ def score_table_with_ml_model(
 
 
 @router.post("/{ml_model_id}/retrain", response_model=schemas.MLModelOut)
-def retrain_ml_model(ml_model_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+def retrain_ml_model(
+    ml_model_id: str,
+    payload: schemas.RetrainMLModelRequest | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
     """Re-loads this model's own data source's current data and re-runs
     training, replacing MLModel's own current artifact/metrics/
     feature_columns/excluded_columns with the new result - the one-click
@@ -344,7 +416,19 @@ def retrain_ml_model(ml_model_id: str, db: Session = Depends(get_db), user: mode
     included) before returning - see that function's own docstring and
     models.MLModelVersion's. GET /{id}/versions lists the full history;
     POST /{id}/versions/{version_id}/promote rolls back to an earlier one
-    with no retraining involved."""
+    with no retraining involved.
+
+    2026-09-30 (leakage-guardrail round): `payload` is now optional and,
+    when omitted (a plain "Retrain with latest data" click still sends no
+    body at all - unchanged from before this round), behaves exactly as it
+    always has. When given with a real feature_columns list (Mldetail.tsx's
+    new "change which columns are used" flow), that list REPLACES this
+    model's own feature_columns BEFORE train_model runs, narrowing the
+    candidate columns train_model reads as `requested_features` - see that
+    function's own docstring for why that's the honest way to change a
+    model's feature config: every requested column still goes through
+    select_features's exact same exclusion checks, so this can't be used
+    to force in a column that genuinely isn't usable."""
     ml_model = _get_editable_ml_model(db, user, ml_model_id)
     ds = db.query(models.DataSource).filter(models.DataSource.id == ml_model.datasource_id).first()
     if not ds:
@@ -355,6 +439,9 @@ def retrain_ml_model(ml_model_id: str, db: Session = Depends(get_db), user: mode
         df = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
     except Exception as e:
         raise HTTPException(400, f"Could not load this data source's data: {e}")
+
+    if payload is not None and payload.feature_columns is not None:
+        ml_model.feature_columns = payload.feature_columns
 
     ml_training.train_model(db, ml_model, df)
 
@@ -395,6 +482,7 @@ def list_ml_model_versions(
             algorithm=v.algorithm,
             metrics=v.metrics,
             feature_importance=v.feature_importance,
+            quality_warnings=v.quality_warnings,
             trained_row_count=v.trained_row_count,
             created_at=v.created_at,
         )
@@ -452,6 +540,7 @@ def promote_ml_model_version(
         model_artifact=version.model_artifact,
         metrics=version.metrics,
         feature_importance=version.feature_importance,
+        quality_warnings=version.quality_warnings,
         trained_row_count=version.trained_row_count,
     ))
 
@@ -461,6 +550,7 @@ def promote_ml_model_version(
     ml_model.model_artifact = version.model_artifact
     ml_model.metrics = version.metrics
     ml_model.feature_importance = version.feature_importance
+    ml_model.quality_warnings = version.quality_warnings
     ml_model.trained_row_count = version.trained_row_count
     ml_model.status = "ready"
     ml_model.error_message = None
