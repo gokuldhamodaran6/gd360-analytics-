@@ -78,6 +78,22 @@ function PipelinesIcon({ className = "w-[18px] h-[18px]" }: { className?: string
   );
 }
 
+// 2026-09-30 (data catalog v1): the Catalog page's own nav entry, right
+// after Pipelines - a magnifying glass over a small stack, since this is a
+// SEARCH across every kind of asset (data sources, columns, transforms,
+// metrics, dashboards, pipelines), distinct from DataSourcesIcon's plain
+// database cylinder below (that page only browses connections).
+function CatalogIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="12" height="3.2" rx="1" />
+      <rect x="3" y="9" width="12" height="3.2" rx="1" />
+      <circle cx="16.5" cy="16.5" r="4" />
+      <path d="M19.5 19.5L22 22" />
+    </svg>
+  );
+}
+
 // 2026-09-23 (sidebar redesign round): a third top-level nav entry, for the
 // new /data page - every connected source, browsable by category, replaces
 // this sidebar's old always-expanded flat list.
@@ -1167,6 +1183,17 @@ function SidebarNav({
         >
           <PipelinesIcon />
           {!collapsed && "Pipelines"}
+        </Link>
+        {/* 2026-09-30 (data catalog v1): see CatalogIcon's own comment for
+            why this sits right after Pipelines. */}
+        <Link
+          to="/catalog"
+          onClick={onNavigate}
+          title={collapsed ? "Catalog" : undefined}
+          className={linkClass(pathname.startsWith("/catalog"))}
+        >
+          <CatalogIcon />
+          {!collapsed && "Catalog"}
         </Link>
         <Link
           to="/data"
