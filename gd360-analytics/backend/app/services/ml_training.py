@@ -39,6 +39,38 @@ analysis). (3) _record_version/models.MLModelVersion: every call into
 train_model that reaches status="ready" now appends a real, timestamped
 version snapshot instead of silently overwriting the previous one - see
 models.MLModelVersion's own docstring.
+
+2026-09-30 (leakage-guardrail round): this app shipped its first real,
+confirmed case of target leakage - a "predict Sales" model that "explained"
+100% of Sales because two of its own auto-included features (Gross Profit,
+Cost) are a simple arithmetic decomposition of Sales itself in that data
+(Sales = Gross Profit + Cost). The model wasn't wrong or buggy - r2/mae are
+computed correctly on a genuine held-out test split (train_test_split
+below), and a leaked relationship holds in held-out rows exactly as well as
+training rows, which is precisely why a train/test split alone can never
+catch leakage. What this round adds is the guardrail this app had none of
+before: (1) preview_features - real Pearson correlation between each
+numeric candidate feature and a REGRESSION target, computed BEFORE a
+person commits to training (see routers/ml_models.py's new
+POST /ml-models/preview-features and components/TrainModelWizard.tsx's
+step 3, which now always shows this instead of hiding an unscored checkbox
+list behind "Advanced"). (2) three real, threshold-based warnings computed
+AFTER training and stored on the model itself (quality_warnings, below) -
+a near-perfect held-out score, one feature holding almost all of a model's
+own real feature_importance, or a USED feature still highly correlated
+with the target. None of this is a new ML technique or an approximation -
+every number behind every warning is either pandas' own real Series.corr
+or a real number this module was already computing (metrics,
+feature_importance) with a plain, stated, honest threshold applied to it.
+Classification targets deliberately get NO pre-training correlation check
+(a categorical/multiclass target doesn't have an honest single "how
+correlated" number the way a continuous one does) - only the post-training
+near-perfect-score and dominant-feature checks apply there, which is an
+acknowledged, honest gap rather than a fabricated one. See
+_LEAKAGE_HIGH_CORRELATION/_LEAKAGE_MEDIUM_CORRELATION/_NEAR_PERFECT_R2/
+_NEAR_PERFECT_ACCURACY/_DOMINANT_FEATURE_SHARE below for the exact,
+stated thresholds - round numbers chosen to be honestly explainable, not
+tuned against any one dataset.
 """
 from __future__ import annotations
 
@@ -91,6 +123,38 @@ _MAX_CATEGORICAL_DISTINCT = 50
 # distinct non-null values - see infer_task_type's own docstring for the
 # full heuristic and its honest limitations.
 _MAX_CLASSIFICATION_DISTINCT = 20
+
+# 2026-09-30 (leakage-guardrail round): a numeric feature this correlated
+# (in either direction) with a REGRESSION target reads as "possible target
+# leakage" - see this module's own docstring for the real "predict Sales"
+# example (Sales = Gross Profit + Cost, correlation ~1.0 with either one)
+# that motivated adding this at all. HIGH is high enough that a real,
+# legitimate business relationship this strong would be unusual (most
+# genuine predictive signal in real data is well below this); MEDIUM is
+# "worth a second look" rather than "almost certainly leaked" - shown as a
+# softer caution, never blocking, never auto-excluded. Both are round,
+# stated, honestly-explainable numbers, not fit to any one dataset.
+_LEAKAGE_HIGH_CORRELATION = 0.98
+_LEAKAGE_MEDIUM_CORRELATION = 0.90
+
+# A held-out test score at or above this reads as "suspiciously perfect"
+# and gets a real, visible warning rather than the same unqualified
+# "READY" treatment a genuinely good ~85% model gets - see this module's
+# own docstring. Regression uses r2 (variance explained, 0-1); the "predict
+# Sales" case that motivated this scored 0.9999999999913826 here.
+_NEAR_PERFECT_R2 = 0.97
+# Classification's equivalent - only raised when more than one feature was
+# actually used, so a legitimately easy two-class problem with one
+# obviously decisive real-world feature isn't flagged just for being easy.
+_NEAR_PERFECT_ACCURACY = 0.99
+
+# If one feature alone holds this much of a trained model's own real,
+# computed feature_importance (already normalized to sum to 1.0 - see
+# _extract_feature_importance below), that is itself a leakage tell
+# independent of the raw score - a model that leans on one column for
+# ~90%+ of its own real reasoning is usually either leaking or missing the
+# real story, worth a second look either way.
+_DOMINANT_FEATURE_SHARE = 0.90
 
 
 def infer_task_type(series: pd.Series) -> str:
@@ -212,6 +276,95 @@ def select_features(
         usable.append(col)
 
     return usable, excluded
+
+
+def _leakage_correlations(df: pd.DataFrame, target_column: str, numeric_features: list[str]) -> dict[str, float]:
+    """2026-09-30 (leakage-guardrail round): real Pearson correlation
+    between each of `numeric_features` and `df[target_column]`, using
+    pandas' own Series.corr (pairwise-complete - a row missing either value
+    is simply excluded from that one pair, never imputed or dropped
+    app-wide). A column with zero variance (every value identical)
+    correlates with nothing and pandas itself returns NaN for it - treated
+    here as "no signal to report", never coerced into a fabricated 0 or 1.
+    Only ever called for a REGRESSION target (both callers below gate on
+    task_type themselves) - correlation against a categorical/multiclass
+    target has no single honest number the way a continuous one does, so
+    this function is never asked to compute one for classification."""
+    target = df[target_column]
+    correlations: dict[str, float] = {}
+    for col in numeric_features:
+        try:
+            c = df[col].corr(target)
+        except Exception:
+            continue
+        if c is None or (isinstance(c, float) and np.isnan(c)):
+            continue
+        correlations[col] = float(c)
+    return correlations
+
+
+def _risk_for_correlation(correlation: float | None) -> str | None:
+    """Maps a real correlation (or None - nothing computed) onto "high" |
+    "medium" | None using this module's own stated, round thresholds - see
+    _LEAKAGE_HIGH_CORRELATION/_LEAKAGE_MEDIUM_CORRELATION above."""
+    if correlation is None:
+        return None
+    magnitude = abs(correlation)
+    if magnitude >= _LEAKAGE_HIGH_CORRELATION:
+        return "high"
+    if magnitude >= _LEAKAGE_MEDIUM_CORRELATION:
+        return "medium"
+    return None
+
+
+def preview_features(df: pd.DataFrame, target_column: str, requested_features: list[str] | None = None) -> dict:
+    """2026-09-30 (leakage-guardrail round): the real, computed answer to
+    "if I trained on this data with this target right now, which columns
+    would actually be used, and does any of them look like it might be
+    leaking the answer" - WITHOUT training anything. Powers
+    POST /ml-models/preview-features (routers/ml_models.py), which
+    TrainModelWizard.tsx's step 3 now calls as soon as a target column is
+    picked, so a person sees this BEFORE committing to a training run -
+    the direct fix for the "predict Sales" case this whole round is named
+    after, where nothing in the product ever showed Gokul that Gross
+    Profit/Cost were about to go in as features until after the (already
+    leaked) result came back.
+
+    Reuses select_features for the exact same usable/excluded split
+    train_model itself uses (single source of truth - this can never drift
+    from what a real training run would actually do), then adds one more
+    real, computed thing select_features itself doesn't: for a REGRESSION
+    target, each usable NUMERIC column's real correlation with the target
+    and the risk band that implies (see _leakage_correlations/
+    _risk_for_correlation above). Raises ValueError (caught by the router
+    and turned into a real 400, matching this app's other "the DATA wasn't
+    usable" error paths) only when `target_column` genuinely isn't a real
+    column in this data - every other honest outcome (zero usable columns,
+    a target with too few rows) is returned as real, empty/low data rather
+    than an exception, since "nothing usable yet" is still useful for the
+    wizard to show, not a failure."""
+    if target_column not in df.columns:
+        raise ValueError(f"Column '{target_column}' was not found in this data source's current data.")
+
+    usable_df = df.dropna(subset=[target_column])
+    task_type = infer_task_type(usable_df[target_column]) if len(usable_df) > 0 else "regression"
+    usable, excluded = select_features(usable_df, target_column, requested_features)
+
+    numeric_usable = [c for c in usable if pd.api.types.is_numeric_dtype(usable_df[c])]
+    correlations = _leakage_correlations(usable_df, target_column, numeric_usable) if task_type == "regression" else {}
+
+    usable_out = []
+    for col in usable:
+        corr = correlations.get(col)
+        usable_out.append({
+            "column": col,
+            "is_numeric": col in numeric_usable,
+            "distinct_count": int(usable_df[col].nunique(dropna=True)),
+            "correlation": corr,
+            "risk": _risk_for_correlation(corr),
+        })
+
+    return {"task_type": task_type, "usable": usable_out, "excluded": excluded}
 
 
 def build_preprocessing_pipeline(df: pd.DataFrame, feature_columns: list[str]) -> ColumnTransformer:
@@ -419,6 +572,12 @@ def _record_version(db, ml_model_row: models.MLModel) -> None:
         model_artifact=ml_model_row.model_artifact,
         metrics=ml_model_row.metrics,
         feature_importance=ml_model_row.feature_importance,
+        # 2026-09-30 (leakage-guardrail round): a version is a full,
+        # honest snapshot - its own warnings travel with it, so promoting
+        # an old version back to active (see routers/ml_models.py
+        # promote_ml_model_version) restores exactly what that version
+        # really looked like, warnings included, never silently dropped.
+        quality_warnings=ml_model_row.quality_warnings,
         trained_row_count=ml_model_row.trained_row_count,
     ))
     ml_model_row.version_number = next_version
@@ -568,6 +727,40 @@ def train_model(db, ml_model_row: models.MLModel, df: pd.DataFrame) -> None:
         buffer = io.BytesIO()
         joblib.dump(best_pipeline, buffer)
 
+        feature_importance = _extract_feature_importance(best_pipeline)
+
+        # 2026-09-30 (leakage-guardrail round): real, threshold-based
+        # warnings, computed here where the real numbers already exist -
+        # never a new statistical technique, just this module's own stated
+        # thresholds (see this module's own docstring and the constants
+        # above) applied to numbers already sitting in `metrics`/
+        # `feature_importance`, plus one more real correlation pass scoped
+        # to the features this run actually used. Always a real list, []
+        # when nothing tripped - never omitted/None for a successful run,
+        # so the frontend can render "no warnings" as confidently as it
+        # renders a real one.
+        quality_warnings: list[dict] = []
+        if task_type == "regression" and metrics.get("r2") is not None and metrics["r2"] >= _NEAR_PERFECT_R2:
+            quality_warnings.append({"type": "near_perfect_score", "metric": "r2", "value": metrics["r2"]})
+        if (
+            task_type == "classification"
+            and metrics.get("accuracy") is not None
+            and metrics["accuracy"] >= _NEAR_PERFECT_ACCURACY
+            and len(usable_features) > 1
+        ):
+            quality_warnings.append({"type": "near_perfect_score", "metric": "accuracy", "value": metrics["accuracy"]})
+        if feature_importance:
+            top = feature_importance[0]
+            if top["importance"] >= _DOMINANT_FEATURE_SHARE:
+                quality_warnings.append({
+                    "type": "dominant_feature", "feature": top["feature"], "importance": top["importance"],
+                })
+        if task_type == "regression":
+            numeric_used = [c for c in usable_features if pd.api.types.is_numeric_dtype(usable_df[c])]
+            for col, corr in _leakage_correlations(usable_df, target_column, numeric_used).items():
+                if abs(corr) >= _LEAKAGE_HIGH_CORRELATION:
+                    quality_warnings.append({"type": "high_correlation_feature", "feature": col, "correlation": corr})
+
         ml_model_row.task_type = task_type
         ml_model_row.feature_columns = usable_features
         ml_model_row.excluded_columns = excluded
@@ -577,7 +770,10 @@ def train_model(db, ml_model_row: models.MLModel, df: pd.DataFrame) -> None:
         # 2026-09-30 (model trustworthiness round): real, global feature
         # importance - see models.MLModel.feature_importance's own
         # docstring and _extract_feature_importance above.
-        ml_model_row.feature_importance = _extract_feature_importance(best_pipeline)
+        ml_model_row.feature_importance = feature_importance
+        # 2026-09-30 (leakage-guardrail round): see models.MLModel.
+        # quality_warnings's own docstring.
+        ml_model_row.quality_warnings = quality_warnings
         ml_model_row.status = "ready"
         ml_model_row.error_message = None
         ml_model_row.trained_row_count = len(usable_df)
