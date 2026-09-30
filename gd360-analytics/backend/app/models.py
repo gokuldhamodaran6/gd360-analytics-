@@ -1644,3 +1644,78 @@ class MetricDefinition(Base):
 
     datasource = relationship("DataSource")
     owner = relationship("User")
+
+
+class DataTransform(Base):
+    """
+    2026-09-30 (transformation layer v1): a named, reusable, ordered
+    pipeline of small, whitelisted operations that turns one data source's
+    raw table into a new, named DERIVED table - the "T" in ETL this app has
+    never had a dedicated place for (claude/gd360-competitive-gap-analysis-
+    2026-09-29.md, gap #4: "a dedicated place to define reusable
+    transformation logic ... this overlaps heavily with gap #6 [the
+    semantic layer] and is worth designing together rather than
+    separately" - which is exactly what this does: the filter step below
+    resolves through the exact same services/metrics.apply_filters every
+    metric definition's own filter already uses, not a third copy of it).
+
+    `steps` is a JSON list of small dicts, each one of a FIXED, reviewable
+    vocabulary - "filter" (reuses services/metrics.apply_filters' exact
+    criterion shape), "add_column" (a derived column from one of four basic
+    arithmetic operators against another column or a constant - never a
+    free-form formula string), "select_columns", "rename_column", and
+    "group_by" (a group + one of the same five aggregations every other
+    computed feature in this app already offers) - see
+    services/transforms.py's STEP_HANDLERS for the authoritative shape of
+    each. Applied in array order, each step's output feeding the next.
+    Deliberately NOT a free-form formula string or any executable code -
+    the same "small fixed whitelist, zero code-execution risk" philosophy
+    services/metrics.py, services/ml_training.py, and dashboard_builder.py's
+    own _MANUAL_AGG_FUNCS already follow.
+
+    Consumers, as of this round:
+      - routers/transforms.py - this transform's own live preview/result,
+        and the live preview used while building/editing one (unsaved
+        steps, via the /preview endpoint).
+      - routers/dashboard_builder.py - a manual-build block
+        (config["recipe"]["transform_id"] set) resolves this transform's
+        OUTPUT dataframe FIRST, then builds its kpi/gauge/chart/table on
+        top of THAT - "a tile built from a saved table" - recomputed live
+        on every rebuild or page-filter change, never a frozen snapshot,
+        the same live-recomputation guarantee a metric-backed block already
+        has (see _metric_kpi_or_gauge_config's own docstring).
+      - services/ai_engine.py / routers/chat.py - a saved transform's
+        already-computed output is made available to the AI as an
+        additional named table (alongside the raw data) with a plain-
+        English note on what it represents, so a question that would
+        benefit from it can reference it directly instead of the AI
+        re-deriving the same logic from scratch every time.
+
+    Scoped to datasource_id (not workspace_id), unique name per data
+    source, and the same two-tier access split (editable to define/change,
+    view to see and use, creator-only to delete) - all for the identical
+    reasons MetricDefinition's own docstring above already gives; see that
+    docstring for the full rationale rather than repeating it here.
+    """
+    __tablename__ = "data_transforms"
+    __table_args__ = (UniqueConstraint("datasource_id", "name", name="uq_data_transform_datasource_name"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    datasource_id = Column(String, ForeignKey("datasources.id"), nullable=False, index=True)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    # list[{"op": str, ...}] - see this model's own docstring above and
+    # services/transforms.py's STEP_HANDLERS for the exact shape of each
+    # "op". Kept as a permissive JSON list (not a discriminated Pydantic
+    # union in schemas.py either) for the same reason schemas.FilterCriterion.
+    # spec already accepts that tradeoff: five genuinely different step
+    # shapes, and services/transforms.py's own validation is the single
+    # source of truth for what is and isn't a valid step - never executed
+    # as code, always dispatched through a fixed op -> handler mapping.
+    steps = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    datasource = relationship("DataSource")
+    owner = relationship("User")
