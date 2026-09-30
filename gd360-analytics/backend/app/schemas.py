@@ -1319,6 +1319,43 @@ class MLExcludedColumn(BaseModel):
     reason: str
 
 
+# ---------- 2026-09-30 (model trustworthiness round) ----------
+# See models.MLModel.feature_importance/MLModelVersion/MLPrediction.
+# explanation's own docstrings for the full design; services/
+# ml_training._extract_feature_importance and .explain_prediction for how
+# each one is actually computed. Both are real numbers read straight off
+# the trained scikit-learn estimator - never fabricated, never a fixed
+# placeholder list.
+class FeatureImportanceEntry(BaseModel):
+    feature: str
+    # Normalized to sum to 1.0 across a model's own feature_importance
+    # list - see services/ml_training._extract_feature_importance.
+    importance: float
+
+
+class PredictionExplanationEntry(BaseModel):
+    feature: str
+    # This prediction's own real (coerced) input value for this feature -
+    # exactly what services/ml_training._coerce_form_value produced for it.
+    value: Any
+    # coefficient x this prediction's own value, real and signed - a
+    # positive number pushed the prediction up, negative pushed it down.
+    # See services/ml_training._explain_prediction's own docstring.
+    contribution: float
+
+
+class MLModelVersionOut(BaseModel):
+    id: str
+    version_number: int
+    is_current: bool
+    created_reason: str  # "trained" | "promoted" - see models.MLModelVersion's own docstring
+    algorithm: Optional[str] = None
+    metrics: Optional[dict] = None
+    feature_importance: Optional[list[FeatureImportanceEntry]] = None
+    trained_row_count: Optional[int] = None
+    created_at: datetime
+
+
 class MLModelOut(BaseModel):
     id: str
     datasource_id: str
@@ -1334,6 +1371,10 @@ class MLModelOut(BaseModel):
     # docstring for exactly which. Always real, computed numbers - never
     # fabricated (see this app's own "never fabricate a stat" discipline).
     metrics: Optional[dict] = None
+    # Real, global feature importance for the currently-active version -
+    # see models.MLModel.feature_importance's own docstring. None for a
+    # model trained before this round, or one still training/failed.
+    feature_importance: Optional[list[FeatureImportanceEntry]] = None
     status: str  # "training" | "ready" | "failed"
     error_message: Optional[str] = None
     trained_row_count: Optional[int] = None
@@ -1341,6 +1382,9 @@ class MLModelOut(BaseModel):
     trained_at: Optional[datetime] = None
     prediction_count: int
     last_predicted_at: Optional[datetime] = None
+    # Which MLModelVersion.version_number is currently active - see
+    # models.MLModel.version_number's own docstring.
+    version_number: int
     # Whoever trained this model, resolved server-side (same convention as
     # QualityRuleOut.created_by_name) - also what the frontend uses to
     # decide whether to show the delete button at all (creator-only).
@@ -1361,6 +1405,11 @@ class PredictOut(BaseModel):
     # None for a regression model, or a classification model whose winning
     # algorithm doesn't expose predict_proba - never a fabricated number.
     confidence: Optional[float] = None
+    # Real per-feature contribution breakdown for THIS prediction - only
+    # ever set for a linear/logistic winning algorithm. See
+    # models.MLPrediction.explanation's own docstring for why a random
+    # forest's prediction leaves this None rather than an approximation.
+    explanation: Optional[list[PredictionExplanationEntry]] = None
 
 
 class ScoreTableRequest(BaseModel):
