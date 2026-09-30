@@ -550,9 +550,20 @@ export default function Workspace() {
   const centerTabStorageKey = (dsId: string | undefined) => (dsId ? `gd360_center_tab_${dsId}` : null);
   const hadStoredCenterTab = useRef(false);
   const [centerTab, setCenterTabState] = useState<"data" | "chart" | "flow" | "quality" | "access" | "metrics" | "transforms">(() => {
-    if (searchParams.get("tab") === "flow") {
+    // 2026-09-30 (data catalog v1): a catalog search result for a saved
+    // table/metric/column links here with ?tab=<name> so the person lands
+    // on the right panel directly, instead of just "somewhere on this data
+    // source" - generalized from the single "flow" special-case this
+    // already had (a Flow-tab share link) to any of the tabs this page
+    // actually has, so a catalog link to "transforms" or "metrics" works
+    // exactly the same way.
+    const tabParam = searchParams.get("tab");
+    if (
+      tabParam === "data" || tabParam === "chart" || tabParam === "flow" || tabParam === "quality" ||
+      tabParam === "access" || tabParam === "metrics" || tabParam === "transforms"
+    ) {
       hadStoredCenterTab.current = true;
-      return "flow";
+      return tabParam;
     }
     try {
       const key = centerTabStorageKey(datasourceId);
