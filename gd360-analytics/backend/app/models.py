@@ -1453,6 +1453,26 @@ class MLModel(Base):
     overwrites this row's history away - see MLModelVersion's own
     docstring and routers/ml_models.py retrain_ml_model/
     promote_ml_model_version for what actually changed.
+
+    quality_warnings (added 2026-09-30, leakage-guardrail round): a real,
+    computed list[{"type": str, ...}] flagging things about THIS trained
+    result worth a second look before trusting it - added after this app's
+    first real, confirmed case of target leakage: a "predict Sales" model
+    that scored r2=0.9999999999913826 because two of its own auto-included
+    features (Gross Profit, Cost) are literally Sales = Gross Profit +
+    Cost in that data. See services/ml_training.py's own module docstring
+    for the full story, and services/ml_training.train_model's own
+    comments for exactly how each entry is computed: "near_perfect_score"
+    (the held-out test score itself was suspiciously high),
+    "dominant_feature" (one feature holds almost all of this model's own
+    real feature_importance), "high_correlation_feature" (a feature this
+    run actually used is still highly correlated with the target it's
+    predicting). Always a real list for a run that reached status="ready"
+    (empty when nothing tripped), never omitted. None of these BLOCK
+    training or silently drop a feature - a person can always keep a
+    flagged column on purpose; this is a warning shown plainly, never an
+    invisible correction, matching this table's own "never fabricate,
+    never silently fix" discipline everywhere else.
     """
     __tablename__ = "ml_models"
 
@@ -1471,6 +1491,11 @@ class MLModel(Base):
     metrics = Column(JSON, nullable=True)
     # See this model's own docstring above - global, never per-prediction.
     feature_importance = Column(JSON, nullable=True)
+    # See this model's own docstring above (leakage-guardrail round) -
+    # list[{"type": str, ...}], real, never fabricated. None for a model
+    # trained before this round existed; [] for one trained since with
+    # nothing to flag.
+    quality_warnings = Column(JSON, nullable=True)
     status = Column(String, nullable=False, default="training")  # "training" | "ready" | "failed"
     error_message = Column(Text, nullable=True)
     trained_row_count = Column(Integer, nullable=True)
@@ -1517,8 +1542,9 @@ class MLModelVersion(Base):
     what each one means. is_current=True on exactly one version per
     ml_model_id at any time; MLModel's own version_number/algorithm/
     metrics/feature_importance/model_artifact/feature_columns/
-    excluded_columns/trained_row_count always match whichever version
-    that is, so nothing else in this app has to know this table exists."""
+    excluded_columns/trained_row_count/quality_warnings always match
+    whichever version that is, so nothing else in this app has to know
+    this table exists."""
     __tablename__ = "ml_model_versions"
 
     id = Column(String, primary_key=True, default=gen_uuid)
@@ -1535,6 +1561,10 @@ class MLModelVersion(Base):
     model_artifact = Column(LargeBinary, nullable=True)
     metrics = Column(JSON, nullable=True)
     feature_importance = Column(JSON, nullable=True)
+    # See MLModel.quality_warnings's own docstring - a version snapshot's
+    # own copy, so promoting an old version restores its real warnings
+    # too, never silently dropping them.
+    quality_warnings = Column(JSON, nullable=True)
     trained_row_count = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
