@@ -1,11 +1,17 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams, Link } from "react-router-dom";
-import { datasourceApi, DataSourceSummary, mlModelsApi, MLModel, MLModelVersion, PredictResult } from "../api/client";
+import {
+  datasourceApi, DataSourceSummary, mlModelsApi, MLModel, MLModelVersion, PredictResult,
+  MLFeatureCandidate, PreviewMLFeaturesResult,
+} from "../api/client";
 import { hasMultipleTables } from "../components/DataSourceForm";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
-import { algorithmLabel, formatNumber, metricLabel, plainLanguageHeadline, statusLabel, timeAgo } from "../lib/mlModelText";
+import {
+  algorithmLabel, formatNumber, featureRiskText, metricLabel, plainLanguageHeadline, qualityWarningText,
+  statusLabel, timeAgo,
+} from "../lib/mlModelText";
 
 // 2026-09-28 (ML Models round): a trained model's own detail page - plain-
 // language result + an expandable "Technical details" section (same
@@ -23,6 +29,22 @@ import { algorithmLabel, formatNumber, metricLabel, plainLanguageHeadline, statu
 // for a linear/logistic model, honestly absent otherwise rather than
 // approximated), and "Version history" (lazy-loaded, same toggle pattern
 // as "Technical details" above) with a real "promote to active" rollback.
+//
+// 2026-09-30 (leakage-guardrail round): two more additions, after this
+// app's first real, confirmed case of target leakage (a "predict Sales"
+// model that scored r2=0.9999999999913826 because two of its own auto-
+// picked features were a simple arithmetic decomposition of Sales itself
+// - see services/ml_training.py's own module docstring for the full
+// story). (1) model.quality_warnings, shown right under the headline, not
+// buried in "Technical details" - the whole point is that this is the one
+// thing worth seeing BEFORE the impressive-looking number next to it.
+// (2) "Change which columns are used" inside "Keep this model current" -
+// reuses the exact same POST /ml-models/preview-features
+// TrainModelWizard.tsx's step 3 calls, so an EXISTING model can be
+// corrected (uncheck a leaked column, retrain) without deleting and
+// starting over - the real gap this round's own live "predict Sales" fix
+// ran into (there was no way to do this except editing the database
+// directly).
 
 function TrashIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
@@ -100,6 +122,15 @@ export default function MLModelDetail() {
   const [retraining, setRetraining] = useState(false);
   const [retrainError, setRetrainError] = useState("");
 
+  // "Change which columns are used" (2026-09-30, leakage-guardrail round)
+  // - lazy-loaded the first time it's opened, same pattern as showVersions
+  // above; reuses the exact same preview-features endpoint the training
+  // wizard's own step 3 calls.
+  const [adjustingFeatures, setAdjustingFeatures] = useState(false);
+  const [featurePreview, setFeaturePreview] = useState<PreviewMLFeaturesResult | null>(null);
+  const [featurePreviewError, setFeaturePreviewError] = useState("");
+  const [pickedFeatures, setPickedFeatures] = useState<string[]>([]);
+
   // Delete
   const [deleting, setDeleting] = useState(false);
 
@@ -140,6 +171,31 @@ export default function MLModelDetail() {
       .then(setVersions)
       .catch(() => setVersionsError("Couldn't load version history. Please try again."));
   }, [showVersions, id, versions]);
+
+  // 2026-09-30 (leakage-guardrail round): loads the real feature preview
+  // the first time "Change which columns are used" is opened, same lazy-
+  // load pattern as showVersions above. Defaults pickedFeatures to this
+  // model's CURRENT feature_columns (not the risk-based default the
+  // training wizard uses) - opening this panel should show "here's what's
+  // in use right now, including anything now flagged as risky", not
+  // silently propose a different set before the person has looked.
+  useEffect(() => {
+    if (!adjustingFeatures || !model || featurePreview !== null) return;
+    setFeaturePreviewError("");
+    mlModelsApi
+      .previewFeatures(model.datasource_id, model.target_column)
+      .then((p) => {
+        setFeaturePreview(p);
+        setPickedFeatures(model.feature_columns || []);
+      })
+      .catch((err: any) => {
+        setFeaturePreviewError(err?.response?.data?.detail || "Couldn't check which columns are usable. Please try again.");
+      });
+  }, [adjustingFeatures, model, featurePreview]);
+
+  const toggleFeature = (col: string) => {
+    setPickedFeatures((prev) => (prev.includes(col) ? prev.filter((c) => c !== col) : [...prev, col]));
+  };
 
   const runPromote = async (versionId: string) => {
     if (!id) return;
@@ -198,6 +254,30 @@ export default function MLModelDetail() {
       setModel(m);
     } catch {
       setRetrainError("Couldn't retrain this model. Please try again.");
+    } finally {
+      setRetraining(false);
+    }
+  };
+
+  // 2026-09-30 (leakage-guardrail round): retrains with an explicit,
+  // narrowed feature_columns list instead of just re-using whichever
+  // columns the last run happened to use - the real fix for a model that
+  // needs a column removed (a leaked one, or anything else) without
+  // deleting it and starting over. Same guard as the training wizard's
+  // own step 3: won't send an empty list, which the backend would
+  // silently treat as "auto-select everything" rather than "use zero
+  // features" - the button itself stays disabled at zero checked instead.
+  const runRetrainWithFeatures = async () => {
+    if (!id || pickedFeatures.length === 0) return;
+    setRetraining(true);
+    setRetrainError("");
+    try {
+      const m = await mlModelsApi.retrain(id, pickedFeatures);
+      setModel(m);
+      setAdjustingFeatures(false);
+      setFeaturePreview(null);
+    } catch (err: any) {
+      setRetrainError(err?.response?.data?.detail || "Couldn't retrain this model with those columns. Please try again.");
     } finally {
       setRetraining(false);
     }
@@ -280,6 +360,21 @@ export default function MLModelDetail() {
               {model.status === "ready" && (
                 <div className="dash-card p-5 mb-6">
                   <div className="text-lg font-bold leading-snug mb-3">{plainLanguageHeadline(model)}</div>
+
+                  {/* 2026-09-30 (leakage-guardrail round): real, computed -
+                      shown right here, never buried in "Technical
+                      details" below, since this is specifically the
+                      "don't trust the number above at face value yet"
+                      signal. See models.MLModel.quality_warnings's own
+                      docstring. */}
+                  {model.quality_warnings && model.quality_warnings.length > 0 && (
+                    <div className="mb-3 text-xs bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 space-y-1.5">
+                      <div className="font-semibold text-amber-700 dark:text-amber-400">Before you trust this result</div>
+                      {model.quality_warnings.map((w, i) => (
+                        <p key={i} className="leading-relaxed">{qualityWarningText(w)}</p>
+                      ))}
+                    </div>
+                  )}
 
                   {model.excluded_columns && model.excluded_columns.length > 0 && (
                     <div className="mb-3 text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
@@ -455,6 +550,85 @@ export default function MLModelDetail() {
                     <button type="button" className="btn-secondary text-xs" onClick={() => setConfirmingRetrain(false)}>Cancel</button>
                   </div>
                 )}
+
+                {/* ---- Change which columns are used (2026-09-30, leakage-guardrail round) ---- */}
+                <div className="mt-4 pt-4 border-t border-border">
+                  <button
+                    type="button"
+                    className="text-xs font-semibold text-primary hover:underline"
+                    onClick={() => setAdjustingFeatures(!adjustingFeatures)}
+                  >
+                    {adjustingFeatures ? "Hide column picker" : "Change which columns are used"}
+                  </button>
+                  {adjustingFeatures && (
+                    <div className="mt-3">
+                      <p className="text-xs text-muted leading-relaxed mb-3">
+                        Uncheck anything that shouldn&rsquo;t be predicting &ldquo;{model.target_column}&rdquo; -
+                        for example a column flagged below as a possible leak - then retrain to make the corrected
+                        result active. Your current version stays saved either way.
+                      </p>
+                      {featurePreviewError && (
+                        <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-3">
+                          {featurePreviewError}
+                        </div>
+                      )}
+                      {!featurePreview && !featurePreviewError && (
+                        <div className="text-xs text-muted py-3 text-center">Checking your columns&hellip;</div>
+                      )}
+                      {featurePreview && (
+                        <>
+                          <div className="border border-border rounded-lg p-3 max-h-64 overflow-y-auto space-y-1">
+                            {featurePreview.usable.length === 0 && (
+                              <div className="text-xs text-muted">No usable columns found for this target.</div>
+                            )}
+                            {featurePreview.usable.map((f: MLFeatureCandidate) => (
+                              <label key={f.column} className="flex items-start gap-2 text-sm py-1.5 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  className="rounded border-border mt-0.5"
+                                  checked={pickedFeatures.includes(f.column)}
+                                  onChange={() => toggleFeature(f.column)}
+                                />
+                                <span className="min-w-0 flex-1">
+                                  <span className="truncate block">{f.column}</span>
+                                  {f.risk && (
+                                    <span
+                                      className={`inline-block mt-0.5 text-[11px] font-medium px-1.5 py-0.5 rounded-full ${
+                                        f.risk === "high"
+                                          ? "bg-red-500/10 text-red-500 dark:text-red-400"
+                                          : "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                                      }`}
+                                    >
+                                      {featureRiskText(f.risk, f.correlation)}
+                                    </span>
+                                  )}
+                                </span>
+                              </label>
+                            ))}
+                          </div>
+                          {featurePreview.excluded.length > 0 && (
+                            <div className="mt-3 text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
+                              <div className="font-semibold text-text mb-1">Columns GD360 can&rsquo;t use, and why</div>
+                              <ul className="space-y-0.5">
+                                {featurePreview.excluded.map((e) => (
+                                  <li key={e.column}><span className="font-medium text-text">{e.column}</span>: {e.reason}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          <button
+                            type="button"
+                            className="btn-primary text-sm mt-3 disabled:opacity-50"
+                            disabled={retraining || pickedFeatures.length === 0}
+                            onClick={runRetrainWithFeatures}
+                          >
+                            {retraining ? "Retraining…" : "Retrain with these columns"}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* ---- Version history (2026-09-30, model trustworthiness round) ---- */}
@@ -497,6 +671,17 @@ export default function MLModelDetail() {
                                 {v.is_current && (
                                   <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-primary/15 text-primary">
                                     Active
+                                  </span>
+                                )}
+                                {/* 2026-09-30 (leakage-guardrail round): a compact flag so
+                                    an old, flagged version isn't promoted back to active
+                                    without at least seeing that it was flagged. */}
+                                {v.quality_warnings && v.quality_warnings.length > 0 && (
+                                  <span
+                                    className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                                    title={v.quality_warnings.map((w) => qualityWarningText(w)).join(" ")}
+                                  >
+                                    Flagged
                                   </span>
                                 )}
                                 {v.created_reason === "promoted" && (
