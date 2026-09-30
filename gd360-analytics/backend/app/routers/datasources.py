@@ -581,52 +581,23 @@ def refresh_api(
     just succeeded - never backdated or defaulted (see
     models.DataSource's own docstring on that column).
 
-    Deliberately manual-only this round: there is no button or setting
-    anywhere that makes this run on its own. Wiring an "api" source into
-    services/scheduler.py's existing 60-second dashboard-refresh loop is
-    real, separate future work - that loop today only ever recomputes
-    DASHBOARD BLOCKS built on top of a data source's data (see that file's
-    own module docstring), never a data source's own underlying data, and
-    giving it a second, different kind of thing to refresh on a timer needs
-    its own design and testing pass (how often is safe to hit someone
-    else's API automatically, what happens to a dashboard mid-recompute if
-    the fetch underneath it changes shape, etc.) rather than a one-line
-    addition slipped into this round."""
+    Manual here (a person clicking this button), but - as of 2026-09-30
+    (orchestration v1) - this is no longer the ONLY way an "api" source's
+    data gets refreshed: services/pipelines.py's "refresh_datasource" step
+    type calls the exact same underlying logic (now extracted into
+    services/datasource_refresh.refresh_api_datasource, which this
+    endpoint is a thin wrapper around) from a saved, optionally-scheduled
+    Pipeline - see models.Pipeline's own docstring. This endpoint itself
+    is unchanged in behavior; only where its logic actually lives moved,
+    so both call sites share one implementation rather than two that could
+    drift apart."""
+    from ..services.datasource_refresh import refresh_api_datasource
+
     ds = _get_editable_datasource(db, user, datasource_id)
-    if ds.kind != "api":
-        raise HTTPException(400, "This isn't an API data source.")
-    info = ds.connection_info or {}
-    url = info.get("url")
-    if not url:
-        raise HTTPException(400, "This data source has no URL on file - remove it and reconnect instead.")
-
-    headers = {}
-    auth_header_name = info.get("auth_header_name")
-    if auth_header_name and ds.encrypted_secret:
-        try:
-            headers[auth_header_name] = security.decrypt_secret(ds.encrypted_secret)
-        except Exception:
-            raise HTTPException(500, "This source's auth header value could not be read - remove it and reconnect with a fresh value.")
-
-    connector = ApiConnector(url, headers=headers, json_path=info.get("json_path"))
     try:
-        df = connector.fetch_dataframe()
-    except ValueError as e:
+        refresh_api_datasource(db, ds)
+    except RuntimeError as e:
         raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(400, f"Could not read that API: {e}")
-
-    schema, file_bytes = _api_schema_and_bytes(df)
-    ds.schema_cache = schema
-    ds.file_data = file_bytes
-    ds.api_last_refreshed_at = datetime.utcnow()
-    db.commit()
-    db.refresh(ds)
-    # Overwrites the in-process cache entry this exact same request's fetch
-    # just made stale - see data_loader.warm_cache's own comment for why
-    # this call is what keeps the "file_data is write-once" cache correct
-    # in the one case (this endpoint) where it genuinely isn't.
-    warm_cache(ds.id, df)
     return ds
 
 
