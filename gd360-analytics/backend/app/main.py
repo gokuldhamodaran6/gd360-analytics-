@@ -9,7 +9,7 @@ from .database import init_db
 from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, admin, conversations, goku,
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
-    data_access_rules, ml_models, metric_definitions,
+    data_access_rules, ml_models, metric_definitions, transforms,
 )
 from .services.scheduler import start_scheduler
 
@@ -155,6 +155,9 @@ app.include_router(data_access_rules.router)
 # with a real scikit-learn model.
 app.include_router(ml_models.router)
 app.include_router(metric_definitions.router)
+# 2026-09-30 (transformation layer v1): saved, reusable data-shaping
+# pipelines - see models.DataTransform's own docstring.
+app.include_router(transforms.router)
 
 
 @app.on_event("startup")
