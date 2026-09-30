@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { datasourceApi, DataSourceSummary, mlModelsApi, MLModel } from "../api/client";
+import { datasourceApi, DataSourceSummary, mlModelsApi, MLModel, MLFeatureCandidate, PreviewMLFeaturesResult } from "../api/client";
 import { connectionKindMeta } from "./DataSourceForm";
-import { plainLanguageHeadline, metricLabel, formatNumber } from "../lib/mlModelText";
+import { plainLanguageHeadline, metricLabel, formatNumber, qualityWarningText, featureRiskText } from "../lib/mlModelText";
 
 // 2026-09-28 (ML Models round): the no-code "train a model" wizard - four
 // steps, no code and no ML jargon in the primary flow (an optional
@@ -20,9 +20,24 @@ import { plainLanguageHeadline, metricLabel, formatNumber } from "../lib/mlModel
 // not a certainty) and showing it with any confidence before the real
 // computation has even happened would risk this feature's own "never
 // fabricate a number/claim" discipline. Instead, step 2 only asks WHICH
-// column to predict; the real, computed task_type only ever appears after
-// the real POST /ml-models/train call returns it on step 4's result -
-// exactly the one honest place a person should see it.
+// column to predict; step 4's result is still the first place a person
+// sees a real, committed training run's own task_type.
+//
+// 2026-09-30 (leakage-guardrail round): step 3 is no longer an optional,
+// collapsed "Advanced: pick specific columns yourself" checkbox list that
+// most people were told to skip. It now ALWAYS calls the real, zero-
+// side-effect POST /ml-models/preview-features (services/ml_training.
+// preview_features) and shows every real candidate column with a real
+// leakage-risk badge where one applies - this is the direct product fix
+// for a real, confirmed case (see lib/mlModelText.ts's own comment) where
+// nothing in this wizard ever surfaced that two auto-picked columns were
+// a simple arithmetic decomposition of the very thing being predicted,
+// until after the (already leaked) result came back. This preview call's
+// own `task_type` is NOT the design choice above being broken - it's a
+// real, server-computed number from the exact same infer_task_type
+// heuristic training itself uses (not a client-side dtype guess), shown
+// honestly as a preview of what training would currently detect, not a
+// promise of what it definitely will.
 
 function CloseIcon({ className = "w-5 h-5" }: { className?: string }) {
   return (
@@ -95,8 +110,11 @@ export default function TrainModelWizard({
   const [columnsError, setColumnsError] = useState("");
   const [targetColumn, setTargetColumn] = useState("");
 
-  // Step 3
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Step 3 (2026-09-30, leakage-guardrail round: always a real preview,
+  // never a collapsed, unscored checkbox list - see this file's own top
+  // comment).
+  const [preview, setPreview] = useState<PreviewMLFeaturesResult | null>(null);
+  const [previewError, setPreviewError] = useState("");
   const [pickedFeatures, setPickedFeatures] = useState<string[]>([]);
 
   // Step 4
@@ -126,6 +144,8 @@ export default function TrainModelWizard({
     setColumns(null);
     setColumnsError("");
     setTargetColumn("");
+    setPreview(null);
+    setPreviewError("");
     setPickedFeatures([]);
     datasourceApi
       .preview(datasourceId, null)
@@ -133,11 +153,30 @@ export default function TrainModelWizard({
       .catch(() => setColumnsError("Couldn't read this data source's columns. Please try another one."));
   }, [datasourceId]);
 
+  // 2026-09-30 (leakage-guardrail round): fetches the real, zero-side-
+  // effect feature preview as soon as both a data source and a target
+  // column are picked, so it's already loaded by the time step 3 renders
+  // rather than making a person wait once they get there. Defaults
+  // pickedFeatures to every USABLE column EXCEPT a "high" leakage risk one
+  // - an opinionated but overridable default (every checkbox stays
+  // editable), the same "safe by default, real control if you want it"
+  // shape a real ML platform's own feature picker uses.
+  useEffect(() => {
+    if (!datasourceId || !targetColumn) return;
+    setPreview(null);
+    setPreviewError("");
+    mlModelsApi
+      .previewFeatures(datasourceId, targetColumn)
+      .then((p) => {
+        setPreview(p);
+        setPickedFeatures(p.usable.filter((f) => f.risk !== "high").map((f) => f.column));
+      })
+      .catch((err: any) => {
+        setPreviewError(err?.response?.data?.detail || "Couldn't check which columns are usable. Please try again.");
+      });
+  }, [datasourceId, targetColumn]);
+
   const selectedSource = sources?.find((s) => s.id === datasourceId) || null;
-  const otherColumns = useMemo(
-    () => (columns || []).filter((c) => c !== targetColumn),
-    [columns, targetColumn]
-  );
 
   const filteredSources = (sources || []).filter(
     (s) => !sourceQuery.trim() || s.name.toLowerCase().includes(sourceQuery.trim().toLowerCase())
@@ -156,7 +195,15 @@ export default function TrainModelWizard({
       const model = await mlModelsApi.train({
         datasource_id: datasourceId,
         target_column: targetColumn,
-        feature_columns: advancedOpen && pickedFeatures.length > 0 ? pickedFeatures : undefined,
+        // 2026-09-30 (leakage-guardrail round): sends the real, currently-
+        // checked column list once a preview has loaded (step 3's own
+        // checkboxes - see this file's own top comment) - undefined only
+        // when the preview genuinely never came back, falling back to the
+        // backend's own zero-configuration auto-select rather than
+        // silently sending an empty list (which Python/select_features
+        // treats as "nothing requested", i.e. auto-select-everything
+        // anyway - never as "use zero features").
+        feature_columns: preview ? pickedFeatures : undefined,
         name: name.trim(),
         description: description.trim() || undefined,
       });
@@ -291,35 +338,76 @@ export default function TrainModelWizard({
               {step === 3 && (
                 <div>
                   <p className="text-xs text-muted leading-relaxed mb-3">
-                    By default, GD360 automatically picks every other column that&rsquo;s useful for predicting{" "}
-                    <span className="font-semibold text-text">{targetColumn}</span>, and explains any it leaves
-                    out. Most people can skip this step entirely.
+                    These are the real columns GD360 checked in{" "}
+                    <span className="font-semibold text-text">{selectedSource?.name}</span> for predicting{" "}
+                    <span className="font-semibold text-text">{targetColumn}</span>. Every one below is checked by
+                    default and will be used - uncheck anything that shouldn&rsquo;t count, and pay attention to
+                    anything flagged as a possible leak (see the note below for what that means).
                   </p>
-                  <button
-                    type="button"
-                    className="text-xs font-semibold text-primary hover:underline"
-                    onClick={() => setAdvancedOpen((o) => !o)}
-                  >
-                    {advancedOpen ? "Hide advanced options" : "Advanced: pick specific columns yourself"}
-                  </button>
-                  {advancedOpen && (
-                    <div className="mt-3 border border-border rounded-lg p-3 max-h-56 overflow-y-auto space-y-1">
-                      {otherColumns.length === 0 && <div className="text-xs text-muted">No other columns available.</div>}
-                      {otherColumns.map((c) => (
-                        <label key={c} className="flex items-center gap-2 text-sm py-1 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            className="rounded border-border"
-                            checked={pickedFeatures.includes(c)}
-                            onChange={() => toggleFeature(c)}
-                          />
-                          <span className="truncate">{c}</span>
-                        </label>
-                      ))}
-                      <p className="text-[11px] text-muted pt-1">
-                        Leave everything unchecked to use GD360&rsquo;s automatic picks instead.
-                      </p>
+                  {previewError && (
+                    <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-3">
+                      {previewError}
                     </div>
+                  )}
+                  {!preview && !previewError && <div className="text-xs text-muted py-4 text-center">Checking your columns&hellip;</div>}
+                  {preview && (
+                    <>
+                      {preview.usable.some((f) => f.risk) && (
+                        <div className="mb-3 text-xs bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2.5 leading-relaxed">
+                          <span className="font-semibold">Possible leak:</span> a column flagged below is unusually
+                          correlated with &ldquo;{targetColumn}&rdquo;, which often means it&rsquo;s mathematically
+                          derived from the very thing you&rsquo;re predicting rather than a genuine, independent
+                          signal. Anything flagged &ldquo;possible leakage&rdquo; starts unchecked - you can still
+                          include it if you&rsquo;re sure it&rsquo;s real.
+                        </div>
+                      )}
+                      <div className="border border-border rounded-lg p-3 max-h-64 overflow-y-auto space-y-1">
+                        {preview.usable.length === 0 && (
+                          <div className="text-xs text-muted">No usable columns found for this target.</div>
+                        )}
+                        {preview.usable.map((f: MLFeatureCandidate) => (
+                          <label key={f.column} className="flex items-start gap-2 text-sm py-1.5 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              className="rounded border-border mt-0.5"
+                              checked={pickedFeatures.includes(f.column)}
+                              onChange={() => toggleFeature(f.column)}
+                            />
+                            <span className="min-w-0 flex-1">
+                              <span className="truncate block">{f.column}</span>
+                              {f.risk && (
+                                <span
+                                  className={`inline-block mt-0.5 text-[11px] font-medium px-1.5 py-0.5 rounded-full ${
+                                    f.risk === "high"
+                                      ? "bg-red-500/10 text-red-500 dark:text-red-400"
+                                      : "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                                  }`}
+                                >
+                                  {featureRiskText(f.risk, f.correlation)}
+                                </span>
+                              )}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                      {preview.excluded.length > 0 && (
+                        <div className="mt-3 text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
+                          <div className="font-semibold text-text mb-1">Columns GD360 can&rsquo;t use, and why</div>
+                          <ul className="space-y-0.5">
+                            {preview.excluded.map((e) => (
+                              <li key={e.column}><span className="font-medium text-text">{e.column}</span>: {e.reason}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {preview.task_type === "classification" && (
+                        <p className="text-[11px] text-muted leading-relaxed mt-3">
+                          &ldquo;{targetColumn}&rdquo; looks like a yes/no or category-style prediction, so GD360
+                          can&rsquo;t check for a leak by correlation here the way it can for a number prediction -
+                          use your own judgment on any column that feels like it might already know the answer.
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
               )}
@@ -381,7 +469,19 @@ export default function TrainModelWizard({
               </button>
             )}
             {step === 3 && (
-              <button type="button" className="btn-primary text-sm" onClick={() => setStep(4)}>
+              <button
+                type="button"
+                className="btn-primary text-sm disabled:opacity-50"
+                // 2026-09-30 (leakage-guardrail round): can't move on with
+                // zero columns checked - a real, empty feature_columns
+                // list would be silently treated by the backend as "auto-
+                // select everything" (see startTraining's own comment),
+                // which would contradict what this screen just showed was
+                // checked, so this stays disabled instead of allowing a
+                // click that wouldn't do what it visibly says.
+                disabled={!preview || pickedFeatures.length === 0}
+                onClick={() => setStep(4)}
+              >
                 Next
               </button>
             )}
@@ -434,6 +534,20 @@ function ResultView({
       <div className="text-xs text-muted mb-4">
         Trained on {model.trained_row_count?.toLocaleString()} real rows of data.
       </div>
+
+      {/* 2026-09-30 (leakage-guardrail round): real, computed - never
+          hidden behind "Technical details" the way a genuinely good
+          result's raw metrics are, since this is specifically the
+          "don't trust this at face value yet" signal. See models.
+          MLModel.quality_warnings's own docstring. */}
+      {model.quality_warnings && model.quality_warnings.length > 0 && (
+        <div className="mb-4 text-xs bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 space-y-1.5">
+          <div className="font-semibold text-amber-700 dark:text-amber-400">Before you trust this result</div>
+          {model.quality_warnings.map((w, i) => (
+            <p key={i} className="leading-relaxed">{qualityWarningText(w)}</p>
+          ))}
+        </div>
+      )}
 
       {model.excluded_columns && model.excluded_columns.length > 0 && (
         <div className="mb-4 text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
