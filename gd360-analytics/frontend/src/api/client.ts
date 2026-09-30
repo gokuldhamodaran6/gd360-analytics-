@@ -2198,12 +2198,15 @@ export const transformsApi = {
     api.get<TransformPreview>(`/datasources/${datasourceId}/transforms/${transformId}/data`).then((r) => r.data),
 };
 
-// ---- Orchestration v1 (2026-09-30, pages/Pipelines.tsx) - see backend
-// models.Pipeline's own docstring for the full design: a named, saved,
-// LINEAR chain of a few whitelisted step types, run strictly in order,
-// on demand or on a schedule reusing the exact same four-value interval
-// vocabulary (RefreshInterval, above) the Jobs page's dashboard schedules
-// already use. ----
+// ---- Orchestration v1 (2026-09-30) - see backend models.Pipeline's own
+// docstring for the full design: a named, saved, LINEAR chain of a few
+// whitelisted step types, run strictly in order, on demand or on a
+// schedule reusing the exact same four-value interval vocabulary
+// (RefreshInterval, above) the Jobs page's dashboard schedules already
+// use. 2026-09-30 (Governance/Jobs redesign round): the standalone
+// pages/Pipelines.tsx page is gone - this same pipelinesApi now backs the
+// "Chains" tab inside pages/Jobs.tsx instead. Every type/call below is
+// unchanged; only which page renders them moved. ----
 export type PipelineStepType = "refresh_datasource" | "rebuild_dashboard" | "run_quality_checks";
 
 export type PipelineStep =
@@ -2285,28 +2288,12 @@ export const pipelinesApi = {
       .then((r) => r.data),
 };
 
-// ---- Data catalog v1 (2026-09-30, pages/Catalog.tsx) - see backend
-// services/catalog.py's own module docstring for the full design: a
-// single, account-wide, LIVE-queried search across every kind of asset
-// this app has (never a separate index that could drift out of sync). ----
-export type CatalogAssetType = "datasource" | "column" | "transform" | "metric" | "dashboard" | "pipeline";
-
-export type CatalogEntry = {
-  asset_type: CatalogAssetType;
-  id: string;
-  name: string;
-  subtitle: string | null;
-  description: string | null;
-  // The data source this entry belongs to, if any - null for a data
-  // source/dashboard/pipeline entry itself. Lets the results list show
-  // "amount — on Orders API" for a column/transform/metric.
-  parent_id: string | null;
-  parent_name: string | null;
-};
-
-export const catalogApi = {
-  // `q` blank means "browse everything this person can see" (no column
-  // entries - see backend's own comment on why those only ever appear once
-  // there's something to actually search for).
-  search: (q: string) => api.get<CatalogEntry[]>("/catalog/search", { params: { q: q || undefined } }).then((r) => r.data),
-};
+// ---- Data catalog v1 (2026-09-30) - REMOVED (Governance/Jobs redesign +
+// Pipelines/Catalog removal round). Gokul's own report: the Catalog page's
+// account-wide search duplicated the Projects filter and Data Sources
+// page and "leads to confusion" - pages/Catalog.tsx, this catalogApi, and
+// backend routers/catalog.py + services/catalog.py are all gone. Its one
+// real, non-redundant capability (editing a data source's short
+// description) now lives inline on DataSources.tsx, calling the same
+// datasourceApi.updateDescription below that was already independent of
+// catalogApi. ----
