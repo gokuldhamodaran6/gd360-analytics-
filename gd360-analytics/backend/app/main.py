@@ -9,7 +9,7 @@ from .database import init_db
 from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, admin, conversations, goku,
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
-    data_access_rules, ml_models, metric_definitions, transforms,
+    data_access_rules, ml_models, metric_definitions, transforms, pipelines,
 )
 from .services.scheduler import start_scheduler
 
@@ -158,6 +158,11 @@ app.include_router(metric_definitions.router)
 # 2026-09-30 (transformation layer v1): saved, reusable data-shaping
 # pipelines - see models.DataTransform's own docstring.
 app.include_router(transforms.router)
+# 2026-09-30 (orchestration v1): named, saved, linear chains of a few
+# whitelisted actions (refresh an API source, rebuild a dashboard, re-run
+# quality checks), run strictly in order, on demand or on a schedule - see
+# models.Pipeline's own docstring.
+app.include_router(pipelines.router)
 
 
 @app.on_event("startup")
