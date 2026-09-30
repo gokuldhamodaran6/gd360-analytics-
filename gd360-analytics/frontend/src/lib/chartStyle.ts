@@ -279,6 +279,58 @@ export function isFacetedSpec(spec: any): boolean {
 function realSeriesCount(data: any[]): number {
   return data.filter((t) => !isDecorativeTrace(t) && !isFacetPanelTrace(t)).length;
 }
+
+// 2026-09-30 (bug fix, Gokul's own report, verbatim): "show anomoly and
+// show forecast dont show for every chart only if it need show or else
+// dont confuse user." The "Show forecast" / "Show anomalies" kebab-menu
+// items used to appear on every single chart block regardless of that
+// chart's actual shape, so a person would see "Show forecast" as a live
+// option on a bar chart or a pie chart, click it, and get bounced straight
+// into the backend's honest-but-jarring 400 error ("Forecasting only works
+// on a line, area, or step chart") for a menu item that never should have
+// been offered in the first place. This mirrors chart_builder.py's
+// apply_analysis_overlays gating EXACTLY (same primary-trace pick, same
+// "scatter + lines mode" check, same 4-point minimum, same "does this
+// trace even have a y array" check) so the menu only offers a toggle when
+// the backend would actually be able to compute it - never a second,
+// looser copy of that logic that could drift out of sync with it.
+function findPrimaryAnalysisTrace(data: any[]): any {
+  // Same rule as the backend: the first trace with NO meta.role at all -
+  // skips over trend lines/bands, facet panels, and any previously-added
+  // forecast/anomaly traces, exactly like fig.data's own role scan.
+  return data.find((t) => !(t?.meta && typeof t.meta === "object" && t.meta.role != null)) ?? null;
+}
+
+function countValidNumericY(t: any): number {
+  const y: any[] = Array.isArray(t?.y) ? t.y : [];
+  return y.filter((v) => v !== null && v !== undefined && v !== "" && !Number.isNaN(Number(v))).length;
+}
+
+/** Whether this chart block's current chart_spec has a shape the "Show
+ * forecast" toggle could honestly compute against - a line/area/step trace
+ * (Plotly type "scatter" with "lines" somewhere in its mode) with at least
+ * 4 real numeric y-values. Used to hide the menu item entirely rather than
+ * show it and let the person hit a 400 error for a chart type that was
+ * never going to work. */
+export function canForecastSpec(spec: any): boolean {
+  const data: any[] = Array.isArray(spec?.data) ? spec.data : Array.isArray(spec) ? spec : [];
+  const primary = findPrimaryAnalysisTrace(data);
+  if (!primary) return false;
+  const mode: string = typeof primary.mode === "string" ? primary.mode : "";
+  if (primary.type !== "scatter" || !mode.includes("lines")) return false;
+  return countValidNumericY(primary) >= 4;
+}
+
+/** Whether this chart block's current chart_spec has a shape the "Show
+ * anomalies" toggle could honestly compute against - any trace that
+ * actually carries a y-value array at all (a pie/donut/funnel/sankey uses
+ * labels/values instead and has none). */
+export function canDetectAnomaliesSpec(spec: any): boolean {
+  const data: any[] = Array.isArray(spec?.data) ? spec.data : Array.isArray(spec) ? spec : [];
+  const primary = findPrimaryAnalysisTrace(data);
+  if (!primary) return false;
+  return Array.isArray(primary.y) && primary.y.length > 0;
+}
  
 // A bar-plus-line chart with its own right-hand axis (see chart_builder.py's
 // _build_dual_axis_combo) - two metrics with very different scales shown
