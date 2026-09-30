@@ -16,10 +16,12 @@ import ExplorePanel from "../components/ExplorePanel";
 import DataTable from "../components/DataTable";
 import DataFlowMap, { FlowJumpTarget } from "../components/DataFlowMap";
 import BuildDashboardModal from "../components/BuildDashboardModal";
-import QualityChecksPanel from "../components/QualityChecksPanel";
-import AccessRulesPanel from "../components/AccessRulesPanel";
-import MetricsPanel from "../components/MetricsPanel";
-import TransformsPanel from "../components/TransformsPanel";
+// 2026-09-30 (bug-fix round, Gokul's own ask): QualityChecksPanel/
+// AccessRulesPanel/MetricsPanel/TransformsPanel imports removed along with
+// this page's own Quality checks/Access/Metrics/Transforms tabs - see the
+// tab-bar comment further down for why. The components themselves, their
+// backend routers, and their own standalone pages (Metrics.tsx,
+// Catalog.tsx) are untouched; only this page stopped importing them.
 import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
 import {
   CLIENT_PIVOTABLE_TYPES, ExploreConfig, ResultColumn, buildExploreFigure, defaultExploreConfig,
@@ -549,29 +551,29 @@ export default function Workspace() {
   // this data source), never overriding a real memory that already exists.
   const centerTabStorageKey = (dsId: string | undefined) => (dsId ? `gd360_center_tab_${dsId}` : null);
   const hadStoredCenterTab = useRef(false);
-  const [centerTab, setCenterTabState] = useState<"data" | "chart" | "flow" | "quality" | "access" | "metrics" | "transforms">(() => {
+  const [centerTab, setCenterTabState] = useState<"data" | "chart" | "flow">(() => {
     // 2026-09-30 (data catalog v1): a catalog search result for a saved
     // table/metric/column links here with ?tab=<name> so the person lands
     // on the right panel directly, instead of just "somewhere on this data
     // source" - generalized from the single "flow" special-case this
     // already had (a Flow-tab share link) to any of the tabs this page
-    // actually has, so a catalog link to "transforms" or "metrics" works
-    // exactly the same way.
+    // actually has.
+    // 2026-09-30 (bug-fix round, Gokul's own ask): the quality/access/
+    // metrics/transforms tabs this used to also recognize are gone from
+    // this page now (see the tab-bar comment below for why) - an old
+    // bookmark or a Catalog link still carrying one of those values simply
+    // doesn't match here anymore and falls through to the same stored/
+    // default handling every other unrecognized value always has, landing
+    // on the Data tab rather than erroring.
     const tabParam = searchParams.get("tab");
-    if (
-      tabParam === "data" || tabParam === "chart" || tabParam === "flow" || tabParam === "quality" ||
-      tabParam === "access" || tabParam === "metrics" || tabParam === "transforms"
-    ) {
+    if (tabParam === "data" || tabParam === "chart" || tabParam === "flow") {
       hadStoredCenterTab.current = true;
       return tabParam;
     }
     try {
       const key = centerTabStorageKey(datasourceId);
       const stored = key ? localStorage.getItem(key) : null;
-      if (
-        stored === "data" || stored === "chart" || stored === "flow" || stored === "quality" ||
-        stored === "access" || stored === "metrics" || stored === "transforms"
-      ) {
+      if (stored === "data" || stored === "chart" || stored === "flow") {
         hadStoredCenterTab.current = true;
         return stored;
       }
@@ -582,7 +584,7 @@ export default function Workspace() {
     }
     return "data";
   });
-  const setCenterTab = (tab: "data" | "chart" | "flow" | "quality" | "access" | "metrics" | "transforms") => {
+  const setCenterTab = (tab: "data" | "chart" | "flow") => {
     setCenterTabState(tab);
     try {
       const key = centerTabStorageKey(datasourceId);
@@ -2181,49 +2183,27 @@ export default function Workspace() {
               >
                 Flow
               </button>
-              {/* Phase 5, Batch A (2026-09-28, data governance & quality):
-                  automated column-level checks on this data source's data -
-                  see components/QualityChecksPanel.tsx. */}
-              <button
-                className={`text-sm px-4 py-2 rounded-lg font-medium transition ${centerTab === "quality" ? "bg-primary text-white" : "btn-secondary"}`}
-                onClick={() => setCenterTab("quality")}
-              >
-                Quality checks
-              </button>
-              {/* Phase 5, Batch B (data governance & quality - row/column
-                  permissions): always shown to everyone who can open this
-                  page, same as every other tab here - AccessRulesPanel
-                  itself handles the non-owner case with its own forbidden-
-                  state message (see components/AccessRulesPanel.tsx), so
-                  ownership is never duplicated as client-side logic here. */}
-              <button
-                className={`text-sm px-4 py-2 rounded-lg font-medium transition ${centerTab === "access" ? "bg-primary text-white" : "btn-secondary"}`}
-                onClick={() => setCenterTab("access")}
-              >
-                Access
-              </button>
-              {/* 2026-09-30 (semantic layer v1): this data source's own
-                  saved metric glossary - see components/MetricsPanel.tsx
-                  and backend models.MetricDefinition's own docstring. Same
-                  "always visible, panel handles its own view-only state"
-                  convention as Quality checks/Access above. */}
-              <button
-                className={`text-sm px-4 py-2 rounded-lg font-medium transition ${centerTab === "metrics" ? "bg-primary text-white" : "btn-secondary"}`}
-                onClick={() => setCenterTab("metrics")}
-              >
-                Metrics
-              </button>
-              {/* 2026-09-30 (transformation layer v1): this data source's
-                  own saved tables - see components/TransformsPanel.tsx and
-                  backend models.DataTransform's own docstring. Same
-                  "always visible, panel handles its own view-only state"
-                  convention as Metrics/Quality checks/Access above. */}
-              <button
-                className={`text-sm px-4 py-2 rounded-lg font-medium transition ${centerTab === "transforms" ? "bg-primary text-white" : "btn-secondary"}`}
-                onClick={() => setCenterTab("transforms")}
-              >
-                Transforms
-              </button>
+              {/* 2026-09-30 (Gokul's own explicit ask, verbatim: "quality
+                  check, access, metrics and transforms are not working
+                  properly and we dont need it if customer wants to do
+                  anything they can ask in chat... too many options confuse
+                  user more and they dont know what to do"): the Quality
+                  checks/Access/Metrics/Transforms tabs that used to sit
+                  here are removed from this per-chat analysis view. Nothing
+                  about those features was deleted - QualityChecksPanel.tsx/
+                  AccessRulesPanel.tsx/MetricsPanel.tsx/TransformsPanel.tsx,
+                  their backend routers, and their own standalone pages
+                  (Metrics.tsx, Catalog.tsx) are all untouched - only these
+                  four buttons and their content branches below are gone,
+                  since this specific view is where they read as clutter
+                  next to the chat, which already does everything they did
+                  (a data-quality question, an access question, and so on
+                  are all just prompts the same "Ask GD360" chat on the left
+                  answers directly). A catalog search result that still
+                  links here with `?tab=metrics` (etc.) degrades gracefully
+                  to the Data tab (see centerTab's own state-init comment
+                  below) rather than erroring - it just no longer lands on
+                  a tab that exists anymore. */}
             </div>
             <div className="flex items-center gap-3 shrink-0">
               {/* 2026-09-23, round four (Gokul's own explicit ask: "in chat
@@ -2386,14 +2366,6 @@ export default function Workspace() {
                 currentConversationId={conversationId}
                 onJump={handleFlowJump}
               />
-            ) : centerTab === "quality" && datasourceId ? (
-              <QualityChecksPanel datasourceId={datasourceId} />
-            ) : centerTab === "access" && datasourceId ? (
-              <AccessRulesPanel datasourceId={datasourceId} />
-            ) : centerTab === "metrics" && datasourceId ? (
-              <MetricsPanel datasourceId={datasourceId} />
-            ) : centerTab === "transforms" && datasourceId ? (
-              <TransformsPanel datasourceId={datasourceId} />
             ) : (
               <div className="h-full flex flex-col gap-2 overflow-hidden">
                 {charts.length > 0 && (
