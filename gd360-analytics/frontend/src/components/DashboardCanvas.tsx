@@ -197,6 +197,18 @@ function InfoIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
     </svg>
   );
 }
+// 2026-10-01 (lineage round): "How this was built" affordance - see
+// BlockCard's lineageOpen popover below. A stacked-layers glyph reads as
+// "what this is made of", distinct enough from InfoIcon's plain "i" not to
+// be confused with the Explain popover sitting right next to it.
+function LayersIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3 3 8l9 5 9-5-9-5Z" />
+      <path d="m3 13 9 5 9-5" />
+    </svg>
+  );
+}
 // 2026-09-29 (round 5, real-bug fix): "* is showing in bold words" - the
 // AI's own INSIGHT_SYSTEM_PROMPT (backend/app/services/ai_engine.py)
 // deliberately writes this exact text with **Key insight:**/
@@ -1264,6 +1276,7 @@ function BlockCard({
   block,
   columns,
   datasourceId,
+  datasourceName,
   filterState,
   onChange,
 }: {
@@ -1271,6 +1284,13 @@ function BlockCard({
   block: DashboardBlock;
   columns: ColumnInfo[];
   datasourceId?: string | null;
+  // 2026-10-01 (lineage round): this dashboard's own resolved data source
+  // name (DashboardBuilderDetail.datasource_name, already computed server-
+  // side from source_conversation_id - see backend _dashboard_datasource)
+  // - the "Source" line in the new "How this was built" panel below. Never
+  // re-fetched or guessed here, just threaded down from the one place the
+  // dashboard object already carries it.
+  datasourceName?: string | null;
   filterState?: DashboardFilterState;
   onChange: (d: DashboardBuilderDetail) => void;
 }) {
@@ -1333,6 +1353,45 @@ function BlockCard({
   };
   const filtersActive = Boolean(filterState && filterState.activeFilters.length > 0);
   const explanation = (filterState?.overrides[block.id]?.config ?? block.config)?.ai_explanation as string | undefined;
+
+  // 2026-10-01 (lineage round, Gokul's own report: "i cannot able to know
+  // how and which data columns re connect in this table... i want to know
+  // how this chart firmed and which column and tables connects"): the
+  // "How this was built" popover - same portal/positioning pattern as
+  // Explain above (explainBtnRef/explainPos), reading whichever REAL,
+  // already-stored lineage fields this exact block has rather than
+  // deriving/guessing anything new (see backend _attach_source_lineage's
+  // own docstring for why: the real generated code, verbatim, is the
+  // honest answer to "which columns/tables" rather than a parsed-out
+  // summary that risks being wrong). Deliberately reads block.config
+  // directly (not the filtered override) - lineage describes how the
+  // block's REAL, saved data was built, not however it happens to look
+  // under a page filter someone else may be previewing right now.
+  const lineageRecipe = block.config?.recipe as
+    | { metric_column?: string; agg?: string; group_by_column?: string | null; transform_id?: string | null }
+    | undefined;
+  const lineageCode = block.config?.source_code as string | undefined;
+  const lineagePrompt = block.config?.ai_prompt as string | undefined;
+  const lineageTable = block.config?.source_table as string | undefined;
+  const lineageColumns = (block.config?.result_columns as { name: string }[] | undefined)?.map((c) => c.name);
+  const hasLineage = Boolean(lineageRecipe || lineageCode || lineagePrompt || datasourceName || lineageTable);
+  const [lineageOpen, setLineageOpen] = useExclusiveOpen();
+  const lineageBtnRef = useRef<HTMLButtonElement>(null);
+  const [lineagePos, setLineagePos] = useState<{ top: number; left: number } | null>(null);
+  const LINEAGE_WIDTH = 320;
+  const toggleLineage = () => {
+    setMenuOpen(false);
+    setLineageOpen((wasOpen) => {
+      const next = !wasOpen;
+      if (next && lineageBtnRef.current) {
+        const rect = lineageBtnRef.current.getBoundingClientRect();
+        const left = Math.min(Math.max(rect.right - LINEAGE_WIDTH, EXPLAIN_MARGIN), window.innerWidth - LINEAGE_WIDTH - EXPLAIN_MARGIN);
+        setLineagePos({ top: rect.bottom + 4, left });
+      }
+      return next;
+    });
+  };
+  const AGG_LABEL: Record<string, string> = { sum: "Sum", avg: "Average", count: "Count", min: "Min", max: "Max" };
   // 2026-09-30 bug fix (Gokul's own report, verbatim: "show anomoly and
   // show forecast dont show for every chart only if it need show"): only
   // offer "Show forecast" / "Show anomalies" in the kebab menu below when
@@ -1556,6 +1615,93 @@ function BlockCard({
               )}
           </div>
         )}
+        {hasLineage && (
+          <div className="shrink-0">
+            <button
+              ref={lineageBtnRef}
+              type="button"
+              className="dash-chart-menu-btn"
+              aria-label="How this was built"
+              aria-haspopup="dialog"
+              aria-expanded={lineageOpen}
+              title="How this was built"
+              onClick={toggleLineage}
+            >
+              <LayersIcon />
+            </button>
+            {lineageOpen &&
+              lineagePos &&
+              createPortal(
+                <div
+                  role="dialog"
+                  aria-label="How this was built"
+                  className="fixed card bg-surface shadow-2xl border border-border p-3 z-50 text-xs leading-relaxed text-foreground space-y-2.5"
+                  style={{
+                    top: lineagePos.top,
+                    left: lineagePos.left,
+                    width: LINEAGE_WIDTH,
+                    maxHeight: Math.min(440, window.innerHeight - lineagePos.top - EXPLAIN_MARGIN),
+                    overflowY: "auto",
+                  }}
+                >
+                  {(datasourceName || lineageTable) && (
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted mb-0.5">Source</div>
+                      <div>
+                        {datasourceName || "This dashboard's data source"}
+                        {lineageTable && <span className="text-muted"> &rarr; table &ldquo;{lineageTable}&rdquo;</span>}
+                      </div>
+                    </div>
+                  )}
+                  {lineageRecipe && (
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted mb-0.5">Built from</div>
+                      <div>
+                        {AGG_LABEL[lineageRecipe.agg || ""] || lineageRecipe.agg} of{" "}
+                        <code className="px-1 py-0.5 rounded bg-surface2 border border-border">{lineageRecipe.metric_column}</code>
+                        {lineageRecipe.group_by_column && (
+                          <>
+                            {" "}grouped by{" "}
+                            <code className="px-1 py-0.5 rounded bg-surface2 border border-border">{lineageRecipe.group_by_column}</code>
+                          </>
+                        )}
+                        {lineageRecipe.transform_id && <span className="text-muted"> &middot; from a saved table</span>}
+                      </div>
+                    </div>
+                  )}
+                  {lineagePrompt && (
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted mb-0.5">Question asked</div>
+                      <div className="italic">&ldquo;{lineagePrompt}&rdquo;</div>
+                    </div>
+                  )}
+                  {lineageColumns && lineageColumns.length > 0 && (
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted mb-0.5">Output columns</div>
+                      <div className="flex flex-wrap gap-1">
+                        {lineageColumns.map((c) => (
+                          <code key={c} className="px-1 py-0.5 rounded bg-surface2 border border-border text-[10px]">
+                            {c}
+                          </code>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {lineageCode && (
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted mb-0.5">
+                        The real code GD360 ran
+                      </div>
+                      <pre className="whitespace-pre-wrap break-words px-2 py-1.5 rounded bg-surface2 border border-border font-mono text-[10px] leading-relaxed">
+                        {lineageCode}
+                      </pre>
+                    </div>
+                  )}
+                </div>,
+                document.body
+              )}
+          </div>
+        )}
         <div className="relative shrink-0">
           <button
             type="button"
@@ -1716,23 +1862,25 @@ function BlockCard({
           className="no-drag flex items-center justify-between gap-2 text-[11px] text-muted bg-surface2/70 border-b border-border px-2.5 py-1 shrink-0"
           title={
             block.type === "kpi"
-              ? "This kpi's value has no recorded sum/average/count to honestly recompute from filtered data - rebuild it with Build manually to make it respond to this page's filters."
-              : "This block was built before this option existed, so it has no data of its own to filter from - rebuild it with Build manually to make it respond to this page's filters."
+              ? "This number has no recorded sum/average/count to honestly recompute from filtered data - rebuild it below to make it respond to this page's filters."
+              : "This block was built before filter-aware blocks existed, so it has no data of its own to filter from - rebuild it below to make it respond to this page's filters."
           }
         >
-          <span className="truncate">Not updated by this filter</span>
-          {/* 2026-09-29 (round 2): the banner used to just explain the gap -
-              now it's one click to close it. "Build manually" always stores
-              a recipe (see dashboard_builder.py's manual-build path), and a
-              stored recipe is exactly what respondsToFilters checks for
-              above, so rebuilding through this panel is a real, honest fix
-              for this exact block - never a guess at its old AI aggregation. */}
+          {/* 2026-10-01 wording fix (Gokul's own report: the old "Not
+              updated by this filter" + an uppercase "Fix this" button read
+              together like a leftover engineering TODO, not real product
+              copy - he's right, it did. Same honest meaning, same one-click
+              fix (still opens the exact same Build manually panel, which
+              always stores a real recipe - the thing respondsToFilters
+              above actually checks for), just said the way a finished
+              product says it. */}
+          <span className="truncate">Doesn't update with filters yet</span>
           <button
             type="button"
             className="no-drag shrink-0 text-[10px] font-semibold uppercase tracking-wide text-primary hover:underline"
             onClick={() => setPanel("manual")}
           >
-            Fix this
+            Make it filterable
           </button>
         </div>
       )}
@@ -1816,7 +1964,21 @@ function BlockCard({
                   <FilterColumnPicker dashboardId={dashboardId} block={block} columns={columns} onDone={onChange} />
                 </div>
                 {block.config?.column && (
-                  <div className="flex-1 min-h-0 flex items-center px-3">
+                  // 2026-10-01 bug fix (Gokul's own report, verbatim: "if i
+                  // press any button i dashboard in editing more its not
+                  // going when i preses the same button again"): every
+                  // other interactive surface in this card (the header
+                  // toolbar, FilterColumnPicker's own two branches) is
+                  // wrapped in `no-drag` so react-grid-layout's drag
+                  // handling on the grid item never intercepts its clicks -
+                  // this was the one wrapper that wasn't, which is exactly
+                  // why the FILTER pill's second click (to close it) could
+                  // get swallowed by a drag gesture instead of reaching the
+                  // popover's own onClick. FilterControl's own button now
+                  // also carries `no-drag` directly (see DashboardBlocks.tsx)
+                  // - both belt and suspenders, matching every sibling
+                  // control's own pattern in this same card.
+                  <div className="no-drag flex-1 min-h-0 flex items-center px-3">
                     {filterState ? (
                       <FilterControl
                         block={block}
@@ -2063,6 +2225,7 @@ export default function DashboardCanvas({
                   block={b}
                   columns={columns}
                   datasourceId={dash.datasource_id}
+                  datasourceName={dash.datasource_name}
                   filterState={filterState}
                   onChange={onChange}
                 />
@@ -2120,6 +2283,7 @@ export default function DashboardCanvas({
                 block={b}
                 columns={columns}
                 datasourceId={dash.datasource_id}
+                datasourceName={dash.datasource_name}
                 filterState={filterState}
                 onChange={onChange}
               />
