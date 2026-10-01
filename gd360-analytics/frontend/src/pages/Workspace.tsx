@@ -16,6 +16,7 @@ import ExplorePanel from "../components/ExplorePanel";
 import DataTable from "../components/DataTable";
 import DataFlowMap, { FlowJumpTarget } from "../components/DataFlowMap";
 import BuildDashboardModal from "../components/BuildDashboardModal";
+import PushToDashboardMenu from "../components/PushToDashboardMenu";
 // 2026-09-30 (bug-fix round, Gokul's own ask): QualityChecksPanel/
 // AccessRulesPanel/MetricsPanel/TransformsPanel imports removed along with
 // this page's own Quality checks/Access/Metrics/Transforms tabs - see the
@@ -766,6 +767,17 @@ export default function Workspace() {
   const chartSpec = activeChart?.spec ?? null;
   const chartStyle = activeChart?.style ?? defaultChartStyle();
   const chartTitle = activeChart?.title ?? "";
+
+  // 2026-10-01 (chat-to-dashboard round): the real code and the real
+  // question behind the chart currently showing, for PushToDashboardMenu's
+  // "Add to dashboard" lineage fields - looked up from this SAME chat's own
+  // turns by activeChart.messageId (set whenever this tab came from a real
+  // chat turn), never fabricated. A chart with no messageId (none exist
+  // today, but defensively handled) or whose turn can't be found simply
+  // omits both - PushToDashboardMenu already treats them as optional.
+  const activeChartTurnIndex = activeChart?.messageId ? turns.findIndex((t) => t.messageId === activeChart.messageId) : -1;
+  const activeChartTurn = activeChartTurnIndex >= 0 ? turns[activeChartTurnIndex] : null;
+  const activeChartPrompt = activeChartTurnIndex > 0 ? turns[activeChartTurnIndex - 1]?.content : undefined;
 
   // Whether THIS chart's chart type can be redrawn client-side from its own
   // tidy rows at all (see lib/exploreEngine.ts) - false for an older chart
@@ -2041,6 +2053,22 @@ export default function Workspace() {
                 insight={lastInsight}
                 dsName={dsName}
                 onSaved={setSaveMsg}
+              />
+              {/* 2026-10-01 (chat-to-dashboard round): pushes this SAME
+                  chart onto an existing Dashboard Builder (v2) page - see
+                  PushToDashboardMenu's own module docstring for why this is
+                  a separate component from SaveChartMenu above rather than
+                  a third mode bolted onto it. */}
+              <PushToDashboardMenu
+                chartSpec={displaySpec}
+                chartType={activeChart?.chartType}
+                resultColumns={activeChart?.resultColumns || undefined}
+                resultRows={activeChart?.resultRows || undefined}
+                resultTruncated={activeChart?.resultTruncated}
+                title={chartStyle.title || chartTitle || "Untitled chart"}
+                insight={lastInsight}
+                sourceCode={activeChartTurn?.code}
+                sourcePrompt={activeChartPrompt}
               />
               {/* 2026-09-28: the way back to a dashboard already built
                   from this chat - see LinkedDashboardsMenu's own comment
