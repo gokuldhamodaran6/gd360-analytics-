@@ -350,13 +350,14 @@ from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, Response, UploadFile, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from .. import models, schemas, security
 from ..database import get_db
 from ..deps import get_current_user
 from ..services import ai_engine, chart_builder, data_access_rules, render_domains, workspace_access
-from ..services.data_loader import load_dataframe
+from ..services.data_loader import load_dataframe, default_table_for_preview
 from ..services.metrics import resolve_metric_value
 from ..services.transforms import apply_transform_steps
 from .chat import _load_selected_tables, _other_sources_catalog
@@ -428,6 +429,21 @@ _MANUAL_AGG_NEEDS_NUMERIC = {"sum", "avg"}
 # of data (e.g. grouped_bar needs two numeric columns, heatmap needs a
 # wide matrix - neither fits what a dashboard block ever stores).
 _RESTYLE_CHART_TYPES = {"bar", "line", "area", "pie", "horizontal_bar", "scatter"}
+# 2026-10-01 (filter-engine fix round): preview_filtered_blocks' own safe
+# rebuild set is DELIBERATELY WIDER than _RESTYLE_CHART_TYPES above - the
+# restyle dropdown is constrained to types that work from ANY plain
+# 2-column result (so switching types never fails just because the new
+# type wanted a different shape), but rebuilding a filtered block never
+# switches type - it only re-renders the SAME chart_type the block
+# already is, so it's safe to also cover the two real chart_type values
+# this still left unable to ever respond to a page filter: "grouped_bar"/
+# "stacked_bar" (the multi-series "value by X, split by Y" comparison -
+# exactly what a department-by-gender attrition chart is) and
+# "faceted_bar" (the small-multiples panel grid). See
+# _rebuild_filtered_chart_spec below for the per-type reconstruction each
+# of these three needs beyond the plain 2-column x/y shape every other
+# type here already handles.
+_FILTER_REBUILD_CHART_TYPES = _RESTYLE_CHART_TYPES | {"grouped_bar", "stacked_bar", "faceted_bar"}
 # A page can carry at most this many active filter blocks at once - plenty
 # for any real dashboard, and keeps preview_filtered_blocks' per-request
 # work (one boolean mask pass over the dataframe per filter) bounded.
@@ -464,24 +480,51 @@ def _apply_filters(df: pd.DataFrame, filters: list) -> pd.DataFrame:
 
 
 # 2026-09-29 (thought-leader filters round): the reverse of
-# chart_builder.build_figure's own chart_type vocabulary (_RESTYLE_CHART_
-# TYPES above) - reads it back off an already-built Plotly spec's first
-# real trace, purely so preview_filtered_blocks can rebuild an AI-built
-# chart AS THE SAME TYPE it already is when a filter changes its data,
-# never switching it to some other type as a side effect of filtering.
-# Deliberately narrow and honest: recognizes only the same six types a
-# person could pick from restyle_block's own dropdown, and returns None -
-# never a guess - for anything else (a heatmap, a funnel, a many-series
-# chart, or any shape this hasn't been taught to recognize). The caller
-# treats None exactly like a block with no recipe at all: left out of the
-# filtered response, still showing its real, unfiltered content.
+# chart_builder.build_figure's own chart_type vocabulary - reads a chart
+# type back off an already-built Plotly spec, purely as a FALLBACK for a
+# block saved before this round (2026-10-01) started persisting the real
+# chart_type string straight onto block.config at build time (see
+# _ai_result_to_block_shape/_block_config_shape/restyle_block, all three
+# of which now stamp config["chart_type"]) - preview_filtered_blocks below
+# always prefers that stored value when present, and only calls this for
+# an older block that predates it.
+#
+# 2026-10-01 bug fix (Gokul's own report, verbatim: "if i click any filter
+# it is not connected with any chart no chart is reacting to the filter it
+# feel like useless"): this used to look ONLY at data[0].type, which is
+# "bar" for a plain single-series bar AND for a grouped/stacked/faceted
+# multi-series bar alike - so a real department-by-gender comparison chart
+# (built as "grouped_bar" or "faceted_bar") was confidently misread as
+# plain "bar", handed to chart_builder.build_figure with the WRONG type,
+# and silently rebuilt into a nonsense chart with the wrong axes - no
+# error, no banner, just a chart that quietly stopped matching its own
+# filter. Now inspects trace COUNT, each trace's own `meta.role` (the
+# explicit "facet_panel" marker _build_faceted_bar stamps on every panel
+# trace), and layout.barmode before ever answering "bar" - so a multi-
+# series shape is correctly named, not collapsed into the single-series
+# case.
+#
+# Still deliberately honest at its core: anything this can't confidently
+# name - a heatmap, a funnel, a radar, any shape outside the vocabulary
+# below - returns None, never a guess, and the caller treats None exactly
+# like a block with no recipe at all: left out of the filtered response,
+# still showing its real, unfiltered content rather than a corrupted one.
 def _detect_restyle_chart_type(chart_spec: dict) -> str | None:
     data = chart_spec.get("data") if isinstance(chart_spec, dict) else None
-    if not data:
+    if not data or not isinstance(data, list):
         return None
-    trace = data[0] if isinstance(data[0], dict) else {}
+    traces = [t for t in data if isinstance(t, dict)]
+    if not traces:
+        return None
+    trace = traces[0]
     t = trace.get("type")
+
     if t == "bar":
+        if any((tr.get("meta") or {}).get("role") == "facet_panel" for tr in traces):
+            return "faceted_bar"
+        if len(traces) > 1:
+            layout = chart_spec.get("layout") if isinstance(chart_spec.get("layout"), dict) else {}
+            return "stacked_bar" if layout.get("barmode") == "stack" else "grouped_bar"
         return "horizontal_bar" if trace.get("orientation") == "h" else "bar"
     if t == "pie":
         return "pie"
@@ -494,6 +537,37 @@ def _detect_restyle_chart_type(chart_spec: dict) -> str | None:
             return "line"
         return "scatter"
     return None
+
+
+# 2026-10-01 (filter-engine fix round): chart_builder.build_figure's own
+# chart-type branches expect two genuinely different input shapes, and
+# preview_filtered_blocks' block_df (reconstructed from the block's stored
+# tidy result_columns/result_rows - always a flat table of named columns,
+# never a pandas index) only ever naturally matches ONE of them. Every
+# type in _RESTYLE_CHART_TYPES, plus "faceted_bar", reads its data by
+# COLUMN - build_figure's own 2-column x/y rename for the simple types,
+# and _build_faceted_bar's fixed (facet, category, value) column order for
+# that one - so block_df can be handed to build_figure completely as-is.
+# "grouped_bar"/"stacked_bar" are the one exception: build_figure reads
+# the category axis off the dataframe's INDEX (result.index, not a named
+# column - see its own comment), because that is exactly the shape a
+# fresh groupby naturally produces when a chart is first built. A
+# reconstructed block_df has no such index (it's a flat records table), so
+# without this, those two types would silently rebuild with the wrong
+# axis labels - a different, quieter version of the same "filters don't
+# work" bug this whole round exists to fix, not a hypothetical one: this
+# was caught by tracing exactly what build_figure's grouped_bar/stacked_bar
+# branch actually reads before this helper was written. This function is
+# the one, single place that bridges that gap, so every caller of
+# chart_builder.build_figure in this file goes through the same correct
+# shape instead of each needing to remember this distinction itself.
+def _rebuild_filtered_chart_spec(block_df: pd.DataFrame, chart_type: str, title: str) -> dict:
+    if chart_type in ("grouped_bar", "stacked_bar") and len(block_df.columns) >= 2:
+        dimension_col = block_df.columns[0]
+        indexed = block_df.set_index(dimension_col)
+        indexed.index.name = dimension_col
+        return chart_builder.build_figure(indexed, chart_type, title=title)
+    return chart_builder.build_figure(block_df, chart_type, title=title)
 
 
 def _safe_float(v: Any, default: float = 0.0) -> float:
@@ -787,14 +861,44 @@ def _fallback_plan(entries: list[dict]) -> list[dict]:
 # ask_ai_block makes for a single block), so the result is "exactly
 # whatever's needed for the dashboard they asked for," not a recap of
 # whatever happened to already be in this one chat. ----------
-def _build_goal_plan_messages(goal: str, conversation_title: str, column_summary: str) -> list[dict]:
+def _build_goal_plan_messages(
+    goal: str, conversation_title: str, column_summary: str, table_names: list[str] | None = None
+) -> list[dict]:
+    # 2026-10-01 (multi-table build round, Gokul's own report, verbatim:
+    # "i connected with mu bigquery data it has 2 files in it, so i told
+    # to build dashboard it shows there are multiple files i cannot able
+    # to create"): when the data source has more than one table,
+    # column_summary (built by generate_dashboard below, straight from
+    # ds.schema_cache - no data load needed) is grouped by table, and the
+    # model is told to name which table each block needs, the same way it
+    # already names each block's type/title/prompt. table_names is None
+    # or empty for an ordinary single-table source, which keeps this
+    # prompt byte-for-byte identical to before this round for every
+    # dashboard built from a plain CSV/single-table database - no
+    # regression for the common case.
+    table_rule = (
+        ' Every block MUST also name which ONE table it needs, in a "table" field, copied exactly '
+        "from the table names given below - a block that needs data from more than one table is not "
+        "possible here, so pick whichever single table best answers that block's question instead."
+        if table_names
+        else ""
+    )
+    schema_block_shape = (
+        '{"page": "short page/tab name", "type": "kpi", "title": "short block title", '
+        '"table": "exact table name", "prompt": "the exact question to ask"}'
+        if table_names
+        else '{"page": "short page/tab name", "type": "kpi", "title": "short block title", '
+        '"prompt": "the exact question to ask"}'
+    )
     system = (
         "You are planning a business dashboard from a plain-English description of what someone "
         "wants to see, against a specific dataset. You do not compute anything yourself - for each "
         "block you plan, you write ONE precise, self-contained analysis question that a separate "
         "data-analysis AI will run against the real data to produce that block's actual numbers or "
         "chart. Ground every question in the real column names you are given below - never invent a "
-        "column that is not listed, and never ask a question the given columns cannot answer. Rules: "
+        "column that is not listed, and never ask a question the given columns cannot answer."
+        + table_rule
+        + " Rules: "
         "prefer 4 to 10 blocks total - too few is thin, too many is clutter. Group blocks into PAGES "
         'by topic (give each block a short "page" name like "Overview", "Demand forecast", "Profit", '
         '"Shipping" - blocks sharing a page name land together on their own tab) so related blocks sit '
@@ -805,26 +909,36 @@ def _build_goal_plan_messages(goal: str, conversation_title: str, column_summary
         'shown as a detailed list of rows should be type "table". Give the whole dashboard a short, '
         "specific title that reflects what was asked for. Return ONLY compact JSON, no prose, no "
         "markdown fences, in exactly this shape:\n"
-        '{"dashboard_title": "short punchy title", "blocks": '
-        '[{"page": "short page/tab name", "type": "kpi", "title": "short block title", '
-        '"prompt": "the exact question to ask"}, ...]}'
+        f'{{"dashboard_title": "short punchy title", "blocks": [{schema_block_shape}, ...]}}'
     )
+    columns_label = "Available tables and columns in the data" if table_names else "Available columns in the data"
     user = (
         f"What they want this dashboard to show: {goal}\n\n"
-        f"Available columns in the data: {column_summary}\n\n"
+        f"{columns_label}: {column_summary}\n\n"
         f'(For background only, not the source of truth: this dashboard is being built from a chat '
         f'analysis titled "{conversation_title}".)'
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def _fallback_goal_plan(goal: str) -> list[dict]:
-    return [{"type": "table", "title": (goal[:80] or "Overview").strip(), "prompt": goal, "page": "Overview"}]
+def _fallback_goal_plan(goal: str, table_names: list[str] | None = None) -> list[dict]:
+    block: dict = {"type": "table", "title": (goal[:80] or "Overview").strip(), "prompt": goal, "page": "Overview"}
+    # A multi-table source has no honest single-table default to fall back
+    # to silently - pick the first table (same zero-ambiguity choice
+    # default_table_for_preview already makes for the Data tab preview)
+    # rather than raising, so a planning-call failure still produces SOME
+    # buildable block instead of turning a multi-table source's every
+    # failure path into a hard error again.
+    if table_names:
+        block["table"] = table_names[0]
+    return [block]
 
 
-def _generate_goal_plan(goal: str, conversation_title: str, column_summary: str) -> tuple[str, list[dict]]:
+def _generate_goal_plan(
+    goal: str, conversation_title: str, column_summary: str, table_names: list[str] | None = None
+) -> tuple[str, list[dict]]:
     fallback_title = (goal[:80] or "New dashboard").strip() or "New dashboard"
-    fallback_blocks = _fallback_goal_plan(goal)
+    fallback_blocks = _fallback_goal_plan(goal, table_names)
     try:
         # 2026-09-28: was a bare _call_llm_resilient(..., max_tokens=1200)
         # with no retry at all - real logs showed a detailed goal (naming
@@ -840,7 +954,7 @@ def _generate_goal_plan(goal: str, conversation_title: str, column_summary: str)
         # here, at that same 3000-token budget, gives this planning call
         # a real second chance instead of none.
         parsed = ai_engine._plan_with_retry(
-            _build_goal_plan_messages(goal, conversation_title, column_summary), max_tokens=3000
+            _build_goal_plan_messages(goal, conversation_title, column_summary, table_names), max_tokens=3000
         )
     except Exception as e:
         # Transient AI hiccup, missing/invalid key, still-malformed JSON
@@ -875,7 +989,23 @@ def _generate_goal_plan(goal: str, conversation_title: str, column_summary: str)
         # round) single-page behavior - so a plan that doesn't group by
         # page at all still builds a perfectly normal one-page dashboard.
         page_name = str(b.get("page") or "Overview").strip()[:60] or "Overview"
-        blocks.append({"type": btype, "title": block_title, "prompt": prompt, "page": page_name})
+        block: dict = {"type": btype, "title": block_title, "prompt": prompt, "page": page_name}
+        # 2026-10-01 (multi-table build round): a block's "table" only
+        # means anything when this source actually has more than one -
+        # table_names is None/empty for a plain single-table source, so
+        # this whole branch is simply skipped and every block is
+        # byte-for-byte what it always was. When it DOES apply: the
+        # model's answer wins only if it's one of the real table names it
+        # was given (never trust an invented one - same "ground it in
+        # what was actually listed" discipline as every other field here);
+        # anything missing or unrecognized falls back to the first table,
+        # the same zero-ambiguity default default_table_for_preview
+        # already uses for the Data tab, so a block is never silently
+        # dropped just because the model left this field out.
+        if table_names:
+            block_table = str(b.get("table") or "").strip()
+            block["table"] = block_table if block_table in table_names else table_names[0]
+        blocks.append(block)
 
     return title, (blocks or fallback_blocks)
 
@@ -946,7 +1076,7 @@ def _block_config(message: models.Message, requested_type: str) -> tuple[str, di
     fabricated or reworded here, exactly whatever ai_engine.analyze()
     wrote for that original chat turn, or simply omitted when that turn
     has no insight."""
-    return _attach_block_config_explanation(message, _block_config_shape(message, requested_type))
+    return _attach_block_config_explanation(message, _attach_block_config_lineage(message, _block_config_shape(message, requested_type)))
 
 
 def _attach_block_config_explanation(message: models.Message, shaped: tuple[str, dict]) -> tuple[str, dict]:
@@ -954,6 +1084,21 @@ def _attach_block_config_explanation(message: models.Message, shaped: tuple[str,
     explanation = (message.insight or "").strip()
     if explanation:
         config = {**config, "ai_explanation": explanation}
+    return actual_type, config
+
+
+def _attach_block_config_lineage(message: models.Message, shaped: tuple[str, dict]) -> tuple[str, dict]:
+    """2026-10-01 (lineage round): the bulk-from-chat-history dashboard
+    path's own counterpart to _attach_source_lineage below (the AI-result
+    path) - models.Message.code already exists (the real code that chat
+    turn ran) and was simply never carried onto a block built from it
+    until now. See _attach_source_lineage's own docstring for why the real
+    code, verbatim, is the honest answer to "which columns/tables does
+    this chart use" rather than a reconstructed guess."""
+    actual_type, config = shaped
+    code = (message.code or "").strip()
+    if code and actual_type != "text":
+        config = {**config, "source_code": code}
     return actual_type, config
 
 
@@ -972,6 +1117,16 @@ def _block_config_shape(message: models.Message, requested_type: str) -> tuple[s
         if message.result_columns and message.result_rows:
             config["result_columns"] = message.result_columns
             config["result_rows"] = message.result_rows
+        # 2026-10-01 (filter-engine fix round): message.chart_type already
+        # exists (the real type this chat turn's chart was rendered as -
+        # see models.Message's own chart_type column) and was simply never
+        # carried onto the block before now. Stamping it here is what lets
+        # preview_filtered_blocks rebuild this exact block correctly when a
+        # page filter changes, instead of having to re-detect it from the
+        # rendered spec (see _detect_restyle_chart_type's own docstring for
+        # why that fallback can't always be trusted).
+        if message.chart_type:
+            config["chart_type"] = message.chart_type
         return "chart", config
 
     if requested_type == "kpi":
@@ -1222,7 +1377,29 @@ def _ai_result_to_block(result: dict, requested_type: str) -> tuple[str, dict]:
     person looking at a chart/number/table on their own dashboard can see
     the same plain-English read of it the AI already gave once, instead of
     having to re-ask."""
-    return _attach_ai_explanation(result, _ai_result_to_block_shape(result, requested_type))
+    return _attach_ai_explanation(result, _attach_source_lineage(result, _ai_result_to_block_shape(result, requested_type)))
+
+
+def _attach_source_lineage(result: dict, shaped: tuple[str, dict]) -> tuple[str, dict]:
+    """2026-10-01 (lineage round, Gokul's own report: "i cannot able to know
+    how and which data columns are connect in this table... i want that
+    detailing in chart i want to know how this chart formed and which
+    column and tables connects"): persists the REAL pandas/python code
+    ai_engine.analyze() actually ran to produce this block, verbatim and
+    character-for-character, under config["source_code"] - never a guessed
+    or reconstructed summary of "which columns were used" (that would risk
+    showing something that isn't literally true - see this codebase's
+    "never fabricate" rule). The real code already names every column and
+    table it touches, so showing it IS the honest answer to "which columns
+    connect" without this needing its own static-analysis pass that could
+    get it wrong. Only attached to a real chart/kpi/table block - the
+    plain-text fallback has no computed result to show code for.
+    DashboardCanvas.tsx's new "How this was built" panel reads this."""
+    actual_type, config = shaped
+    code = (result.get("code") or "").strip()
+    if code and actual_type != "text":
+        config = {**config, "source_code": code}
+    return actual_type, config
 
 
 def _attach_ai_explanation(result: dict, shaped: tuple[str, dict]) -> tuple[str, dict]:
@@ -1260,6 +1437,14 @@ def _ai_result_to_block_shape(result: dict, requested_type: str) -> tuple[str, d
     chart_spec = result.get("chart_spec")
     cols = result.get("result_columns") or []
     rows = result.get("result_rows") or []
+    # 2026-10-01 (filter-engine fix round): ai_engine.analyze()'s result
+    # already carries the real chart_type it built ("bar", "grouped_bar",
+    # "faceted_bar", ...) - this was simply never copied onto the block
+    # before now. See _detect_restyle_chart_type's docstring for exactly
+    # what silently broke without it (a multi-series chart misread as a
+    # plain single-series one on every filter change), and
+    # preview_filtered_blocks for where this value is read back.
+    chart_type = result.get("chart_type")
 
     def _kpi_from_rows() -> tuple[str, dict] | None:
         if not rows:
@@ -1285,6 +1470,8 @@ def _ai_result_to_block_shape(result: dict, requested_type: str) -> tuple[str, d
         if cols and rows:
             config["result_columns"] = cols
             config["result_rows"] = rows
+        if chart_type:
+            config["chart_type"] = chart_type
         return "chart", config
     if requested_type == "kpi":
         kpi = _kpi_from_rows()
@@ -1302,6 +1489,8 @@ def _ai_result_to_block_shape(result: dict, requested_type: str) -> tuple[str, d
         if cols and rows:
             config["result_columns"] = cols
             config["result_rows"] = rows
+        if chart_type:
+            config["chart_type"] = chart_type
         return "chart", config
     if rows and len(rows) == 1:
         kpi = _kpi_from_rows()
@@ -1843,6 +2032,46 @@ def _image_response(image: bytes | None, content_type: str | None) -> Response:
 
 # ---------- Endpoints ----------
 
+@router.get("", response_model=list[schemas.DashboardPickerOut])
+def list_my_dashboards(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """2026-10-01 (chat-to-dashboard round): "in which dashboard, which
+    page, i want to push" (Gokul's own words) - the picker behind
+    PushToDashboardMenu.tsx's "Add to dashboard" action. Every real
+    (layout_version==2) dashboard this person can at least see, scoped the
+    exact same way GET /dashboards (routers/dashboards.py's own
+    list_dashboards) already scopes its v1 listing - their own, plus
+    anything shared into a workspace they belong to - so this never leaks
+    a dashboard outside that boundary. Each entry carries just enough to
+    drive a two-step dashboard-then-page picker (id/name plus its pages'
+    id/name) - never the full pages/blocks/branding (see
+    DashboardPickerOut's own docstring for why that's deliberate)."""
+    ws_ids = workspace_access.member_workspace_ids(db, user.id)
+    query = db.query(models.Dashboard).filter(models.Dashboard.layout_version == 2)
+    if ws_ids:
+        query = query.filter(
+            or_(models.Dashboard.owner_id == user.id, models.Dashboard.workspace_id.in_(list(ws_ids)))
+        )
+    else:
+        query = query.filter(models.Dashboard.owner_id == user.id)
+    rows = query.order_by(models.Dashboard.created_at.desc()).all()
+    out: list[schemas.DashboardPickerOut] = []
+    for d in rows:
+        if not _can_view(db, d, user):
+            continue
+        ds = _dashboard_datasource(db, d)
+        out.append(schemas.DashboardPickerOut(
+            id=d.id,
+            name=d.name,
+            can_edit=_can_edit(db, d, user),
+            datasource_name=ds.name if ds else None,
+            pages=[
+                schemas.DashboardPickerPageOut(id=p.id, name=p.name)
+                for p in sorted(d.pages, key=lambda p: p.position)
+            ],
+        ))
+    return out
+
+
 @router.post("/generate", response_model=schemas.DashboardBuilderOut, status_code=201)
 def generate_dashboard(
     payload: schemas.GenerateDashboardRequest,
@@ -1897,14 +2126,69 @@ def generate_dashboard(
             # happens BEFORE any row is created, same zero-partial-write
             # discipline as the plain path.
             ds = _resolve_datasource(db, user, models.Dashboard(source_conversation_id=conv.id))
-        try:
-            original_df = load_dataframe(ds, table=None, version="original", db=db)
-            original_df = data_access_rules.filter_dataframe_for_role(db, original_df, ds, user)
-        except Exception as e:
-            raise HTTPException(400, f"Could not load this data source: {e}")
 
-        column_summary = ", ".join(f"{c} ({original_df[c].dtype})" for c in list(original_df.columns)[:60])
-        title, block_specs = _generate_goal_plan(goal, conv.title, column_summary)
+        # 2026-10-01 (multi-table build round, Gokul's own report,
+        # verbatim: "i connected with mu bigquery data it has 2 files in
+        # it, so i told to build dashboard it shows there are multiple
+        # files i cannot able to create"): this used to always eagerly
+        # load table=None up front - load_dataframe's own _pick_single
+        # raises NeedsTableSelection for any source with more than one
+        # table (a multi-table Postgres/MySQL/SQL Server/Supabase/Mongo/
+        # BigQuery/Snowflake connection, or a multi-sheet Excel workbook),
+        # which the bare except below turned into exactly the blunt
+        # "Could not load this data source: Multiple tables/collections
+        # available; please specify one." error he hit - with no way to
+        # pick a table anywhere in this flow, so a multi-table source
+        # could never build a goal-driven dashboard at all.
+        #
+        # default_table_for_preview(ds) is the same kind-agnostic,
+        # zero-ambiguity check datasources.py's own Data tab preview
+        # already uses to tell a genuinely multi-table source apart from
+        # an ordinary single-table one - it returns the first table's name
+        # for a multi-table source, None otherwise. For a multi-table
+        # source, nothing is loaded here at all: ds.schema_cache already
+        # has every table's real column names from connect time (see
+        # connectors.py's own introspect_schema), so the goal-planning
+        # call below can see every table up front with zero extra data
+        # pulls, and ai_engine.analyze() per block still gets a real,
+        # specific DataFrame - just loaded lazily, per block, by
+        # _load_table_for_block further down, once the plan says which
+        # table each block actually needs.
+        table_names: list[str] = []
+        original_df: pd.DataFrame | None = None
+        if default_table_for_preview(ds) is not None:
+            table_names = list((ds.schema_cache or {}).keys())
+            column_summary = "; ".join(
+                f'table "{t}": ' + ", ".join(
+                    f"{c.get('name')} ({c.get('type') or 'unknown'})" for c in (ds.schema_cache.get(t) or [])[:40]
+                )
+                for t in table_names[:20]
+            )
+        else:
+            try:
+                original_df = load_dataframe(ds, table=None, version="original", db=db)
+                original_df = data_access_rules.filter_dataframe_for_role(db, original_df, ds, user)
+            except Exception as e:
+                raise HTTPException(400, f"Could not load this data source: {e}")
+            column_summary = ", ".join(f"{c} ({original_df[c].dtype})" for c in list(original_df.columns)[:60])
+
+        title, block_specs = _generate_goal_plan(goal, conv.title, column_summary, table_names)
+
+        # Per-block lazy table loading for a multi-table source - each
+        # table is only ever loaded once per request even if several
+        # blocks target it, and every load still goes through the exact
+        # same access-rule filtering every other load in this app does.
+        # For an ordinary single-table source, table_names is empty and
+        # this is never consulted - block_original_df just reuses the one
+        # original_df already loaded above, identical to before this round.
+        _loaded_tables: dict[str, pd.DataFrame] = {}
+
+        def _load_table_for_block(table_name: str | None) -> pd.DataFrame:
+            key = table_name or "__default__"
+            if key not in _loaded_tables:
+                df = load_dataframe(ds, table=table_name, version="original", db=db)
+                _loaded_tables[key] = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
+            return _loaded_tables[key]
 
         # 2026-09-28 (multi-page round): grouped by spec["page"] in
         # first-seen order rather than laid onto one shared "Overview"
@@ -1946,10 +2230,22 @@ def generate_dashboard(
 
         skipped_reasons: list[str] = []
         for position, spec in enumerate(block_specs):
+            # Multi-table source: load (or reuse, if an earlier block
+            # already needed it) exactly the one table this block's own
+            # plan item named - see _load_table_for_block above. A
+            # single-table source never reaches this branch at all
+            # (table_names is empty), so block_original_df is just
+            # original_df, unchanged from before this round.
+            try:
+                block_original_df = _load_table_for_block(spec.get("table")) if table_names else original_df
+            except Exception as e:
+                print(f"[dashboard_builder] could not load table {spec.get('table')!r} for block {spec['prompt']!r}: {e}")
+                skipped_reasons.append(f'"{spec["title"]}": could not load table "{spec.get("table")}": {e}')
+                continue
             try:
                 result = ai_engine.analyze(
-                    spec["prompt"], {"Original data": original_df}, history=[], guided=False,
-                    skip_prep=False, original_df=original_df, unattended=True, catalog=catalog,
+                    spec["prompt"], {"Original data": block_original_df}, history=[], guided=False,
+                    skip_prep=False, original_df=block_original_df, unattended=True, catalog=catalog,
                 )
             except Exception as e:
                 print(f"[dashboard_builder] goal-driven block build failed for {spec['prompt']!r}: {e}")
@@ -1979,7 +2275,7 @@ def generate_dashboard(
                     try:
                         result = ai_engine.analyze(
                             spec["prompt"], block_tables, history=[], guided=False,
-                            skip_prep=False, original_df=original_df, unattended=True,
+                            skip_prep=False, original_df=block_original_df, unattended=True,
                         )
                     except Exception as e:
                         print(f"[dashboard_builder] goal-driven block build failed after auto-loading data for {spec['prompt']!r}: {e}")
@@ -1995,6 +2291,18 @@ def generate_dashboard(
                 skipped_reasons.append(f'"{spec["title"]}": {question}')
                 continue
             actual_type, config = _ai_result_to_block(result, spec["type"])
+            # 2026-10-01 (lineage round): a multi-table source's own real
+            # table name for this specific block - spec["table"] is the
+            # exact, already-validated table _generate_goal_plan picked for
+            # it (see that function's own table_names handling above), not
+            # a guess. table_names is only non-empty for a multi-table
+            # source at all (see this branch's own setup above), so a
+            # single-table dashboard's blocks are completely unaffected -
+            # that case is already honestly covered by the dashboard's own
+            # datasource_name the frontend already has (DashboardBuilderOut
+            # .datasource_name), with nothing per-block to add.
+            if table_names and actual_type != "text":
+                config = {**config, "source_table": spec.get("table")}
             # 2026-09-29 (design revamp): _ai_result_to_block's own fallback
             # cascade lands on a plain "text" block, carrying whatever
             # narrative analyze() wrote, only when this plan item didn't
@@ -2098,8 +2406,17 @@ def generate_dashboard(
         # final pair - _page_relevant_filter_columns below picks each
         # page's own subset of it, so pages stop all showing the exact
         # same filters regardless of what they actually contain.
+        # 2026-10-01 (multi-table build round): original_df is None for a
+        # multi-table source (nothing was eagerly loaded - see above), so
+        # this falls back to whichever real table a block actually ended
+        # up using first (_loaded_tables is populated in the same
+        # first-needed order the blocks above ran in) - still a real,
+        # already-loaded dataframe, never a fabricated one, just not
+        # necessarily every table's columns. A single-table source is
+        # completely unaffected: original_df is already the right thing.
+        filter_source_df = original_df if original_df is not None else next(iter(_loaded_tables.values()), None)
         try:
-            filter_candidates = _suggest_filter_columns(original_df, max_filters=8)
+            filter_candidates = _suggest_filter_columns(filter_source_df, max_filters=8) if filter_source_df is not None else []
         except Exception as e:
             print(f"[dashboard_builder] filter suggestion skipped: {e}")
             filter_candidates = []
@@ -2612,7 +2929,16 @@ def create_block(
     # VALUE is never stored here at all - see this file's own module
     # docstring (Phase 2b, point 1) for why that's per-viewer/ephemeral
     # instead.
-    default_config = _default_block_config(payload.type)
+    # 2026-10-01 (chat-to-dashboard round): payload.config lets this block
+    # be created ALREADY FILLED with a real result - see CreateBlockRequest
+    # .config's own docstring for exactly why (PushToDashboardMenu.tsx's
+    # "Add to dashboard" action from the chat panel / the current chart).
+    # A truthy, non-empty dict is used as-is in place of the usual empty
+    # starting shape; anything falsy (None, {}, omitted) keeps create_block
+    # behaving exactly as it always has - every other caller (the element-
+    # library drag-drop, BuildDashboardModal's blank/template starts) never
+    # sends this field at all.
+    default_config = payload.config if payload.config else _default_block_config(payload.type)
     block = models.DashboardBlock(
         page_id=page.id,
         type=payload.type,
@@ -2620,6 +2946,12 @@ def create_block(
         x=x, y=y, w=w, h=h,
         config=default_config,
         position=len(page.blocks),
+        # Not set explicitly here either way - models.DashboardBlock
+        # .data_updated_at already carries its own column-level default
+        # (datetime.utcnow at insert time, pre-existing, unrelated to this
+        # round), so a block created already filled with a real pushed
+        # result (payload.config truthy) correctly reads as just-built
+        # without this endpoint needing to stamp it a second time.
     )
     db.add(block)
     db.commit()
@@ -2752,8 +3084,28 @@ def ask_ai_block(
     block = _get_block(db, d, block_id)
     ds = _resolve_datasource(db, user, d)
 
+    # 2026-10-01 (lineage round): this used to pass table=None unconditionally,
+    # which load_dataframe silently turns into "raise NeedsTableSelection" for
+    # ANY multi-table source (BigQuery/Snowflake/a multi-table SQL connection/
+    # multi-sheet Excel/MongoDB with more than one collection picked) - caught
+    # below only as a generic "Could not load this dashboard's data" 400, with
+    # no way to recover. That's the exact same bug class Gokul originally
+    # reported for the goal-driven /generate path (see default_table_for_
+    # preview's own docstring and this file's multi-table fix round), just in
+    # the two OTHER places a dashboard touches its data - Ask AI on an
+    # existing block, and Build Manually just below. default_table_for_
+    # preview(ds) is the SAME deterministic "first table" convention the Data
+    # tab preview already uses for exactly this situation - never a guess,
+    # and honestly disclosed via config["source_table"] below (see
+    # ai_result_to_block/_attach_source_lineage) rather than silently picked
+    # with no record of which table actually answered the question. A real
+    # per-block table PICKER (letting a person choose a different table than
+    # the first one) is a natural next step, not attempted here - this round
+    # is scoped to "stop 400ing," matching how the goal-driven path's own
+    # fix was scoped to table_names rather than full cross-table joins.
+    multi_table_default = default_table_for_preview(ds)
     try:
-        original_df = load_dataframe(ds, table=None, version="original", db=db)
+        original_df = load_dataframe(ds, table=multi_table_default, version="original", db=db)
         original_df = data_access_rules.filter_dataframe_for_role(db, original_df, ds, user)
     except Exception as e:
         raise HTTPException(400, f"Could not load this dashboard's data: {e}")
@@ -2771,6 +3123,8 @@ def ask_ai_block(
         raise HTTPException(422, result.get("clarifying_question") or "Could you rephrase that question?")
 
     actual_type, config = _ai_result_to_block(result, block.type)
+    if multi_table_default and actual_type != "text":
+        config = {**config, "source_table": multi_table_default}
     # 2026-09-29 (design revamp): if the person's own question here already
     # says "forecast"/"predict"/"projection" ("forecast next quarter's
     # shipping delay"), turn the forecast overlay on automatically, the
@@ -2831,8 +3185,13 @@ def build_manual_block(
     block = _get_block(db, d, block_id)
     ds = _resolve_datasource(db, user, d)
 
+    # 2026-10-01 (lineage round): see ask_ai_block's identical comment just
+    # above in this file - the same NeedsTableSelection-becomes-a-bare-400
+    # bug, for the same reason, fixed the same honest way (default to the
+    # first table, disclose it via config["source_table"] below).
+    multi_table_default = default_table_for_preview(ds)
     try:
-        df = load_dataframe(ds, table=None, version="original", db=db)
+        df = load_dataframe(ds, table=multi_table_default, version="original", db=db)
         df = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
     except Exception as e:
         raise HTTPException(400, f"Could not load this dashboard's data: {e}")
@@ -2912,6 +3271,8 @@ def build_manual_block(
         except Exception as e:
             raise HTTPException(400, f"Couldn't compute that: {e}")
 
+    if multi_table_default and actual_type != "text":
+        config = {**config, "source_table": multi_table_default}
     _snapshot_block_config(block)
     block.type = actual_type
     block.config = config
@@ -2981,6 +3342,12 @@ def restyle_block(
     block.config = {
         **block.config,
         "chart_spec": new_spec,
+        # 2026-10-01 (filter-engine fix round): restyle always targets one
+        # of _RESTYLE_CHART_TYPES, so the new type is already known with
+        # certainty here - stamping it keeps config["chart_type"] in sync
+        # with what was actually just rebuilt, so a later filter change
+        # rebuilds THIS type, not whatever the block used to be.
+        "chart_type": chart_type,
         "forecast_enabled": False,
         "anomalies_enabled": False,
         "anomaly_count": None,
@@ -3259,24 +3626,31 @@ def preview_filtered_blocks(
             ))
             continue
 
-        # A chart block: rebuild the SAME chart type it already is,
-        # detected from its own current chart_spec (see
-        # _detect_restyle_chart_type's own docstring) - never guessed,
-        # and never silently switched to a different type just because a
-        # filter changed. A type this can't confidently recognize (a
-        # heatmap, a funnel, a many-series chart outside the plain
-        # restyle vocabulary) is left out here exactly like a block with
-        # no recipe always has been - it keeps showing its real,
-        # unfiltered content rather than a mis-rebuilt one.
-        chart_type = _detect_restyle_chart_type((block.config or {}).get("chart_spec") or {})
-        if not chart_type:
+        # A chart block: rebuild the SAME chart type it already is - never
+        # guessed, and never silently switched to a different type just
+        # because a filter changed. 2026-10-01 (filter-engine fix round):
+        # prefer the chart_type stored directly on the block (stamped by
+        # _ai_result_to_block_shape/_block_config_shape/restyle_block as of
+        # this round) and only fall back to detecting it from the rendered
+        # spec for an older block saved before that existed (see
+        # _detect_restyle_chart_type's own docstring for what that
+        # detection does and doesn't catch). Either way, a type outside
+        # _FILTER_REBUILD_CHART_TYPES (a heatmap, a funnel, any shape this
+        # app can't safely reconstruct from the block's own stored tidy
+        # data) is left out here exactly like a block with no recipe
+        # always has been - it keeps showing its real, unfiltered content
+        # rather than a mis-rebuilt one.
+        chart_type = (block.config or {}).get("chart_type") or _detect_restyle_chart_type(
+            (block.config or {}).get("chart_spec") or {}
+        )
+        if not chart_type or chart_type not in _FILTER_REBUILD_CHART_TYPES:
             continue
         try:
-            new_spec = chart_builder.build_figure(block_df, chart_type, title=block.title or "")
+            new_spec = _rebuild_filtered_chart_spec(block_df, chart_type, block.title or "")
         except Exception:
             continue
         out.append(schemas.FilteredBlockOut(
-            id=block.id, type="chart", config={**(block.config or {}), "chart_spec": new_spec}
+            id=block.id, type="chart", config={**(block.config or {}), "chart_spec": new_spec, "chart_type": chart_type}
         ))
 
     # 2026-09-25e (elite pass): `df` above already has payload.filters
