@@ -1166,6 +1166,19 @@ export type DashboardBuilderSummary = {
   is_published: boolean;
 };
 
+// 2026-10-01 (chat-to-dashboard round): the picker behind "Add to
+// dashboard" (PushToDashboardMenu.tsx) - see backend DashboardPickerOut's
+// own docstring for exactly what's included and why (every dashboard this
+// person can reach, each with just its pages' id/name, never full blocks).
+export type DashboardPickerPage = { id: string; name: string };
+export type DashboardPickerEntry = {
+  id: string;
+  name: string;
+  can_edit: boolean;
+  datasource_name: string | null;
+  pages: DashboardPickerPage[];
+};
+
 // What the anonymous, no-login public link actually gets back - no
 // can_edit/is_published/ids beyond what's needed to render the pages, so
 // nothing about the owner's account leaks into a page a stranger can open.
@@ -1308,6 +1321,11 @@ export const dashboardBuilderApi = {
     api
       .get<DashboardBuilderSummary[]>(`/dashboard-builder/by-conversation/${conversationId}`)
       .then((r) => r.data),
+  // 2026-10-01 (chat-to-dashboard round): every v2 dashboard this person
+  // can reach, for PushToDashboardMenu.tsx's "Add to dashboard" picker -
+  // see backend list_my_dashboards' own docstring for the exact scope
+  // (unlike listByConversation above, this is NOT scoped to one chat).
+  listMine: () => api.get<DashboardPickerEntry[]>("/dashboard-builder").then((r) => r.data),
   // 2026-09-29 (design revamp): "merge with other dashboards in the same
   // project" - copies every page (and its blocks) from sourceDashboardId
   // into dashboardId as new pages, appended at the end. Additive only -
@@ -1406,7 +1424,22 @@ export const dashboardBuilderApi = {
   // when a card was dragged from the library and dropped at a specific
   // grid cell (see DashboardCanvas.tsx's onDrop), so the block lands
   // exactly there instead of always at the bottom of the page.
-  createBlock: (dashboardId: string, pageId: string, type: DashboardBlockType, title?: string, position?: { x: number; y: number }) =>
+  // 2026-10-01 (chat-to-dashboard round): `config`, the trailing optional
+  // argument, lets this block be created ALREADY FILLED with a real,
+  // already-computed result instead of always starting empty - see
+  // backend CreateBlockRequest.config's own docstring. Used by
+  // PushToDashboardMenu.tsx's "Add to dashboard" action; every other
+  // caller (element-library drag-drop, the blank/template dashboard
+  // starts) leaves it undefined and gets the exact original
+  // always-empty behavior.
+  createBlock: (
+    dashboardId: string,
+    pageId: string,
+    type: DashboardBlockType,
+    title?: string,
+    position?: { x: number; y: number },
+    config?: Record<string, any>
+  ) =>
     api
       .post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks`, {
         page_id: pageId,
@@ -1414,6 +1447,7 @@ export const dashboardBuilderApi = {
         title: title || undefined,
         x: position?.x,
         y: position?.y,
+        config: config || undefined,
       })
       .then((r) => r.data),
 
