@@ -1,5 +1,6 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
 import { DatasetVersion, DataSourceSummary, datasourceApi, ResultEntry } from "../api/client";
+import PushToDashboardMenu from "./PushToDashboardMenu";
 import ChartCanvas from "./ChartCanvas";
 import { hasMultipleTables, connectionKindMeta } from "./DataSourceForm";
 
@@ -368,7 +369,7 @@ function SelfCritiqueNote({ text }: { text: string }) {
 // ai_engine._build_result_entry - a wider reference table that could not
 // be charted) shows its table alone instead, never an empty box.
 function ResultCard({
-  entry, sourceIds, onSourceIdsChange,
+  entry, sourceIds, onSourceIdsChange, sourcePrompt,
 }: {
   entry: ResultEntry;
   // 2026-09-28 (named-results round): when this specific piece was saved
@@ -381,6 +382,12 @@ function ResultCard({
   // simply doesn't get the button.
   sourceIds?: string[];
   onSourceIdsChange?: (ids: string[]) => void;
+  // 2026-10-01 (chat-to-dashboard round): the real question that produced
+  // this whole turn (every card in a multi-result answer shares it) -
+  // passed through to PushToDashboardMenu's "Add to dashboard" action as
+  // config["ai_prompt"], never fabricated. Optional - a card rendered
+  // without it (none today) just omits that one lineage field.
+  sourcePrompt?: string;
 }) {
   const [showTable, setShowTable] = useState(!entry.chart_spec);
   const rows: any[] = Array.isArray(entry.result_rows) ? entry.result_rows : [];
@@ -449,6 +456,18 @@ function ResultCard({
               {alreadySelected ? "✓ Selected" : "Use this table →"}
             </button>
           )}
+          <PushToDashboardMenu
+            compact
+            chartSpec={entry.chart_spec}
+            chartType={entry.chart_type}
+            resultColumns={columns.length > 0 ? columns : undefined}
+            resultRows={rows.length > 0 ? rows : undefined}
+            resultTruncated={entry.result_truncated}
+            title={entry.label || "Untitled"}
+            insight={entry.insight}
+            sourceCode={entry.code}
+            sourcePrompt={sourcePrompt}
+          />
         </div>
       </div>
       {entry.insight && (
@@ -554,11 +573,12 @@ function StaggeredCard({ delayMs, children }: { delayMs: number; children: React
 }
 
 function MultiResultCards({
-  entries, sourceIds, onSourceIdsChange,
+  entries, sourceIds, onSourceIdsChange, sourcePrompt,
 }: {
   entries: ResultEntry[];
   sourceIds?: string[];
   onSourceIdsChange?: (ids: string[]) => void;
+  sourcePrompt?: string;
 }) {
   const offsets = entries.map((e) => e.completed_offset_ms ?? null);
   const known = offsets.filter((o): o is number => o != null);
@@ -570,7 +590,7 @@ function MultiResultCards({
         const delayMs = raw == null ? 0 : Math.min(raw - minOffset, MAX_REVEAL_STAGGER_MS);
         return (
           <StaggeredCard key={i} delayMs={delayMs}>
-            <ResultCard entry={entry} sourceIds={sourceIds} onSourceIdsChange={onSourceIdsChange} />
+            <ResultCard entry={entry} sourceIds={sourceIds} onSourceIdsChange={onSourceIdsChange} sourcePrompt={sourcePrompt} />
           </StaggeredCard>
         );
       })}
@@ -1011,7 +1031,12 @@ export default function ChatPanel({
             )}
             {t.role === "assistant" && t.selfCritique && <SelfCritiqueNote text={t.selfCritique} />}
             {t.role === "assistant" && t.results && t.results.length > 1 && (
-              <MultiResultCards entries={t.results} sourceIds={sourceIds} onSourceIdsChange={onSourceIdsChange} />
+              <MultiResultCards
+                entries={t.results}
+                sourceIds={sourceIds}
+                onSourceIdsChange={onSourceIdsChange}
+                sourcePrompt={i > 0 && turns[i - 1]?.role === "user" ? turns[i - 1].content : undefined}
+              />
             )}
             {t.role === "assistant" && (t.action === "analyze" || t.action === "transform") && t.messageId && !t.continueAction && (
               <div className="mt-1.5">
