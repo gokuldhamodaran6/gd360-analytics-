@@ -633,6 +633,33 @@ class DashboardBuilderSummaryOut(BaseModel):
     is_published: bool
 
 
+# 2026-10-01 (chat-to-dashboard round): the picker behind "Add to
+# dashboard" (PushToDashboardMenu.tsx) - every real (layout_version==2)
+# dashboard this person can at least SEE, each with just enough to drive a
+# dashboard-then-page picker: its own pages (id+name only, not their
+# blocks - a page can have many blocks and this is listing dozens of
+# dashboards at once, not opening one). Deliberately broader than
+# DashboardBuilderSummaryOut (not scoped to one source conversation - this
+# is "every dashboard I can reach", matching GET /dashboards' own v1
+# listing query) and deliberately narrower than the full
+# DashboardBuilderOut (no branding/sharing/blocks - this never needs to
+# RENDER a dashboard, only to be chosen from a list). can_edit is included
+# so the frontend can grey out a view-only dashboard the same way
+# SaveChartMenu already does for v1 chart boards, rather than letting a
+# push fail server-side with a 403 the person never saw coming.
+class DashboardPickerPageOut(BaseModel):
+    id: str
+    name: str
+
+
+class DashboardPickerOut(BaseModel):
+    id: str
+    name: str
+    can_edit: bool
+    datasource_name: Optional[str] = None
+    pages: list[DashboardPickerPageOut]
+
+
 class DashboardBuilderOut(BaseModel):
     id: str
     name: str
@@ -816,6 +843,18 @@ class CreateBlockRequest(BaseModel):
     # create_block for why size is still never taken from here.
     x: Optional[int] = None
     y: Optional[int] = None
+    # 2026-10-01 (chat-to-dashboard round): optional - lets a block be
+    # created ALREADY FILLED with a real, already-computed result (a chart/
+    # table a person just got in the chat panel, or on the data workspace's
+    # own "current chart"), instead of always starting empty and needing a
+    # second ask-ai/build-manual call. The caller (PushToDashboardMenu.tsx)
+    # builds this from the exact same ChartEntry/ResultEntry data already
+    # rendered on screen - chart_spec, result_columns/result_rows,
+    # chart_type, source_code, ai_prompt, ai_explanation, source_table -
+    # never a second AI call, so this is honest, real data the person
+    # already saw, just relocated onto a dashboard. None/omitted keeps
+    # create_block's original always-empty behavior exactly as before.
+    config: Optional[dict] = None
 
 
 class UpdateBlockRequest(BaseModel):
