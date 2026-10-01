@@ -1449,7 +1449,7 @@ export function FilterControl({
       {!column ? (
         <div className="text-xs text-muted italic">Not set up yet.</div>
       ) : (
-        <div className="relative min-w-0">
+        <div className="no-drag relative min-w-0">
           <button
             ref={btnRef}
             type="button"
