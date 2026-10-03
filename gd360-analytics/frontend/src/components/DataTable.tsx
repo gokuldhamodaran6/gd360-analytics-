@@ -489,7 +489,18 @@ export default function DataTable({
   // Fetches whichever table (the original data, or one of the saved/named
   // ones) is currently selected. Which one that is lives one level up, in
   // Workspace, so the chat panel and this table always agree on it.
+  // 2026-10-02 fix: a `cancelled` flag (the same pattern the distinct-values
+  // effect below already uses) so a slower, now-stale request can't
+  // overwrite a newer one that already resolved. Without it, every
+  // dependency change fired a new request without cancelling whichever was
+  // still in flight - on a slower machine, or under quick repeated
+  // interaction (paging, scrolling-driven filter/sort edits, switching
+  // tables), an earlier, slower request could resolve AFTER a newer, faster
+  // one and unconditionally overwrite it via setPreview(data). That's what
+  // made a transformed/filtered table appear to "restart" back to the
+  // original sheet after a few scrolls - a stale response, applied late.
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       setLoading(true);
       setError("");
@@ -499,13 +510,14 @@ export default function DataTable({
           { sortBy, sortDir, filters: debouncedFilters },
           activeVersionId ? null : activeTable
         );
-        setPreview(data);
+        if (!cancelled) setPreview(data);
       } catch (err: any) {
-        setError(err?.response?.data?.detail || "Could not load data preview.");
+        if (!cancelled) setError(err?.response?.data?.detail || "Could not load data preview.");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [datasourceId, activeVersionId, activeTable, refreshKey, offset, pageSize, sortBy, sortDir, debouncedFilters]);
 
