@@ -1013,10 +1013,19 @@ class FilteredBlocksOut(BaseModel):
     # separate query. This is what lets the frontend show an honest
     # "Showing 6,709 rows" next to the filter row (the reference dashboard
     # screenshots Gokul sent) instead of a fabricated number - see this
-    # engagement's standing rule against ever inventing stats. 0 whenever
-    # the datasource couldn't be loaded at all (frontend treats 0 as "no
-    # count to show", same as any other empty state).
-    matched_rows: int = 0
+    # engagement's standing rule against ever inventing stats.
+    #
+    # 2026-10-02 fix: now `int | None`, was `int = 0`. The comment used to
+    # claim "0 whenever the datasource couldn't be loaded... frontend
+    # treats 0 as no count to show" - that was never actually true: the
+    # frontend only ever checked `!== null`, so a literal 0 rendered as the
+    # real UI string "0 rows match," reading as "nothing matches" instead
+    # of the intended "no count available right now." None is the honest
+    # value for "couldn't load the live datasource this request" - a
+    # genuine zero-match filter result (the data loaded fine, nothing
+    # happened to match) still correctly returns the integer 0 and still
+    # correctly shows "0 rows match."
+    matched_rows: int | None = None
 
 
 # ---------- Folders (2026-09-23, folders round: organizes Projects on the
