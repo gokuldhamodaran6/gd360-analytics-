@@ -3516,18 +3516,34 @@ def preview_filtered_blocks(
     if not page:
         raise HTTPException(404, "Page not found on this dashboard.")
 
+    # 2026-10-02 fix: the live datasource is now OPTIONAL for this request,
+    # not required for the whole thing. d.source_conversation_id is "purely
+    # for reference... never required" (see Dashboard's own docstring) -
+    # every block's own config is meant to be self-contained - but this
+    # endpoint used to abort the ENTIRE request, every block on the page,
+    # the instant _resolve_datasource_for_read couldn't resolve a
+    # datasource through it (which happens whenever the dashboard's
+    # original chat/analysis has since been deleted, archived, or is
+    # otherwise unreachable - not rare on an older dashboard). An AI-built
+    # chart/table block never touches `df` at all below - it recomputes
+    # entirely from its own already-stored tidy result_columns/result_rows
+    # - so it was being taken down by a failure it never actually depended
+    # on. Only a `recipe`-based block (built manually, or backed by a saved
+    # metric/transform) genuinely needs the live `df` to recompute against;
+    # see the `if recipe and df is None: continue` guard below for how that
+    # one real dependency is now handled per-block instead of up front.
     ds = _resolve_datasource_for_read(db, user, d)
-    if not ds:
-        return schemas.FilteredBlocksOut(blocks=[], matched_rows=0)
-
-    try:
-        df = load_dataframe(ds, table=None, version="original", db=db)
-        df = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
-    except Exception:
-        return schemas.FilteredBlocksOut(blocks=[], matched_rows=0)
+    df = None
+    if ds:
+        try:
+            df = load_dataframe(ds, table=None, version="original", db=db)
+            df = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
+        except Exception:
+            df = None
 
     active_filters = payload.filters[:_MAX_FILTERS_PER_REQUEST]
-    df = _apply_filters(df, active_filters)
+    if df is not None:
+        df = _apply_filters(df, active_filters)
 
     # Per-chart filters - capped defensively (a real dashboard page has
     # nowhere near this many blocks or per-block criteria; see
@@ -3541,6 +3557,15 @@ def preview_filtered_blocks(
     for block in page.blocks:
         own_filters = block_filters.get(block.id) or []
         recipe = (block.config or {}).get("recipe")
+        if recipe and df is None:
+            # 2026-10-02 fix: the live datasource couldn't be loaded this
+            # request - a recipe-based block has no other source of truth
+            # to recompute from, so it's left out exactly like any other
+            # block this endpoint can't currently recompute (see this
+            # function's own docstring above). A self-contained AI-built
+            # table/chart block further down is NOT affected by this at
+            # all - it never reads `df`.
+            continue
         # 2026-09-30 (semantic layer v1): a metric-backed kpi/gauge
         # (recipe["metric_id"] set - see build_manual_block) is looked up
         # fresh here every time, not just recomputed from a frozen column/
@@ -3659,7 +3684,15 @@ def preview_filtered_blocks(
     # therefore the real, exact row count either way, at zero extra query
     # cost. See FilteredBlocksOut.matched_rows for what the frontend does
     # with this.
-    return schemas.FilteredBlocksOut(blocks=out, matched_rows=len(df))
+    #
+    # 2026-10-02 fix: `df` can now genuinely be None (the live datasource
+    # couldn't be loaded this request) - matched_rows is None in that case,
+    # NOT a fabricated 0. A literal 0 means "the filter bar matched zero
+    # rows," which is a real, meaningful answer the frontend should show;
+    # None means "no count available right now," which the frontend's
+    # existing `!== null` guard already knows how to hide instead of
+    # rendering as a misleading "0 rows match."
+    return schemas.FilteredBlocksOut(blocks=out, matched_rows=len(df) if df is not None else None)
 
 
 @router.post("/{dashboard_id}/pages", response_model=schemas.DashboardBuilderOut, status_code=201)
