@@ -44,12 +44,63 @@ function setActiveSlotId(id: string | null) {
 
 let nextSlotId = 0;
 
-export function useExclusiveOpen(): [boolean, (next: boolean | ((was: boolean) => boolean)) => void] {
+// 2026-10-02 fix: a real outside-click + Escape dismiss, which this
+// registry never had at all before - the original fix above only ever
+// closed whichever slot was open when a DIFFERENT slot opened. Clicking
+// anywhere else on the page (empty canvas space, another chart, the page
+// background) or pressing Escape did nothing at all, so the only way to
+// close an open menu/panel was to find its own trigger again. Attached
+// once, lazily, the first time any slot actually mounts - not at module
+// load - so a page that never renders one of these never pays for a
+// document-level listener it doesn't need.
+let outsideListenerAttached = false;
+
+function attachOutsideListenerOnce() {
+  if (outsideListenerAttached || typeof document === "undefined") return;
+  outsideListenerAttached = true;
+
+  // Capture phase, and deliberately mousedown rather than click: this has
+  // to run and decide BEFORE a trigger's own onClick (which fires on the
+  // following click event) gets a chance to toggle its slot back open -
+  // otherwise clicking a slot's own trigger to close it would get closed
+  // here first, then immediately reopened by that same click's onClick.
+  document.addEventListener(
+    "mousedown",
+    (e: MouseEvent) => {
+      if (!activeSlotId) return;
+      const target = e.target as Element | null;
+      // A click inside the active slot's own trigger, or inside its own
+      // open panel/menu, is never "outside" it - both are tagged with the
+      // same data-exclusive-id (this hook's 3rd return value) by every
+      // call site. A form-like panel (Ask AI, Build manually, Chart
+      // style) tags its whole container, so typing or clicking inside an
+      // input there is never mistaken for a click "outside" that loses
+      // the in-progress edit.
+      if (target?.closest(`[data-exclusive-id="${activeSlotId}"]`)) return;
+      setActiveSlotId(null);
+    },
+    true
+  );
+
+  document.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key === "Escape" && activeSlotId) setActiveSlotId(null);
+  });
+}
+
+export function useExclusiveOpen(): [
+  boolean,
+  (next: boolean | ((was: boolean) => boolean)) => void,
+  // 2026-10-02 fix: this slot's own stable id, to tag onto BOTH its
+  // trigger element and its panel/menu element via data-exclusive-id - see
+  // attachOutsideListenerOnce above for what that tag is checked against.
+  string
+] {
   const idRef = useRef<string | null>(null);
   if (idRef.current === null) idRef.current = `dash-open-${++nextSlotId}`;
   const [isOpen, setIsOpen] = useState(() => activeSlotId === idRef.current);
 
   useEffect(() => {
+    attachOutsideListenerOnce();
     const listen = (id: string | null) => setIsOpen(id === idRef.current);
     listeners.add(listen);
     return () => {
@@ -67,5 +118,5 @@ export function useExclusiveOpen(): [boolean, (next: boolean | ((was: boolean) =
     setActiveSlotId(resolved ? idRef.current : null);
   }, []);
 
-  return [isOpen, setOpen];
+  return [isOpen, setOpen, idRef.current];
 }
