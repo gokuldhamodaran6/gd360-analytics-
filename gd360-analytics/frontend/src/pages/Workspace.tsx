@@ -26,6 +26,7 @@ import PushToDashboardMenu from "../components/PushToDashboardMenu";
 import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
 import {
   CLIENT_PIVOTABLE_TYPES, ExploreConfig, ResultColumn, buildExploreFigure, defaultExploreConfig,
+  isBackendTypePivotable,
 } from "../lib/exploreEngine";
 
 // One tab in the chart history strip. Every question (or corrected answer)
@@ -828,9 +829,20 @@ export default function Workspace() {
   // explore config built yet (every chart starts this way) gives it one,
   // seeded from its own columns and the chart type the backend rendered -
   // lazy, so a chart that's never opened in Explore never pays this cost.
+  // 2026-10-02 fix: only do this when the backend's own chart type is
+  // actually client-pivotable (isBackendTypePivotable). Before this check,
+  // a specialized chart the backend rendered (a gauge, sankey, heatmap,
+  // etc.) would still get an explore config seeded with chartType "bar" -
+  // normalizeChartType's safe fallback for the picker, never meant to mean
+  // "redraw this as a bar chart" - and canExplore would then read true,
+  // silently replacing the real chart with a client-built bar chart the
+  // instant "Edit chart" was opened, with no click from the person at all.
+  // For a non-pivotable type, explore stays null and the real backend chart
+  // keeps showing.
   const ensureExploreConfig = () => {
     if (!activeChartId || !activeChart) return;
     if (activeChart.explore || !activeChart.resultColumns?.length) return;
+    if (!isBackendTypePivotable(activeChart.chartType)) return;
     const config = defaultExploreConfig(activeChart.resultColumns, activeChart.chartType);
     setCharts((cs) => cs.map((c) => (c.id === activeChartId ? { ...c, explore: config } : c)));
   };
