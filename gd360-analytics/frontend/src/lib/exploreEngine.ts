@@ -139,6 +139,25 @@ export function normalizeChartType(backendType: string | null | undefined): Expl
   return CHART_TYPE_ALIASES[backendType] || "bar";
 }
 
+// Whether the BACKEND's own chart type (chart_builder.py's vocabulary, e.g.
+// "gauge", "sankey", "bar") can actually be redrawn client-side at all -
+// true only when it is directly in CLIENT_PIVOTABLE_TYPES or has a
+// deliberate, listed alias in CHART_TYPE_ALIASES. Deliberately NOT the same
+// question normalizeChartType answers: normalizeChartType always returns
+// SOME client-pivotable type (falling back to "bar" for anything it doesn't
+// recognize) so the Explore panel's own chart-type dropdown always has a
+// sensible value once Explore is already open - but that fallback must
+// never be mistaken for "this chart type is safe to silently redraw
+// client-side the moment Explore opens". A gauge, heatmap, sankey,
+// candlestick, treemap, waterfall, choropleth, sunburst, or parallel-
+// coordinates chart all normalize to "bar" for picker purposes, but none of
+// them are actually pivotable - only this function tells the two apart.
+export function isBackendTypePivotable(backendType: string | null | undefined): boolean {
+  if (!backendType) return false;
+  if ((CLIENT_PIVOTABLE_TYPES as string[]).includes(backendType)) return true;
+  return Object.prototype.hasOwnProperty.call(CHART_TYPE_ALIASES, backendType);
+}
+
 export function defaultExploreConfig(columns: ResultColumn[], backendChartType?: string | null): ExploreConfig {
   const dimensions = columns.filter((c) => c.role === "dimension");
   const measures = columns.filter((c) => c.role === "measure");
