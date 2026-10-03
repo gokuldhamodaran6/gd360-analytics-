@@ -1130,26 +1130,37 @@ export function ColumnFilterSpecEditor({
 
   const conditionLabel = group === "number" ? "Range" : group === "date" ? "Range" : "Condition";
 
+  // 2026-10-02 (premium filter UI pass): Values/Condition used to be a
+  // thin-underline tab pair (a 2px bottom border on the active label) -
+  // the single most "this wasn't designed" detail Gokul screenshotted next
+  // to the reference dashboards he sent. Now a real segmented control: a
+  // filled pill (bg-surface + shadow) tracks whichever tab is active
+  // inside a quiet bg-surface2 track, the same pattern the app's own
+  // premium chrome already uses elsewhere (dash-card, dash-chart-menu-btn).
   return (
     <div className="flex flex-col min-w-[220px] max-w-[280px]">
-      <div className="flex border-b border-border text-[11px]">
+      <div className="flex gap-0.5 m-2 mb-1.5 p-0.5 rounded-lg bg-surface2 text-[11px]">
         <button
           type="button"
-          className={`flex-1 px-2 py-1.5 ${tab === "values" ? "text-primary border-b-2 border-primary font-medium" : "text-muted"}`}
+          className={`flex-1 px-2 py-1.5 rounded-md font-medium transition-colors ${
+            tab === "values" ? "bg-surface text-text shadow-sm" : "text-muted hover:text-text"
+          }`}
           onClick={() => setTab("values")}
         >
           Values
         </button>
         <button
           type="button"
-          className={`flex-1 px-2 py-1.5 ${tab === "condition" ? "text-primary border-b-2 border-primary font-medium" : "text-muted"}`}
+          className={`flex-1 px-2 py-1.5 rounded-md font-medium transition-colors ${
+            tab === "condition" ? "bg-surface text-text shadow-sm" : "text-muted hover:text-text"
+          }`}
           onClick={() => setTab("condition")}
         >
           {conditionLabel}
         </button>
       </div>
       {tab === "values" ? (
-        <div className="p-2 flex flex-col gap-1.5">
+        <div className="px-2 pb-2 flex flex-col gap-1.5">
           <input className="input text-xs py-1.5" placeholder="Search values…" value={search} onChange={(e) => setSearch(e.target.value)} />
           <div className="max-h-44 overflow-y-auto flex flex-col gap-0.5">
             {loadingValues ? (
@@ -1157,19 +1168,36 @@ export function ColumnFilterSpecEditor({
             ) : filteredValues.length === 0 ? (
               <div className="text-[11px] text-muted px-1 py-1">No values.</div>
             ) : (
-              filteredValues.map((v) => (
-                <label key={String(v.value)} className="flex items-center gap-1.5 text-xs px-1 py-1 rounded hover:bg-surface2 cursor-pointer">
-                  <input type="checkbox" checked={include.some((x) => String(x) === String(v.value))} onChange={() => toggleValue(v.value)} />
-                  <span className="truncate flex-1">{v.value === null ? "(Blanks)" : String(v.value)}</span>
-                  <span className="text-muted tabular-nums">{v.count}</span>
-                </label>
-              ))
+              filteredValues.map((v) => {
+                const checked = include.some((x) => String(x) === String(v.value));
+                return (
+                  <label
+                    key={String(v.value)}
+                    className={`flex items-center gap-1.5 text-xs px-2 py-1.5 rounded-md cursor-pointer transition-colors ${
+                      checked ? "bg-primary/10 text-primary" : "text-text hover:bg-surface2"
+                    }`}
+                  >
+                    <input type="checkbox" className="accent-primary" checked={checked} onChange={() => toggleValue(v.value)} />
+                    <span className="truncate flex-1">{v.value === null ? "(Blanks)" : String(v.value)}</span>
+                    <span className={`tabular-nums ${checked ? "text-primary/70" : "text-muted"}`}>{v.count}</span>
+                  </label>
+                );
+              })
             )}
           </div>
+          {/* 2026-10-02 (premium filter UI pass): "Clear (N)" (the count
+              buried inside the button label) replaced with the Hex-style
+              footer - a plain "N selected" readout plus a separate, always
+              in the same place "Clear" action. */}
           {include.length > 0 && (
-            <button type="button" className="text-[11px] text-muted hover:text-text self-start" onClick={() => onChange(null)}>
-              Clear ({include.length})
-            </button>
+            <div className="flex items-center justify-between px-1 pt-1.5 mt-0.5 border-t border-border text-[11px]">
+              <span className="text-muted">
+                <span className="font-semibold text-text">{include.length}</span> selected
+              </span>
+              <button type="button" className="text-primary font-medium hover:underline" onClick={() => onChange(null)}>
+                Clear
+              </button>
+            </div>
           )}
         </div>
       ) : (
@@ -1271,7 +1299,7 @@ export function BlockFilterButton({
   // docstring: this popover previously had no idea another block's menu,
   // explain popover, or filter popover was already open elsewhere on the
   // page, so more than one could be open on screen at once.
-  const [open, setOpen] = useExclusiveOpen();
+  const [open, setOpen, openSlotId] = useExclusiveOpen();
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const [draftColumn, setDraftColumn] = useState("");
   const btnRef = useRef<HTMLButtonElement | null>(null);
@@ -1310,6 +1338,7 @@ export function BlockFilterButton({
         aria-haspopup="dialog"
         aria-expanded={open}
         title={criteria.length > 0 ? `${criteria.length} filter${criteria.length === 1 ? "" : "s"} on this block only` : "Filter this block only"}
+        data-exclusive-id={openSlotId}
         onClick={toggle}
       >
         <FilterIcon />
@@ -1321,6 +1350,7 @@ export function BlockFilterButton({
           <>
             <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
             <div
+              data-exclusive-id={openSlotId}
               className="fixed z-50 card bg-surface shadow-2xl border border-border overflow-hidden flex flex-col"
               style={{ top: pos.top, left: pos.left, width: POPOVER_WIDTH }}
             >
@@ -1413,7 +1443,7 @@ export function FilterControl({
   const column: string | null = block.config?.column || null;
   // 2026-09-30 (bug fix) - see lib/useExclusiveOpen.ts's own module
   // docstring; same fix as BlockFilterButton above.
-  const [open, setOpen] = useExclusiveOpen();
+  const [open, setOpen, openSlotId] = useExclusiveOpen();
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const btnRef = useRef<HTMLButtonElement | null>(null);
 
@@ -1458,6 +1488,7 @@ export function FilterControl({
                 ? "border-primary/70 bg-primary/10 text-primary font-medium"
                 : "border-border bg-surface2/60 text-muted hover:border-primary/40 hover:text-text"
             }`}
+            data-exclusive-id={openSlotId}
             onClick={togglePopover}
           >
             <FilterIcon className="w-3 h-3 shrink-0" />
@@ -1469,7 +1500,11 @@ export function FilterControl({
             createPortal(
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-                <div className="fixed z-50 card bg-surface shadow-2xl border border-border overflow-hidden" style={{ top: pos.top, left: pos.left }}>
+                <div
+                  data-exclusive-id={openSlotId}
+                  className="fixed z-50 card bg-surface shadow-2xl border border-border overflow-hidden"
+                  style={{ top: pos.top, left: pos.left }}
+                >
                   <ColumnFilterSpecEditor datasourceId={datasourceId} column={column} spec={value} onChange={onChange} />
                 </div>
               </>,
