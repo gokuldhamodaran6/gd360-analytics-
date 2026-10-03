@@ -113,6 +113,21 @@ body {
 }
 .input:focus { border-color: rgb(var(--color-primary)); box-shadow: 0 0 0 3px rgb(var(--color-primary) / 0.15); }
 
+/* 2026-10-02 (premium filter UI pass): every native checkbox/radio in the
+   app themed to the emerald brand accent in one place, instead of each one
+   being left in the browser's flat default gray - the single most visible
+   "this wasn't designed" detail sitting right next to this app's own
+   already-themed buttons/inputs/selects. `accent-color` is the one real CSS
+   property a browser's native checkbox/radio actually honors (there's no
+   reliable cross-browser way to restyle the box itself without replacing
+   the control entirely, which this app doesn't do anywhere) - every
+   checkbox and radio in the app, in every popover/panel/form, picks this
+   up automatically with no per-component change needed. */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: rgb(var(--color-primary));
+}
+
 /* 2026-09-23: every search box in the app pairs `.input` with a Tailwind
    `pl-*` utility to clear room for a left-aligned icon (SearchIcon) - but
    `.input`'s own `padding` shorthand above sets padding-left too, and since
