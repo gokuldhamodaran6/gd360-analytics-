@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import Plot, { Plotly } from "../lib/plotly";
 import { useTheme } from "../api/ThemeContext";
 import { suggestedChartMinHeight } from "../lib/chartStyle";
+import { useExclusiveOpen } from "../lib/useExclusiveOpen";
 
 const EXPORT_FORMATS: { value: "png" | "jpeg" | "svg" | "webp"; label: string }[] = [
   { value: "png", label: "PNG" },
@@ -81,7 +82,18 @@ export default function ChartCanvas({
   // the header below. A plain Workspace/legacy chart keeps its permanent
   // "Export chart as" row exactly as it always has, so this stays unused
   // (and harmless) there.
-  const [menuOpen, setMenuOpen] = useState(false);
+  //
+  // 2026-10-02 fix: this used to be a private useState<boolean>, making it
+  // the one popover in the whole app NEVER migrated onto the shared
+  // useExclusiveOpen registry every other block kebab/panel/popover
+  // already uses (see lib/useExclusiveOpen.ts's own module docstring) -
+  // every block card actually has TWO separate "..." menus (this chart-
+  // level export menu, and a separate block-level Ask AI/Style/Delete menu
+  // from DashboardCanvas.tsx/DashboardBlocks.tsx), and this was the one
+  // that never closed when the other opened, and vice versa, and that had
+  // no outside-click/Escape dismiss at all. Now a real slot in the same
+  // registry, like everything else.
+  const [menuOpen, setMenuOpen, menuSlotId] = useExclusiveOpen();
   const { theme } = useTheme();
   const cardClass = dashPremium ? "dash-card" : "card";
 
@@ -234,12 +246,17 @@ export default function ChartCanvas({
             aria-label="Chart options"
             aria-haspopup="menu"
             aria-expanded={menuOpen}
+            data-exclusive-id={menuSlotId}
             onClick={() => setMenuOpen((o) => !o)}
           >
             <KebabIcon />
           </button>
           {menuOpen && (
-            <div role="menu" className="absolute right-0 top-full mt-1 w-36 card bg-surface shadow-2xl border border-border p-1.5 z-20">
+            <div
+              role="menu"
+              data-exclusive-id={menuSlotId}
+              className="absolute right-0 top-full mt-1 w-36 card bg-surface shadow-2xl border border-border p-1.5 z-20"
+            >
               <div className="text-[10px] font-semibold uppercase tracking-wide text-muted px-2 py-1">Export as</div>
               {EXPORT_FORMATS.map((f) => (
                 <button
