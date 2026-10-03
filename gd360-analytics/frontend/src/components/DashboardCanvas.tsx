@@ -1302,7 +1302,7 @@ function BlockCard({
   // keeps its original 4-value shape (none/ask/manual/style) on the outside -
   // every call site below (setPanel(panel === "ask" ? "none" : "ask"), the
   // onClose callbacks, etc.) is untouched - only how it's backed changed.
-  const [panelOpen, setPanelOpenSlot] = useExclusiveOpen();
+  const [panelOpen, setPanelOpenSlot, panelSlotId] = useExclusiveOpen();
   const [panelKind, setPanelKind] = useState<"ask" | "manual" | "style">("ask");
   const panel: "none" | "ask" | "manual" | "style" = panelOpen ? panelKind : "none";
   const setPanel = (next: "none" | "ask" | "manual" | "style") => {
@@ -1317,12 +1317,12 @@ function BlockCard({
   const [textDraft, setTextDraft] = useState(block.config?.text || "");
   const [deleting, setDeleting] = useState(false);
   // 2026-09-25d (elite pass) - see KebabIcon above.
-  const [menuOpen, setMenuOpen] = useExclusiveOpen();
+  const [menuOpen, setMenuOpen, menuSlotId] = useExclusiveOpen();
   // 2026-09-29 (design revamp) - see InfoIcon above and the "ai_explanation"
   // comment on _ai_result_to_block in dashboard_builder.py for where this
   // text comes from: analyze()'s own real, already-generated narrative for
   // this exact block, never a second AI call and never fabricated here.
-  const [explainOpen, setExplainOpen] = useExclusiveOpen();
+  const [explainOpen, setExplainOpen, explainSlotId] = useExclusiveOpen();
   // 2026-09-29 (round 5, real-bug fix): "for small field like kpi and i
   // cannot able to read that suggestions about the blocks" - this popover
   // used to be positioned with plain `absolute` inside the block's own
@@ -1375,7 +1375,7 @@ function BlockCard({
   const lineageTable = block.config?.source_table as string | undefined;
   const lineageColumns = (block.config?.result_columns as { name: string }[] | undefined)?.map((c) => c.name);
   const hasLineage = Boolean(lineageRecipe || lineageCode || lineagePrompt || datasourceName || lineageTable);
-  const [lineageOpen, setLineageOpen] = useExclusiveOpen();
+  const [lineageOpen, setLineageOpen, lineageSlotId] = useExclusiveOpen();
   const lineageBtnRef = useRef<HTMLButtonElement>(null);
   const [lineagePos, setLineagePos] = useState<{ top: number; left: number } | null>(null);
   const LINEAGE_WIDTH = 320;
@@ -1590,6 +1590,7 @@ function BlockCard({
               aria-haspopup="dialog"
               aria-expanded={explainOpen}
               title="Explain this chart"
+              data-exclusive-id={explainSlotId}
               onClick={toggleExplain}
             >
               <InfoIcon />
@@ -1600,6 +1601,7 @@ function BlockCard({
                 <div
                   role="dialog"
                   aria-label="Explanation"
+                  data-exclusive-id={explainSlotId}
                   className="fixed card bg-surface shadow-2xl border border-border p-3 z-50 text-xs leading-relaxed text-foreground"
                   style={{
                     top: explainPos.top,
@@ -1625,6 +1627,7 @@ function BlockCard({
               aria-haspopup="dialog"
               aria-expanded={lineageOpen}
               title="How this was built"
+              data-exclusive-id={lineageSlotId}
               onClick={toggleLineage}
             >
               <LayersIcon />
@@ -1635,6 +1638,7 @@ function BlockCard({
                 <div
                   role="dialog"
                   aria-label="How this was built"
+                  data-exclusive-id={lineageSlotId}
                   className="fixed card bg-surface shadow-2xl border border-border p-3 z-50 text-xs leading-relaxed text-foreground space-y-2.5"
                   style={{
                     top: lineagePos.top,
@@ -1709,6 +1713,7 @@ function BlockCard({
             aria-label="Block options"
             aria-haspopup="menu"
             aria-expanded={menuOpen}
+            data-exclusive-id={menuSlotId}
             onClick={() => {
               setExplainOpen(false);
               setMenuOpen((o) => !o);
@@ -1717,7 +1722,7 @@ function BlockCard({
             <KebabIcon />
           </button>
           {menuOpen && (
-            <div role="menu" className="absolute right-0 top-full mt-1 w-40 card bg-surface shadow-2xl border border-border p-1.5 z-20">
+            <div role="menu" data-exclusive-id={menuSlotId} className="absolute right-0 top-full mt-1 w-40 card bg-surface shadow-2xl border border-border p-1.5 z-20">
               {!NO_DATA_TYPES.includes(block.type) && !MANUAL_ONLY_TYPES.includes(block.type) && (
                 <button
                   type="button"
@@ -1885,7 +1890,13 @@ function BlockCard({
         </div>
       )}
 
-      <div className="flex-1 min-h-0">
+      {/* 2026-10-02 fix: tagged with panelSlotId so the new outside-click
+          dismiss (lib/useExclusiveOpen.ts) never mistakes typing or
+          clicking inside this form-like panel (an Ask AI prompt box, a
+          Build-manually field, a Style control) for a click "outside" it -
+          the panel only ever closes via its own explicit onClose, exactly
+          as before. */}
+      <div className="flex-1 min-h-0" data-exclusive-id={panelSlotId}>
         {panel === "ask" && <AskAiPanel dashboardId={dashboardId} block={block} onDone={onDone} onClose={() => setPanel("none")} />}
         {panel === "manual" && (
           <ManualBuildPanel
