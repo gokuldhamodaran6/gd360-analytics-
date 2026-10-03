@@ -718,7 +718,11 @@ def _build_faceted_bar(result: pd.DataFrame) -> go.Figure:
 
     fig = make_subplots(
         rows=n_rows, cols=n_cols, subplot_titles=subplot_titles,
-        horizontal_spacing=0.09, vertical_spacing=0.16,
+        # 2026-10-02 fix: bumped from 0.09 - still tight, but every panel
+        # past the first no longer prints its own y-axis labels (see the
+        # showticklabels pass below), so this gap only has to separate bars
+        # from the panel beside them, not labels from bars.
+        horizontal_spacing=0.12, vertical_spacing=0.16,
     )
 
     for i, facet_value in enumerate(facet_values):
@@ -735,6 +739,20 @@ def _build_faceted_bar(result: pd.DataFrame) -> go.Figure:
             row=row, col=col,
         )
         fig.add_vline(x=0, line_color=TREND_COLOR, line_width=1.5, row=row, col=col)
+        # 2026-10-02 fix: only the leftmost panel in each row now prints its
+        # y-axis category labels - every panel already shares the exact
+        # same category order top-to-bottom (category_order above), so
+        # repeating the same (often long) labels on every panel's own
+        # y-axis, with barely any gap between panels, visually smeared them
+        # together into unreadable text (e.g. "Senior Software Engineer"
+        # bleeding into the panel to its left). This is also the standard
+        # small-multiples convention, not just a fix for the overlap.
+        # automargin=True on that one labeled column so long text gets real
+        # room instead of being clipped.
+        if col == 1:
+            fig.update_yaxes(automargin=True, row=row, col=col)
+        else:
+            fig.update_yaxes(showticklabels=False, row=row, col=col)
 
     # Unused grid cells (e.g. 7 panels in a 3x3 grid leaves 2 empty) get
     # their axes hidden entirely rather than left as empty, distracting box
