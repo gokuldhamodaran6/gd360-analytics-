@@ -1562,9 +1562,16 @@ export const dashboardBuilderApi = {
   // id, is "per-chart filtering" - extra criteria applied ONLY to that
   // one block's own recompute, on top of `filters` for everyone else.
   // Optional/omitted behaves exactly as before this round.
+  // 2026-10-02 fix: matched_rows is now `number | null`, matching the
+  // backend's own FilteredBlocksOut.matched_rows (int | None). null means
+  // "the live datasource couldn't be loaded this request, no count
+  // available" - useDashboardFilters.ts/DashboardBuilderView.tsx already
+  // typed and guarded matchedRows as `number | null` with a `!== null`
+  // check; only this raw response type was still (incorrectly) claiming
+  // matched_rows could never be anything but a number.
   previewFiltered: (dashboardId: string, pageId: string, filters: FilterCriterion[], blockFilters?: Record<string, FilterCriterion[]>) =>
     api
-      .post<{ blocks: FilteredBlock[]; matched_rows: number }>(
+      .post<{ blocks: FilteredBlock[]; matched_rows: number | null }>(
         `/dashboard-builder/${dashboardId}/pages/${pageId}/preview-filtered`,
         { filters, block_filters: blockFilters || {} }
       )
