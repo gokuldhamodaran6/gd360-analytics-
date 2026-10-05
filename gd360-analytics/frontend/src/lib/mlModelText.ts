@@ -143,6 +143,15 @@ export function qualityWarningText(w: MLQualityWarning): string {
       "independent predictor - check whether it should really be included."
     );
   }
+  if (w.type === "sampled_training_data") {
+    const used = w.rows_used != null ? w.rows_used.toLocaleString() : "a";
+    const total = w.rows_total != null ? w.rows_total.toLocaleString() : "the full";
+    return (
+      `This data source has ${total} rows - more than one training run needs. This model was trained on a ` +
+      `random sample of ${used} of them, chosen to keep the real result statistically honest while staying ` +
+      "fast and reliable. This is a normal, deliberate choice, not a data quality problem."
+    );
+  }
   return "This result has an unusual pattern worth a second look before trusting it.";
 }
 
