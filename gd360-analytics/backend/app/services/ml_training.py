@@ -104,6 +104,28 @@ from .. import models
 # pass.
 MIN_TRAINING_ROWS = 30
 
+# 2026-10-05 root-cause fix: this module's own docstring above has always
+# assumed "realistic dataset sizes this app deals with (hundreds to low
+# tens-of-thousands of rows)" (see routers/ml_models.py's train_ml_model
+# docstring, worded identically), but nothing anywhere actually enforced
+# that assumption. A live-connector datasource (BigQuery/Snowflake/SQL)
+# already can't exceed settings.MAX_ROWS_LOADED_PER_QUERY by the time its
+# DataFrame reaches here (see data_loader.py's row_limit plumbing), but a
+# CSV/Excel UPLOAD has no such cap anywhere in its load path - its whole
+# file is loaded into memory as-is, however large, the same shape of risk
+# that caused this app's confirmed, real OOM crashes before the 2026-10-05
+# sandbox/cache fixes closed it off for the chat/upload-cache paths. A
+# training run on a genuinely huge uploaded file would hit the exact same
+# wall, just via this module instead. Rather than silently fail later
+# (or crash the container, same as before), cap the actual training set
+# here with a random sample - a completely standard, honest ML practice,
+# not a fabricated or lower-quality result (see this module's own "never
+# fabricate a stat" discipline in the header docstring) - and say so
+# plainly via the existing quality_warnings mechanism (see train_model's
+# `sampled_training_data` entry below) so nobody is ever left wondering
+# why a huge file "looks" like it trained on less data than it has.
+MAX_TRAINING_ROWS = 75_000
+
 # A column with at least this fraction of its rows holding a distinct value
 # reads as an identifier (a customer id, an order number, a row number) -
 # useful for looking a row up, never useful for PREDICTING anything about
@@ -647,6 +669,24 @@ def train_model(db, ml_model_row: models.MLModel, df: pd.DataFrame) -> None:
             return
 
         usable_df = df.dropna(subset=[target_column]).copy()
+
+        # See MAX_TRAINING_ROWS's own comment above: a random sample (not
+        # the first N rows, which could all be one sorted-by-date/sorted-
+        # by-category slice and bias the result) keeps memory use bounded
+        # regardless of how large the source file is, while staying a
+        # statistically honest training set - random_state is fixed so a
+        # retrain on the same underlying data reproduces the same sample
+        # rather than drifting on every run for no real reason.
+        sampling_warning = None
+        total_before_sampling = len(usable_df)
+        if total_before_sampling > MAX_TRAINING_ROWS:
+            usable_df = usable_df.sample(n=MAX_TRAINING_ROWS, random_state=42)
+            sampling_warning = {
+                "type": "sampled_training_data",
+                "rows_used": MAX_TRAINING_ROWS,
+                "rows_total": total_before_sampling,
+            }
+
         if len(usable_df) < MIN_TRAINING_ROWS:
             _fail(
                 ml_model_row,
@@ -740,6 +780,8 @@ def train_model(db, ml_model_row: models.MLModel, df: pd.DataFrame) -> None:
         # so the frontend can render "no warnings" as confidently as it
         # renders a real one.
         quality_warnings: list[dict] = []
+        if sampling_warning is not None:
+            quality_warnings.append(sampling_warning)
         if task_type == "regression" and metrics.get("r2") is not None and metrics["r2"] >= _NEAR_PERFECT_R2:
             quality_warnings.append({"type": "near_perfect_score", "metric": "r2", "value": metrics["r2"]})
         if (
