@@ -407,10 +407,16 @@ Rules:
   request: "scatter" for the relationship between two numeric variables (including a correlation between
   exactly two named columns), "heatmap" for a correlation matrix across several/all numeric columns or any
   "across all columns"/"matrix" request, "histogram" for a distribution/spread request, "line" for a trend
-  over time, "box" for comparing distributions across groups, "pie" only for a small number of categories
-  showing share of a whole, "waterfall" for cumulative contributions to a total, "funnel" for sequential
-  conversion stages. Only choose "bar" when comparing a measure across categories is genuinely the best fit
-  for the request - not as a fallback. Beyond these core types, a much larger chart vocabulary is also
+  over time, "box" for comparing distributions across groups, "pie"/"donut" ONLY for a genuine share-of-a-whole
+  request with 6 or fewer categories (past 6 a pie/donut stops being readable at a glance and the real
+  comparison is better read off a sorted "bar"/"horizontal_bar", or "stacked_bar" when the whole itself also
+  matters) - never pick "pie"/"donut" for comparing values that are all close to each other, since a wedge
+  makes small differences much harder to read than a bar's length does, "waterfall" for cumulative
+  contributions to a total, "funnel" for sequential conversion stages. Only choose "bar" when comparing a
+  measure across categories is genuinely the best fit for the request - not as a fallback. Never pick a
+  dual-axis chart or any chart_type that would need a second y-scale - this app has none, by design: two
+  measures on different scales are always two charts, small multiples, or indexed to a common base on one
+  axis, never two scales sharing one plot. Beyond these core types, a much larger chart vocabulary is also
   available (see the chart_type list above) for when the data and request genuinely call for it, e.g.
   "grouped_bar"/"stacked_bar" for several numeric columns compared per category, "faceted_bar" for the same bar
   comparison repeated in a separate panel per value of a second category (an "in each <group>"/"for every
@@ -1648,7 +1654,21 @@ def _infer_chart_type(prompt: str, result: Any, chart_type: str | None) -> str:
     if any(k in p for k in ("trend", "over time", "time series", "month by month", "monthly", "year over year")):
         return "line"
     if any(k in p for k in ("share of", "proportion", "percentage breakdown", "% breakdown")):
-        return "pie"
+        # A pie/donut only reads at a glance up to about 6 slices (see this
+        # codebase's own dataviz skill, references/choosing-a-form.md and
+        # anti-patterns.md); past that, the same "share of a whole" request
+        # is genuinely clearer as a sorted bar, so this safety net - which
+        # only ever runs when the model itself left chart_type at the
+        # generic "bar" default (see the docstring above) - keeps that
+        # default rather than steering it toward an unreadable pie.
+        n_categories = None
+        if isinstance(result, pd.Series):
+            n_categories = result.shape[0]
+        elif isinstance(result, pd.DataFrame) and result.shape[1] <= 2:
+            n_categories = result.shape[0]
+        if n_categories is None or n_categories <= 6:
+            return "pie"
+        return fallback
     if any(k in p for k in ("funnel", "conversion stage", "conversion rate by stage")):
         return "funnel"
     if any(k in p for k in ("cumulative", "waterfall", "build-up", "build up", "contribution to total")):
@@ -2697,6 +2717,22 @@ def analyze(
     # timeout instead of blindly trying a third time.
     is_timeout = False
     timeout_streak = 0
+    # 2026-10-05 root-cause fix: a real production incident (BigQuery-backed
+    # chat request, Render's own memory graph climbing past 400MB+ followed
+    # immediately by "Instance restarted") traced back to the sandboxed
+    # child process (services/sandbox.py) being allowed to grow large enough
+    # to risk the WHOLE container's shared memory ceiling, not just its own.
+    # sandbox.py now caps that child against the container's real remaining
+    # headroom, so a run that would have taken the whole app down instead
+    # hits that child's own RLIMIT_AS and comes back here as a clean,
+    # catchable MemoryError - exactly like a timeout coming back as a clean
+    # "timed out after Ns" string. It gets the same treatment as a timeout
+    # for the same reason: a plain "reconsider" nudge gives the model no way
+    # to know WHY it ran out of memory, and a second identical-shaped retry
+    # on the same oversized intermediate result is no more likely to fit
+    # than the first.
+    is_memory_error = False
+    memory_streak = 0
     while needs_retry and attempt <= _MAX_EXECUTION_RETRIES:
         retry_detail = result.pop("_retry_detail", "unknown error")
         print(f"[ai_engine] attempt {attempt} failed for prompt={prompt!r}: {retry_detail}")
@@ -2716,6 +2752,8 @@ def analyze(
         # actual chance of being faster, not just a repeat of attempt 1.
         is_timeout = "timed out" in retry_detail.lower()
         timeout_streak = timeout_streak + 1 if is_timeout else 0
+        is_memory_error = (not is_timeout) and "memoryerror" in retry_detail.lower()
+        memory_streak = memory_streak + 1 if is_memory_error else 0
         if is_timeout and timeout_streak >= 2:
             # Stop now, without sending a third attempt - see the
             # 2026-09-29 note above this loop for why a third try is not
@@ -2725,6 +2763,22 @@ def analyze(
                 "detail": (
                     "This table/request is genuinely too slow to finish on this app's current server "
                     "resources, not something a third identical-budget attempt was going to fix - see "
+                    "the honest message below instead of guessing at a third rewrite."
+                ),
+            })
+            break
+        if is_memory_error and memory_streak >= 2:
+            # Same reasoning as the timeout streak above: two memory
+            # failures in a row on the same prompt mean the underlying
+            # intermediate result genuinely does not fit in what is
+            # currently available, not that the model's code happens to be
+            # wrong twice - a third attempt burns another sandbox fork for
+            # essentially the same outcome.
+            steps.append({
+                "label": "Stopped after two memory errors in a row",
+                "detail": (
+                    "This table/request genuinely does not fit in the memory currently available on this "
+                    "app's server, not something a third identical-shaped attempt was going to fix - see "
                     "the honest message below instead of guessing at a third rewrite."
                 ),
             })
@@ -2743,6 +2797,20 @@ def analyze(
                 "groupby/merge/vectorized arithmetic can do directly), and before merging, make sure the join "
                 "key is actually unique on at least one side (drop_duplicates or aggregate first if not) so "
                 "the result cannot explode in size. Respond with corrected JSON (same schema as before)."
+            )
+        elif is_memory_error:
+            guidance = (
+                "Running that used more memory than is currently available and was stopped before it could "
+                "bring anything else down. This almost always means an intermediate result got far bigger "
+                "than the input data: a merge/join whose key is not unique on one or both sides (a 50,000-row "
+                "table merged on a non-unique key can balloon into millions of rows in memory), building a "
+                "wide pivot/crosstab with many distinct category values as columns, holding more than one "
+                "full copy of a large table alive at once (assign over the same name instead of keeping both "
+                "`df` and a transformed copy in scope), or concatenating many per-group frames instead of "
+                "using one vectorized groupby/agg call. Rewrite the code to keep memory use proportional to "
+                "the ORIGINAL table size: aggregate before merging where possible, drop columns you don't "
+                "need as early as possible, and prefer groupby/agg over building and then filtering a much "
+                "larger intermediate frame. Respond with corrected JSON (same schema as before)."
             )
         else:
             guidance = (
@@ -2818,6 +2886,25 @@ def analyze(
                 "limit, not a misunderstanding. Try narrowing it (a shorter date range, fewer columns "
                 "or categories, or a smaller breakdown) and I will run it again, or ask for a quicker "
                 "summary first (e.g. totals by month instead of by day) before drilling into detail."
+            )
+        elif is_memory_error:
+            # 2026-10-05: same honesty fix as the timeout case just above,
+            # for the same reason - telling someone "rephrase your
+            # question" when the real cause is "this server ran out of
+            # memory running that" is actively misleading, and (per the
+            # sandbox.py fix this pairs with) this message is now reached
+            # specifically BECAUSE that fix caught the problem safely
+            # inside one request instead of crashing the whole app for
+            # every concurrent user, so it should say so plainly rather
+            # than read like a generic failure.
+            row_count = profile.get("row_count")
+            size_note = f" ({row_count:,} rows)" if isinstance(row_count, int) else ""
+            result["narrative"] = (
+                f"I understood the request, but this table{size_note} needed more memory than is currently "
+                "available on this app's server to finish that specific analysis - this is a capacity limit, "
+                "not a misunderstanding. Try narrowing it (a shorter date range, fewer columns, or a smaller "
+                "breakdown) and I will run it again, or ask for a quicker summary first (e.g. totals by month "
+                "instead of a full per-row breakdown) before drilling into detail."
             )
     result.pop("_retry_needed", None)
     result.pop("_retry_detail", None)
