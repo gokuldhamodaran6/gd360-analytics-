@@ -205,6 +205,15 @@ class Settings(BaseSettings):
     # separately and much lower here; chat/AI analysis (which genuinely can
     # need more rows to be accurate) keeps using the higher limit above.
     PREVIEW_ROW_LIMIT: int = 20_000
+    # 2026-10-05: how long the Data tab's full-table column profiling
+    # (services/profiling.py, routers/datasources.py's `/profile`) keeps a
+    # result cached in-process before re-scanning the real table. A real
+    # warehouse query (billable on BigQuery) every single time someone
+    # reopens the Data tab on the same table would be wasteful and slow;
+    # 5 minutes is long enough that normal back-and-forth browsing never
+    # re-triggers it, short enough that the numbers shown are never
+    # meaningfully stale.
+    PROFILE_CACHE_TTL_SECONDS: int = 300
     # 2026-09-23: raised from 20 after real production logs showed
     # "Analysis code timed out" firing repeatedly for ordinary requests
     # (a plain groupby, a two-table merge) against tables of only tens of
