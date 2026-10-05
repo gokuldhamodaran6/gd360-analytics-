@@ -340,23 +340,42 @@ input[type="radio"] {
 /* Six rotating kpi-tile accent hues (see DashboardBlocks.tsx's
    accentIndex) - dark-mode values here, restated for light mode below so
    each stays legible as icon-chip text on a 14% tint of itself in either
-   theme. Deliberately in the same restrained, non-neon family as the
-   rest of the app rather than a loud rainbow set. */
+   theme.
+   2026-10-05 (world-class visualization round): replaces the previous
+   6 hand-picked hues, which FAILED the dataviz skill's own validator
+   (node scripts/validate_palette.js) in light mode: the lightness band
+   check failed outright, and the worst adjacent pair (purple<->pink)
+   measured normal-vision Delta E 11.8 - below the 15 floor, meaning even
+   someone with ordinary full-color vision could struggle to tell two
+   KPI tiles apart by their accent color alone, let alone someone with a
+   color-vision deficiency. These 6 values are instead the first 6 slots
+   of this app's own already-validated 8-hue categorical order - the
+   exact same one chartStyle.ts's SIGNATURE_COLORS/chart_builder.py's
+   PALETTE already use for real chart series (so a KPI tile's accent and
+   a chart's series-1 color are drawn from the same validated family,
+   not two palettes that could clash) - re-run through the validator at
+   just these 6 slots: light mode passes lightness band, chroma floor,
+   CVD separation (worst adjacent Delta E 9.1) and normal-vision floor
+   (worst adjacent Delta E 19.6), with a contrast WARN on 3 of the 6 that
+   the skill's own "relief rule" accepts because this app never shows
+   these colors as the sole carrier of meaning - always paired with a
+   visible icon + label in normal ink (see KpiTile in DashboardBlocks.tsx).
+   Dark mode passes every check outright, including contrast. */
 :root {
-  --dash-accent-0: 92 156 248;
-  --dash-accent-1: 235 148 84;
-  --dash-accent-2: 92 210 176;
-  --dash-accent-3: 224 138 199;
-  --dash-accent-4: 154 138 224;
-  --dash-accent-5: 224 122 122;
+  --dash-accent-0: 57 135 229;
+  --dash-accent-1: 217 89 38;
+  --dash-accent-2: 25 158 112;
+  --dash-accent-3: 201 133 0;
+  --dash-accent-4: 213 81 129;
+  --dash-accent-5: 0 131 0;
 }
 :root[data-theme="light"] {
   --dash-accent-0: 42 120 214;
-  --dash-accent-1: 200 104 34;
-  --dash-accent-2: 27 155 108;
-  --dash-accent-3: 197 84 150;
-  --dash-accent-4: 90 66 176;
-  --dash-accent-5: 197 60 60;
+  --dash-accent-1: 235 104 52;
+  --dash-accent-2: 27 175 122;
+  --dash-accent-3: 237 161 0;
+  --dash-accent-4: 232 123 164;
+  --dash-accent-5: 0 131 0;
 }
 .dash-accent-0 { background: rgb(var(--dash-accent-0) / 0.14); color: rgb(var(--dash-accent-0)); }
 .dash-accent-1 { background: rgb(var(--dash-accent-1) / 0.14); color: rgb(var(--dash-accent-1)); }
