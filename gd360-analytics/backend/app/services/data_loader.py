@@ -60,15 +60,50 @@ class NeedsTableSelection(Exception):
 # happens once per process lifetime per id; every later load is a plain
 # in-memory `.copy()` (milliseconds, not seconds, even at 50,000+ rows).
 #
-# A bounded, simple LRU (not a TTL cache - these ids never go stale) keeps
-# memory use predictable even if many different datasources/tables get
-# touched over a long-running process's lifetime; the oldest-touched entry
-# is evicted once the cache is full. `threading.Lock` guards it since
-# FastAPI can serve requests on more than one thread even in a single
-# worker process.
+# A bounded LRU (not a TTL cache - these ids never go stale) keeps memory
+# use predictable even if many different datasources/tables get touched
+# over a long-running process's lifetime; the oldest-touched entry is
+# evicted once the cache is full. `threading.Lock` guards it since FastAPI
+# can serve requests on more than one thread even in a single worker
+# process.
+#
+# 2026-10-05 root-cause fix: this was bounded ONLY by entry COUNT
+# (_DF_CACHE_MAX_ENTRIES = 24), with no idea how large any entry actually
+# was. That is fine for a demo-sized file, but real production evidence
+# (server memory graph + the host's own OOM kill, twice, confirmed from
+# Render's logs/metrics) showed this process climbing straight past its
+# 512MB container limit and getting killed mid-request while a user was
+# working with a 119,390-row dataset - 24 cached copies of a dataset that
+# size (each cache hit AND the original `_cache_put` miss path both
+# `.copy()` a full DataFrame) is enormous, and nothing here ever noticed.
+# A dataset's byte footprint, not how many OTHER datasets happen to be
+# cached alongside it, is what actually matters for staying under a fixed
+# memory ceiling - so this is now bounded by approximate total bytes
+# (via `DataFrame.memory_usage(deep=True)`, which prices in the real
+# per-cell cost of object/string columns, not just a pointer-sized
+# estimate) as the primary limit, with the old entry-count cap kept as a
+# cheap secondary safety net against a cache that is all small entries.
+# _DF_CACHE_MAX_BYTES is deliberately conservative relative to a 512MB
+# host: it leaves headroom for the FastAPI/pandas/numpy process baseline
+# AND for the 2-4x-working-copy overhead a single in-flight request's own
+# pandas operations (a merge, a group-by, a sandboxed AI transform) need
+# on top of whatever is sitting in this cache.
 _DF_CACHE_MAX_ENTRIES = 24
+_DF_CACHE_MAX_BYTES = 160 * 1024 * 1024  # 160MB
 _df_cache: "OrderedDict[str, pd.DataFrame]" = OrderedDict()
+_df_cache_bytes: dict[str, int] = {}
+_df_cache_total_bytes = 0
 _df_cache_lock = threading.Lock()
+
+
+def _approx_bytes(df: pd.DataFrame) -> int:
+    try:
+        return int(df.memory_usage(deep=True, index=True).sum())
+    except Exception:
+        # Pathological/empty frame, or a dtype memory_usage can't walk -
+        # never let a sizing failure block caching; just don't count it
+        # toward the byte budget (the entry-count cap still applies).
+        return 0
 
 
 def _cache_get(key: str) -> pd.DataFrame | None:
@@ -80,12 +115,34 @@ def _cache_get(key: str) -> pd.DataFrame | None:
         return cached.copy()
 
 
+def _evict_locked() -> None:
+    """Must be called with _df_cache_lock held. Evicts oldest-touched
+    entries until both the byte budget and the entry-count cap are
+    satisfied. A single entry larger than the whole byte budget (a very
+    large file) is still kept - it's the one the caller just asked for,
+    evicting it immediately would defeat the cache entirely - but it will
+    be the only thing left in the cache afterward, which is the correct,
+    safe behavior."""
+    global _df_cache_total_bytes
+    while (
+        (_df_cache_total_bytes > _DF_CACHE_MAX_BYTES or len(_df_cache) > _DF_CACHE_MAX_ENTRIES)
+        and len(_df_cache) > 1
+    ):
+        oldest_key, _ = _df_cache.popitem(last=False)
+        _df_cache_total_bytes -= _df_cache_bytes.pop(oldest_key, 0)
+
+
 def _cache_put(key: str, df: pd.DataFrame) -> None:
+    global _df_cache_total_bytes
+    size = _approx_bytes(df)
     with _df_cache_lock:
+        if key in _df_cache:
+            _df_cache_total_bytes -= _df_cache_bytes.get(key, 0)
         _df_cache[key] = df
+        _df_cache_bytes[key] = size
+        _df_cache_total_bytes += size
         _df_cache.move_to_end(key)
-        while len(_df_cache) > _DF_CACHE_MAX_ENTRIES:
-            _df_cache.popitem(last=False)
+        _evict_locked()
 
 
 def _load_and_cache(key: str, loader) -> pd.DataFrame:
