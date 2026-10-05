@@ -151,6 +151,46 @@ _ANALYSIS_OVERLAY_ROLES = {"forecast_line", "forecast_band", "anomaly_markers"}
 # colorscale instead of PALETTE.
 GRADIENT_CHART_TYPES = {"heatmap", "contour", "density_heatmap", "choropleth"}
 
+# 2026-10-05 (chart-TYPE selection audit): this codebase's own dataviz skill
+# is explicit that a pie/donut is "part-to-whole at a glance only, <=6
+# segments" (references/choosing-a-form.md) and separately flags "a
+# donut/pie for comparing close values" and "more than ~7 color classes
+# carrying meaning" as named anti-patterns. Before this fix, pie/donut built
+# straight from whatever rows `result` had - a 12- or 20-category result
+# (e.g. "revenue share by customer") drew a 12-/20-wedge pie with only the 8
+# PALETTE hues to cycle through, so slice 9 silently reused slice 1's color
+# (indistinguishable identity, not just a crowded chart) - exactly the
+# "generated/cycled 9th hue" case the PALETTE comment above and the skill's
+# own non-negotiables call out. _fold_small_slices_into_other keeps this a
+# pie/donut (build_figure never silently substitutes a different chart type
+# the AI/person asked for - see the module docstring) but folds every slice
+# past the top 5 into one "Other" wedge first, the same "fold the tail"
+# treatment the skill prescribes for an over-full categorical legend.
+_MAX_PIE_SLICES = 6
+
+
+def _fold_small_slices_into_other(labels: list, values: list, max_slices: int = _MAX_PIE_SLICES) -> tuple[list, list]:
+    """For a pie/donut with more than `max_slices` categories, keeps the
+    (max_slices - 1) largest-by-magnitude slices as-is and sums every
+    remaining one into a single trailing "Other" slice - see _MAX_PIE_SLICES
+    above for why. A no-op (returns labels/values unchanged, in their
+    original order) when there are already max_slices or fewer."""
+    pairs = list(zip(list(labels), list(values)))
+    if len(pairs) <= max_slices:
+        return labels, values
+
+    def _as_float(v: Any) -> float:
+        n = pd.to_numeric(v, errors="coerce")
+        return float(n) if pd.notna(n) else 0.0
+
+    numeric_pairs = [(lbl, _as_float(val)) for lbl, val in pairs]
+    numeric_pairs.sort(key=lambda p: abs(p[1]), reverse=True)
+    kept = numeric_pairs[: max_slices - 1]
+    folded = numeric_pairs[max_slices - 1:]
+    other_total = sum(v for _, v in folded)
+    kept.append((f"Other ({len(folded)})", other_total))
+    return [lbl for lbl, _ in kept], [v for _, v in kept]
+
 
 def _numeric_cols(frame: Any) -> list:
     if not isinstance(frame, pd.DataFrame):
@@ -888,7 +928,8 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
     elif chart_type == "area":
         fig = go.Figure(go.Scatter(x=df["x"], y=df["y"], mode="lines", fill="tozeroy", line=dict(color=PALETTE[1])))
     elif chart_type == "pie":
-        fig = go.Figure(go.Pie(labels=df["x"], values=df["y"], marker=dict(colors=PALETTE), hole=0.45))
+        pie_labels, pie_values = _fold_small_slices_into_other(list(df["x"]), list(df["y"]))
+        fig = go.Figure(go.Pie(labels=pie_labels, values=pie_values, marker=dict(colors=PALETTE), hole=0.45))
     elif chart_type == "scatter":
         fig = go.Figure(go.Scatter(
             x=df["x"], y=df["y"], mode="markers",
@@ -1080,7 +1121,8 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
 
     # ---- Part-to-whole ----
     elif chart_type == "donut":
-        fig = go.Figure(go.Pie(labels=df["x"], values=df["y"], marker=dict(colors=PALETTE), hole=0.65))
+        donut_labels, donut_values = _fold_small_slices_into_other(list(df["x"]), list(df["y"]))
+        fig = go.Figure(go.Pie(labels=donut_labels, values=donut_values, marker=dict(colors=PALETTE), hole=0.65))
     elif chart_type == "sunburst":
         fig = go.Figure(go.Sunburst(labels=df["x"], values=df["y"], parents=[""] * len(df), marker=dict(colors=PALETTE)))
     elif chart_type == "icicle":
