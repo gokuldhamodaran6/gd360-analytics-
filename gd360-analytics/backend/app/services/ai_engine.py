@@ -2948,6 +2948,24 @@ def _run_transform(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, 
     summary["source_row_count"] = rows_after
     insight = _generate_insight(prompt, summary)
 
+    # 2026-10-05 bug fix: "Filtering the dataset for employees where
+    # Attrition is True, returning EmployeeID, Department, ..." showing up
+    # as a dashboard's entire content, instead of the actual table that was
+    # requested. Root cause: this function builds `cleaned` (the real,
+    # filtered table) but never put it in a form anything downstream could
+    # render as a table - result_columns/result_rows (what every OTHER
+    # action in this file sets via result_to_tidy, see e.g. the "analyze"
+    # path a few lines below this function) were simply never set here.
+    # routers/dashboard_builder.py's _ai_result_to_block_shape falls
+    # through its chart -> kpi -> table -> text cascade by checking exactly
+    # these two fields - with both missing, a transform's result ALWAYS
+    # collapsed to the text-only fallback showing just the one-line
+    # narrative, even though the real table was sitting right there in
+    # `cleaned`. Mirrors every other action's own result_to_tidy call -
+    # see this file's module-level result_to_tidy usages for the identical
+    # pattern.
+    tidy = result_to_tidy(cleaned)
+
     return {
         "needs_clarification": False,
         "clarifying_question": None,
@@ -2956,6 +2974,10 @@ def _run_transform(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, 
         "chart_spec": chart_spec,
         "insight": insight,
         "cleaned_df": cleaned,
+        "result_columns": tidy["columns"] if tidy else None,
+        "result_rows": tidy["rows"] if tidy else None,
+        "result_row_count": tidy["row_count"] if tidy else None,
+        "result_truncated": tidy["truncated"] if tidy else False,
         "rows_before": rows_before,
         "rows_after": rows_after,
         "nulls_before": nulls_before,
