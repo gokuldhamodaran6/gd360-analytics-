@@ -370,7 +370,7 @@ from .dashboards import _can_edit, _can_view
 # No circular import risk: routers/datasources.py imports nothing from
 # this file, the same one-way relationship this file already has with
 # routers/chat.py and routers/dashboards.py (see the imports just above).
-from .datasources import _apply_column_filter
+from .datasources import _apply_column_filter, _jsonify_scalar
 
 router = APIRouter(prefix="/dashboard-builder", tags=["dashboard-builder"])
 
@@ -3541,6 +3541,28 @@ def preview_filtered_blocks(
         except Exception:
             df = None
 
+    return _filter_page_blocks(db, page, df, ds, payload)
+
+
+# 2026-10-05 (public-filters round): factored out of preview_filtered_blocks
+# above so the authenticated editor path and the new anonymous public-link
+# path (preview_filtered_blocks_public below) share the exact same
+# per-block recompute logic instead of two copies that could silently
+# drift apart. Takes an ALREADY-resolved df/ds (either may be None) rather
+# than a `user` - preview_filtered_blocks resolves them via the logged-in
+# user's own workspace access; preview_filtered_blocks_public always
+# passes df=None, ds=None (see that function's own docstring for why
+# that's a deliberate security boundary, not a missing feature - a
+# recipe-based block is skipped below exactly like it already is when the
+# editor's own live datasource fails to load, and a self-contained
+# AI-built table/chart block never reads df/ds at all).
+def _filter_page_blocks(
+    db: Session,
+    page: models.DashboardPage,
+    df: pd.DataFrame | None,
+    ds: models.DataSource | None,
+    payload: schemas.ApplyFiltersRequest,
+) -> schemas.FilteredBlocksOut:
     active_filters = payload.filters[:_MAX_FILTERS_PER_REQUEST]
     if df is not None:
         df = _apply_filters(df, active_filters)
@@ -4090,6 +4112,29 @@ def _issue_viewer_token_if_allowed(share: models.DashboardShare, payload: schema
     return security.create_dashboard_viewer_token(share.id, email)
 
 
+# 2026-10-05 (public-filters round): pulled out of _render_public_dashboard
+# below so preview_filtered_blocks_public and get_public_filter_options
+# (further down) can run the exact same access check - mode gate, plus the
+# private-dashboard live-token re-verification - without duplicating this
+# security-sensitive logic a second (and third) time. Raises the same
+# 401/403s _render_public_dashboard always has; callers don't need to
+# catch anything, just call it before touching share.dashboard_id.
+def _authorize_public_share(share: models.DashboardShare, x_dashboard_access_token: str | None) -> None:
+    if share.mode not in ("public", "private"):
+        raise HTTPException(404, "This dashboard isn't available.")
+
+    if share.mode == "private":
+        email = (
+            security.decode_dashboard_viewer_token(x_dashboard_access_token, share.id)
+            if x_dashboard_access_token else None
+        )
+        if not email:
+            raise HTTPException(401, "Sign in with your email to view this dashboard.")
+        allowed = {e.email.lower() for e in share.allowed_emails}
+        if email.lower() not in allowed:
+            raise HTTPException(403, "Your access to this dashboard has been revoked or was never granted.")
+
+
 def _render_public_dashboard(
     db: Session, share: models.DashboardShare, x_dashboard_access_token: str | None
 ) -> schemas.PublicDashboardOut:
@@ -4104,19 +4149,7 @@ def _render_public_dashboard(
     401s ("please sign in with your email"); a valid token for an email
     that's since been removed from the list 403s ("access revoked") -
     the frontend shows a different message for each."""
-    if share.mode not in ("public", "private"):
-        raise HTTPException(404, "This dashboard isn't available.")
-
-    if share.mode == "private":
-        email = (
-            security.decode_dashboard_viewer_token(x_dashboard_access_token, share.id)
-            if x_dashboard_access_token else None
-        )
-        if not email:
-            raise HTTPException(401, "Sign in with your email to view this dashboard.")
-        allowed = {e.email.lower() for e in share.allowed_emails}
-        if email.lower() not in allowed:
-            raise HTTPException(403, "Your access to this dashboard has been revoked or was never granted.")
+    _authorize_public_share(share, x_dashboard_access_token)
 
     d = db.query(models.Dashboard).filter(models.Dashboard.id == share.dashboard_id).first()
     if not d:
@@ -4216,6 +4249,128 @@ def get_public_dashboard(
     checks, shared with get_public_dashboard_by_domain below."""
     share = _resolve_share_by_slug(db, slug)
     return _render_public_dashboard(db, share, x_dashboard_access_token)
+
+
+# 2026-10-05 (public-filters round): "in published dashboard i cannot
+# able to use the filters" - Gokul's own words, with a screenshot of the
+# inert "All" dropdown StaticFilterNote renders on this view (see
+# DashboardBlocks.tsx's own comment on it). This was never a missing
+# onClick handler - see this file's module docstring (Phase 2b, point 3)
+# for the real reason filtering was never wired up here: the authenticated
+# preview_filtered_blocks above can touch a customer's own live, credentialed
+# warehouse/database connection, which is not something an anonymous
+# stranger with the public link should ever be able to trigger with no
+# rate limit.
+#
+# This endpoint closes that gap WITHOUT crossing that line: df/ds are
+# always None here, so _filter_page_blocks (shared with the authenticated
+# endpoint above) skips every recipe-based block exactly like it already
+# does whenever the editor's own live datasource fails to load - no live
+# query, no customer credentials, ever reachable from this anonymous
+# route. What it DOES make work: every self-contained AI-built table/chart
+# block, which carries its own already-computed result_columns/result_rows
+# and recomputes straight from those. That covers the common case (an
+# AI-auto-built dashboard) - a hand-built "Build manually" recipe block
+# stays un-filterable on the public link for now, same as before this
+# round, which is the honest remaining gap rather than something this
+# endpoint silently papers over.
+@public_router.post("/{slug}/pages/{page_id}/preview-filtered", response_model=schemas.FilteredBlocksOut)
+def preview_filtered_blocks_public(
+    slug: str,
+    page_id: str,
+    payload: schemas.ApplyFiltersRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_dashboard_access_token: str | None = Header(default=None, alias="X-Dashboard-Access-Token"),
+):
+    ip = _client_ip(request)
+    _check_rate_limit(f"public-filter:ip:{ip}", limit=90)
+    _check_rate_limit(f"public-filter:slug:{slug}", limit=60)
+
+    share = _resolve_share_by_slug(db, slug)
+    _authorize_public_share(share, x_dashboard_access_token)
+    d = db.query(models.Dashboard).filter(models.Dashboard.id == share.dashboard_id).first()
+    if not d:
+        raise HTTPException(404, "This dashboard isn't available.")
+    page = next((p for p in d.pages if p.id == page_id), None)
+    if not page:
+        raise HTTPException(404, "Page not found on this dashboard.")
+
+    return _filter_page_blocks(db, page, df=None, ds=None, payload=payload)
+
+
+# Companion to preview_filtered_blocks_public above: a filter block's own
+# "Values" checklist and dtype-aware "Condition" tab (ColumnFilterSpecEditor
+# on the frontend) need to know what values a column actually has BEFORE
+# any filter is applied - the authenticated editor gets that from
+# datasources.py's get_column_distinct_values, which queries the live
+# datasource directly. That's exactly the live-query-from-an-anonymous-
+# link exposure this file avoids everywhere else on the public router, so
+# this endpoint answers the same question a different way: it looks at
+# every table/chart block ALREADY on this page that happens to include
+# the requested column, and computes distinct values/dtype from THEIR
+# already-materialized result_rows (unioned across however many blocks
+# have that column) - never the live datasource. A page where no block
+# happens to carry this column returns an honest empty list rather than
+# an error - the frontend's Values tab shows "no data available to filter
+# by" and the Condition tab still works as a plain freeform input.
+@public_router.get("/{slug}/pages/{page_id}/filter-options")
+def get_public_filter_options(
+    slug: str,
+    page_id: str,
+    column: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_dashboard_access_token: str | None = Header(default=None, alias="X-Dashboard-Access-Token"),
+):
+    ip = _client_ip(request)
+    _check_rate_limit(f"public-filter-options:ip:{ip}", limit=90)
+    _check_rate_limit(f"public-filter-options:slug:{slug}", limit=60)
+
+    share = _resolve_share_by_slug(db, slug)
+    _authorize_public_share(share, x_dashboard_access_token)
+    d = db.query(models.Dashboard).filter(models.Dashboard.id == share.dashboard_id).first()
+    if not d:
+        raise HTTPException(404, "This dashboard isn't available.")
+    page = next((p for p in d.pages if p.id == page_id), None)
+    if not page:
+        raise HTTPException(404, "Page not found on this dashboard.")
+
+    frames: list[pd.DataFrame] = []
+    for block in page.blocks:
+        if block.type not in ("table", "chart"):
+            continue
+        cols = (block.config or {}).get("result_columns")
+        rows = (block.config or {}).get("result_rows")
+        if not cols or not rows:
+            continue
+        col_names = [c.get("name") for c in cols]
+        if column not in col_names:
+            continue
+        try:
+            frames.append(pd.DataFrame(rows, columns=col_names)[[column]])
+        except Exception:
+            continue
+
+    if not frames:
+        return {"column": column, "values": [], "null_count": 0, "distinct_total": 0, "truncated": False, "dtype": ""}
+
+    series = pd.concat(frames, ignore_index=True)[column]
+    null_count = int(series.isna().sum())
+    counts = series.value_counts(dropna=True)
+    limit = 200
+    truncated = bool(len(counts) > limit)
+    top = counts.iloc[:limit]
+    values = [{"value": _jsonify_scalar(idx), "count": int(cnt)} for idx, cnt in top.items()]
+
+    return {
+        "column": column,
+        "values": values,
+        "null_count": null_count,
+        "distinct_total": int(counts.shape[0]),
+        "truncated": truncated,
+        "dtype": str(series.dtype),
+    }
 
 
 @public_domains_router.post("/{hostname}/verify", response_model=schemas.VerifyPrivateAccessOut)
