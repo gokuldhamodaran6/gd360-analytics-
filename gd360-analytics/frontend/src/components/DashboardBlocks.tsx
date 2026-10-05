@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ChartCanvas from "./ChartCanvas";
-import { datasourceApi, DashboardBlock, DashboardBlockType, ColumnFilterSpec, FilterTextOp, FilterNumberOp, FilterCriterion } from "../api/client";
+import { datasourceApi, DashboardBlock, DashboardBlockType, ColumnFilterSpec, ColumnDistinctValue, FilterTextOp, FilterNumberOp, FilterCriterion } from "../api/client";
 import { DashboardFilterState } from "../lib/useDashboardFilters";
 import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
 import { useExclusiveOpen } from "../lib/useExclusiveOpen";
@@ -291,10 +291,24 @@ function KpiDelta({ current, compareValue }: { current: number; compareValue: un
   const pct = ((current - compareValue) / Math.abs(compareValue)) * 100;
   if (!Number.isFinite(pct)) return null;
   const direction = pct > 0.05 ? "up" : pct < -0.05 ? "down" : "flat";
-  const colorClass = direction === "up" ? "text-emerald-500" : direction === "down" ? "text-red-400" : "text-muted";
+  // 2026-10-05 (world-class visualization round): was plain colored text -
+  // reads as "a number happens to be green" rather than a deliberate
+  // status signal. A tinted pill (background + ink both from the same
+  // status hue) is the chip convention the rest of a premium analytics
+  // product uses for a delta - still never the ONLY way this reads as
+  // good/bad (the arrow glyph + "vs unfiltered" text carry the same
+  // meaning for anyone who can't distinguish the color), consistent with
+  // the dataviz skill's "status colors ship with an icon + label, never
+  // color alone" rule.
+  const pillClass =
+    direction === "up"
+      ? "bg-emerald-500/12 text-emerald-500"
+      : direction === "down"
+      ? "bg-red-400/12 text-red-400"
+      : "bg-surface2 text-muted";
   const arrow = direction === "up" ? "▲" : direction === "down" ? "▼" : "•";
   return (
-    <div className={`flex items-center gap-1 text-xs font-medium ${colorClass}`}>
+    <div className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full w-fit ${pillClass}`}>
       <span aria-hidden="true">{arrow}</span>
       <span>{Math.abs(pct).toLocaleString(undefined, { maximumFractionDigits: 1 })}% vs unfiltered</span>
     </div>
@@ -428,10 +442,109 @@ export function BlockTable({
   );
 }
 
+// 2026-10-05 (per-chart date filter round): "if dashbaord gas monthlywise
+// data in one visial i need date wise montjly fikter i can use in that
+// visial" - Gokul's own words, confirmed via AskUserQuestion as "Automatic
+// on every date/time-series chart" (no per-chart opt-in). A chart block
+// already carries its own real column metadata in result_columns (set by
+// chart_builder.result_to_tidy - {name, dtype, role}, "date" being one of
+// the four dtype groups it ever assigns) whenever it's a tidy AI-built
+// result, which is exactly the signal used here to decide a chart IS
+// "date/time-series based": any chart with at least one dtype=="date"
+// column gets this bar, with zero manual setup.
+//
+// Deliberately NOT a new backend concept - this reuses the exact same
+// block_filters mechanism BlockFilterButton's "Filter just this block"
+// popover already writes into (filterState.setBlockFilters, recomputed by
+// the shared _filter_page_blocks on the backend, which both the
+// authenticated editor/Preview AND the new public preview-filtered
+// endpoint call - see lib/useDashboardFilters.ts and this file's own
+// BlockFilterButton for that existing path). The only new thing is WHERE
+// this one date criterion is exposed: always visible right on the chart
+// itself as a plain from/to range, instead of hidden behind the funnel
+// icon and requiring the viewer to go find and add it themselves.
+// Picking a date range in this bar and manually adding the same column
+// through BlockFilterButton share one underlying criterion (keyed by
+// column name) - whichever UI touched it last wins, same as any other
+// per-chart filter criterion.
+// Mirrors backend routers/dashboard_builder.py's _FILTER_REBUILD_CHART_TYPES
+// (_RESTYLE_CHART_TYPES plus grouped/stacked/faceted bar) - the chart
+// shapes _filter_page_blocks can actually rebuild from a block's own tidy
+// result_rows once a date-range criterion narrows them. A chart_type
+// outside this set (a heatmap, a donut, a funnel - none of which are
+// really "time-series" shaped anyway) would just silently keep showing
+// its unfiltered content, so the bar doesn't bother appearing for one. A
+// chart saved before chart_type was ever stamped onto the block (pre-
+// 2026-10-01) has no chart_type at all - treated the same as a supported
+// one, since the backend's own fallback there (_detect_restyle_chart_type)
+// usually resolves one of these same types anyway.
+const _DATE_FILTERABLE_CHART_TYPES = new Set([
+  "bar", "line", "area", "pie", "horizontal_bar", "scatter", "grouped_bar", "stacked_bar", "faceted_bar",
+]);
+
+function _firstDateColumn(config: any): string | null {
+  const cols = config?.result_columns;
+  if (!Array.isArray(cols)) return null;
+  if (config?.chart_type && !_DATE_FILTERABLE_CHART_TYPES.has(config.chart_type)) return null;
+  const dateCol = cols.find((c: any) => c && c.dtype === "date" && typeof c.name === "string");
+  return dateCol ? dateCol.name : null;
+}
+
+function InlineDateFilterBar({
+  column,
+  criteria,
+  onChange,
+}: {
+  column: string;
+  criteria: FilterCriterion[];
+  onChange: (criteria: FilterCriterion[]) => void;
+}) {
+  const existing = criteria.find((c) => c.column === column);
+  const spec = existing?.spec?.type === "date" ? existing.spec : null;
+  const from = spec?.from || "";
+  const to = spec?.to || "";
+  const active = Boolean(from || to);
+
+  const setRange = (nextFrom: string, nextTo: string) => {
+    const withoutThis = criteria.filter((c) => c.column !== column);
+    const next: ColumnFilterSpec | null = nextFrom || nextTo ? { type: "date", from: nextFrom || null, to: nextTo || null } : null;
+    onChange(next ? [...withoutThis, { column, spec: next }] : withoutThis);
+  };
+
+  return (
+    <div className="no-drag shrink-0 flex items-center gap-1.5 px-2 pt-1 pb-1.5 flex-wrap text-[11px] border-b border-border/60">
+      <FilterIcon className="w-3 h-3 text-muted shrink-0" />
+      <span className="text-muted truncate shrink-0">{column}</span>
+      <input
+        type="date"
+        aria-label={`${column} from`}
+        className="dash-select text-[11px] py-0.5 px-1.5 w-auto"
+        value={from}
+        onChange={(e) => setRange(e.target.value, to)}
+      />
+      <span className="text-muted">&ndash;</span>
+      <input
+        type="date"
+        aria-label={`${column} to`}
+        className="dash-select text-[11px] py-0.5 px-1.5 w-auto"
+        value={to}
+        onChange={(e) => setRange(from, e.target.value)}
+      />
+      {active && (
+        <button type="button" className="text-primary font-medium hover:underline" onClick={() => setRange("", "")}>
+          Clear
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function BlockChart({
   title,
   config,
   onMinHeight,
+  blockFilterCriteria,
+  onBlockFilterChange,
 }: {
   title: string | null;
   config: any;
@@ -439,6 +552,12 @@ export function BlockChart({
   // see its own comment on this prop. Only BlockCard (DashboardCanvas.tsx)
   // ever passes it.
   onMinHeight?: (px: number) => void;
+  // 2026-10-05 (per-chart date filter round): both optional, and only ever
+  // meaningful together - a caller with no live filterState at all (none
+  // exists today, but kept optional defensively) simply never shows the
+  // automatic date bar below, same as a chart with no date column.
+  blockFilterCriteria?: FilterCriterion[];
+  onBlockFilterChange?: (criteria: FilterCriterion[]) => void;
 }) {
   // 2026-09-28: an honest "checked, found none" hint for the "Show
   // anomalies" toggle - anomaly_count is only ever a real int (never
@@ -472,8 +591,18 @@ export function BlockChart({
     return applyChartStyle(config.chart_spec, style, title || undefined);
   }, [config?.chart_spec, config?.chart_style, title]);
 
+  // 2026-10-05 (per-chart date filter round): see InlineDateFilterBar's own
+  // comment above. onBlockFilterChange is only ever passed by a caller
+  // that actually has a live filterState to write into - without it there
+  // would be nowhere for a date pick here to go, so the bar stays hidden
+  // exactly like today (no date column -> no bar either).
+  const dateColumn = onBlockFilterChange ? _firstDateColumn(config) : null;
+
   return (
     <div className="h-full flex flex-col">
+      {dateColumn && (
+        <InlineDateFilterBar column={dateColumn} criteria={blockFilterCriteria || []} onChange={onBlockFilterChange!} />
+      )}
       {showNoAnomaliesHint && (
         <div className="shrink-0 text-[11px] text-muted italic px-2 pt-1 pb-0.5">No unusual points detected.</div>
       )}
@@ -1054,14 +1183,35 @@ export function ColumnFilterSpecEditor({
   dtype,
   spec,
   onChange,
+  fetchDistinctValues,
 }: {
   datasourceId: string | null;
   column: string;
   dtype?: string;
   spec: ColumnFilterSpec | null;
   onChange: (spec: ColumnFilterSpec | null) => void;
+  // 2026-10-05 (public-filters round): override for where the Values tab's
+  // list (and, when `dtype` above wasn't already known, this column's
+  // dtype) comes from. Default (omitted) is the original behavior - the
+  // live, authenticated datasourceApi.getColumnDistinctValues call below,
+  // keyed on datasourceId, which only ever runs when datasourceId is a
+  // real id. PublicDashboardView.tsx passes a fetcher backed by the new
+  // publicDashboardApi.getColumnFilterOptions instead - see that file's
+  // own comment for why a live datasource query isn't an option on the
+  // anonymous public link. Passing this makes datasourceId optional for
+  // this component's own purposes (it's only ever used by the fallback
+  // path), so a caller with no real datasourceId at all (public view) can
+  // still drive this editor.
+  fetchDistinctValues?: (column: string) => Promise<{ values: ColumnDistinctValue[]; dtype?: string }>;
 }) {
-  const resolvedDtype = useColumnDtype(datasourceId, column, dtype);
+  // 2026-10-05 (public-filters round): when `dtype` isn't already known by
+  // the caller, the public fetcher's own response carries one (derived
+  // from the already-materialized result_rows on the page - see
+  // get_public_filter_options' docstring) - this is where that lands, so
+  // the Condition tab picks the right editor (number/date/text) without a
+  // second round trip or a hardcoded guess.
+  const [remoteDtype, setRemoteDtype] = useState("");
+  const resolvedDtype = useColumnDtype(datasourceId, column, dtype || remoteDtype || undefined);
   const group = dtypeGroup(resolvedDtype);
   // Defaults to whichever tab already has an active spec (so reopening a
   // filter that's set as a range doesn't silently land on the empty
@@ -1075,13 +1225,22 @@ export function ColumnFilterSpecEditor({
   const [search, setSearch] = useState("");
 
   useEffect(() => {
-    if (group === "boolean" || !datasourceId) return;
+    if (group === "boolean") return;
+    // 2026-10-05 (public-filters round): a real datasourceId is only
+    // required for the ORIGINAL fallback path below - a caller supplying
+    // fetchDistinctValues (public view) has no datasourceId at all and
+    // that's fine; skip only when NEITHER is available.
+    if (!fetchDistinctValues && !datasourceId) return;
     let cancelled = false;
     setLoadingValues(true);
-    datasourceApi
-      .getColumnDistinctValues(datasourceId, column, null, { limit: 200 })
+    const request = fetchDistinctValues
+      ? fetchDistinctValues(column)
+      : datasourceApi.getColumnDistinctValues(datasourceId as string, column, null, { limit: 200 });
+    request
       .then((res) => {
-        if (!cancelled) setValues(res.values);
+        if (cancelled) return;
+        setValues(res.values);
+        if (!dtype && res.dtype) setRemoteDtype(res.dtype);
       })
       .catch(() => {
         if (!cancelled) setValues([]);
@@ -1092,7 +1251,7 @@ export function ColumnFilterSpecEditor({
     return () => {
       cancelled = true;
     };
-  }, [datasourceId, column, group]);
+  }, [datasourceId, column, group, fetchDistinctValues, dtype]);
 
   const include = spec?.type === "values" ? spec.include : [];
   const toggleValue = (v: string | number | boolean | null) => {
@@ -1434,11 +1593,18 @@ export function FilterControl({
   datasourceId,
   value,
   onChange,
+  fetchDistinctValues,
 }: {
   block: DashboardBlock;
   datasourceId: string | null;
   value: ColumnFilterSpec | null;
   onChange: (spec: ColumnFilterSpec | null) => void;
+  // 2026-10-05 (public-filters round): threaded straight through to
+  // ColumnFilterSpecEditor below - see its own comment. DashboardBuilderView
+  // (edit mode / the owner's own Preview) never passes this, so it keeps
+  // calling the live datasourceApi endpoint exactly as before.
+  // PublicDashboardView.tsx passes one backed by publicDashboardApi.getColumnFilterOptions.
+  fetchDistinctValues?: (column: string) => Promise<{ values: ColumnDistinctValue[]; dtype?: string }>;
 }) {
   const column: string | null = block.config?.column || null;
   // 2026-09-30 (bug fix) - see lib/useExclusiveOpen.ts's own module
@@ -1505,7 +1671,13 @@ export function FilterControl({
                   className="fixed z-50 card bg-surface shadow-2xl border border-border overflow-hidden"
                   style={{ top: pos.top, left: pos.left }}
                 >
-                  <ColumnFilterSpecEditor datasourceId={datasourceId} column={column} spec={value} onChange={onChange} />
+                  <ColumnFilterSpecEditor
+                    datasourceId={datasourceId}
+                    column={column}
+                    spec={value}
+                    onChange={onChange}
+                    fetchDistinctValues={fetchDistinctValues}
+                  />
                 </div>
               </>,
               document.body
@@ -1536,13 +1708,26 @@ export function DashboardBlockGrid({
   blocks,
   datasourceId,
   filterState,
+  fetchDistinctValues,
 }: {
   blocks: DashboardBlock[];
-  // Both optional - a caller that omits filterState (PublicDashboardView)
-  // gets every block exactly as saved, with a filter block rendered as an
-  // inert StaticFilterNote instead of a live control.
+  // Both optional - a caller that omits filterState gets every block
+  // exactly as saved, with a filter block rendered as an inert
+  // StaticFilterNote instead of a live control. As of the 2026-10-05
+  // public-filters round, PublicDashboardView.tsx DOES now pass a real
+  // filterState (backed by a public, no-live-datasource previewFn - see
+  // lib/useDashboardFilters.ts) - StaticFilterNote below is now only ever
+  // seen while that page's first preview-filtered round trip is still
+  // loading, or on a caller that genuinely has nothing wired up.
   datasourceId?: string | null;
   filterState?: DashboardFilterState;
+  // 2026-10-05 (public-filters round): threaded through to FilterControl's
+  // own fetchDistinctValues prop below - see that component's comment.
+  // Omitted by DashboardBuilderView (edit mode / owner Preview), which has
+  // a real datasourceId and so keeps using the original live-datasource
+  // path; PublicDashboardView.tsx passes one backed by
+  // publicDashboardApi.getColumnFilterOptions.
+  fetchDistinctValues?: (column: string) => Promise<{ values: ColumnDistinctValue[]; dtype?: string }>;
 }) {
   const narrow = useIsNarrow();
 
@@ -1585,7 +1770,14 @@ export function DashboardBlockGrid({
           />
         )}
         {type === "table" && <BlockTable title={b.title} config={{ ...config, accent_color: b.config?.accent_color }} />}
-        {type === "chart" && <BlockChart title={b.title} config={config} />}
+        {type === "chart" && (
+          <BlockChart
+            title={b.title}
+            config={config}
+            blockFilterCriteria={filterState?.blockFilters[b.id] || []}
+            onBlockFilterChange={filterState ? (criteria) => filterState.setBlockFilters(b.id, criteria) : undefined}
+          />
+        )}
         {type === "text" && <TextBlock title={b.title} config={config} />}
         {type === "gauge" && <GaugeBlock title={b.title} config={{ ...config, accent_color: b.config?.accent_color }} />}
         {type === "donut" && <DonutBlock title={b.title} config={config} />}
@@ -1600,6 +1792,7 @@ export function DashboardBlockGrid({
               datasourceId={datasourceId || null}
               value={filterState.values[b.id] ?? null}
               onChange={(spec) => filterState.setFilterValue(b.id, spec)}
+              fetchDistinctValues={fetchDistinctValues}
             />
           ) : (
             <StaticFilterNote block={b} />
