@@ -1588,16 +1588,31 @@ export default function Workspace() {
     const priorActiveVersionId = activeVersionId;
     setTurns((t) => [...t, { role: "user", content: prompt }]);
     try {
-      const { data } = await api.post("/chat", {
-        conversation_id: conversationId,
-        datasource_id: datasourceId,
-        prompt,
-        chart_override: chartOverride,
-        intent: null,
-        source_version_ids: requestSourceIds,
-        analysis_mode: analysisMode,
-        skip_prep: !!opts?.skipPrep,
-      });
+      const { data } = await api.post(
+        "/chat",
+        {
+          conversation_id: conversationId,
+          datasource_id: datasourceId,
+          prompt,
+          chart_override: chartOverride,
+          intent: null,
+          source_version_ids: requestSourceIds,
+          analysis_mode: analysisMode,
+          skip_prep: !!opts?.skipPrep,
+        },
+        // 2026-10-05 (chat-hang bug fix): "I asked the AI chat something
+        // and it just hung with no response at all" - this call had no
+        // timeout at all before, so a backend that genuinely never
+        // responded (see services/connectors.py's own fix this same round
+        // for the real root cause: SQLConnector had no connect/query
+        // timeout either) left this promise unsettled forever - `busy`
+        // never cleared, no error ever showed, exactly the report. 120s is
+        // comfortably above the backend's own new worst case (a ~10s
+        // connect + ~30s query ceiling, plus up to a few sequential
+        // AI-engine LLM calls at 60s each on a self-healing retry) - this
+        // is a last-resort ceiling, not a target response time.
+        { timeout: 120000 }
+      );
       setConversationId(data.conversation_id);
       // The very first message of a brand-new chat is exactly what just
       // created this Project server-side (see backend chat.py
@@ -1749,7 +1764,17 @@ export default function Workspace() {
       // failure narrative is already visible as this turn's own message.
       return data.ok !== false;
     } catch (err: any) {
-      setError(err?.response?.data?.detail || "Something went wrong. Please try again.");
+      // 2026-10-05: a genuine client-side timeout (see this call's own
+      // `timeout: 120000` above) has no err.response at all - axios
+      // marks it err.code === "ECONNABORTED" - so without this branch it
+      // fell through to the generic message below, which is accurate but
+      // unhelpful ("went wrong" reads like a bug, not "this specific
+      // question took too long to answer, try again or rephrase it").
+      if (err?.code === "ECONNABORTED") {
+        setError("That took too long to answer. Please try again, or rephrase the question.");
+      } else {
+        setError(err?.response?.data?.detail || "Something went wrong. Please try again.");
+      }
       return false;
     } finally {
       setBusy(false);
