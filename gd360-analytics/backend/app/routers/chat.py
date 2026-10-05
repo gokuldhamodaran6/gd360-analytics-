@@ -92,42 +92,16 @@ def _mongo_schema_text(schema_cache: dict) -> str:
     return "\n".join(lines)
 
 
-def _log_pushdown(db: Session, user_id: str, datasource_id: str, provider: str, sql_text: str,
-                   bytes_scanned, status: str, error_message: str = None):
-    """Records one pushdown attempt (BigQuery, Snowflake - any future
-    warehouse the same way) to the audit log, success or not - see
-    models.PushdownQueryLog. Best-effort only: a logging failure must
-    never break the actual chat request, so any error here is swallowed
-    (after being printed) rather than raised. Committed on its own right
-    away rather than left pending on the shared session, so the audit row
-    is durable even if something later in this same request has to roll
-    back."""
-    try:
-        db.add(models.PushdownQueryLog(
-            owner_id=user_id, datasource_id=datasource_id, provider=provider,
-            sql_text=sql_text or "", bytes_scanned=bytes_scanned, status=status,
-            error_message=error_message,
-        ))
-        db.commit()
-    except Exception as e:
-        print(f"[chat] Failed to write pushdown audit log (non-fatal): {e}")
-        db.rollback()
-
-
-def _todays_pushdown_bytes(db: Session, user_id: str) -> int:
-    """Total bytes this person's pushdown queries (any provider - BigQuery
-    and Snowflake share one combined daily cap) have made a warehouse scan
-    since midnight UTC today - the running total the daily per-customer
-    cost budget below is checked against. Read straight off the audit log
-    rather than a separate running-totals table, so there is nothing else
-    to keep in sync."""
-    start_of_day = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    total = db.query(func.sum(models.PushdownQueryLog.bytes_scanned)).filter(
-        models.PushdownQueryLog.owner_id == user_id,
-        models.PushdownQueryLog.created_at >= start_of_day,
-        models.PushdownQueryLog.status == "ok",
-    ).scalar()
-    return total or 0
+# 2026-10-05: _log_pushdown/_todays_pushdown_bytes used to be defined
+# here directly. Moved to services/pushdown_budget.py (imported below,
+# under their original names so every call site in this file is
+# unchanged) so routers/datasources.py's new Data-tab profiling endpoint
+# can share the exact same per-user daily cost budget and audit log
+# instead of duplicating this logic - a person's profiling calls and
+# their chat questions both spend from one real budget, not two that
+# each look safe alone. See that module's own docstring for the full
+# reasoning.
+from ..services.pushdown_budget import log_pushdown as _log_pushdown, todays_pushdown_bytes as _todays_pushdown_bytes
 
 
 def _try_bigquery_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt: str):
