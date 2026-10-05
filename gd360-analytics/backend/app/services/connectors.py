@@ -181,19 +181,74 @@ def _sql_engine_url(kind: str, host: str, port: int, database: str, username: st
     raise ValueError(f"Unsupported SQL kind: {kind}")
 
 
+# 2026-10-05 (chat-hang bug fix): "I asked the AI chat something and it
+# just hung with no response at all" - traced to this exact class. Every
+# other connector in this file bounds its worst-case wait somehow -
+# MongoConnector sets serverSelectionTimeoutMS, SnowflakeConnector sets
+# login_timeout/network_timeout plus a session-level statement timeout -
+# but SQLConnector (every plain Postgres/MySQL/SQL Server/Supabase
+# connection) set none of that at all: create_engine() with no
+# connect_args, and pd.read_sql() with no query timeout either. chat()
+# itself is a plain `def`, not `async def`, so this runs synchronously
+# inside a worker thread - if a customer's own database is slow, has a
+# locked table, or sits behind a firewall that silently drops packets
+# (no refusal, just nothing coming back), the connect or the query blocks
+# that thread forever, with nothing anywhere in this app ever stepping in
+# to turn it into an error. These are real, bounded ceilings now, mirroring
+# the same idea Snowflake/Mongo already use here: a connect phase that
+# can't even reach the database gives up in _CONNECT_TIMEOUT_SECONDS: a
+# query that connects fine but then hangs (a lock, a huge unindexed scan)
+# gives up in _STATEMENT_TIMEOUT_SECONDS. Both are generous enough for any
+# real chat-turn query against a reasonably-indexed table, deliberately
+# not tunable per-customer yet - the goal here is "never literally forever
+# with zero feedback," not query performance tuning.
+_SQL_CONNECT_TIMEOUT_SECONDS = 10
+_SQL_STATEMENT_TIMEOUT_SECONDS = 30
+
+
+def _sql_connect_args(kind: str) -> dict:
+    if kind == "postgres" or kind == "supabase":
+        return {
+            "connect_timeout": _SQL_CONNECT_TIMEOUT_SECONDS,
+            # psycopg2's own way to set a session-level statement timeout
+            # (milliseconds) before the first query ever runs - applies to
+            # every query on this connection, not just one.
+            "options": f"-c statement_timeout={_SQL_STATEMENT_TIMEOUT_SECONDS * 1000}",
+        }
+    if kind == "mysql":
+        return {
+            "connect_timeout": _SQL_CONNECT_TIMEOUT_SECONDS,
+            # pymysql's read/write timeouts bound time waiting on the
+            # socket mid-query (a locked table, a slow scan) - connect_timeout
+            # alone only covers the initial TCP handshake.
+            "read_timeout": _SQL_STATEMENT_TIMEOUT_SECONDS,
+            "write_timeout": _SQL_STATEMENT_TIMEOUT_SECONDS,
+        }
+    if kind == "sqlserver":
+        return {
+            # pymssql: login_timeout bounds the connect phase, timeout
+            # bounds each query - both real kwargs this driver accepts
+            # directly, no session command needed the way postgres does.
+            "login_timeout": _SQL_CONNECT_TIMEOUT_SECONDS,
+            "timeout": _SQL_STATEMENT_TIMEOUT_SECONDS,
+        }
+    return {}
+
+
 class SQLConnector:
     def __init__(self, kind: str, host: str, port: int, database: str, username: str, password: str, ssl: bool = True):
         self.kind = kind
         self.url = _sql_engine_url(kind, host, port, database, username, password, ssl)
+        self.connect_args = _sql_connect_args(kind)
 
     def test_connection(self) -> None:
-        engine = create_engine(self.url, pool_pre_ping=True)
+        engine = create_engine(self.url, pool_pre_ping=True, connect_args=self.connect_args)
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         engine.dispose()
 
     def introspect_schema(self, max_tables: int = 50) -> dict:
-        engine = create_engine(self.url, pool_pre_ping=True)
+        engine = create_engine(self.url, pool_pre_ping=True, connect_args=self.connect_args)
         insp = inspect(engine)
         schema = {}
         for table_name in insp.get_table_names()[:max_tables]:
@@ -204,7 +259,11 @@ class SQLConnector:
 
     def load_dataframe(self, query_or_table: str, is_raw_sql: bool = False, row_limit: int | None = None) -> pd.DataFrame:
         row_limit = row_limit or settings.MAX_ROWS_LOADED_PER_QUERY
-        engine = create_engine(self.url, pool_pre_ping=True)
+        # This is the call every chat turn and every dashboard refresh
+        # actually goes through - see this class's own module-level
+        # comment above (_SQL_CONNECT_TIMEOUT_SECONDS) for why connect_args
+        # matters most right here.
+        engine = create_engine(self.url, pool_pre_ping=True, connect_args=self.connect_args)
         try:
             if is_raw_sql:
                 assert_read_only_sql(query_or_table)
