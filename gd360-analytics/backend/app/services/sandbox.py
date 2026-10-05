@@ -68,30 +68,116 @@ SAFE_BUILTINS = {
 }
 
 
+def _read_container_memory_limit_bytes() -> int:
+    """Best-effort read of this CONTAINER's real memory ceiling (the cgroup
+    limit), not a number picked in isolation from it. cgroup v2 (modern
+    Docker/Render) exposes this at /sys/fs/cgroup/memory.max; cgroup v1
+    (older) at /sys/fs/cgroup/memory/memory.limit_in_bytes. Falls back to
+    this app's currently-confirmed Render plan (0.5c-512mb, see config.py)
+    if neither is readable - a different host, or the plan changes later -
+    so this never silently computes a budget against the wrong ceiling."""
+    _FALLBACK_BYTES = 512 * 1024 * 1024
+    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            with open(path) as f:
+                raw = f.read().strip()
+            if raw and raw != "max":
+                value = int(raw)
+                # cgroup v1 reports an absurd sentinel (effectively
+                # "unset"), not a real limit, when no limit is configured -
+                # treat that the same as "max" and keep looking/falling back.
+                if 0 < value < (1 << 53):
+                    return value
+        except Exception:
+            continue
+    return _FALLBACK_BYTES
+
+
 def _child_worker(code: str, tables: dict[str, pd.DataFrame], conn, timeout: int) -> None:
     try:
         try:
             import resource
-            # 2026-09-28: investigated whether this 1GB figure was
+            # 2026-09-28: investigated whether a flat 1GB figure was
             # dangerously loose given this Render instance's confirmed
-            # 512MB TOTAL container RAM (see run_sandboxed's comment
-            # below) - measured directly rather than guessing, by
-            # profiling a real worker process (pandas/numpy/scipy
-            # imported, several tables loaded, a realistic 4-table merge
-            # like the kind that actually timed out in production). A
-            # first attempt at tightening this to 300MB was reverted after
-            # that measurement showed just importing pandas/numpy/scipy
+            # 512MB TOTAL container RAM - measured directly rather than
+            # guessing, by profiling a real worker process (pandas/numpy/
+            # scipy imported, several tables loaded, a realistic 4-table
+            # merge like the kind that actually timed out in production).
+            # That measurement showed just importing pandas/numpy/scipy
             # already puts a fresh process's VIRTUAL memory size (VmSize -
             # exactly what RLIMIT_AS constrains) around 490MB before
-            # touching any data at all - a well-known pandas/NumPy/BLAS
-            # quirk where address space reserved for its native math
-            # libraries vastly exceeds what is actually resident (real
-            # RSS for that same realistic merge stayed under 200MB). A
-            # 300MB cap would have made ordinary, successful requests fail
-            # immediately with a memory error - a regression far worse
-            # than today's intermittent timeout. 1GB is kept as-is; it is
-            # not, in fact, the loose safety hole it first looked like.
-            mem_bytes = 1024 * 1024 * 1024  # 1GB - re-verified safe, see note above
+            # touching any data at all, while real RSS for that same merge
+            # stayed under 200MB - so a flat number anywhere near 512MB
+            # would make ordinary, successful requests fail immediately.
+            #
+            # 2026-10-05 root-cause fix: that investigation only ever asked
+            # "is 1GB too tight for THIS CHILD alone" - it never checked
+            # the number against what else is sharing the SAME 512MB
+            # container at the same time. `multiprocessing`'s default
+            # start method on Linux is fork(): this child's address space
+            # starts as a copy-on-write duplicate of the PARENT's entire
+            # heap at the moment of fork - every table this chat request
+            # already pulled (up to config.MAX_ROWS_LOADED_PER_QUERY rows),
+            # FastAPI/SQLAlchemy's own baseline, anything else in flight -
+            # and the parent keeps running and allocating concurrently
+            # while this child computes. RLIMIT_AS=1GB only ever bounded
+            # this child's OWN virtual address space in isolation, so a
+            # child "given 1GB to itself" could let combined parent+child
+            # RSS sail past the real 512MB cgroup ceiling long before its
+            # own rlimit ever tripped - at which point it is the Linux
+            # cgroup OOM-killer that responds, by killing a process in the
+            # container. Confirmed directly against real incidents: Render's
+            # own memory graph showed usage climbing past 400MB+ during a
+            # single large BigQuery-backed chat request, immediately
+            # followed by "Instance restarted" in the logs - the whole app
+            # going down for every concurrent user, not a clean, isolated
+            # failure of just this one request (which is exactly what this
+            # sandbox exists to guarantee - see the module docstring).
+            #
+            # The fix: size this child's cap against what is ACTUALLY left
+            # in the container's real ceiling, not a number chosen without
+            # reference to it. Two different things are being measured
+            # here and they must not be blended into one floor/ceiling
+            # clamp (an earlier version of this fix did exactly that, and
+            # a floor meant to protect bare imports ended up overriding
+            # the safety math in precisely the dangerous case - parent
+            # already near the limit - defeating the fix):
+            #   1. A roughly CONSTANT ~450MB of VIRTUAL overhead
+            #      (`_LIBRARY_VIRTUAL_OVERHEAD_BYTES`) just from importing
+            #      pandas/numpy/scipy/BLAS, per the 2026-09-28 measurement
+            #      - mostly address space that is reserved but never made
+            #      resident, so it does not meaningfully compete with the
+            #      parent for the container's real physical RAM. This part
+            #      does not shrink even when the parent is under pressure.
+            #   2. The REAL resident headroom actually left in the shared
+            #      512MB container once the parent's own current RSS
+            #      (already "spent" from that shared budget, since fork()
+            #      just inherited it into this child) and a fixed
+            #      concurrency reserve (the parent keeps running and
+            #      allocating while this child computes) are subtracted.
+            #      This part DOES shrink - all the way to zero - when the
+            #      parent is already using most of the container, which is
+            #      exactly the case that must fail fast and safely instead
+            #      of racing the parent to the real ceiling.
+            # Adding them (then capping at the old 1GB safe ceiling) gives
+            # the child enough virtual room for its libraries while making
+            # any computation beyond the real remaining headroom hit its
+            # OWN RLIMIT_AS and raise a clean, catchable MemoryError - see
+            # the module docstring's "defense in depth" list - rather than
+            # letting the Linux cgroup OOM-killer kill a process in the
+            # shared container (observed twice in real incidents: the
+            # whole app going down for every concurrent user, not a clean,
+            # isolated failure of just this one request).
+            container_limit = _read_container_memory_limit_bytes()
+            try:
+                parent_rss_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+            except Exception:
+                parent_rss_bytes = 0
+            _LIBRARY_VIRTUAL_OVERHEAD_BYTES = 450 * 1024 * 1024
+            _PARENT_CONCURRENCY_RESERVE_BYTES = 100 * 1024 * 1024
+            _MAX_CHILD_BYTES = 1024 * 1024 * 1024  # the 2026-09-28 safe ceiling, never exceeded
+            real_headroom_bytes = max(0, container_limit - parent_rss_bytes - _PARENT_CONCURRENCY_RESERVE_BYTES)
+            mem_bytes = min(_MAX_CHILD_BYTES, _LIBRARY_VIRTUAL_OVERHEAD_BYTES + real_headroom_bytes)
             resource.setrlimit(resource.RLIMIT_CPU, (timeout + 2, timeout + 5))
             resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
         except Exception:
