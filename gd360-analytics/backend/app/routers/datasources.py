@@ -48,11 +48,14 @@ from ..deps import get_current_user
 from ..services import ai_engine, audit, data_access_rules, workspace_access
 from ..services.connectors import (
     SQLConnector, MongoConnector, FileConnector, BigQueryConnector, SnowflakeConnector, ApiConnector,
+    QueryTooExpensive,
 )
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, ensure_legacy_migrated, warm_cache, default_table_for_preview,
     dataframe_to_csv_bytes,
 )
+from ..services.profiling import build_profile_query, parse_profile_row
+from ..services.pushdown_budget import log_pushdown, todays_pushdown_bytes
 
 router = APIRouter(prefix="/datasources", tags=["datasources"])
 settings = get_settings()
@@ -1273,6 +1276,155 @@ def preview_datasource(
         "column_stats": column_stats,
         "stats_capped": stats_capped,
     }
+
+
+# 2026-10-05: tiny in-process TTL cache for /profile results, same spirit
+# as data_loader.py's _df_cache but far smaller - a profile result is a
+# handful of numbers per column, never a DataFrame, so there is no memory-
+# footprint concern here the way there was for cached file uploads. The
+# TTL exists purely so repeatedly opening/closing the Data tab on the same
+# table does not re-run a real warehouse query (billable, for BigQuery)
+# every single time - one scan per table per settings.PROFILE_CACHE_TTL_
+# SECONDS is enough to feel instant on reopen without ever describing
+# stale-for-long data.
+_profile_cache: dict[tuple, tuple[float, dict]] = {}
+
+
+def _profile_cache_get(key: tuple) -> dict | None:
+    entry = _profile_cache.get(key)
+    if entry is None:
+        return None
+    stored_at, value = entry
+    if time.time() - stored_at > settings.PROFILE_CACHE_TTL_SECONDS:
+        _profile_cache.pop(key, None)
+        return None
+    return value
+
+
+def _profile_cache_put(key: tuple, value: dict) -> None:
+    # Cheap unbounded-growth guard: this cache is keyed by (datasource_id,
+    # table), which only grows with how many distinct tables get profiled
+    # - evict the oldest entries past a generous cap rather than letting a
+    # long-running process accumulate one entry per table forever.
+    if len(_profile_cache) > 500:
+        oldest_key = min(_profile_cache, key=lambda k: _profile_cache[k][0])
+        _profile_cache.pop(oldest_key, None)
+    _profile_cache[key] = (time.time(), value)
+
+
+_PROFILE_SUPPORTED_KINDS = ("bigquery", "snowflake", "postgres", "mysql", "sqlserver", "supabase")
+
+
+@router.get("/{datasource_id}/profile")
+def profile_datasource(
+    datasource_id: str,
+    table: str | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Full-table column profiling (2026-10-05) - see services/profiling.py's
+    module docstring for what this computes and why. Deliberately a
+    SEPARATE endpoint from preview_datasource above, not folded into it:
+    this runs one real query against the actual data source (billable for
+    BigQuery, real warehouse/database compute for every other supported
+    kind), while preview_datasource's existing column_stats is already
+    free (computed over a dataframe the preview already has in memory) -
+    keeping them separate means a plain page load never silently triggers
+    a billable query; only an explicit call to this endpoint does. Results
+    are cached in-process per (datasource, table) for
+    settings.PROFILE_CACHE_TTL_SECONDS (see _profile_cache above), so
+    reopening the Data tab feels instant instead of re-scanning the table
+    every time.
+
+    CSV/Excel/API/Google Sheets/Microsoft Excel/MongoDB sources return
+    `supported: false` (not an error) - the frontend falls back to the
+    existing capped-sample column_stats from preview_datasource for those,
+    exactly like it does today. MongoDB is deliberately out of scope here
+    (aggregation-pipeline profiling is a real, separate feature, not a
+    quick add on top of this SQL-only query builder) rather than shipping
+    something unverified."""
+    ds = _get_accessible_datasource(db, user, datasource_id)
+    ensure_legacy_migrated(db, ds)
+
+    if ds.kind not in _PROFILE_SUPPORTED_KINDS:
+        return {"supported": False, "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False}
+
+    resolved_table = table or default_table_for_preview(ds)
+    cache_key = (ds.id, resolved_table)
+    cached = _profile_cache_get(cache_key)
+    if cached is not None:
+        return {**cached, "cached": True}
+
+    all_columns = [c.get("name") for c in (ds.schema_cache or {}).get(resolved_table, []) if c.get("name")]
+    if not all_columns:
+        return {"supported": False, "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False}
+
+    sql, profiled_columns = build_profile_query(ds.kind, resolved_table, all_columns)
+
+    try:
+        if ds.kind == "bigquery":
+            service_account_json = security.decrypt_secret(ds.encrypted_secret)
+            info = ds.connection_info
+            connector = BigQueryConnector(info["project_id"], info["dataset_id"], service_account_json)
+            already_scanned_today = todays_pushdown_bytes(db, user.id)
+            if already_scanned_today >= settings.PUSHDOWN_MAX_BYTES_SCANNED_PER_DAY_PER_USER:
+                return {
+                    "supported": True, "too_expensive": True,
+                    "message": "Today's data-warehouse query budget is already used up - profiling will resume tomorrow.",
+                    "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False,
+                }
+            result_df, bytes_scanned = connector.run_pushdown_query(
+                sql, max_bytes=settings.BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY
+            )
+            log_pushdown(db, user.id, ds.id, "bigquery", sql, bytes_scanned, "ok")
+        elif ds.kind == "snowflake":
+            creds = json.loads(security.decrypt_secret(ds.encrypted_secret))
+            info = ds.connection_info
+            connector = SnowflakeConnector(
+                account=info["account"], warehouse=info["warehouse"], database=info["database"],
+                db_schema=info.get("db_schema"), role=info.get("role"),
+                username=creds["username"], password=creds["password"],
+            )
+            result_df, bytes_scanned = connector.run_pushdown_query(
+                sql, statement_timeout_seconds=settings.SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS
+            )
+            log_pushdown(db, user.id, ds.id, "snowflake", sql, bytes_scanned, "ok")
+        else:
+            username, password = security.decrypt_secret(ds.encrypted_secret).split("␟")
+            info = ds.connection_info
+            connector = SQLConnector(
+                ds.kind, info["host"], info["port"], info["database"], username, password, info.get("ssl", True)
+            )
+            result_df = connector.load_dataframe(sql, is_raw_sql=True)
+    except QueryTooExpensive as e:
+        return {
+            "supported": True, "too_expensive": True, "message": str(e),
+            "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False,
+        }
+    except Exception as e:
+        # Never let a profiling failure look like the datasource itself is
+        # broken - the Data tab's actual preview/rows come from
+        # preview_datasource above, completely unaffected by this. This
+        # just quietly reports "profiling didn't work this time."
+        print(f"[datasources] profiling query failed for {datasource_id}/{resolved_table}: {e}")
+        return {
+            "supported": True, "error": True,
+            "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False,
+        }
+
+    row = result_df.iloc[0].to_dict() if len(result_df) else {}
+    total_rows_raw = row.get("gd360_total_rows")
+    total_rows = int(total_rows_raw) if total_rows_raw is not None and not pd.isna(total_rows_raw) else 0
+    columns_stats = parse_profile_row(row, profiled_columns, total_rows)
+    result = {
+        "supported": True,
+        "exact_total_rows": total_rows,
+        "columns": columns_stats,
+        "profiled_columns": profiled_columns,
+        "truncated_columns": len(all_columns) > len(profiled_columns),
+    }
+    _profile_cache_put(cache_key, result)
+    return {**result, "cached": False}
 
 
 def _jsonify_scalar(v):
