@@ -1942,6 +1942,8 @@ function BlockCard({
                 title={block.title}
                 config={filterState?.overrides[block.id]?.config ?? block.config}
                 onMinHeight={handleChartMinHeight}
+                blockFilterCriteria={filterState?.blockFilters[block.id] || []}
+                onBlockFilterChange={filterState ? (criteria) => filterState.setBlockFilters(block.id, criteria) : undefined}
               />
             )}
             {block.type === "gauge" && (
