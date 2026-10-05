@@ -1741,6 +1741,61 @@ export const publicDashboardApi = {
         password: password || undefined,
       })
       .then((r) => r.data.access_token),
+
+  // 2026-10-05 (public-filters round): "in published dasbpard i cannot
+  // able to use the filters" - Gokul's own words. Backend companion:
+  // routers/dashboard_builder.py's preview_filtered_blocks_public, which
+  // deliberately never touches the owner's live datasource (see that
+  // endpoint's own docstring) - it only recomputes whatever AI-built
+  // table/chart blocks on this page already carry their own tidy
+  // result_columns/result_rows for. Same request/response shape as
+  // dashboardBuilderApi.previewFiltered above, over the public router and
+  // the anonymous-viewer X-Dashboard-Access-Token header instead of a
+  // real login - see lib/useDashboardFilters.ts's new `previewFn` param,
+  // which is what PublicDashboardView.tsx passes this through as.
+  // Slug-only for now (no hostname/custom-domain counterpart) - a
+  // white-labeled dashboard's filters stay inert until a future round
+  // adds one; this round's fix covers the GD360-domain /d/:slug link,
+  // which is what the screenshot showed.
+  previewFiltered: (
+    slug: string,
+    pageId: string,
+    filters: FilterCriterion[],
+    blockFilters: Record<string, FilterCriterion[]> | undefined,
+    viewerToken?: string
+  ) =>
+    publicApi
+      .post<{ blocks: FilteredBlock[]; matched_rows: number | null }>(
+        `/public/dashboards/${slug}/pages/${pageId}/preview-filtered`,
+        { filters, block_filters: blockFilters || {} },
+        { headers: viewerToken ? { "X-Dashboard-Access-Token": viewerToken } : undefined }
+      )
+      .then((r) => ({ blocks: r.data.blocks, matchedRows: r.data.matched_rows })),
+
+  // Companion to previewFiltered above: what a filter block's Values tab
+  // (ColumnFilterSpecEditor) shows on the public view, since it can't call
+  // the authenticated datasourceApi.getColumnDistinctValues (that queries
+  // the live datasource directly - exactly what this anonymous view must
+  // never do). The backend derives this purely from whatever table/chart
+  // blocks on the page already have the requested column in their own
+  // materialized result_rows - see get_public_filter_options's own
+  // docstring. `dtype` lets DashboardBlocks.tsx's ColumnFilterSpecEditor
+  // pick the right Condition editor (number/date/text) without a second
+  // network round trip.
+  getColumnFilterOptions: (slug: string, pageId: string, column: string, viewerToken?: string) =>
+    publicApi
+      .get<{
+        column: string;
+        values: ColumnDistinctValue[];
+        null_count: number;
+        distinct_total: number;
+        truncated: boolean;
+        dtype: string;
+      }>(`/public/dashboards/${slug}/pages/${pageId}/filter-options`, {
+        params: { column },
+        headers: viewerToken ? { "X-Dashboard-Access-Token": viewerToken } : undefined,
+      })
+      .then((r) => r.data),
 };
 
 // ---- Scheduled auto-refresh + background jobs (2026-09-28, pages/Jobs.tsx)
