@@ -83,7 +83,28 @@ export type DashboardFilterState = {
   matchedRows: number | null;
 };
 
-export function useDashboardFilters(dashboardId: string, page: DashboardBuilderPage | undefined): DashboardFilterState {
+// 2026-10-05 (public-filters round): what runPreview below actually calls
+// to recompute blocks - factored out as a type so a caller can swap in a
+// different fetcher without this hook knowing or caring which. Default
+// (see useDashboardFilters' third param) is dashboardBuilderApi.previewFiltered
+// itself, so every existing call site (just DashboardBuilderView.tsx so
+// far) keeps its exact old behavior with zero changes. PublicDashboardView.tsx
+// passes a fetcher backed by publicDashboardApi.previewFiltered instead -
+// same shape, so this hook's own state machine (overrides/matchedRows/
+// loading/the request-sequence race guard) is shared verbatim rather than
+// forked into a second, easy-to-drift copy for the public view.
+export type DashboardFilterPreviewFn = (
+  dashboardId: string,
+  pageId: string,
+  filters: FilterCriterion[],
+  blockFilters: Record<string, FilterCriterion[]>
+) => Promise<{ blocks: FilteredBlock[]; matchedRows: number | null }>;
+
+export function useDashboardFilters(
+  dashboardId: string,
+  page: DashboardBuilderPage | undefined,
+  previewFn: DashboardFilterPreviewFn = dashboardBuilderApi.previewFiltered
+): DashboardFilterState {
   const [values, setValues] = useState<Record<string, ColumnFilterSpec | null>>({});
   const [blockFilters, setBlockFiltersState] = useState<Record<string, FilterCriterion[]>>({});
   const [overrides, setOverrides] = useState<Record<string, FilteredBlock>>({});
@@ -134,8 +155,7 @@ export function useDashboardFilters(dashboardId: string, page: DashboardBuilderP
       const hasAnyFilters = filters.length > 0 || Object.keys(activeBlockFilters).length > 0;
       const seq = ++requestSeq.current;
       setLoading(true);
-      dashboardBuilderApi
-        .previewFiltered(dashboardId, page.id, filters, activeBlockFilters)
+      previewFn(dashboardId, page.id, filters, activeBlockFilters)
         .then(({ blocks, matchedRows: mr }) => {
           if (seq !== requestSeq.current) return; // superseded by a newer change
           // At "All, no per-chart filters either" (the resting state),
@@ -162,7 +182,7 @@ export function useDashboardFilters(dashboardId: string, page: DashboardBuilderP
           if (seq === requestSeq.current) setLoading(false);
         });
     },
-    [dashboardId, page, activeFiltersFor]
+    [dashboardId, page, activeFiltersFor, previewFn]
   );
 
   // Seeds the resting-state row count as soon as a page with filter
