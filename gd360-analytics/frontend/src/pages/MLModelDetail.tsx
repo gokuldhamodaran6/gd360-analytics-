@@ -366,15 +366,37 @@ export default function MLModelDetail() {
                       details" below, since this is specifically the
                       "don't trust the number above at face value yet"
                       signal. See models.MLModel.quality_warnings's own
-                      docstring. */}
-                  {model.quality_warnings && model.quality_warnings.length > 0 && (
-                    <div className="mb-3 text-xs bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 space-y-1.5">
-                      <div className="font-semibold text-amber-700 dark:text-amber-400">Before you trust this result</div>
-                      {model.quality_warnings.map((w, i) => (
-                        <p key={i} className="leading-relaxed">{qualityWarningText(w)}</p>
-                      ))}
-                    </div>
-                  )}
+                      docstring.
+                      2026-10-05: "sampled_training_data" is a DIFFERENT
+                      kind of notice - a transparency disclosure about how
+                      much data was used, not a reason to distrust the
+                      result - so it's split out into its own neutral box
+                      below rather than lumped into "Before you trust this
+                      result", which would misleadingly flag a normal,
+                      deliberate choice as a quality concern. */}
+                  {(() => {
+                    const warnings = model.quality_warnings || [];
+                    const trustWarnings = warnings.filter((w) => w.type !== "sampled_training_data");
+                    const samplingNotice = warnings.find((w) => w.type === "sampled_training_data");
+                    return (
+                      <>
+                        {trustWarnings.length > 0 && (
+                          <div className="mb-3 text-xs bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 space-y-1.5">
+                            <div className="font-semibold text-amber-700 dark:text-amber-400">Before you trust this result</div>
+                            {trustWarnings.map((w, i) => (
+                              <p key={i} className="leading-relaxed">{qualityWarningText(w)}</p>
+                            ))}
+                          </div>
+                        )}
+                        {samplingNotice && (
+                          <div className="mb-3 text-xs bg-sky-500/10 border border-sky-500/30 rounded-lg p-3">
+                            <div className="font-semibold text-sky-700 dark:text-sky-400 mb-0.5">Trained on a sample</div>
+                            <p className="leading-relaxed">{qualityWarningText(samplingNotice)}</p>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
 
                   {model.excluded_columns && model.excluded_columns.length > 0 && (
                     <div className="mb-3 text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
