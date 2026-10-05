@@ -274,6 +274,53 @@ export type ColumnDistinctValues = {
   truncated: boolean;
 };
 
+// 2026-10-05 (Data-tab scale round): one column's real, full-table stats -
+// see backend services/profiling.py's build_profile_query/parse_profile_row.
+// Deliberately narrower than ColumnStat above (no sum/mean - see
+// profiling.py's own comment on why AVG was left out across 5 SQL
+// dialects): this is an honest, exact COUNT/MIN/MAX over EVERY row at the
+// source, not a sample-derived estimate.
+export type ProfileColumnStat = {
+  non_null: number;
+  null_pct: number;
+  distinct: number | null;
+  min: number | string | null;
+  max: number | string | null;
+};
+
+// What GET /datasources/{id}/profile returns - see backend
+// routers/datasources.py profile_datasource. Every field after `supported`
+// is optional because the four outcomes (unsupported kind, cached hit,
+// too-expensive, real result) each fill in a different subset - DataTable.tsx
+// must check `supported`/`too_expensive`/`error` before trusting any stat.
+export type DataProfile = {
+  // False for a kind this never runs against (Mongo, file uploads) - the
+  // Data tab silently keeps its existing sample-based heuristic for those,
+  // this is not a failure state.
+  supported: boolean;
+  // True only when this profile's cost would have exceeded the same shared
+  // per-user daily pushdown budget chat.ts's BigQuery/Snowflake queries are
+  // governed by (see services/pushdown_budget.py) - a real governance
+  // outcome, not an error.
+  too_expensive?: boolean;
+  message?: string;
+  // True when the real query failed for some other reason - the Data tab
+  // must fall back to its existing preview-based stats, never show a blank
+  // or broken profile strip.
+  error?: boolean;
+  exact_total_rows?: number;
+  columns?: Record<string, ProfileColumnStat>;
+  profiled_columns?: string[];
+  // True when the table has more columns than MAX_PROFILE_COLUMNS - only
+  // the first N were profiled, so the strip should say so rather than
+  // silently look complete.
+  truncated_columns?: boolean;
+  // True when this came back from the 5-minute in-process TTL cache rather
+  // than a fresh query - lets the UI skip a loading flicker on repeat opens
+  // without claiming the number was just re-measured.
+  cached?: boolean;
+};
+
 // What the natural-language filter bar gets back - `filters` is keyed by
 // real column name, each value already the same structured shape the
 // manual Values/Condition filter panel builds (DataTable.tsx's
@@ -413,6 +460,20 @@ export const datasourceApi = {
           search: opts.search || undefined,
           limit: opts.limit || undefined,
         },
+      })
+      .then((r) => r.data),
+
+  // 2026-10-05 (Data-tab scale round): real, exact full-table stats - see
+  // backend routers/datasources.py profile_datasource. `table` only (no
+  // versionId) since this profiles a real connected table at its source,
+  // never a saved/AI-built table (those have no live source to query).
+  // Called lazily by DataTable.tsx once per table open, not on every
+  // preview page - the backend's own 5-minute TTL cache keeps repeat opens
+  // cheap and fast without this client needing its own cache.
+  profile: (id: string, table?: string | null) =>
+    api
+      .get<DataProfile>(`/datasources/${id}/profile`, {
+        params: { table: table || undefined },
       })
       .then((r) => r.data),
 
@@ -2088,7 +2149,16 @@ export type PredictionExplanationEntry = { feature: string; value: string | numb
 // qualityWarningText for how each type below becomes a plain sentence.
 // Every field here is a real number the backend already computed - this
 // type never carries a pre-written message.
-export type MLQualityWarningType = "near_perfect_score" | "dominant_feature" | "high_correlation_feature";
+// 2026-10-05: "sampled_training_data" added alongside the three leakage-
+// guardrail-round types above - a different KIND of notice (a transparency
+// disclosure, not a quality concern) but it travels through this exact
+// same real-numbers-only mechanism rather than inventing a second one. See
+// backend services/ml_training.py's MAX_TRAINING_ROWS for why this exists:
+// a very large uploaded file is now trained on a random, honestly-labeled
+// sample instead of risking the same out-of-memory crash the chat/upload
+// paths were fixed against earlier the same day.
+export type MLQualityWarningType =
+  | "near_perfect_score" | "dominant_feature" | "high_correlation_feature" | "sampled_training_data";
 export type MLQualityWarning = {
   type: MLQualityWarningType;
   metric?: "r2" | "accuracy" | null; // near_perfect_score only
@@ -2096,6 +2166,8 @@ export type MLQualityWarning = {
   feature?: string | null; // dominant_feature / high_correlation_feature only
   importance?: number | null; // dominant_feature only - real share, 0-1
   correlation?: number | null; // high_correlation_feature only - real, signed Pearson correlation
+  rows_used?: number | null; // sampled_training_data only - the real sample size actually trained on
+  rows_total?: number | null; // sampled_training_data only - the real total rows available before sampling
 };
 
 // The real, computed "would this column actually be used, and does it
