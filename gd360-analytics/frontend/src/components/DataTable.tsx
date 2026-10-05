@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { datasourceApi, DataPreview, DatasetVersion, ColumnStat, ColumnDistinctValues, SavedView } from "../api/client";
+import { datasourceApi, DataPreview, DatasetVersion, ColumnStat, ColumnDistinctValues, SavedView, DataProfile } from "../api/client";
 
 // Rows-per-page choices for the numbered pagination footer below. Capped at
 // 250 (and no more "1000"/"All" option) on purpose - see config.py's
@@ -459,6 +459,16 @@ export default function DataTable({
   const [newViewName, setNewViewName] = useState("");
   const [viewsError, setViewsError] = useState<string | null>(null);
 
+  // 2026-10-05 (Data-tab scale round): the real, exact full-table profile -
+  // see datasourceApi.profile / backend routers/datasources.py
+  // profile_datasource. null means "not fetched yet or not supported for
+  // this table" - every render below falls back to the existing
+  // sample-based preview.column_stats/total_rows whenever this is null or
+  // its own supported/error/too_expensive flags say not to trust it, so a
+  // Mongo/file-upload table (never profiled) or a failed profile query
+  // looks exactly as it always did, never broken or blank.
+  const [profile, setProfile] = useState<DataProfile | null>(null);
+
   const menuRef = useRef<HTMLDivElement | null>(null);
   const columnsPanelRef = useRef<HTMLDivElement | null>(null);
   const viewsPanelRef = useRef<HTMLDivElement | null>(null);
@@ -520,6 +530,35 @@ export default function DataTable({
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [datasourceId, activeVersionId, activeTable, refreshKey, offset, pageSize, sortBy, sortDir, debouncedFilters]);
+
+  // 2026-10-05 (Data-tab scale round): fetches the real, exact full-table
+  // profile once per table open - not on every page/sort/filter change
+  // (unlike the preview effect above), since a profile is a property of
+  // the WHOLE table, not of whatever page is currently in view. Only ever
+  // called for a real connected table (activeVersionId null - a saved/
+  // AI-built table has no live source to profile, same gating the preview
+  // effect's own `table` param already uses). The backend's own 5-minute
+  // TTL cache (see config.PROFILE_CACHE_TTL_SECONDS) is what keeps
+  // re-opening the same table cheap, not anything client-side here.
+  useEffect(() => {
+    setProfile(null);
+    if (activeVersionId) return; // saved/AI-built table - nothing to profile
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await datasourceApi.profile(datasourceId, activeTable);
+        if (!cancelled) setProfile(data);
+      } catch {
+        if (!cancelled) setProfile(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [datasourceId, activeVersionId, activeTable]);
+
+  // Whether the exact, real full-table profile is actually usable right
+  // now - every place below that wants to prefer it over the sample-based
+  // preview stats checks this one flag rather than re-deriving it.
+  const profileUsable = !!profile && profile.supported && !profile.too_expensive && !profile.error && !!profile.columns;
 
   // Switching tables (a different tab, a different original table/sheet, or
   // a different data source entirely) starts every view control fresh - a
@@ -1099,14 +1138,59 @@ export default function DataTable({
 
   if (!preview) return null;
 
-  const from = preview.total_rows === 0 ? 0 : offset + 1;
-  const to = Math.min(offset + preview.limit, preview.total_rows);
-  const totalPages = Math.max(1, Math.ceil(preview.total_rows / preview.limit));
+  // 2026-10-05 (Data-tab scale round): preview.total_rows is the old
+  // capped-sample heuristic for a live connector (see backend
+  // preview_datasource's own comment - it was deliberately left alone
+  // rather than adding a COUNT(*) to this hot pagination path). Whenever
+  // the real profile query has already given us an exact, full-table
+  // count for this SAME unfiltered table, prefer it here - this is what
+  // turns "119,390+ rows" into a real "119,390 rows" and makes the pager's
+  // own page count correct instead of silently capped. Never applied under
+  // an active filter, since the profile counts the whole table, not
+  // whatever subset the filter narrowed down to - preview.total_rows
+  // already reflects the filtered count correctly in that case.
+  const displayTotalRows =
+    profileUsable && !hasActiveFilters && profile!.exact_total_rows != null
+      ? profile!.exact_total_rows
+      : preview.total_rows;
+  const totalRowsIsExact = profileUsable && !hasActiveFilters && profile!.exact_total_rows != null;
+
+  const from = displayTotalRows === 0 ? 0 : offset + 1;
+  const to = Math.min(offset + preview.limit, displayTotalRows);
+  const totalPages = Math.max(1, Math.ceil(displayTotalRows / preview.limit));
   const currentPage = Math.floor(offset / preview.limit) + 1;
   const pageList = buildPageList(currentPage, totalPages);
   const rowPad = density === "compact" ? "py-1" : "py-1.5";
   const rowNumWidth = 46;
   const activeFilterEntries = Object.entries(filters);
+
+  // 2026-10-05 (Data-tab scale round): one short, honest line per column
+  // from the real full-table profile - the header-strip equivalent of the
+  // mockup's "178 countries" / "0-737, avg 104" readouts, built from
+  // whatever the real query actually returned (never a fabricated avg -
+  // see services/profiling.py's own comment on why AVG was left out).
+  // Returns null when there's nothing trustworthy to show for this column
+  // (not profiled, or this table's profile isn't usable right now) so the
+  // caller can skip rendering the strip entirely rather than show a row of
+  // blanks.
+  const profileCellText = (col: string): string | null => {
+    if (!profileUsable) return null;
+    const stat = profile!.columns?.[col];
+    if (!stat) return null;
+    const group = dtypeGroup(preview.dtypes[col] || "");
+    let main: string;
+    if (group === "number" && stat.min != null && stat.max != null) {
+      main = `${formatStatValue("min", stat as any)}–${formatStatValue("max", stat as any)}`;
+    } else if (stat.distinct != null) {
+      main = `${stat.distinct.toLocaleString()} unique`;
+    } else if (stat.min != null && stat.max != null) {
+      main = `${stat.min}–${stat.max}`;
+    } else {
+      return null;
+    }
+    const blankPct = Math.round(stat.null_pct || 0);
+    return blankPct > 0 ? `${main} · ${blankPct}% blank` : main;
+  };
 
   // The table's own real total width - every column's explicit width, row
   // number column included. Handed to the <table> itself (not just its
@@ -2029,6 +2113,50 @@ export default function DataTable({
                   );
                 })}
               </tr>
+              {/* 2026-10-05 (Data-tab scale round): one real stat per column,
+                  from a single full-table query at the source - the "give
+                  real clarity about the whole dataset" ask, directly below
+                  the header rather than buried in a totals footer the
+                  person has to scroll to. Only rendered once the profile
+                  query has actually come back usable for this table -
+                  nothing fabricated or sample-derived shown here, and
+                  nothing shown at all for a table this never runs against
+                  (Mongo, file uploads) or whose query failed/was too
+                  expensive. */}
+              {profileUsable && (
+                // No sticky positioning of its own needed: it's a second
+                // row inside the SAME <thead> that's already `sticky
+                // top-0` as a whole (see the <thead> tag above), so it
+                // naturally stays stacked right under the header row
+                // during vertical scroll without a second, fragile
+                // pixel-offset sticky of its own.
+                <tr className="bg-surface2 border-b border-border">
+                  <td
+                    className="sticky left-0 z-20 bg-surface2 px-1 py-1 border-r border-border text-center text-[9px] text-emerald-500"
+                    title={
+                      profile!.truncated_columns
+                        ? "Real stats from a single query against every row at the source - only the first columns of this wide table were profiled."
+                        : "Real stats from a single query against every row at the source."
+                    }
+                  >
+                    &#10003;
+                  </td>
+                  {renderColumns.map((col) => {
+                    const pinned = pinnedVisible.includes(col);
+                    const text = profileCellText(col);
+                    return (
+                      <td
+                        key={col}
+                        className={`px-3 py-1 text-[10px] text-muted truncate border-l border-border/30 ${pinned ? "bg-surface2" : ""}`}
+                        style={pinned ? { position: "sticky", left: pinnedLeftOffset[col], zIndex: 15 } : undefined}
+                        title={text || undefined}
+                      >
+                        {text ?? <span className="text-muted/40">&mdash;</span>}
+                      </td>
+                    );
+                  })}
+                </tr>
+              )}
             </thead>
             <tbody>
               {preview.rows.map((row, i) => {
@@ -2125,14 +2253,26 @@ export default function DataTable({
 
       {preview.stats_capped && showTotals && (
         <div className="px-3 pt-1 text-[10px] text-amber-400 shrink-0">
-          Totals are based on a large sample of this table, not necessarily every row.
+          {totalRowsIsExact
+            ? "Totals are based on a large sample of this table - the row count above, though, is exact: a real query against every row."
+            : "Totals are based on a large sample of this table, not necessarily every row."}
         </div>
       )}
 
       <div className="p-3 border-t border-border flex items-center justify-between gap-3 flex-wrap shrink-0 text-xs text-muted">
-        <div>
-          {from}-{to} of {preview.total_rows.toLocaleString()}{preview.stats_capped ? "+" : ""} rows
-          {hasActiveFilters && <span className="ml-1 text-accent">(filtered)</span>}
+        <div className="flex items-center gap-1.5">
+          <span>
+            {from}-{to} of {displayTotalRows.toLocaleString()}{!totalRowsIsExact && preview.stats_capped ? "+" : ""} rows
+            {hasActiveFilters && <span className="ml-1 text-accent">(filtered)</span>}
+          </span>
+          {totalRowsIsExact && !hasActiveFilters && (
+            <span
+              className="text-emerald-500 text-[10px]"
+              title="A real query against every row at the source, not an estimate."
+            >
+              &#10003; exact
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1">
           <button
