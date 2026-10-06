@@ -7,7 +7,7 @@ import {
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
-import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID, otherDsSourceId, otherDsIdFromSourceId, ShowCalculation } from "../components/ChatPanel";
+import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID, otherDsSourceId, otherDsIdFromSourceId, ShowCalculation, PushdownBadge } from "../components/ChatPanel";
 import { hasMultipleTables, connectionKindMeta, CreatedDataSource } from "../components/DataSourceForm";
 import AddDataPicker from "../components/AddDataPicker";
 import GokuChat from "../components/GokuChat";
@@ -1414,6 +1414,11 @@ export default function Workspace() {
           methodSummary: m.method_summary || null,
           code: m.code || null,
           durationMs: m.duration_ms ?? null,
+          // Pushdown-honesty round - see runPrompt's own identical fields
+          // for what these mean; restored here too so reopening a saved
+          // conversation still shows the honest badge under a past turn.
+          usedPushdown: m.used_pushdown ?? null,
+          sampleRowCount: m.sample_row_count ?? null,
         }));
         setTurns(restored);
 
@@ -1688,6 +1693,13 @@ export default function Workspace() {
         methodSummary: data.method_summary || null,
         code: data.code || null,
         durationMs: data.duration_ms ?? null,
+        // 2026-10-06 (pushdown-honesty round): whether this turn ran a
+        // real query directly against the warehouse/database, or fell
+        // back to analyzing a loaded sample - see backend schemas.
+        // ChatResponse's identical fields. Renders as a small badge right
+        // next to the Insight box (see ChatPanel.tsx's PushdownBadge).
+        usedPushdown: data.used_pushdown ?? null,
+        sampleRowCount: data.sample_row_count ?? null,
       }]);
 
       if (data.action === "transform") {
@@ -2549,6 +2561,24 @@ export default function Workspace() {
                   <div className="shrink-0 text-sm bg-accent/10 border border-accent/30 rounded-xl px-4 py-2.5 whitespace-pre-wrap">
                     <span className="font-semibold text-accent">Insight: </span>
                     {activeChartTurn.insight}
+                  </div>
+                )}
+                {/* Pushdown-honesty round: the founder's own confirmed bug
+                    report showed up right here - the Chart tab's own
+                    Insight box said "a total dataset size of n = 2,000
+                    rows" for a BigQuery source with zero indication that
+                    was a loaded sample, not his real table. Same badge,
+                    same component, as ChatPanel.tsx's chat transcript -
+                    see PushdownBadge's own docstring. Renders nothing
+                    when this chart predates the feature or came from a
+                    non-pushdown-eligible kind. */}
+                {activeChartTurn && (
+                  <div className="shrink-0">
+                    <PushdownBadge
+                      usedPushdown={activeChartTurn.usedPushdown}
+                      sampleRowCount={activeChartTurn.sampleRowCount}
+                      datasourceKind={dsInfo?.kind}
+                    />
                   </div>
                 )}
                 {activeChartTurn && (activeChartTurn.methodSummary || activeChartTurn.code) && (
