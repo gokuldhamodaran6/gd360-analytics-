@@ -337,6 +337,88 @@ class ChatResponse(BaseModel):
     used_pushdown: Optional[bool] = None
     sample_row_count: Optional[int] = None
 
+    # ---- 2026-10-06 (warehouse-honesty round) -------------------------
+    # For a warehouse/database data source (routers/chat.py
+    # PUSHDOWN_ELIGIBLE_KINDS), a question is now answered ONLY by a real
+    # query that ran inside the warehouse over every row. The app never
+    # pulls a row-capped sample and analyzes that - so for those kinds
+    # `used_pushdown` is True (answer computed in the warehouse) or the
+    # turn is an `action="needs_query_help"` turn (below) with
+    # used_pushdown=False and nothing computed. `sample_row_count` is
+    # therefore always None for a warehouse kind now; it only ever applied
+    # to the sample path those kinds no longer take.
+    #
+    # Set on a SUCCESSFUL warehouse turn (used_pushdown=True):
+    #   pushdown_sql           - the exact SQL (or, for MongoDB, the JSON
+    #                            {"collection", "pipeline"}) that produced
+    #                            the result. Also set when the person's own
+    #                            query_builder/raw_sql request ran.
+    #   pushdown_provider      - the data source kind it ran in
+    #                            ("bigquery", "snowflake", "postgres", ...).
+    #   pushdown_bytes_scanned - real bytes scanned (BigQuery: the dry-run
+    #                            estimate the query was admitted on;
+    #                            Snowflake: its own post-hoc figure). None
+    #                            for kinds with no metered cost.
+    #   pushdown_duration_ms   - wall-clock ms for generate+execute.
+    #   pushdown_result_rows   - rows in the (already-aggregated) result.
+    #   exact_total_rows       - the real COUNT(*) of the one table the
+    #                            query was scoped to, IF the Data tab's
+    #                            profile already computed and cached it
+    #                            (never a fresh count). None otherwise.
+    pushdown_sql: Optional[str] = None
+    pushdown_provider: Optional[str] = None
+    pushdown_bytes_scanned: Optional[int] = None
+    pushdown_duration_ms: Optional[int] = None
+    pushdown_result_rows: Optional[int] = None
+    exact_total_rows: Optional[int] = None
+    # Set on an action="needs_query_help" turn - the warehouse query could
+    # not be produced, NOTHING was computed (no chart, no insight,
+    # ok=True, needs_clarification=False), and reply_text is a short plain
+    # explanation. The frontend uses these to let the person finish it:
+    #   pushdown_attempts      - list of {"sql": str, "status": str,
+    #                            "error": str|None}; status is one of
+    #                            "ok" | "rejected_unsafe" |
+    #                            "rejected_too_expensive" | "error" |
+    #                            "not_possible" | "needs_table" |
+    #                            "generation_failed". May be empty when
+    #                            pushdown_skipped_reason is set.
+    #   pushdown_skipped_reason - why no (or no further) attempt was made:
+    #                            "daily_budget" | "empty_schema" |
+    #                            "restricted_role" |
+    #                            "unsupported_selection" | "needs_table"
+    #                            | "not_possible" | "table_failed" | None.
+    #                            "needs_table" is MongoDB-only now; for a
+    #                            SQL warehouse a row-level request creates
+    #                            a saved-query table instead (2026-10-06,
+    #                            "generated data is a saved query" layer):
+    #                            the turn is action="transform" with
+    #                            new_version_id/new_version_name,
+    #                            used_pushdown=True, pushdown_sql = the
+    #                            table's standalone definition,
+    #                            pushdown_result_rows = its exact row
+    #                            count (null if the COUNT(*) failed),
+    #                            rows_before/rows_after when known, and
+    #                            pushdown_attempts = the definition
+    #                            attempts. "table_failed" is the honest
+    #                            failure of that path: needs_query_help
+    #                            with the attempts, builder_suggestion
+    #                            always None.
+    #   builder_suggestion     - a best-guess QueryBuilderSpec-shaped dict
+    #                            (see schemas_extra.QueryBuilderSpec),
+    #                            already validated against the data
+    #                            source's schema, to prefill the builder.
+    #                            None when no safe guess was possible, and
+    #                            always None for MongoDB (builder is SQL-
+    #                            only) and for a restricted role.
+    #   builder_columns        - {table: [{"name", "type"}]} for the
+    #                            tables in scope, straight from the data
+    #                            source's own schema, so the builder's
+    #                            selects need no second request.
+    pushdown_attempts: Optional[list] = None
+    pushdown_skipped_reason: Optional[str] = None
+    builder_suggestion: Optional[dict] = None
+    builder_columns: Optional[dict] = None
+
 
 # ---------- Verify ("Double-check this") ----------
 class VerifyResponse(BaseModel):
@@ -364,6 +446,30 @@ class VerifyResponse(BaseModel):
 # ---------- Dataset versions (saved/named tables) ----------
 class RenameVersionRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
+
+
+class DatasetVersionOut(BaseModel):
+    """One entry of GET /datasources/{id}/versions. The first six fields
+    are what the list has always returned; the rest were added 2026-10-06
+    ("generated data is a saved query" layer) so the Data tab can render
+    a warehouse saved-query table without ever loading it - see
+    models.DatasetVersion.source_kind and friends. For a plain file-backed
+    version source_kind is "file" and every query field is null."""
+    id: str
+    name: str
+    parent_version_id: Optional[str] = None
+    step_count: int = 0
+    created_at: Optional[datetime] = None
+    conversation_id: Optional[str] = None
+    # "file" | "warehouse_query"
+    source_kind: str = "file"
+    query_sql: Optional[str] = None
+    sql_alias: Optional[str] = None
+    source_table: Optional[str] = None
+    row_count: Optional[int] = None
+    # [{"name", "type"}] - the query's result schema captured at creation.
+    columns_json: Optional[list] = None
+    parent_version_ids: Optional[list] = None
 
 
 # ---------- Data tab: natural-language filter bar ----------
