@@ -184,6 +184,17 @@ _NEW_COLUMNS = [
     # feature_importance did just above.
     ("ml_models", "quality_warnings", "JSON"),
     ("ml_model_versions", "quality_warnings", "JSON"),
+    # 2026-10-06 (pushdown-honesty round): see models.DatasetVersion.
+    # used_pushdown/sample_row_count and models.Message.used_pushdown/
+    # sample_row_count's own docstrings for what these hold and why - the
+    # real-vs-sample disclosure for a chat/chart answer. Both messages and
+    # dataset_versions are existing tables (live since before this round),
+    # so these need the normal ALTER-TABLE treatment here, same as
+    # duration_ms/method_summary did for the exact same two tables above.
+    ("dataset_versions", "used_pushdown", "BOOLEAN"),
+    ("dataset_versions", "sample_row_count", "INTEGER"),
+    ("messages", "used_pushdown", "BOOLEAN"),
+    ("messages", "sample_row_count", "INTEGER"),
 ]
 
 
