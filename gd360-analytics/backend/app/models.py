@@ -291,6 +291,41 @@ class DatasetVersion(Base):
     used_pushdown = Column(Boolean, nullable=True)
     sample_row_count = Column(Integer, nullable=True)
 
+    # 2026-10-06 ("generated data is a saved query" layer): for a warehouse
+    # /database data source GD360 never loads rows into the app, so a
+    # table generated from a prompt ("keep only non-canceled bookings and
+    # add a total nights column") is NOT a copied dataset - it is ONE
+    # standalone, read-only SELECT re-run inside the warehouse whenever
+    # the table is used. See services/warehouse_tables.py.
+    #   source_kind   - "file" (every CSV-backed version; NULL means file)
+    #                   or "warehouse_query".
+    #   query_sql     - the complete, standalone definition: optional
+    #                   top-level `WITH ...` (every parent's SQL already
+    #                   inlined - never a reference to another version at
+    #                   run time, so a deleted parent cannot break a
+    #                   child) then one SELECT. Read-only, no LIMIT.
+    #   sql_alias     - the safe identifier later SQL references this
+    #                   query by (`WITH <sql_alias> AS (<query_sql>)`):
+    #                   lowercase [a-z0-9_], starts with a letter, <= 40
+    #                   chars, unique within the data source.
+    #   source_table  - the warehouse table it ultimately reads.
+    #   columns_json  - [{name, type}] of the query's result schema,
+    #                   captured at creation (BigQuery dry run / a
+    #                   zero-row run) - what the Data tab and the SQL
+    #                   writers use instead of ever loading rows.
+    #   row_count     - exact COUNT(*) at creation (billable on BigQuery,
+    #                   so it may be NULL when that query failed); the
+    #                   Data-tab profile fills it in later if NULL.
+    # `data` stays NOT NULL in the database (there is no migration tool
+    # to relax it) - a warehouse version stores b"" there, and
+    # data_loader.is_warehouse_query() is the one check every reader uses.
+    source_kind = Column(String, nullable=True)
+    query_sql = Column(Text, nullable=True)
+    sql_alias = Column(String, nullable=True)
+    source_table = Column(String, nullable=True)
+    columns_json = Column(JSON, nullable=True)
+    row_count = Column(BigInteger, nullable=True)
+
     # 2026-09-28: the "promote to shared model" feature (Saved Tables /
     # models_library.py) these three columns belonged to was removed -
     # it turned out to duplicate a capability chat's own cross-datasource
@@ -535,6 +570,40 @@ class Message(Base):
     # to show.
     used_pushdown = Column(Boolean, nullable=True)
     sample_row_count = Column(Integer, nullable=True)
+
+    # 2026-10-06 (warehouse-honesty round): for a warehouse/database
+    # kind, a chat answer is now ONLY ever computed inside the warehouse
+    # (used_pushdown=True) or not computed at all (action=
+    # "needs_query_help", used_pushdown=False, code=None) - never on a
+    # loaded sample, so sample_row_count above is always NULL for those
+    # kinds from this round on. These record what actually happened, so
+    # reopening a conversation shows the same information the live
+    # response did (see schemas.ChatResponse's own comment for each
+    # field's meaning):
+    #   pushdown_sql            - the exact SQL/pipeline that produced the
+    #                             result (AI-written, builder-built, or the
+    #                             person's own raw_sql).
+    #   pushdown_attempts       - [{"sql", "status", "error"}] for every
+    #                             attempt made this turn, success or not.
+    #   pushdown_bytes_scanned  - real bytes scanned, when metered.
+    #   pushdown_duration_ms    - wall-clock ms of generate+execute.
+    #   pushdown_result_rows    - rows in the already-aggregated result.
+    #   pushdown_skipped_reason - why no attempt (or no further attempt)
+    #                             was made, on a needs_query_help turn.
+    # All NULL for every file-based kind and for rows saved before this
+    # round. The builder prefill (builder_suggestion) is stored inside the
+    # existing `suggestions` JSON under key "builder_suggestion" rather
+    # than as yet another column.
+    pushdown_sql = Column(Text, nullable=True)
+    pushdown_attempts = Column(JSON, nullable=True)
+    # BigInteger, not Integer: a BigQuery scan can legitimately be several
+    # GiB (settings.BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY is 5 GiB), which
+    # overflows Postgres' 32-bit INTEGER - same reason
+    # PushdownQueryLog.bytes_scanned below is BigInteger.
+    pushdown_bytes_scanned = Column(BigInteger, nullable=True)
+    pushdown_duration_ms = Column(Integer, nullable=True)
+    pushdown_result_rows = Column(Integer, nullable=True)
+    pushdown_skipped_reason = Column(Text, nullable=True)
 
     conversation = relationship("Conversation", back_populates="messages")
 
