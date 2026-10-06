@@ -25,6 +25,7 @@ narrative reach the UI - it never shows a raw exception name or traceback.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import re
 import time
@@ -572,7 +573,16 @@ parenthesis, backslash-bracket, or similar) around any number or notation anywhe
 renders plain text, not math, so every number and symbol (n, r, mean, pp, a gap figure, a percent) must be
 written as ordinary characters with nothing wrapped around it. The only correct use of a dollar sign anywhere in
 your response is as a currency prefix directly on a real dollar amount, exactly like "$5,911.55" - never doubled,
-never closing a pair, never around anything that is not an actual amount of money."""
+never closing a pair, never around anything that is not an actual amount of money.
+
+Answers computed inside the person's own data warehouse: when the summary has "computed_in_warehouse" set to
+true, these figures were produced by one query that ran inside the person's warehouse over EVERY row of the
+table - not on a sample, an extract, or a preview. Say so, in plain words, in the Key insight (for example
+"computed across every row in your BigQuery table" - "warehouse_provider" names the warehouse). When
+"warehouse_total_rows" is present, that number is the real total row count of the table - cite it as n. When it
+is absent, do not state or guess any n at all; in that case "source_row_count" is deliberately missing and the
+small number of rows in the summary is the size of the RESULT, never the data behind it. Never describe a
+warehouse-computed result as a sample, an estimate, an approximation, or "based on the loaded rows"."""
 
 VERIFY_SYSTEM_PROMPT = """You are the GD360 verification module - a second, independent reviewer whose only job
 is to audit a previous answer for correctness before a person trusts it, the way a second analyst double-checking
@@ -644,6 +654,12 @@ Strict rules:
   this same round for the warning this module's own silence made necessary). This is prompt guidance for a
   language model, not a guaranteed code path - it makes success at this shape of question more likely, not
   certain.
+- If the question asks you to PRODUCE A TABLE OF ROWS rather than a summary - cleaning or transforming the data,
+  filtering rows into a new table, adding or deriving a column, deduplicating, reshaping, "give me the rows where
+  ...", anything whose answer is a row-level result set rather than an aggregate/breakdown/top-N - respond with
+  exactly: NEEDS_TABLE. (2026-10-06: GD360 then hands the request to its separate table-definition module, which
+  saves the new table as a query that runs inside the warehouse; this module only ever answers summary questions
+  with one aggregate query.)
 - If the question genuinely cannot be answered from the given schema (it needs a column or table that does not
   exist), respond with exactly: NOT_POSSIBLE"""
 
@@ -744,6 +760,12 @@ Strict rules:
   this same round for the warning this module's own silence made necessary). This is prompt guidance for a
   language model, not a guaranteed code path - it makes success at this shape of question more likely, not
   certain.
+- If the question asks you to PRODUCE A TABLE OF ROWS rather than a summary - cleaning or transforming the data,
+  filtering rows into a new table, adding or deriving a column, deduplicating, reshaping, "give me the rows where
+  ...", anything whose answer is a row-level result set rather than an aggregate/breakdown/top-N - respond with
+  exactly: NEEDS_TABLE. (2026-10-06: GD360 then hands the request to its separate table-definition module, which
+  saves the new table as a query that runs inside the warehouse; this module only ever answers summary questions
+  with one aggregate query.)
 - If the question genuinely cannot be answered from the given schema (it needs a column or table that does not
   exist), respond with exactly: NOT_POSSIBLE"""
 
@@ -860,6 +882,12 @@ Strict rules:
   "which is highest/lowest" question. Never a bare `SELECT *` with no WHERE/row cap against what could be a huge
   table - the whole point of this path is that the database summarizes the data, not GD360.
 - {dialect_notes}
+- If the question asks you to PRODUCE A TABLE OF ROWS rather than a summary - cleaning or transforming the data,
+  filtering rows into a new table, adding or deriving a column, deduplicating, reshaping, "give me the rows where
+  ...", anything whose answer is a row-level result set rather than an aggregate/breakdown/top-N - respond with
+  exactly: NEEDS_TABLE. (2026-10-06: GD360 then hands the request to its separate table-definition module, which
+  saves the new table as a query that runs inside the warehouse; this module only ever answers summary questions
+  with one aggregate query.)
 - If the question genuinely cannot be answered from the given schema (it needs a column or table that does not
   exist), respond with exactly: NOT_POSSIBLE"""
     user_content = f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"
@@ -881,6 +909,96 @@ Strict rules:
             sql = sql[3:]
         sql = sql.strip()
     return sql
+
+
+# --- Warehouse table definitions (2026-10-06, "generated data is a saved
+# query" layer) -------------------------------------------------------------
+# When one of the three pushdown writers above answers NEEDS_TABLE (the
+# question asks for ROWS - a clean-up, a filter, a derived column - not a
+# summary), or the prompt came from the guided "clean" step, routers/
+# chat.py asks THIS writer for the table's definition instead: ONE
+# read-only SELECT that returns the requested rows, which GD360 stores as
+# a DatasetVersion(source_kind="warehouse_query") and re-runs inside the
+# warehouse whenever the table is used. No rows are ever copied into the
+# app - see services/warehouse_tables.py and the founder's rule in
+# routers/chat.py's module docstring. The dialect notes are the same ones
+# the matching pushdown prompt uses.
+_TABLE_DIALECT_NOTES = {
+    "bigquery": "Standard BigQuery SQL. Backtick-quote an identifier only when its name actually needs escaping. "
+                "Real tables must be written fully qualified as `project.dataset.table` exactly as the schema names them.",
+    "snowflake": "Standard Snowflake SQL. Double-quote an identifier only when its exact case or characters actually "
+                 "need preserving - Snowflake treats an unquoted identifier as uppercase by default.",
+    "postgres": _SQL_DIALECT_INFO["postgres"][1],
+    "supabase": _SQL_DIALECT_INFO["supabase"][1],
+    "mysql": _SQL_DIALECT_INFO["mysql"][1],
+    "sqlserver": _SQL_DIALECT_INFO["sqlserver"][1],
+}
+_TABLE_DIALECT_LABELS = {
+    "bigquery": "BigQuery", "snowflake": "Snowflake", "postgres": "PostgreSQL", "supabase": "PostgreSQL",
+    "mysql": "MySQL", "sqlserver": "Microsoft SQL Server",
+}
+
+
+def _warehouse_table_system_prompt(dialect_kind: str) -> str:
+    label = _TABLE_DIALECT_LABELS.get(dialect_kind, "standard SQL")
+    notes = _TABLE_DIALECT_NOTES.get(dialect_kind, "")
+    return f"""You are the GD360 table-definition module - the part of the analytics engine that turns a request for a NEW
+TABLE OF ROWS (a clean-up, a filter, a derived column, a rename, a de-duplication, a join) into ONE real SQL query
+that runs directly inside the person's own {label} warehouse. The query IS the new table: it is saved as a
+definition and re-run whenever the table is used, so it must return exactly the rows the person asked for - never
+a summary of them. You are given the request and the schema of the tables in scope (each table's name, then its
+column names and types; a table marked as a saved query is an earlier definition and is referenced by its given
+name exactly as spelled, unquoted).
+
+Respond with ONLY the raw SQL query text, then one final line of the exact form
+-- name: <a 3 to 6 word name for the new table>
+No markdown code fences, no explanation, nothing else before or after.
+
+Strict rules:
+- Exactly one SELECT statement. Never anything else - no INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/MERGE, no multiple
+  statements separated by semicolons, no DDL of any kind. This runs against a real production warehouse and must
+  only ever read.
+- Return ROWS, not an aggregate: keep every column the person did not ask to drop (SELECT * plus the new columns,
+  or an explicit list when columns are renamed/dropped), add derived columns with clear names, filter with WHERE,
+  de-duplicate with DISTINCT or a window function, join across the given tables on a real shared column. Only
+  aggregate (GROUP BY) when the request itself clearly asks for a grouped table.
+- No LIMIT / TOP / FETCH and no ORDER BY - a saved table has no row cap and no fixed order.
+- Reference only the real table and column names given in the schema - never invent one. A table marked as a saved
+  query is referenced by that exact name; do not define your own CTE with the same name.
+- {notes}
+- If the request genuinely cannot be expressed from the given schema (it needs a column or table that does not
+  exist, or it is not a request for a table of rows at all), respond with exactly: NOT_POSSIBLE"""
+
+
+def generate_warehouse_table_sql(
+    prompt: str, schema_text: str, dialect_kind: str,
+    previous_sql: str | None = None, previous_error: str | None = None,
+) -> str:
+    """Writes the definition of a new saved-query table - see
+    _warehouse_table_system_prompt. Returns the raw model text (SQL plus
+    the `-- name:` trailer, or NOT_POSSIBLE); routers/chat.py parses it
+    with warehouse_tables.parse_table_sql_response. previous_sql/
+    previous_error carry the one bounded retry exactly like
+    generate_bigquery_sql's."""
+    user_content = f"Tables in scope:\n{schema_text}\n\nRequest: {prompt}"
+    if previous_sql and previous_error:
+        user_content += (
+            f"\n\nYour previous attempt:\n{previous_sql}\n\n"
+            f"It failed with this error:\n{previous_error}\n\n"
+            f"Write a corrected query (and the -- name: line)."
+        )
+    messages = [
+        {"role": "system", "content": _warehouse_table_system_prompt(dialect_kind)},
+        {"role": "user", "content": user_content},
+    ]
+    raw = _call_llm_resilient(messages, max_tokens=900)
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text[:3].lower() == "sql":
+            text = text[3:]
+        text = text.strip()
+    return text
 
 
 # --- MongoDB pushdown (Enterprise Scale Roadmap, Phase 2) ----------------
@@ -951,6 +1069,74 @@ def generate_mongo_pipeline(prompt: str, schema_text: str) -> str:
             pipeline_text = pipeline_text[4:]
         pipeline_text = pipeline_text.strip()
     return pipeline_text
+
+
+# --- Query-builder suggestion (2026-10-06, warehouse-honesty round) --------
+# When the pushdown SQL writer above could not turn a question into a query
+# that runs inside the warehouse, routers/chat.py answers with
+# action="needs_query_help" and offers a deterministic query builder (see
+# services/query_builder.py). This asks the model for a STRUCTURED best
+# guess at how to fill that builder in - JSON in exactly the
+# schemas_extra.QueryBuilderSpec shape - so the person starts from a
+# mostly-right prefill instead of a blank form. The result is only ever a
+# suggestion: routers/chat.py validates every part of it against the data
+# source's real schema (query_builder.sanitize_suggested_spec) and drops
+# anything that does not check out before it reaches the frontend, and the
+# SQL eventually run is built by query_builder.py from the (possibly
+# edited) spec, never from this model output.
+QUERY_SPEC_SYSTEM_PROMPT = """You are the GD360 query-builder suggestion module. A person asked a question about a
+warehouse table, and it could not be answered automatically. Your job is to propose how to fill in a simple
+aggregate query builder for it, as ONE raw JSON object of exactly this shape - no markdown code fences, no
+explanation, nothing before or after the JSON:
+
+{"table": "<table name>", "group_by": ["<column>", ...], "measure": "<column>" | null,
+ "agg": "count" | "sum" | "avg" | "min" | "max" | "count_distinct",
+ "filters": [{"column": "<column>", "op": "=" | "!=" | ">" | ">=" | "<" | "<=" | "is_null" | "is_not_null" | "in",
+              "value": <string | number | [..] | null>}, ...],
+ "order_by": "measure_desc" | "measure_asc" | "group" | null, "limit": <integer 1..5000>}
+
+Strict rules:
+- Use ONLY table and column names that appear, spelled exactly, in the schema you are given. Never invent one.
+- group_by has at most 3 columns. measure is null only when agg is "count" (which then means COUNT(*)).
+- filters is a flat list, all AND-ed together; is_null/is_not_null take value null; "in" takes a list.
+- If the question is not an aggregate/breakdown/top-N question that this builder shape can express (for example
+  it asks for a table of raw rows, a transformation, or something the schema cannot support), respond with
+  exactly: null"""
+
+
+def suggest_query_spec(prompt: str, schema_text: str) -> dict | None:
+    """Best-effort structured suggestion for the query builder - see
+    QUERY_SPEC_SYSTEM_PROMPT. Returns a plain dict in the QueryBuilderSpec
+    shape (NOT yet validated against the schema - the caller must run it
+    through query_builder.sanitize_suggested_spec), or None when the model
+    said null, answered with something that is not a JSON object, or the
+    call itself failed. Never raises: this is a prefill convenience, and a
+    failure here must never turn a needs_query_help response into a 500."""
+    try:
+        messages = [
+            {"role": "system", "content": QUERY_SPEC_SYSTEM_PROMPT},
+            {"role": "user", "content": f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"},
+        ]
+        raw = _call_llm_resilient(messages, max_tokens=500)
+    except Exception as e:
+        print(f"[ai_engine] suggest_query_spec failed (non-fatal): {e}")
+        return None
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text[:4].lower() == "json":
+            text = text[4:]
+        text = text.strip()
+    if not text or text.lower() == "null":
+        return None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        try:
+            parsed = _extract_json(text)
+        except Exception:
+            return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 GOKU_SYSTEM_PROMPT = """You are Goku, a friendly, world-class data analyst assistant embedded inside the GD360
@@ -2395,6 +2581,7 @@ def analyze(
     metric_definitions: list[dict] | None = None,
     transform_tables: dict[str, pd.DataFrame] | None = None,
     transform_definitions: list[dict] | None = None,
+    warehouse_context: dict | None = None,
 ) -> dict:
     """
     Main entrypoint. `tables` maps display name -> DataFrame for every table
@@ -2508,7 +2695,50 @@ def analyze(
     can't convey that. Both None/empty means no saved transforms exist for
     this data source yet, exactly this app's whole behavior before this
     feature existed.
+
+    `warehouse_context` (2026-10-06, warehouse-honesty round), when given
+    by routers/chat.py, means the single table in `tables` is NOT the
+    person's data but the small, already-aggregated RESULT of one query
+    that ran inside their warehouse over every row: {"provider": ds.kind,
+    "exact_total_rows": int | None, "bytes_scanned": int | None, "sql":
+    str}. It is held in _WAREHOUSE_CONTEXT for the duration of this call
+    so every insight summary built below is stamped via _stamp_source_rows
+    with computed_in_warehouse=True (and the real total row count as n,
+    when known) instead of the result's own tiny length as "n" - see
+    INSIGHT_SYSTEM_PROMPT's "Answers computed inside the person's own data
+    warehouse" rule. None (every other caller) changes nothing.
     """
+    token = _WAREHOUSE_CONTEXT.set(dict(warehouse_context) if warehouse_context else None)
+    try:
+        return _analyze_inner(
+            prompt, tables, history=history, chart_override=chart_override, intent=intent, guided=guided,
+            skip_prep=skip_prep, original_df=original_df, durable_repeat=durable_repeat, unattended=unattended,
+            catalog=catalog, metric_definitions=metric_definitions, transform_tables=transform_tables,
+            transform_definitions=transform_definitions,
+        )
+    finally:
+        _WAREHOUSE_CONTEXT.reset(token)
+
+
+def _analyze_inner(
+    prompt: str,
+    tables: dict[str, pd.DataFrame],
+    history: list[dict] | None = None,
+    chart_override: dict | None = None,
+    intent: str | None = None,
+    guided: bool = False,
+    skip_prep: bool = False,
+    original_df: pd.DataFrame | None = None,
+    durable_repeat: tuple[str, str, str, str | None] | None = None,
+    unattended: bool = False,
+    catalog: list[dict] | None = None,
+    metric_definitions: list[dict] | None = None,
+    transform_tables: dict[str, pd.DataFrame] | None = None,
+    transform_definitions: list[dict] | None = None,
+) -> dict:
+    """The body of analyze() - see its docstring. Split out only so the
+    warehouse-context ContextVar can be set/reset around the whole thing
+    in one try/finally."""
     df = next(iter(tables.values()))  # the primary table - profiling/suggestions are based on this one
     profile = profile_dataframe(df)
     explicit_table_names = list(tables.keys())
@@ -3116,7 +3346,7 @@ def _run_transform(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, 
     summary = result_to_summary(cleaned)
     # The real row count behind this result, so the insight can cite an
     # actual sample size (n) instead of leaving it unstated.
-    summary["source_row_count"] = rows_after
+    _stamp_source_rows(summary, rows_after)
     insight = _generate_insight(prompt, summary)
 
     # 2026-10-05 bug fix: "Filtering the dataset for employees where
@@ -3208,7 +3438,7 @@ def _run_analyze_with_prep(
         # person continues past this pause, further down in this function.
         prep_chart_spec = None
         prep_summary = result_to_summary(prepped)
-        prep_summary["source_row_count"] = rows_after
+        _stamp_source_rows(prep_summary, rows_after)
         prep_insight = _generate_insight(prompt, prep_summary)
         return {
             "needs_clarification": False,
@@ -3450,7 +3680,7 @@ def _run_analyze_with_prep(
     tidy = result_to_tidy(result)
 
     summary = result_to_summary(result)
-    summary["source_row_count"] = rows_after
+    _stamp_source_rows(summary, rows_after)
     insight = _generate_insight(prompt, summary)
 
     return {
@@ -3872,7 +4102,7 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
     # The real row count of the table this was computed from, so the
     # insight can cite an actual sample size (n) instead of leaving it
     # unstated or, worse, the model guessing one.
-    summary["source_row_count"] = int(len(next(iter(tables.values()))))
+    _stamp_source_rows(summary, int(len(next(iter(tables.values())))))
     insight = _generate_insight(prompt, summary)
 
     return {
@@ -3965,6 +4195,56 @@ def _augment_summary_with_computed_stats(summary: dict) -> dict:
     return summary
 
 
+# --- Warehouse-computed answers (2026-10-06, warehouse-honesty round) ----
+# routers/chat.py hands analyze() a `warehouse_context` whenever the table
+# it is analyzing is NOT the person's data but the small, already-
+# aggregated RESULT of one query that ran inside their warehouse over
+# every row. Every summary this module builds for an insight used to stamp
+# `source_row_count = len(<table analyzed>)` - for a warehouse result that
+# is e.g. 3, which would make the insight say "n = 3" (or, before this
+# round, "across the sample of n = 2,000"), both flatly wrong. The context
+# is kept in a ContextVar for the duration of the analyze() call rather
+# than threaded through every _execute_plan/_run_*/_attach_entry_insights
+# signature: every summary in this module is built on the calling thread
+# (the ThreadPoolExecutor pools here only run _generate_insight on an
+# already-built summary, and the sandbox is a child process), so a
+# ContextVar set in analyze() is visible exactly where the summaries are
+# stamped and nowhere else. _stamp_source_rows is the single chokepoint.
+_WAREHOUSE_CONTEXT: contextvars.ContextVar = contextvars.ContextVar("gd360_warehouse_context", default=None)
+
+
+def _stamp_source_rows(summary: dict, rows: int | None) -> dict:
+    """Records what "n" means for this summary. Ordinary (pandas) path:
+    source_row_count = the real row count of the table analyzed. Warehouse
+    path (a warehouse_context is active): computed_in_warehouse=True, the
+    provider, and warehouse_total_rows (the real COUNT(*) of the scoped
+    table, only when routers/chat.py had it cached from the Data tab's
+    profile - never a fresh count) - and NO source_row_count at all, since
+    the small result's own length is not a sample size of anything."""
+    ctx = _WAREHOUSE_CONTEXT.get()
+    if ctx:
+        summary["computed_in_warehouse"] = True
+        if ctx.get("provider"):
+            summary["warehouse_provider"] = ctx.get("provider")
+        total = ctx.get("exact_total_rows")
+        if isinstance(total, int) and not isinstance(total, bool):
+            summary["warehouse_total_rows"] = total
+        summary.pop("source_row_count", None)
+    else:
+        summary["source_row_count"] = rows
+    return summary
+
+
+def _warehouse_phrase(summary: dict) -> str:
+    """The deterministic wording _fallback_insight uses for a warehouse-
+    computed summary - mirrors the INSIGHT_SYSTEM_PROMPT rule exactly."""
+    provider = summary.get("warehouse_provider")
+    where = f"your {provider} warehouse" if provider else "your data warehouse"
+    total = summary.get("warehouse_total_rows")
+    n_text = f", n = {total:,}" if isinstance(total, int) else ""
+    return f" (computed inside {where} across every row{n_text})"
+
+
 def _fallback_insight(summary: dict) -> str:
     """Used only if the model genuinely could not write an insight after
     every retry below (e.g. a transient provider error) - builds a plain,
@@ -3978,6 +4258,8 @@ def _fallback_insight(summary: dict) -> str:
         value = round(scalar, 3)
         n = summary.get("source_row_count")
         n_text = f" (n = {n})" if isinstance(n, int) else ""
+        if summary.get("computed_in_warehouse"):
+            n_text = _warehouse_phrase(summary)
         return (
             f"**Key insight:** The computed result for this request is {value}{n_text}.\n"
             f"**Implication:** Compare this figure against what you would expect for these columns to judge "
@@ -4000,6 +4282,8 @@ def _fallback_insight(summary: dict) -> str:
         relative = f" ({gap_rel}% relative)" if gap_rel is not None else ""
         n = summary.get("source_row_count")
         n_text = f" (n = {n})" if isinstance(n, int) else ""
+        if summary.get("computed_in_warehouse"):
+            n_text = _warehouse_phrase(summary)
         return (
             f"**Key insight:** {top_label} leads at {top_value}, versus {bottom_label} at "
             f"{bottom_value} - a gap of {gap_desc}{relative}{n_text}.\n"
@@ -4011,8 +4295,9 @@ def _fallback_insight(summary: dict) -> str:
     if preview:
         first = preview[0]
         pairs = ", ".join(f"{k}: {v}" for k, v in list(first.items())[:4])
+        where = _warehouse_phrase(summary) if summary.get("computed_in_warehouse") else ""
         return (
-            f"**Key insight:** The leading result shown above is {pairs}.\n"
+            f"**Key insight:** The leading result shown above is {pairs}{where}.\n"
             f"**Implication:** This is the top figure in the breakdown you asked for.\n"
             f"**Next step:** Compare it against the rest of the results in the chart above to see how much it "
             f"stands out."
@@ -4097,7 +4382,7 @@ def _attach_entry_insights(
         if value is None:
             continue
         summary = result_to_summary(value)
-        summary["source_row_count"] = source_row_count
+        _stamp_source_rows(summary, source_row_count)
         summaries[label] = summary
     insights: dict[str, str] = {}
     if summaries:
