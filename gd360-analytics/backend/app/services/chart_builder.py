@@ -70,6 +70,8 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from scipy import stats as scipy_stats
 
+from .dtype_utils import coerce_dates_for_json
+
 DARK_TEMPLATE = "plotly_dark"
 
 # 2026-09-29 (visual redesign, round 1): replaces the previous 10-hue set
@@ -1459,9 +1461,16 @@ def result_to_summary(result: Any, max_rows: int = 15) -> dict:
     else:
         return {"scalar_result": result}
 
+    # coerce_dates_for_json so a date/timestamp column shows up as a real
+    # date in the AI's own summary of its result, instead of the raw
+    # epoch-millisecond number pandas' to_json would otherwise produce
+    # (same underlying bug as the Data tab preview - see dtype_utils.py).
+    # Left untouched for "describe" below: those are already-aggregated
+    # stats (mean/min/max as summary figures), a lower-stakes, separate
+    # case not changed in this round.
     return {
         "shape": list(df.shape),
         "columns": list(map(str, df.columns)),
-        "preview": json.loads(df.head(max_rows).to_json(orient="records")),
+        "preview": json.loads(coerce_dates_for_json(df.head(max_rows)).to_json(orient="records")),
         "describe": json.loads(df.describe(include="all").to_json()) if not df.empty else {},
     }
