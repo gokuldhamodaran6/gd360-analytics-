@@ -205,6 +205,23 @@ class Settings(BaseSettings):
     # separately and much lower here; chat/AI analysis (which genuinely can
     # need more rows to be accurate) keeps using the higher limit above.
     PREVIEW_ROW_LIMIT: int = 20_000
+    # 2026-10-06: a hard, BigQuery-specific ceiling on top of both limits
+    # above - confirmed necessary from Render's own oomKilled events
+    # (services/connectors.py BigQueryConnector.load_dataframe's own
+    # comment has the full incident). BigQuery's connector pulls rows
+    # over its REST API (no BigQuery Storage Read API client - that needs
+    # an extra IAM permission this app doesn't request), which is
+    # measurably heavier per row than the native wire-protocol drivers
+    # every other connector in this app uses (psycopg2/pymysql/pymssql/
+    # Snowflake's Arrow-based fetch_pandas_all). PREVIEW_ROW_LIMIT (20,000)
+    # is safe for those; it was NOT safe for BigQuery - the crash happened
+    # at exactly that cap, on an ordinary preview of a real table.
+    # Deliberately conservative rather than finely tuned (there was no
+    # safe way to binary-search the real ceiling against the user's own
+    # already-crashing live service); raise it only after confirming a
+    # real, successful load at the new value via Render's own memory
+    # metrics, not by estimating from this table alone.
+    BIGQUERY_MAX_ROWS_LOADED: int = 2_000
     # 2026-10-05: how long the Data tab's full-table column profiling
     # (services/profiling.py, routers/datasources.py's `/profile`) keeps a
     # result cached in-process before re-scanning the real table. A real
