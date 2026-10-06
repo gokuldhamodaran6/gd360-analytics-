@@ -714,7 +714,7 @@ class BigQueryConnector:
             # already proven out by run_pushdown_query, so this doesn't
             # introduce a second, untested way of pulling a BigQuery
             # result into pandas.
-            return client.query(sql).result().to_dataframe(create_bqstorage_client=False)
+            return client.query(sql, job_config=self._job_config()).result().to_dataframe(create_bqstorage_client=False)
         finally:
             client.close()
 
@@ -762,13 +762,29 @@ class BigQueryConnector:
         )
         return bq.Client(project=self.project_id, credentials=credentials)
 
+    def _job_config(self, **kwargs) -> "bq.QueryJobConfig":
+        """2026-10-06 (founder's live BigQuery incident, second root cause):
+        every query this connector runs now carries this connection's own
+        project + dataset as BigQuery's DEFAULT DATASET, so a statement
+        that names a table plainly - `FROM Hotel_data`, exactly what the
+        AI SQL writer, the query builder's aliases and a person's own SQL
+        naturally produce - resolves to `project.dataset.Hotel_data`
+        instead of failing with BigQuery's "Table must be qualified with
+        a dataset". Fully-qualified names keep working unchanged. This is
+        deterministic connector-level behaviour: the connector already
+        knows both ids, so correctness never depends on a model
+        remembering to qualify a name."""
+        cfg = bq.QueryJobConfig(**kwargs)
+        cfg.default_dataset = f"{self.project_id}.{self.dataset_id}"
+        return cfg
+
     def estimate_query_bytes(self, sql: str) -> int:
         """A BigQuery dry run - tells you how much data a query would scan
         without running it or being billed for it. This is the number
         run_pushdown_query checks against its byte budget before the real
         query ever touches anything."""
         client = self._bq_client()
-        job = client.query(sql, job_config=bq.QueryJobConfig(dry_run=True, use_query_cache=False))
+        job = client.query(sql, job_config=self._job_config(dry_run=True, use_query_cache=False))
         return job.total_bytes_processed or 0
 
     def run_pushdown_query(self, sql: str, max_bytes: int) -> tuple[pd.DataFrame, int]:
@@ -794,7 +810,7 @@ class BigQueryConnector:
                 estimated_bytes=estimated,
             )
         client = self._bq_client()
-        job = client.query(sql, job_config=bq.QueryJobConfig(use_query_cache=True))
+        job = client.query(sql, job_config=self._job_config(use_query_cache=True))
         df = job.result().to_dataframe()
         return df, estimated
 
@@ -814,7 +830,7 @@ class BigQueryConnector:
         assert_read_only_sql(sql)
         client = self._bq_client()
         try:
-            job = client.query(sql, job_config=bq.QueryJobConfig(dry_run=True, use_query_cache=False))
+            job = client.query(sql, job_config=self._job_config(dry_run=True, use_query_cache=False))
             return columns_from_bq_schema(getattr(job, "schema", None)), int(job.total_bytes_processed or 0)
         finally:
             client.close()
@@ -835,7 +851,7 @@ class BigQueryConnector:
             )
         client = self._bq_client()
         try:
-            job = client.query(sql, job_config=bq.QueryJobConfig(use_query_cache=True))
+            job = client.query(sql, job_config=self._job_config(use_query_cache=True))
             rows = job.result(page_size=batch_rows)
             schema = getattr(rows, "schema", None) or getattr(job, "schema", None) or []
             yield [getattr(f, "name", str(f)) for f in schema]
