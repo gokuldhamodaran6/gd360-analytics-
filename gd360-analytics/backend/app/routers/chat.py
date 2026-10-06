@@ -10,10 +10,20 @@ The core AI analytics endpoint. Given a prompt + a datasource, it:
   4. Persists the conversation turn.
   5. Returns chart spec + insight + follow-up suggestions, or a
      clarifying question if the AI/system needs more info.
+
+For a warehouse/database data source (PUSHDOWN_ELIGIBLE_KINDS) step 1 is
+different since 2026-10-06 (warehouse-honesty round): rows are never
+pulled into the app for analysis. The question is answered by one real
+query that runs inside the warehouse over every row (AI-written, built
+deterministically from the person's query_builder spec, or their own
+raw_sql), and the small result is what step 2 charts - or, when no such
+query could be produced, the turn is action="needs_query_help" and
+nothing is computed. See the section comment above _multi_table_schema_text.
 """
 import json
 import time
 from collections import defaultdict, deque
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,12 +35,16 @@ from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
 from ..schemas_extra import ChatRequestFull, VerifyRequest
-from ..services import ai_engine, data_access_rules, learned_answers, workspace_access
+from ..services import ai_engine, data_access_rules, learned_answers, query_builder, warehouse_tables, workspace_access
+from ..services.profile_cache import cached_exact_total_rows
 from ..services.transforms import apply_transform_steps, describe_transform
-from ..services.connectors import BigQueryConnector, SnowflakeConnector, SQLConnector, MongoConnector, QueryTooExpensive, ReadOnlyViolation
+from ..services.connectors import (
+    BigQueryConnector, SnowflakeConnector, SQLConnector, MongoConnector, QueryTooExpensive, ReadOnlyViolation,
+    assert_read_only_sql,
+)
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, dataframe_to_csv_bytes, ensure_legacy_migrated, NeedsTableSelection,
-    purpose_label,
+    purpose_label, is_warehouse_query, WAREHOUSE_QUERY_SOURCE_KIND,
 )
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -52,15 +66,26 @@ def _check_rate_limit(user_id: str):
     window.append(now)
 
 
-# --- Warehouse pushdown (Enterprise Scale Roadmap, Phase 1 + 2) ------------
-# Scoped narrowly on purpose: only the plain "ask a question about my
-# BigQuery/Snowflake data" case below (requested_ids == ["original"], no
-# extra tables merged in, no specific sub-table forced) tries this path.
-# Merging in other sources/saved versions still uses the general
-# multi-table path a few lines down - broadening pushdown to that case is
-# real future work, not this first slice. See the roadmap doc's own
-# "Where to start" section for why this is deliberately the narrowest
-# useful first step.
+# --- Warehouse pushdown ---------------------------------------------------
+# 2026-10-06 (warehouse-honesty round - a product-policy change, not a bug
+# fix): for a warehouse/database data source (PUSHDOWN_ELIGIBLE_KINDS
+# below), a chat question is answered ONLY by one real query that runs
+# inside the warehouse over every row. The app never pulls a row-capped
+# SAMPLE of a warehouse table into pandas and analyzes that - the founder's
+# firm decision is that an answer computed on a sample is a wrong answer
+# and must never be produced. The only two honest outcomes for such a
+# source are:
+#   - "computed inside the warehouse over every row" (used_pushdown=True),
+#   - "not computed yet - here is how to finish it" (action=
+#     "needs_query_help": the attempts made, a prefilled deterministic
+#     query builder, or the person's own SQL - see _needs_query_help_response
+#     and schemas.ChatResponse).
+# Before this round, a failed pushdown silently fell through to
+# _load_selected_tables -> load_dataframe, which loaded e.g. 2,000 BigQuery
+# rows (settings.BIGQUERY_MAX_ROWS_LOADED) and analyzed those as if they
+# were the data. That path is gone for warehouse kinds; it is unchanged for
+# every file-based kind (csv/excel/api/googlesheets/...), whose data is
+# already complete in the app.
 
 def _multi_table_schema_text(schema_cache: dict) -> str:
     """Every table in a warehouse dataset (BigQuery or Snowflake - both
@@ -117,6 +142,17 @@ def _mongo_schema_text(schema_cache: dict) -> str:
     return "\n".join(lines)
 
 
+def _scoped_schema_cache(schema_cache, scope_tables: list[str] | None) -> dict:
+    """The schema_cache narrowed to exactly `scope_tables` (every table when
+    None) - what the SQL/pipeline writer is shown, so it can only ever
+    reference the tables the person actually selected."""
+    if not isinstance(schema_cache, dict):
+        return {}
+    if scope_tables is None:
+        return schema_cache
+    return {k: v for k, v in schema_cache.items() if k in scope_tables}
+
+
 # 2026-10-05: _log_pushdown/_todays_pushdown_bytes used to be defined
 # here directly. Moved to services/pushdown_budget.py (imported below,
 # under their original names so every call site in this file is
@@ -129,248 +165,112 @@ def _mongo_schema_text(schema_cache: dict) -> str:
 from ..services.pushdown_budget import log_pushdown as _log_pushdown, todays_pushdown_bytes as _todays_pushdown_bytes
 
 
-# 2026-10-06 (pushdown-honesty round): every datasource kind the chat
-# endpoint's pushdown dispatch (just below) ever ATTEMPTS pushdown for -
-# the exact same set of kinds that `if ds.kind == "bigquery": ... elif
-# ds.kind in (...): ...` branch already lists, kept here as one named
-# constant so the honesty-disclosure logic right after that branch can
-# check "is this a kind that COULD have run a real query" without
-# silently drifting out of sync with the dispatch itself. A kind NOT in
-# this set (a CSV/Excel upload, a plain API connection) never attempts
-# pushdown at all, so there is nothing to disclose either way for it -
-# see Message.used_pushdown/sample_row_count's own docstring.
+# Every datasource kind the chat endpoint ever runs a query INSIDE the
+# source for - exactly the set the dispatch in _run_warehouse_pushdown
+# handles. For these kinds the sample path is gone (see the module
+# comment above). A kind NOT in this set (a CSV/Excel upload, a plain API
+# connection, Google Sheets, ...) never attempts pushdown at all and keeps
+# today's pull-and-pandas path completely unchanged.
 PUSHDOWN_ELIGIBLE_KINDS = {"bigquery", "snowflake", "postgres", "mysql", "sqlserver", "supabase", "mongodb"}
+# The metered warehouses whose scans count against the shared per-user
+# daily byte budget (services/pushdown_budget.py). A customer's own
+# Postgres/MySQL/SQL Server/Supabase/Mongo server has no per-query billing
+# to guard, so those skip the budget (unchanged from before this round).
+_BUDGETED_KINDS = {"bigquery", "snowflake"}
+_SQL_PUSHDOWN_KINDS = {"bigquery", "snowflake", "postgres", "mysql", "sqlserver", "supabase"}
 
 
-# 2026-10-06 (pushdown gate fix - founder's live-production root cause):
-# the pushdown gate used to check `requested_ids == ["original"]` only.
-# That is NEVER true for a BigQuery/Snowflake/SQL/Mongo datasource that
-# exposes exactly one table/collection, because the frontend (Workspace.tsx,
-# see setSourceIds/ORIGINAL_SOURCE_ID) defaults the WORKING ON selection to
-# `sheet:<that one table name>`, not the literal string "original", the
-# moment it can detect a "first table" - which a warehouse/database source
-# virtually always can (unlike a flat CSV/Excel upload, which has no
-# sub-table concept and genuinely defaults to "original"). So for the
-# overwhelming majority of real single-table warehouse/database
-# connections, pushdown was structurally never even attempted.
-#
-# This helper broadens the gate ONLY for that exact, provably-safe case:
-# the selection is a single "sheet:<name>" entry AND that name is the ONLY
-# key this datasource's schema_cache has. Picking "just this one table"
-# is then semantically identical to picking "original" (the whole
-# datasource), because _multi_table_schema_text/_mongo_schema_text would
-# produce the exact same schema text either way - there is nothing else in
-# the schema the AI pushdown SQL/pipeline writer could accidentally
-# reference. It deliberately does NOT broaden the case where a datasource
-# has 2+ tables and the person picked just one of them - the pushdown SQL
-# generator is handed the FULL datasource schema (every table), not a
-# schema scoped to just the one picked table, so writing a real query in
-# that case could legitimately reference a table the person did not
-# select. Scoping the generator itself to one table among several is real,
-# harder future work, not this fix - see the module docstring above.
-#
-# Written defensively on purpose: ds.schema_cache can be None, {}, or (in
-# theory, from stale/legacy data) not a dict at all, and this must return
-# False - never raise - in any ambiguous case, since a raise here would
-# break EVERY chat request for that datasource, not just skip pushdown for
-# one of them.
-def _is_effectively_original_selection(ds: models.DataSource, requested_ids: list) -> bool:
+@dataclass
+class PushdownOutcome:
+    """What one warehouse pushdown cycle actually did - replaces the old
+    "DataFrame or None" return so the caller can be honest about a failure
+    instead of silently falling back to a sample.
+
+    df             - the small result when the query ran, else None.
+    sql            - the SQL (or, for MongoDB, the JSON {"collection",
+                     "pipeline"} text) that actually produced `df`; None
+                     when nothing ran.
+    bytes_scanned  - real bytes scanned when the provider meters it
+                     (BigQuery dry-run estimate / Snowflake's own figure).
+    duration_ms    - wall-clock ms around the whole generate+execute
+                     cycle(s), time.perf_counter based.
+    attempts       - every attempt, in order: {"sql", "status", "error"},
+                     status in "ok" | "rejected_unsafe" |
+                     "rejected_too_expensive" | "error" | "not_possible" |
+                     "needs_table" | "generation_failed".
+    skipped_reason - why no (or no further) attempt was made:
+                     "daily_budget" | "empty_schema" | "needs_table" |
+                     "not_possible" | None. "restricted_role" and
+                     "unsupported_selection" are set by chat() itself,
+                     before any pushdown function is called.
+    """
+    df: object = None
+    sql: str | None = None
+    bytes_scanned: int | None = None
+    duration_ms: int = 0
+    attempts: list = field(default_factory=list)
+    skipped_reason: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.df is not None
+
+
+def _version_ctes(versions) -> list[tuple[str, str]]:
+    """[(sql_alias, query_sql)] for the saved-query versions in a scope -
+    what every statement that references one is wrapped in (always all of
+    them: an unused CTE is harmless)."""
+    return [
+        (v.sql_alias, v.query_sql)
+        for v in (versions or [])
+        if getattr(v, "sql_alias", None) and getattr(v, "query_sql", None)
+    ]
+
+
+def _execute_sql_attempt(
+    db: Session, ds: models.DataSource, user_id: str, sql: str, is_retry: bool = False,
+    ctes: list[tuple[str, str]] | None = None,
+) -> dict:
+    """Runs ONE already-written SQL statement inside the warehouse/database
+    `ds` points at - the single execution chokepoint shared by the
+    AI-written pushdown path, the deterministic query builder and the
+    person's own raw_sql, so all three get exactly the same read-only
+    check (assert_read_only_sql inside each connector), per-query cost
+    guard (BigQuery dry run), statement timeout (Snowflake), row cap
+    (SQLConnector) and audit-log row. Returns:
+      {"df": DataFrame, "bytes_scanned": int|None, "attempt": {...}} on
+        success;
+      {"retry": bool, "attempt": {...}} on failure, where `retry` says
+        whether the AI pushdown path may hand this SQL+error back to the
+        model for its one bounded retry (True for ReadOnlyViolation and any
+        execution error on a first attempt; always False for
+        QueryTooExpensive - valid SQL that is simply too costly, which a
+        rewrite cannot fix - and always False on a retry).
+    Never raises past the caller for a query/connection failure; only a
+    genuinely unexpected kind reaches the ValueError below.
+
+    2026-10-06 ("generated data is a saved query" layer): `ctes` -
+    [(alias, query_sql)] of the saved-query versions in scope - wraps the
+    statement as `WITH alias AS (query_sql), ... <sql>` before it runs
+    (warehouse_tables.wrap_with_ctes, flat at the top level), so a
+    question on a saved table is still ONE query over every row, inside
+    the warehouse. The attempt's recorded "sql" is the wrapped text that
+    actually ran."""
+    kind = ds.kind
+    info = ds.connection_info or {}
+    if ctes:
+        try:
+            sql = warehouse_tables.wrap_with_ctes(sql, ctes)
+        except warehouse_tables.CteConflict as e:
+            _log_pushdown(db, user_id, ds.id, kind, sql, None, "error", str(e))
+            return {"retry": not is_retry, "attempt": {"sql": sql, "status": "error", "error": str(e)}}
     try:
-        if requested_ids == ["original"]:
-            return True
-        if not isinstance(requested_ids, list) or len(requested_ids) != 1:
-            return False
-        only_id = requested_ids[0]
-        if not isinstance(only_id, str) or not only_id.startswith("sheet:"):
-            return False
-        # Exact same raw-string slice _load_selected_tables' own "sheet:"
-        # branch uses below - no new normalization (case-folding,
-        # whitespace-stripping, etc.) invented here, so this can never
-        # disagree with what that function would actually load for the
-        # same id.
-        sheet_name = only_id[len("sheet:"):]
-        schema_cache = ds.schema_cache
-        if not isinstance(schema_cache, dict) or not schema_cache:
-            return False
-        keys = list(schema_cache.keys())
-        return keys == [sheet_name]
-    except Exception as e:
-        print(f"[chat] _is_effectively_original_selection could not evaluate, treating as not-original: {e}")
-        return False
-
-
-def _try_bigquery_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt: str):
-    """Tries to answer `prompt` with one governed SQL query run directly
-    inside BigQuery, instead of pulling rows into memory. Returns the
-    small result as a DataFrame on success, or None on ANY failure -
-    schema too sparse, this user's daily pushdown cost budget is already
-    used up, the model couldn't write safe SQL, the query would scan more
-    than this connection's per-query byte budget, or BigQuery rejected it
-    outright (even after a retry - see below). A None here must be
-    treated exactly like "pushdown was never attempted": the caller falls
-    through to the ordinary pull-and-pandas path, so a BigQuery question
-    can only ever get faster/cheaper from this, never worse - nothing in
-    this function is allowed to raise past it. Every real attempt (one
-    that got far enough to have actual SQL) is written to the audit log
-    via _log_pushdown, regardless of outcome - see models.PushdownQueryLog.
-
-    2026-10-06 (self-correcting pushdown round - "think like a data
-    scientist": attempt a real aggregate query, and don't silently give
-    up on the first stumble): this used to be a strict one-shot - any
-    failure at all fell back immediately, discarding the often very
-    actionable error a BigQuery dry-run rejection gives (e.g. naming
-    exactly which column doesn't exist) without ever showing it to the
-    model. Now, when the FIRST attempt fails in a way that is plausibly
-    the model's own mistake and genuinely correctable by showing it the
-    error - a ReadOnlyViolation (the SQL was unsafe/malformed), or a
-    genuine BigQuery dry-run/execution rejection (NOT QueryTooExpensive -
-    that means the SQL was VALID but scans too much data, which a retry
-    cannot fix and would just waste a second model call) - the exact
-    previous SQL and error are handed back to ai_engine.generate_
-    bigquery_sql for exactly ONE corrected second attempt (see
-    `_attempt` below). A second failure, of any kind, falls back exactly
-    like today - never a third attempt, never a loop. The daily cost
-    budget is checked once, before the first attempt, not re-checked
-    before the retry: a query that failed a dry run or was rejected as
-    unsafe never got far enough to actually scan/bill anything (confirmed
-    against _todays_pushdown_bytes, which only sums "ok"-status rows), so
-    there is nothing for a second check to catch that the first one
-    didn't already see."""
-    schema_text = _multi_table_schema_text(ds.schema_cache)
-    if not schema_text.strip():
-        return None
-
-    already_scanned_today = _todays_pushdown_bytes(db, user_id)
-    if already_scanned_today >= settings.PUSHDOWN_MAX_BYTES_SCANNED_PER_DAY_PER_USER:
-        print(f"[chat] BigQuery pushdown skipped, daily cost budget already used: {already_scanned_today} bytes")
-        _log_pushdown(db, user_id, ds.id, "bigquery", "", None, "rejected_daily_budget")
-        return None
-
-    def _attempt(is_retry: bool, previous_sql: str | None = None, previous_error: str | None = None):
-        """One generate-then-execute cycle. Returns a dict:
-          {"df": <DataFrame>} on success;
-          {"retry": True, "sql": <sql>, "error": <str>} on a failure the
-            caller may retry once more with this SQL/error as context
-            (ReadOnlyViolation, or a genuine execution/dry-run error);
-          {"retry": False} on anything else (SQL generation itself
-            failed, NOT_POSSIBLE/empty SQL, or QueryTooExpensive - a
-            correct, final rejection, not a mistake to correct).
-        Logs this one attempt to the audit table whenever it got far
-        enough to have real SQL, exactly like the pre-retry code did -
-        called once for the first attempt and, only when it returned
-        retry=True, once more for the single retry, so the audit log
-        ends up with two honest, separately-timestamped rows (first
-        attempt's real failure, then the retry's real outcome) rather
-        than the retry silently overwriting or hiding that a first
-        attempt happened."""
-        try:
-            sql = ai_engine.generate_bigquery_sql(prompt, schema_text, previous_sql=previous_sql, previous_error=previous_error)
-        except Exception as e:
-            print(f"[chat] BigQuery pushdown SQL generation failed{' (retry)' if is_retry else ''}, falling back: {e}")
-            return {"retry": False}
-
-        if not sql or sql.strip().upper() == "NOT_POSSIBLE":
-            return {"retry": False}
-
-        try:
+        if kind == "bigquery":
             service_account_json = security.decrypt_secret(ds.encrypted_secret)
-            info = ds.connection_info
             connector = BigQueryConnector(info["project_id"], info["dataset_id"], service_account_json)
             df, bytes_scanned = connector.run_pushdown_query(sql, max_bytes=settings.BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY)
-            _log_pushdown(db, user_id, ds.id, "bigquery", sql, bytes_scanned, "ok")
-            return {"df": df}
-        except ReadOnlyViolation as e:
-            label = "unsafe, falling back" if is_retry else "unsafe, will retry once with the error shown to the model"
-            print(f"[chat] BigQuery pushdown query rejected ({label}): {e}")
-            _log_pushdown(db, user_id, ds.id, "bigquery", sql, None, "rejected_unsafe", str(e))
-            return {"retry": not is_retry, "sql": sql, "error": str(e)}
-        except QueryTooExpensive as e:
-            # Valid SQL, just too costly - a retry can't fix that and
-            # would only waste a second model call, so always fall back
-            # immediately here, exactly like before this round.
-            print(f"[chat] BigQuery pushdown query rejected (too expensive), falling back: {e}")
-            _log_pushdown(db, user_id, ds.id, "bigquery", sql, e.estimated_bytes, "rejected_too_expensive", str(e))
-            return {"retry": False}
-        except Exception as e:
-            label = "falling back" if is_retry else "will retry once with the error shown to the model"
-            print(f"[chat] BigQuery pushdown query failed, {label}: {e}")
-            _log_pushdown(db, user_id, ds.id, "bigquery", sql, None, "error", str(e))
-            return {"retry": not is_retry, "sql": sql, "error": str(e)}
-
-    first = _attempt(is_retry=False)
-    if "df" in first:
-        return first["df"]
-    if not first.get("retry"):
-        return None
-    # Exactly one bounded retry: give the model its own previous SQL and
-    # the exact error it produced, then try executing the corrected query
-    # exactly once more. Whatever this returns (success or not) is final.
-    second = _attempt(is_retry=True, previous_sql=first["sql"], previous_error=first["error"])
-    return second.get("df")
-
-
-def _try_snowflake_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt: str):
-    """Tries to answer `prompt` with one governed SQL query run directly
-    inside Snowflake, instead of pulling rows into memory - the same idea
-    as _try_bigquery_pushdown above, with one real difference: Snowflake
-    bills by warehouse compute-time, not bytes scanned, so there is no
-    free pre-flight "how much would this cost" check the way BigQuery's
-    dry run gives. Safety instead comes from a strict per-query statement
-    timeout (settings.SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS - Snowflake
-    itself cancels the query once it's hit, capping the worst case) plus
-    the same daily cumulative byte budget every pushdown provider shares
-    (see _todays_pushdown_bytes): Snowflake's own actual bytes_scanned for
-    a completed query (read back from its QUERY_HISTORY_BY_SESSION, see
-    SnowflakeConnector.run_pushdown_query) still counts toward that budget
-    - just recorded after the query runs rather than estimated before it
-    does. Returns the small result as a DataFrame on success, or None on
-    ANY failure (even after a retry - see below), matching
-    _try_bigquery_pushdown's exact fallback contract - see that
-    function's docstring for the full list of ways this can (harmlessly)
-    fail through to the normal pull-and-pandas path.
-
-    2026-10-06 (self-correcting pushdown round): mirrors
-    _try_bigquery_pushdown's retry exactly - see that function's
-    docstring for the full reasoning. Snowflake has no QueryTooExpensive
-    equivalent (no free pre-flight cost check to reject on), so here
-    EVERY failure - ReadOnlyViolation or any other execution error (a
-    syntax/column error Snowflake's own engine rejects at execute time) -
-    is a candidate for the one bounded retry; there is no "valid but too
-    costly, don't bother retrying" case to carve out the way BigQuery's
-    QueryTooExpensive is. The daily budget is still checked only once,
-    before the first attempt: a query that failed before it ever ran
-    (ReadOnlyViolation) or failed during execution never produced a real
-    bytes_scanned "ok" row, so there is nothing a second budget check
-    before the retry would catch that the first one didn't already see."""
-    schema_text = _multi_table_schema_text(ds.schema_cache)
-    if not schema_text.strip():
-        return None
-
-    already_scanned_today = _todays_pushdown_bytes(db, user_id)
-    if already_scanned_today >= settings.PUSHDOWN_MAX_BYTES_SCANNED_PER_DAY_PER_USER:
-        print(f"[chat] Snowflake pushdown skipped, daily cost budget already used: {already_scanned_today} bytes")
-        _log_pushdown(db, user_id, ds.id, "snowflake", "", None, "rejected_daily_budget")
-        return None
-
-    def _attempt(is_retry: bool, previous_sql: str | None = None, previous_error: str | None = None):
-        """One generate-then-execute cycle - see _try_bigquery_pushdown's
-        own `_attempt` for the exact same shape/contract this mirrors.
-        Logs this one attempt to the audit table whenever it got far
-        enough to have real SQL, so a first failure and the retry's own
-        outcome both end up as separate, honest rows rather than the
-        retry hiding that a first attempt happened."""
-        try:
-            sql = ai_engine.generate_snowflake_sql(prompt, schema_text, previous_sql=previous_sql, previous_error=previous_error)
-        except Exception as e:
-            print(f"[chat] Snowflake pushdown SQL generation failed{' (retry)' if is_retry else ''}, falling back: {e}")
-            return {"retry": False}
-
-        if not sql or sql.strip().upper() == "NOT_POSSIBLE":
-            return {"retry": False}
-
-        try:
+        elif kind == "snowflake":
             creds = json.loads(security.decrypt_secret(ds.encrypted_secret))
-            info = ds.connection_info
             connector = SnowflakeConnector(
                 account=info["account"], warehouse=info["warehouse"], database=info["database"],
                 db_schema=info.get("db_schema"), role=info.get("role"),
@@ -379,145 +279,270 @@ def _try_snowflake_pushdown(db: Session, ds: models.DataSource, user_id: str, pr
             df, bytes_scanned = connector.run_pushdown_query(
                 sql, statement_timeout_seconds=settings.SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS
             )
-            _log_pushdown(db, user_id, ds.id, "snowflake", sql, bytes_scanned, "ok")
-            return {"df": df}
-        except ReadOnlyViolation as e:
-            label = "unsafe, falling back" if is_retry else "unsafe, will retry once with the error shown to the model"
-            print(f"[chat] Snowflake pushdown query rejected ({label}): {e}")
-            _log_pushdown(db, user_id, ds.id, "snowflake", sql, None, "rejected_unsafe", str(e))
-            return {"retry": not is_retry, "sql": sql, "error": str(e)}
-        except Exception as e:
-            label = "falling back" if is_retry else "will retry once with the error shown to the model"
-            print(f"[chat] Snowflake pushdown query failed, {label}: {e}")
-            _log_pushdown(db, user_id, ds.id, "snowflake", sql, None, "error", str(e))
-            return {"retry": not is_retry, "sql": sql, "error": str(e)}
-
-    first = _attempt(is_retry=False)
-    if "df" in first:
-        return first["df"]
-    if not first.get("retry"):
-        return None
-    second = _attempt(is_retry=True, previous_sql=first["sql"], previous_error=first["error"])
-    return second.get("df")
-
-
-def _try_sql_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt: str):
-    """Tries to answer `prompt` with one governed SQL query run directly
-    inside the person's own Postgres/MySQL/SQL Server/Supabase database,
-    instead of pulling rows into memory - the plain-database counterpart to
-    _try_bigquery_pushdown/_try_snowflake_pushdown above. Unlike those two,
-    there is no per-query metered cost to guard here (a customer's own
-    database server has no pay-per-scan billing the way a cloud warehouse
-    does), so this skips the byte/time cost checks and the shared daily
-    budget entirely - it is purely a speed and memory-safety upgrade,
-    reusing SQLConnector.load_dataframe's existing is_raw_sql path
-    (assert_read_only_sql plus an automatic, now dialect-aware row cap -
-    see that method's own comments for the SQL Server TOP-vs-LIMIT fix)
-    completely unchanged. Still logs to the same audit table as the other
-    two providers, with bytes_scanned always None, so the audit trail
-    stays consistent across every pushdown provider even though this one
-    has nothing to meter. Returns the small result as a DataFrame on
-    success, or None on ANY failure (even after a retry - see below),
-    matching the other two pushdown helpers' exact fallback contract.
-
-    2026-10-06 (self-correcting pushdown round): mirrors
-    _try_bigquery_pushdown's one bounded retry exactly - see that
-    function's docstring for the full reasoning. Like Snowflake (and
-    unlike BigQuery), there is no QueryTooExpensive concept here at all -
-    no metered cost to guard, so no "valid but too costly" case to carve
-    out - so EVERY failure (ReadOnlyViolation, or any other error the
-    database driver raises executing the SQL, e.g. an unknown column)
-    is a candidate for the single retry. There is no daily cost budget
-    for this path at all (see the class docstring above), so there is
-    nothing to re-check before the retry either."""
-    schema_text = _multi_table_schema_text(ds.schema_cache)
-    if not schema_text.strip():
-        return None
-
-    def _attempt(is_retry: bool, previous_sql: str | None = None, previous_error: str | None = None):
-        """One generate-then-execute cycle - see _try_bigquery_pushdown's
-        own `_attempt` for the exact same shape/contract this mirrors.
-        Logs this one attempt to the audit table whenever it got far
-        enough to have real SQL, so a first failure and the retry's own
-        outcome both end up as separate, honest rows rather than the
-        retry hiding that a first attempt happened."""
-        try:
-            sql = ai_engine.generate_sql_pushdown_sql(
-                prompt, schema_text, ds.kind, previous_sql=previous_sql, previous_error=previous_error
-            )
-        except Exception as e:
-            print(f"[chat] SQL pushdown SQL generation failed{' (retry)' if is_retry else ''}, falling back: {e}")
-            return {"retry": False}
-
-        if not sql or sql.strip().upper() == "NOT_POSSIBLE":
-            return {"retry": False}
-
-        try:
+        elif kind in ("postgres", "mysql", "sqlserver", "supabase"):
             username, password = security.decrypt_secret(ds.encrypted_secret).split("␟")
-            info = ds.connection_info
             connector = SQLConnector(
-                ds.kind, info["host"], info["port"], info["database"], username, password, info.get("ssl", True)
+                kind, info["host"], info["port"], info["database"], username, password, info.get("ssl", True)
             )
             df = connector.load_dataframe(sql, is_raw_sql=True)
-            _log_pushdown(db, user_id, ds.id, ds.kind, sql, None, "ok")
-            return {"df": df}
-        except ReadOnlyViolation as e:
-            label = "unsafe, falling back" if is_retry else "unsafe, will retry once with the error shown to the model"
-            print(f"[chat] SQL pushdown query rejected ({label}): {e}")
-            _log_pushdown(db, user_id, ds.id, ds.kind, sql, None, "rejected_unsafe", str(e))
-            return {"retry": not is_retry, "sql": sql, "error": str(e)}
-        except Exception as e:
-            label = "falling back" if is_retry else "will retry once with the error shown to the model"
-            print(f"[chat] SQL pushdown query failed, {label}: {e}")
-            _log_pushdown(db, user_id, ds.id, ds.kind, sql, None, "error", str(e))
-            return {"retry": not is_retry, "sql": sql, "error": str(e)}
+            bytes_scanned = None
+        else:
+            raise ValueError(f"_execute_sql_attempt does not handle kind {kind!r}")
+        _log_pushdown(db, user_id, ds.id, kind, sql, bytes_scanned, "ok")
+        return {"df": df, "bytes_scanned": bytes_scanned, "attempt": {"sql": sql, "status": "ok", "error": None}}
+    except ReadOnlyViolation as e:
+        label = "unsafe, giving up" if is_retry else "unsafe, will retry once with the error shown to the model"
+        print(f"[chat] {kind} pushdown query rejected ({label}): {e}")
+        _log_pushdown(db, user_id, ds.id, kind, sql, None, "rejected_unsafe", str(e))
+        return {"retry": not is_retry, "attempt": {"sql": sql, "status": "rejected_unsafe", "error": str(e)}}
+    except QueryTooExpensive as e:
+        # Valid SQL, just too costly - a retry can't fix that and would
+        # only waste a second model call, so never retry here.
+        print(f"[chat] {kind} pushdown query rejected (too expensive): {e}")
+        _log_pushdown(db, user_id, ds.id, kind, sql, e.estimated_bytes, "rejected_too_expensive", str(e))
+        return {"retry": False, "attempt": {"sql": sql, "status": "rejected_too_expensive", "error": str(e)}}
+    except Exception as e:
+        label = "giving up" if is_retry else "will retry once with the error shown to the model"
+        print(f"[chat] {kind} pushdown query failed, {label}: {e}")
+        _log_pushdown(db, user_id, ds.id, kind, sql, None, "error", str(e))
+        return {"retry": not is_retry, "attempt": {"sql": sql, "status": "error", "error": str(e)}}
 
-    first = _attempt(is_retry=False)
-    if "df" in first:
-        return first["df"]
-    if not first.get("retry"):
-        return None
-    second = _attempt(is_retry=True, previous_sql=first["sql"], previous_error=first["error"])
-    return second.get("df")
+
+def _daily_budget_exhausted(db: Session, ds: models.DataSource, user_id: str) -> bool:
+    """The shared per-user daily scanned-bytes budget check, for the
+    metered kinds only (see _BUDGETED_KINDS). Logs the rejection to the
+    audit table exactly as before this round."""
+    if ds.kind not in _BUDGETED_KINDS:
+        return False
+    already_scanned_today = _todays_pushdown_bytes(db, user_id)
+    if already_scanned_today >= settings.PUSHDOWN_MAX_BYTES_SCANNED_PER_DAY_PER_USER:
+        print(f"[chat] {ds.kind} pushdown skipped, daily cost budget already used: {already_scanned_today} bytes")
+        _log_pushdown(db, user_id, ds.id, ds.kind, "", None, "rejected_daily_budget")
+        return True
+    return False
 
 
-def _try_mongo_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt: str):
-    """Tries to answer `prompt` with one governed MongoDB aggregation
-    pipeline run directly inside the person's own MongoDB database,
-    instead of pulling documents into memory - the MongoDB counterpart to
-    _try_sql_pushdown above, same idea with a different query language
-    (an aggregation pipeline instead of SQL) since MongoDB has no SQL
-    dialect to speak. No metered cost to guard here either (a customer's
-    own MongoDB server), so this skips the byte/time cost checks and
-    shared daily budget entirely, exactly like _try_sql_pushdown - it's
-    purely a speed and memory-safety upgrade. Reuses MongoConnector.
-    run_pushdown_query for the actual execution (the read-only stage
-    check, automatic $limit cap, and maxTimeMS runtime safety net all
-    live there). Still logs to the same audit table as every other
-    provider, with bytes_scanned always None. Returns the small result as
-    a DataFrame on success, or None on ANY failure, matching every other
-    pushdown helper's exact fallback contract."""
-    schema_text = _mongo_schema_text(ds.schema_cache)
+def _warehouse_schema_text(ds: models.DataSource, scope_tables: list[str] | None, versions=None) -> str:
+    """The schema text every SQL writer sees for a warehouse scope: the
+    real tables (scoped - _scoped_schema_cache) plus, 2026-10-06
+    ("generated data is a saved query" layer), one `Table \`<sql_alias>\``
+    block per saved-query version in scope with its columns_json
+    (warehouse_tables.versions_schema_text) - a version is a table the
+    writer may select from exactly like a real one; the statement is
+    wrapped in the matching CTEs before it runs."""
+    text = _multi_table_schema_text(_scoped_schema_cache(ds.schema_cache, scope_tables))
+    extra = warehouse_tables.versions_schema_text(versions) if versions else ""
+    return "\n".join(part for part in (text, extra) if part)
+
+
+def _run_sql_pushdown_cycle(
+    db: Session, ds: models.DataSource, user_id: str, prompt: str, generate, scope_tables: list[str] | None,
+    versions=None,
+) -> PushdownOutcome:
+    """The shared generate-then-execute cycle behind _try_bigquery_pushdown
+    / _try_snowflake_pushdown / _try_sql_pushdown. `generate(schema_text,
+    previous_sql, previous_error) -> str` is the provider's SQL writer.
+
+    Retry behaviour is exactly what each provider had before this round
+    (self-correcting pushdown round, 2026-10-06): when the FIRST attempt
+    fails in a way that is plausibly the model's own mistake and genuinely
+    correctable by showing it the error - a ReadOnlyViolation, or a real
+    execution/dry-run rejection - the exact previous SQL and error are
+    handed back to the SQL writer for exactly ONE corrected second
+    attempt. Never a retry on QueryTooExpensive (valid SQL that is simply
+    too costly - only BigQuery raises it), never on a generation failure
+    or NOT_POSSIBLE/NEEDS_TABLE, never a third attempt. The daily budget
+    (metered kinds only) is checked once, before the first attempt: a
+    query that was rejected or failed never scanned/billed anything, so
+    there is nothing a second check would catch. Both attempts are
+    audit-logged separately (see _execute_sql_attempt) and both are
+    reported in the outcome's `attempts`, so the person can see exactly
+    what was tried."""
+    started = time.perf_counter()
+    outcome = PushdownOutcome()
+    schema_text = _warehouse_schema_text(ds, scope_tables, versions)
     if not schema_text.strip():
-        return None
+        outcome.skipped_reason = "empty_schema"
+        return outcome
+    if _daily_budget_exhausted(db, ds, user_id):
+        outcome.skipped_reason = "daily_budget"
+        return outcome
+    ctes = _version_ctes(versions)
+
+    def _attempt(is_retry: bool, previous_sql: str | None = None, previous_error: str | None = None) -> dict:
+        """One generate-then-execute cycle. Returns {"df", "bytes_scanned"}
+        on success, {"retry": bool} otherwise - after appending this
+        attempt to outcome.attempts either way."""
+        try:
+            sql = generate(schema_text, previous_sql, previous_error)
+        except Exception as e:
+            print(f"[chat] {ds.kind} pushdown SQL generation failed{' (retry)' if is_retry else ''}: {e}")
+            outcome.attempts.append({"sql": None, "status": "generation_failed", "error": str(e)})
+            return {"retry": False}
+        marker = (sql or "").strip().upper().rstrip(";").strip()
+        if not sql or marker == "NOT_POSSIBLE":
+            outcome.attempts.append({"sql": None, "status": "not_possible", "error": None})
+            if not is_retry:
+                outcome.skipped_reason = "not_possible"
+            return {"retry": False}
+        if marker == "NEEDS_TABLE":
+            # The question asks for a row-level table (clean/transform/
+            # filter/add a column), not a summary - see the NEEDS_TABLE
+            # rule in the SQL system prompts. Treated like NOT_POSSIBLE
+            # for retry purposes (no retry), but recorded distinctly so
+            # the response can say "creating a new table from a live
+            # warehouse source is coming in the next update".
+            outcome.attempts.append({"sql": None, "status": "needs_table", "error": None})
+            outcome.skipped_reason = "needs_table"
+            return {"retry": False}
+        res = _execute_sql_attempt(db, ds, user_id, sql, is_retry=is_retry, ctes=ctes)
+        outcome.attempts.append(res["attempt"])
+        if "df" in res:
+            return res
+        return {"retry": bool(res.get("retry")), "sql": sql, "error": res["attempt"].get("error")}
+
+    try:
+        first = _attempt(is_retry=False)
+        final = first
+        if "df" not in first and first.get("retry"):
+            # Exactly one bounded retry: give the model its own previous
+            # SQL and the exact error it produced, then execute the
+            # corrected query exactly once more. Whatever this returns is
+            # final.
+            final = _attempt(is_retry=True, previous_sql=first["sql"], previous_error=first["error"])
+        if "df" in final:
+            outcome.df = final["df"]
+            outcome.bytes_scanned = final.get("bytes_scanned")
+            outcome.sql = outcome.attempts[-1]["sql"]
+    except Exception as e:
+        # Nothing in the cycle is supposed to raise past here; this is the
+        # last-line guard that keeps a surprise from turning into a 500.
+        print(f"[chat] {ds.kind} pushdown cycle raised unexpectedly: {e}")
+        outcome.attempts.append({"sql": None, "status": "error", "error": str(e)})
+    outcome.duration_ms = int((time.perf_counter() - started) * 1000)
+    return outcome
+
+
+def _try_bigquery_pushdown(
+    db: Session, ds: models.DataSource, user_id: str, prompt: str, scope_tables: list[str] | None = None,
+    versions=None,
+) -> PushdownOutcome:
+    """Answers `prompt` with one governed SQL query run directly inside
+    BigQuery over every row. Cost guards: a dry-run byte estimate per
+    query (BigQueryConnector.run_pushdown_query, settings.BIGQUERY_MAX_
+    BYTES_SCANNED_PER_QUERY) and the shared per-user daily budget. See
+    _run_sql_pushdown_cycle for the one bounded retry and the full
+    PushdownOutcome contract; `scope_tables`, when given, limits the
+    schema the SQL writer sees to exactly those tables."""
+    return _run_sql_pushdown_cycle(
+        db, ds, user_id, prompt,
+        lambda schema_text, prev_sql, prev_err: ai_engine.generate_bigquery_sql(
+            prompt, schema_text, previous_sql=prev_sql, previous_error=prev_err
+        ),
+        scope_tables,
+        versions=versions,
+    )
+
+
+def _try_snowflake_pushdown(
+    db: Session, ds: models.DataSource, user_id: str, prompt: str, scope_tables: list[str] | None = None,
+    versions=None,
+) -> PushdownOutcome:
+    """Answers `prompt` with one governed SQL query run directly inside
+    Snowflake over every row. Snowflake bills by compute time, not bytes,
+    so there is no free pre-flight cost check; safety is a strict
+    per-query statement timeout (settings.SNOWFLAKE_STATEMENT_TIMEOUT_
+    SECONDS) plus the shared daily byte budget, fed by Snowflake's own
+    post-hoc bytes_scanned. There is no QueryTooExpensive here, so EVERY
+    first-attempt failure is a candidate for the one bounded retry. See
+    _run_sql_pushdown_cycle."""
+    return _run_sql_pushdown_cycle(
+        db, ds, user_id, prompt,
+        lambda schema_text, prev_sql, prev_err: ai_engine.generate_snowflake_sql(
+            prompt, schema_text, previous_sql=prev_sql, previous_error=prev_err
+        ),
+        scope_tables,
+        versions=versions,
+    )
+
+
+def _try_sql_pushdown(
+    db: Session, ds: models.DataSource, user_id: str, prompt: str, scope_tables: list[str] | None = None,
+    versions=None,
+) -> PushdownOutcome:
+    """Answers `prompt` with one governed SQL query run directly inside the
+    person's own Postgres/MySQL/SQL Server/Supabase database over every
+    row. No metered cost to guard (a customer's own server), so no byte
+    budget; SQLConnector.load_dataframe's is_raw_sql path still applies
+    assert_read_only_sql and its dialect-aware row cap. Every
+    first-attempt failure is a candidate for the one bounded retry. See
+    _run_sql_pushdown_cycle."""
+    return _run_sql_pushdown_cycle(
+        db, ds, user_id, prompt,
+        lambda schema_text, prev_sql, prev_err: ai_engine.generate_sql_pushdown_sql(
+            prompt, schema_text, ds.kind, previous_sql=prev_sql, previous_error=prev_err
+        ),
+        scope_tables,
+        versions=versions,
+    )
+
+
+def _try_mongo_pushdown(
+    db: Session, ds: models.DataSource, user_id: str, prompt: str, scope_tables: list[str] | None = None,
+    versions=None,
+) -> PushdownOutcome:
+    """Answers `prompt` with one governed MongoDB aggregation pipeline run
+    directly inside the person's own MongoDB database - the MongoDB
+    counterpart to _try_sql_pushdown, with an aggregation pipeline instead
+    of SQL. No metered cost, no budget; MongoConnector.run_pushdown_query
+    applies the read-only stage check, automatic $limit cap and maxTimeMS.
+    One attempt, no retry (unchanged from before this round). The
+    outcome's `sql`/attempt "sql" carry the JSON {"collection",
+    "pipeline"} text. `scope_tables` limits the collections the pipeline
+    writer sees. NOTE: the deterministic query builder (services/
+    query_builder.py) is SQL-only - for mongodb chat() returns
+    builder_suggestion=None and the frontend offers rephrase/try again
+    only."""
+    started = time.perf_counter()
+    outcome = PushdownOutcome()
+    schema_text = _mongo_schema_text(_scoped_schema_cache(ds.schema_cache, scope_tables))
+    if not schema_text.strip():
+        outcome.skipped_reason = "empty_schema"
+        return outcome
 
     try:
         raw = ai_engine.generate_mongo_pipeline(prompt, schema_text)
     except Exception as e:
-        print(f"[chat] Mongo pushdown pipeline generation failed, falling back: {e}")
-        return None
+        print(f"[chat] Mongo pushdown pipeline generation failed: {e}")
+        outcome.attempts.append({"sql": None, "status": "generation_failed", "error": str(e)})
+        outcome.duration_ms = int((time.perf_counter() - started) * 1000)
+        return outcome
 
     if not raw or raw.strip().upper() == "NOT_POSSIBLE":
-        return None
+        outcome.attempts.append({"sql": None, "status": "not_possible", "error": None})
+        outcome.skipped_reason = "not_possible"
+        outcome.duration_ms = int((time.perf_counter() - started) * 1000)
+        return outcome
+    if raw.strip().upper().rstrip(";").strip() == "NEEDS_TABLE":
+        # 2026-10-06 ("generated data is a saved query" layer): MongoDB is
+        # out of that layer's scope - a row-level request keeps today's
+        # interim "needs_table" card (see _NEEDS_QUERY_HELP_REPLIES) rather
+        # than being treated as unparseable JSON.
+        outcome.attempts.append({"sql": None, "status": "needs_table", "error": None})
+        outcome.skipped_reason = "needs_table"
+        outcome.duration_ms = int((time.perf_counter() - started) * 1000)
+        return outcome
 
     try:
         parsed = json.loads(raw)
         collection = parsed["collection"]
         pipeline = parsed["pipeline"]
     except Exception as e:
-        print(f"[chat] Mongo pushdown pipeline was not valid JSON, falling back: {e}")
+        print(f"[chat] Mongo pushdown pipeline was not valid JSON: {e}")
         _log_pushdown(db, user_id, ds.id, "mongodb", raw, None, "error", f"invalid pipeline JSON: {e}")
-        return None
+        outcome.attempts.append({"sql": raw, "status": "error", "error": f"invalid pipeline JSON: {e}"})
+        outcome.duration_ms = int((time.perf_counter() - started) * 1000)
+        return outcome
 
     log_text = json.dumps({"collection": collection, "pipeline": pipeline})
     try:
@@ -528,15 +553,732 @@ def _try_mongo_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt
             collection, pipeline, timeout_seconds=settings.MONGO_AGGREGATION_TIMEOUT_SECONDS
         )
         _log_pushdown(db, user_id, ds.id, "mongodb", log_text, None, "ok")
-        return df
+        outcome.attempts.append({"sql": log_text, "status": "ok", "error": None})
+        outcome.df = df
+        outcome.sql = log_text
     except ReadOnlyViolation as e:
-        print(f"[chat] Mongo pushdown pipeline rejected (unsafe), falling back: {e}")
+        print(f"[chat] Mongo pushdown pipeline rejected (unsafe): {e}")
         _log_pushdown(db, user_id, ds.id, "mongodb", log_text, None, "rejected_unsafe", str(e))
-        return None
+        outcome.attempts.append({"sql": log_text, "status": "rejected_unsafe", "error": str(e)})
     except Exception as e:
-        print(f"[chat] Mongo pushdown query failed, falling back: {e}")
+        print(f"[chat] Mongo pushdown query failed: {e}")
         _log_pushdown(db, user_id, ds.id, "mongodb", log_text, None, "error", str(e))
+        outcome.attempts.append({"sql": log_text, "status": "error", "error": str(e)})
+    outcome.duration_ms = int((time.perf_counter() - started) * 1000)
+    return outcome
+
+
+def _run_warehouse_pushdown(
+    db: Session, ds: models.DataSource, user_id: str, prompt: str, scope_tables: list[str] | None, versions=None,
+) -> PushdownOutcome:
+    """Dispatches to the right provider's pushdown for ds.kind. `versions`
+    (2026-10-06) are the saved-query DatasetVersions in scope - see
+    _warehouse_schema_text/_execute_sql_attempt; always empty for mongodb."""
+    if ds.kind == "bigquery":
+        return _try_bigquery_pushdown(db, ds, user_id, prompt, scope_tables, versions=versions)
+    if ds.kind == "snowflake":
+        return _try_snowflake_pushdown(db, ds, user_id, prompt, scope_tables, versions=versions)
+    if ds.kind in ("postgres", "mysql", "sqlserver", "supabase"):
+        return _try_sql_pushdown(db, ds, user_id, prompt, scope_tables, versions=versions)
+    if ds.kind == "mongodb":
+        return _try_mongo_pushdown(db, ds, user_id, prompt, scope_tables)
+    raise ValueError(f"_run_warehouse_pushdown does not handle kind {ds.kind!r}")
+
+
+def _run_prewritten_sql(
+    db: Session, ds: models.DataSource, user_id: str, sql: str, ctes: list[tuple[str, str]] | None = None,
+) -> PushdownOutcome:
+    """Executes SQL that did NOT come from the model - the deterministic
+    query builder's output, or the person's own raw_sql - through the
+    exact same chokepoint as AI pushdown (_execute_sql_attempt): same
+    read-only check, same cost guards, same daily budget, same audit log.
+    One attempt, no LLM, no retry. A failure (QueryTooExpensive,
+    ReadOnlyViolation, a database error) comes back as a failed
+    PushdownOutcome with that one attempt and its error - never a 500."""
+    started = time.perf_counter()
+    outcome = PushdownOutcome()
+    if ds.kind not in _SQL_PUSHDOWN_KINDS:
+        outcome.skipped_reason = "unsupported_kind"
+        return outcome
+    if _daily_budget_exhausted(db, ds, user_id):
+        outcome.skipped_reason = "daily_budget"
+        return outcome
+    try:
+        # Reject an unsafe statement up front (the connectors re-check, but
+        # doing it here means a bad raw_sql never even opens a connection).
+        assert_read_only_sql(sql)
+    except ReadOnlyViolation as e:
+        _log_pushdown(db, user_id, ds.id, ds.kind, sql, None, "rejected_unsafe", str(e))
+        outcome.attempts.append({"sql": sql, "status": "rejected_unsafe", "error": str(e)})
+        outcome.duration_ms = int((time.perf_counter() - started) * 1000)
+        return outcome
+    except Exception as e:
+        # sqlparse itself choking on the text - treat as unsafe/unparseable.
+        _log_pushdown(db, user_id, ds.id, ds.kind, sql, None, "rejected_unsafe", str(e))
+        outcome.attempts.append({"sql": sql, "status": "rejected_unsafe", "error": f"Could not parse this SQL: {e}"})
+        outcome.duration_ms = int((time.perf_counter() - started) * 1000)
+        return outcome
+    res = _execute_sql_attempt(db, ds, user_id, sql, is_retry=True, ctes=ctes)
+    outcome.attempts.append(res["attempt"])
+    if "df" in res:
+        outcome.df = res["df"]
+        outcome.bytes_scanned = res.get("bytes_scanned")
+        outcome.sql = res["attempt"]["sql"]
+    outcome.duration_ms = int((time.perf_counter() - started) * 1000)
+    return outcome
+
+
+# --- Selection scope for a warehouse kind ----------------------------------
+
+def _resolve_warehouse_scope(
+    ds: models.DataSource, requested_ids: list, table: str | None, db: Session | None = None,
+) -> tuple[str, list[str] | None]:
+    """(mode, scope_tables) - see _resolve_warehouse_selection, which this
+    wraps for callers that do not need the saved-query versions. Without
+    `db`, a bare DatasetVersion id cannot be looked up, so every one is
+    treated as a file-backed saved table (today's "saved_only")."""
+    mode, scope_tables, _versions = _resolve_warehouse_selection(db, ds, requested_ids, table)
+    return mode, scope_tables
+
+
+def _resolve_warehouse_selection(
+    db: Session | None, ds: models.DataSource, requested_ids: list, table: str | None,
+) -> tuple[str, list[str] | None, list]:
+    """Decides, for a warehouse/database kind, what a WORKING ON selection
+    means under the no-samples policy. Returns (mode, scope_tables,
+    versions) - `versions` is the list of saved-query DatasetVersion rows
+    in scope (2026-10-06, "generated data is a saved query" layer; always
+    [] for every mode but "versions"):
+      ("versions", tables|None, [v, ...]) - every bare id is a
+                               source_kind="warehouse_query" version of
+                               THIS datasource (optionally mixed with
+                               "original" - then tables is None, every
+                               real table in scope - or "sheet:<name>"
+                               entries of this datasource): the question
+                               runs inside the warehouse with each
+                               version's definition wrapped as a CTE. A
+                               file-backed version mixed in, or any
+                               version of another datasource, is
+                               "unsupported" (there is no honest way to
+                               push a CSV into the warehouse).
+      ("all", None)          - requested_ids == ["original"]: every table in
+                               ds.schema_cache is in scope (today's
+                               behaviour).
+      ("tables", [names])    - every entry is "sheet:<name>" of THIS
+                               datasource and every <name> is a key of
+                               ds.schema_cache: exactly those tables are
+                               in scope (one or several - several lets
+                               the SQL writer join them; it is already
+                               told how).
+      ("saved_only", None)   - NO entry refers to this datasource's live
+                               data at all: every entry is a bare
+                               DatasetVersion id (a complete, saved CSV in
+                               the app, not a sample). The caller keeps
+                               today's pandas path for these.
+      ("unsupported", None)  - anything else: a "ds:" cross-datasource
+                               entry, a mix of live tables and saved
+                               tables, a sheet name not in the schema, or
+                               a forced `table` that is not a schema key.
+                               The caller must NOT load samples; it
+                               answers needs_query_help with
+                               skipped_reason="unsupported_selection".
+
+    2026-10-06: this REPLACES the old _is_effectively_original_selection
+    gate, which only let a single "sheet:<name>" through when that name
+    was the datasource's ONLY table (because the SQL writer was always
+    handed the FULL schema). Now the schema text is scoped to exactly the
+    selected tables (_scoped_schema_cache), so any subset of this
+    datasource's own tables is safe to push down.
+
+    A forced `table` (payload.table - no current frontend code sends it,
+    but API clients may) is treated as a scope narrowing when it is a real
+    schema key and the selection is "original"; it is never a reason to
+    load a sample.
+
+    Written defensively: ds.schema_cache can be None/{}/not a dict, and
+    this must return a safe answer rather than raise - a raise here would
+    break every chat request for that datasource."""
+    try:
+        schema_cache = ds.schema_cache if isinstance(ds.schema_cache, dict) else {}
+        ids = [i for i in (requested_ids if isinstance(requested_ids, list) else []) if isinstance(i, str)]
+        if not ids:
+            ids = ["original"]
+        if table:
+            if ids == ["original"] and table in schema_cache:
+                return "tables", [table], []
+            return "unsupported", None, []
+        if ids == ["original"]:
+            return "all", None, []
+        if all(i.startswith("sheet:") for i in ids):
+            names: list[str] = []
+            for i in ids:
+                name = i[len("sheet:"):]
+                if name not in schema_cache:
+                    return "unsupported", None, []
+                if name not in names:
+                    names.append(name)
+            return "tables", names, []
+        if any(i.startswith("ds:") for i in ids):
+            return "unsupported", None, []
+        bare_ids = [i for i in ids if i != "original" and not i.startswith("sheet:")]
+        versions: list = []
+        if db is not None and bare_ids and ds.kind != "mongodb":
+            rows = db.query(models.DatasetVersion).filter(models.DatasetVersion.id.in_(bare_ids)).all()
+            by_id = {r.id: r for r in rows if r is not None}
+            # Every bare id must be a saved-query version of THIS datasource
+            # for the warehouse path; one file-backed (or foreign) version
+            # means the whole selection cannot run inside the warehouse.
+            if all(
+                i in by_id and is_warehouse_query(by_id[i]) and by_id[i].datasource_id == ds.id
+                for i in bare_ids
+            ):
+                versions = [by_id[i] for i in bare_ids]
+        if versions:
+            if "original" in ids:
+                return "versions", None, versions
+            names = []
+            for i in ids:
+                if i.startswith("sheet:"):
+                    name = i[len("sheet:"):]
+                    if name not in schema_cache:
+                        return "unsupported", None, []
+                    if name not in names:
+                        names.append(name)
+            # Only versions selected: scope_tables stays [] (no real table
+            # in the writer's schema text - the versions are the tables).
+            return "versions", names, versions
+        is_live = lambda i: i == "original" or i.startswith("sheet:") or i.startswith("ds:")  # noqa: E731
+        if not any(is_live(i) for i in ids):
+            if db is not None and bare_ids and ds.kind != "mongodb":
+                # A mix of saved-query and file-backed versions: neither
+                # path can honour it.
+                rows_by_id = {r.id: r for r in db.query(models.DatasetVersion).filter(models.DatasetVersion.id.in_(bare_ids)).all()}
+                if any(is_warehouse_query(rows_by_id.get(i)) for i in bare_ids):
+                    return "unsupported", None, []
+            return "saved_only", None, []
+        return "unsupported", None, []
+    except Exception as e:
+        print(f"[chat] _resolve_warehouse_selection could not evaluate, treating as unsupported: {e}")
+        return "unsupported", None, []
+
+
+def _scope_manifest(ds: models.DataSource, mode: str, scope_tables: list[str] | None, versions=None) -> list[dict]:
+    """The sources manifest (see _load_selected_tables' docstring for the
+    shape) for a warehouse-computed turn: one entry per scoped table, in
+    the same kind/sheet/datasource_id terms the Flow tab's lineage and
+    Workspace.tsx's restore-on-refresh already understand - the label of
+    the in-memory `tables` dict ("Query result") is NOT what either keys
+    off, so changing it is lineage-safe. Saved-query versions in scope
+    (2026-10-06) appear as the same "version" entries _load_selected_tables
+    writes for a file-backed saved table."""
+    out: list[dict] = []
+    if mode == "versions":
+        if scope_tables is None:
+            out.append({"kind": "original", "label": "Original data", "datasource_id": ds.id, "version_id": None, "sheet": None})
+        else:
+            out.extend(
+                {"kind": "sheet", "label": name, "datasource_id": ds.id, "version_id": None, "sheet": name}
+                for name in scope_tables
+            )
+        out.extend(
+            {"kind": "version", "label": v.name, "datasource_id": ds.id, "version_id": v.id, "sheet": None}
+            for v in (versions or [])
+        )
+        return out
+    if mode == "tables" and scope_tables:
+        return [
+            {"kind": "sheet", "label": name, "datasource_id": ds.id, "version_id": None, "sheet": name}
+            for name in scope_tables
+        ]
+    return [{"kind": "original", "label": "Original data", "datasource_id": ds.id, "version_id": None, "sheet": None}]
+
+
+_NEEDS_QUERY_HELP_REPLIES = {
+    "restricted_role": (
+        "Your access to this data source is limited by row/column rules, and a question against a live "
+        "warehouse table runs inside the warehouse where those rules cannot be applied - so I haven't "
+        "produced an answer, and I won't estimate from a sample. Ask a workspace admin to run it, or work "
+        "from a saved table instead."
+    ),
+    "unsupported_selection": (
+        "For a live warehouse table, questions run inside the warehouse itself - and this selection mixes "
+        "in something I can't query there yet (a saved table or another data source). Pick just this "
+        "source's own table(s) and ask again, or work from the saved table on its own."
+    ),
+    "daily_budget": (
+        "Today's warehouse query budget for your account is already used up, so I haven't run this - I "
+        "won't estimate from a sample instead. It resets at midnight UTC; you can still write the query "
+        "yourself to run tomorrow."
+    ),
+    "empty_schema": (
+        "I don't have this data source's table and column list yet, so I can't write a query that runs "
+        "inside your warehouse - and I won't estimate from a sample. Reconnect or refresh the data source "
+        "and ask again."
+    ),
+    "needs_table": (
+        "This asks for a new table of rows (a clean-up, filter or transformation) rather than a summary. "
+        "Creating a new table from a live warehouse source is coming in the next update - for now I can "
+        "answer summary questions (totals, breakdowns, top-N) that run inside your warehouse. Ask one of "
+        "those, or write the SQL yourself below."
+    ),
+    "table_failed": (
+        "I couldn't write a safe query that builds this table inside your {provider} warehouse (what I "
+        "tried is shown below), so no table was created - and I won't build one from a sample. Rephrase "
+        "what the new table should contain, or write the SELECT yourself and save it as a table."
+    ),
+    "not_possible": (
+        "I couldn't turn this into a query that runs inside your {provider} table - usually because it "
+        "needs a column or table that isn't in this source. I haven't produced an answer, and I won't "
+        "estimate from a sample. Finish it below, rephrase, or write the SQL yourself."
+    ),
+    "builder_or_raw_failed": (
+        "That query didn't run inside your {provider} table (the error is shown below), so I haven't "
+        "produced an answer - I won't estimate from a sample. Adjust it and try again."
+    ),
+}
+_DEFAULT_NEEDS_QUERY_HELP_REPLY = (
+    "I couldn't turn this into a query that runs inside your {provider} table, so I haven't produced an "
+    "answer - I won't estimate from a sample. Finish it below, rephrase, or write the SQL yourself."
+)
+_PROVIDER_LABELS = {
+    "bigquery": "BigQuery", "snowflake": "Snowflake", "postgres": "Postgres", "mysql": "MySQL",
+    "sqlserver": "SQL Server", "supabase": "Supabase", "mongodb": "MongoDB",
+}
+
+
+def _needs_query_help_response(
+    db: Session, conversation_id: str, ds: models.DataSource, prompt: str, outcome: PushdownOutcome | None,
+    scope_tables: list[str] | None, skipped_reason: str | None, reply_key: str | None = None,
+    suggest: bool = True, versions=None,
+) -> schemas.ChatResponse:
+    """The one honest "not computed yet" response for a warehouse kind -
+    persisted as action="needs_query_help" with code=None, the attempts
+    JSON and the skipped reason, and returned with everything the
+    frontend needs to let the person finish the question: the attempts
+    (sql+status+error), a validated builder prefill (SQL kinds only -
+    never for MongoDB, never for a restricted role), and the scoped
+    tables' columns. Nothing was loaded or analyzed: used_pushdown=False,
+    sample_row_count=None, no chart, no insight."""
+    provider = _PROVIDER_LABELS.get(ds.kind, ds.kind)
+    attempts = list(outcome.attempts) if outcome else []
+    reason = skipped_reason or (outcome.skipped_reason if outcome else None)
+    key = reply_key or reason
+    reply = (_NEEDS_QUERY_HELP_REPLIES.get(key or "") or _DEFAULT_NEEDS_QUERY_HELP_REPLY).format(provider=provider)
+
+    # 2026-10-06 ("generated data is a saved query" layer): saved-query
+    # versions in scope are offered to the builder as tables too, keyed by
+    # sql_alias - the builder's SQL is wrapped in their CTEs when it runs.
+    builder_schema, _aliases = query_builder.with_version_aliases(ds.schema_cache, versions)
+    builder_scope = None
+    if scope_tables is not None or versions:
+        real_tables = scope_tables if scope_tables is not None else list((ds.schema_cache or {}).keys() if isinstance(ds.schema_cache, dict) else [])
+        builder_scope = list(real_tables) + [v.sql_alias for v in (versions or []) if v.sql_alias]
+    builder_columns = query_builder.builder_columns(builder_schema, builder_scope) or None
+    builder_suggestion = None
+    # MongoDB: the builder is SQL-only for now, so no prefill - the frontend
+    # shows rephrase/try again only. A restricted role must not be handed a
+    # builder either: the builder's query would run inside the warehouse,
+    # outside this app's row/column filtering, exactly like AI pushdown.
+    if suggest and ds.kind in query_builder.SQL_KINDS and reason not in ("restricted_role", "daily_budget", "empty_schema"):
+        try:
+            schema_text = _warehouse_schema_text(ds, scope_tables, versions)
+            raw_spec = ai_engine.suggest_query_spec(prompt, schema_text) if schema_text.strip() else None
+            if raw_spec:
+                builder_suggestion = query_builder.sanitize_suggested_spec(raw_spec, builder_schema)
+                if builder_suggestion and builder_scope and builder_suggestion.get("table") not in builder_scope:
+                    # The model reached for a table outside the selection -
+                    # drop the suggestion rather than widen the scope.
+                    builder_suggestion = None
+        except Exception as e:
+            print(f"[chat] builder suggestion failed (non-fatal): {e}")
+            builder_suggestion = None
+
+    return _persist_and_respond(
+        db, conversation_id, reply,
+        action="needs_query_help",
+        needs_clarification=False,
+        ok=True,
+        code=None,
+        sources=_scope_manifest(ds, "versions" if versions else ("tables" if scope_tables else "all"), scope_tables, versions),
+        duration_ms=outcome.duration_ms if outcome else None,
+        used_pushdown=False,
+        sample_row_count=None,
+        pushdown_attempts=attempts,
+        pushdown_skipped_reason=reason,
+        pushdown_duration_ms=outcome.duration_ms if outcome else None,
+        pushdown_provider=ds.kind,
+        builder_suggestion=builder_suggestion,
+        builder_columns=builder_columns,
+    )
+
+
+# --- Saved-query tables (2026-10-06, "generated data is a saved query") ----
+# For a SQL warehouse kind (PUSHDOWN_ELIGIBLE_KINDS minus mongodb) a request
+# for a NEW TABLE OF ROWS - "keep only non-canceled bookings and add a total
+# nights column" - is not answered by copying rows into the app. It becomes
+# ONE standalone, read-only SELECT (the table's definition) stored on a
+# DatasetVersion(source_kind="warehouse_query") and re-run inside the
+# warehouse whenever the table is profiled, sampled, downloaded or asked a
+# follow-up question (its definition is wrapped as a CTE - see
+# _execute_sql_attempt's `ctes`). See services/warehouse_tables.py for every
+# text helper and models.DatasetVersion.source_kind for the columns.
+#
+# The path, in order: generate (ai_engine.generate_warehouse_table_sql) ->
+# assert_read_only_sql -> inline the scope's CTEs so the definition is
+# standalone -> validate without reading a row (BigQuery dry run, else the
+# dialect's zero-row statement) and capture the result schema -> one
+# bounded retry with the exact error, exactly like pushdown -> one
+# COUNT(*) (billable on BigQuery, through the same audit log/daily budget;
+# a failure here leaves row_count null, never fails creation) -> create the
+# version. "Save as a real BigQuery table" (CTAS) is deliberately NOT here:
+# this layer never writes to a customer warehouse.
+
+_TABLE_KINDS = _SQL_PUSHDOWN_KINDS
+
+
+@dataclass
+class TableOutcome:
+    """What one saved-query creation cycle did. `version` is the created
+    DatasetVersion on success; `attempts` mirrors PushdownOutcome.attempts
+    (status: "validated" | "rejected_unsafe" | "error" | "not_possible" |
+    "generation_failed"); `skipped_reason` is "daily_budget" |
+    "empty_schema" | None."""
+    version: object = None
+    definition_sql: str | None = None
+    columns: list = field(default_factory=list)
+    row_count: int | None = None
+    source_row_count: int | None = None
+    bytes_scanned: int | None = None
+    duration_ms: int = 0
+    attempts: list = field(default_factory=list)
+    skipped_reason: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.version is not None
+
+
+def _describe_definition(ds: models.DataSource, definition_sql: str) -> tuple[list[dict], int | None]:
+    """Validates a definition inside the warehouse WITHOUT reading a row
+    and returns (columns_json, estimated_bytes|None): BigQuery's free dry
+    run (estimated bytes too), Snowflake `LIMIT 0`, the SQL kinds' `WHERE
+    1=0`/`TOP 0` - see each connector's describe_query. Raises the
+    warehouse's own error for an invalid definition (handed to the writer
+    for its one bounded retry)."""
+    info = ds.connection_info or {}
+    if ds.kind == "bigquery":
+        service_account_json = security.decrypt_secret(ds.encrypted_secret)
+        connector = BigQueryConnector(info["project_id"], info["dataset_id"], service_account_json)
+        return connector.describe_query(definition_sql)
+    if ds.kind == "snowflake":
+        creds = json.loads(security.decrypt_secret(ds.encrypted_secret))
+        connector = SnowflakeConnector(
+            account=info["account"], warehouse=info["warehouse"], database=info["database"],
+            db_schema=info.get("db_schema"), role=info.get("role"),
+            username=creds["username"], password=creds["password"],
+        )
+        return connector.describe_query(definition_sql, statement_timeout_seconds=settings.SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS), None
+    if ds.kind in ("postgres", "mysql", "sqlserver", "supabase"):
+        username, password = security.decrypt_secret(ds.encrypted_secret).split("␟")
+        connector = SQLConnector(ds.kind, info["host"], info["port"], info["database"], username, password, info.get("ssl", True))
+        return connector.describe_query(definition_sql), None
+    raise ValueError(f"_describe_definition does not handle kind {ds.kind!r}")
+
+
+def _validate_definition(
+    db: Session, ds: models.DataSource, user_id: str, statement_sql: str, ctes: list[tuple[str, str]],
+    is_retry: bool,
+) -> dict:
+    """One validation of a candidate table definition. Returns
+    {"definition_sql", "columns", "estimated_bytes", "attempt"} on success
+    or {"retry": bool, "attempt": {...}} on failure - the attempt's "sql"
+    is the standalone definition (CTEs inlined) that was checked."""
+    try:
+        assert_read_only_sql(statement_sql)
+        definition_sql = warehouse_tables.wrap_with_ctes(statement_sql, ctes)
+        if definition_sql != statement_sql:
+            assert_read_only_sql(definition_sql)
+    except ReadOnlyViolation as e:
+        _log_pushdown(db, user_id, ds.id, ds.kind, statement_sql, None, "rejected_unsafe", str(e))
+        return {"retry": not is_retry, "attempt": {"sql": statement_sql, "status": "rejected_unsafe", "error": str(e)}}
+    except Exception as e:
+        _log_pushdown(db, user_id, ds.id, ds.kind, statement_sql, None, "error", str(e))
+        return {"retry": not is_retry, "attempt": {"sql": statement_sql, "status": "error", "error": str(e)}}
+    try:
+        columns, estimated = _describe_definition(ds, definition_sql)
+    except ReadOnlyViolation as e:
+        _log_pushdown(db, user_id, ds.id, ds.kind, definition_sql, None, "rejected_unsafe", str(e))
+        return {"retry": not is_retry, "attempt": {"sql": definition_sql, "status": "rejected_unsafe", "error": str(e)}}
+    except Exception as e:
+        print(f"[chat] {ds.kind} table definition failed validation{' (retry)' if is_retry else ''}: {e}")
+        _log_pushdown(db, user_id, ds.id, ds.kind, definition_sql, None, "error", str(e))
+        return {"retry": not is_retry, "attempt": {"sql": definition_sql, "status": "error", "error": str(e)}}
+    if not columns:
+        err = "The query returned no columns."
+        _log_pushdown(db, user_id, ds.id, ds.kind, definition_sql, None, "error", err)
+        return {"retry": not is_retry, "attempt": {"sql": definition_sql, "status": "error", "error": err}}
+    # The dry run / zero-row check is not billed - logged as "validated"
+    # (not "ok") so it never counts toward the daily scanned-bytes budget.
+    _log_pushdown(db, user_id, ds.id, ds.kind, definition_sql, None, "validated")
+    return {
+        "definition_sql": definition_sql, "columns": columns, "estimated_bytes": estimated,
+        "attempt": {"sql": definition_sql, "status": "validated", "error": None},
+    }
+
+
+def _count_definition_rows(db: Session, ds: models.DataSource, user_id: str, definition_sql: str) -> tuple[int | None, int | None]:
+    """(row_count, bytes_scanned) from ONE `SELECT COUNT(*) FROM
+    (<definition>) AS gd360_v` through the shared chokepoint (same guards,
+    same audit row, same daily budget). Never raises: (None, None) when it
+    could not run - a saved table with an unknown row count is still a
+    valid saved table (the Data-tab profile fills it in later)."""
+    try:
+        res = _execute_sql_attempt(db, ds, user_id, warehouse_tables.count_sql(ds.kind, definition_sql), is_retry=True)
+        if "df" in res:
+            return warehouse_tables.count_from_frame(res["df"]), res.get("bytes_scanned")
+    except Exception as e:
+        print(f"[chat] row count for a new saved query failed (non-fatal): {e}")
+    return None, None
+
+
+def _version_sql_aliases(db: Session, ds: models.DataSource) -> set[str]:
+    rows = db.query(models.DatasetVersion.sql_alias).filter(models.DatasetVersion.datasource_id == ds.id).all()
+    out: set[str] = set()
+    for row in rows or []:
+        alias = row[0] if isinstance(row, (tuple, list)) else getattr(row, "sql_alias", row)
+        if isinstance(alias, str) and alias:
+            out.add(alias)
+    return out
+
+
+def _source_row_count(ds: models.DataSource, scope_tables: list[str] | None, versions, source_table: str | None) -> int | None:
+    """rows_before for a new saved query, when honestly known: a single
+    parent version's own row_count, else the Data-tab profile's cached
+    COUNT(*) of the one real table it reads - never a fresh query."""
+    if versions and len(versions) == 1 and getattr(versions[0], "row_count", None) is not None:
+        return int(versions[0].row_count)
+    if versions:
         return None
+    if source_table:
+        return cached_exact_total_rows(ds.id, source_table)
+    return None
+
+
+def _create_version_from_definition(
+    db: Session, ds: models.DataSource, prompt: str, name: str, definition_sql: str, columns: list[dict],
+    row_count: int | None, source_table: str | None, versions, scope_tables: list[str] | None,
+    duration_ms: int | None, source_row_count: int | None, summary: str,
+) -> models.DatasetVersion:
+    """The DatasetVersion row for a saved query - numbered like
+    _save_cleaning_result (position = max + 1), parent lineage = the
+    selected saved-query versions when chaining, cleaning_log = the
+    parents' log plus one entry shaped the way _save_cleaning_result
+    writes it (so the Flow tab works unchanged), data = b"" (NOT NULL
+    column, no file - see data_loader.is_warehouse_query)."""
+    max_position = (
+        db.query(func.max(models.DatasetVersion.position))
+        .filter(models.DatasetVersion.datasource_id == ds.id)
+        .scalar()
+        or 0
+    )
+    parent_ids = [v.id for v in (versions or [])] or None
+    prior_log: list = []
+    for v in versions or []:
+        prior_log.extend(v.cleaning_log or [])
+    log_entry = {
+        "prompt": prompt,
+        "summary": summary,
+        "rows_before": source_row_count,
+        "rows_after": row_count,
+        "nulls_before": None,
+        "nulls_after": None,
+        "created_at": datetime.utcnow().isoformat(),
+        "source_kind": WAREHOUSE_QUERY_SOURCE_KIND,
+        "query_sql": definition_sql,
+    }
+    alias = warehouse_tables.derive_sql_alias(name, _version_sql_aliases(db, ds))
+    version = models.DatasetVersion(
+        datasource_id=ds.id,
+        name=name[:80],
+        parent_version_id=parent_ids[0] if parent_ids else None,
+        parent_version_ids=parent_ids,
+        data=b"",
+        cleaning_log=prior_log + [log_entry],
+        position=max_position + 1,
+        duration_ms=duration_ms,
+        method_summary="Saved warehouse query",
+        used_pushdown=True,
+        sample_row_count=None,
+        source_kind=WAREHOUSE_QUERY_SOURCE_KIND,
+        query_sql=definition_sql,
+        sql_alias=alias,
+        source_table=source_table,
+        columns_json=columns,
+        row_count=row_count,
+    )
+    db.add(version)
+    db.commit()
+    db.refresh(version)
+    return version
+
+
+def _build_warehouse_table(
+    db: Session, ds: models.DataSource, user_id: str, prompt: str, scope_tables: list[str] | None, versions,
+    raw_sql: str | None = None,
+) -> TableOutcome:
+    """Creates a saved-query table from `prompt` (the AI writes the
+    definition, one bounded retry) or, with `raw_sql`, from the person's
+    own SELECT (one validation, no model). See the section comment above
+    for the full path. Never raises for a model/warehouse failure - a
+    failed outcome carries the attempts."""
+    started = time.perf_counter()
+    outcome = TableOutcome()
+    schema_text = _warehouse_schema_text(ds, scope_tables, versions)
+    if not raw_sql and not schema_text.strip():
+        outcome.skipped_reason = "empty_schema"
+        return outcome
+    if _daily_budget_exhausted(db, ds, user_id):
+        outcome.skipped_reason = "daily_budget"
+        return outcome
+    ctes = _version_ctes(versions)
+    name_hint: str | None = None
+
+    def _attempt(is_retry: bool, previous_sql: str | None = None, previous_error: str | None = None) -> dict:
+        nonlocal name_hint
+        if raw_sql:
+            statement = warehouse_tables.strip_trailing_semicolon(raw_sql)
+            if not statement:
+                outcome.attempts.append({"sql": None, "status": "not_possible", "error": None})
+                return {"retry": False}
+        else:
+            try:
+                raw = ai_engine.generate_warehouse_table_sql(
+                    prompt, schema_text, ds.kind, previous_sql=previous_sql, previous_error=previous_error
+                )
+            except Exception as e:
+                print(f"[chat] {ds.kind} table definition generation failed{' (retry)' if is_retry else ''}: {e}")
+                outcome.attempts.append({"sql": None, "status": "generation_failed", "error": str(e)})
+                return {"retry": False}
+            statement, parsed_name = warehouse_tables.parse_table_sql_response(raw)
+            if parsed_name and not name_hint:
+                name_hint = parsed_name
+            if not statement:
+                outcome.attempts.append({"sql": None, "status": "not_possible", "error": None})
+                return {"retry": False}
+        res = _validate_definition(db, ds, user_id, statement, ctes, is_retry=is_retry)
+        outcome.attempts.append(res["attempt"])
+        if "definition_sql" in res:
+            return res
+        return {"retry": bool(res.get("retry")) and not raw_sql, "sql": statement, "error": res["attempt"].get("error")}
+
+    try:
+        first = _attempt(is_retry=False)
+        final = first
+        if "definition_sql" not in first and first.get("retry"):
+            final = _attempt(is_retry=True, previous_sql=first["sql"], previous_error=first["error"])
+        if "definition_sql" in final:
+            definition_sql = final["definition_sql"]
+            columns = final["columns"]
+            row_count, count_bytes = _count_definition_rows(db, ds, user_id, definition_sql)
+            schema_keys = list(ds.schema_cache.keys()) if isinstance(ds.schema_cache, dict) else []
+            source_table = None
+            if versions:
+                source_table = next((v.source_table for v in versions if getattr(v, "source_table", None)), None)
+            if not source_table:
+                source_table = warehouse_tables.detect_source_table(definition_sql, scope_tables or schema_keys)
+            source_row_count = _source_row_count(ds, scope_tables, versions, source_table)
+            name = (name_hint or warehouse_tables.derive_table_name(prompt))
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            summary = _table_summary(name, columns, row_count, source_row_count, source_table, bool(raw_sql))
+            version = _create_version_from_definition(
+                db, ds, prompt, name, definition_sql, columns, row_count, source_table, versions, scope_tables,
+                duration_ms, source_row_count, summary,
+            )
+            outcome.version = version
+            outcome.definition_sql = definition_sql
+            outcome.columns = columns
+            outcome.row_count = row_count
+            outcome.source_row_count = source_row_count
+            outcome.bytes_scanned = count_bytes if count_bytes is not None else final.get("estimated_bytes")
+    except Exception as e:
+        print(f"[chat] {ds.kind} saved-query creation raised unexpectedly: {e}")
+        outcome.attempts.append({"sql": None, "status": "error", "error": str(e)})
+    outcome.duration_ms = int((time.perf_counter() - started) * 1000)
+    return outcome
+
+
+def _table_summary(
+    name: str, columns: list[dict], row_count: int | None, source_row_count: int | None, source_table: str | None,
+    from_raw_sql: bool,
+) -> str:
+    """The plain narrative for a new saved query - what it is, where it
+    runs, and the row count when known ("75,166 of 119,386 rows kept")."""
+    how = "the SQL you wrote" if from_raw_sql else "one query"
+    parts = [f"Saved \"{name}\" as a query, not a copy - {how} that runs inside your warehouse"]
+    if source_table:
+        parts[-1] += f" on top of {source_table}"
+    parts[-1] += "; nothing was downloaded."
+    if row_count is not None and source_row_count:
+        pct = round(100 * row_count / source_row_count) if source_row_count else None
+        parts.append(f"{row_count:,} of {source_row_count:,} rows kept" + (f" ({pct}%)." if pct is not None else "."))
+    elif row_count is not None:
+        parts.append(f"{row_count:,} rows.")
+    else:
+        parts.append("Its exact row count will appear once the Data tab profiles it.")
+    if columns:
+        parts.append(f"{len(columns)} columns.")
+    return " ".join(parts)
+
+
+def _warehouse_table_response(
+    db: Session, conversation_id: str, ds: models.DataSource, prompt: str, outcome: TableOutcome,
+    scope_mode: str, scope_tables: list[str] | None, versions,
+) -> schemas.ChatResponse:
+    """The transform turn for a created saved query - persisted and
+    returned exactly like a file-backed transform (new_version_id/name,
+    code=None) plus the warehouse disclosure fields (used_pushdown=True,
+    pushdown_sql = the definition, pushdown_result_rows = row_count)."""
+    v = outcome.version
+    reply = (v.cleaning_log or [{}])[-1].get("summary") or f"Saved \"{v.name}\" as a query inside your warehouse."
+    return _persist_and_respond(
+        db, conversation_id, reply,
+        action="transform",
+        needs_clarification=False,
+        ok=True,
+        rows_before=outcome.source_row_count,
+        rows_after=outcome.row_count,
+        new_version_id=v.id,
+        new_version_name=v.name,
+        code=None,
+        sources=_scope_manifest(ds, scope_mode, scope_tables, versions),
+        duration_ms=outcome.duration_ms,
+        method_summary="Saved warehouse query",
+        used_pushdown=True,
+        sample_row_count=None,
+        pushdown_sql=outcome.definition_sql,
+        pushdown_provider=ds.kind,
+        pushdown_bytes_scanned=outcome.bytes_scanned,
+        pushdown_duration_ms=outcome.duration_ms,
+        pushdown_result_rows=outcome.row_count,
+        pushdown_attempts=list(outcome.attempts),
+        exact_total_rows=outcome.row_count,
+    )
+
+
+def _table_failed_response(
+    db: Session, conversation_id: str, ds: models.DataSource, prompt: str, outcome: TableOutcome,
+    scope_tables: list[str] | None, versions,
+) -> schemas.ChatResponse:
+    """needs_query_help for a saved query that could not be built: the
+    attempts, reason "table_failed" (or the budget/schema skip reason),
+    builder_suggestion always None (an aggregate builder cannot define a
+    table of rows)."""
+    pseudo = PushdownOutcome(attempts=list(outcome.attempts), duration_ms=outcome.duration_ms)
+    reason = outcome.skipped_reason or "table_failed"
+    return _needs_query_help_response(
+        db, conversation_id, ds, prompt, pseudo, scope_tables, reason, reply_key=reason, suggest=False,
+        versions=versions,
+    )
 
 
 @router.post("", response_model=schemas.ChatResponse)
@@ -574,49 +1316,195 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     # once; each entry is only loaded once even if listed twice.
     requested_ids = payload.source_version_ids or ["original"]
 
-    # Warehouse/database pushdown (see the Enterprise Scale Roadmap doc):
-    # only the plain "ask about my data" case - a single source, its own
-    # original data (or, since the 2026-10-06 gate fix, a single selected
-    # table/sheet that is provably the datasource's ONLY table - see
-    # _is_effectively_original_selection above for exactly why that is
-    # still safe), no forced sub-table - tries running a real query
-    # directly inside the source before falling back to the normal path
-    # below. See _try_bigquery_pushdown/_try_snowflake_pushdown/
-    # _try_sql_pushdown/_try_mongo_pushdown's own docstrings for the full
-    # fallback contract (the plain-database and MongoDB paths skip the
-    # cost/budget checks the two warehouses have, since a customer's own
-    # database/Mongo server has no metered per-query billing to guard).
+    # --- Warehouse policy (2026-10-06, warehouse-honesty round) ---------
+    # For a warehouse/database kind (PUSHDOWN_ELIGIBLE_KINDS) the answer is
+    # computed inside the warehouse over every row, or it is not computed
+    # at all - never on a loaded sample. See the module comment above
+    # _multi_table_schema_text. The three ways a warehouse question runs:
+    #   1. the AI writes one SQL/pipeline (_run_warehouse_pushdown, one
+    #      bounded retry),
+    #   2. the person's structured query_builder spec, turned into SQL
+    #      deterministically (services/query_builder.py, no LLM),
+    #   3. the person's own raw_sql,
+    # all through the same execution chokepoint (_execute_sql_attempt) and
+    # the same guards. When none produced a result, the reply is
+    # action="needs_query_help" (see _needs_query_help_response) and
+    # nothing is loaded or analyzed.
     #
     # Phase 5, Batch B (data governance & quality - row/column permissions):
-    # also gated on `not data_access_rules.has_active_restrictions(...)` -
     # a pushdown query runs directly inside the customer's own warehouse/
     # database/Mongo server and its result never passes through
     # load_dataframe, so it can never be filtered by services/
     # data_access_rules.filter_dataframe_for_role after the fact. The only
     # correct fix is to never attempt pushdown at all for a restricted
-    # role, not to filter its result afterward - see that module's own
-    # docstring for the full reasoning. A restricted caller simply falls
-    # through to the normal _load_selected_tables path below, where
-    # row/column filtering is applied for real.
-    pushdown_df = None
-    if _is_effectively_original_selection(ds, requested_ids) and not payload.table and not data_access_rules.has_active_restrictions(db, ds, user):
-        if ds.kind == "bigquery":
-            pushdown_df = _try_bigquery_pushdown(db, ds, user.id, payload.prompt)
-        elif ds.kind == "snowflake":
-            pushdown_df = _try_snowflake_pushdown(db, ds, user.id, payload.prompt)
-        elif ds.kind in ("postgres", "mysql", "sqlserver", "supabase"):
-            pushdown_df = _try_sql_pushdown(db, ds, user.id, payload.prompt)
-        elif ds.kind == "mongodb":
-            pushdown_df = _try_mongo_pushdown(db, ds, user.id, payload.prompt)
+    # role - see that module's own docstring. Before this round a
+    # restricted caller fell through to the sample path; under the
+    # no-samples policy that is no longer allowed either, so a restricted
+    # role on a warehouse kind gets needs_query_help (restricted_role) -
+    # and, for the same reason, neither the builder nor raw_sql may run
+    # for them (both would also execute inside the warehouse, unfiltered).
+    warehouse_outcome: PushdownOutcome | None = None
+    warehouse_scope: list[str] | None = None
+    warehouse_scope_mode: str | None = None
+    finish_note: str | None = None  # extra context for analyze() on a builder/raw_sql turn
+    is_warehouse_kind = ds.kind in PUSHDOWN_ELIGIBLE_KINDS
 
-    if pushdown_df is not None:
-        tables = {"Original data": pushdown_df}
+    wants_finish_path = payload.query_builder is not None or bool(payload.raw_sql)
+    if wants_finish_path and not is_warehouse_kind:
+        raise HTTPException(400, "A query builder or SQL request only applies to a warehouse or database data source.")
+
+    # 2026-10-06 ("generated data is a saved query" layer): the saved-query
+    # DatasetVersions in scope (see _resolve_warehouse_selection) - the
+    # question runs with their definitions wrapped as CTEs, and a new
+    # table built from them inlines those definitions.
+    warehouse_versions: list = []
+    is_table_kind = ds.kind in _TABLE_KINDS
+
+    if is_warehouse_kind:
+        warehouse_scope_mode, warehouse_scope, warehouse_versions = _resolve_warehouse_selection(
+            db, ds, requested_ids, payload.table
+        )
+        if payload.save_as_table and not is_table_kind:
+            raise HTTPException(400, "Saving a query as a table is SQL-only for now; MongoDB sources are not supported yet.")
+        if warehouse_scope_mode == "saved_only" and not wants_finish_path:
+            # Every entry is a saved DatasetVersion - a complete CSV in the
+            # app, not a sample - so today's pandas path below is kept as
+            # is (row/column rules are applied there by _load_selected_
+            # tables). The only warehouse-specific difference: no
+            # merge-fallback reload of the live table (see the
+            # `original_df is None` block further down), since that would
+            # be a sample.
+            pass
+        elif data_access_rules.has_active_restrictions(db, ds, user):
+            return _needs_query_help_response(
+                db, conversation.id, ds, payload.prompt, None, warehouse_scope, "restricted_role", suggest=False,
+            )
+        elif payload.query_builder is not None:
+            # Deterministic builder: validate every identifier against the
+            # schema (HTTP 400 on anything unknown), render SQL for this
+            # dialect, run it once through the shared chokepoint. The spec
+            # names its own table, so the WORKING ON selection only matters
+            # as a consistency check when it was itself a table selection.
+            # A saved-query version in scope is a valid builder table too
+            # (by sql_alias - query_builder.with_version_aliases); its SQL
+            # is wrapped in the scope's CTEs when it runs.
+            builder_schema, alias_tables = query_builder.with_version_aliases(ds.schema_cache, warehouse_versions)
+            try:
+                built_sql, built_spec = query_builder.build_sql(
+                    payload.query_builder, ds.kind, builder_schema, ds.connection_info, alias_tables
+                )
+            except query_builder.QueryBuilderError as e:
+                raise HTTPException(400, str(e))
+            if warehouse_scope_mode == "tables" and warehouse_scope and built_spec["table"] not in warehouse_scope:
+                raise HTTPException(400, "The query builder's table is not part of the current WORKING ON selection.")
+            if warehouse_scope_mode == "versions":
+                allowed = set(warehouse_scope or []) | alias_tables
+                if warehouse_scope is not None and built_spec["table"] not in allowed:
+                    raise HTTPException(400, "The query builder's table is not part of the current WORKING ON selection.")
+            else:
+                warehouse_scope = [built_spec["table"]]
+                warehouse_scope_mode = "tables"
+            warehouse_outcome = _run_prewritten_sql(db, ds, user.id, built_sql, ctes=_version_ctes(warehouse_versions))
+            if not warehouse_outcome.ok:
+                return _needs_query_help_response(
+                    db, conversation.id, ds, payload.prompt, warehouse_outcome, warehouse_scope,
+                    warehouse_outcome.skipped_reason, reply_key=warehouse_outcome.skipped_reason or "builder_or_raw_failed",
+                    suggest=False, versions=warehouse_versions,
+                )
+            finish_note = (
+                "This table is the already-computed result of a query the person built themselves and ran inside "
+                f"their {_PROVIDER_LABELS.get(ds.kind, ds.kind)} warehouse over every row: "
+                f"{query_builder.describe_spec(built_spec)}. Chart and describe this result as-is; do not "
+                "re-derive, re-aggregate or second-guess it."
+            )
+        elif payload.raw_sql:
+            if ds.kind == "mongodb":
+                raise HTTPException(400, "Writing your own query is SQL-only for now; MongoDB sources are not supported yet.")
+            if warehouse_scope_mode not in ("tables", "versions"):
+                warehouse_scope, warehouse_scope_mode = None, "all"
+            if payload.save_as_table:
+                # 2026-10-06 ("generated data is a saved query" layer): the
+                # person's own SELECT becomes a saved-query table - validated
+                # exactly like an AI-written definition, never charted.
+                table_outcome = _build_warehouse_table(
+                    db, ds, user.id, payload.prompt, warehouse_scope, warehouse_versions, raw_sql=payload.raw_sql,
+                )
+                if not table_outcome.ok:
+                    return _table_failed_response(
+                        db, conversation.id, ds, payload.prompt, table_outcome, warehouse_scope, warehouse_versions,
+                    )
+                return _warehouse_table_response(
+                    db, conversation.id, ds, payload.prompt, table_outcome, warehouse_scope_mode or "all",
+                    warehouse_scope, warehouse_versions,
+                )
+            warehouse_outcome = _run_prewritten_sql(
+                db, ds, user.id, payload.raw_sql.strip(), ctes=_version_ctes(warehouse_versions)
+            )
+            if not warehouse_outcome.ok:
+                return _needs_query_help_response(
+                    db, conversation.id, ds, payload.prompt, warehouse_outcome, warehouse_scope,
+                    warehouse_outcome.skipped_reason, reply_key=warehouse_outcome.skipped_reason or "builder_or_raw_failed",
+                    suggest=False, versions=warehouse_versions,
+                )
+            finish_note = (
+                "This table is the already-computed result of SQL the person wrote themselves and ran inside "
+                f"their {_PROVIDER_LABELS.get(ds.kind, ds.kind)} warehouse over every row. Chart and describe this "
+                "result as-is; do not re-derive, re-aggregate or second-guess it."
+            )
+        elif warehouse_scope_mode == "unsupported":
+            return _needs_query_help_response(
+                db, conversation.id, ds, payload.prompt, None, None, "unsupported_selection", suggest=False,
+            )
+        else:
+            # 2026-10-06 ("generated data is a saved query" layer): the
+            # guided "clean" step is, by definition, a request for a new
+            # table of rows - go straight to the table-definition writer
+            # for a SQL warehouse kind (MongoDB keeps today's pipeline
+            # path and its interim needs_table card).
+            warehouse_outcome = None
+            if not (is_table_kind and payload.intent == "clean"):
+                warehouse_outcome = _run_warehouse_pushdown(
+                    db, ds, user.id, payload.prompt, warehouse_scope, versions=warehouse_versions
+                )
+            if warehouse_outcome is None or (
+                not warehouse_outcome.ok and warehouse_outcome.skipped_reason == "needs_table" and is_table_kind
+            ):
+                # The summary writer said NEEDS_TABLE (or the step is
+                # "clean"): build the table as a saved query instead of
+                # the old interim card. Its own attempts are appended after
+                # the summary writer's so the person sees the whole story.
+                table_outcome = _build_warehouse_table(
+                    db, ds, user.id, payload.prompt, warehouse_scope, warehouse_versions,
+                )
+                if warehouse_outcome is not None:
+                    table_outcome.attempts = list(warehouse_outcome.attempts) + list(table_outcome.attempts)
+                if not table_outcome.ok:
+                    return _table_failed_response(
+                        db, conversation.id, ds, payload.prompt, table_outcome, warehouse_scope, warehouse_versions,
+                    )
+                return _warehouse_table_response(
+                    db, conversation.id, ds, payload.prompt, table_outcome, warehouse_scope_mode or "all",
+                    warehouse_scope, warehouse_versions,
+                )
+            if not warehouse_outcome.ok:
+                return _needs_query_help_response(
+                    db, conversation.id, ds, payload.prompt, warehouse_outcome, warehouse_scope,
+                    warehouse_outcome.skipped_reason, versions=warehouse_versions,
+                )
+
+    if warehouse_outcome is not None and warehouse_outcome.ok:
+        # The small, already-aggregated result is the ONLY table this turn
+        # analyzes - labelled for what it is. Nothing downstream keys off
+        # the literal "Original data" label (verified: learned_answers
+        # fingerprints column names, the Flow tab/Workspace restore read
+        # the manifest's kind/sheet/datasource_id, not the label), so this
+        # is lineage-safe. original_df stays None on purpose: a warehouse
+        # turn has no in-app copy of the real data to offer as a
+        # merge-fallback reference, and loading one would be a sample.
+        tables = {"Query result": warehouse_outcome.df}
         source_versions = []
-        original_df = pushdown_df
-        sources_manifest = [{
-            "kind": "original", "label": "Original data", "datasource_id": ds.id,
-            "version_id": None, "sheet": None,
-        }]
+        original_df = None
+        sources_manifest = _scope_manifest(ds, warehouse_scope_mode or "all", warehouse_scope, warehouse_versions)
     else:
         try:
             tables, source_versions, original_df, sources_manifest = _load_selected_tables(
@@ -627,31 +1515,19 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
             reply = f"This datasource has multiple tables/collections: {available_list}. Which one would you like to analyze?"
             return _persist_and_respond(db, conversation.id, reply, needs_clarification=True)
 
-    # 2026-10-06 (pushdown-honesty round, reorder fix): this merge-fallback
-    # reload of `original_df` must run BEFORE used_pushdown/sample_row_count
-    # are computed below, not after. It used to run after, which meant the
-    # used_pushdown computation always saw original_df in its PRE-reload
-    # state - still None whenever this turn's WORKING ON selection was only
-    # a sheet/saved table (e.g. "sheet:Hotel_data"), since _load_selected_
-    # tables only sets original_df for a literal "original" entry. That
-    # silently reported "nothing to disclose" (used_pushdown=None) even
-    # though this exact reload, moments later in the old order, genuinely
-    # loaded a real, row-capped live sample and the reply text went on to
-    # reference it. Confirmed live: a BigQuery chat reply whose text said
-    # "Hotel_data (2,000 total rows)" had used_pushdown/sample_row_count
-    # both stored as NULL. Moving the reload earlier - with its existing
-    # best-effort/never-blocks-the-request try/except kept exactly as-is -
-    # means the computation below always sees the final, true state of
-    # original_df instead of a stale snapshot taken before this ran.
-    if original_df is None:
-        # The person is working on a derived table, not the original data -
-        # load the original too (best-effort only, never blocks the main
-        # request on failure) so a prep step can pull in a column that
-        # table is missing straight from there, instead of the person
-        # having to notice the gap, switch WORKING ON by hand, and ask
-        # again from scratch - see ai_engine._schema_with_fallback. This
-        # also happens to be exactly the live data the pushdown-honesty
-        # disclosure just below needs to see, for the same reason.
+    # Merge-fallback reload of the original data - FILE-BASED KINDS ONLY.
+    # When the person is working on a derived table, the original is also
+    # loaded (best-effort, never blocks the request) so a prep step can
+    # pull in a column that table is missing straight from there - see
+    # ai_engine._schema_with_fallback. 2026-10-06 (warehouse-honesty
+    # round): for a warehouse kind this reload is skipped outright. On a
+    # warehouse-computed turn there is nothing to reload (the result IS
+    # the answer); on a saved-tables-only turn, load_dataframe would pull
+    # a row-capped SAMPLE of the live table and hand it to the model as a
+    # reference table - which is analysis on a sample, exactly what the
+    # policy forbids. Saved tables (complete CSVs) still analyze fine on
+    # their own; they just no longer get a sampled "Original data" sidecar.
+    if original_df is None and not is_warehouse_kind:
         try:
             original_df = load_dataframe(ds, table=payload.table, version="original", db=db)
             original_df = data_access_rules.filter_dataframe_for_role(db, original_df, ds, user)
@@ -659,48 +1535,53 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
             print(f"[chat] Could not load original data as a merge fallback: {e}")
             original_df = None
 
-    # 2026-10-06 (pushdown-honesty round - the founder's own confirmed bug
-    # report: a chat question against his BigQuery source silently
-    # analyzed a 2,000-row in-memory sample instead of running a real
-    # query against his full table, with zero indication of this to him).
-    # `used_pushdown` is already trivially knowable right here - the branch
-    # just above (plus the merge-fallback reload immediately above this
-    # comment) already tells us, no extra detection needed - but it is
-    # deliberately left None (not a misleading False) in two cases where
-    # there is genuinely nothing to disclose, not just "it fell back":
-    #   - this datasource's kind never attempts pushdown at all (a CSV/
-    #     Excel upload, an API/webhook connection) - "did it run directly
-    #     against your warehouse" does not even apply to a kind that has
-    #     no warehouse to run directly against.
-    #   - no LIVE table was actually part of this turn at all, even after
-    #     the merge-fallback reload above had its chance to load one (it
-    #     either failed, or this datasource's original data genuinely could
-    #     not be loaded) - so `original_df` is still None here. Whatever
-    #     this turn ran against was then only an already-saved table (a
-    #     DatasetVersion): a deliberately-built, complete result, not a
-    #     row-capped live sample, and labelling it "based on a sample of N
-    #     loaded rows" would be actively misleading, not honest.
-    # Only in the one remaining case - this kind CAN run pushdown, didn't
-    # (for any reason: the SQL writer gave up, the daily cost budget was
-    # used up, a restricted role, or a specific table was asked for) AND a
-    # live table genuinely WAS loaded (and therefore row-capped, for a
-    # kind with a load cap) - is this False, with `sample_row_count` set
-    # to the REAL, already-loaded row count of that exact table (`original_
-    # df`, via the row cap `load_dataframe` already enforces - see
-    # settings.BIGQUERY_MAX_ROWS_LOADED and friends). Never a fresh "what's
-    # the real total" query - that would reintroduce the exact cost/
-    # latency problem the row cap exists to avoid; this is simply an
-    # honest report of what was already loaded, the same restrained
-    # approach Round 2's Data-tab loaded_row_count already uses.
-    if ds.kind not in PUSHDOWN_ELIGIBLE_KINDS:
+    # used_pushdown / sample_row_count (see models.Message's docstring):
+    #   None  - a file-based kind: "did it run inside your warehouse" does
+    #           not apply; nothing to disclose.
+    #   True  - a warehouse kind, answer computed inside the warehouse over
+    #           every row (AI pushdown, the builder, or raw_sql).
+    #   None  - a warehouse kind whose selection was saved tables only (no
+    #           live table involved at all - complete CSVs, not samples).
+    # 2026-10-06 (warehouse-honesty round): there is no `False` case left
+    # on this path. A warehouse kind that could not run its query never
+    # reaches here - it returned action="needs_query_help" above with
+    # used_pushdown=False and sample_row_count=None, because nothing was
+    # loaded. sample_row_count only ever described the sample path, which
+    # warehouse kinds no longer take, so it is always None from here on.
+    if not is_warehouse_kind:
         used_pushdown = None
-    elif pushdown_df is not None:
+    elif warehouse_outcome is not None and warehouse_outcome.ok:
         used_pushdown = True
-    elif original_df is not None:
-        used_pushdown = False
     else:
-        used_pushdown = None  # no live table involved in this turn at all - nothing to disclose
-    sample_row_count = len(original_df) if used_pushdown is False else None
+        used_pushdown = None
+    sample_row_count = None
+
+    # What the insight writer needs to describe a warehouse-computed
+    # result honestly (see ai_engine.analyze's `warehouse_context`):
+    # never "n = <size of the tiny result>", never "sample". The real
+    # total row count is cited only when a single table was scoped AND
+    # the Data tab's profile already computed and cached it - never a
+    # fresh COUNT(*) here (billable).
+    warehouse_context = None
+    exact_total_rows = None
+    if used_pushdown:
+        if warehouse_versions:
+            # 2026-10-06: a question over exactly one saved query cites
+            # that query's own exact row count (captured at creation or by
+            # the Data-tab profile) - never the underlying table's.
+            if len(warehouse_versions) == 1 and not warehouse_scope and warehouse_scope is not None:
+                rc = getattr(warehouse_versions[0], "row_count", None)
+                exact_total_rows = int(rc) if isinstance(rc, int) and not isinstance(rc, bool) else None
+        elif warehouse_scope and len(warehouse_scope) == 1:
+            exact_total_rows = cached_exact_total_rows(ds.id, warehouse_scope[0])
+        elif not warehouse_scope and isinstance(ds.schema_cache, dict) and len(ds.schema_cache) == 1:
+            exact_total_rows = cached_exact_total_rows(ds.id, next(iter(ds.schema_cache)))
+        warehouse_context = {
+            "provider": ds.kind,
+            "exact_total_rows": exact_total_rows,
+            "bytes_scanned": warehouse_outcome.bytes_scanned,
+            "sql": warehouse_outcome.sql,
+        }
 
     history = _recent_history(db, conversation.id)
 
@@ -731,7 +1612,14 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     # ai_engine.SYSTEM_PROMPT's "Automatically finding data in another
     # connected source" rule and _other_sources_catalog's own docstring.
     exclude_ids = {ds.id} | {m.get("datasource_id") for m in sources_manifest if m.get("datasource_id")}
-    catalog = _other_sources_catalog(db, user, exclude_ids)
+    # 2026-10-06 (warehouse-honesty round): on a warehouse-computed turn
+    # the catalog is NOT offered. If the model answered needs_data, the
+    # auto-expand below would call _load_selected_tables with this turn's
+    # own requested_ids - loading a row-capped SAMPLE of the warehouse
+    # table alongside the extra source. The result it was handed is the
+    # whole answer; combining it with another source is a question for a
+    # saved table, not this path.
+    catalog = [] if used_pushdown else _other_sources_catalog(db, user, exclude_ids)
 
     # Semantic layer v1 (2026-09-30): this data source's own saved metric
     # glossary, handed to ai_engine.analyze so a question naming one of
@@ -789,18 +1677,35 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     # retry just below (when it happens) since that is still genuinely
     # part of this one turn's total work, not a separate one.
     _analyze_started_at = time.perf_counter()
+    # On a warehouse-computed turn the prompt handed to analyze() carries a
+    # short note saying the one table IS the already-computed answer (so
+    # the chart/insight describe it rather than re-derive it). The person's
+    # own message was already stored verbatim above; only the model sees
+    # this note.
+    analyze_prompt = payload.prompt
+    if used_pushdown:
+        if finish_note:
+            analyze_prompt = f"{payload.prompt}\n\n(Context: {finish_note})"
+        else:
+            analyze_prompt = (
+                f"{payload.prompt}\n\n(Context: the table \"Query result\" is the already-computed answer to this "
+                f"question, produced by one query that ran inside the person's "
+                f"{_PROVIDER_LABELS.get(ds.kind, ds.kind)} warehouse over every row. Chart and describe it as-is; "
+                "do not re-derive or re-aggregate it unless the question clearly needs a further step on top.)"
+            )
     try:
         result = ai_engine.analyze(
-            payload.prompt, tables, history=history, chart_override=payload.chart_override, intent=payload.intent,
+            analyze_prompt, tables, history=history, chart_override=payload.chart_override, intent=payload.intent,
             guided=(payload.analysis_mode == "guided"), skip_prep=payload.skip_prep, original_df=original_df,
             durable_repeat=durable_repeat, catalog=catalog, metric_definitions=metric_definitions,
             transform_tables=transform_tables, transform_definitions=transform_glossary,
+            warehouse_context=warehouse_context,
         )
     except Exception as e:
         print(f"[chat] AI analysis failed: {e}")
         raise HTTPException(502, ai_engine.friendly_ai_error(e))
 
-    if result.get("action") == "needs_data" and result.get("needs_datasource_ids"):
+    if result.get("action") == "needs_data" and result.get("needs_datasource_ids") and not used_pushdown:
         # The model recognized this question needs a table from the
         # catalog above and named its id(s) instead of guessing or asking
         # the person - load it for real (through the exact same "ds:"
@@ -869,6 +1774,19 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
                     "looking for?"
                 ),
             }
+    elif result.get("action") == "needs_data":
+        # Defensive only: on a warehouse-computed turn no catalog was
+        # offered, so the model has nothing to name - but never let this
+        # internal marker reach the person as a bare "Done.".
+        result = {
+            **result,
+            "action": "clarify",
+            "needs_clarification": True,
+            "clarifying_question": (
+                "This result was computed inside your warehouse from the selected table(s) only. To combine it "
+                "with another data source, save it as a table first, then ask again with that table selected."
+            ),
+        }
 
     duration_ms = int((time.perf_counter() - _analyze_started_at) * 1000)
     method_summary = ai_engine._derive_method_summary(result.get("action"), result.get("chart_type"), result.get("code"))
@@ -995,6 +1913,15 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         method_summary=method_summary,
         used_pushdown=used_pushdown,
         sample_row_count=sample_row_count,
+        # 2026-10-06 (warehouse-honesty round): what actually ran inside
+        # the warehouse - see schemas.ChatResponse's own comment.
+        pushdown_sql=warehouse_outcome.sql if used_pushdown else None,
+        pushdown_provider=ds.kind if used_pushdown else None,
+        pushdown_bytes_scanned=warehouse_outcome.bytes_scanned if used_pushdown else None,
+        pushdown_duration_ms=warehouse_outcome.duration_ms if used_pushdown else None,
+        pushdown_result_rows=int(len(warehouse_outcome.df)) if used_pushdown else None,
+        pushdown_attempts=list(warehouse_outcome.attempts) if used_pushdown else None,
+        exact_total_rows=exact_total_rows,
     )
 
 
@@ -1229,7 +2156,7 @@ def _load_selected_tables(
             owning_ds = _get_other_ds(version.datasource_id)
             label = f"{owning_ds.name} — {version.name}"
         try:
-            version_df = load_version_dataframe(version)
+            version_df = load_version_dataframe(version, ds=owning_ds)
             version_df = data_access_rules.filter_dataframe_for_role(db, version_df, owning_ds, user)
         except Exception as e:
             raise HTTPException(400, f"Could not load data: {e}")
@@ -1300,6 +2227,34 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
     prompt = prior_user_msg.content if prior_user_msg else msg.content
 
     requested_ids = payload.source_version_ids or ["original"]
+
+    # 2026-10-06 (warehouse-honesty round): "Double-check this" re-runs the
+    # stored pandas code against freshly loaded data. For a warehouse kind
+    # that would mean loading a row-capped SAMPLE of the live table - and,
+    # for a turn that was computed inside the warehouse, re-running chart
+    # code (written against the small query result) on raw sample rows,
+    # then possibly overwriting a correct answer with a sample-based
+    # "correction". Neither is allowed under the no-samples policy, so a
+    # warehouse turn is verified by asking the question again (which
+    # re-runs the real query), and only a selection made entirely of saved
+    # tables can still be double-checked here.
+    is_warehouse_kind = ds.kind in PUSHDOWN_ELIGIBLE_KINDS
+    if is_warehouse_kind:
+        # db is passed so a saved-query version (2026-10-06) resolves to
+        # mode "versions" - which has no in-app copy to re-check against
+        # either - rather than looking like a file-backed saved table.
+        scope_mode, _ = _resolve_warehouse_scope(ds, requested_ids, None, db=db)
+        if msg.used_pushdown or scope_mode != "saved_only":
+            return schemas.VerifyResponse(
+                status="unavailable",
+                message=(
+                    "This answer was computed by a query inside your warehouse over every row, so there is no "
+                    "in-app copy to re-check it against (and I won't check it against a sample). Ask the "
+                    "question again to recompute it directly in the warehouse."
+                ),
+                message_id=msg.id,
+            )
+
     try:
         tables, source_versions, original_df, sources_manifest = _load_selected_tables(
             db, user, ds, requested_ids, table=None
@@ -1308,7 +2263,7 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
         available_list = ", ".join(e.available)
         raise HTTPException(400, f"This datasource has multiple tables/collections ({available_list}); please pick one before verifying.")
 
-    if original_df is None:
+    if original_df is None and not is_warehouse_kind:
         try:
             original_df = load_dataframe(ds, table=None, version="original", db=db)
             original_df = data_access_rules.filter_dataframe_for_role(db, original_df, ds, user)
@@ -1611,7 +2566,18 @@ def _persist_and_respond(
     continue_action=None, result_columns=None, result_rows=None, result_truncated=False,
     sources=None, ok: bool = True, steps=None, results=None, self_critique=None,
     duration_ms=None, method_summary=None, used_pushdown=None, sample_row_count=None,
+    pushdown_sql=None, pushdown_provider=None, pushdown_bytes_scanned=None, pushdown_duration_ms=None,
+    pushdown_result_rows=None, pushdown_attempts=None, pushdown_skipped_reason=None, exact_total_rows=None,
+    builder_suggestion=None, builder_columns=None,
 ) -> schemas.ChatResponse:
+    # 2026-10-06 (warehouse-honesty round): the builder prefill rides
+    # inside the existing `suggestions` JSON (no new column needed) so
+    # reopening the conversation can restore it - see
+    # routers/conversations.py, which lifts it back out to top level.
+    # builder_columns is NOT persisted: it is derived from ds.schema_cache,
+    # which the frontend already has for the open data source.
+    if builder_suggestion is not None:
+        suggestions = {**(suggestions or {}), "builder_suggestion": builder_suggestion}
     msg = models.Message(
         conversation_id=conversation_id,
         role="assistant",
@@ -1648,6 +2614,14 @@ def _persist_and_respond(
         # sample_row_count's own docstring in models.py.
         used_pushdown=used_pushdown,
         sample_row_count=sample_row_count,
+        # Warehouse-honesty round - see models.Message.pushdown_sql and
+        # friends' own docstring.
+        pushdown_sql=pushdown_sql,
+        pushdown_attempts=pushdown_attempts,
+        pushdown_bytes_scanned=pushdown_bytes_scanned,
+        pushdown_duration_ms=pushdown_duration_ms,
+        pushdown_result_rows=pushdown_result_rows,
+        pushdown_skipped_reason=pushdown_skipped_reason,
     )
     db.add(msg)
     db.commit()
@@ -1691,4 +2665,15 @@ def _persist_and_respond(
         # on these two fields for what they mean and why.
         used_pushdown=used_pushdown,
         sample_row_count=sample_row_count,
+        # Warehouse-honesty round - see schemas.ChatResponse's own comment.
+        pushdown_sql=pushdown_sql,
+        pushdown_provider=pushdown_provider,
+        pushdown_bytes_scanned=pushdown_bytes_scanned,
+        pushdown_duration_ms=pushdown_duration_ms,
+        pushdown_result_rows=pushdown_result_rows,
+        exact_total_rows=exact_total_rows,
+        pushdown_attempts=pushdown_attempts,
+        pushdown_skipped_reason=pushdown_skipped_reason,
+        builder_suggestion=builder_suggestion,
+        builder_columns=builder_columns,
     )
