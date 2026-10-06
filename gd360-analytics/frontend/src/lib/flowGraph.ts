@@ -263,7 +263,12 @@ export function buildFlowGraph(
         // tab strip, exports, etc.) still shows/uses v.name untouched,
         // exactly like a dashboard block's own title override works.
         title: v.display_label || v.name,
-        subtitle: `${v.step_count} cleaning step${v.step_count === 1 ? "" : "s"}`,
+        // 2026-10-06 ("generated data is a saved query" layer): a warehouse
+        // saved-query table says so, with its exact row count when the
+        // backend has it - a file-backed table keeps its step count line.
+        subtitle: v.source_kind === "warehouse_query"
+          ? `Saved query${v.source_table ? ` on ${v.source_table}` : ""}${v.row_count != null ? ` · ${v.row_count.toLocaleString()} rows` : ""}`
+          : `${v.step_count} cleaning step${v.step_count === 1 ? "" : "s"}`,
         detail: creator?.prompt ? `Asked: "${creator.prompt}"` : undefined,
         meta: relativeDate(v.created_at),
         step: 1,
