@@ -141,6 +141,19 @@ class Settings(BaseSettings):
     # usage patterns are known.
     PUSHDOWN_MAX_BYTES_SCANNED_PER_DAY_PER_USER: int = 50 * 1024 * 1024 * 1024  # 50 GiB
 
+    # 2026-10-06 ("generated data is a saved query" layer): the hard row cap
+    # on GET /datasources/{id}/versions/{vid}/download for a warehouse
+    # saved-query table. The download streams rows straight from the
+    # warehouse's own row iterator to the browser as CSV (never a
+    # DataFrame, never the whole result in this process's memory), so the
+    # cap is not a memory guard - it bounds how long one request can keep
+    # a warehouse connection and a worker thread busy. When hit, the CSV
+    # ends with one trailing comment row saying it stopped at the cap.
+    WAREHOUSE_DOWNLOAD_MAX_ROWS: int = 1_000_000
+    # Rows fetched per round trip while streaming that download (BigQuery
+    # page_size, Snowflake fetchmany size, SQLAlchemy yield_per).
+    WAREHOUSE_DOWNLOAD_BATCH_ROWS: int = 5_000
+
     # --- MongoDB pushdown (Enterprise Scale Roadmap, Phase 2) ---
     # Like the plain SQL databases (Postgres/MySQL/SQL Server/Supabase),
     # a customer's own MongoDB server has no per-query metered billing to
