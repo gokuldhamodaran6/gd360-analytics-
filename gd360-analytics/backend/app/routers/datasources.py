@@ -27,6 +27,7 @@ no effect on that renamed column in that saved version - see
 filter_dataframe_for_role's own docstring for the same behavior stated
 generally.
 """
+import csv
 import io
 import json
 import os
@@ -45,16 +46,18 @@ from .. import models, schemas, security
 from ..config import get_settings, effective_preview_cap
 from ..database import get_db
 from ..deps import get_current_user
-from ..services import ai_engine, audit, data_access_rules, workspace_access
+from ..services import ai_engine, audit, data_access_rules, warehouse_tables, workspace_access
 from ..services.connectors import (
     SQLConnector, MongoConnector, FileConnector, BigQueryConnector, SnowflakeConnector, ApiConnector,
-    QueryTooExpensive,
+    QueryTooExpensive, ReadOnlyViolation, assert_read_only_sql,
 )
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, ensure_legacy_migrated, warm_cache, default_table_for_preview,
-    dataframe_to_csv_bytes,
+    dataframe_to_csv_bytes, is_warehouse_query, warehouse_no_file_message,
 )
-from ..services.profiling import build_profile_query, parse_profile_row
+from ..services.profiling import (
+    build_profile_query, parse_profile_row, build_top_values_query, parse_top_values, TOP_VALUES_MAX_DISTINCT,
+)
 from ..services.pushdown_budget import log_pushdown, todays_pushdown_bytes
 from ..services.dtype_utils import normalize_dtypes_dict, coerce_dates_for_json
 
@@ -770,17 +773,31 @@ def list_versions(datasource_id: str, db: Session = Depends(get_db), user: model
         .all()
     )
     conv_by_version = _conversation_id_by_version(db, user, [v.id for v in versions])
-    return [
-        {
-            "id": v.id,
-            "name": v.name,
-            "parent_version_id": v.parent_version_id,
-            "step_count": len(v.cleaning_log or []),
-            "created_at": v.created_at,
-            "conversation_id": conv_by_version.get(v.id),
-        }
-        for v in versions
-    ]
+    return [_version_out(v, conv_by_version.get(v.id)) for v in versions]
+
+
+def _version_out(v: models.DatasetVersion, conversation_id: str | None = None) -> dict:
+    """One entry of the versions list - see schemas.DatasetVersionOut. The
+    2026-10-06 saved-query fields ride along so the Data tab can render a
+    warehouse table (definition, alias, source table, exact row count,
+    result columns) without ever loading it; a file-backed version reports
+    source_kind "file" and nulls."""
+    warehouse = is_warehouse_query(v)
+    return {
+        "id": v.id,
+        "name": v.name,
+        "parent_version_id": v.parent_version_id,
+        "parent_version_ids": v.parent_version_ids,
+        "step_count": len(v.cleaning_log or []),
+        "created_at": v.created_at,
+        "conversation_id": conversation_id,
+        "source_kind": "warehouse_query" if warehouse else "file",
+        "query_sql": v.query_sql if warehouse else None,
+        "sql_alias": v.sql_alias if warehouse else None,
+        "source_table": v.source_table if warehouse else None,
+        "row_count": v.row_count if warehouse else None,
+        "columns_json": v.columns_json if warehouse else None,
+    }
 
 
 def _flow_annotations_by_key(db: Session, datasource_id: str) -> dict[str, models.FlowAnnotation]:
@@ -846,6 +863,11 @@ def get_data_flow(
             # duration_ms/method_summary's own docstring.
             "duration_ms": v.duration_ms,
             "method_summary": v.method_summary,
+            # 2026-10-06 ("generated data is a saved query" layer): so the
+            # Flow tab can label a warehouse saved-query table honestly.
+            "source_kind": "warehouse_query" if is_warehouse_query(v) else "file",
+            "row_count": v.row_count if is_warehouse_query(v) else None,
+            "source_table": v.source_table if is_warehouse_query(v) else None,
             **_annotation_fields(annotations, v.id),
         }
         for v in versions
@@ -1180,6 +1202,111 @@ def _apply_column_filter(df: pd.DataFrame, col: str, spec) -> pd.DataFrame:
     return df
 
 
+def _sample_sql_for_caption(ds: models.DataSource, table: str | None, n: int) -> str:
+    """The real shape of the statement each connector's load_dataframe
+    builds for a plain `row_limit=n` table load (see connectors.py:
+    BigQueryConnector/SQLConnector/SnowflakeConnector.load_dataframe) -
+    shown verbatim under the example rows so a person can see exactly what
+    was asked of their warehouse. Mirrors, never replaces, the connector's
+    own statement."""
+    name = table or default_table_for_preview(ds) or ""
+    if ds.kind == "bigquery":
+        info = ds.connection_info or {}
+        return f"SELECT * FROM `{info.get('project_id')}.{info.get('dataset_id')}.{name}` LIMIT {n}"
+    if ds.kind == "sqlserver":
+        return f"SELECT TOP {n} * FROM [{name}]"
+    if ds.kind == "mysql":
+        return f"SELECT * FROM `{name}` LIMIT {n}"
+    return f'SELECT * FROM "{name}" LIMIT {n}'
+
+
+def _sample_rows_response(ds: models.DataSource, df: pd.DataFrame, table: str | None, n: int) -> dict:
+    """preview_datasource's response in `sample_rows` mode (see its own
+    comment): the whole tiny frame, unfiltered/unsorted/unpaged, with
+    total_rows/loaded_row_count honestly equal to the sample's own size -
+    the frontend takes the real table count from /profile, never from
+    here. Same top-level keys as the ordinary response so the shared
+    DataPreview type still fits, plus sample_mode/sample_sql/sample_rows."""
+    dtypes = normalize_dtypes_dict(df)
+    rows = json.loads(coerce_dates_for_json(df).to_json(orient="records"))
+    return {
+        "columns": [str(c) for c in df.columns],
+        "dtypes": dtypes,
+        "rows": rows,
+        "total_rows": int(len(df)),
+        "offset": 0,
+        "limit": n,
+        "version_id": None,
+        "version_name": "Original data",
+        "cleaning_log": [],
+        "column_stats": _column_stats(df),
+        # The sample hit its own cap - which is the normal case for any
+        # real table - so nothing downstream can ever read these 20 rows
+        # as the whole table.
+        "stats_capped": len(df) >= n,
+        "loaded_row_count": int(len(df)),
+        "sample_mode": True,
+        "sample_rows": n,
+        "sample_sql": _sample_sql_for_caption(ds, table, n),
+    }
+
+
+def _warehouse_version_connector(ds: models.DataSource):
+    """The connector for a saved-query version's own data source - the
+    same construction routers/chat.py's execution chokepoint uses, kept
+    here (module-level names) so tests can patch it the way they patch
+    profile_datasource's."""
+    info = ds.connection_info or {}
+    if ds.kind == "bigquery":
+        return BigQueryConnector(info["project_id"], info["dataset_id"], security.decrypt_secret(ds.encrypted_secret))
+    if ds.kind == "snowflake":
+        creds = json.loads(security.decrypt_secret(ds.encrypted_secret))
+        return SnowflakeConnector(
+            account=info["account"], warehouse=info["warehouse"], database=info["database"],
+            db_schema=info.get("db_schema"), role=info.get("role"),
+            username=creds["username"], password=creds["password"],
+        )
+    if ds.kind in ("postgres", "mysql", "sqlserver", "supabase"):
+        username, password = security.decrypt_secret(ds.encrypted_secret).split("␟")
+        return SQLConnector(ds.kind, info["host"], info["port"], info["database"], username, password, info.get("ssl", True))
+    raise HTTPException(400, "Saved queries are only supported for SQL warehouse and database sources.")
+
+
+def _require_warehouse_version(ds: models.DataSource, version: models.DatasetVersion) -> None:
+    if not is_warehouse_query(version):
+        raise HTTPException(400, "This saved table is a file inside GD360, not a warehouse query.")
+    if ds.kind not in _PROFILE_SUPPORTED_KINDS:
+        raise HTTPException(400, "Saved queries are only supported for SQL warehouse and database sources.")
+    if not version.query_sql:
+        raise HTTPException(400, "This saved query has no definition stored.")
+
+
+def _warehouse_version_sample(
+    db: Session, ds: models.DataSource, user: models.User, version: models.DatasetVersion, n: int,
+) -> pd.DataFrame:
+    """`SELECT * FROM (<definition>) AS gd360_v LIMIT n` (TOP n on SQL
+    Server; the definition's own WITH hoisted to the front - see
+    warehouse_tables.sample_sql) through the same connector path, cost
+    guard and audit log as every other warehouse query. Raises on any
+    failure (the caller turns it into a 400)."""
+    _require_warehouse_version(ds, version)
+    sql = warehouse_tables.sample_sql(ds.kind, version.query_sql, n)
+    connector = _warehouse_version_connector(ds)
+    if ds.kind == "bigquery":
+        if todays_pushdown_bytes(db, user.id) >= settings.PUSHDOWN_MAX_BYTES_SCANNED_PER_DAY_PER_USER:
+            raise HTTPException(400, "Today's data-warehouse query budget is already used up - example rows will be available tomorrow.")
+        df, scanned = connector.run_pushdown_query(sql, max_bytes=settings.BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY)
+        log_pushdown(db, user.id, ds.id, ds.kind, sql, scanned, "ok")
+        return df
+    if ds.kind == "snowflake":
+        df, scanned = connector.run_pushdown_query(sql, statement_timeout_seconds=settings.SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS)
+        log_pushdown(db, user.id, ds.id, ds.kind, sql, scanned, "ok")
+        return df
+    df = connector.load_dataframe(sql, is_raw_sql=True, row_limit=n)
+    log_pushdown(db, user.id, ds.id, ds.kind, sql, None, "ok")
+    return df
+
+
 @router.get("/{datasource_id}/preview")
 def preview_datasource(
     datasource_id: str,
@@ -1190,6 +1317,7 @@ def preview_datasource(
     sort_by: str | None = None,
     sort_dir: str = "asc",
     filters: str | None = None,
+    sample_rows: int | None = None,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
@@ -1197,6 +1325,64 @@ def preview_datasource(
     ensure_legacy_migrated(db, ds)
 
     active_version = _get_owned_version(db, ds, version_id) if version_id else None
+
+    # 2026-10-06 (profile-first Data tab): `sample_rows` is the warehouse
+    # Data tab asking for a tiny, labelled set of EXAMPLE rows (20 by
+    # default on the frontend, 1..200 here) instead of the usual page-able
+    # grid. Only honoured for an ORIGINAL table of a profile-supported
+    # warehouse/database kind (see _PROFILE_SUPPORTED_KINDS below) - the
+    # founder's rule for those sources is that the table never loads into
+    # GD360, so the connector is asked for exactly `sample_rows` rows at
+    # the query level (LIMIT n / TOP n - see each connector's
+    # load_dataframe) rather than fetching the usual preview cap and
+    # slicing. Filters/sort/pagination are ignored in this mode: the rows
+    # are read-only examples, every real number on that tab comes from
+    # /profile. Left unset (every other caller - the old grid, the manual
+    # chart builder's `preview(id, null)`), this function behaves exactly
+    # as it always did.
+    sample_mode = (
+        sample_rows is not None
+        and active_version is None
+        and ds.kind in _PROFILE_SUPPORTED_KINDS
+    )
+    if sample_mode:
+        sample_rows = max(1, min(int(sample_rows), 200))
+
+    # 2026-10-06 ("generated data is a saved query" layer): a warehouse
+    # saved-query version has no rows inside GD360 to page through - the
+    # ONLY supported view is sample mode, which runs
+    # `SELECT * FROM (<definition>) AS gd360_v LIMIT n` inside the
+    # warehouse (see _warehouse_version_sample). Anything else is a plain
+    # 400, never a blank grid.
+    if active_version is not None and is_warehouse_query(active_version):
+        if sample_rows is None:
+            raise HTTPException(
+                400,
+                warehouse_no_file_message(active_version, ds)
+                + " Ask for example rows (sample_rows) instead of a page - every real number comes from /profile.",
+            )
+        n = max(1, min(int(sample_rows), 200))
+        try:
+            df = _warehouse_version_sample(db, ds, user, active_version, n)
+            df = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(400, f"Could not run this saved query inside your warehouse: {e}")
+        out = _sample_rows_response(ds, df, None, n)
+        out.update({
+            "version_id": active_version.id,
+            "version_name": active_version.name,
+            "cleaning_log": active_version.cleaning_log or [],
+            "sample_sql": warehouse_tables.sample_sql(ds.kind, active_version.query_sql or "", n),
+            "version_source_kind": "warehouse_query",
+            "query_sql": active_version.query_sql,
+            "sql_alias": active_version.sql_alias,
+            "source_table": active_version.source_table,
+            "row_count": active_version.row_count,
+            "columns_json": active_version.columns_json,
+        })
+        return out
     try:
         # `table` (new) is the Data tab's own per-table/per-sheet tab strip
         # asking for one specific original table by name - the same
@@ -1212,12 +1398,15 @@ def preview_datasource(
             if active_version
             else load_dataframe(
                 ds, table=table or default_table_for_preview(ds), version="original",
-                row_limit=settings.PREVIEW_ROW_LIMIT, db=db,
+                row_limit=sample_rows if sample_mode else settings.PREVIEW_ROW_LIMIT, db=db,
             )
         )
         df = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
     except Exception as e:
         raise HTTPException(400, f"Could not load data: {e}")
+
+    if sample_mode:
+        return _sample_rows_response(ds, df, table or default_table_for_preview(ds), sample_rows)
 
     # How many rows actually got loaded before any filter/sort - used just
     # below to tell a Totals row honestly whether it's summing the WHOLE
@@ -1315,29 +1504,17 @@ def preview_datasource(
 # every single time - one scan per table per settings.PROFILE_CACHE_TTL_
 # SECONDS is enough to feel instant on reopen without ever describing
 # stale-for-long data.
-_profile_cache: dict[tuple, tuple[float, dict]] = {}
-
-
-def _profile_cache_get(key: tuple) -> dict | None:
-    entry = _profile_cache.get(key)
-    if entry is None:
-        return None
-    stored_at, value = entry
-    if time.time() - stored_at > settings.PROFILE_CACHE_TTL_SECONDS:
-        _profile_cache.pop(key, None)
-        return None
-    return value
-
-
-def _profile_cache_put(key: tuple, value: dict) -> None:
-    # Cheap unbounded-growth guard: this cache is keyed by (datasource_id,
-    # table), which only grows with how many distinct tables get profiled
-    # - evict the oldest entries past a generous cap rather than letting a
-    # long-running process accumulate one entry per table forever.
-    if len(_profile_cache) > 500:
-        oldest_key = min(_profile_cache, key=lambda k: _profile_cache[k][0])
-        _profile_cache.pop(oldest_key, None)
-    _profile_cache[key] = (time.time(), value)
+#
+# 2026-10-06 (warehouse-honesty round): the cache itself and its two
+# helpers moved, unchanged, to services/profile_cache.py so routers/chat.py
+# can read `exact_total_rows` for a warehouse-computed answer without
+# importing this router (see that module's docstring). Re-bound here under
+# the original private names so every use below is untouched.
+from ..services.profile_cache import (  # noqa: E402
+    _profile_cache,  # noqa: F401  (kept importable for anything that inspected it)
+    profile_cache_get as _profile_cache_get,
+    profile_cache_put as _profile_cache_put,
+)
 
 
 _PROFILE_SUPPORTED_KINDS = ("bigquery", "snowflake", "postgres", "mysql", "sqlserver", "supabase")
@@ -1347,6 +1524,7 @@ _PROFILE_SUPPORTED_KINDS = ("bigquery", "snowflake", "postgres", "mysql", "sqlse
 def profile_datasource(
     datasource_id: str,
     table: str | None = None,
+    version_id: str | None = None,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
@@ -1382,6 +1560,17 @@ def profile_datasource(
     ds = _get_accessible_datasource(db, user, datasource_id)
     ensure_legacy_migrated(db, ds)
 
+    # 2026-10-06 ("generated data is a saved query" layer): `version_id`
+    # profiles a warehouse saved-query version by running the SAME
+    # aggregate query over `(<definition>) AS gd360_v` instead of a table
+    # name (profiling.build_profile_query's from_clause), columns from its
+    # columns_json, cached under (ds.id, "version:<id>"). A file-backed
+    # version is `supported: false` (the frontend keeps using the preview's
+    # column_stats for those, exactly as today).
+    active_version = _get_owned_version(db, ds, version_id) if version_id else None
+    if active_version is not None and not is_warehouse_query(active_version):
+        return {"supported": False, "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False}
+
     if ds.kind not in _PROFILE_SUPPORTED_KINDS:
         result = {"supported": False, "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False}
         # 2026-10-06 (NoSQL hybrid round 2): MongoDB stays unsupported for
@@ -1414,15 +1603,40 @@ def profile_datasource(
                 print(f"[datasources] mongodb estimated_document_count failed for {datasource_id}: {e}")
         return result
 
-    resolved_table = table or default_table_for_preview(ds)
-    cache_key = (ds.id, resolved_table)
-    cached = _profile_cache_get(cache_key)
-    if cached is not None:
-        return {**cached, "cached": True}
+    with_prefix, from_clause = "", None
+    if active_version is not None:
+        _require_warehouse_version(ds, active_version)
+        if data_access_rules.has_active_restrictions(db, ds, user):
+            # Same reasoning as routers/chat.py's restricted_role: the
+            # profile runs inside the warehouse where row/column rules
+            # cannot be applied, so it is refused rather than leaked.
+            raise HTTPException(403, "Your access to this data source is limited by row/column rules, so a saved query cannot be profiled inside the warehouse.")
+        resolved_table = f"version:{active_version.id}"
+        cache_key = (ds.id, resolved_table)
+        cached = _profile_cache_get(cache_key)
+        if cached is not None:
+            return {**cached, "cached": True}
+        all_columns = [
+            c.get("name") for c in (active_version.columns_json or [])
+            if isinstance(c, dict) and c.get("name")
+        ]
+        if not all_columns:
+            return {"supported": False, "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False}
+        with_prefix, from_clause = warehouse_tables.subquery_from_clause(ds.kind, active_version.query_sql)
+        version_type_by_name = {
+            c.get("name"): c.get("type") for c in (active_version.columns_json or [])
+            if isinstance(c, dict) and c.get("name")
+        }
+    else:
+        resolved_table = table or default_table_for_preview(ds)
+        cache_key = (ds.id, resolved_table)
+        cached = _profile_cache_get(cache_key)
+        if cached is not None:
+            return {**cached, "cached": True}
 
-    all_columns = [c.get("name") for c in (ds.schema_cache or {}).get(resolved_table, []) if c.get("name")]
-    if not all_columns:
-        return {"supported": False, "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False}
+        all_columns = [c.get("name") for c in (ds.schema_cache or {}).get(resolved_table, []) if c.get("name")]
+        if not all_columns:
+            return {"supported": False, "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False}
 
     # 2026-10-06: BigQuery needs its table name qualified with a project
     # and dataset (e.g. "my-proj.my_dataset.Hotel_data") - an unqualified
@@ -1436,13 +1650,25 @@ def profile_datasource(
     # other supported kind keeps using the plain table name exactly as
     # before - this was never broken for them.
     profile_table_ident = resolved_table
-    if ds.kind == "bigquery":
+    if ds.kind == "bigquery" and active_version is None:
         info = ds.connection_info
         profile_table_ident = f"{info['project_id']}.{info['dataset_id']}.{resolved_table}"
 
-    sql, profiled_columns = build_profile_query(ds.kind, profile_table_ident, all_columns)
+    sql, profiled_columns = build_profile_query(ds.kind, profile_table_ident, all_columns, from_clause=from_clause)
+    sql = with_prefix + sql
+
+    # 2026-10-06 (profile-first Data tab): wall-clock of every query this
+    # profile runs (the main aggregate below, plus the optional top-values
+    # query after it) - handed back as `duration_ms` for the tab's
+    # "Profile cost" tile. Real elapsed time, never estimated.
+    started_at = time.perf_counter()
 
     try:
+        # One `run_sql(sql) -> (DataFrame, bytes_scanned | None)` closure
+        # per kind, built once, so the top-values query further down goes
+        # through EXACTLY the same connector, budget ceiling and
+        # log_pushdown audit path as the main profile query - never a
+        # second, subtly different code path for a second billable query.
         if ds.kind == "bigquery":
             service_account_json = security.decrypt_secret(ds.encrypted_secret)
             info = ds.connection_info
@@ -1454,10 +1680,13 @@ def profile_datasource(
                     "message": "Today's data-warehouse query budget is already used up - profiling will resume tomorrow.",
                     "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False,
                 }
-            result_df, bytes_scanned = connector.run_pushdown_query(
-                sql, max_bytes=settings.BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY
-            )
-            log_pushdown(db, user.id, ds.id, "bigquery", sql, bytes_scanned, "ok")
+
+            def run_sql(statement: str):
+                frame, scanned = connector.run_pushdown_query(
+                    statement, max_bytes=settings.BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY
+                )
+                log_pushdown(db, user.id, ds.id, "bigquery", statement, scanned, "ok")
+                return frame, scanned
         elif ds.kind == "snowflake":
             creds = json.loads(security.decrypt_secret(ds.encrypted_secret))
             info = ds.connection_info
@@ -1466,17 +1695,24 @@ def profile_datasource(
                 db_schema=info.get("db_schema"), role=info.get("role"),
                 username=creds["username"], password=creds["password"],
             )
-            result_df, bytes_scanned = connector.run_pushdown_query(
-                sql, statement_timeout_seconds=settings.SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS
-            )
-            log_pushdown(db, user.id, ds.id, "snowflake", sql, bytes_scanned, "ok")
+
+            def run_sql(statement: str):
+                frame, scanned = connector.run_pushdown_query(
+                    statement, statement_timeout_seconds=settings.SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS
+                )
+                log_pushdown(db, user.id, ds.id, "snowflake", statement, scanned, "ok")
+                return frame, scanned
         else:
             username, password = security.decrypt_secret(ds.encrypted_secret).split("␟")
             info = ds.connection_info
             connector = SQLConnector(
                 ds.kind, info["host"], info["port"], info["database"], username, password, info.get("ssl", True)
             )
-            result_df = connector.load_dataframe(sql, is_raw_sql=True)
+
+            def run_sql(statement: str):
+                return connector.load_dataframe(statement, is_raw_sql=True), None
+
+        result_df, bytes_scanned = run_sql(sql)
     except QueryTooExpensive as e:
         return {
             "supported": True, "too_expensive": True, "message": str(e),
@@ -1497,12 +1733,72 @@ def profile_datasource(
     total_rows_raw = row.get("gd360_total_rows")
     total_rows = int(total_rows_raw) if total_rows_raw is not None and not pd.isna(total_rows_raw) else 0
     columns_stats = parse_profile_row(row, profiled_columns, total_rows)
+
+    # Each column's declared type, straight from the schema introspected
+    # at connect time (ds.schema_cache) - so the profile-first Data tab
+    # has one self-contained source for name/type/stats and never needs
+    # the row preview's dtypes just to label a column.
+    type_by_name = {
+        c.get("name"): c.get("type")
+        for c in (ds.schema_cache or {}).get(resolved_table, [])
+        if isinstance(c, dict) and c.get("name")
+    } if active_version is None else version_type_by_name
+    for col, stat in columns_stats.items():
+        stat["type"] = type_by_name.get(col)
+
+    # A saved query whose COUNT(*) failed at creation (row_count null) gets
+    # its exact count from this profile - the same number, same source.
+    if active_version is not None and active_version.row_count is None and total_rows:
+        try:
+            active_version.row_count = int(total_rows)
+            db.commit()
+        except Exception as e:
+            print(f"[datasources] could not store row_count on version {active_version.id} (non-fatal): {e}")
+            db.rollback()
+
+    # 2026-10-06 (profile-first Data tab): top values for the low-
+    # cardinality columns the main query just identified - ONE extra
+    # query (see services/profiling.py build_top_values_query), through
+    # the same run_sql closure (same connector, same per-query byte
+    # ceiling, same log_pushdown audit/budget row) as the main query.
+    # Its bytes are added to this profile's bytes_scanned. Any failure
+    # here - a dialect quirk on one odd column type, a budget rejection,
+    # a timeout - is logged and the profile is returned WITHOUT top
+    # values; it never fails the profile as a whole.
+    top_value_columns = [
+        col for col in profiled_columns
+        if isinstance(columns_stats.get(col, {}).get("distinct"), int)
+        and 0 < columns_stats[col]["distinct"] <= TOP_VALUES_MAX_DISTINCT
+    ]
+    top_values_computed = False
+    top_values_sql, top_value_columns = build_top_values_query(
+        ds.kind, profile_table_ident, top_value_columns, from_clause=from_clause
+    )
+    if top_values_sql:
+        top_values_sql = with_prefix + top_values_sql
+        try:
+            top_df, top_bytes = run_sql(top_values_sql)
+            top_values = parse_top_values(ds.kind, top_df, top_value_columns, total_rows)
+            for col, values in top_values.items():
+                if col in columns_stats:
+                    columns_stats[col]["top_values"] = values
+            if top_bytes:
+                bytes_scanned = (bytes_scanned or 0) + int(top_bytes)
+            top_values_computed = True
+        except Exception as e:
+            print(f"[datasources] top-values query failed for {datasource_id}/{resolved_table} (profile still returned): {e}")
+
     result = {
         "supported": True,
         "exact_total_rows": total_rows,
         "columns": columns_stats,
         "profiled_columns": profiled_columns,
         "truncated_columns": len(all_columns) > len(profiled_columns),
+        "duration_ms": int((time.perf_counter() - started_at) * 1000),
+        # Honest flag for the tab's footnote: False means the low-
+        # cardinality columns simply have no top_values this time (none
+        # qualified, or that second query failed) - not that none exist.
+        "top_values_computed": top_values_computed,
     }
     # 2026-10-06 (NoSQL hybrid round): `bytes_scanned` was already real and
     # available (run_pushdown_query's own second return value, above) but
@@ -1808,6 +2104,135 @@ def export_datasource(
     return StreamingResponse(
         buf,
         media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename=\"{filename}\""},
+    )
+
+
+def _safe_filename_part(text: str | None, fallback: str) -> str:
+    return "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in (text or "")) or fallback
+
+
+def _csv_line(values) -> str:
+    buf = io.StringIO()
+    csv.writer(buf, lineterminator="\n").writerow(values)
+    return buf.getvalue()
+
+
+def _csv_cell(v):
+    if v is None:
+        return ""
+    if isinstance(v, float) and v != v:
+        return ""
+    if isinstance(v, (datetime, pd.Timestamp)):
+        return v.isoformat()
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, default=str)
+    return v
+
+
+def _stream_rows_as_csv(row_iter, max_rows: int):
+    """Generator of CSV text chunks from a connector's iter_query_rows
+    (first item = column names, then row tuples). Stops at `max_rows`
+    with one trailing comment row - never buffers the result."""
+    header = next(row_iter)
+    yield _csv_line(list(header))
+    n = 0
+    chunk: list[str] = []
+    for row in row_iter:
+        if n >= max_rows:
+            chunk.append(_csv_line([
+                f"# GD360: download stopped at the {max_rows:,}-row cap; this saved query has more rows than that."
+            ]))
+            break
+        chunk.append(_csv_line([_csv_cell(v) for v in row]))
+        n += 1
+        if len(chunk) >= 500:
+            yield "".join(chunk)
+            chunk = []
+    if chunk:
+        yield "".join(chunk)
+
+
+@router.get("/{datasource_id}/versions/{version_id}/download")
+def download_warehouse_version(
+    datasource_id: str,
+    version_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """2026-10-06 ("generated data is a saved query" layer): the "Download"
+    exit for a warehouse saved-query table. Streams the query's rows
+    straight from the warehouse's own row iterator to the browser as CSV
+    (BigQuery RowIterator pages, Snowflake fetchmany, a SQLAlchemy
+    server-side cursor - see each connector's iter_query_rows) - never
+    to_dataframe(), never the whole result inside this process. Guards:
+    read-only check, BigQuery dry-run cost check and the shared daily
+    budget (logged through log_pushdown BEFORE streaming starts, since the
+    request's DB session is gone once the response body streams), a hard
+    settings.WAREHOUSE_DOWNLOAD_MAX_ROWS cap (a trailing comment row says
+    so when hit), and a refusal for a restricted role (rows would stream
+    unfiltered). The existing /export for file-backed versions is
+    untouched - this endpoint 400s for one of those."""
+    ds = _get_accessible_datasource(db, user, datasource_id)
+    v = _get_owned_version(db, ds, version_id)
+    _require_warehouse_version(ds, v)
+    if data_access_rules.has_active_restrictions(db, ds, user):
+        raise HTTPException(403, "Your access to this data source is limited by row/column rules, so a saved query cannot be downloaded straight from the warehouse.")
+    sql = warehouse_tables.strip_trailing_semicolon(v.query_sql)
+    try:
+        # Explicitly first - BigQuery's dry run itself has no read-only
+        # check (the connectors check inside run/iter, which come later).
+        assert_read_only_sql(sql)
+    except ReadOnlyViolation as e:
+        log_pushdown(db, user.id, ds.id, ds.kind, sql, None, "rejected_unsafe", str(e))
+        raise HTTPException(400, f"This saved query is not a read-only SELECT: {e}")
+    max_rows = int(settings.WAREHOUSE_DOWNLOAD_MAX_ROWS)
+    batch = int(settings.WAREHOUSE_DOWNLOAD_BATCH_ROWS)
+    connector = _warehouse_version_connector(ds)
+    try:
+        if ds.kind == "bigquery":
+            if todays_pushdown_bytes(db, user.id) >= settings.PUSHDOWN_MAX_BYTES_SCANNED_PER_DAY_PER_USER:
+                raise HTTPException(400, "Today's data-warehouse query budget is already used up - the download will be available tomorrow.")
+            estimated = connector.estimate_query_bytes(sql)
+            if estimated > settings.BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY:
+                raise QueryTooExpensive(
+                    f"This download would scan about {estimated / (1024 ** 3):.1f} GB, over the "
+                    f"{settings.BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY / (1024 ** 3):.1f} GB per-query limit.",
+                    estimated_bytes=estimated,
+                )
+            log_pushdown(db, user.id, ds.id, ds.kind, sql, estimated, "ok")
+            row_iter = connector.iter_query_rows(sql, max_bytes=settings.BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY, batch_rows=batch)
+        elif ds.kind == "snowflake":
+            log_pushdown(db, user.id, ds.id, ds.kind, sql, None, "ok")
+            row_iter = connector.iter_query_rows(
+                sql, statement_timeout_seconds=settings.SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS, batch_rows=batch
+            )
+        else:
+            log_pushdown(db, user.id, ds.id, ds.kind, sql, None, "ok")
+            row_iter = connector.iter_query_rows(sql, batch_rows=batch)
+        # Pull the header now so a bad definition fails as a clean 400
+        # before any 200 streaming response has started.
+        header = next(row_iter)
+    except HTTPException:
+        raise
+    except ReadOnlyViolation as e:
+        log_pushdown(db, user.id, ds.id, ds.kind, sql, None, "rejected_unsafe", str(e))
+        raise HTTPException(400, f"This saved query is not a read-only SELECT: {e}")
+    except QueryTooExpensive as e:
+        log_pushdown(db, user.id, ds.id, ds.kind, sql, e.estimated_bytes, "rejected_too_expensive", str(e))
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log_pushdown(db, user.id, ds.id, ds.kind, sql, None, "error", str(e))
+        raise HTTPException(400, f"Could not run this saved query inside your warehouse: {e}")
+
+    def _with_header():
+        yield header
+        yield from row_iter
+
+    filename = f"{_safe_filename_part(ds.name, 'data')}_{_safe_filename_part(v.name, 'table')}.csv"
+    return StreamingResponse(
+        _stream_rows_as_csv(_with_header(), max_rows),
+        media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=\"{filename}\""},
     )
 
