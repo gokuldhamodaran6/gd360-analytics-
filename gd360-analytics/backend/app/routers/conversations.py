@@ -309,6 +309,15 @@ def get_conversation_messages(
                 "method_summary": m.method_summary,
                 "code": m.code,
                 "duration_ms": m.duration_ms,
+                # 2026-10-06 (pushdown-honesty round): whether this past
+                # turn ran a real query directly against the warehouse/
+                # database, or analyzed a loaded sample - see models.
+                # Message.used_pushdown/sample_row_count's own docstring.
+                # Restored here too so reopening a saved conversation keeps
+                # showing the honest "ran directly" / "based on a sample"
+                # badge under a past turn, not just a freshly-sent live one.
+                "used_pushdown": m.used_pushdown,
+                "sample_row_count": m.sample_row_count,
                 "created_at": m.created_at,
             }
             for m in messages
