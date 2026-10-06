@@ -424,7 +424,44 @@ def default_table_for_preview(ds: models.DataSource) -> str | None:
     return next(iter((ds.schema_cache or {}).keys()), None)
 
 
-def load_version_dataframe(version: models.DatasetVersion) -> pd.DataFrame:
+WAREHOUSE_QUERY_SOURCE_KIND = "warehouse_query"
+
+_PROVIDER_LABELS = {
+    "bigquery": "BigQuery", "snowflake": "Snowflake", "postgres": "Postgres", "mysql": "MySQL",
+    "sqlserver": "SQL Server", "supabase": "Supabase",
+}
+
+
+def is_warehouse_query(version) -> bool:
+    """True for a DatasetVersion that is a saved query living in the
+    person's warehouse (2026-10-06 "generated data is a saved query"
+    layer - see models.DatasetVersion.source_kind): it has NO CSV copy
+    inside GD360 (`data` is b"" there, since that column is NOT NULL and
+    cannot be relaxed without a migration tool). NULL source_kind means a
+    plain file-backed version, exactly as every version before this layer.
+    Every reader of a version's rows must check this before touching
+    `.data` - load_version_dataframe below does, so a caller that goes
+    through it can simply catch the ValueError."""
+    if version is None:
+        return False
+    return getattr(version, "source_kind", None) == WAREHOUSE_QUERY_SOURCE_KIND
+
+
+class WarehouseQueryHasNoFile(ValueError):
+    """Raised by load_version_dataframe for a saved-query version: there
+    are no rows to load into pandas, by design."""
+
+
+def warehouse_no_file_message(version, ds=None) -> str:
+    kind = getattr(ds, "kind", None) if ds is not None else None
+    if kind is None:
+        owner = getattr(version, "datasource", None)
+        kind = getattr(owner, "kind", None)
+    provider = _PROVIDER_LABELS.get(kind or "", kind or "data")
+    return f"This table is a saved query that lives in your {provider} warehouse; it has no copy inside GD360."
+
+
+def load_version_dataframe(version: models.DatasetVersion, ds: models.DataSource | None = None) -> pd.DataFrame:
     """Loads a specific saved/named snapshot (one of the person tables),
     as opposed to the always-live original data. Cached the same way as the
     original data above - a DatasetVersion's `.data` is set once when the
@@ -432,7 +469,19 @@ def load_version_dataframe(version: models.DatasetVersion) -> pd.DataFrame:
     result becomes its own new row instead), so it is just as safe to cache
     with no invalidation, and just as worth it: working through a chain of
     saved tables re-loads whichever one is selected on every chat message
-    the same way the original data does."""
+    the same way the original data does.
+
+    2026-10-06: a warehouse saved-query version (is_warehouse_query) has no
+    file - raises WarehouseQueryHasNoFile (a ValueError) with a plain
+    message instead of ever parsing its empty `data` into a blank frame.
+    Every caller already wraps this in `except Exception -> HTTP 400`
+    (routers/chat.py _load_selected_tables, routers/datasources.py
+    preview/distinct-values/parse-filter/export), so the person sees that
+    sentence, never a 500 or a silent empty table."""
+    if is_warehouse_query(version):
+        # `ds` (optional) only names the provider in the message; without
+        # it the version's own datasource relationship is used.
+        raise WarehouseQueryHasNoFile(warehouse_no_file_message(version, ds))
     return _load_and_cache(f"version:{version.id}", lambda: FileConnector(version.data, ".csv").load_dataframe())
 
 
