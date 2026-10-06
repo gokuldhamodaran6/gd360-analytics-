@@ -195,6 +195,33 @@ _NEW_COLUMNS = [
     ("dataset_versions", "sample_row_count", "INTEGER"),
     ("messages", "used_pushdown", "BOOLEAN"),
     ("messages", "sample_row_count", "INTEGER"),
+    # 2026-10-06 (warehouse-honesty round): see models.Message.pushdown_sql
+    # and friends' own docstring. messages is an existing table, so these
+    # need the normal ALTER-TABLE treatment. JSON for pushdown_attempts
+    # follows the exact precedent of messages.steps/results above (a
+    # Column(JSON) model column added as a plain "JSON" ALTER - works on
+    # both Postgres and SQLite). BIGINT for bytes_scanned, not INTEGER: a
+    # multi-GiB BigQuery scan overflows a 32-bit INTEGER on Postgres.
+    ("messages", "pushdown_sql", "TEXT"),
+    ("messages", "pushdown_attempts", "JSON"),
+    ("messages", "pushdown_bytes_scanned", "BIGINT"),
+    ("messages", "pushdown_duration_ms", "INTEGER"),
+    ("messages", "pushdown_result_rows", "INTEGER"),
+    ("messages", "pushdown_skipped_reason", "TEXT"),
+    # 2026-10-06 ("generated data is a saved query" layer): see
+    # models.DatasetVersion.source_kind and friends' own docstring.
+    # dataset_versions is an existing table, so these need the normal
+    # ALTER-TABLE treatment. All nullable (this helper can only ADD a
+    # nullable column - `data` stays NOT NULL and a warehouse version
+    # stores b"" there). JSON for columns_json follows messages.steps'
+    # precedent; BIGINT for row_count because a warehouse table can
+    # exceed 2^31 rows.
+    ("dataset_versions", "source_kind", "TEXT"),
+    ("dataset_versions", "query_sql", "TEXT"),
+    ("dataset_versions", "sql_alias", "TEXT"),
+    ("dataset_versions", "source_table", "TEXT"),
+    ("dataset_versions", "columns_json", "JSON"),
+    ("dataset_versions", "row_count", "BIGINT"),
 ]
 
 
