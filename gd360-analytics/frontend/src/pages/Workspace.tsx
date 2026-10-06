@@ -3,12 +3,16 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   api, chatApi, conversationApi, datasourceApi, dashboardApi, dashboardBuilderApi, workspaceApi,
   DatasetVersion, DataSourceSummary, DataFlow, DashboardSummary, DashboardBuilderSummary, WorkspaceSummary,
+  ChatFinishRequest,
 } from "../api/client";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID, otherDsSourceId, otherDsIdFromSourceId, ShowCalculation, PushdownBadge } from "../components/ChatPanel";
 import { hasMultipleTables, connectionKindMeta, CreatedDataSource } from "../components/DataSourceForm";
+import {
+  ExactRowsPill, NeedsQueryHelpCard, SqlThatRan, WarehouseFooter, WarehouseResultTable, builderColumnsFromSchema,
+} from "../components/WarehouseTurn";
 import AddDataPicker from "../components/AddDataPicker";
 import GokuChat from "../components/GokuChat";
 import ChartCanvas from "../components/ChartCanvas";
@@ -780,6 +784,18 @@ export default function Workspace() {
   const activeChartTurn = activeChartTurnIndex >= 0 ? turns[activeChartTurnIndex] : null;
   const activeChartPrompt = activeChartTurnIndex > 0 ? turns[activeChartTurnIndex - 1]?.content : undefined;
 
+  // 2026-10-06 (warehouse-honesty round): the builder's column lists for a
+  // restored needs_query_help turn (the messages endpoint does not repeat
+  // builder_columns per message) - this data source's own schema_cache,
+  // the same source the backend derives them from.
+  const schemaBuilderColumns = useMemo(() => builderColumnsFromSchema(dsInfo?.schema_cache), [dsInfo?.schema_cache]);
+  // When the MOST RECENT turn is a warehouse question that was not run,
+  // the Chart tab shows the same honest card (condensed) instead of a
+  // stale earlier chart or a blank pane - see the Chart tab render below.
+  const lastTurn = turns.length ? turns[turns.length - 1] : null;
+  const lastNeedsHelpTurn = lastTurn && lastTurn.role === "assistant" && lastTurn.action === "needs_query_help" ? lastTurn : null;
+  const isWarehouseChartTurn = !!activeChartTurn?.usedPushdown;
+
   // Whether THIS chart's chart type can be redrawn client-side from its own
   // tidy rows at all (see lib/exploreEngine.ts) - false for an older chart
   // from before this feature, one whose result wasn't tabular, or one whose
@@ -1419,6 +1435,24 @@ export default function Workspace() {
           // conversation still shows the honest badge under a past turn.
           usedPushdown: m.used_pushdown ?? null,
           sampleRowCount: m.sample_row_count ?? null,
+          // Warehouse-honesty round: restored so a reopened conversation
+          // shows the same "ran this SQL over every row" detail, or the
+          // same needs_query_help card, as the live turn did. The
+          // messages endpoint does not repeat builder_columns per message
+          // - left null here and derived from this data source's own
+          // schema_cache at render time (schemaBuilderColumns below,
+          // passed to ChatPanel as fallbackBuilderColumns), since this
+          // restore can run before dsInfo is known.
+          pushdownSql: m.pushdown_sql ?? null,
+          pushdownProvider: m.pushdown_provider ?? null,
+          pushdownBytesScanned: m.pushdown_bytes_scanned ?? null,
+          pushdownDurationMs: m.pushdown_duration_ms ?? null,
+          pushdownResultRows: m.pushdown_result_rows ?? null,
+          pushdownAttempts: m.pushdown_attempts ?? null,
+          pushdownSkippedReason: m.pushdown_skipped_reason ?? null,
+          builderSuggestion: m.builder_suggestion ?? null,
+          builderColumns: null,
+          exactTotalRows: m.exact_total_rows ?? null,
         }));
         setTurns(restored);
 
@@ -1598,6 +1632,19 @@ export default function Workspace() {
       // instead of whatever WORKING ON currently has selected - without
       // changing that selection for anything asked afterward.
       forceSourceIds?: string[];
+      // 2026-10-06 (warehouse-honesty round): the deterministic "finish
+      // it yourself" request from a needs_query_help card - a structured
+      // query-builder spec or the person's own SQL (see backend
+      // schemas_extra.ChatRequestFull.query_builder/raw_sql). Sent on the
+      // SAME /chat body as a normal question, with `prompt` = the plain-
+      // words summary the card shows; the response is handled exactly
+      // like any other answer (new turn, chart tab, ...).
+      finish?: ChatFinishRequest;
+      // When set, a request failure (most importantly the backend's 400
+      // for an invalid builder spec) is handed here with its `detail`
+      // instead of the page-level error banner, so the card can show it
+      // inline next to the form that caused it.
+      onRequestError?: (detail: string) => void;
     }
   ): Promise<boolean> => {
     setError("");
@@ -1606,7 +1653,7 @@ export default function Workspace() {
       ? opts.forceSourceIds
       : sourceIds.length ? sourceIds : [ORIGINAL_SOURCE_ID];
     const priorActiveVersionId = activeVersionId;
-    setTurns((t) => [...t, { role: "user", content: prompt }]);
+    setTurns((t) => [...t, { role: "user", content: prompt, finish: opts?.finish || null }]);
     try {
       const { data } = await api.post(
         "/chat",
@@ -1619,6 +1666,12 @@ export default function Workspace() {
           source_version_ids: requestSourceIds,
           analysis_mode: analysisMode,
           skip_prep: !!opts?.skipPrep,
+          query_builder: opts?.finish?.query_builder ?? undefined,
+          raw_sql: opts?.finish?.raw_sql ?? undefined,
+          // 2026-10-06 ("generated data is a saved query" layer): the
+          // person's own SELECT becomes a saved-query table instead of
+          // being charted - see api/client.ts ChatFinishRequest.
+          save_as_table: opts?.finish?.save_as_table ? true : undefined,
         },
         // 2026-10-05 (chat-hang bug fix): "I asked the AI chat something
         // and it just hung with no response at all" - this call had no
@@ -1677,6 +1730,7 @@ export default function Workspace() {
         sourceIds: requestSourceIds,
         priorActiveVersionId,
         newVersionId: data.new_version_id || null,
+        newVersionName: data.new_version_name || null,
         continueAction: data.continue_action || null,
         followUp: data.follow_up_suggestions || null,
         messageId: data.message_id,
@@ -1700,7 +1754,27 @@ export default function Workspace() {
         // next to the Insight box (see ChatPanel.tsx's PushdownBadge).
         usedPushdown: data.used_pushdown ?? null,
         sampleRowCount: data.sample_row_count ?? null,
+        // 2026-10-06 (warehouse-honesty round): what ran inside the
+        // warehouse, or - on a needs_query_help turn - what was tried
+        // and the builder prefill. See api/client.ts WarehouseTurnFields.
+        pushdownSql: data.pushdown_sql ?? null,
+        pushdownProvider: data.pushdown_provider ?? null,
+        pushdownBytesScanned: data.pushdown_bytes_scanned ?? null,
+        pushdownDurationMs: data.pushdown_duration_ms ?? null,
+        pushdownResultRows: data.pushdown_result_rows ?? null,
+        pushdownAttempts: data.pushdown_attempts ?? null,
+        pushdownSkippedReason: data.pushdown_skipped_reason ?? null,
+        builderSuggestion: data.builder_suggestion ?? null,
+        builderColumns: data.builder_columns ?? builderColumnsFromSchema(dsInfo?.schema_cache),
+        exactTotalRows: data.exact_total_rows ?? null,
       }]);
+
+      // A warehouse question that was NOT run (see NeedsQueryHelpCard):
+      // land on the Chart tab so the right pane shows the same honest
+      // card instead of a stale earlier chart or a blank area.
+      if (data.action === "needs_query_help") {
+        setCenterTab("chart");
+      }
 
       if (data.action === "transform") {
         setDataRefreshKey((k) => k + 1);
@@ -1797,15 +1871,35 @@ export default function Workspace() {
       // fell through to the generic message below, which is accurate but
       // unhelpful ("went wrong" reads like a bug, not "this specific
       // question took too long to answer, try again or rephrase it").
-      if (err?.code === "ECONNABORTED") {
-        setError("That took too long to answer. Please try again, or rephrase the question.");
+      const detail: string =
+        err?.code === "ECONNABORTED"
+          ? "That took too long to answer. Please try again, or rephrase the question."
+          : (typeof err?.response?.data?.detail === "string" && err.response.data.detail) || "Something went wrong. Please try again.";
+      if (opts?.onRequestError) {
+        // A rejected builder/raw-SQL request (HTTP 400): the detail goes
+        // back to the card inline, next to the form that caused it. The
+        // user turn stays - the backend stores the person's message
+        // before validating the spec (see routers/chat.py chat()), so a
+        // reopened conversation shows it too.
+        opts.onRequestError(detail);
       } else {
-        setError(err?.response?.data?.detail || "Something went wrong. Please try again.");
+        setError(detail);
       }
       return false;
     } finally {
       setBusy(false);
     }
+  };
+
+  // 2026-10-06 (warehouse-honesty round): "Run on all rows" / "Run" on a
+  // needs_query_help card. Same runPrompt, same conversation/datasource/
+  // WORKING ON selection as a normal send, plus the structured finish
+  // request; resolves to the backend's rejection detail (shown inline by
+  // the card) or null when the request went through.
+  const runFinish = async (finish: ChatFinishRequest, prompt: string): Promise<string | null> => {
+    let detail: string | null = null;
+    await runPrompt(prompt, undefined, { finish, onRequestError: (d) => { detail = d; } });
+    return detail;
   };
 
   const applyChartOverride = (override: { chart_type?: string; title?: string }) => {
@@ -2227,6 +2321,8 @@ export default function Workspace() {
             linkedDashboards={linkedDashboards}
             onOpenBuildDashboard={() => setBuildDashboardOpen(true)}
             onOpenDashboard={(id) => navigate(`/dashboard-builder/${id}`)}
+            onFinish={runFinish}
+            fallbackBuilderColumns={schemaBuilderColumns}
           />
         </div>
 
@@ -2458,6 +2554,39 @@ export default function Workspace() {
                         { forceSourceIds }
                       );
                     }}
+                    // 2026-10-06 ("generated data is a saved query" layer):
+                    // the three chat hooks of a warehouse saved-query
+                    // table's Data tab (see GeneratedTableView.tsx). A bare
+                    // version id is a valid WORKING ON entry whichever
+                    // connected source the switcher is showing (see
+                    // ORIGINAL_SOURCE_ID's comment in ChatPanel.tsx).
+                    onAskAboutVersion={(id) => {
+                      // Point the next question at exactly this table and
+                      // focus the composer, keeping anything already typed.
+                      setSourceIds([id]);
+                      setCustomizeSeed({ nonce: Date.now() });
+                    }}
+                    onAskQuestionOnVersion={(id, prompt) => {
+                      setSourceIds([id]);
+                      runPrompt(prompt, undefined, { forceSourceIds: [id] });
+                    }}
+                    onEditVersionDefinition={(id, sql) => {
+                      // The definition reads the real source table, so the
+                      // re-run is scoped to that table (not chained on the
+                      // table being edited) - a sibling, not a child.
+                      const v = (isViewingPrimaryInDataTab ? visibleVersions : visibleOtherDsVersions).find((x) => x.id === id);
+                      const sourceTable = v?.source_table || null;
+                      if (isViewingPrimaryInDataTab) {
+                        setSourceIds([sourceTable && originalTables.length > 1 ? `sheet:${sourceTable}` : ORIGINAL_SOURCE_ID]);
+                      } else {
+                        setSourceIds([
+                          sourceTable && activeOtherOriginalTables.length > 1
+                            ? otherDsSourceId(activeDataTabSourceId, sourceTable)
+                            : otherDsSourceId(activeDataTabSourceId),
+                        ]);
+                      }
+                      setCustomizeSeed({ nonce: Date.now(), sql, saveAsTable: true });
+                    }}
                   />
                 </div>
               </>
@@ -2471,7 +2600,7 @@ export default function Workspace() {
                 onJump={handleFlowJump}
               />
             ) : (
-              <div className="h-full flex flex-col gap-2 overflow-hidden">
+              <div className={`h-full flex flex-col gap-2 ${isWarehouseChartTurn || lastNeedsHelpTurn ? "overflow-y-auto" : "overflow-hidden"}`}>
                 {charts.length > 0 && (
                   <div className="flex items-center gap-1.5 overflow-x-auto shrink-0 pb-0.5">
                     {charts.map((c) => (
@@ -2530,19 +2659,57 @@ export default function Workspace() {
                     never new data, just surfacing what this component
                     already tracks, in the one place the mockup puts it.
                     Renders nothing before any chart exists. */}
+                {/* 2026-10-06 (warehouse-honesty round): when the MOST
+                    RECENT turn is a warehouse question that was NOT run,
+                    this pane shows the same honest card ChatPanel shows
+                    (condensed: banner + what was tried + footer; the one
+                    builder, with its one state, lives in the chat) instead
+                    of a stale earlier chart or a blank area. Everything
+                    below it is skipped for that case only. */}
+                {lastNeedsHelpTurn ? (
+                  <div className="flex-1 min-h-0 overflow-y-auto pr-0.5 chart-tab-needs-help">
+                    <NeedsQueryHelpCard
+                      condensed
+                      replyText={lastNeedsHelpTurn.content}
+                      provider={lastNeedsHelpTurn.pushdownProvider || dsInfo?.kind}
+                      attempts={lastNeedsHelpTurn.pushdownAttempts}
+                      skippedReason={lastNeedsHelpTurn.pushdownSkippedReason}
+                      exactTotalRows={lastNeedsHelpTurn.exactTotalRows}
+                    />
+                  </div>
+                ) : (
+                <>
                 {displaySpec && (chartStyle.title || chartTitle || activeChartPrompt) && (
-                  <div className="shrink-0 px-0.5">
-                    <div className="text-base font-bold text-text leading-tight truncate">
-                      {chartStyle.title || chartTitle || "Untitled chart"}
-                    </div>
-                    {activeChartPrompt && (
-                      <div className="text-xs text-muted mt-0.5 truncate" title={activeChartPrompt}>
-                        &ldquo;{activeChartPrompt}&rdquo;{dsName ? ` · ${dsName}` : ""}
+                  <div className="shrink-0 px-0.5 flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-base font-bold text-text leading-tight truncate">
+                        {chartStyle.title || chartTitle || "Untitled chart"}
                       </div>
+                      {activeChartPrompt && (
+                        <div className="text-xs text-muted mt-0.5 truncate" title={activeChartPrompt}>
+                          &ldquo;{activeChartPrompt}&rdquo;{dsName ? ` · ${dsName}` : ""}
+                        </div>
+                      )}
+                    </div>
+                    {/* Warehouse-honesty round: the real row count the
+                        query ran over (the Data tab's cached exact
+                        COUNT(*)) and where it ran - "n = 119,386 rows ·
+                        exact · ran in BigQuery", or "every row · ran in
+                        BigQuery" when no cached count exists. Replaces the
+                        old sample path's "n = 2,000"-style figure for a
+                        warehouse turn; nothing renders for any other turn. */}
+                    {isWarehouseChartTurn && (
+                      <ExactRowsPill
+                        provider={activeChartTurn?.pushdownProvider || dsInfo?.kind}
+                        exactTotalRows={activeChartTurn?.exactTotalRows}
+                      />
                     )}
                   </div>
                 )}
-                <div className="flex-1 min-h-0">
+                {/* For a warehouse turn the pane scrolls (see the container
+                    above) so the result table, SQL and footer below never
+                    squeeze the chart itself under a readable height. */}
+                <div className={isWarehouseChartTurn ? "flex-1 min-h-[320px] shrink-0" : "flex-1 min-h-0"}>
                   <ChartCanvas chartSpec={displaySpec} title={chartStyle.title || chartTitle} />
                 </div>
                 {/* Insight box + "Show how this was calculated" toggle -
@@ -2578,6 +2745,43 @@ export default function Workspace() {
                       usedPushdown={activeChartTurn.usedPushdown}
                       sampleRowCount={activeChartTurn.sampleRowCount}
                       datasourceKind={dsInfo?.kind}
+                      provider={activeChartTurn.pushdownProvider}
+                      exactTotalRows={activeChartTurn.exactTotalRows}
+                    />
+                  </div>
+                )}
+                {/* Warehouse-honesty round, for a warehouse-computed chart
+                    only: the small result that came back (the ONLY data
+                    GD360 received - downloadable as CSV client-side), the
+                    exact SQL that ran (expanded here; collapsed in the
+                    chat), and the one-line "how this was calculated"
+                    footer with the real scanned bytes/time. See
+                    WarehouseTurn.tsx. */}
+                {isWarehouseChartTurn && activeChart && (
+                  <div className="shrink-0">
+                    <WarehouseResultTable
+                      columns={activeChart.resultColumns || []}
+                      rows={activeChart.resultRows || []}
+                      resultRows={activeChartTurn?.pushdownResultRows}
+                      truncated={activeChart.resultTruncated}
+                    />
+                  </div>
+                )}
+                {isWarehouseChartTurn && activeChartTurn?.pushdownSql && (
+                  <div className="shrink-0">
+                    <SqlThatRan
+                      sql={activeChartTurn.pushdownSql}
+                      provider={activeChartTurn.pushdownProvider || dsInfo?.kind}
+                      defaultOpen
+                      maxHeightClass="max-h-40"
+                    />
+                  </div>
+                )}
+                {isWarehouseChartTurn && (
+                  <div className="shrink-0">
+                    <WarehouseFooter
+                      bytesScanned={activeChartTurn?.pushdownBytesScanned}
+                      durationMs={activeChartTurn?.pushdownDurationMs}
                     />
                   </div>
                 )}
@@ -2589,6 +2793,8 @@ export default function Workspace() {
                       durationMs={activeChartTurn.durationMs}
                     />
                   </div>
+                )}
+                </>
                 )}
               </div>
             )}
