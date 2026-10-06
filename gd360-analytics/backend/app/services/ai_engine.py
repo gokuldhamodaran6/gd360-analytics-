@@ -627,6 +627,23 @@ Strict rules:
   or "which is highest/lowest" question. Never a bare `SELECT *` with no WHERE/LIMIT against what could be a huge
   table - the whole point of this path is that the warehouse summarizes the data, not GD360.
 - Standard BigQuery SQL. Backtick-quote an identifier only when its name actually needs escaping.
+- For a question asking for a breakdown by one category PLUS a total (e.g. "bookings by arrival month, total and
+  per year of coverage", "sales by region, broken down by year, with a grand total") - this is still answerable
+  as ONE real SELECT, using conditional aggregation, NOT a reason to give up: GROUP BY the first dimension (e.g.
+  the month), and for each distinct value of the second dimension (e.g. each year) add
+  SUM(CASE WHEN year_column = 2023 THEN 1 ELSE 0 END) AS a safely-named alias (e.g. y2023) - or SUM(amount_column)
+  instead of 1 when the question is asking for a sum rather than a count - plus one more column (COUNT(*), or
+  SUM(...) over everything) for the total. Only build this pivot when the second dimension's distinct values are
+  actually visible in the schema sample given to you, or can be reasonably bounded (a handful of known years, a
+  small fixed set of categories/statuses) - if it could have unbounded distinct values (e.g. a free-text column,
+  a customer name), answer the plain grouped breakdown by the first dimension alone, with a real aggregate for
+  the total, rather than guessing at column names that don't exist. 2026-10-06 (pushdown-honesty round): this rule
+  exists because this exact shape of question was confirmed, from a real production audit, to make this module
+  give up and respond NOT_POSSIBLE far more often than it needed to - silently falling the person back to
+  analyzing a small loaded sample instead of their real, full table, with no warning that happened (see Fix 1 in
+  this same round for the warning this module's own silence made necessary). This is prompt guidance for a
+  language model, not a guaranteed code path - it makes success at this shape of question more likely, not
+  certain.
 - If the question genuinely cannot be answered from the given schema (it needs a column or table that does not
   exist), respond with exactly: NOT_POSSIBLE"""
 
@@ -687,6 +704,23 @@ Strict rules:
   extra second it runs.
 - Standard Snowflake SQL. Double-quote an identifier only when its exact case or characters actually need
   preserving - Snowflake treats an unquoted identifier as uppercase by default.
+- For a question asking for a breakdown by one category PLUS a total (e.g. "bookings by arrival month, total and
+  per year of coverage", "sales by region, broken down by year, with a grand total") - this is still answerable
+  as ONE real SELECT, using conditional aggregation, NOT a reason to give up: GROUP BY the first dimension (e.g.
+  the month), and for each distinct value of the second dimension (e.g. each year) add
+  SUM(CASE WHEN year_column = 2023 THEN 1 ELSE 0 END) AS a safely-named alias (e.g. y2023) - or SUM(amount_column)
+  instead of 1 when the question is asking for a sum rather than a count - plus one more column (COUNT(*), or
+  SUM(...) over everything) for the total. Only build this pivot when the second dimension's distinct values are
+  actually visible in the schema sample given to you, or can be reasonably bounded (a handful of known years, a
+  small fixed set of categories/statuses) - if it could have unbounded distinct values (e.g. a free-text column,
+  a customer name), answer the plain grouped breakdown by the first dimension alone, with a real aggregate for
+  the total, rather than guessing at column names that don't exist. 2026-10-06 (pushdown-honesty round): this rule
+  exists because this exact shape of question was confirmed, from a real production audit, to make this module
+  give up and respond NOT_POSSIBLE far more often than it needed to - silently falling the person back to
+  analyzing a small loaded sample instead of their real, full table, with no warning that happened (see Fix 1 in
+  this same round for the warning this module's own silence made necessary). This is prompt guidance for a
+  language model, not a guaranteed code path - it makes success at this shape of question more likely, not
+  certain.
 - If the question genuinely cannot be answered from the given schema (it needs a column or table that does not
   exist), respond with exactly: NOT_POSSIBLE"""
 
