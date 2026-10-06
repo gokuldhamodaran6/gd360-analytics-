@@ -176,6 +176,18 @@ export type ChatTurn = {
   methodSummary?: string | null;
   code?: string | null;
   durationMs?: number | null;
+  // 2026-10-06 (pushdown-honesty round - the founder's own confirmed bug
+  // report: a chat question against his BigQuery source silently
+  // analyzed a 2,000-row in-memory sample instead of running a real query
+  // against his full table, with zero indication of this to him). See
+  // backend models.Message.used_pushdown/sample_row_count's own docstring
+  // for the full reasoning. Rendered as a small, honest badge right next
+  // to the Insight box (see PushdownBadge below) - undefined/null for a
+  // turn that predates this feature, or whose datasource kind never
+  // attempts pushdown at all (a CSV/Excel upload), in which case the
+  // badge simply does not render.
+  usedPushdown?: boolean | null;
+  sampleRowCount?: number | null;
 };
 
 export type CustomizeSeed = { text: string; nonce: number };
@@ -351,6 +363,59 @@ export function ShowCalculation({
           {code && <CodeBlock code={code} />}
         </div>
       )}
+    </div>
+  );
+}
+
+// 2026-10-06 (pushdown-honesty round - the founder's own confirmed bug
+// report: a chat question against his BigQuery source silently analyzed a
+// 2,000-row in-memory sample instead of running a real query against his
+// full table, with zero indication of this to him). A small, honest pill
+// badge right next to the Insight box saying exactly which of those two
+// things actually happened for THIS turn - never silent, and never
+// vague: a sample disclosure always names the real number of rows that
+// were loaded, not just "may be a sample". Renders nothing at all when
+// `usedPushdown` is null/undefined (a turn that predates this feature, or
+// whose datasource kind never attempts pushdown - a CSV/Excel upload has
+// nothing to disclose either way).
+// Visual language deliberately reuses what this app already has rather
+// than inventing a third style: the affirming case mirrors the Data tab's
+// own "exact" pill (bg-primary/10 + text-primary, a checkmark - see
+// DataTable.tsx's own totalRowsIsExact pill), and the sample-fallback case
+// mirrors the Data tab's amber "stats are based on loaded rows, not
+// necessarily every row at the source" caveat (same amber-400 tint), just
+// as a pill instead of plain text so it reads as a status, not an aside.
+export function PushdownBadge({
+  usedPushdown, sampleRowCount, datasourceKind,
+}: {
+  usedPushdown?: boolean | null;
+  sampleRowCount?: number | null;
+  datasourceKind?: string | null;
+}) {
+  if (usedPushdown == null) return null;
+  const kindLabel = datasourceKind ? connectionKindMeta(datasourceKind).label : "your database";
+  if (usedPushdown) {
+    return (
+      <div className="mt-1.5">
+        <span
+          className="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-full bg-primary/10 text-primary"
+          title="This answer came from one real query run directly against your connected source, not a loaded sample."
+        >
+          &#10003; Ran directly against your {kindLabel}
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-1.5">
+      <span
+        className="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-full bg-amber-400/10 text-amber-400"
+        title="This source could not be queried directly for this question, so this answer is based on a limited, already-loaded sample instead of every row at the source."
+      >
+        &#9888; {sampleRowCount != null
+          ? `Based on a sample of ${sampleRowCount.toLocaleString()} loaded rows, not a direct query against your full table`
+          : "Based on a loaded sample, not a direct query against your full table"}
+      </span>
     </div>
   );
 }
@@ -1032,6 +1097,13 @@ export default function ChatPanel({
                 <span className="font-semibold text-accent">Insight: </span>
                 {renderInlineBold(t.insight, "insight")}
               </div>
+            )}
+            {t.role === "assistant" && (
+              <PushdownBadge
+                usedPushdown={t.usedPushdown}
+                sampleRowCount={t.sampleRowCount}
+                datasourceKind={datasourceKind}
+              />
             )}
             {t.role === "assistant" && (
               <ShowCalculation method={t.methodSummary} code={t.code} durationMs={t.durationMs} />
