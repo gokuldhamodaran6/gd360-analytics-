@@ -325,6 +325,17 @@ class ChatResponse(BaseModel):
     method_summary: Optional[str] = None
     code: Optional[str] = None
     duration_ms: Optional[int] = None
+    # 2026-10-06 (pushdown-honesty round): did this turn run a real query
+    # directly against the warehouse/database, or fall back to analyzing a
+    # loaded, row-capped in-memory sample - see models.Message.
+    # used_pushdown/sample_row_count's own docstring for the full
+    # reasoning. used_pushdown is None for a kind pushdown is never
+    # attempted for (a file upload) - never a misleading False implying a
+    # fallback that was never even possible. sample_row_count is set only
+    # when used_pushdown is False AND this kind is pushdown-eligible - a
+    # real, already-loaded row count, never a fabricated or re-queried one.
+    used_pushdown: Optional[bool] = None
+    sample_row_count: Optional[int] = None
 
 
 # ---------- Verify ("Double-check this") ----------
