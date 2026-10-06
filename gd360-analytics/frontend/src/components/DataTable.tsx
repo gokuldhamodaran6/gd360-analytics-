@@ -384,6 +384,33 @@ function PinIcon() {
   );
 }
 
+// 2026-10-06 (Mongo raw-document drawer round): the row-level "view raw
+// document" button's own glyph - a plain small document outline, the
+// same 11px/currentColor/shrink-0 treatment every other inline glyph in
+// this file (FilterIcon, PinIcon above) already uses, so it reads as part
+// of the same icon family rather than a one-off.
+function RawDocIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M4 1.5h5.5L13 5v9H4V1.5z" />
+      <path d="M9.3 1.5V5h3.5" />
+      <path d="M6 8h4M6 10.3h4M6 12.5h2.5" />
+    </svg>
+  );
+}
+
+// The drawer's own close glyph - identical "X" stroke-icon treatment used
+// for every other dismiss button in this app (see AppSidebar.tsx's
+// CloseIcon), redrawn locally here rather than importing a sibling
+// component's internal helper across files.
+function RawDocCloseIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M18 6L6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
 // The cleaning-log summary the AI writes for "what changed" (see
 // backend/app/services/ai_engine.py) marks its own section headers with
 // plain **bold** markdown ("**Data prep:** ...", "**Analysis:** ..."). This
@@ -556,6 +583,19 @@ export default function DataTable({
   // looks exactly as it always did, never broken or blank.
   const [profile, setProfile] = useState<DataProfile | null>(null);
 
+  // 2026-10-06 (Mongo raw-document drawer round): the right-side "raw
+  // document" drawer's own state - entirely separate from every "Pro"
+  // table view state above, since it's per-click rather than per-table.
+  // `rawDocId` is one of preview.doc_ids' `_id` strings (set the moment a
+  // row's drawer icon is clicked); `rawDocOpen` drives the slide-in
+  // transition independently of it so the panel can animate closed
+  // before the id itself is cleared.
+  const [rawDocId, setRawDocId] = useState<string | null>(null);
+  const [rawDocOpen, setRawDocOpen] = useState(false);
+  const [rawDocLoading, setRawDocLoading] = useState(false);
+  const [rawDocError, setRawDocError] = useState<string | null>(null);
+  const [rawDocValue, setRawDocValue] = useState<unknown>(null);
+
   const menuRef = useRef<HTMLDivElement | null>(null);
   const columnsPanelRef = useRef<HTMLDivElement | null>(null);
   const viewsPanelRef = useRef<HTMLDivElement | null>(null);
@@ -627,9 +667,58 @@ export default function DataTable({
   // effect's own `table` param already uses). The backend's own 5-minute
   // TTL cache (see config.PROFILE_CACHE_TTL_SECONDS) is what keeps
   // re-opening the same table cheap, not anything client-side here.
+  //
+  // 2026-10-06 (pushdown-honesty round, real bug fix): this used to fire
+  // TWICE, as two separate real billable queries, every time a multi-table
+  // datasource's Data tab opened - confirmed directly from the production
+  // pushdown audit log (the exact same BigQuery profiling query, ~0.5-1s
+  // apart, every single open). Root cause: `activeTable` starts out `null`
+  // for one or more renders while Workspace.tsx's own default-table
+  // resolution (see its `originalTables`/`activeOriginalTable` effect)
+  // is still working out the real first table name from `dsInfo`, which
+  // itself loads asynchronously - this effect fired once for that
+  // transient null state (the backend silently defaulted via
+  // default_table_for_preview) and AGAIN once `activeTable` resolved to
+  // the real name, profiling the exact same table twice, often while the
+  // first query hadn't even finished (and so hadn't been cached yet) -
+  // two real scans, not one cached hit.
+  //
+  // Two conditions below, both required to actually eliminate this
+  // (confirmed by hand-tracing every render - see this round's own
+  // README/report for the full trace):
+  //   1. `datasourceKind === undefined` - true only in the handful of
+  //      renders before `dsInfo` (or, for another connected source, its
+  //      own summary) has loaded AT ALL. This is the one signal that can
+  //      tell "genuinely single-table" apart from "don't know yet" -
+  //      `originalTables` alone cannot: it is an empty array in BOTH
+  //      cases (see this component's own `originalTables` prop comment),
+  //      so gating on it by itself still lets the very first, premature
+  //      null-table fetch through. Skipping here delays the FIRST ever
+  //      fetch by one render for every source, single- or multi-table -
+  //      never twice, just slightly later, and only until the kind is
+  //      known (a handful of milliseconds, not a visible delay).
+  //   2. `originalTables.length > 1 && !activeTable` - true only once the
+  //      kind above IS known to be multi-table and resolution is still
+  //      genuinely pending. `originalTablesCount` (the length, a plain
+  //      number) is used in the dependency array below instead of the
+  //      `originalTables` array itself, since a brand new (but still
+  //      logically empty) array reference is produced every time `dsInfo`
+  //      loads even for an ordinary single-table source (see Workspace.tsx
+  //      originalTables useMemo) - depending on the array itself would
+  //      have re-fired this effect an extra, pointless time for EVERY
+  //      single-table source too, not just skipped something real.
+  // For a genuine single-table source, condition 2 can never be true
+  // (originalTables never has more than one entry - see this component's
+  // own prop docstring), so condition 1 is the only thing that ever
+  // delays its fetch, and only by the one render it takes for the kind to
+  // resolve - never skipped forever, exactly the "don't break single-
+  // table sources" requirement this fix has to respect.
+  const originalTablesCount = originalTables ? originalTables.length : 0;
   useEffect(() => {
     setProfile(null);
     if (activeVersionId) return; // saved/AI-built table - nothing to profile
+    if (datasourceKind === undefined) return; // don't know this source's shape yet - wait for it, don't guess
+    if (originalTablesCount > 1 && !activeTable) return; // multi-table resolution genuinely still pending
     let cancelled = false;
     (async () => {
       try {
@@ -640,7 +729,7 @@ export default function DataTable({
       }
     })();
     return () => { cancelled = true; };
-  }, [datasourceId, activeVersionId, activeTable]);
+  }, [datasourceId, activeVersionId, activeTable, datasourceKind, originalTablesCount]);
 
   // Whether the exact, real full-table profile is actually usable right
   // now - every place below that wants to prefer it over the sample-based
@@ -652,6 +741,43 @@ export default function DataTable({
   // every SQL source's existing blank-for-NULL rendering stays exactly as
   // it was.
   const isMongoSource = datasourceKind === "mongodb";
+
+  // 2026-10-06 (Mongo raw-document drawer round): opens the drawer for
+  // one row's doc id and lets the effect below fetch it. Re-clicking a
+  // different row's icon while the drawer is already open just swaps
+  // `rawDocId` - the effect's dependency on it re-fetches for the new id.
+  function openRawDocDrawer(docId: string) {
+    setRawDocId(docId);
+    setRawDocOpen(true);
+  }
+  function closeRawDocDrawer() {
+    setRawDocOpen(false);
+  }
+
+  // Fetches the real, unflattened MongoDB document for whichever row's
+  // icon was last clicked. Scoped to isMongoSource/rawDocOpen/rawDocId all
+  // being set - closing the drawer (rawDocOpen false) does not re-fetch,
+  // and nothing here ever runs for a non-Mongo datasource. The same
+  // `cancelled` pattern the main preview effect above uses, so a slow
+  // request for a row the person already clicked away from can't
+  // overwrite a newer one.
+  useEffect(() => {
+    if (!isMongoSource || !rawDocOpen || !rawDocId) return;
+    let cancelled = false;
+    setRawDocLoading(true);
+    setRawDocError(null);
+    (async () => {
+      try {
+        const data = await datasourceApi.getMongoRawDocument(datasourceId, rawDocId, activeVersionId ? null : activeTable);
+        if (!cancelled) setRawDocValue(data.document);
+      } catch (err: any) {
+        if (!cancelled) setRawDocError(err?.response?.data?.detail || "Could not load this document.");
+      } finally {
+        if (!cancelled) setRawDocLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isMongoSource, rawDocOpen, rawDocId, datasourceId, activeVersionId, activeTable]);
 
   // Switching tables (a different tab, a different original table/sheet, or
   // a different data source entirely) starts every view control fresh - a
@@ -686,6 +812,12 @@ export default function DataTable({
     setSavedViews([]);
     setNewViewName("");
     setViewsError(null);
+    // A raw document drawn from a previous table/datasource makes no
+    // sense once a different one is in view.
+    setRawDocOpen(false);
+    setRawDocId(null);
+    setRawDocValue(null);
+    setRawDocError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [datasourceId, activeVersionId, activeTable]);
 
@@ -2280,12 +2412,34 @@ export default function DataTable({
                 // content visibly bleed through - a real bug caught while
                 // screenshot-testing the new Pin column feature.
                 const stripeClass = i % 2 === 1 ? "bg-surface2" : "bg-surface";
+                const rowDocId = isMongoSource ? preview.doc_ids?.[i] : undefined;
                 return (
                 <tr key={i} className="group hover:bg-surface2/60 border-b border-border/50 even:bg-surface2/20">
                   <td
-                    className={`sticky left-0 z-[6] ${stripeClass} group-hover:bg-surface2/60 text-right px-2 align-top text-muted border-r border-border/50 tabular-nums`}
+                    className={`sticky left-0 z-[6] ${stripeClass} group-hover:bg-surface2/60 px-2 align-top text-muted border-r border-border/50`}
                   >
-                    {offset + i + 1}
+                    <div className="flex items-center justify-end gap-1 tabular-nums">
+                      {/* 2026-10-06 (Mongo raw-document drawer round): one
+                          icon per row, only for a MongoDB datasource and
+                          only when this row actually has a real `_id` to
+                          look up (preview.doc_ids - see preview_datasource).
+                          Quiet until hovered, same calm treatment as the
+                          rest of this already-shipped row styling - it's
+                          not meant to compete visually with the row number
+                          it sits next to. */}
+                      {rowDocId && (
+                        <button
+                          type="button"
+                          onClick={() => openRawDocDrawer(rowDocId)}
+                          title="View raw MongoDB document"
+                          aria-label="View raw MongoDB document"
+                          className="shrink-0 p-0.5 rounded text-muted/60 hover:text-primary hover:bg-surface2 transition opacity-0 group-hover:opacity-100 focus:opacity-100"
+                        >
+                          <RawDocIcon />
+                        </button>
+                      )}
+                      <span>{offset + i + 1}</span>
+                    </div>
                   </td>
                   {renderColumns.map((col) => {
                     const value = row[col];
@@ -2496,6 +2650,68 @@ export default function DataTable({
           </button>
         </div>
       </div>
+
+      {/* 2026-10-06 (Mongo raw-document drawer round): the real,
+          unflattened MongoDB document behind one row - entirely gated
+          behind isMongoSource, so this never mounts a single extra node
+          for any other datasource kind. Portaled to document.body for
+          the same reason the column menu popover above already is (see
+          its own comment): without it, this would sit inside several
+          overflow-hidden/overflow-auto ancestors (the scrollable table
+          body, the card wrapping the whole table) that would clip a
+          fixed-position right-side panel to nothing. Always mounted
+          (not conditionally rendered on rawDocOpen) so open/close can
+          actually slide-transition via CSS instead of an abrupt mount/
+          unmount - the same pattern AppSidebar.tsx's own mobile drawer
+          uses, mirrored to the right edge instead of the left. */}
+      {isMongoSource &&
+        createPortal(
+          <div
+            className={`fixed inset-0 z-50 transition-opacity duration-200 ${
+              rawDocOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
+            }`}
+            aria-hidden={!rawDocOpen}
+          >
+            <div className="absolute inset-0 bg-black/40" onClick={closeRawDocDrawer} />
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Raw MongoDB document"
+              className={`absolute right-0 top-0 h-full w-full sm:w-[460px] max-w-full bg-surface border-l border-border shadow-2xl flex flex-col transition-transform duration-200 ${
+                rawDocOpen ? "translate-x-0" : "translate-x-full"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border shrink-0">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-text">Raw document</div>
+                  <div className="text-[11px] text-muted truncate">
+                    The original MongoDB document behind this row, before flattening.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeRawDocDrawer}
+                  aria-label="Close"
+                  className="shrink-0 p-1.5 rounded-lg text-muted hover:text-text hover:bg-surface2 transition"
+                >
+                  <RawDocCloseIcon />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {rawDocLoading ? (
+                  <div className="text-xs text-muted">Loading the real document from MongoDB…</div>
+                ) : rawDocError ? (
+                  <div className="text-xs text-red-400">{rawDocError}</div>
+                ) : (
+                  <pre className="text-[11px] font-mono text-text whitespace-pre-wrap break-words leading-relaxed">
+                    {JSON.stringify(rawDocValue, null, 2)}
+                  </pre>
+                )}
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
