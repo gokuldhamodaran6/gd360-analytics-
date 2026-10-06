@@ -1,8 +1,12 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
-import { DatasetVersion, DataSourceSummary, datasourceApi, ResultEntry } from "../api/client";
+import {
+  BuilderColumns, ChatFinishRequest, DatasetVersion, DataSourceSummary, datasourceApi, PushdownAttempt,
+  PushdownSkippedReason, QueryBuilderSpec, ResultEntry, SAVE_AS_TABLE_PROMPT,
+} from "../api/client";
 import PushToDashboardMenu from "./PushToDashboardMenu";
 import ChartCanvas from "./ChartCanvas";
 import { hasMultipleTables, connectionKindMeta } from "./DataSourceForm";
+import { BUILDER_KINDS, ComputedInBadge, NeedsQueryHelpCard, providerLabel, SqlThatRan, WarehouseTrace } from "./WarehouseTurn";
 
 // The literal id used, on both the client and the server, to mean "the
 // original, untouched data" inside a WORKING ON selection - every other
@@ -116,7 +120,16 @@ export type ChatTurn = {
   content: string;
   insight?: string | null;
   needsClarification?: boolean;
-  action?: "analyze" | "transform" | "clarify" | "explain";
+  // "needs_query_help" (2026-10-06, warehouse-honesty round): a warehouse
+  // question that could NOT be run inside the warehouse. Nothing was
+  // computed - the turn renders as the NeedsQueryHelpCard (see
+  // WarehouseTurn.tsx) instead of a normal answer bubble.
+  action?: "analyze" | "transform" | "clarify" | "explain" | "needs_query_help";
+  // On a USER turn: the structured finish request this message was sent
+  // with (the query builder spec or hand-written SQL), so "Try again" on
+  // a failed builder/raw-SQL turn re-sends the same request rather than
+  // the plain-words summary as a fresh question.
+  finish?: ChatFinishRequest | null;
   rowsBefore?: number | null;
   rowsAfter?: number | null;
   nullsBefore?: number | null;
@@ -135,6 +148,11 @@ export type ChatTurn = {
   sourceIds?: string[];
   priorActiveVersionId?: string | null;
   newVersionId?: string | null;
+  // 2026-10-06 ("generated data is a saved query" layer): the new table's
+  // name, for the "Saved as <name>" chip under a warehouse saved-query
+  // turn (action "transform" with usedPushdown true). A restored turn may
+  // not carry it; ChatPanel then resolves the name from `versions`.
+  newVersionName?: string | null;
   // Set only in step-by-step ("guided") analysis mode, right after this
   // turn prepared a table but has NOT yet run the actual analysis on it -
   // rendered as a single prominent "Continue" button (see
@@ -188,9 +206,40 @@ export type ChatTurn = {
   // badge simply does not render.
   usedPushdown?: boolean | null;
   sampleRowCount?: number | null;
+  // 2026-10-06 (warehouse-honesty round): what actually ran inside the
+  // warehouse for this turn (usedPushdown true), or - on a
+  // needs_query_help turn - what was tried and how to finish it. See
+  // api/client.ts WarehouseTurnFields and backend schemas.ChatResponse
+  // for the exact meaning of each; all undefined/null for a file-based
+  // source, which renders exactly as it did before this round.
+  pushdownSql?: string | null;
+  pushdownProvider?: string | null;
+  pushdownBytesScanned?: number | null;
+  pushdownDurationMs?: number | null;
+  pushdownResultRows?: number | null;
+  pushdownAttempts?: PushdownAttempt[] | null;
+  pushdownSkippedReason?: PushdownSkippedReason | null;
+  builderSuggestion?: QueryBuilderSpec | null;
+  builderColumns?: BuilderColumns | null;
+  exactTotalRows?: number | null;
 };
 
-export type CustomizeSeed = { text: string; nonce: number };
+// What a caller can drop into the composer (see the customizeSeed effect
+// below): `text` seeds the plain question box ("Customize further" sends
+// "Also, "); `sql` (2026-10-06, "generated data is a saved query" layer)
+// opens the write-SQL mode prefilled with that statement - the Data tab's
+// "Edit & re-run" on a saved query's definition - with the "Save as table"
+// checkbox set from `saveAsTable`. A seed with neither just focuses the
+// composer ("Ask about this table"), keeping whatever was already typed.
+export type CustomizeSeed = { text?: string; nonce: number; sql?: string; saveAsTable?: boolean };
+
+// A warehouse saved-query table turn (see backend routers/chat.py
+// _warehouse_table_response): a transform that ran INSIDE the warehouse -
+// the table is a stored SQL definition, not a copy. Rendered with the
+// table wording of the warehouse pieces (badge, trace, "Definition").
+function isSavedQueryTurn(t: ChatTurn): boolean {
+  return t.role === "assistant" && t.action === "transform" && t.usedPushdown === true;
+}
 
 // Resolves any sourceId (see the forms documented on ORIGINAL_SOURCE_ID
 // above) to a short, human-readable label for the WORKING ON summary line
@@ -385,36 +434,44 @@ export function ShowCalculation({
 // mirrors the Data tab's amber "stats are based on loaded rows, not
 // necessarily every row at the source" caveat (same amber-400 tint), just
 // as a pill instead of plain text so it reads as a status, not an aside.
+// 2026-10-06 (warehouse-honesty round): the affirming pill now says
+// exactly what ran and over how many rows ("Computed in BigQuery · all
+// 119,386 rows", or "· every row" when the Data tab has not cached the
+// exact count - see ComputedInBadge in WarehouseTurn.tsx). The amber
+// sample branch is kept ONLY for legacy turns still in the database from
+// before the sample path was removed (usedPushdown === false with a real
+// sampleRowCount) - a warehouse kind can no longer produce one. A
+// needs_query_help turn (usedPushdown false, no sample) renders nothing
+// here: its NeedsQueryHelpCard carries the whole story.
 export function PushdownBadge({
-  usedPushdown, sampleRowCount, datasourceKind,
+  usedPushdown, sampleRowCount, datasourceKind, provider, exactTotalRows, table,
 }: {
   usedPushdown?: boolean | null;
   sampleRowCount?: number | null;
   datasourceKind?: string | null;
+  provider?: string | null;
+  exactTotalRows?: number | null;
+  // 2026-10-06 ("generated data is a saved query" layer): true for a
+  // saved-query table turn - the pill then reads "Built as a saved query
+  // in BigQuery · N rows" (exactTotalRows is the new table's own count).
+  table?: boolean;
 }) {
   if (usedPushdown == null) return null;
-  const kindLabel = datasourceKind ? connectionKindMeta(datasourceKind).label : "your database";
   if (usedPushdown) {
     return (
       <div className="mt-1.5">
-        <span
-          className="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-full bg-primary/10 text-primary"
-          title="This answer came from one real query run directly against your connected source, not a loaded sample."
-        >
-          &#10003; Ran directly against your {kindLabel}
-        </span>
+        <ComputedInBadge provider={provider || datasourceKind} exactTotalRows={exactTotalRows} variant={table ? "table" : "answer"} />
       </div>
     );
   }
+  if (sampleRowCount == null) return null;
   return (
     <div className="mt-1.5">
       <span
         className="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-full bg-amber-400/10 text-amber-400"
         title="This source could not be queried directly for this question, so this answer is based on a limited, already-loaded sample instead of every row at the source."
       >
-        &#9888; {sampleRowCount != null
-          ? `Based on a sample of ${sampleRowCount.toLocaleString()} loaded rows, not a direct query against your full table`
-          : "Based on a loaded sample, not a direct query against your full table"}
+        &#9888; Based on a sample of {sampleRowCount.toLocaleString()} loaded rows, not a direct query against your full table
       </span>
     </div>
   );
@@ -798,10 +855,24 @@ export default function ChatPanel({
   turns, onSend, busy, onApproveTransform, onRejectTransform, onCustomizeTransform, onContinueAnalysis, customizeSeed,
   versions, sourceIds, onSourceIdsChange, onVerify, verifyingIndex, analysisMode, onAnalysisModeChange,
   datasourceKind, datasourceSchema, otherDataSources, conversationId,
-  linkedDashboards, onOpenBuildDashboard, onOpenDashboard,
+  linkedDashboards, onOpenBuildDashboard, onOpenDashboard, onFinish, fallbackBuilderColumns,
 }: {
   turns: ChatTurn[];
   onSend: (prompt: string) => void;
+  // 2026-10-06 (warehouse-honesty round): the two deterministic ways to
+  // finish a warehouse question the AI could not turn into a query (see
+  // NeedsQueryHelpCard in WarehouseTurn.tsx): a structured query-builder
+  // spec or the person's own SQL, POSTed on the same /chat body as a
+  // normal send with `prompt` = the plain-words summary. Resolves to the
+  // backend's 400 detail when the request was rejected, so the card can
+  // show it inline; null/undefined when it was accepted. Omitted (e.g. a
+  // file-based source), the card offers rephrase/try again only.
+  onFinish?: (finish: ChatFinishRequest, prompt: string) => Promise<string | null | void> | void;
+  // The builder's column lists for a RESTORED needs_query_help turn (a
+  // live response carries its own builderColumns; the messages endpoint
+  // does not repeat them per message) - Workspace.tsx derives these from
+  // the data source's own schema_cache.
+  fallbackBuilderColumns?: BuilderColumns | null;
   busy: boolean;
   onApproveTransform?: (index: number) => void;
   onRejectTransform?: (index: number) => void;
@@ -997,13 +1068,47 @@ export default function ChatPanel({
     onSourceIdsChange(next.length ? next : [ORIGINAL_SOURCE_ID]);
   };
 
+  // 2026-10-06 ("generated data is a saved query" layer): the composer's
+  // own write-SQL mode, for SQL warehouse/database kinds only (same gate
+  // as the deterministic builder - BUILDER_KINDS). The person's SELECT is
+  // sent as `raw_sql` on the same /chat body as a question; with "Save as
+  // table" ticked it becomes a saved-query table inside the warehouse
+  // instead of being charted (save_as_table: true - see backend
+  // routers/chat.py's raw_sql branch). Not available for MongoDB or a
+  // file-based source (no onFinish, or a non-SQL kind): the toggle simply
+  // does not render and the composer is exactly as before.
+  const sqlAllowed = !!onFinish && !!datasourceKind && BUILDER_KINDS.includes(datasourceKind);
+  const [sqlMode, setSqlMode] = useState(false);
+  const [rawSql, setRawSql] = useState("");
+  const [saveAsTable, setSaveAsTable] = useState(false);
+  const [sqlError, setSqlError] = useState<string | null>(null);
+  const [sqlRunning, setSqlRunning] = useState(false);
+  const sqlRef = useRef<HTMLTextAreaElement>(null);
+
   // A "Refine further" click on a data-cleaning result seeds the chat box
   // with a starting phrase and focuses it, so the person can finish typing
   // exactly what else they want done - without losing any text they may
   // already have typed elsewhere.
   useEffect(() => {
     if (!customizeSeed) return;
-    setText(customizeSeed.text);
+    if (typeof customizeSeed.sql === "string") {
+      // "Edit & re-run" from a saved query's Data tab: the definition lands
+      // in the write-SQL editor with "Save as table" set as asked.
+      setSqlMode(true);
+      setRawSql(customizeSeed.sql);
+      setSaveAsTable(customizeSeed.saveAsTable ?? true);
+      setSqlError(null);
+      window.setTimeout(() => sqlRef.current?.focus(), 0);
+      return;
+    }
+    if (typeof customizeSeed.text === "string") setText(customizeSeed.text);
+    if (sqlMode) {
+      // The question box is not mounted while the SQL editor is up - leave
+      // that mode first, then focus once it has rendered.
+      setSqlMode(false);
+      window.setTimeout(() => inputRef.current?.focus(), 0);
+      return;
+    }
     inputRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customizeSeed?.nonce]);
@@ -1012,6 +1117,50 @@ export default function ChatPanel({
     if (!text.trim() || busy) return;
     onSend(text.trim());
     setText("");
+  };
+
+
+  const runSql = async () => {
+    const sql = rawSql.trim();
+    if (!sql || !onFinish || busy || sqlRunning) return;
+    setSqlRunning(true);
+    setSqlError(null);
+    try {
+      const firstLine = sql.split("\n").map((l) => l.trim()).find((l) => l) || "My own SQL";
+      const prompt = saveAsTable ? SAVE_AS_TABLE_PROMPT : firstLine.length > 200 ? `${firstLine.slice(0, 200)}…` : firstLine;
+      const detail = await onFinish(saveAsTable ? { raw_sql: sql, save_as_table: true } : { raw_sql: sql }, prompt);
+      if (typeof detail === "string" && detail) setSqlError(detail);
+      else setRawSql("");
+    } catch (e: any) {
+      setSqlError(e?.message || "That could not be run.");
+    } finally {
+      setSqlRunning(false);
+    }
+  };
+
+  // "Rephrase the question" on a needs_query_help card: the original
+  // question lands back in the composer, focused, for the person to edit.
+  const rephrase = (prompt: string) => {
+    setText(prompt);
+    if (sqlMode) {
+      setSqlMode(false);
+      window.setTimeout(() => inputRef.current?.focus(), 0);
+      return;
+    }
+    inputRef.current?.focus();
+  };
+
+  // "Try again" on a needs_query_help card: re-sends exactly what produced
+  // it - the same builder/raw-SQL request when the preceding user turn was
+  // one, otherwise the original question as a plain prompt.
+  const retryTurn = (i: number) => {
+    const prev = i > 0 && turns[i - 1]?.role === "user" ? turns[i - 1] : null;
+    if (!prev) return;
+    if (prev.finish && onFinish) {
+      void onFinish(prev.finish, prev.content);
+    } else {
+      onSend(prev.content);
+    }
   };
 
   // The most recent turn that created (or is in the middle of creating) a
@@ -1062,6 +1211,28 @@ export default function ChatPanel({
           </div>
         )}
         {turns.map((t, i) => (
+          t.role === "assistant" && t.action === "needs_query_help" ? (
+            // 2026-10-06 (warehouse-honesty round): a warehouse question
+            // that was NOT run - no bubble, no insight, no badge; the one
+            // card says what was tried and how to finish it on every row.
+            // The original question is the nearest preceding user turn.
+            <div key={i} className="max-w-[96%] needs-query-help-turn">
+              <NeedsQueryHelpCard
+                replyText={t.content}
+                provider={t.pushdownProvider || datasourceKind}
+                attempts={t.pushdownAttempts}
+                skippedReason={t.pushdownSkippedReason}
+                builderSuggestion={t.builderSuggestion}
+                builderColumns={t.builderColumns && Object.keys(t.builderColumns).length ? t.builderColumns : fallbackBuilderColumns}
+                exactTotalRows={t.exactTotalRows}
+                originalPrompt={i > 0 && turns[i - 1]?.role === "user" ? turns[i - 1].content : undefined}
+                busy={busy}
+                onFinish={onFinish}
+                onRephrase={rephrase}
+                onRetry={() => retryTurn(i)}
+              />
+            </div>
+          ) : (
           <div key={i} className={`max-w-[90%] ${t.role === "user" ? "ml-auto" : ""}`}>
             <div
               className={`rounded-2xl px-4 py-2.5 text-sm ${
@@ -1069,7 +1240,9 @@ export default function ChatPanel({
               } ${t.needsClarification ? "border-accent/60" : ""}`}
             >
               {t.action === "transform" && (
-                <div className="text-[10px] uppercase tracking-wide text-accent font-semibold mb-1">Data cleaned</div>
+                <div className="text-[10px] uppercase tracking-wide text-accent font-semibold mb-1">
+                  {isSavedQueryTurn(t) ? "Table built as a saved query" : "Data cleaned"}
+                </div>
               )}
               {t.action === "analyze" && t.newVersionId && (
                 <div className="text-[10px] uppercase tracking-wide text-accent font-semibold mb-1">
@@ -1085,11 +1258,16 @@ export default function ChatPanel({
             {t.rowsBefore != null && (
               <div className="mt-1.5 flex flex-wrap gap-2 text-[11px]">
                 <span className="bg-surface2 border border-border rounded-full px-2.5 py-1">
-                  Rows: {t.rowsBefore} &rarr; {t.rowsAfter}
+                  Rows: {isSavedQueryTurn(t) ? t.rowsBefore.toLocaleString() : t.rowsBefore} &rarr; {isSavedQueryTurn(t) && t.rowsAfter != null ? t.rowsAfter.toLocaleString() : t.rowsAfter}
                 </span>
-                <span className="bg-surface2 border border-border rounded-full px-2.5 py-1">
-                  Missing values: {t.nullsBefore} &rarr; {t.nullsAfter}
-                </span>
+                {/* A saved query has no in-app rows to count nulls over
+                    (the backend sends null for both) - the chip is simply
+                    left out there, never "→" with nothing on either side. */}
+                {!isSavedQueryTurn(t) && (
+                  <span className="bg-surface2 border border-border rounded-full px-2.5 py-1">
+                    Missing values: {t.nullsBefore} &rarr; {t.nullsAfter}
+                  </span>
+                )}
               </div>
             )}
             {t.insight && (
@@ -1103,8 +1281,62 @@ export default function ChatPanel({
                 usedPushdown={t.usedPushdown}
                 sampleRowCount={t.sampleRowCount}
                 datasourceKind={datasourceKind}
+                provider={t.pushdownProvider}
+                exactTotalRows={t.exactTotalRows}
+                table={isSavedQueryTurn(t)}
               />
             )}
+            {/* 2026-10-06 (warehouse-honesty round): under a warehouse-
+                computed answer, the 3-step "what happened" trace and the
+                exact SQL that ran (collapsed; the Chart tab shows it
+                expanded). Both are real response fields - see
+                WarehouseTurn.tsx. Nothing renders for a non-warehouse turn.
+                For a saved-query TABLE turn (2026-10-06, "generated data is
+                a saved query" layer) the same two pieces use their table
+                wording: the definition was saved, not run for an answer. */}
+            {t.role === "assistant" && t.usedPushdown && (
+              <WarehouseTrace
+                provider={t.pushdownProvider || datasourceKind}
+                bytesScanned={t.pushdownBytesScanned}
+                durationMs={t.pushdownDurationMs}
+                resultRows={t.pushdownResultRows}
+                variant={isSavedQueryTurn(t) ? "table" : "answer"}
+              />
+            )}
+            {t.role === "assistant" && t.usedPushdown && t.pushdownSql && (
+              <SqlThatRan
+                sql={t.pushdownSql}
+                provider={t.pushdownProvider || datasourceKind}
+                {...(isSavedQueryTurn(t) ? { label: "Definition" } : {})}
+              />
+            )}
+            {/* "Saved as <name>" + "Use this table" for a saved-query table
+                turn - the same chip and button a named result card shows
+                (see ResultCard), so a table built by a prompt reads the
+                same whether it came from a transform or an analysis. */}
+            {isSavedQueryTurn(t) && t.newVersionId && (() => {
+              const savedName = t.newVersionName || versions.find((v) => v.id === t.newVersionId)?.name || null;
+              const selected = sourceIds.includes(t.newVersionId);
+              return (
+                <div className="mt-1.5 flex flex-wrap items-center gap-2 saved-query-row" data-testid="saved-query-row">
+                  <span className="text-[11px] text-muted">Saved as</span>
+                  <span className="result-chip-table inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-mono" data-testid="saved-query-name">
+                    <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                    {savedName || "a saved query"}
+                  </span>
+                  <button
+                    type="button"
+                    className="text-[10px] font-medium disabled:cursor-default text-accent hover:opacity-80 disabled:opacity-60"
+                    disabled={selected || busy}
+                    title={selected ? "Already selected for your next question" : "Saved as a query in your warehouse - use it as the starting point for your next question"}
+                    onClick={() => onSourceIdsChange([t.newVersionId as string])}
+                    data-testid="saved-query-use"
+                  >
+                    {selected ? "✓ Selected" : "Use this table →"}
+                  </button>
+                </div>
+              );
+            })()}
             {t.role === "assistant" && (
               <ShowCalculation method={t.methodSummary} code={t.code} durationMs={t.durationMs} />
             )}
@@ -1227,6 +1459,7 @@ export default function ChatPanel({
               </div>
             )}
           </div>
+          )
         ))}
         {busy && (
           <div className="text-sm text-muted flex items-center gap-2">
@@ -1307,6 +1540,59 @@ export default function ChatPanel({
           </div>
         </div>
 
+        {sqlAllowed && sqlMode ? (
+          <div className="p-4 pt-3 flex flex-col gap-2 composer-sql" data-testid="composer-sql">
+            <div className="flex items-center justify-between gap-2 text-[11px]">
+              <span className="font-semibold text-text">
+                Your SQL — runs inside {providerLabel(datasourceKind)} over every row (read-only, same cost guards)
+              </span>
+              <button
+                type="button"
+                className="text-muted hover:text-text font-medium shrink-0"
+                disabled={busy || sqlRunning}
+                onClick={() => { setSqlMode(false); setSqlError(null); }}
+                data-testid="composer-sql-close"
+              >
+                Back to questions
+              </button>
+            </div>
+            <textarea
+              ref={sqlRef}
+              className="input font-mono text-[11px] leading-relaxed min-h-[110px] resize-y"
+              value={rawSql}
+              aria-label="Your SQL"
+              placeholder="SELECT …"
+              disabled={busy || sqlRunning}
+              onChange={(e) => { setRawSql(e.target.value); setSqlError(null); }}
+              data-testid="composer-sql-textarea"
+            />
+            {sqlError && (
+              <div className="text-[11px] text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-2.5 py-1.5" role="alert">{sqlError}</div>
+            )}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="flex items-center gap-1.5 text-[11px] text-text cursor-pointer" title="Turns this SELECT into a saved query inside your warehouse - a table you can ask about next, with no rows copied into GD360">
+                <input
+                  type="checkbox"
+                  checked={saveAsTable}
+                  disabled={busy || sqlRunning}
+                  onChange={(e) => setSaveAsTable(e.target.checked)}
+                  data-testid="composer-save-as-table"
+                />
+                Save as table
+                <span className="text-muted">(a saved query, not a copy)</span>
+              </label>
+              <button
+                type="button"
+                className="btn-primary text-xs px-3 py-1.5"
+                disabled={busy || sqlRunning || !rawSql.trim() || !!sqlError}
+                onClick={runSql}
+                data-testid="composer-sql-run"
+              >
+                {sqlRunning ? "Running…" : saveAsTable ? "Save as table" : "Run"}
+              </button>
+            </div>
+          </div>
+        ) : (
         <div className="p-4 pt-3 flex gap-2">
           <input
             ref={inputRef}
@@ -1317,10 +1603,23 @@ export default function ChatPanel({
             onKeyDown={(e) => { if (e.key === "Enter") send(); }}
             disabled={busy}
           />
+          {sqlAllowed && (
+            <button
+              type="button"
+              className="btn-secondary shrink-0 text-xs px-3"
+              title="Write the SQL yourself - it runs inside your warehouse over every row; tick 'Save as table' to keep the result as a saved query"
+              disabled={busy}
+              onClick={() => setSqlMode(true)}
+              data-testid="composer-sql-toggle"
+            >
+              Write SQL
+            </button>
+          )}
           <button className="btn-primary shrink-0" onClick={send} disabled={busy || !text.trim()}>
             Send
           </button>
         </div>
+        )}
       </div>
     </div>
 
