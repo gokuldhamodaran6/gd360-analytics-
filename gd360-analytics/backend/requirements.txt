@@ -22,6 +22,14 @@ pymssql==2.3.2
 pymongo==4.9.1
 sqlalchemy-bigquery==1.17.2
 google-cloud-bigquery==3.45.2
+# 2026-10-06: required by google-cloud-bigquery's own RowIterator.to_dataframe()
+# (used by services/connectors.py BigQueryConnector.load_dataframe's native-client
+# fix) to convert BigQuery's DATE/TIME columns into pandas - without this,
+# to_dataframe() raises "Please install the 'db-dtypes' package to use this
+# function" on the very first real table with a DATE/TIME column, which is how
+# this was actually caught. pyarrow>=13.0.0 (db-dtypes' own floor) is already
+# satisfied transitively via snowflake-connector-python[pandas] below.
+db-dtypes==1.7.2
 # Snowflake data-warehouse connector (Enterprise Scale Roadmap, Phase 2) -
 # the [pandas] extra pulls in pyarrow, needed for cur.fetch_pandas_all()
 # in services/connectors.py SnowflakeConnector.
