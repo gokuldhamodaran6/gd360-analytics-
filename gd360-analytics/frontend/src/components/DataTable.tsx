@@ -1330,7 +1330,7 @@ export default function DataTable({
           originalTables.map((t) => (
             <button
               key={t}
-              className={`text-xs px-3 py-1.5 rounded-lg font-medium transition shrink-0 flex items-center gap-1.5 ${
+              className={`text-xs px-3 py-1.5 rounded-full font-medium transition shrink-0 flex items-center gap-1.5 ${
                 activeVersionId === null && activeTable === t
                   ? "bg-sky-600 text-white"
                   : "border border-sky-500/40 text-sky-300 bg-sky-500/10 hover:bg-sky-500/20"
@@ -1343,7 +1343,7 @@ export default function DataTable({
           ))
         ) : (
           <button
-            className={`text-xs px-3 py-1.5 rounded-lg font-medium transition shrink-0 ${
+            className={`text-xs px-3 py-1.5 rounded-full font-medium transition shrink-0 ${
               activeVersionId === null
                 ? "bg-sky-600 text-white"
                 : "border border-sky-500/40 text-sky-300 bg-sky-500/10 hover:bg-sky-500/20"
@@ -1356,7 +1356,7 @@ export default function DataTable({
         {versions.map((v) => (
           <div
             key={v.id}
-            className={`flex items-center gap-1 rounded-lg pl-3 pr-1.5 py-1.5 text-xs font-medium shrink-0 transition ${
+            className={`flex items-center gap-1 rounded-full pl-3 pr-1.5 py-1.5 text-xs font-medium shrink-0 transition ${
               activeVersionId === v.id ? "bg-primary text-white" : "btn-secondary"
             }`}
           >
@@ -1665,14 +1665,25 @@ export default function DataTable({
                       onDragOver={(e) => e.preventDefault()}
                       onDrop={(e) => { e.preventDefault(); reorderColumn(dragColKey, col); setDragColKey(null); }}
                       onDragEnd={() => setDragColKey(null)}
-                      className={`relative text-left px-3 py-2 font-semibold border-b border-border whitespace-nowrap overflow-hidden ${
+                      className={`relative text-left px-3 py-2 font-semibold uppercase tracking-wide text-[10.5px] border-b border-border whitespace-nowrap overflow-hidden ${
                         dragColKey === col ? "opacity-50" : ""
                       } ${pinned ? "bg-surface2" : ""} ${isLastPinned ? "border-r-2 border-r-primary/40" : ""}`}
                       style={pinned ? { position: "sticky", left: pinnedLeftOffset[col], zIndex: 15 } : undefined}
                       title="Drag to reorder • click to sort/filter"
                     >
+                      {/* 2026-10-06 (round 3 visual restyle, "Option D"
+                          mockup): the filter/sort glyph used to sit at full
+                          opacity on every single header, all the time - the
+                          mockup instead only reveals it on hover (".thwrap
+                          .filt { opacity:0 } :hover .filt { opacity:1 }"),
+                          unless that column is actually sorted or filtered
+                          right now, in which case it stays visible so an
+                          active filter is never hidden behind a hover you
+                          have to discover. `group` here + the opacity
+                          classes on FilterIcon below are the only change -
+                          same onClick, same toggleColumnMenu, same icon. */}
                       <div
-                        className="flex items-center gap-1.5 cursor-pointer select-none hover:text-primary transition overflow-hidden"
+                        className="group flex items-center gap-1.5 cursor-pointer select-none hover:text-primary transition overflow-hidden"
                         onMouseDown={(e) => e.stopPropagation()}
                         onClick={() => toggleColumnMenu(col)}
                       >
@@ -1687,7 +1698,11 @@ export default function DataTable({
                             <span className="ml-1" title="Conditional formatting on" aria-hidden>&#9679;</span>
                           )}
                         </span>
-                        <span className="ml-auto shrink-0">
+                        <span
+                          className={`ml-auto shrink-0 transition-opacity ${
+                            sortBy === col || isFilterActive(filters[col]) ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                          }`}
+                        >
                           <FilterIcon active={sortBy === col || isFilterActive(filters[col])} />
                         </span>
                       </div>
@@ -2377,9 +2392,18 @@ export default function DataTable({
             {from}-{to} of {displayTotalRows.toLocaleString()}{!totalRowsIsExact && preview.stats_capped ? "+" : ""} rows
             {hasActiveFilters && <span className="ml-1 text-accent">(filtered)</span>}
           </span>
+          {/* 2026-10-06 (round 3 visual restyle, "Option D" mockup): this
+              exact/estimated status - the single most important honesty
+              signal on this whole footer - now reads as a real pill badge
+              (the same bg-primary/10 + text-primary "verified" tint this
+              codebase already uses for a confirmed/trusted state
+              elsewhere, e.g. Workspace.tsx's dashboard-tie-in icon) instead
+              of plain colored text sitting in a row of other plain colored
+              text, where it used to blend in with everything next to it.
+              Same condition, same title, same words - only the wrapper. */}
           {totalRowsIsExact && !hasActiveFilters && (
             <span
-              className="text-emerald-500 text-[10px]"
+              className="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-full bg-primary/10 text-primary"
               title="A real query against every row at the source, not an estimate."
             >
               &#10003; exact
@@ -2416,7 +2440,7 @@ export default function DataTable({
               is wired to the real backend field only. */}
           {profile?.estimated_total_rows != null && (
             <span
-              className="text-sky-400/80 text-[10px]"
+              className="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-1 rounded-full bg-sky-400/10 text-sky-400"
               title="An approximate document count from MongoDB's own collection metadata (estimated_document_count) - not a real full-collection scan, so it can drift slightly from the true count."
             >
               ~{profile.estimated_total_rows.toLocaleString()} rows (estimated)
