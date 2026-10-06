@@ -238,9 +238,21 @@ export type DataPreview = {
   cleaning_log: CleaningLogEntry[];
   column_stats: Record<string, ColumnStat>;
   // True only for a live-connector datasource whose true row count may be
-  // bigger than what PREVIEW_ROW_LIMIT let this preview load - the Totals
-  // row shows a small caveat instead of silently understating a sum.
+  // bigger than what this kind's effective preview cap (backend
+  // config.py's effective_preview_cap - PREVIEW_ROW_LIMIT, or BigQuery's
+  // own lower BIGQUERY_MAX_ROWS_LOADED) let this preview load - the
+  // Totals row shows a small caveat instead of silently understating a
+  // sum.
   stats_capped: boolean;
+  // 2026-10-06 (NoSQL hybrid round 2): how many rows the connector
+  // actually handed back before any column filter was applied (the raw
+  // load size) - distinct from total_rows above, which is AFTER any
+  // filter. Paging can never reach past this number, no matter what
+  // total_rows or profile.exact_total_rows say - see DataTable.tsx's
+  // stats_capped messaging, which shows this alongside the exact/
+  // estimated total so a person can never mistake "rows loaded into this
+  // preview" for "rows that really exist at the source."
+  loaded_row_count: number;
 };
 
 // Each column's filter is now a small structured object - a values
@@ -319,6 +331,29 @@ export type DataProfile = {
   // than a fresh query - lets the UI skip a loading flicker on repeat opens
   // without claiming the number was just re-measured.
   cached?: boolean;
+  // 2026-10-06 (NoSQL hybrid round): real, previously-discarded numbers
+  // from backend routers/datasources.py's profile_datasource -
+  // `bytes_scanned` is the connector's own run_pushdown_query result
+  // (already metered for the shared daily cost budget - see
+  // services/pushdown_budget.py), only ever present for bigquery/
+  // snowflake (the only two kinds that run a real metered pushdown query
+  // here); every other supported kind omits this key entirely, never
+  // sends a fabricated 0. `cached_at` is the real epoch-seconds timestamp
+  // this result was computed/stored, present whenever `supported` is
+  // true - DataTable.tsx uses it to show a genuine "cached Xm ago"
+  // instead of guessing from the TTL alone.
+  bytes_scanned?: number;
+  cached_at?: number;
+  // 2026-10-06 (NoSQL hybrid round 2): a cheap, APPROXIMATE document-count
+  // signal - present ONLY when ds.kind === "mongodb" (MongoConnector.
+  // estimate_row_count, via pymongo's estimated_document_count - a fast
+  // metadata read, never a full collection scan). Every other unsupported
+  // kind (csv/excel/api/googlesheets/microsoft_excel) has no equivalent
+  // cheap estimate and never gets this key. Deliberately named
+  // differently from exact_total_rows above - this is always an estimate,
+  // never exact, and DataTable.tsx must show it with a "~"/"estimated"
+  // label, never the exact pill's checkmark.
+  estimated_total_rows?: number;
 };
 
 // What the natural-language filter bar gets back - `filters` is keyed by
