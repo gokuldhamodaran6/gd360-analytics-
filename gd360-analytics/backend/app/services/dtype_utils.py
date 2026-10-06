@@ -111,6 +111,20 @@ def normalize_dtype_label(series: pd.Series) -> str:
         # integer column is never misread as booleans here.
         if all(isinstance(v, bool) for v in sample):
             return "boolean"
+        # 2026-10-06 (NoSQL hybrid round): a MongoDB array field - e.g.
+        # {"tags": ["a", "b"]} - lands in pandas, after
+        # MongoConnector.load_dataframe's pandas.json_normalize flattening,
+        # as an "object" column of plain Python list/tuple values (list
+        # fields are deliberately left unexpanded - see that function's own
+        # comment on why). Without this, such a column would silently fall
+        # through to "text" below, and the frontend would try to render a
+        # raw Python list repr in every cell instead of a real "N items"
+        # count. tuple is included for the same reason bool is checked
+        # above it - defensive, not because any connector in this app
+        # currently produces tuples; a real test (not just this reasoning)
+        # confirms list columns hit this branch.
+        if all(isinstance(v, (list, tuple)) for v in sample):
+            return "array"
     return raw
 
 
