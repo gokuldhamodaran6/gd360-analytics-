@@ -699,7 +699,7 @@ def generate_bigquery_sql(
         {"role": "system", "content": BIGQUERY_SQL_SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
-    raw = _call_llm_resilient(messages, max_tokens=600)
+    raw = _call_llm_resilient(messages, max_tokens=_SQL_WRITER_MAX_TOKENS)
     sql = raw.strip()
     # Cheap insurance against the model adding a code fence anyway, despite
     # being told not to - mirrors how _extract_json tolerates the same
@@ -796,7 +796,7 @@ def generate_snowflake_sql(
         {"role": "system", "content": SNOWFLAKE_SQL_SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
-    raw = _call_llm_resilient(messages, max_tokens=600)
+    raw = _call_llm_resilient(messages, max_tokens=_SQL_WRITER_MAX_TOKENS)
     sql = raw.strip()
     if sql.startswith("```"):
         sql = sql.strip("`")
@@ -901,7 +901,7 @@ Strict rules:
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
     ]
-    raw = _call_llm_resilient(messages, max_tokens=600)
+    raw = _call_llm_resilient(messages, max_tokens=_SQL_WRITER_MAX_TOKENS)
     sql = raw.strip()
     if sql.startswith("```"):
         sql = sql.strip("`")
@@ -991,7 +991,7 @@ def generate_warehouse_table_sql(
         {"role": "system", "content": _warehouse_table_system_prompt(dialect_kind)},
         {"role": "user", "content": user_content},
     ]
-    raw = _call_llm_resilient(messages, max_tokens=900)
+    raw = _call_llm_resilient(messages, max_tokens=_SQL_WRITER_MAX_TOKENS)
     text = (raw or "").strip()
     if text.startswith("```"):
         text = text.strip("`")
@@ -1061,7 +1061,7 @@ def generate_mongo_pipeline(prompt: str, schema_text: str) -> str:
         {"role": "system", "content": MONGO_PIPELINE_SYSTEM_PROMPT},
         {"role": "user", "content": f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"},
     ]
-    raw = _call_llm_resilient(messages, max_tokens=800)
+    raw = _call_llm_resilient(messages, max_tokens=_SQL_WRITER_MAX_TOKENS)
     pipeline_text = raw.strip()
     if pipeline_text.startswith("```"):
         pipeline_text = pipeline_text.strip("`")
@@ -1117,7 +1117,7 @@ def suggest_query_spec(prompt: str, schema_text: str) -> dict | None:
             {"role": "system", "content": QUERY_SPEC_SYSTEM_PROMPT},
             {"role": "user", "content": f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"},
         ]
-        raw = _call_llm_resilient(messages, max_tokens=500)
+        raw = _call_llm_resilient(messages, max_tokens=_SQL_WRITER_MAX_TOKENS)
     except Exception as e:
         print(f"[ai_engine] suggest_query_spec failed (non-fatal): {e}")
         return None
@@ -1251,6 +1251,34 @@ class _EmptyModelResponse(RuntimeError):
     retry this specific case without masking a real API error."""
 
 
+class _TruncatedModelResponse(RuntimeError):
+    """2026-10-06 (found from the founder's live BigQuery audit log): the
+    model call succeeded but the provider reported it stopped because the
+    token budget ran out (OpenAI-style finish_reason == "length", Anthropic
+    stop_reason == "max_tokens"). A "thinking" model (Gemini flash, gpt-oss,
+    qwen) spends part of `max_tokens` on internal reasoning, so a small
+    budget can leave the VISIBLE answer cut off mid-sentence - the real
+    incident was a BigQuery SQL statement truncated after its third line
+    (`SELECT arrival_date_year, COUNT(*) AS total_bookings,` - no FROM
+    clause) that was then executed as-is and failed with "Unrecognized
+    name". A truncated answer must never be used: _call_llm raises this,
+    and _call_llm_resilient retries once with a much larger budget."""
+
+
+# Checked on every OpenAI-compatible response (Groq, Gemini, OpenAI): the
+# provider's own signal that the answer was cut off by max_tokens.
+_LENGTH_FINISH_REASONS = {"length", "max_tokens"}
+
+
+def _check_not_truncated(choice: dict, provider_label: str) -> None:
+    reason = str(choice.get("finish_reason") or "").lower()
+    if reason in _LENGTH_FINISH_REASONS:
+        raise _TruncatedModelResponse(
+            f"{provider_label} stopped the answer early (finish_reason={reason!r}): the token budget ran out "
+            "before the model finished, so the text is incomplete and must not be used."
+        )
+
+
 def _extract_json(text: str) -> dict:
     text = text.strip()
     text = re.sub(r"^```(json)?|```$", "", text, flags=re.MULTILINE).strip()
@@ -1312,7 +1340,9 @@ def _call_llm(messages: list[dict], max_tokens: int = 3000, model_override: str 
             timeout=60,
         )
         _raise_with_body(resp, "Groq")
-        content = resp.json()["choices"][0]["message"]["content"]
+        _choice = resp.json()["choices"][0]
+        _check_not_truncated(_choice, "Groq")
+        content = _choice["message"]["content"]
         if not content or not content.strip():
             raise _EmptyModelResponse(
                 "The AI model returned an empty response, most likely because it used its "
@@ -1346,7 +1376,9 @@ def _call_llm(messages: list[dict], max_tokens: int = 3000, model_override: str 
             timeout=60,
         )
         _raise_with_body(resp, "Gemini")
-        content = resp.json()["choices"][0]["message"]["content"]
+        _choice = resp.json()["choices"][0]
+        _check_not_truncated(_choice, "Gemini")
+        content = _choice["message"]["content"]
         if not content or not content.strip():
             raise _EmptyModelResponse(
                 "The AI model returned an empty response, most likely because it used its "
@@ -1367,7 +1399,9 @@ def _call_llm(messages: list[dict], max_tokens: int = 3000, model_override: str 
             timeout=60,
         )
         _raise_with_body(resp, "OpenAI")
-        return resp.json()["choices"][0]["message"]["content"]
+        _choice = resp.json()["choices"][0]
+        _check_not_truncated(_choice, "OpenAI")
+        return _choice["message"]["content"]
 
     if provider == "anthropic":
         if not settings.ANTHROPIC_API_KEY:
@@ -1388,7 +1422,9 @@ def _call_llm(messages: list[dict], max_tokens: int = 3000, model_override: str 
             timeout=60,
         )
         _raise_with_body(resp, "Anthropic")
-        return resp.json()["content"][0]["text"]
+        _body = resp.json()
+        _check_not_truncated({"finish_reason": _body.get("stop_reason")}, "Anthropic")
+        return _body["content"][0]["text"]
 
     raise RuntimeError(f"Unknown AI_PROVIDER: {provider}")
 
@@ -1435,6 +1471,16 @@ def _call_llm_resilient(messages: list[dict], max_tokens: int = 3000, model_over
     themselves."""
     try:
         return _call_llm(messages, max_tokens=max_tokens, model_override=model_override)
+    except _TruncatedModelResponse as e:
+        # 2026-10-06 (live BigQuery incident - see _TruncatedModelResponse):
+        # the answer was cut off by the token budget, which for a thinking
+        # model mostly means its internal reasoning ate the budget. One
+        # retry with a much larger budget (never the same one - that would
+        # just truncate again). A second truncation is a real failure the
+        # caller must handle, never partial text handed back as if whole.
+        bigger = max(_TRUNCATION_RETRY_MIN_TOKENS, max_tokens * 4)
+        print(f"[ai_engine] answer truncated at max_tokens={max_tokens}, retrying once with {bigger}: {e}")
+        return _call_llm(messages, max_tokens=bigger, model_override=model_override)
     except RuntimeError as e:
         text = str(e)
         text_lower = text.lower()
@@ -1445,6 +1491,19 @@ def _call_llm_resilient(messages: list[dict], max_tokens: int = 3000, model_over
         print(f"[ai_engine] transient provider error, retrying once after a short pause: {e}")
         time.sleep(3)
         return _call_llm(messages, max_tokens=max_tokens, model_override=model_override)
+
+
+# The floor for the one bigger-budget retry above: enough for a thinking
+# model's reasoning plus a long multi-line SQL statement or JSON plan.
+_TRUNCATION_RETRY_MIN_TOKENS = 6000
+
+# 2026-10-06: every SQL/pipeline/spec writer below used max_tokens=600-800 -
+# fine for the visible SQL alone, but Gemini flash and the Groq reasoning
+# models spend tokens THINKING first, inside that same budget, which is
+# exactly how a live BigQuery query came out truncated after three lines.
+# These writers now start from this budget (the retry above still covers
+# an unusually long think).
+_SQL_WRITER_MAX_TOKENS = 3000
 
 
 def friendly_ai_error(e: Exception) -> str:
