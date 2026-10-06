@@ -1115,6 +1115,21 @@ export default function Workspace() {
     return d && hasMultipleTables(d.kind, d.schema_cache) ? Object.keys(d.schema_cache || {}) : [];
   }, [isViewingPrimaryInDataTab, otherDataSources, activeDataTabSourceId]);
 
+  // 2026-10-06 (NoSQL hybrid round): whichever datasource's `kind` the
+  // Data tab is actually showing right now - the primary one (dsInfo) or
+  // whichever "other" connected source the switcher is pointed at - same
+  // isViewingPrimaryInDataTab branch activeOtherOriginalTables above
+  // already uses. Handed to DataTable as `datasourceKind` (the same prop
+  // name/shape ChatPanel already receives dsInfo?.kind as, just resolved
+  // for whichever source is active in THIS tab instead of always the
+  // primary one) so it can scope Mongo-only cell treatment (a "not set"
+  // label for a missing document field) to exactly the sources that are
+  // actually MongoDB, without a new fetch of its own.
+  const activeDataTabKind = useMemo(() => {
+    if (isViewingPrimaryInDataTab) return dsInfo?.kind;
+    return otherDataSources.find((x) => x.id === activeDataTabSourceId)?.kind;
+  }, [isViewingPrimaryInDataTab, dsInfo, otherDataSources, activeDataTabSourceId]);
+
   // The header-level "+ Add data" popup (see AddDataPicker.tsx) - an
   // always-visible entry point next to the datasource name for pulling
   // another connected data source, or a brand-new one, into this analysis,
@@ -2345,6 +2360,7 @@ export default function Workspace() {
                 <div className="flex-1 min-h-0">
                   <DataTable
                     datasourceId={activeDataTabSourceId}
+                    datasourceKind={activeDataTabKind}
                     refreshKey={dataRefreshKey}
                     versions={isViewingPrimaryInDataTab ? visibleVersions : visibleOtherDsVersions}
                     activeVersionId={
