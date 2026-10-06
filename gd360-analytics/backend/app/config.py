@@ -231,6 +231,22 @@ class Settings(BaseSettings):
     # re-triggers it, short enough that the numbers shown are never
     # meaningfully stale.
     PROFILE_CACHE_TTL_SECONDS: int = 300
+    # 2026-10-06 (NoSQL hybrid round): how many documents
+    # MongoConnector.introspect_schema samples per collection to build
+    # ds.schema_cache - was hard-coded to exactly ONE document
+    # (`find_one()`) before this, which meant any field missing from that
+    # one sample (a sparse field present on only some documents - normal
+    # in a schemaless database) silently never appeared anywhere in the
+    # Data tab, chat's schema awareness, or the AI dashboard builder's
+    # column list, no matter how many other documents actually had it.
+    # Deliberately capped, not unbounded, the same way BIGQUERY_MAX_ROWS_
+    # LOADED above is capped: this runs synchronously inside a connect/
+    # refresh request against a customer's own MongoDB server, and 200
+    # documents is already enough to see almost every field a real
+    # collection uses without turning "connect a data source" into a slow
+    # full-collection scan. Raise it only after confirming connect/refresh
+    # still feels fast against a real, large collection - not by guessing.
+    MONGO_SCHEMA_SAMPLE_SIZE: int = 200
     # 2026-09-23: raised from 20 after real production logs showed
     # "Analysis code timed out" firing repeatedly for ordinary requests
     # (a plain groupby, a two-table merge) against tables of only tens of
@@ -330,3 +346,33 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def effective_preview_cap(kind: str) -> int:
+    """2026-10-06 (NoSQL hybrid round 2) real bug fix: the TRUE row
+    ceiling the Data tab's preview can ever actually show for a given
+    datasource `kind`, after accounting for any per-connector cap layered
+    on top of the generic PREVIEW_ROW_LIMIT above.
+
+    routers/datasources.py's preview_datasource used to compare
+    loaded_row_count against PREVIEW_ROW_LIMIT (20,000) alone to decide
+    `stats_capped` - correct for most kinds, but wrong for BigQuery:
+    BigQueryConnector.load_dataframe (services/connectors.py) separately,
+    internally clamps row_limit to BIGQUERY_MAX_ROWS_LOADED (2,000) no
+    matter what row_limit it was called with. So a real BigQuery table
+    with, say, 119,386 rows would silently load only ~2,000 rows, and
+    2,000 >= 20,000 is False - `stats_capped` came back False even though
+    the preview WAS heavily truncated, and the Data tab's one honest
+    "this is a sample, not the whole table" disclaimer never fired for
+    BigQuery at all.
+
+    Call this instead of reading PREVIEW_ROW_LIMIT directly wherever code
+    needs to know "how many rows could this kind's preview load ever
+    actually contain." A future connector-specific cap (another warehouse
+    with its own memory ceiling, say) is a one-line addition to the
+    `caps` dict below, not a rewrite of this function or its callers."""
+    settings = get_settings()
+    caps = {
+        "bigquery": min(settings.PREVIEW_ROW_LIMIT, settings.BIGQUERY_MAX_ROWS_LOADED),
+    }
+    return caps.get(kind, settings.PREVIEW_ROW_LIMIT)
