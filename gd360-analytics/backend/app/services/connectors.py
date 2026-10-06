@@ -464,6 +464,35 @@ class BigQueryConnector:
         instead of a pre-check error, which is a fine trade for removing
         a whole extra network call from this hot path."""
         row_limit = row_limit or settings.MAX_ROWS_LOADED_PER_QUERY
+        # 2026-10-06 (same day, same table, found in the SAME production
+        # logs that proved db-dtypes was the missing piece): once the
+        # 403 and the missing-package error above were both actually
+        # fixed, this call started completing for real for the first
+        # time - and THAT is what surfaced the real remaining ceiling.
+        # Render's own oomKilled events show this process getting killed
+        # again, twice, on an ordinary preview of the user's real
+        # Hotel_data table, at the normal settings.PREVIEW_ROW_LIMIT
+        # (20,000) cap - confirming the earlier mock-only test above
+        # (FakeClient/FakeJob/FakeRowIterator) verified the SQL this
+        # method builds, but never actually verified real memory
+        # behavior at a real row count, because it had no real BigQuery
+        # table to run against. BigQuery's REST protocol (no bqstorage
+        # client, per the create_bqstorage_client=False call below) is
+        # categorically heavier per row than the native wire-protocol
+        # drivers the other connectors in this file use, so the same
+        # row_limit that's safe for Postgres/MySQL/SQL Server/Snowflake
+        # is not safe here. Clamping to BIGQUERY_MAX_ROWS_LOADED applies
+        # everywhere this method is called from - the plain Data-tab
+        # preview, chat's non-pushdown fallback, and ML training's
+        # BigQuery sample pull alike - so the same crash can't resurface
+        # in any of those instead. This starting value (see config.py)
+        # is a deliberately conservative floor, not a precisely measured
+        # ceiling - there was no way to safely binary-search the exact
+        # real limit against the user's own live, already-crashing
+        # service; it should be revisited upward with real evidence
+        # (Render's memory metrics on a successful load) rather than
+        # guessed higher.
+        row_limit = min(row_limit, settings.BIGQUERY_MAX_ROWS_LOADED)
         if is_raw_sql:
             assert_read_only_sql(query_or_table)
             sql = query_or_table
