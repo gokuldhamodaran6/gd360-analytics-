@@ -1367,7 +1367,23 @@ def profile_datasource(
     if not all_columns:
         return {"supported": False, "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False}
 
-    sql, profiled_columns = build_profile_query(ds.kind, resolved_table, all_columns)
+    # 2026-10-06: BigQuery needs its table name qualified with a project
+    # and dataset (e.g. "my-proj.my_dataset.Hotel_data") - an unqualified
+    # name like "Hotel_data" fails with a real, live BigQuery error ("must
+    # be qualified with a dataset"), confirmed directly from this
+    # endpoint's own logs. build_profile_query only ever sees whatever
+    # table identifier it's handed (it has no way to know a project/
+    # dataset on its own - unlike BigQueryConnector.load_dataframe, which
+    # already builds this same qualified form), so that identifier has to
+    # be built HERE, before calling it, for BigQuery specifically. Every
+    # other supported kind keeps using the plain table name exactly as
+    # before - this was never broken for them.
+    profile_table_ident = resolved_table
+    if ds.kind == "bigquery":
+        info = ds.connection_info
+        profile_table_ident = f"{info['project_id']}.{info['dataset_id']}.{resolved_table}"
+
+    sql, profiled_columns = build_profile_query(ds.kind, profile_table_ident, all_columns)
 
     try:
         if ds.kind == "bigquery":
