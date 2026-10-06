@@ -278,6 +278,19 @@ class DatasetVersion(Base):
     duration_ms = Column(Integer, nullable=True)
     method_summary = Column(String, nullable=True)
 
+    # 2026-10-06 (pushdown-honesty round): whether the turn that BUILT this
+    # table ran a real query directly against the warehouse/database
+    # (used_pushdown=True), or fell back to analyzing a loaded, row-capped
+    # in-memory sample (used_pushdown=False) - see models.Message.
+    # used_pushdown/sample_row_count's own docstring just below for the
+    # full reasoning (this mirrors it exactly, just captured for a
+    # table-producing turn instead of a chart-producing one). Both null for
+    # any version saved before this column existed, or for a version not
+    # built from a live-connector datasource at all (a CSV/Excel upload has
+    # nothing to disclose either way).
+    used_pushdown = Column(Boolean, nullable=True)
+    sample_row_count = Column(Integer, nullable=True)
+
     # 2026-09-28: the "promote to shared model" feature (Saved Tables /
     # models_library.py) these three columns belonged to was removed -
     # it turned out to duplicate a capability chat's own cross-datasource
@@ -490,6 +503,38 @@ class Message(Base):
     # captured for a chart-producing turn instead of a table-producing one.
     duration_ms = Column(Integer, nullable=True)
     method_summary = Column(String, nullable=True)
+
+    # 2026-10-06 (pushdown-honesty round, Gokul's own confirmed bug report:
+    # a chat answer against his BigQuery source silently analyzed a 2,000-
+    # row in-memory sample instead of running a real query against his
+    # full table - with zero indication of this to him). `used_pushdown`
+    # is the one thing that actually answers "did this turn run a real
+    # query directly against the warehouse/database, or analyze a loaded
+    # sample" - True when routers/chat.py's own pushdown attempt
+    # (_try_bigquery_pushdown/_try_snowflake_pushdown/_try_sql_pushdown/
+    # _try_mongo_pushdown) actually succeeded for this turn, False when it
+    # was attempted-and-fell-back OR never attempted at all (a CSV/Excel
+    # upload, a saved table, or a plain pull-and-pandas kind that has no
+    # pushdown path). Null only for a turn saved before this column
+    # existed. `sample_row_count` is set ONLY when used_pushdown is False
+    # AND this datasource's kind is one pushdown is ever attempted for
+    # (bigquery/snowflake/postgres/mysql/sqlserver/supabase/mongodb) - the
+    # real, already-loaded row count of the table this turn actually
+    # analyzed (never a fresh "what's the real total" query - that would
+    # reintroduce the exact cost/latency problem the row cap exists to
+    # avoid; this is simply an honest report of what was already loaded,
+    # the same restrained approach Round 2's Data-tab loaded_row_count
+    # already uses). Null whenever used_pushdown is not False (True -
+    # nothing to disclose, this ran directly against the real data; or
+    # null - either the kind isn't pushdown-eligible at all, a file
+    # upload has no bigger "real" table hiding behind what was loaded, or
+    # this turn never loaded a live table at all, e.g. the person picked
+    # only an already-saved table as their selection - see routers/
+    # chat.py's own comment on this exact three-way split). Never a vague
+    # "may be a sample" message - always a real number when there is one
+    # to show.
+    used_pushdown = Column(Boolean, nullable=True)
+    sample_row_count = Column(Integer, nullable=True)
 
     conversation = relationship("Conversation", back_populates="messages")
 
