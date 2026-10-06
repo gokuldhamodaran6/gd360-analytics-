@@ -429,24 +429,67 @@ class BigQueryConnector:
         return schema
 
     def load_dataframe(self, query_or_table: str, is_raw_sql: bool = False, row_limit: int | None = None) -> pd.DataFrame:
+        """2026-10-06 root-cause fix: this used to build a SQLAlchemy
+        engine (`bigquery://...` via the sqlalchemy-bigquery dialect) and
+        load through `pd.read_sql` - the generic DB-API path, which pulls
+        every row back over BigQuery's REST API as a plain Python tuple,
+        one row at a time, via SQLAlchemy's own cursor protocol, and only
+        THEN has pandas re-assemble that whole list of tuples into a
+        DataFrame. For the span of that call, the full result briefly
+        exists TWICE in memory (once as the row-tuple list, once as the
+        DataFrame being built from it) on top of whatever the request's
+        own schema-introspection round trip (`insp.get_table_names()`,
+        a second live call this needed every single time) was already
+        holding.
+
+        Real production evidence (Render's own event log, not a guess)
+        showed this exact call - an ordinary Data-tab preview of a live
+        BigQuery table, nothing exotic - spiking this process straight
+        from its own ~290MB idle baseline past the 512MB container
+        ceiling and getting OOM-killed, more than once, even AFTER the
+        separate sandboxed-AI-code memory fix (services/sandbox.py) was
+        already live. That fix only ever bounded the isolated child
+        process chat's AI-generated code runs in - it was never able to
+        help here, because this load happens directly in the main
+        request-handling process, before anything reaches a sandbox.
+
+        Now goes straight through the native google-cloud-bigquery client
+        (already used below for the pushdown path) and its own
+        `to_dataframe()` - which streams and converts BigQuery's paginated
+        REST response in bulk, without ever materializing a second,
+        separate Python list of the same rows first - and skips the
+        SQLAlchemy engine/inspector entirely, so there is no second live
+        "does this table exist" round trip on every single load. An
+        unknown table now surfaces as BigQuery's own clear NotFound error
+        instead of a pre-check error, which is a fine trade for removing
+        a whole extra network call from this hot path."""
         row_limit = row_limit or settings.MAX_ROWS_LOADED_PER_QUERY
-        engine = self._engine()
+        if is_raw_sql:
+            assert_read_only_sql(query_or_table)
+            sql = query_or_table
+            if "limit" not in sql.lower():
+                trimmed_sql = sql.rstrip(";")
+                sql = f"SELECT * FROM ({trimmed_sql}) AS gd360_sub LIMIT {row_limit}"
+        else:
+            # Fully-qualified so this never depends on an implicit
+            # "default dataset" the way the old SQLAlchemy URL did -
+            # explicit is also what makes skipping the separate
+            # table-existence pre-check safe: BigQuery resolves this
+            # itself and raises its own clear error if it's wrong.
+            table_name = query_or_table.replace("`", "").strip()
+            quoted = f"`{self.project_id}.{self.dataset_id}.{table_name}`"
+            sql = f"SELECT * FROM {quoted} LIMIT {row_limit}"
+        client = self._bq_client()
         try:
-            if is_raw_sql:
-                assert_read_only_sql(query_or_table)
-                sql = query_or_table
-                if "limit" not in sql.lower():
-                    trimmed_sql = sql.rstrip(";")
-                    sql = f"SELECT * FROM ({trimmed_sql}) AS gd360_sub LIMIT {row_limit}"
-            else:
-                insp = inspect(engine)
-                if query_or_table not in insp.get_table_names():
-                    raise ValueError(f"Unknown table: {query_or_table}")
-                quoted = engine.dialect.identifier_preparer.quote(query_or_table)
-                sql = f"SELECT * FROM {quoted} LIMIT {row_limit}"
-            return pd.read_sql(text(sql), engine)
+            # .result() first (waits for completion, same as
+            # run_pushdown_query below), THEN .to_dataframe() on the
+            # RowIterator it returns - the exact same two-call shape
+            # already proven out by run_pushdown_query, so this doesn't
+            # introduce a second, untested way of pulling a BigQuery
+            # result into pandas.
+            return client.query(sql).result().to_dataframe(create_bqstorage_client=False)
         finally:
-            engine.dispose()
+            client.close()
 
     # -----------------------------------------------------------------
     # Pushdown querying (Enterprise Scale Roadmap, Phase 1) - runs ONE
