@@ -42,7 +42,7 @@ from sqlalchemy.orm import Session
 import requests
 
 from .. import models, schemas, security
-from ..config import get_settings
+from ..config import get_settings, effective_preview_cap
 from ..database import get_db
 from ..deps import get_current_user
 from ..services import ai_engine, audit, data_access_rules, workspace_access
@@ -1258,7 +1258,19 @@ def preview_datasource(
     # cap exactly is the only signal available without a separate COUNT(*)
     # query against the real source; a CSV/Excel upload's full file is
     # always already in memory, so it is never capped here.
-    stats_capped = ds.kind not in ("csv", "excel") and loaded_row_count >= settings.PREVIEW_ROW_LIMIT
+    #
+    # 2026-10-06 (NoSQL hybrid round 2) real bug fix: this used to compare
+    # loaded_row_count against the generic settings.PREVIEW_ROW_LIMIT
+    # (20,000) alone - wrong for BigQuery, whose own connector silently
+    # clamps row_limit to the much smaller BIGQUERY_MAX_ROWS_LOADED (2,000)
+    # internally (see BigQueryConnector.load_dataframe in connectors.py).
+    # A real BigQuery table with 119,386 rows would load only ~2,000 of
+    # them, and 2,000 >= 20,000 is False, so stats_capped came back False
+    # even though the preview WAS heavily truncated - the Data tab's one
+    # honest "this is a sample" disclaimer never fired for BigQuery at
+    # all. effective_preview_cap(ds.kind) (config.py) returns the TRUE
+    # per-kind ceiling instead of the generic limit alone.
+    stats_capped = ds.kind not in ("csv", "excel") and loaded_row_count >= effective_preview_cap(ds.kind)
     limit = max(1, min(limit, 5000))
     offset = max(0, offset)
     page = df.iloc[offset: offset + limit]
@@ -1283,6 +1295,14 @@ def preview_datasource(
         "cleaning_log": (active_version.cleaning_log if active_version else None) or [],
         "column_stats": column_stats,
         "stats_capped": stats_capped,
+        # 2026-10-06 (NoSQL hybrid round 2): the raw count of rows the
+        # connector actually handed back before any filter/sort (see the
+        # local variable's own comment above) - distinct from total_rows,
+        # which is AFTER any column filter the caller applied. The Data
+        # tab needs both: "how many rows did the source actually load"
+        # (this one - what paging can ever reach) vs "how many of those
+        # match the current filter" (total_rows).
+        "loaded_row_count": loaded_row_count,
     }
 
 
@@ -1350,12 +1370,49 @@ def profile_datasource(
     exactly like it does today. MongoDB is deliberately out of scope here
     (aggregation-pipeline profiling is a real, separate feature, not a
     quick add on top of this SQL-only query builder) rather than shipping
-    something unverified."""
+    something unverified.
+
+    2026-10-06 (NoSQL hybrid round 2): MongoDB's `supported: false` result
+    additionally carries an `estimated_total_rows` key (see
+    MongoConnector.estimate_row_count) - a cheap, approximate document
+    count, not real profiling, and not the same as `exact_total_rows`
+    above. No other unsupported kind gets this key; there is no equally
+    cheap size signal available for a CSV/Excel/API/Google Sheets/
+    Microsoft Excel source, so none is faked for them."""
     ds = _get_accessible_datasource(db, user, datasource_id)
     ensure_legacy_migrated(db, ds)
 
     if ds.kind not in _PROFILE_SUPPORTED_KINDS:
-        return {"supported": False, "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False}
+        result = {"supported": False, "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False}
+        # 2026-10-06 (NoSQL hybrid round 2): MongoDB stays unsupported for
+        # real column profiling (see this function's own docstring - that
+        # is unchanged), but it is NOT like csv/excel/api/googlesheets/
+        # microsoft_excel here, which have no cheap total-size signal at
+        # all. estimated_document_count (MongoConnector.estimate_row_count,
+        # services/connectors.py) is a fast, metadata-only call this app
+        # already has everything needed to make. Added ONLY for mongodb -
+        # every other unsupported kind must keep getting exactly the
+        # `result` above, with no estimate key at all, since faking one
+        # for them would be worse than having none. Named
+        # "estimated_total_rows", deliberately distinct from
+        # "exact_total_rows" above, so the frontend can never mistake an
+        # estimate for a real exact count.
+        if ds.kind == "mongodb":
+            try:
+                username, password = security.decrypt_secret(ds.encrypted_secret).split("␟")
+                info = ds.connection_info
+                connector = MongoConnector(
+                    info["host"], info["port"], info["database"], username, password, info.get("ssl", True)
+                )
+                mongo_table = table or default_table_for_preview(ds)
+                result["estimated_total_rows"] = connector.estimate_row_count(mongo_table)
+            except Exception as e:
+                # Same spirit as the real profiling failure branch further
+                # down this function: never let an estimate failure look
+                # like the datasource itself is broken - just quietly skip
+                # the estimate for this call.
+                print(f"[datasources] mongodb estimated_document_count failed for {datasource_id}: {e}")
+        return result
 
     resolved_table = table or default_table_for_preview(ds)
     cache_key = (ds.id, resolved_table)
@@ -1447,6 +1504,28 @@ def profile_datasource(
         "profiled_columns": profiled_columns,
         "truncated_columns": len(all_columns) > len(profiled_columns),
     }
+    # 2026-10-06 (NoSQL hybrid round): `bytes_scanned` was already real and
+    # available (run_pushdown_query's own second return value, above) but
+    # previously only ever logged (log_pushdown, for the shared daily cost
+    # budget) - never handed back to the person looking at the Data tab, so
+    # the one piece of real "what did this cost" information for a metered
+    # warehouse query was invisible to them. Added ONLY for bigquery/
+    # snowflake, the only two branches above that actually produce a real
+    # byte count - postgres/mysql/sqlserver/supabase have no such number
+    # (their own branch above never calls run_pushdown_query), so this key
+    # is deliberately left out entirely for them rather than sent as a
+    # fabricated 0 or null.
+    if ds.kind in ("bigquery", "snowflake"):
+        result["bytes_scanned"] = bytes_scanned
+    # The real moment this result was computed/cached (the same timestamp
+    # _profile_cache_put below is about to store it under) - handed back so
+    # the frontend can show a genuine "cached Xm ago" instead of guessing
+    # from settings.PROFILE_CACHE_TTL_SECONDS alone. Embedding it directly
+    # in `result` (rather than changing _profile_cache_get/_profile_cache_
+    # put's own signatures) means it rides along unchanged through a later
+    # cache hit too - that code path just returns `{**cached, "cached":
+    # True}`, and `cached` already has this same real stored_at inside it.
+    result["cached_at"] = time.time()
     _profile_cache_put(cache_key, result)
     return {**result, "cached": False}
 
