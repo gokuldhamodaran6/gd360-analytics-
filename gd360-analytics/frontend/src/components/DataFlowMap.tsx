@@ -485,7 +485,17 @@ const FLOW_CSS = `
   --flow-external: #2a78d6;
   --flow-table: #eb6834;
   --flow-chart: #1baf7a;
-  background: rgb(var(--color-surface));
+  /* 2026-10-06 (round 3 visual restyle, "FlowD" mockup): the mockup's
+     calm look is a light-gray CANVAS with plain-white CARDS floating on
+     it ("background:#f6f7f5" on the outer frame, "#fff" on each node) -
+     this used to be the other way around (--color-surface, the app's
+     "card" white, on the canvas; --color-surface2, its slightly-tinted
+     "chrome" shade, on each card below) so cards barely stood out from
+     the canvas behind them. Swapping which token goes where - nothing
+     else - gives the same two-tone hierarchy in both light and dark,
+     since both tokens already exist and already flip correctly with the
+     theme toggle. */
+  background: rgb(var(--color-surface2));
 }
 :root[data-theme="dark"] .flow-map-root,
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .flow-map-root {
@@ -503,25 +513,50 @@ const FLOW_CSS = `
   width: 258px;
   min-height: 90px;
   display: flex;
-  background: rgb(var(--color-surface2));
+  /* 2026-10-06 (round 3 visual restyle, "FlowD" mockup): swapped from
+     --color-surface2 to --color-surface - paired with .flow-map-root's
+     own swap above, this is what gives the mockup's "plain white card
+     floating on a light-gray canvas" hierarchy instead of the previous
+     reversed one, in both themes, with no new colors introduced. */
+  background: rgb(var(--color-surface));
   border: 1px solid rgb(var(--color-border));
   border-radius: 12px;
+  /* Stays "visible" (not hidden) on purpose - .flow-card__step below is
+     deliberately positioned to poke out past this card's own top-left
+     corner, and clipping the card itself would clip that badge too. */
   overflow: visible;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.08);
   transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
 }
-.flow-card__bar,
-.flow-card__body { overflow: hidden; }
-.flow-card__bar { border-radius: 12px 0 0 12px; }
-.flow-card__body { border-radius: 0 12px 12px 0; }
+.flow-card__body { overflow: hidden; border-radius: 12px; }
+/* 2026-10-06 (round 3 visual restyle, "FlowD" mockup): the left-edge
+   accent used to be a full-height, flush-to-the-corner stripe (a flex
+   child stretched edge-to-edge, with its own slice of the card's own
+   corner radius) - the mockup's own left-edge-accent card instead floats
+   a short, rounded, INSET bar a little clear of the card's own top/
+   bottom corners (".node::before { top:12px; bottom:12px; width:3px;
+   border-radius:2px }"). Same purpose (this card's kind - source/step/
+   result - read at a glance from one color, via the same --card-hue the
+   inline style on the card element already sets) - only the shape
+   changed, from a block spanning the full height to this floating mark,
+   so .flow-card__body no longer needs its own half of the radius either. */
+.flow-card__bar {
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--card-hue);
+  z-index: 1;
+}
 .flow-card--clickable { cursor: pointer; }
 .flow-card--clickable:hover {
   transform: translateY(-2px);
   border-color: var(--card-hue);
-  box-shadow: 0 10px 24px rgba(0,0,0,0.28), 0 0 0 1px var(--card-hue) inset;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.2), 0 0 0 1px var(--card-hue) inset;
 }
 .flow-card--selected { border-color: var(--card-hue); box-shadow: 0 0 0 2px var(--card-hue); }
-.flow-card__bar { width: 4px; flex-shrink: 0; background: var(--card-hue); }
 .flow-card__step {
   position: absolute;
   top: -7px;
@@ -569,11 +604,15 @@ const FLOW_CSS = `
 .flow-map-root .react-flow__edge:hover .react-flow__edge-path { stroke: rgb(var(--color-primary)); }
 
 .flow-controls {
-  background: rgb(var(--color-surface2));
+  /* Round 3: surface (not surface2) so this floating control panel still
+     reads as a card sitting ON the canvas now that the canvas itself is
+     surface2 (see .flow-map-root above) - otherwise it would be the same
+     flat shade as the background behind it. */
+  background: rgb(var(--color-surface));
   border: 1px solid rgb(var(--color-border));
   border-radius: 10px;
   overflow: hidden;
-  box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.2);
 }
 .flow-controls button {
   background: transparent; border: none; border-bottom: 1px solid rgb(var(--color-border));
@@ -584,15 +623,15 @@ const FLOW_CSS = `
 .flow-controls button path { fill: currentColor; }
 
 .flow-minimap {
-  background: rgb(var(--color-surface2));
+  background: rgb(var(--color-surface));
   border: 1px solid rgb(var(--color-border));
   border-radius: 10px;
   overflow: hidden;
-  box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.2);
 }
 
 .flow-legend {
-  background: rgb(var(--color-surface2) / 0.92);
+  background: rgb(var(--color-surface) / 0.92);
   border: 1px solid rgb(var(--color-border));
   border-radius: 10px;
   padding: 8px 10px;
@@ -623,7 +662,7 @@ const FLOW_CSS = `
   display: inline-flex;
   gap: 2px;
   padding: 3px;
-  background: rgb(var(--color-surface2) / 0.95);
+  background: rgb(var(--color-surface) / 0.95);
   border: 1px solid rgb(var(--color-border));
   border-radius: 10px;
   box-shadow: 0 4px 14px rgba(0,0,0,0.2);
@@ -638,7 +677,7 @@ const FLOW_CSS = `
   font-size: 11px;
   line-height: 1.4;
   color: rgb(var(--color-muted));
-  background: rgb(var(--color-surface2) / 0.95);
+  background: rgb(var(--color-surface) / 0.95);
   border: 1px solid rgb(var(--color-border));
   border-radius: 10px;
   padding: 6px 10px;
