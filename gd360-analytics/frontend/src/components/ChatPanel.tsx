@@ -299,7 +299,14 @@ function StepsTrace({ steps }: { steps: { label: string; detail?: string | null 
 // ai_engine's dict-in-`code` multi-result path), rather than something
 // unique to just this card, so the label says so instead of implying a
 // precision that code path cannot actually offer.
-function ShowCalculation({
+// 2026-10-06 (round 3 visual restyle): exported so Workspace.tsx's own
+// Chart tab (centerTab === "chart") can render this exact same toggle -
+// same component, same collapsed-by-default behavior, same real
+// method/code/durationMs fields - directly under that tab's chart, instead
+// of only ever appearing inline in this chat transcript. Nothing about the
+// component itself changed to make this possible; it was always a plain,
+// stateless-from-outside function component.
+export function ShowCalculation({
   method, code, durationMs, sharedCode,
 }: {
   method?: string | null;
