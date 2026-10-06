@@ -648,17 +648,40 @@ Strict rules:
   exist), respond with exactly: NOT_POSSIBLE"""
 
 
-def generate_bigquery_sql(prompt: str, schema_text: str) -> str:
+def generate_bigquery_sql(
+    prompt: str, schema_text: str, previous_sql: str | None = None, previous_error: str | None = None,
+) -> str:
     """The Phase-1 pushdown path: writes one governed SQL SELECT that runs
     inside BigQuery itself, instead of the usual pull-rows-then-pandas
     path every other connector uses. Returns raw SQL text, or the literal
     string "NOT_POSSIBLE" if the model could not answer from the given
     schema. Callers must treat both an exception from this function and a
     "NOT_POSSIBLE" result the same way: fall back to the normal analysis
-    path, never as a hard error the person sees."""
+    path, never as a hard error the person sees.
+
+    2026-10-06 (self-correcting pushdown round): `previous_sql`/
+    `previous_error` are optional, and used ONLY for the one bounded retry
+    routers/chat.py's `_try_bigquery_pushdown` now makes after a first SQL
+    attempt fails in a plausibly self-correctable way (an unsafe/invalid
+    statement, or a genuine BigQuery dry-run/execution rejection - never a
+    QueryTooExpensive rejection, which means the SQL was valid but too
+    costly, not wrong). When both are given, the exact previous SQL and
+    the exact error it produced are appended to the user message as a
+    labelled correction block, so the model can see precisely what it got
+    wrong (e.g. BigQuery's own dry-run error naming the exact nonexistent
+    column) and write a corrected query - the same single call shape,
+    just with one extra bit of grounding context. The system prompt itself
+    is unchanged either way."""
+    user_content = f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"
+    if previous_sql and previous_error:
+        user_content += (
+            f"\n\nYour previous attempt:\n{previous_sql}\n\n"
+            f"It failed with this error:\n{previous_error}\n\n"
+            f"Write a corrected query."
+        )
     messages = [
         {"role": "system", "content": BIGQUERY_SQL_SYSTEM_PROMPT},
-        {"role": "user", "content": f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"},
+        {"role": "user", "content": user_content},
     ]
     raw = _call_llm_resilient(messages, max_tokens=600)
     sql = raw.strip()
@@ -725,7 +748,9 @@ Strict rules:
   exist), respond with exactly: NOT_POSSIBLE"""
 
 
-def generate_snowflake_sql(prompt: str, schema_text: str) -> str:
+def generate_snowflake_sql(
+    prompt: str, schema_text: str, previous_sql: str | None = None, previous_error: str | None = None,
+) -> str:
     """The Snowflake pushdown path (Phase 2): writes one governed SQL
     SELECT that runs inside Snowflake itself, instead of the usual
     pull-rows-then-pandas path every other connector uses. Returns raw
@@ -733,10 +758,21 @@ def generate_snowflake_sql(prompt: str, schema_text: str) -> str:
     answer from the given schema. Callers must treat both an exception
     from this function and a "NOT_POSSIBLE" result the same way: fall
     back to the normal analysis path, never as a hard error the person
-    sees - mirrors generate_bigquery_sql above exactly."""
+    sees - mirrors generate_bigquery_sql above exactly, including the
+    optional `previous_sql`/`previous_error` retry-context pair (2026-10-06,
+    self-correcting pushdown round) - see that function's own docstring
+    for exactly what they're for and when routers/chat.py's
+    `_try_snowflake_pushdown` passes them."""
+    user_content = f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"
+    if previous_sql and previous_error:
+        user_content += (
+            f"\n\nYour previous attempt:\n{previous_sql}\n\n"
+            f"It failed with this error:\n{previous_error}\n\n"
+            f"Write a corrected query."
+        )
     messages = [
         {"role": "system", "content": SNOWFLAKE_SQL_SYSTEM_PROMPT},
-        {"role": "user", "content": f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"},
+        {"role": "user", "content": user_content},
     ]
     raw = _call_llm_resilient(messages, max_tokens=600)
     sql = raw.strip()
@@ -787,7 +823,10 @@ _SQL_DIALECT_INFO = {
 }
 
 
-def generate_sql_pushdown_sql(prompt: str, schema_text: str, db_kind: str) -> str:
+def generate_sql_pushdown_sql(
+    prompt: str, schema_text: str, db_kind: str,
+    previous_sql: str | None = None, previous_error: str | None = None,
+) -> str:
     """The Postgres/MySQL/SQL Server/Supabase pushdown path (Phase 2):
     writes one governed SQL SELECT that runs inside the person's own
     database, instead of the usual pull-rows-then-pandas path. db_kind is
@@ -797,7 +836,11 @@ def generate_sql_pushdown_sql(prompt: str, schema_text: str, db_kind: str) -> st
     from the given schema - callers must treat both an exception from this
     function and a "NOT_POSSIBLE" result the same way: fall back to the
     normal analysis path, exactly like generate_bigquery_sql/
-    generate_snowflake_sql above."""
+    generate_snowflake_sql above - including the optional `previous_sql`/
+    `previous_error` retry-context pair (2026-10-06, self-correcting
+    pushdown round): see generate_bigquery_sql's own docstring for exactly
+    what they're for and when routers/chat.py's `_try_sql_pushdown` passes
+    them."""
     dialect_label, dialect_notes = _SQL_DIALECT_INFO.get(db_kind, ("standard SQL", ""))
     system_prompt = f"""You are the GD360 database pushdown module - the part of the analytics engine that answers a
 question by writing ONE real SQL query that runs directly inside the person's own {dialect_label} database,
@@ -819,9 +862,16 @@ Strict rules:
 - {dialect_notes}
 - If the question genuinely cannot be answered from the given schema (it needs a column or table that does not
   exist), respond with exactly: NOT_POSSIBLE"""
+    user_content = f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"
+    if previous_sql and previous_error:
+        user_content += (
+            f"\n\nYour previous attempt:\n{previous_sql}\n\n"
+            f"It failed with this error:\n{previous_error}\n\n"
+            f"Write a corrected query."
+        )
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Dataset schema:\n{schema_text}\n\nQuestion: {prompt}"},
+        {"role": "user", "content": user_content},
     ]
     raw = _call_llm_resilient(messages, max_tokens=600)
     sql = raw.strip()
