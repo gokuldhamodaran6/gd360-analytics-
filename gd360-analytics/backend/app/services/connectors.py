@@ -301,6 +301,62 @@ class SQLConnector:
         finally:
             engine.dispose()
 
+    # -----------------------------------------------------------------
+    # 2026-10-06 ("generated data is a saved query" layer) - see
+    # services/warehouse_tables.py. Two read-only helpers a saved-query
+    # DatasetVersion needs that load_dataframe cannot give: the result
+    # SCHEMA of a definition without reading a row (validation at
+    # creation time), and a row ITERATOR for the CSV download that never
+    # materialises the whole result in this process.
+    # -----------------------------------------------------------------
+
+    def describe_query(self, sql: str) -> list[dict]:
+        """Runs the dialect's zero-row validation statement (`SELECT * FROM
+        (<sql>) AS gd360_v WHERE 1=0`, or `SELECT TOP 0 * ...` on SQL
+        Server - see warehouse_tables.zero_row_validation_sql) and returns
+        [{name, type}] from the cursor description. Raises the database's
+        own error for an invalid definition - that text is what the SQL
+        writer gets for its one bounded retry."""
+        from .warehouse_tables import columns_from_cursor_description, zero_row_validation_sql
+        assert_read_only_sql(sql)
+        statement = zero_row_validation_sql(self.kind, sql)
+        engine = create_engine(self.url, pool_pre_ping=True, connect_args=self.connect_args)
+        try:
+            with engine.connect() as conn:
+                result = conn.execute(text(statement))
+                description = getattr(result.cursor, "description", None) if result.cursor is not None else None
+                columns = columns_from_cursor_description(self.kind, description)
+                if not columns:
+                    columns = [{"name": str(k), "type": "unknown"} for k in result.keys()]
+                try:
+                    result.close()
+                except Exception:
+                    pass
+                return columns
+        finally:
+            engine.dispose()
+
+    def iter_query_rows(self, sql: str, batch_rows: int = 5000):
+        """Generator: the column names first (a list), then one tuple per
+        row, streamed with SQLAlchemy's server-side cursor
+        (stream_results + yield_per) so the result is never held whole in
+        memory. pymssql has no server-side cursor, so for SQL Server the
+        driver buffers the result itself - rows are still handed out in
+        batches here, but that one driver's own buffer is outside this
+        method's control. The connection stays open until the generator
+        is exhausted or closed."""
+        assert_read_only_sql(sql)
+        engine = create_engine(self.url, pool_pre_ping=True, connect_args=self.connect_args)
+        try:
+            with engine.connect() as conn:
+                result = conn.execution_options(stream_results=True).execute(text(sql))
+                yield list(result.keys())
+                for partition in result.yield_per(batch_rows).partitions(batch_rows):
+                    for row in partition:
+                        yield tuple(row)
+        finally:
+            engine.dispose()
+
 
 def _infer_mongo_field_type(series: pd.Series) -> str:
     """One friendly type label ("int"/"float"/"bool"/"str"/"date"/"array")
@@ -742,6 +798,52 @@ class BigQueryConnector:
         df = job.result().to_dataframe()
         return df, estimated
 
+    # -----------------------------------------------------------------
+    # 2026-10-06 ("generated data is a saved query" layer) - see
+    # services/warehouse_tables.py and SQLConnector.describe_query /
+    # iter_query_rows above for the same two helpers on plain SQL kinds.
+    # -----------------------------------------------------------------
+
+    def describe_query(self, sql: str) -> tuple[list[dict], int]:
+        """Validates a definition with BigQuery's own free dry run (no row
+        is read, nothing is billed) and returns ([{name, type}] from the
+        job's result schema, estimated_bytes). An invalid definition
+        raises BigQuery's own error (e.g. "Unrecognized name: foo") - that
+        text is what the SQL writer gets for its one bounded retry."""
+        from .warehouse_tables import columns_from_bq_schema
+        assert_read_only_sql(sql)
+        client = self._bq_client()
+        try:
+            job = client.query(sql, job_config=bq.QueryJobConfig(dry_run=True, use_query_cache=False))
+            return columns_from_bq_schema(getattr(job, "schema", None)), int(job.total_bytes_processed or 0)
+        finally:
+            client.close()
+
+    def iter_query_rows(self, sql: str, max_bytes: int, batch_rows: int = 5000):
+        """Generator: the column names first (a list), then one tuple per
+        row, straight off BigQuery's paginated RowIterator (page_size =
+        batch_rows) - never to_dataframe(), never the whole result in this
+        process. Same read-only + dry-run cost guard as
+        run_pushdown_query, applied before the real job is ever started."""
+        assert_read_only_sql(sql)
+        estimated = self.estimate_query_bytes(sql)
+        if estimated > max_bytes:
+            raise QueryTooExpensive(
+                f"This download would need to scan about {estimated / (1024 ** 3):.1f} GB of data, over this "
+                f"connection's {max_bytes / (1024 ** 3):.1f} GB per-query limit.",
+                estimated_bytes=estimated,
+            )
+        client = self._bq_client()
+        try:
+            job = client.query(sql, job_config=bq.QueryJobConfig(use_query_cache=True))
+            rows = job.result(page_size=batch_rows)
+            schema = getattr(rows, "schema", None) or getattr(job, "schema", None) or []
+            yield [getattr(f, "name", str(f)) for f in schema]
+            for row in rows:
+                yield tuple(row.values()) if hasattr(row, "values") else tuple(row)
+        finally:
+            client.close()
+
 
 class SnowflakeConnector:
     """Snowflake, GD360's second data-warehouse connector (Enterprise
@@ -912,6 +1014,47 @@ class SnowflakeConnector:
             df = cur.fetch_pandas_all()
             bytes_scanned = self._bytes_scanned_for_query(conn, cur.sfqid)
             return df, bytes_scanned
+        finally:
+            conn.close()
+
+    # -----------------------------------------------------------------
+    # 2026-10-06 ("generated data is a saved query" layer) - the same two
+    # helpers SQLConnector/BigQueryConnector gained; see
+    # services/warehouse_tables.py.
+    # -----------------------------------------------------------------
+
+    def describe_query(self, sql: str, statement_timeout_seconds: int | None = None) -> list[dict]:
+        """Runs `SELECT * FROM (<sql>) AS gd360_v LIMIT 0` and returns
+        [{name, type}] from the cursor description (Snowflake's own type
+        names via FIELD_ID_TO_NAME). An invalid definition raises
+        Snowflake's own error."""
+        from .warehouse_tables import columns_from_cursor_description, zero_row_validation_sql
+        assert_read_only_sql(sql)
+        statement = zero_row_validation_sql("snowflake", sql)
+        conn = self._connect(statement_timeout_seconds=statement_timeout_seconds)
+        try:
+            cur = conn.cursor()
+            cur.execute(statement)
+            return columns_from_cursor_description("snowflake", cur.description)
+        finally:
+            conn.close()
+
+    def iter_query_rows(self, sql: str, statement_timeout_seconds: int | None = None, batch_rows: int = 5000):
+        """Generator: the column names first (a list), then one tuple per
+        row via a fetchmany loop - never fetch_pandas_all(), never the
+        whole result in this process."""
+        assert_read_only_sql(sql)
+        conn = self._connect(statement_timeout_seconds=statement_timeout_seconds)
+        try:
+            cur = conn.cursor()
+            cur.execute(sql)
+            yield [col[0] for col in (cur.description or [])]
+            while True:
+                batch = cur.fetchmany(batch_rows)
+                if not batch:
+                    break
+                for row in batch:
+                    yield tuple(row)
         finally:
             conn.close()
 
