@@ -7,7 +7,7 @@ import {
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
-import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID, otherDsSourceId, otherDsIdFromSourceId } from "../components/ChatPanel";
+import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID, otherDsSourceId, otherDsIdFromSourceId, ShowCalculation } from "../components/ChatPanel";
 import { hasMultipleTables, connectionKindMeta, CreatedDataSource } from "../components/DataSourceForm";
 import AddDataPicker from "../components/AddDataPicker";
 import GokuChat from "../components/GokuChat";
@@ -2244,21 +2244,32 @@ export default function Workspace() {
 
         <div className="min-h-[400px] flex-1 min-w-0 flex flex-col gap-4 overflow-visible lg:overflow-hidden">
           <div className="flex items-center justify-between gap-1.5 shrink-0">
-            <div className="flex gap-1.5">
+            {/* 2026-10-06 (round 3 visual restyle, "Option D - Hybrid"
+                mockup): this used to be three loose buttons, each one
+                either solid-green or its own full bordered btn-secondary
+                box - a noisier look than the quiet grouped pill switcher
+                the mockup and every other segmented control already in
+                this codebase (DataTable's own Comfortable/Compact density
+                toggle, right below this component, is the exact same
+                pattern) use: one bordered, tinted "track" with borderless
+                text tabs inside it, only the ACTIVE one getting a solid
+                fill. Same onClick handlers, same centerTab state, same
+                three destinations - purely the classNames changed. */}
+            <div className="flex items-center gap-0.5 bg-surface2 border border-border rounded-lg p-0.5">
               <button
-                className={`text-sm px-4 py-2 rounded-lg font-medium transition ${centerTab === "data" ? "bg-primary text-white" : "btn-secondary"}`}
+                className={`text-sm px-4 py-1.5 rounded-md font-medium transition ${centerTab === "data" ? "bg-primary text-white" : "text-muted hover:text-text"}`}
                 onClick={() => setCenterTab("data")}
               >
                 Data
               </button>
               <button
-                className={`text-sm px-4 py-2 rounded-lg font-medium transition ${centerTab === "chart" ? "bg-primary text-white" : "btn-secondary"}`}
+                className={`text-sm px-4 py-1.5 rounded-md font-medium transition ${centerTab === "chart" ? "bg-primary text-white" : "text-muted hover:text-text"}`}
                 onClick={() => setCenterTab("chart")}
               >
                 Chart
               </button>
               <button
-                className={`text-sm px-4 py-2 rounded-lg font-medium transition ${centerTab === "flow" ? "bg-primary text-white" : "btn-secondary"}`}
+                className={`text-sm px-4 py-1.5 rounded-md font-medium transition ${centerTab === "flow" ? "bg-primary text-white" : "text-muted hover:text-text"}`}
                 onClick={() => setCenterTab("flow")}
               >
                 Flow
@@ -2498,9 +2509,57 @@ export default function Workspace() {
                     ))}
                   </div>
                 )}
+                {/* 2026-10-06 (round 3 visual restyle, "ChartD" mockup): a
+                    quiet title/subtitle line above the chart itself - the
+                    chart's own real title (already computed above for the
+                    tab label and ChartCanvas's own title prop) plus the
+                    real prompt that produced it (activeChartPrompt, already
+                    derived above for PushToDashboardMenu's sourcePrompt) -
+                    never new data, just surfacing what this component
+                    already tracks, in the one place the mockup puts it.
+                    Renders nothing before any chart exists. */}
+                {displaySpec && (chartStyle.title || chartTitle || activeChartPrompt) && (
+                  <div className="shrink-0 px-0.5">
+                    <div className="text-base font-bold text-text leading-tight truncate">
+                      {chartStyle.title || chartTitle || "Untitled chart"}
+                    </div>
+                    {activeChartPrompt && (
+                      <div className="text-xs text-muted mt-0.5 truncate" title={activeChartPrompt}>
+                        &ldquo;{activeChartPrompt}&rdquo;{dsName ? ` · ${dsName}` : ""}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="flex-1 min-h-0">
                   <ChartCanvas chartSpec={displaySpec} title={chartStyle.title || chartTitle} />
                 </div>
+                {/* Insight box + "Show how this was calculated" toggle -
+                    the exact same component and classNames ChatPanel.tsx's
+                    own chat transcript already uses for this exact turn
+                    (see ShowCalculation/t.insight there), just surfaced
+                    again here so the Chart tab itself - not only the chat
+                    history on the left - carries the honest insight and
+                    real method/code/timing behind what's on screen, the
+                    way the approved mockup shows it. activeChartTurn is the
+                    exact ChatTurn that produced displaySpec (derived above
+                    from activeChart.messageId) - nothing fabricated, and
+                    this renders nothing when that turn has neither an
+                    insight nor a method/code to show. */}
+                {activeChartTurn?.insight && (
+                  <div className="shrink-0 text-sm bg-accent/10 border border-accent/30 rounded-xl px-4 py-2.5 whitespace-pre-wrap">
+                    <span className="font-semibold text-accent">Insight: </span>
+                    {activeChartTurn.insight}
+                  </div>
+                )}
+                {activeChartTurn && (activeChartTurn.methodSummary || activeChartTurn.code) && (
+                  <div className="shrink-0">
+                    <ShowCalculation
+                      method={activeChartTurn.methodSummary}
+                      code={activeChartTurn.code}
+                      durationMs={activeChartTurn.durationMs}
+                    />
+                  </div>
+                )}
               </div>
             )}
           </div>
