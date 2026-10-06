@@ -129,6 +129,19 @@ def _mongo_schema_text(schema_cache: dict) -> str:
 from ..services.pushdown_budget import log_pushdown as _log_pushdown, todays_pushdown_bytes as _todays_pushdown_bytes
 
 
+# 2026-10-06 (pushdown-honesty round): every datasource kind the chat
+# endpoint's pushdown dispatch (just below) ever ATTEMPTS pushdown for -
+# the exact same set of kinds that `if ds.kind == "bigquery": ... elif
+# ds.kind in (...): ...` branch already lists, kept here as one named
+# constant so the honesty-disclosure logic right after that branch can
+# check "is this a kind that COULD have run a real query" without
+# silently drifting out of sync with the dispatch itself. A kind NOT in
+# this set (a CSV/Excel upload, a plain API connection) never attempts
+# pushdown at all, so there is nothing to disclose either way for it -
+# see Message.used_pushdown/sample_row_count's own docstring.
+PUSHDOWN_ELIGIBLE_KINDS = {"bigquery", "snowflake", "postgres", "mysql", "sqlserver", "supabase", "mongodb"}
+
+
 def _try_bigquery_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt: str):
     """Tries to answer `prompt` with one governed SQL query run directly
     inside BigQuery, instead of pulling rows into memory. Returns the
@@ -438,6 +451,46 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
             reply = f"This datasource has multiple tables/collections: {available_list}. Which one would you like to analyze?"
             return _persist_and_respond(db, conversation.id, reply, needs_clarification=True)
 
+    # 2026-10-06 (pushdown-honesty round - the founder's own confirmed bug
+    # report: a chat question against his BigQuery source silently
+    # analyzed a 2,000-row in-memory sample instead of running a real
+    # query against his full table, with zero indication of this to him).
+    # `used_pushdown` is already trivially knowable right here - the branch
+    # just above already tells us, no extra detection needed - but it is
+    # deliberately left None (not a misleading False) in two cases where
+    # there is genuinely nothing to disclose, not just "it fell back":
+    #   - this datasource's kind never attempts pushdown at all (a CSV/
+    #     Excel upload, an API/webhook connection) - "did it run directly
+    #     against your warehouse" does not even apply to a kind that has
+    #     no warehouse to run directly against.
+    #   - no LIVE table was actually part of this turn at all (the person
+    #     picked only an already-saved table - a DatasetVersion - as their
+    #     WORKING ON selection, so `original_df` is None here): that saved
+    #     table is a deliberately-built, complete result, not a row-capped
+    #     live sample, and labelling it "based on a sample of N loaded
+    #     rows" would be actively misleading, not honest.
+    # Only in the one remaining case - this kind CAN run pushdown, didn't
+    # (for any reason: the SQL writer gave up, the daily cost budget was
+    # used up, a restricted role, or a specific table was asked for) AND a
+    # live table genuinely WAS loaded (and therefore row-capped, for a
+    # kind with a load cap) - is this False, with `sample_row_count` set
+    # to the REAL, already-loaded row count of that exact table (`original_
+    # df`, via the row cap `load_dataframe` already enforces - see
+    # settings.BIGQUERY_MAX_ROWS_LOADED and friends). Never a fresh "what's
+    # the real total" query - that would reintroduce the exact cost/
+    # latency problem the row cap exists to avoid; this is simply an
+    # honest report of what was already loaded, the same restrained
+    # approach Round 2's Data-tab loaded_row_count already uses.
+    if ds.kind not in PUSHDOWN_ELIGIBLE_KINDS:
+        used_pushdown = None
+    elif pushdown_df is not None:
+        used_pushdown = True
+    elif original_df is not None:
+        used_pushdown = False
+    else:
+        used_pushdown = None  # no live table involved in this turn at all - nothing to disclose
+    sample_row_count = len(original_df) if used_pushdown is False else None
+
     if original_df is None:
         # The person is working on a derived table, not the original data -
         # load the original too (best-effort only, never blocks the main
@@ -656,6 +709,7 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         new_version = _save_cleaning_result(
             db, ds, source_versions, payload.prompt, result,
             duration_ms=duration_ms, method_summary=method_summary,
+            used_pushdown=used_pushdown, sample_row_count=sample_row_count,
         )
 
     # Named-results round (2026-09-28): when this turn's `results` are
@@ -742,6 +796,8 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         self_critique=result.get("self_critique") or None,
         duration_ms=duration_ms,
         method_summary=method_summary,
+        used_pushdown=used_pushdown,
+        sample_row_count=sample_row_count,
     )
 
 
@@ -1149,6 +1205,7 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
 def _save_cleaning_result(
     db: Session, ds: models.DataSource, source_versions: list[models.DatasetVersion], prompt: str, result: dict,
     duration_ms: int | None = None, method_summary: str | None = None,
+    used_pushdown: bool | None = None, sample_row_count: int | None = None,
 ) -> models.DatasetVersion:
     """Every cleaning/prep prompt becomes its own new saved table, built on
     top of whichever table(s) the person picked as the source, instead of
@@ -1187,6 +1244,8 @@ def _save_cleaning_result(
         position=max_position + 1,
         duration_ms=duration_ms,
         method_summary=method_summary,
+        used_pushdown=used_pushdown,
+        sample_row_count=sample_row_count,
     )
     db.add(version)
     db.commit()
@@ -1354,7 +1413,7 @@ def _persist_and_respond(
     new_version_id=None, new_version_name=None, code=None, chart_type=None,
     continue_action=None, result_columns=None, result_rows=None, result_truncated=False,
     sources=None, ok: bool = True, steps=None, results=None, self_critique=None,
-    duration_ms=None, method_summary=None,
+    duration_ms=None, method_summary=None, used_pushdown=None, sample_row_count=None,
 ) -> schemas.ChatResponse:
     msg = models.Message(
         conversation_id=conversation_id,
@@ -1388,6 +1447,10 @@ def _persist_and_respond(
         # method_summary's own docstring in models.py.
         duration_ms=duration_ms,
         method_summary=method_summary,
+        # Pushdown-honesty round - see Message.used_pushdown/
+        # sample_row_count's own docstring in models.py.
+        used_pushdown=used_pushdown,
+        sample_row_count=sample_row_count,
     )
     db.add(msg)
     db.commit()
@@ -1427,4 +1490,8 @@ def _persist_and_respond(
         method_summary=method_summary,
         code=code,
         duration_ms=duration_ms,
+        # Pushdown-honesty round - see schemas.ChatResponse's own comment
+        # on these two fields for what they mean and why.
+        used_pushdown=used_pushdown,
+        sample_row_count=sample_row_count,
     )
