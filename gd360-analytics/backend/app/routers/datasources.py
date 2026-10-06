@@ -56,6 +56,7 @@ from ..services.data_loader import (
 )
 from ..services.profiling import build_profile_query, parse_profile_row
 from ..services.pushdown_budget import log_pushdown, todays_pushdown_bytes
+from ..services.dtype_utils import normalize_dtypes_dict, coerce_dates_for_json
 
 router = APIRouter(prefix="/datasources", tags=["datasources"])
 settings = get_settings()
@@ -1261,11 +1262,18 @@ def preview_datasource(
     limit = max(1, min(limit, 5000))
     offset = max(0, offset)
     page = df.iloc[offset: offset + limit]
-    rows = json.loads(page.to_json(orient="records"))
+    # 2026-10-06: dtypes must be read off the ORIGINAL page (normalize_dtypes_dict),
+    # before coerce_dates_for_json rewrites date/time columns to plain
+    # strings for JSON - otherwise every date column's dtype would come
+    # back labeled "object" and the frontend would lose its date-range
+    # filter / calendar icon for it. See dtype_utils.py's module docstring
+    # for the two real, verified bugs this fixes (not just a BigQuery one).
+    dtypes = normalize_dtypes_dict(page)
+    rows = json.loads(coerce_dates_for_json(page).to_json(orient="records"))
 
     return {
         "columns": [str(c) for c in df.columns],
-        "dtypes": {str(c): str(df[c].dtype) for c in df.columns},
+        "dtypes": dtypes,
         "rows": rows,
         "total_rows": total_rows,
         "offset": offset,
@@ -1553,7 +1561,12 @@ def parse_filter(
         raise HTTPException(400, f"Could not load data: {e}")
 
     columns = [str(c) for c in df.columns]
-    dtypes = {str(c): str(df[c].dtype) for c in df.columns}
+    # normalize_dtypes_dict (not str(df[c].dtype) directly) so the AI sees
+    # "date" for a DATE column even when the underlying driver's dtype
+    # string wouldn't say so - same fix as the Data tab preview above, see
+    # dtype_utils.py. Otherwise asking to filter by a date range on one of
+    # these columns would silently get treated as a text filter.
+    dtypes = normalize_dtypes_dict(df)
     try:
         result = ai_engine.parse_filter_prompt(payload.prompt, columns, dtypes)
     except Exception as e:
