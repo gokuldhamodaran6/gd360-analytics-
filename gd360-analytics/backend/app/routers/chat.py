@@ -21,6 +21,7 @@ query could be produced, the turn is action="needs_query_help" and
 nothing is computed. See the section comment above _multi_table_schema_text.
 """
 import json
+import re
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -395,6 +396,18 @@ def _run_sql_pushdown_cycle(
             outcome.attempts.append({"sql": None, "status": "needs_table", "error": None})
             outcome.skipped_reason = "needs_table"
             return {"retry": False}
+        if not re.search(r"\bfrom\b", sql, re.IGNORECASE):
+            # 2026-10-06 (live BigQuery incident): a thinking model's answer
+            # can come back cut off by the token budget - the real case was
+            # `SELECT arrival_date_year, COUNT(*) AS total_bookings,` with
+            # no FROM clause, executed as-is. ai_engine now detects the
+            # provider's own "stopped early" signal and retries with a
+            # bigger budget, but a statement with no FROM is never worth
+            # sending to a warehouse: record it honestly and let the one
+            # bounded retry ask for a complete query instead.
+            err = "The generated SQL is incomplete (it has no FROM clause), so it was not run."
+            outcome.attempts.append({"sql": sql, "status": "error", "error": err})
+            return {"retry": not is_retry, "sql": sql, "error": err}
         res = _execute_sql_attempt(db, ds, user_id, sql, is_retry=is_retry, ctes=ctes)
         outcome.attempts.append(res["attempt"])
         if "df" in res:
