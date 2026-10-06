@@ -78,9 +78,17 @@ const NUMBER_OP_LABELS: Record<NumberOp, string> = {
 // value can ever collide with this one.
 const NULL_KEY = "\u0000__NULL__";
 
-function dtypeGroup(dtype: string): "number" | "date" | "boolean" | "text" {
+function dtypeGroup(dtype: string): "number" | "date" | "boolean" | "text" | "array" {
   const d = (dtype || "").toLowerCase();
   if (d.startsWith("bool")) return "boolean";
+  // 2026-10-06 (NoSQL hybrid round): a MongoDB array/list field - see
+  // backend/app/services/dtype_utils.py's normalize_dtype_label, which
+  // now labels a real object-dtype column of Python list/tuple values
+  // "array" (after MongoConnector.load_dataframe's pandas.json_normalize
+  // flattening leaves such a field as-is, unexpanded). Checked before the
+  // generic "object"/text fallback below, the same way every other
+  // sniffed label here is.
+  if (d === "array") return "array";
   if (d.startsWith("int") || d.startsWith("float") || d.startsWith("uint") || d.startsWith("double")) return "number";
   // 2026-10-06: the backend now sends a clean "date"/"time" label for
   // every connector's date/time columns (BigQuery's old "dbdate"/"dbtime"
@@ -101,10 +109,15 @@ function dtypeGroup(dtype: string): "number" | "date" | "boolean" | "text" {
   return "text";
 }
 
-function defaultConditionForGroup(group: "number" | "date" | "boolean" | "text"): ColumnFilterSpec {
+function defaultConditionForGroup(group: "number" | "date" | "boolean" | "text" | "array"): ColumnFilterSpec {
   if (group === "number") return { type: "number", op: "eq", value: "" };
   if (group === "date") return { type: "date", from: null, to: null };
   if (group === "boolean") return { type: "boolean", value: "true" };
+  // An "array" column (e.g. a MongoDB list field) has no dedicated filter
+  // UI of its own yet - falls back to the same plain-text "contains"
+  // condition a text column gets, which still lets someone filter by a
+  // stringified match if they really need to, rather than this crashing
+  // or silently doing nothing.
   return { type: "text", op: "contains", value: "" };
 }
 
@@ -283,6 +296,35 @@ function formatStatValue(key: StatKey, stat: ColumnStat | undefined): string {
   return String(v);
 }
 
+// 2026-10-06 (NoSQL hybrid round): a human-sized byte count for the
+// profile's real `bytes_scanned` (only ever present for bigquery/
+// snowflake - see backend routers/datasources.py's profile_datasource and
+// client.ts's DataProfile type). Plain binary (KB/MB/GB = 1024, not 1000)
+// since that is what every cloud warehouse's own billing page uses.
+function formatScannedBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v.toFixed(v >= 10 ? 0 : 1)} ${units[i]}`;
+}
+
+// A real "cached Xm ago" from the profile's own `cached_at` (the actual
+// epoch-seconds moment the backend computed/stored this result - see
+// routers/datasources.py's profile_datasource) - never a guess from
+// settings.PROFILE_CACHE_TTL_SECONDS alone, which would describe the
+// cache's maximum age, not this particular result's real one.
+function formatCachedAgo(cachedAtEpochSeconds: number): string {
+  const ageMs = Date.now() - cachedAtEpochSeconds * 1000;
+  const ageMin = Math.max(0, Math.round(ageMs / 60000));
+  if (ageMin < 1) return "cached just now";
+  return `cached ${ageMin}m ago`;
+}
+
 function FilterIcon({ active }: { active: boolean }) {
   return (
     <svg
@@ -299,16 +341,36 @@ function FilterIcon({ active }: { active: boolean }) {
 
 // A short glyph next to each column name showing what kind of data it
 // holds - "#" for a number, a checkmark for a boolean, a calendar for a
-// date, and the default "Abc" for text - the same at-a-glance affordance a
-// spreadsheet/database grid gives, using the dtype the backend already
-// returns (preview.dtypes) rather than re-sniffing it client-side.
+// date, "[ ]" for an array/list (2026-10-06, NoSQL hybrid round - a
+// MongoDB list field, see dtypeGroup), and the default "Abc" for text -
+// the same at-a-glance affordance a spreadsheet/database grid gives,
+// using the dtype the backend already returns (preview.dtypes) rather
+// than re-sniffing it client-side.
 function ColumnTypeIcon({ dtype }: { dtype: string }) {
   const group = dtypeGroup(dtype);
-  const label = group === "boolean" ? "✓︎" : group === "number" ? "#" : group === "date" ? "\u{1F4C5}" : "Abc";
-  const cls = group === "boolean" ? "text-emerald-400" : group === "number" ? "text-sky-400" : group === "date" ? "text-amber-400" : "text-muted";
+  const label =
+    group === "boolean" ? "✓︎" : group === "number" ? "#" : group === "date" ? "\u{1F4C5}" : group === "array" ? "[ ]" : "Abc";
+  const cls =
+    group === "boolean" ? "text-emerald-400" : group === "number" ? "text-sky-400" : group === "date" ? "text-amber-400" : group === "array" ? "text-violet-400" : "text-muted";
   return (
     <span className={`text-[10px] font-semibold shrink-0 ${cls}`} title={dtype} aria-hidden>
       {label}
+    </span>
+  );
+}
+
+// 2026-10-06 (NoSQL hybrid round): a small "nested" indicator next to a
+// flattened MongoDB sub-document field's name - "customer.email" is only
+// ever a dot-path like this because MongoConnector.load_dataframe
+// flattened a nested object into it (pandas.json_normalize, sep=".") - no
+// other connector in this app ever produces a dotted column name, so the
+// dot itself is a reliable, backend-flag-free signal. Purely a visual
+// hint (a small "⌃" caret, the same muted tone as the type glyph above)
+// that this column came from inside another field, not a top-level one.
+function NestedFieldIcon() {
+  return (
+    <span className="text-[9px] text-muted/70 shrink-0" title="Nested field (flattened from a sub-document)" aria-hidden>
+      &#8614;
     </span>
   );
 }
@@ -374,6 +436,7 @@ export default function DataTable({
   activeTable,
   onActiveTableChange,
   onInsertColumn,
+  datasourceKind,
 }: {
   datasourceId: string;
   refreshKey: number;
@@ -404,6 +467,15 @@ export default function DataTable({
   // omits "Insert column" entirely rather than showing something that
   // does nothing.
   onInsertColumn?: (afterColumn: string, side: "left" | "right", description: string) => void;
+  // 2026-10-06 (NoSQL hybrid round): this datasource's own `kind` (e.g.
+  // "mongodb") - the same prop name/shape ChatPanel already receives for
+  // the exact same purpose (see Workspace.tsx's `datasourceKind={dsInfo?.
+  // kind}` passed into ChatPanel), so a missing/null cell can be shown as
+  // a clearly-muted "not set" label specifically for Mongo's genuinely
+  // schemaless missing fields, without touching SQL NULL's existing blank
+  // rendering for every other kind. Optional and safe to omit (treated as
+  // "not Mongo") for any caller that predates this.
+  datasourceKind?: string;
 }) {
   const [preview, setPreview] = useState<DataPreview | null>(null);
   const [offset, setOffset] = useState(0);
@@ -574,6 +646,12 @@ export default function DataTable({
   // now - every place below that wants to prefer it over the sample-based
   // preview stats checks this one flag rather than re-deriving it.
   const profileUsable = !!profile && profile.supported && !profile.too_expensive && !profile.error && !!profile.columns;
+
+  // 2026-10-06 (NoSQL hybrid round): true only for a MongoDB datasource -
+  // see the "not set" cell treatment below, scoped to this one kind so
+  // every SQL source's existing blank-for-NULL rendering stays exactly as
+  // it was.
+  const isMongoSource = datasourceKind === "mongodb";
 
   // Switching tables (a different tab, a different original table/sheet, or
   // a different data source entirely) starts every view control fresh - a
@@ -1601,6 +1679,7 @@ export default function DataTable({
                         <span className="text-muted/50 shrink-0 cursor-grab" aria-hidden>&#8942;&#8942;</span>
                         <ColumnTypeIcon dtype={preview.dtypes[col]} />
                         {pinned && <PinIcon />}
+                        {col.includes(".") && <NestedFieldIcon />}
                         <span className="truncate">
                           {displayLabel(col)}
                           {sortBy === col && <span className="ml-1 text-primary">{sortDir === "asc" ? "▲" : "▼"}</span>}
@@ -2210,9 +2289,27 @@ export default function DataTable({
                           ...(bg ? { backgroundColor: bg } : {}),
                           ...(pinned ? { position: "sticky", left: pinnedLeftOffset[col] } : {}),
                         }}
-                        title={value === null || value === undefined ? "" : String(value)}
+                        title={value === null || value === undefined ? "" : Array.isArray(value) ? JSON.stringify(value) : String(value)}
                       >
-                        {value === null || value === undefined || value === "" ? (
+                        {Array.isArray(value) ? (
+                          // 2026-10-06 (NoSQL hybrid round): a MongoDB
+                          // array/list field (dtypeGroup "array") - shown
+                          // as a real count badge from the real array
+                          // length, never a stringified Python list repr
+                          // or a blank cell.
+                          <span className="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded-full bg-violet-400/10 text-violet-400 border border-violet-400/30 font-medium">
+                            {value.length} item{value.length === 1 ? "" : "s"}
+                          </span>
+                        ) : (value === null || value === undefined) && isMongoSource ? (
+                          // Scoped specifically to Mongo: a genuinely
+                          // schemaless missing field reads differently
+                          // from a plain blank - SQL NULL's existing
+                          // blank-cell rendering (the branch right below)
+                          // is untouched for every other source kind.
+                          <span className="text-muted/50 italic text-[11px]" title="This field is not present on this document.">
+                            not set
+                          </span>
+                        ) : value === null || value === undefined || value === "" ? (
                           <span className="text-muted">&mdash;</span>
                         ) : (
                           formatted ?? String(value)
@@ -2269,8 +2366,8 @@ export default function DataTable({
       {preview.stats_capped && showTotals && (
         <div className="px-3 pt-1 text-[10px] text-amber-400 shrink-0">
           {totalRowsIsExact
-            ? "Totals are based on a large sample of this table - the row count above, though, is exact: a real query against every row."
-            : "Totals are based on a large sample of this table, not necessarily every row."}
+            ? `Totals are based on the ${preview.loaded_row_count.toLocaleString()} rows actually loaded here - the row count above, though, is exact: a real query against every row.`
+            : `Totals are based on the ${preview.loaded_row_count.toLocaleString()} rows actually loaded here, not necessarily every row at the source.`}
         </div>
       )}
 
@@ -2286,6 +2383,59 @@ export default function DataTable({
               title="A real query against every row at the source, not an estimate."
             >
               &#10003; exact
+            </span>
+          )}
+          {/* 2026-10-06 (NoSQL hybrid round 2) real bug fix: preview_
+              datasource's stats_capped used to compare the rows actually
+              loaded against the generic PREVIEW_ROW_LIMIT alone, which
+              missed BigQuery entirely (its own connector silently caps
+              far lower - see backend config.py's effective_preview_cap
+              for the real incident this fixes). Now that stats_capped is
+              correct, show the ONE thing that was never visible before:
+              paging can only ever reach preview.loaded_row_count rows,
+              no matter how big the real table is. Sits NEXT TO the exact/
+              estimated total pill (never replaces it) so a person sees
+              both numbers side by side and can't mistake one for the
+              other. */}
+          {preview.stats_capped && (
+            <span
+              className="text-amber-400 text-[10px]"
+              title="Paging through this table can only ever reach this many rows - this is how many the connector actually loaded, not the real total."
+            >
+              browsing first {preview.loaded_row_count.toLocaleString()} loaded rows
+            </span>
+          )}
+          {/* 2026-10-06 (NoSQL hybrid round 2): MongoDB's own cheap
+              estimated_document_count signal (backend MongoConnector.
+              estimate_row_count, wired through profile_datasource's
+              mongodb branch) - a muted, visually distinct variant of the
+              exact pill above: a "~" prefix and the word "estimated",
+              never a checkmark, since this is never a real full-table
+              query the way the exact pill's number is. Replaces any
+              earlier placeholder/mockup-only estimated-count idea - this
+              is wired to the real backend field only. */}
+          {profile?.estimated_total_rows != null && (
+            <span
+              className="text-sky-400/80 text-[10px]"
+              title="An approximate document count from MongoDB's own collection metadata (estimated_document_count) - not a real full-collection scan, so it can drift slightly from the true count."
+            >
+              ~{profile.estimated_total_rows.toLocaleString()} rows (estimated)
+            </span>
+          )}
+          {/* 2026-10-06 (NoSQL hybrid round): real, previously-discarded
+              numbers from the same profile query - both OMITTED ENTIRELY
+              (not a "—" placeholder) whenever the backend didn't send
+              them, which is every source except bigquery/snowflake for
+              bytes_scanned, and any source whose profile hasn't actually
+              run yet for cached_at. Never a fabricated value. */}
+          {profileUsable && profile!.bytes_scanned != null && (
+            <span className="text-muted/70 text-[10px]" title="Real bytes scanned by this one profiling query, from the source warehouse's own metering.">
+              scanned {formatScannedBytes(profile!.bytes_scanned)}
+            </span>
+          )}
+          {profileUsable && profile!.cached_at != null && (
+            <span className="text-muted/70 text-[10px]" title="When this profile result was actually computed - not re-measured on every page open.">
+              {formatCachedAgo(profile!.cached_at)}
             </span>
           )}
         </div>
