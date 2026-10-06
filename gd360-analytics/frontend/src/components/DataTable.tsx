@@ -1,6 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { datasourceApi, DataPreview, DatasetVersion, ColumnStat, ColumnDistinctValues, SavedView, DataProfile } from "../api/client";
+import { datasourceApi, DataPreview, DatasetVersion, ColumnStat, ColumnDistinctValues, SavedView, DataProfile, isWarehouseQueryVersion } from "../api/client";
+import WarehouseDataView, { isProfileSupportedKind } from "./WarehouseDataView";
+import GeneratedTableView from "./GeneratedTableView";
+
+// 2026-10-06 ("generated data is a saved query" layer): the small marker on
+// a saved-query table's tab - a tiny database glyph in the same stroke
+// style as the Flow tab's "Raw data" icon - so it reads differently from a
+// file-backed saved table at a glance.
+function SavedQueryTabIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="11" height="11" fill="none" aria-hidden className="shrink-0 opacity-90">
+      <ellipse cx="10" cy="5" rx="6.5" ry="2.5" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M3.5 5v10c0 1.38 2.91 2.5 6.5 2.5s6.5-1.12 6.5-2.5V5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <path d="M3.5 10c0 1.38 2.91 2.5 6.5 2.5s6.5-1.12 6.5-2.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
 
 // Rows-per-page choices for the numbered pagination footer below. Capped at
 // 250 (and no more "1000"/"All" option) on purpose - see config.py's
@@ -464,6 +480,9 @@ export default function DataTable({
   onActiveTableChange,
   onInsertColumn,
   datasourceKind,
+  onAskAboutVersion,
+  onAskQuestionOnVersion,
+  onEditVersionDefinition,
 }: {
   datasourceId: string;
   refreshKey: number;
@@ -503,6 +522,16 @@ export default function DataTable({
   // rendering for every other kind. Optional and safe to omit (treated as
   // "not Mongo") for any caller that predates this.
   datasourceKind?: string;
+  // 2026-10-06 ("generated data is a saved query" layer): the three chat
+  // hooks of a warehouse saved-query table's Data tab (see
+  // GeneratedTableView.tsx) - "Ask about this table" (point WORKING ON at
+  // it and focus the composer), "Ask the next question" (run a prompt
+  // against exactly it) and "Edit & re-run" (open the composer's write-SQL
+  // mode with the definition, "Save as table" on). All optional: a caller
+  // that does not wire them simply gets a view without those controls.
+  onAskAboutVersion?: (versionId: string) => void;
+  onAskQuestionOnVersion?: (versionId: string, prompt: string) => void;
+  onEditVersionDefinition?: (versionId: string, sql: string) => void;
 }) {
   const [preview, setPreview] = useState<DataPreview | null>(null);
   const [offset, setOffset] = useState(0);
@@ -614,6 +643,30 @@ export default function DataTable({
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   const hasActiveFilters = Object.keys(debouncedFilters).length > 0;
 
+  // 2026-10-06 (profile-first Data tab): for an ORIGINAL table of a
+  // warehouse/database source (backend _PROFILE_SUPPORTED_KINDS, mirrored
+  // by isProfileSupportedKind - BigQuery/Snowflake/Postgres/MySQL/SQL
+  // Server/Supabase; MongoDB is NOT one), the table never loads into
+  // GD360: WarehouseDataView.tsx renders the full-table profile plus 20
+  // labelled example rows instead of this grid. Strictly gated by kind
+  // AND by activeVersionId === null - a saved DatasetVersion of a
+  // warehouse source is a snapshot already in GD360 and keeps the grid,
+  // and every CSV/Excel/API/Google Sheets/Microsoft Excel/MongoDB source
+  // renders exactly as before. In this mode the preview/profile effects
+  // below do nothing (WarehouseDataView owns both fetches, with the same
+  // multi-table resolution guard), so no 2,000-row load ever happens.
+  //
+  // 2026-10-06 ("generated data is a saved query" layer): ALSO warehouse
+  // mode when the active saved table is itself a saved QUERY of such a
+  // source (DatasetVersion.source_kind === "warehouse_query" - it has no
+  // rows inside GD360 at all; the backend 400s the ordinary grid preview
+  // for one). GeneratedTableView.tsx renders those. A file-backed saved
+  // table of a warehouse source (source_kind "file"/missing) keeps the
+  // grid exactly as before.
+  const activeVersion = activeVersionId ? versions.find((v) => v.id === activeVersionId) ?? null : null;
+  const activeVersionIsQuery = isWarehouseQueryVersion(activeVersion);
+  const warehouseMode = (activeVersionId === null || activeVersionIsQuery) && isProfileSupportedKind(datasourceKind);
+
   // Typing into a filter box should not fire a request on every keystroke -
   // wait for a short pause before actually re-querying the server. Kept as
   // a safety buffer even though the new Values/Condition panel now commits
@@ -637,6 +690,20 @@ export default function DataTable({
   // made a transformed/filtered table appear to "restart" back to the
   // original sheet after a few scrolls - a stale response, applied late.
   useEffect(() => {
+    // 2026-10-06 (profile-first Data tab): two guards, same reasoning as
+    // the profile effect below. `datasourceKind === undefined` is true
+    // only for the handful of renders before Workspace's dsInfo (or the
+    // other-source summary) has loaded at all - firing the old full
+    // preview then would pull BIGQUERY_MAX_ROWS_LOADED rows of a BigQuery
+    // table into GD360 before this component could even know it must
+    // not (the request is already on the wire by the time warehouseMode
+    // flips to true; `cancelled` only stops the setState). Waiting one
+    // render for the kind delays every source's FIRST fetch by a few
+    // milliseconds and never skips it - the "Loading data..." placeholder
+    // shows either way, so nothing a person sees changes. `warehouseMode`
+    // then skips the grid's row load entirely (see its comment above).
+    if (datasourceKind === undefined) return;
+    if (warehouseMode) return;
     let cancelled = false;
     (async () => {
       setLoading(true);
@@ -656,7 +723,7 @@ export default function DataTable({
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [datasourceId, activeVersionId, activeTable, refreshKey, offset, pageSize, sortBy, sortDir, debouncedFilters]);
+  }, [datasourceId, activeVersionId, activeTable, refreshKey, offset, pageSize, sortBy, sortDir, debouncedFilters, datasourceKind, warehouseMode]);
 
   // 2026-10-05 (Data-tab scale round): fetches the real, exact full-table
   // profile once per table open - not on every page/sort/filter change
@@ -719,6 +786,7 @@ export default function DataTable({
     if (activeVersionId) return; // saved/AI-built table - nothing to profile
     if (datasourceKind === undefined) return; // don't know this source's shape yet - wait for it, don't guess
     if (originalTablesCount > 1 && !activeTable) return; // multi-table resolution genuinely still pending
+    if (warehouseMode) return; // WarehouseDataView fetches the profile itself (same guards) - never twice from here
     let cancelled = false;
     (async () => {
       try {
@@ -729,7 +797,7 @@ export default function DataTable({
       }
     })();
     return () => { cancelled = true; };
-  }, [datasourceId, activeVersionId, activeTable, datasourceKind, originalTablesCount]);
+  }, [datasourceId, activeVersionId, activeTable, datasourceKind, originalTablesCount, warehouseMode]);
 
   // Whether the exact, real full-table profile is actually usable right
   // now - every place below that wants to prefer it over the sample-based
@@ -1353,6 +1421,118 @@ export default function DataTable({
 
   const statFor = (col: string): StatKey => totalsSelection[col] ?? defaultStat(preview?.column_stats[col]);
 
+  // 2026-10-06 (profile-first Data tab): the original-table tab(s) and the
+  // saved-table tabs, as one fragment, so the warehouse branch below can
+  // show the exact same strip above WarehouseDataView. Same JSX as was
+  // inline in the grid's own header - only moved, not changed.
+  const tableTabs = (
+    <>
+      {originalTables && originalTables.length > 1 ? (
+        originalTables.map((t) => (
+          <button
+            key={t}
+            className={`text-xs px-3 py-1.5 rounded-full font-medium transition shrink-0 flex items-center gap-1.5 ${
+              activeVersionId === null && activeTable === t
+                ? "bg-sky-600 text-white"
+                : "border border-sky-500/40 text-sky-300 bg-sky-500/10 hover:bg-sky-500/20"
+            }`}
+            onClick={() => { onActiveVersionChange(null); onActiveTableChange?.(t); }}
+            title={`Original data — ${t}`}
+          >
+            {t}
+          </button>
+        ))
+      ) : (
+        <button
+          className={`text-xs px-3 py-1.5 rounded-full font-medium transition shrink-0 ${
+            activeVersionId === null
+              ? "bg-sky-600 text-white"
+              : "border border-sky-500/40 text-sky-300 bg-sky-500/10 hover:bg-sky-500/20"
+          }`}
+          onClick={() => onActiveVersionChange(null)}
+        >
+          Original data
+        </button>
+      )}
+      {versions.map((v) => (
+        <div
+          key={v.id}
+          className={`flex items-center gap-1 rounded-full pl-3 pr-1.5 py-1.5 text-xs font-medium shrink-0 transition ${
+            activeVersionId === v.id ? "bg-primary text-white" : "btn-secondary"
+          }`}
+        >
+          {renamingId === v.id ? (
+            <input
+              autoFocus
+              className="bg-transparent border-b border-current outline-none w-24 text-xs"
+              value={renameDraft}
+              onChange={(e) => setRenameDraft(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitRename(v);
+                if (e.key === "Escape") setRenamingId(null);
+              }}
+              onBlur={() => commitRename(v)}
+            />
+          ) : (
+            <span
+              className="cursor-pointer whitespace-nowrap flex items-center gap-1"
+              onClick={() => onActiveVersionChange(v.id)}
+              {...(isWarehouseQueryVersion(v) ? { title: "Saved query — lives in your warehouse", "data-saved-query": "true" } : {})}
+            >
+              {isWarehouseQueryVersion(v) && <SavedQueryTabIcon />}
+              {v.name}
+            </span>
+          )}
+          <button className="opacity-70 hover:opacity-100 px-0.5" title="Rename this table" onClick={() => startRename(v)}>
+            &#9998;
+          </button>
+          <button
+            className="opacity-70 hover:opacity-100 px-0.5"
+            title="Delete this table"
+            disabled={busyAction === `delete-${v.id}`}
+            onClick={() => doDeleteVersion(v)}
+          >
+            &times;
+          </button>
+        </div>
+      ))}
+    </>
+  );
+
+  if (warehouseMode) {
+    // Profile-first view for an original warehouse/database table - see
+    // the warehouseMode comment above. Same card shell and tab strip as
+    // the grid; no Export buttons (an export would pull up to the preview
+    // cap into GD360, which is exactly what this view promises never
+    // happens), no toolbar, no grid.
+    return (
+      <div className="card h-full flex flex-col overflow-hidden">
+        <div className="p-3 border-b border-border flex items-center gap-3 overflow-x-auto shrink-0">
+          {tableTabs}
+        </div>
+        {activeVersionIsQuery && activeVersion ? (
+          <GeneratedTableView
+            datasourceId={datasourceId}
+            datasourceKind={datasourceKind!}
+            version={activeVersion}
+            versions={versions}
+            onAskAboutTable={onAskAboutVersion}
+            onAskQuestion={onAskQuestionOnVersion}
+            onEditDefinition={onEditVersionDefinition}
+          />
+        ) : (
+          <WarehouseDataView
+            datasourceId={datasourceId}
+            datasourceKind={datasourceKind!}
+            activeTable={activeTable}
+            originalTablesCount={originalTablesCount}
+          />
+        )}
+      </div>
+    );
+  }
+
   if (loading && !preview) {
     return <div className="card h-full flex items-center justify-center text-muted p-10 text-center">Loading data...</div>;
   }
@@ -1458,71 +1638,7 @@ export default function DataTable({
             button - every one of them is still "original data", just teal
             either way, exactly as many teal tabs as there are real source
             tables, however many that is. */}
-        {originalTables && originalTables.length > 1 ? (
-          originalTables.map((t) => (
-            <button
-              key={t}
-              className={`text-xs px-3 py-1.5 rounded-full font-medium transition shrink-0 flex items-center gap-1.5 ${
-                activeVersionId === null && activeTable === t
-                  ? "bg-sky-600 text-white"
-                  : "border border-sky-500/40 text-sky-300 bg-sky-500/10 hover:bg-sky-500/20"
-              }`}
-              onClick={() => { onActiveVersionChange(null); onActiveTableChange?.(t); }}
-              title={`Original data — ${t}`}
-            >
-              {t}
-            </button>
-          ))
-        ) : (
-          <button
-            className={`text-xs px-3 py-1.5 rounded-full font-medium transition shrink-0 ${
-              activeVersionId === null
-                ? "bg-sky-600 text-white"
-                : "border border-sky-500/40 text-sky-300 bg-sky-500/10 hover:bg-sky-500/20"
-            }`}
-            onClick={() => onActiveVersionChange(null)}
-          >
-            Original data
-          </button>
-        )}
-        {versions.map((v) => (
-          <div
-            key={v.id}
-            className={`flex items-center gap-1 rounded-full pl-3 pr-1.5 py-1.5 text-xs font-medium shrink-0 transition ${
-              activeVersionId === v.id ? "bg-primary text-white" : "btn-secondary"
-            }`}
-          >
-            {renamingId === v.id ? (
-              <input
-                autoFocus
-                className="bg-transparent border-b border-current outline-none w-24 text-xs"
-                value={renameDraft}
-                onChange={(e) => setRenameDraft(e.target.value)}
-                onClick={(e) => e.stopPropagation()}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") commitRename(v);
-                  if (e.key === "Escape") setRenamingId(null);
-                }}
-                onBlur={() => commitRename(v)}
-              />
-            ) : (
-              <span className="cursor-pointer whitespace-nowrap flex items-center gap-1" onClick={() => onActiveVersionChange(v.id)}>
-                {v.name}
-              </span>
-            )}
-            <button className="opacity-70 hover:opacity-100 px-0.5" title="Rename this table" onClick={() => startRename(v)}>
-              &#9998;
-            </button>
-            <button
-              className="opacity-70 hover:opacity-100 px-0.5"
-              title="Delete this table"
-              disabled={busyAction === `delete-${v.id}`}
-              onClick={() => doDeleteVersion(v)}
-            >
-              &times;
-            </button>
-          </div>
-        ))}
+        {tableTabs}
         <div className="ml-auto flex items-center gap-2 shrink-0">
           {loading && <span className="text-[11px] text-accent animate-pulse">Updating...</span>}
           <button className="btn-secondary text-xs px-2.5 py-1.5" disabled={!!busyAction} onClick={() => doExport("csv")}>
