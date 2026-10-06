@@ -253,6 +253,14 @@ export type DataPreview = {
   // estimated total so a person can never mistake "rows loaded into this
   // preview" for "rows that really exist at the source."
   loaded_row_count: number;
+  // 2026-10-06 (Mongo raw-document drawer round): the real MongoDB `_id`
+  // string for each row in `rows` above, positionally aligned with it -
+  // present ONLY when this preview is for a MongoDB datasource (see
+  // backend preview_datasource, which omits this key entirely - never an
+  // empty array - for every other datasource kind). DataTable.tsx uses
+  // this to know which rows can open the raw-document drawer, and what
+  // doc_id to send getMongoRawDocument below.
+  doc_ids?: string[];
 };
 
 // Each column's filter is now a small structured object - a values
@@ -472,6 +480,20 @@ export const datasourceApi = {
               : undefined,
         },
       })
+      .then((r) => r.data),
+
+  // 2026-10-06 (Mongo raw-document drawer round): the real, unflattened
+  // MongoDB document behind one Data-tab row - `docId` is one of the
+  // `_id` strings DataPreview.doc_ids returned alongside that row, and
+  // `table` is the collection name (same as `preview`'s own `table`
+  // param - left undefined for a single-collection datasource exactly
+  // the way `preview` already leaves its own `table` param undefined
+  // then, and resolved server-side the same way). See backend
+  // get_mongo_raw_document for why this is cheap to call on every
+  // drawer-open (a single indexed find_one).
+  getMongoRawDocument: (id: string, docId: string, table?: string | null) =>
+    api
+      .get<{ document: unknown }>(`/datasources/${id}/mongo-document`, { params: { doc_id: docId, table: table || undefined } })
       .then((r) => r.data),
 
   listVersions: (id: string) => api.get<DatasetVersion[]>(`/datasources/${id}/versions`).then((r) => r.data),
@@ -752,6 +774,15 @@ export type ConversationMessage = {
   method_summary: string | null;
   code: string | null;
   duration_ms: number | null;
+  // 2026-10-06 (pushdown-honesty round): whether this turn ran a real
+  // query directly against the warehouse/database, or fell back to
+  // analyzing a loaded, row-capped in-memory sample - see backend
+  // models.Message.used_pushdown/sample_row_count's own docstring for the
+  // full reasoning. used_pushdown is null for a kind pushdown is never
+  // attempted for (a file upload). sample_row_count is set only when
+  // used_pushdown is false AND this kind is pushdown-eligible.
+  used_pushdown: boolean | null;
+  sample_row_count: number | null;
   created_at: string;
 };
 
