@@ -77,18 +77,43 @@ def _multi_table_schema_text(schema_cache: dict) -> str:
 
 
 def _mongo_schema_text(schema_cache: dict) -> str:
-    """MongoDB's introspect_schema shape is different from every warehouse/
-    SQL database above - {collection_name: [field_name, ...]}, no column
-    types, since a document database has no fixed schema; the field list
-    itself is inferred from a single sample document per collection (see
-    MongoConnector.introspect_schema), so it may not include every field
-    that appears elsewhere in the same collection. Formatted for
-    ai_engine.generate_mongo_pipeline."""
+    """MongoDB's introspect_schema shape - {collection_name: [{"name",
+    "type", "present_count", "sample_size"}, ...]} - since a document
+    database has no fixed schema; the field list itself is inferred from
+    a SAMPLE of documents per collection (see MongoConnector.
+    introspect_schema, 2026-10-06 round: up to settings.MONGO_SCHEMA_
+    SAMPLE_SIZE documents, not just one), so it may not include every
+    field that appears elsewhere in the same collection, and a field only
+    present on some of the sampled documents is called out as sparse
+    right here rather than looking identical to a universal one.
+    Formatted for ai_engine.generate_mongo_pipeline.
+
+    2026-10-06: updated alongside that introspect_schema rewrite - each
+    field entry used to be a bare string; it's a dict now (real inferred
+    type + sparsity, not just a name), so this reads entry["name"]/
+    entry.get("type")/entry.get("present_count") instead of treating `f`
+    itself as the field name. A legacy string entry (an older cached
+    schema_cache from before this round that hasn't been refreshed yet)
+    is still handled so this never breaks for a datasource that simply
+    hasn't been reconnected/refreshed since."""
     lines = []
     for coll_name, fields in (schema_cache or {}).items():
-        lines.append(f"Collection `{coll_name}` (fields seen in one sample document - others may exist):")
+        lines.append(f"Collection `{coll_name}` (fields seen in a sample of documents - others may exist):")
         for f in fields or []:
-            lines.append(f"  - {f}")
+            if isinstance(f, dict):
+                name = f.get("name")
+                ftype = f.get("type")
+                present = f.get("present_count")
+                total = f.get("sample_size")
+                sparse_note = (
+                    f", present on {present}/{total} sampled docs"
+                    if present is not None and total is not None and present < total
+                    else ""
+                )
+                lines.append(f"  - {name} ({ftype}{sparse_note})" if ftype else f"  - {name}{sparse_note}")
+            else:
+                # Legacy bare-string entry from before this round.
+                lines.append(f"  - {f}")
     return "\n".join(lines)
 
 
