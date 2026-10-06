@@ -232,64 +232,49 @@ export default function ChartCanvas({
 
   return (
     <div className={`${cardClass} p-4 h-full flex flex-col overflow-hidden transition-shadow hover:shadow-glow`}>
-      {dashPremium ? (
-        // 2026-09-25b (elite pass): a dashboard chart card no longer has a
-        // permanent "Export chart as" label + 4-button row sitting above
-        // every single chart (the concrete "unwanted header options"
-        // clutter a side-by-side against a competitor dashboard called
-        // out) - the same 4 formats are one click behind a small "..."
-        // menu instead, same downloadImage() call underneath.
-        <div className="flex items-center justify-end mb-1 shrink-0 relative">
-          <button
-            type="button"
-            className="dash-chart-menu-btn"
-            aria-label="Chart options"
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
+      {/* 2026-10-06 (round 3 visual restyle, "ChartD" mockup): the plain
+          Workspace/chat chart used to carry a permanent "Export chart as"
+          label + 4-button row above every single chart - exactly the kind
+          of always-on chrome the mockup's "quiet toolbar" treatment (and
+          the 2026-09-25b elite pass below, previously scoped to dashPremium
+          only) was meant to replace. Now every chart - dashPremium or not -
+          gets the same one small "..." menu, same downloadImage() call per
+          format underneath; nothing about the export feature itself changed,
+          only how much permanent space it occupies above the chart. */}
+      <div className="flex items-center justify-end mb-1 shrink-0 relative">
+        <button
+          type="button"
+          className="dash-chart-menu-btn"
+          aria-label="Chart options"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          data-exclusive-id={menuSlotId}
+          onClick={() => setMenuOpen((o) => !o)}
+        >
+          <KebabIcon />
+        </button>
+        {menuOpen && (
+          <div
+            role="menu"
             data-exclusive-id={menuSlotId}
-            onClick={() => setMenuOpen((o) => !o)}
+            className="absolute right-0 top-full mt-1 w-36 card bg-surface shadow-2xl border border-border p-1.5 z-20"
           >
-            <KebabIcon />
-          </button>
-          {menuOpen && (
-            <div
-              role="menu"
-              data-exclusive-id={menuSlotId}
-              className="absolute right-0 top-full mt-1 w-36 card bg-surface shadow-2xl border border-border p-1.5 z-20"
-            >
-              <div className="text-[10px] font-semibold uppercase tracking-wide text-muted px-2 py-1">Export as</div>
-              {EXPORT_FORMATS.map((f) => (
-                <button
-                  key={f.value}
-                  role="menuitem"
-                  disabled={!!downloading}
-                  className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors disabled:opacity-50 flex items-center justify-between"
-                  onClick={() => download(f.value)}
-                >
-                  <span>{f.label}</span>
-                  {downloading === f.value && <span className="text-[10px] text-muted">…</span>}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="flex items-center justify-between mb-3 shrink-0">
-          <div className="text-xs font-semibold tracking-wide text-muted uppercase">Export chart as</div>
-          <div className="flex gap-1.5">
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-muted px-2 py-1">Export as</div>
             {EXPORT_FORMATS.map((f) => (
               <button
                 key={f.value}
+                role="menuitem"
                 disabled={!!downloading}
-                className="text-xs btn-secondary px-2.5 py-1 disabled:opacity-50"
+                className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-surface2 transition-colors disabled:opacity-50 flex items-center justify-between"
                 onClick={() => download(f.value)}
               >
-                {downloading === f.value ? "..." : f.label}
+                <span>{f.label}</span>
+                {downloading === f.value && <span className="text-[10px] text-muted">…</span>}
               </button>
             ))}
           </div>
-        </div>
-      )}
+        )}
+      </div>
       <div className="flex-1 min-h-0 rounded-xl overflow-hidden">
         <Plot
           data={chartSpec.data}
