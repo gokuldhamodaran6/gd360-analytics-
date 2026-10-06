@@ -142,6 +142,63 @@ from ..services.pushdown_budget import log_pushdown as _log_pushdown, todays_pus
 PUSHDOWN_ELIGIBLE_KINDS = {"bigquery", "snowflake", "postgres", "mysql", "sqlserver", "supabase", "mongodb"}
 
 
+# 2026-10-06 (pushdown gate fix - founder's live-production root cause):
+# the pushdown gate used to check `requested_ids == ["original"]` only.
+# That is NEVER true for a BigQuery/Snowflake/SQL/Mongo datasource that
+# exposes exactly one table/collection, because the frontend (Workspace.tsx,
+# see setSourceIds/ORIGINAL_SOURCE_ID) defaults the WORKING ON selection to
+# `sheet:<that one table name>`, not the literal string "original", the
+# moment it can detect a "first table" - which a warehouse/database source
+# virtually always can (unlike a flat CSV/Excel upload, which has no
+# sub-table concept and genuinely defaults to "original"). So for the
+# overwhelming majority of real single-table warehouse/database
+# connections, pushdown was structurally never even attempted.
+#
+# This helper broadens the gate ONLY for that exact, provably-safe case:
+# the selection is a single "sheet:<name>" entry AND that name is the ONLY
+# key this datasource's schema_cache has. Picking "just this one table"
+# is then semantically identical to picking "original" (the whole
+# datasource), because _multi_table_schema_text/_mongo_schema_text would
+# produce the exact same schema text either way - there is nothing else in
+# the schema the AI pushdown SQL/pipeline writer could accidentally
+# reference. It deliberately does NOT broaden the case where a datasource
+# has 2+ tables and the person picked just one of them - the pushdown SQL
+# generator is handed the FULL datasource schema (every table), not a
+# schema scoped to just the one picked table, so writing a real query in
+# that case could legitimately reference a table the person did not
+# select. Scoping the generator itself to one table among several is real,
+# harder future work, not this fix - see the module docstring above.
+#
+# Written defensively on purpose: ds.schema_cache can be None, {}, or (in
+# theory, from stale/legacy data) not a dict at all, and this must return
+# False - never raise - in any ambiguous case, since a raise here would
+# break EVERY chat request for that datasource, not just skip pushdown for
+# one of them.
+def _is_effectively_original_selection(ds: models.DataSource, requested_ids: list) -> bool:
+    try:
+        if requested_ids == ["original"]:
+            return True
+        if not isinstance(requested_ids, list) or len(requested_ids) != 1:
+            return False
+        only_id = requested_ids[0]
+        if not isinstance(only_id, str) or not only_id.startswith("sheet:"):
+            return False
+        # Exact same raw-string slice _load_selected_tables' own "sheet:"
+        # branch uses below - no new normalization (case-folding,
+        # whitespace-stripping, etc.) invented here, so this can never
+        # disagree with what that function would actually load for the
+        # same id.
+        sheet_name = only_id[len("sheet:"):]
+        schema_cache = ds.schema_cache
+        if not isinstance(schema_cache, dict) or not schema_cache:
+            return False
+        keys = list(schema_cache.keys())
+        return keys == [sheet_name]
+    except Exception as e:
+        print(f"[chat] _is_effectively_original_selection could not evaluate, treating as not-original: {e}")
+        return False
+
+
 def _try_bigquery_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt: str):
     """Tries to answer `prompt` with one governed SQL query run directly
     inside BigQuery, instead of pulling rows into memory. Returns the
@@ -149,13 +206,36 @@ def _try_bigquery_pushdown(db: Session, ds: models.DataSource, user_id: str, pro
     schema too sparse, this user's daily pushdown cost budget is already
     used up, the model couldn't write safe SQL, the query would scan more
     than this connection's per-query byte budget, or BigQuery rejected it
-    outright. A None here must be treated exactly like "pushdown was
-    never attempted": the caller falls through to the ordinary pull-and-
-    pandas path, so a BigQuery question can only ever get faster/cheaper
-    from this, never worse - nothing in this function is allowed to raise
-    past it. Every real attempt (one that got far enough to have actual
-    SQL) is written to the audit log via _log_pushdown, regardless of
-    outcome - see models.PushdownQueryLog."""
+    outright (even after a retry - see below). A None here must be
+    treated exactly like "pushdown was never attempted": the caller falls
+    through to the ordinary pull-and-pandas path, so a BigQuery question
+    can only ever get faster/cheaper from this, never worse - nothing in
+    this function is allowed to raise past it. Every real attempt (one
+    that got far enough to have actual SQL) is written to the audit log
+    via _log_pushdown, regardless of outcome - see models.PushdownQueryLog.
+
+    2026-10-06 (self-correcting pushdown round - "think like a data
+    scientist": attempt a real aggregate query, and don't silently give
+    up on the first stumble): this used to be a strict one-shot - any
+    failure at all fell back immediately, discarding the often very
+    actionable error a BigQuery dry-run rejection gives (e.g. naming
+    exactly which column doesn't exist) without ever showing it to the
+    model. Now, when the FIRST attempt fails in a way that is plausibly
+    the model's own mistake and genuinely correctable by showing it the
+    error - a ReadOnlyViolation (the SQL was unsafe/malformed), or a
+    genuine BigQuery dry-run/execution rejection (NOT QueryTooExpensive -
+    that means the SQL was VALID but scans too much data, which a retry
+    cannot fix and would just waste a second model call) - the exact
+    previous SQL and error are handed back to ai_engine.generate_
+    bigquery_sql for exactly ONE corrected second attempt (see
+    `_attempt` below). A second failure, of any kind, falls back exactly
+    like today - never a third attempt, never a loop. The daily cost
+    budget is checked once, before the first attempt, not re-checked
+    before the retry: a query that failed a dry run or was rejected as
+    unsafe never got far enough to actually scan/bill anything (confirmed
+    against _todays_pushdown_bytes, which only sums "ok"-status rows), so
+    there is nothing for a second check to catch that the first one
+    didn't already see."""
     schema_text = _multi_table_schema_text(ds.schema_cache)
     if not schema_text.strip():
         return None
@@ -166,36 +246,67 @@ def _try_bigquery_pushdown(db: Session, ds: models.DataSource, user_id: str, pro
         _log_pushdown(db, user_id, ds.id, "bigquery", "", None, "rejected_daily_budget")
         return None
 
-    try:
-        sql = ai_engine.generate_bigquery_sql(prompt, schema_text)
-    except Exception as e:
-        print(f"[chat] BigQuery pushdown SQL generation failed, falling back: {e}")
-        return None
+    def _attempt(is_retry: bool, previous_sql: str | None = None, previous_error: str | None = None):
+        """One generate-then-execute cycle. Returns a dict:
+          {"df": <DataFrame>} on success;
+          {"retry": True, "sql": <sql>, "error": <str>} on a failure the
+            caller may retry once more with this SQL/error as context
+            (ReadOnlyViolation, or a genuine execution/dry-run error);
+          {"retry": False} on anything else (SQL generation itself
+            failed, NOT_POSSIBLE/empty SQL, or QueryTooExpensive - a
+            correct, final rejection, not a mistake to correct).
+        Logs this one attempt to the audit table whenever it got far
+        enough to have real SQL, exactly like the pre-retry code did -
+        called once for the first attempt and, only when it returned
+        retry=True, once more for the single retry, so the audit log
+        ends up with two honest, separately-timestamped rows (first
+        attempt's real failure, then the retry's real outcome) rather
+        than the retry silently overwriting or hiding that a first
+        attempt happened."""
+        try:
+            sql = ai_engine.generate_bigquery_sql(prompt, schema_text, previous_sql=previous_sql, previous_error=previous_error)
+        except Exception as e:
+            print(f"[chat] BigQuery pushdown SQL generation failed{' (retry)' if is_retry else ''}, falling back: {e}")
+            return {"retry": False}
 
-    if not sql or sql.strip().upper() == "NOT_POSSIBLE":
-        return None
+        if not sql or sql.strip().upper() == "NOT_POSSIBLE":
+            return {"retry": False}
 
-    try:
-        service_account_json = security.decrypt_secret(ds.encrypted_secret)
-        info = ds.connection_info
-        connector = BigQueryConnector(info["project_id"], info["dataset_id"], service_account_json)
-        df, bytes_scanned = connector.run_pushdown_query(sql, max_bytes=settings.BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY)
-        _log_pushdown(db, user_id, ds.id, "bigquery", sql, bytes_scanned, "ok")
-        return df
-    except ReadOnlyViolation as e:
-        # The AI wrote something unsafe - don't retry with a worse query,
-        # just fall back this one time like any other pushdown failure.
-        print(f"[chat] BigQuery pushdown query rejected (unsafe), falling back: {e}")
-        _log_pushdown(db, user_id, ds.id, "bigquery", sql, None, "rejected_unsafe", str(e))
+        try:
+            service_account_json = security.decrypt_secret(ds.encrypted_secret)
+            info = ds.connection_info
+            connector = BigQueryConnector(info["project_id"], info["dataset_id"], service_account_json)
+            df, bytes_scanned = connector.run_pushdown_query(sql, max_bytes=settings.BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY)
+            _log_pushdown(db, user_id, ds.id, "bigquery", sql, bytes_scanned, "ok")
+            return {"df": df}
+        except ReadOnlyViolation as e:
+            label = "unsafe, falling back" if is_retry else "unsafe, will retry once with the error shown to the model"
+            print(f"[chat] BigQuery pushdown query rejected ({label}): {e}")
+            _log_pushdown(db, user_id, ds.id, "bigquery", sql, None, "rejected_unsafe", str(e))
+            return {"retry": not is_retry, "sql": sql, "error": str(e)}
+        except QueryTooExpensive as e:
+            # Valid SQL, just too costly - a retry can't fix that and
+            # would only waste a second model call, so always fall back
+            # immediately here, exactly like before this round.
+            print(f"[chat] BigQuery pushdown query rejected (too expensive), falling back: {e}")
+            _log_pushdown(db, user_id, ds.id, "bigquery", sql, e.estimated_bytes, "rejected_too_expensive", str(e))
+            return {"retry": False}
+        except Exception as e:
+            label = "falling back" if is_retry else "will retry once with the error shown to the model"
+            print(f"[chat] BigQuery pushdown query failed, {label}: {e}")
+            _log_pushdown(db, user_id, ds.id, "bigquery", sql, None, "error", str(e))
+            return {"retry": not is_retry, "sql": sql, "error": str(e)}
+
+    first = _attempt(is_retry=False)
+    if "df" in first:
+        return first["df"]
+    if not first.get("retry"):
         return None
-    except QueryTooExpensive as e:
-        print(f"[chat] BigQuery pushdown query rejected (too expensive), falling back: {e}")
-        _log_pushdown(db, user_id, ds.id, "bigquery", sql, e.estimated_bytes, "rejected_too_expensive", str(e))
-        return None
-    except Exception as e:
-        print(f"[chat] BigQuery pushdown query failed, falling back: {e}")
-        _log_pushdown(db, user_id, ds.id, "bigquery", sql, None, "error", str(e))
-        return None
+    # Exactly one bounded retry: give the model its own previous SQL and
+    # the exact error it produced, then try executing the corrected query
+    # exactly once more. Whatever this returns (success or not) is final.
+    second = _attempt(is_retry=True, previous_sql=first["sql"], previous_error=first["error"])
+    return second.get("df")
 
 
 def _try_snowflake_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt: str):
@@ -213,9 +324,24 @@ def _try_snowflake_pushdown(db: Session, ds: models.DataSource, user_id: str, pr
     SnowflakeConnector.run_pushdown_query) still counts toward that budget
     - just recorded after the query runs rather than estimated before it
     does. Returns the small result as a DataFrame on success, or None on
-    ANY failure, matching _try_bigquery_pushdown's exact fallback
-    contract - see that function's docstring for the full list of ways
-    this can (harmlessly) fail through to the normal pull-and-pandas path."""
+    ANY failure (even after a retry - see below), matching
+    _try_bigquery_pushdown's exact fallback contract - see that
+    function's docstring for the full list of ways this can (harmlessly)
+    fail through to the normal pull-and-pandas path.
+
+    2026-10-06 (self-correcting pushdown round): mirrors
+    _try_bigquery_pushdown's retry exactly - see that function's
+    docstring for the full reasoning. Snowflake has no QueryTooExpensive
+    equivalent (no free pre-flight cost check to reject on), so here
+    EVERY failure - ReadOnlyViolation or any other execution error (a
+    syntax/column error Snowflake's own engine rejects at execute time) -
+    is a candidate for the one bounded retry; there is no "valid but too
+    costly, don't bother retrying" case to carve out the way BigQuery's
+    QueryTooExpensive is. The daily budget is still checked only once,
+    before the first attempt: a query that failed before it ever ran
+    (ReadOnlyViolation) or failed during execution never produced a real
+    bytes_scanned "ok" row, so there is nothing a second budget check
+    before the retry would catch that the first one didn't already see."""
     schema_text = _multi_table_schema_text(ds.schema_cache)
     if not schema_text.strip():
         return None
@@ -226,36 +352,53 @@ def _try_snowflake_pushdown(db: Session, ds: models.DataSource, user_id: str, pr
         _log_pushdown(db, user_id, ds.id, "snowflake", "", None, "rejected_daily_budget")
         return None
 
-    try:
-        sql = ai_engine.generate_snowflake_sql(prompt, schema_text)
-    except Exception as e:
-        print(f"[chat] Snowflake pushdown SQL generation failed, falling back: {e}")
-        return None
+    def _attempt(is_retry: bool, previous_sql: str | None = None, previous_error: str | None = None):
+        """One generate-then-execute cycle - see _try_bigquery_pushdown's
+        own `_attempt` for the exact same shape/contract this mirrors.
+        Logs this one attempt to the audit table whenever it got far
+        enough to have real SQL, so a first failure and the retry's own
+        outcome both end up as separate, honest rows rather than the
+        retry hiding that a first attempt happened."""
+        try:
+            sql = ai_engine.generate_snowflake_sql(prompt, schema_text, previous_sql=previous_sql, previous_error=previous_error)
+        except Exception as e:
+            print(f"[chat] Snowflake pushdown SQL generation failed{' (retry)' if is_retry else ''}, falling back: {e}")
+            return {"retry": False}
 
-    if not sql or sql.strip().upper() == "NOT_POSSIBLE":
-        return None
+        if not sql or sql.strip().upper() == "NOT_POSSIBLE":
+            return {"retry": False}
 
-    try:
-        creds = json.loads(security.decrypt_secret(ds.encrypted_secret))
-        info = ds.connection_info
-        connector = SnowflakeConnector(
-            account=info["account"], warehouse=info["warehouse"], database=info["database"],
-            db_schema=info.get("db_schema"), role=info.get("role"),
-            username=creds["username"], password=creds["password"],
-        )
-        df, bytes_scanned = connector.run_pushdown_query(
-            sql, statement_timeout_seconds=settings.SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS
-        )
-        _log_pushdown(db, user_id, ds.id, "snowflake", sql, bytes_scanned, "ok")
-        return df
-    except ReadOnlyViolation as e:
-        print(f"[chat] Snowflake pushdown query rejected (unsafe), falling back: {e}")
-        _log_pushdown(db, user_id, ds.id, "snowflake", sql, None, "rejected_unsafe", str(e))
+        try:
+            creds = json.loads(security.decrypt_secret(ds.encrypted_secret))
+            info = ds.connection_info
+            connector = SnowflakeConnector(
+                account=info["account"], warehouse=info["warehouse"], database=info["database"],
+                db_schema=info.get("db_schema"), role=info.get("role"),
+                username=creds["username"], password=creds["password"],
+            )
+            df, bytes_scanned = connector.run_pushdown_query(
+                sql, statement_timeout_seconds=settings.SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS
+            )
+            _log_pushdown(db, user_id, ds.id, "snowflake", sql, bytes_scanned, "ok")
+            return {"df": df}
+        except ReadOnlyViolation as e:
+            label = "unsafe, falling back" if is_retry else "unsafe, will retry once with the error shown to the model"
+            print(f"[chat] Snowflake pushdown query rejected ({label}): {e}")
+            _log_pushdown(db, user_id, ds.id, "snowflake", sql, None, "rejected_unsafe", str(e))
+            return {"retry": not is_retry, "sql": sql, "error": str(e)}
+        except Exception as e:
+            label = "falling back" if is_retry else "will retry once with the error shown to the model"
+            print(f"[chat] Snowflake pushdown query failed, {label}: {e}")
+            _log_pushdown(db, user_id, ds.id, "snowflake", sql, None, "error", str(e))
+            return {"retry": not is_retry, "sql": sql, "error": str(e)}
+
+    first = _attempt(is_retry=False)
+    if "df" in first:
+        return first["df"]
+    if not first.get("retry"):
         return None
-    except Exception as e:
-        print(f"[chat] Snowflake pushdown query failed, falling back: {e}")
-        _log_pushdown(db, user_id, ds.id, "snowflake", sql, None, "error", str(e))
-        return None
+    second = _attempt(is_retry=True, previous_sql=first["sql"], previous_error=first["error"])
+    return second.get("df")
 
 
 def _try_sql_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt: str):
@@ -274,38 +417,68 @@ def _try_sql_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt: 
     two providers, with bytes_scanned always None, so the audit trail
     stays consistent across every pushdown provider even though this one
     has nothing to meter. Returns the small result as a DataFrame on
-    success, or None on ANY failure, matching the other two pushdown
-    helpers' exact fallback contract."""
+    success, or None on ANY failure (even after a retry - see below),
+    matching the other two pushdown helpers' exact fallback contract.
+
+    2026-10-06 (self-correcting pushdown round): mirrors
+    _try_bigquery_pushdown's one bounded retry exactly - see that
+    function's docstring for the full reasoning. Like Snowflake (and
+    unlike BigQuery), there is no QueryTooExpensive concept here at all -
+    no metered cost to guard, so no "valid but too costly" case to carve
+    out - so EVERY failure (ReadOnlyViolation, or any other error the
+    database driver raises executing the SQL, e.g. an unknown column)
+    is a candidate for the single retry. There is no daily cost budget
+    for this path at all (see the class docstring above), so there is
+    nothing to re-check before the retry either."""
     schema_text = _multi_table_schema_text(ds.schema_cache)
     if not schema_text.strip():
         return None
 
-    try:
-        sql = ai_engine.generate_sql_pushdown_sql(prompt, schema_text, ds.kind)
-    except Exception as e:
-        print(f"[chat] SQL pushdown SQL generation failed, falling back: {e}")
-        return None
+    def _attempt(is_retry: bool, previous_sql: str | None = None, previous_error: str | None = None):
+        """One generate-then-execute cycle - see _try_bigquery_pushdown's
+        own `_attempt` for the exact same shape/contract this mirrors.
+        Logs this one attempt to the audit table whenever it got far
+        enough to have real SQL, so a first failure and the retry's own
+        outcome both end up as separate, honest rows rather than the
+        retry hiding that a first attempt happened."""
+        try:
+            sql = ai_engine.generate_sql_pushdown_sql(
+                prompt, schema_text, ds.kind, previous_sql=previous_sql, previous_error=previous_error
+            )
+        except Exception as e:
+            print(f"[chat] SQL pushdown SQL generation failed{' (retry)' if is_retry else ''}, falling back: {e}")
+            return {"retry": False}
 
-    if not sql or sql.strip().upper() == "NOT_POSSIBLE":
-        return None
+        if not sql or sql.strip().upper() == "NOT_POSSIBLE":
+            return {"retry": False}
 
-    try:
-        username, password = security.decrypt_secret(ds.encrypted_secret).split("␟")
-        info = ds.connection_info
-        connector = SQLConnector(
-            ds.kind, info["host"], info["port"], info["database"], username, password, info.get("ssl", True)
-        )
-        df = connector.load_dataframe(sql, is_raw_sql=True)
-        _log_pushdown(db, user_id, ds.id, ds.kind, sql, None, "ok")
-        return df
-    except ReadOnlyViolation as e:
-        print(f"[chat] SQL pushdown query rejected (unsafe), falling back: {e}")
-        _log_pushdown(db, user_id, ds.id, ds.kind, sql, None, "rejected_unsafe", str(e))
+        try:
+            username, password = security.decrypt_secret(ds.encrypted_secret).split("␟")
+            info = ds.connection_info
+            connector = SQLConnector(
+                ds.kind, info["host"], info["port"], info["database"], username, password, info.get("ssl", True)
+            )
+            df = connector.load_dataframe(sql, is_raw_sql=True)
+            _log_pushdown(db, user_id, ds.id, ds.kind, sql, None, "ok")
+            return {"df": df}
+        except ReadOnlyViolation as e:
+            label = "unsafe, falling back" if is_retry else "unsafe, will retry once with the error shown to the model"
+            print(f"[chat] SQL pushdown query rejected ({label}): {e}")
+            _log_pushdown(db, user_id, ds.id, ds.kind, sql, None, "rejected_unsafe", str(e))
+            return {"retry": not is_retry, "sql": sql, "error": str(e)}
+        except Exception as e:
+            label = "falling back" if is_retry else "will retry once with the error shown to the model"
+            print(f"[chat] SQL pushdown query failed, {label}: {e}")
+            _log_pushdown(db, user_id, ds.id, ds.kind, sql, None, "error", str(e))
+            return {"retry": not is_retry, "sql": sql, "error": str(e)}
+
+    first = _attempt(is_retry=False)
+    if "df" in first:
+        return first["df"]
+    if not first.get("retry"):
         return None
-    except Exception as e:
-        print(f"[chat] SQL pushdown query failed, falling back: {e}")
-        _log_pushdown(db, user_id, ds.id, ds.kind, sql, None, "error", str(e))
-        return None
+    second = _attempt(is_retry=True, previous_sql=first["sql"], previous_error=first["error"])
+    return second.get("df")
 
 
 def _try_mongo_pushdown(db: Session, ds: models.DataSource, user_id: str, prompt: str):
@@ -403,7 +576,10 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
 
     # Warehouse/database pushdown (see the Enterprise Scale Roadmap doc):
     # only the plain "ask about my data" case - a single source, its own
-    # original data, no forced sub-table - tries running a real query
+    # original data (or, since the 2026-10-06 gate fix, a single selected
+    # table/sheet that is provably the datasource's ONLY table - see
+    # _is_effectively_original_selection above for exactly why that is
+    # still safe), no forced sub-table - tries running a real query
     # directly inside the source before falling back to the normal path
     # below. See _try_bigquery_pushdown/_try_snowflake_pushdown/
     # _try_sql_pushdown/_try_mongo_pushdown's own docstrings for the full
@@ -423,7 +599,7 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     # through to the normal _load_selected_tables path below, where
     # row/column filtering is applied for real.
     pushdown_df = None
-    if requested_ids == ["original"] and not payload.table and not data_access_rules.has_active_restrictions(db, ds, user):
+    if _is_effectively_original_selection(ds, requested_ids) and not payload.table and not data_access_rules.has_active_restrictions(db, ds, user):
         if ds.kind == "bigquery":
             pushdown_df = _try_bigquery_pushdown(db, ds, user.id, payload.prompt)
         elif ds.kind == "snowflake":
@@ -451,24 +627,59 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
             reply = f"This datasource has multiple tables/collections: {available_list}. Which one would you like to analyze?"
             return _persist_and_respond(db, conversation.id, reply, needs_clarification=True)
 
+    # 2026-10-06 (pushdown-honesty round, reorder fix): this merge-fallback
+    # reload of `original_df` must run BEFORE used_pushdown/sample_row_count
+    # are computed below, not after. It used to run after, which meant the
+    # used_pushdown computation always saw original_df in its PRE-reload
+    # state - still None whenever this turn's WORKING ON selection was only
+    # a sheet/saved table (e.g. "sheet:Hotel_data"), since _load_selected_
+    # tables only sets original_df for a literal "original" entry. That
+    # silently reported "nothing to disclose" (used_pushdown=None) even
+    # though this exact reload, moments later in the old order, genuinely
+    # loaded a real, row-capped live sample and the reply text went on to
+    # reference it. Confirmed live: a BigQuery chat reply whose text said
+    # "Hotel_data (2,000 total rows)" had used_pushdown/sample_row_count
+    # both stored as NULL. Moving the reload earlier - with its existing
+    # best-effort/never-blocks-the-request try/except kept exactly as-is -
+    # means the computation below always sees the final, true state of
+    # original_df instead of a stale snapshot taken before this ran.
+    if original_df is None:
+        # The person is working on a derived table, not the original data -
+        # load the original too (best-effort only, never blocks the main
+        # request on failure) so a prep step can pull in a column that
+        # table is missing straight from there, instead of the person
+        # having to notice the gap, switch WORKING ON by hand, and ask
+        # again from scratch - see ai_engine._schema_with_fallback. This
+        # also happens to be exactly the live data the pushdown-honesty
+        # disclosure just below needs to see, for the same reason.
+        try:
+            original_df = load_dataframe(ds, table=payload.table, version="original", db=db)
+            original_df = data_access_rules.filter_dataframe_for_role(db, original_df, ds, user)
+        except Exception as e:
+            print(f"[chat] Could not load original data as a merge fallback: {e}")
+            original_df = None
+
     # 2026-10-06 (pushdown-honesty round - the founder's own confirmed bug
     # report: a chat question against his BigQuery source silently
     # analyzed a 2,000-row in-memory sample instead of running a real
     # query against his full table, with zero indication of this to him).
     # `used_pushdown` is already trivially knowable right here - the branch
-    # just above already tells us, no extra detection needed - but it is
+    # just above (plus the merge-fallback reload immediately above this
+    # comment) already tells us, no extra detection needed - but it is
     # deliberately left None (not a misleading False) in two cases where
     # there is genuinely nothing to disclose, not just "it fell back":
     #   - this datasource's kind never attempts pushdown at all (a CSV/
     #     Excel upload, an API/webhook connection) - "did it run directly
     #     against your warehouse" does not even apply to a kind that has
     #     no warehouse to run directly against.
-    #   - no LIVE table was actually part of this turn at all (the person
-    #     picked only an already-saved table - a DatasetVersion - as their
-    #     WORKING ON selection, so `original_df` is None here): that saved
-    #     table is a deliberately-built, complete result, not a row-capped
-    #     live sample, and labelling it "based on a sample of N loaded
-    #     rows" would be actively misleading, not honest.
+    #   - no LIVE table was actually part of this turn at all, even after
+    #     the merge-fallback reload above had its chance to load one (it
+    #     either failed, or this datasource's original data genuinely could
+    #     not be loaded) - so `original_df` is still None here. Whatever
+    #     this turn ran against was then only an already-saved table (a
+    #     DatasetVersion): a deliberately-built, complete result, not a
+    #     row-capped live sample, and labelling it "based on a sample of N
+    #     loaded rows" would be actively misleading, not honest.
     # Only in the one remaining case - this kind CAN run pushdown, didn't
     # (for any reason: the SQL writer gave up, the daily cost budget was
     # used up, a restricted role, or a specific table was asked for) AND a
@@ -490,20 +701,6 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     else:
         used_pushdown = None  # no live table involved in this turn at all - nothing to disclose
     sample_row_count = len(original_df) if used_pushdown is False else None
-
-    if original_df is None:
-        # The person is working on a derived table, not the original data -
-        # load the original too (best-effort only, never blocks the main
-        # request on failure) so a prep step can pull in a column that
-        # table is missing straight from there, instead of the person
-        # having to notice the gap, switch WORKING ON by hand, and ask
-        # again from scratch - see ai_engine._schema_with_fallback.
-        try:
-            original_df = load_dataframe(ds, table=payload.table, version="original", db=db)
-            original_df = data_access_rules.filter_dataframe_for_role(db, original_df, ds, user)
-        except Exception as e:
-            print(f"[chat] Could not load original data as a merge fallback: {e}")
-            original_df = None
 
     history = _recent_history(db, conversation.id)
 
