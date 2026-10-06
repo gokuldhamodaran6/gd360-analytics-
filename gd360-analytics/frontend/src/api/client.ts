@@ -128,7 +128,34 @@ export type DatasetVersion = {
   // reads this same list) to just the currently open conversation by
   // default - see Workspace.tsx's versionScope.
   conversation_id: string | null;
+  // 2026-10-06 ("generated data is a saved query" layer) - see backend
+  // schemas.DatasetVersionOut. For a warehouse/database source a table
+  // built from a prompt is a SAVED QUERY (source_kind "warehouse_query"):
+  // GD360 stores only its SQL definition, never a copy of the rows. The
+  // fields below ride along so the Data tab can render such a table
+  // without ever loading it; a file-backed version reports "file" (treat
+  // a missing source_kind as "file" - an older backend never sends it)
+  // and nulls everywhere else.
+  source_kind?: "file" | "warehouse_query";
+  // The standalone SQL definition (the `pushdown_sql` of the chat turn
+  // that built it).
+  query_sql?: string | null;
+  // The short alias the definition is wrapped under as a CTE when a later
+  // question chains on this table (`WITH <sql_alias> AS (...)`).
+  sql_alias?: string | null;
+  // The real warehouse table the definition reads from.
+  source_table?: string | null;
+  // Exact COUNT(*) of the definition, taken inside the warehouse at
+  // creation (null if that count failed; /profile fills it in later).
+  row_count?: number | null;
+  // The definition's result schema captured at creation: [{name, type}].
+  columns_json?: { name: string; type?: string | null }[] | null;
+  parent_version_ids?: string[] | null;
 };
+
+export function isWarehouseQueryVersion(v: Pick<DatasetVersion, "source_kind"> | null | undefined): boolean {
+  return !!v && v.source_kind === "warehouse_query";
+}
 
 // One table this datasource's data flow through - exactly what
 // Message.sources holds server-side (see backend models.py), returned
@@ -178,6 +205,13 @@ export type FlowVersion = FlowAnnotationFields & {
   // this existed. Never fabricated - see backend models.DatasetVersion.
   duration_ms: number | null;
   method_summary: string | null;
+  // 2026-10-06 ("generated data is a saved query" layer): "warehouse_query"
+  // for a saved-query table of a warehouse source (see DatasetVersion.
+  // source_kind), with its exact row count and the real table it reads
+  // from - so the Flow tab can label it honestly. Absent/"file" otherwise.
+  source_kind?: "file" | "warehouse_query";
+  row_count?: number | null;
+  source_table?: string | null;
 };
 
 // One chart-producing or table-producing chat turn, anywhere in this data
@@ -261,6 +295,28 @@ export type DataPreview = {
   // this to know which rows can open the raw-document drawer, and what
   // doc_id to send getMongoRawDocument below.
   doc_ids?: string[];
+  // 2026-10-06 (profile-first Data tab): present ONLY when the preview was
+  // requested with `sample_rows` (datasourceApi.previewSample below) for an
+  // original warehouse/database table - see backend preview_datasource's
+  // sample mode. `rows` is then the whole tiny example set (unfiltered,
+  // unsorted, unpaged), total_rows/loaded_row_count equal its size (never
+  // the real table count - that comes from DataProfile.exact_total_rows),
+  // and `sample_sql` is the real statement shape the connector ran, shown
+  // verbatim as the example-rows caption.
+  sample_mode?: boolean;
+  sample_rows?: number;
+  sample_sql?: string;
+  // 2026-10-06 ("generated data is a saved query" layer): present ONLY
+  // when the sample was requested for a warehouse saved-query version
+  // (datasourceApi.previewVersionSample) - the version's own definition
+  // and lineage, copied from the version row so this one response is
+  // self-contained. See DatasetVersion's identical fields.
+  version_source_kind?: "warehouse_query";
+  query_sql?: string | null;
+  sql_alias?: string | null;
+  source_table?: string | null;
+  row_count?: number | null;
+  columns_json?: { name: string; type?: string | null }[] | null;
 };
 
 // Each column's filter is now a small structured object - a values
@@ -306,7 +362,23 @@ export type ProfileColumnStat = {
   distinct: number | null;
   min: number | string | null;
   max: number | string | null;
+  // 2026-10-06 (profile-first Data tab): the column's declared type from
+  // the schema introspected at connect time (ds.schema_cache) - e.g.
+  // "STRING"/"INT64" for BigQuery, "VARCHAR"/"INTEGER" for a SQL source.
+  // Null when the schema has no entry for this column.
+  type?: string | null;
+  // The three most common values, most common first, ONLY for a column
+  // whose exact distinct count is 1..50 - from ONE extra query per
+  // profile run (BigQuery APPROX_TOP_COUNT / Snowflake APPROX_TOP_K / a
+  // GROUP BY UNION ALL on the SQL kinds - see backend services/profiling.py
+  // build_top_values_query). `pct` is the share of ALL rows
+  // (exact_total_rows), so it lines up with the empty-cell percentages.
+  // Absent when that second query failed or the column didn't qualify -
+  // see DataProfile.top_values_computed.
+  top_values?: ProfileTopValue[];
 };
+
+export type ProfileTopValue = { value: string | number | boolean | null; count: number; pct: number | null };
 
 // What GET /datasources/{id}/profile returns - see backend
 // routers/datasources.py profile_datasource. Every field after `supported`
@@ -352,6 +424,16 @@ export type DataProfile = {
   // instead of guessing from the TTL alone.
   bytes_scanned?: number;
   cached_at?: number;
+  // 2026-10-06 (profile-first Data tab): real wall-clock milliseconds the
+  // profile's queries took at the source (the main aggregate plus the
+  // optional top-values query) - the "Profile cost" tile's duration.
+  // Rides along unchanged through a cache hit (it describes the cached
+  // computation, not this request).
+  duration_ms?: number;
+  // True when the second, top-values query ran and succeeded this time -
+  // False means low-cardinality columns simply carry no top_values (none
+  // qualified, or that query failed), never that they have no values.
+  top_values_computed?: boolean;
   // 2026-10-06 (NoSQL hybrid round 2): a cheap, APPROXIMATE document-count
   // signal - present ONLY when ds.kind === "mongodb" (MongoConnector.
   // estimate_row_count, via pymongo's estimated_document_count - a fast
@@ -482,6 +564,33 @@ export const datasourceApi = {
       })
       .then((r) => r.data),
 
+  // 2026-10-06 (profile-first Data tab): a tiny set of EXAMPLE rows for an
+  // original warehouse/database table - the connector is asked for exactly
+  // `sampleRows` rows at the query level (LIMIT n / TOP n), never the
+  // usual preview cap. No version id, no filters/sort/paging: the rows are
+  // read-only examples under the full-table profile, and every real
+  // number on that tab comes from `profile` above. See backend
+  // preview_datasource's `sample_rows` param; for any non-warehouse kind
+  // the backend ignores sample_rows and answers like a plain preview.
+  previewSample: (id: string, table?: string | null, sampleRows = 20) =>
+    api
+      .get<DataPreview>(`/datasources/${id}/preview`, {
+        params: { table: table || undefined, sample_rows: sampleRows },
+      })
+      .then((r) => r.data),
+
+  // 2026-10-06 ("generated data is a saved query" layer): the example rows
+  // of a warehouse SAVED-QUERY version - `SELECT * FROM (<definition>)
+  // LIMIT n` run inside the warehouse (see backend preview_datasource's
+  // version branch). This is the ONLY way to read rows of such a version:
+  // the same call without `sample_rows` is a 400 there, never a grid.
+  previewVersionSample: (id: string, versionId: string, sampleRows = 20) =>
+    api
+      .get<DataPreview>(`/datasources/${id}/preview`, {
+        params: { version_id: versionId, sample_rows: sampleRows },
+      })
+      .then((r) => r.data),
+
   // 2026-10-06 (Mongo raw-document drawer round): the real, unflattened
   // MongoDB document behind one Data-tab row - `docId` is one of the
   // `_id` strings DataPreview.doc_ids returned alongside that row, and
@@ -531,6 +640,18 @@ export const datasourceApi = {
     api
       .get<DataProfile>(`/datasources/${id}/profile`, {
         params: { table: table || undefined },
+      })
+      .then((r) => r.data),
+
+  // 2026-10-06 ("generated data is a saved query" layer): the same full
+  // profile for a warehouse SAVED-QUERY version - the aggregate query runs
+  // over `(<definition>) AS gd360_v` inside the warehouse (see backend
+  // profile_datasource's version_id branch). Same response shape as
+  // `profile` above; a file-backed version answers `supported: false`.
+  profileVersion: (id: string, versionId: string) =>
+    api
+      .get<DataProfile>(`/datasources/${id}/profile`, {
+        params: { version_id: versionId },
       })
       .then((r) => r.data),
 
@@ -655,6 +776,32 @@ export const datasourceApi = {
     link.remove();
     window.URL.revokeObjectURL(url);
   },
+
+  // 2026-10-06 ("generated data is a saved query" layer): the "Download N
+  // rows" exit for a warehouse saved-query table - GET /datasources/{id}/
+  // versions/{vid}/download streams the definition's rows straight from
+  // the warehouse's own row iterator to the browser as CSV (see backend
+  // download_warehouse_version: never to_dataframe(), capped at
+  // WAREHOUSE_DOWNLOAD_MAX_ROWS with a trailing comment row when hit).
+  // Fetched through the same authenticated axios instance and saved via a
+  // blob exactly the way downloadExport above does, so the bearer token
+  // never ends up in a URL. A file-backed version is a 400 here - those
+  // keep using downloadExport.
+  downloadVersionCsv: async (id: string, versionId: string) => {
+    const res = await api.get(`/datasources/${id}/versions/${versionId}/download`, { responseType: "blob" });
+    const disposition: string = res.headers["content-disposition"] || "";
+    const match = disposition.match(/filename="?([^"]+)"?/);
+    const filename = match ? match[1] : "saved-query.csv";
+    const blob = new Blob([res.data]);
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  },
 };
 
 // ---- Live OAuth connectors: Google Sheets and Microsoft Excel (OneDrive/
@@ -748,7 +895,11 @@ export type ConversationMessage = {
   insight: string | null;
   suggestions: { charts?: any[]; stats?: any[]; follow_up?: { label: string; prompt: string }[] } | null;
   needs_clarification: boolean;
-  action: "analyze" | "transform" | "clarify" | "explain" | null;
+  // "needs_query_help" (2026-10-06, warehouse-honesty round): a warehouse
+  // question that could NOT be run inside the warehouse - nothing was
+  // computed, and the pushdown_* / builder_* fields below say what was
+  // tried and how to finish it. See backend schemas.ChatResponse.
+  action: "analyze" | "transform" | "clarify" | "explain" | "needs_query_help" | null;
   // 2026-09-28: the real WORKING ON selection this turn actually ran
   // against (see backend routers/chat.py _load_selected_tables' own
   // "sources manifest" docstring for the exact shape) plus which new
@@ -783,8 +934,133 @@ export type ConversationMessage = {
   // used_pushdown is false AND this kind is pushdown-eligible.
   used_pushdown: boolean | null;
   sample_row_count: number | null;
+  // 2026-10-06 (warehouse-honesty round): what actually ran inside the
+  // warehouse for this turn, or why it could not - see WarehouseTurnFields
+  // below and backend routers/conversations.py get_conversation_messages.
+  // builder_columns is deliberately NOT restored per message (it is
+  // derived from the data source's own schema_cache, which Workspace.tsx
+  // already holds as dsInfo.schema_cache - see builderColumnsFromSchema in
+  // components/WarehouseTurn.tsx). exact_total_rows is not persisted on
+  // the message row either, so a restored turn falls back to the "every
+  // row" wording.
+  pushdown_sql?: string | null;
+  pushdown_provider?: string | null;
+  pushdown_bytes_scanned?: number | null;
+  pushdown_duration_ms?: number | null;
+  pushdown_result_rows?: number | null;
+  pushdown_attempts?: PushdownAttempt[] | null;
+  pushdown_skipped_reason?: PushdownSkippedReason | null;
+  builder_suggestion?: QueryBuilderSpec | null;
+  exact_total_rows?: number | null;
   created_at: string;
 };
+
+// ---- 2026-10-06 (warehouse-honesty round) ---------------------------
+// For a warehouse/database data source (BigQuery/Snowflake/Postgres/MySQL/
+// SQL Server/Supabase/MongoDB) a chat question is answered ONLY by a real
+// query run inside the warehouse over every row - never by analyzing a
+// row-capped sample. These mirror backend schemas.ChatResponse's new
+// fields and schemas_extra.QueryBuilderSpec exactly; see those files'
+// own comments for the full contract.
+
+export type QueryBuilderAgg = "count" | "sum" | "avg" | "min" | "max" | "count_distinct";
+export type QueryBuilderOp = "=" | "!=" | ">" | ">=" | "<" | "<=" | "is_null" | "is_not_null" | "in";
+export type QueryBuilderOrderBy = "measure_desc" | "measure_asc" | "group";
+
+export type QueryBuilderFilter = {
+  column: string;
+  op: QueryBuilderOp;
+  // A single number/string for the comparison ops, a list for "in",
+  // omitted/null for is_null / is_not_null.
+  value?: string | number | (string | number)[] | null;
+};
+
+// The deterministic "finish it yourself" spec: turned into SQL server-side
+// with zero language-model involvement (backend services/query_builder.py).
+// Every table/column must exist in the data source's own schema or the
+// request is rejected with HTTP 400.
+export type QueryBuilderSpec = {
+  table: string;
+  group_by: string[];
+  measure: string | null;
+  agg: QueryBuilderAgg;
+  filters: QueryBuilderFilter[];
+  order_by?: QueryBuilderOrderBy | null;
+  limit?: number;
+};
+
+export type PushdownAttemptStatus =
+  | "ok"
+  | "rejected_unsafe"
+  | "rejected_too_expensive"
+  | "error"
+  | "not_possible"
+  | "needs_table"
+  | "generation_failed"
+  // 2026-10-06 ("generated data is a saved query" layer): a table
+  // definition that passed validation (read-only check, dry run, schema
+  // probe) and became the saved query - the "ran" of a table turn.
+  | "validated";
+
+export type PushdownAttempt = {
+  sql: string | null;
+  status: PushdownAttemptStatus;
+  error: string | null;
+};
+
+export type PushdownSkippedReason =
+  | "daily_budget"
+  | "empty_schema"
+  | "restricted_role"
+  | "unsupported_selection"
+  | "needs_table"
+  | "not_possible"
+  // 2026-10-06 ("generated data is a saved query" layer): no safe table
+  // definition could be written/validated, so no saved query was created
+  // (and nothing was built from a sample). builder_suggestion is always
+  // null with it - an aggregate builder cannot define a table of rows;
+  // the person's way forward is the raw-SQL editor with "Save as table".
+  | "table_failed";
+
+// {table: [{name, type}]} for the tables in scope - what the builder's
+// selects populate from, straight from the data source's own schema.
+export type BuilderColumns = Record<string, { name: string; type: string | null }[]>;
+
+// The fields a live /chat response carries on top of the older ones -
+// Workspace.tsx reads these straight off the axios response and maps them
+// onto ChatPanel's ChatTurn (see its warehouse fields).
+export type WarehouseTurnFields = {
+  pushdown_sql?: string | null;
+  pushdown_provider?: string | null;
+  pushdown_bytes_scanned?: number | null;
+  pushdown_duration_ms?: number | null;
+  pushdown_result_rows?: number | null;
+  pushdown_attempts?: PushdownAttempt[] | null;
+  pushdown_skipped_reason?: PushdownSkippedReason | null;
+  builder_suggestion?: QueryBuilderSpec | null;
+  builder_columns?: BuilderColumns | null;
+  exact_total_rows?: number | null;
+};
+
+// The two optional, mutually exclusive ways to finish a warehouse question
+// the AI could not turn into a query - sent on the same POST /chat body
+// Workspace.tsx's runPrompt already builds (see its `finish` option).
+// `prompt` is still required with either one: it is stored as the person's
+// own message, so the frontend sends the builder's plain-words summary, or
+// a short label for a hand-written query.
+export type ChatFinishRequest =
+  | { query_builder: QueryBuilderSpec; raw_sql?: undefined; save_as_table?: undefined }
+  // 2026-10-06 ("generated data is a saved query" layer): with
+  // `save_as_table: true` the person's own SELECT becomes a saved-query
+  // table inside the warehouse (validated exactly like an AI-written
+  // definition, never charted) - see backend schemas_extra.ChatRequestFull.
+  // save_as_table and routers/chat.py's raw_sql branch. SQL kinds only.
+  | { raw_sql: string; query_builder?: undefined; save_as_table?: boolean };
+
+// The prompt stored as the person's own message when their SQL is saved
+// as a table - one literal, shared by every surface that offers the
+// "Save as table" checkbox so the conversation reads the same everywhere.
+export const SAVE_AS_TABLE_PROMPT = "My own SQL (saved as a table)";
 
 // One named chart/table card of a multi-result answer (see
 // ai_engine._build_result_entry) - the same shape the top-level
