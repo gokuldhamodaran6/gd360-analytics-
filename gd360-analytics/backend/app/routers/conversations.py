@@ -26,6 +26,40 @@ from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_user
 from ..services import workspace_access
+from ..services.profile_cache import cached_exact_total_rows
+
+
+def _restored_exact_total_rows(ds, m) -> int | None:
+    """2026-10-06 (warehouse-honesty round): the same `exact_total_rows`
+    routers/chat.py attaches to a live warehouse-computed turn, resolved
+    the same way - the real COUNT(*) the Data tab's profile already paid
+    for and cached (services/profile_cache.py), only when exactly ONE
+    table was in scope. The scoped table is derived from the persisted
+    `sources` manifest: a single "sheet" entry names it directly; a single
+    "original" entry means the whole data source, which is one table only
+    when its schema_cache has exactly one key. Several entries (a join)
+    -> None. Never a fresh COUNT(*) query, and never raises - a cache
+    miss or a malformed manifest simply yields None."""
+    try:
+        if ds is None or not m.used_pushdown:
+            return None
+        sources = m.sources if isinstance(m.sources, list) else []
+        if len(sources) != 1 or not isinstance(sources[0], dict):
+            return None
+        entry = sources[0]
+        table = None
+        if entry.get("kind") == "sheet" and isinstance(entry.get("sheet"), str):
+            table = entry["sheet"]
+        elif entry.get("kind") == "original":
+            schema_cache = ds.schema_cache if isinstance(ds.schema_cache, dict) else {}
+            if len(schema_cache) == 1:
+                table = next(iter(schema_cache))
+        if not table:
+            return None
+        return cached_exact_total_rows(ds.id, table)
+    except Exception as e:  # noqa: BLE001
+        print(f"[conversations] exact_total_rows restore skipped (non-fatal): {e}")
+        return None
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -240,6 +274,14 @@ def get_conversation_messages(
 
     messages = sorted(conv.messages, key=lambda m: m.created_at)
     creator = db.query(models.User).filter(models.User.id == conv.owner_id).first()
+    # 2026-10-06 (warehouse-honesty round): pushdown_provider is not
+    # stored on the row (it is simply the data source's kind) - resolved
+    # once here so a restored warehouse turn carries the same provider the
+    # live response did. Imported lazily to keep this router free of any
+    # import-time dependency on routers/chat.py.
+    from .chat import PUSHDOWN_ELIGIBLE_KINDS  # noqa: WPS433
+    ds = db.query(models.DataSource).filter(models.DataSource.id == conv.datasource_id).first() if conv.datasource_id else None
+    pushdown_provider = ds.kind if ds and ds.kind in PUSHDOWN_ELIGIBLE_KINDS else None
     return {
         "id": conv.id,
         "title": conv.title,
@@ -318,6 +360,30 @@ def get_conversation_messages(
                 # badge under a past turn, not just a freshly-sent live one.
                 "used_pushdown": m.used_pushdown,
                 "sample_row_count": m.sample_row_count,
+                # 2026-10-06 (warehouse-honesty round): what ran inside the
+                # warehouse for this turn, or why it could not - see
+                # models.Message.pushdown_sql and friends and schemas.
+                # ChatResponse's own comment. Restored so reopening a chat
+                # shows the same "ran this SQL over every row" detail, or
+                # the same needs_query_help attempts, as the live turn did.
+                # builder_suggestion lives inside `suggestions` on the row
+                # (see routers/chat.py _persist_and_respond) and is lifted
+                # back to top level here; builder_columns is derived from
+                # the data source's schema_cache, which the frontend already
+                # has, so it is not repeated per message.
+                "pushdown_sql": m.pushdown_sql,
+                "pushdown_provider": pushdown_provider if (m.used_pushdown or m.action == "needs_query_help") else None,
+                "pushdown_bytes_scanned": m.pushdown_bytes_scanned,
+                "pushdown_duration_ms": m.pushdown_duration_ms,
+                "pushdown_result_rows": m.pushdown_result_rows,
+                "pushdown_attempts": m.pushdown_attempts,
+                "pushdown_skipped_reason": m.pushdown_skipped_reason,
+                # Resolved from the profile cache exactly like the live
+                # turn (see _restored_exact_total_rows above) - null when
+                # the cache has expired, several tables were joined, or
+                # the turn was not warehouse-computed.
+                "exact_total_rows": _restored_exact_total_rows(ds, m),
+                "builder_suggestion": (m.suggestions or {}).get("builder_suggestion") if isinstance(m.suggestions, dict) else None,
                 "created_at": m.created_at,
             }
             for m in messages
