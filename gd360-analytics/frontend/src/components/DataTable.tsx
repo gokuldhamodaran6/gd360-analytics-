@@ -82,7 +82,22 @@ function dtypeGroup(dtype: string): "number" | "date" | "boolean" | "text" {
   const d = (dtype || "").toLowerCase();
   if (d.startsWith("bool")) return "boolean";
   if (d.startsWith("int") || d.startsWith("float") || d.startsWith("uint") || d.startsWith("double")) return "number";
-  if (d.startsWith("datetime") || d.startsWith("date")) return "date";
+  // 2026-10-06: the backend now sends a clean "date"/"time" label for
+  // every connector's date/time columns (BigQuery's old "dbdate"/"dbtime"
+  // dtype strings included - see backend/app/services/dtype_utils.py's
+  // normalize_dtypes_dict, which this preview/profile response is already
+  // built from). The explicit "dbdate"/"dbtime" checks below are kept only
+  // as a defensive fallback for any older cached response that hasn't
+  // been through that normalization, so a DATE column never silently
+  // falls back to being treated as plain text the way it did before this
+  // fix - that's what broke date filtering for exactly this column type.
+  if (d.startsWith("datetime") || d.startsWith("date") || d === "dbdate") return "date";
+  // A pure TIME-of-day column ("dbtime", or "time..." from any connector)
+  // has no dedicated filter UI here (the date-range picker below expects
+  // a calendar date, not a time-of-day) - falling through to "text" below
+  // keeps its existing "contains" filter usable (e.g. matching "10:30:00"
+  // exactly) instead of showing a date picker that can't actually express
+  // a time value. Tracked as a known, deliberate gap, not silently missed.
   return "text";
 }
 
