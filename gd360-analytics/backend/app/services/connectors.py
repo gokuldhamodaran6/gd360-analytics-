@@ -499,14 +499,39 @@ class BigQueryConnector:
     # SQLAlchemy engine above, specifically so a real BigQuery dry run
     # (Google's own free, instant "how much data would this scan" check)
     # is available before anything is ever actually run or billed for.
-    # Read-only scope (bigquery.readonly) as defense-in-depth on top of
-    # assert_read_only_sql below, matching this file's stated design
-    # principle at the top.
+    #
+    # 2026-10-06 fix: this used to request only the `bigquery.readonly`
+    # OAuth scope as an extra defense-in-depth layer on top of
+    # assert_read_only_sql below. In production this broke EVERY call
+    # through this client - including this file's own load_dataframe
+    # above, once it was switched onto this same client - with a 403
+    # "Request had insufficient authentication scopes" on the POST to
+    # BigQuery's `jobs` endpoint. Confirmed against Google's own docs:
+    # running a query (even a plain read-only SELECT) goes through
+    # `jobs.insert`, which needs the `bigquery.jobs.create` capability -
+    # `bigquery.readonly`'s scope does not carry that, only the broader
+    # `bigquery` scope does. This was silently breaking the pushdown path
+    # too (routers/chat.py's _try_bigquery_pushdown swallows any failure
+    # here and falls back to the slower pull-and-pandas path "by design",
+    # so a scope error here was invisible - it just looked like pushdown
+    # "wasn't helping" rather than an outright bug).
+    #
+    # Broadening the scope here does NOT weaken the actual safety
+    # boundary: OAuth scope only gates which categories of API a token
+    # can call at all - what it's actually ALLOWED to do is enforced
+    # separately, server-side, by the service account's own IAM roles,
+    # which is why this file's module docstring already recommends
+    # connecting BigQuery with a service account scoped to BigQuery Data
+    # Viewer + BigQuery Job User only (view data, run jobs, cannot write
+    # or modify anything) - that IAM boundary holds regardless of this
+    # scope, and assert_read_only_sql below is the other real guard. A
+    # scope that blocks 100% of legitimate read-only queries was never
+    # real defense-in-depth - it was just broken.
     # -----------------------------------------------------------------
 
     def _bq_client(self) -> "bq.Client":
         credentials = bq_service_account.Credentials.from_service_account_info(
-            self.credentials_info, scopes=["https://www.googleapis.com/auth/bigquery.readonly"],
+            self.credentials_info, scopes=["https://www.googleapis.com/auth/bigquery"],
         )
         return bq.Client(project=self.project_id, credentials=credentials)
 
