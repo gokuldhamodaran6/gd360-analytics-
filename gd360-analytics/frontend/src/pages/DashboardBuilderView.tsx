@@ -1,16 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   dashboardBuilderApi, DashboardBlock, DashboardBuilderDetail, DashboardBuilderPage, DashboardBlockType, datasourceApi, WorkspaceSummary, qualityChecksApi,
 } from "../api/client";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
-import { DataFreshnessBadge, describeFilterSpec, isSpecActive } from "../components/DashboardBlocks";
-import DashboardCanvas from "../components/DashboardCanvas";
-import { DashboardShell, ParametersEditor, useComments, useDashboardRun, useDashboardViewMode, type CanvasOwnerActions, type RunSource } from "../dashboard";
-import { useDashboardFilters } from "../lib/useDashboardFilters";
+import { DataFreshnessBadge } from "../components/DashboardBlocks";
+import {
+  DashboardShell, isEmptyBlock, readEditFromUrl, useComments, useDashboardEditor, useDashboardRun, useDashboardViewMode, useEditMode, type CanvasOwnerActions, type RunSource,
+} from "../dashboard";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { brandingBackgroundImageStyle, brandingStyleVars, hexToRgbTriple, useBrandingAsset } from "../lib/branding";
+import { ConfirmDialog, ExternalIcon, MergeIcon as KitMergeIcon, MoreIcon, PaletteIcon as KitPaletteIcon, Popover, Sheet, WarningIcon, buttonClasses, cn } from "../ui";
+import { MenuRow } from "../dashboard/menu";
 
 // 2026-09-25d (elite pass): the dashboard builder/editor - the exact page
 // Gokul's own screenshots of the live app's edit mode were taken from -
@@ -33,12 +35,16 @@ import { brandingBackgroundImageStyle, brandingStyleVars, hexToRgbTriple, useBra
 // layout_version===2) or straight after "Build with AI" finishes (see
 // BuildDashboardModal.tsx).
 //
-// Phase 2 adds a real edit/view toggle: someone who can_edit this dashboard
-// lands in edit mode by default (DashboardCanvas - drag/resize/add/remove
-// blocks, per-block Ask AI/manual build/style) and can switch to a plain
-// read view (DashboardBlockGrid, the exact same renderer the public link
-// uses) at any time; a view-only visitor (can_edit===false) only ever sees
-// the read view, with no toggle offered at all.
+// 2026-10-07 (dashboard edit mode): opening a dashboard - and landing on
+// it after "Publish dashboard" in the prompt builder - shows the FINISHED
+// dashboard. Editing is the same page made editable (?edit=1, kept across
+// a refresh): the same DashboardShell with the run engine still on, its
+// header, rail, KPI strip and grid, plus the edit toolbar - see
+// src/dashboard/edit/. The old separate editor screen (a centred column
+// around components/DashboardCanvas, whose cards read cached render keys a
+// warehouse block does not have) is gone. A dashboard its owner can edit
+// that has no block on any page opens straight in edit mode: there is
+// nothing to view yet.
 //
 // Phase 2b adds cross-filtering, live in BOTH Edit and Preview here (never
 // on the public link - see lib/useDashboardFilters.ts and the backend's
@@ -140,29 +146,6 @@ function PaletteIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
       <circle cx="7.5" cy="10.5" r="1.1" fill="currentColor" stroke="none" />
       <circle cx="10.5" cy="7" r="1.1" fill="currentColor" stroke="none" />
       <circle cx="15" cy="7.5" r="1.1" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
-// 2026-09-29 (design revamp): "from which project this dashboard created"
-// - a small folder glyph for the "Built from" Project link.
-function FolderIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
-    </svg>
-  );
-}
-
-// 2026-09-29 (round 5): tiny "opens in a new tab" hint on the "Built from"
-// link, per Gokul's explicit ask - clicking it should open the source chat
-// as a reference alongside the dashboard, not navigate away from it.
-function ExternalLinkIcon({ className = "w-3 h-3" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-      <path d="M15 3h6v6" />
-      <path d="M10 14 21 3" />
     </svg>
   );
 }
@@ -421,12 +404,16 @@ function BrandingPanel({
   logoUrl,
   backgroundImageUrl,
   onAssetChanged,
+  inline = false,
 }: {
   dash: DashboardBuilderDetail;
   onChange: (d: DashboardBuilderDetail) => void;
   logoUrl: string | null;
   backgroundImageUrl: string | null;
   onAssetChanged: () => void;
+  // 2026-10-07 (dashboard edit mode): the panel's body only, always open -
+  // the edit header reaches it from its "More" menu and shows it in a Sheet.
+  inline?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -533,12 +520,14 @@ function BrandingPanel({
   const activeStyle = dash.background_style || "default";
 
   return (
-    <div className="relative">
-      <button type="button" className="btn-secondary text-xs flex items-center gap-1.5" onClick={() => setOpen((o) => !o)}>
-        <PaletteIcon /> Branding
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-2 w-80 card bg-surface shadow-2xl border border-border p-4 z-30 max-h-[75vh] overflow-y-auto">
+    <div className={inline ? undefined : "relative"} data-branding-panel="">
+      {!inline && (
+        <button type="button" className="btn-secondary text-xs flex items-center gap-1.5" onClick={() => setOpen((o) => !o)}>
+          <PaletteIcon /> Branding
+        </button>
+      )}
+      {(open || inline) && (
+        <div className={inline ? "" : "absolute right-0 top-full mt-2 w-80 card bg-surface shadow-2xl border border-border p-4 z-30 max-h-[75vh] overflow-y-auto"}>
           {error && <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-3">{error}</div>}
 
           <label className="text-[11px] text-muted uppercase tracking-wide">Logo</label>
@@ -692,7 +681,7 @@ function BrandingPanel({
 // this button at all rather than showing one that opens to an empty,
 // useless list. Same dropdown-button shape as PublishPanel right below,
 // for visual consistency in this same header row.
-function MergeDashboardsPanel({ dash, onChange }: { dash: DashboardBuilderDetail; onChange: (d: DashboardBuilderDetail) => void }) {
+function MergeDashboardsPanel({ dash, onChange, inline = false, onMerged }: { dash: DashboardBuilderDetail; onChange: (d: DashboardBuilderDetail) => void; inline?: boolean; onMerged?: () => void }) {
   const [open, setOpen] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -716,6 +705,7 @@ function MergeDashboardsPanel({ dash, onChange }: { dash: DashboardBuilderDetail
     try {
       onChange(await dashboardBuilderApi.mergeFrom(dash.id, sourceId));
       setOpen(false);
+      onMerged?.();
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Couldn't merge that dashboard in. Please try again.");
     } finally {
@@ -724,12 +714,14 @@ function MergeDashboardsPanel({ dash, onChange }: { dash: DashboardBuilderDetail
   };
 
   return (
-    <div className="relative" ref={boxRef}>
-      <button type="button" className="btn-secondary text-xs flex items-center gap-1.5" onClick={() => setOpen((o) => !o)}>
-        <MergeIcon /> Merge dashboards
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-2 w-80 dash-card bg-surface shadow-2xl border border-border p-3 z-30 space-y-2">
+    <div className={inline ? undefined : "relative"} ref={boxRef} data-merge-panel="">
+      {!inline && (
+        <button type="button" className="btn-secondary text-xs flex items-center gap-1.5" onClick={() => setOpen((o) => !o)}>
+          <MergeIcon /> Merge dashboards
+        </button>
+      )}
+      {(open || inline) && (
+        <div className={inline ? "space-y-2" : "absolute right-0 top-full mt-2 w-80 dash-card bg-surface shadow-2xl border border-border p-3 z-30 space-y-2"}>
           <div className="text-sm font-semibold">Merge in from this project</div>
           <p className="text-[11px] text-muted leading-relaxed">
             Pull another dashboard&apos;s pages into this one, as new tabs here. The other dashboard is left exactly
@@ -762,7 +754,7 @@ function MergeDashboardsPanel({ dash, onChange }: { dash: DashboardBuilderDetail
   );
 }
 
-function PublishPanel({ dash, onChange }: { dash: DashboardBuilderDetail; onChange: (d: DashboardBuilderDetail) => void }) {
+function PublishPanel({ dash, onChange, triggerClassName }: { dash: DashboardBuilderDetail; onChange: (d: DashboardBuilderDetail) => void; triggerClassName?: string }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -819,7 +811,7 @@ function PublishPanel({ dash, onChange }: { dash: DashboardBuilderDetail; onChan
 
   if (!dash.can_edit) {
     return dash.is_published ? (
-      <a href={publicUrl} target="_blank" rel="noreferrer" className="btn-secondary text-xs flex items-center gap-1.5">
+      <a href={publicUrl} target="_blank" rel="noreferrer" className={triggerClassName || "btn-secondary text-xs flex items-center gap-1.5"}>
         <LinkIcon className="w-3.5 h-3.5" /> View {dash.share_mode === "private" ? "private" : "public"} link
       </a>
     ) : null;
@@ -831,7 +823,9 @@ function PublishPanel({ dash, onChange }: { dash: DashboardBuilderDetail; onChan
     <div className="relative">
       <button
         type="button"
-        className={dash.is_published ? "btn-secondary text-xs" : "btn-primary text-xs"}
+        className={triggerClassName || (dash.is_published ? "btn-secondary text-xs" : "btn-primary text-xs")}
+        aria-expanded={open}
+        data-publish-trigger=""
         onClick={() => setOpen((o) => !o)}
       >
         {dash.is_published ? (dash.share_mode === "private" ? "Published · Private" : "Published") : "Publish"}
@@ -955,13 +949,18 @@ function PageTabsBar({
   activePageId,
   setActivePageId,
   onChange,
+  className = "mt-5 mb-4",
 }: {
   dash: DashboardBuilderDetail;
   activePageId: string | undefined;
   setActivePageId: (id: string) => void;
   onChange: (d: DashboardBuilderDetail) => void;
+  // Spacing around the bar (the dashboard's context row passes none).
+  className?: string;
 }) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  // 2026-10-07: "Delete page" asks through the kit's confirm, never window.confirm.
+  const [deleting, setDeleting] = useState<DashboardBuilderPage | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [busy, setBusy] = useState(false);
   // 2026-09-25d (elite pass) - see KebabIcon above. Which page's menu is
@@ -1024,7 +1023,6 @@ function PageTabsBar({
 
   const remove = async (p: DashboardBuilderPage) => {
     if (busy || pages.length <= 1) return;
-    if (!confirm(`Delete the page "${p.name}"? Every block on it will be deleted too. This can't be undone.`)) return;
     setBusy(true);
     try {
       const updated = await dashboardBuilderApi.deletePage(dash.id, p.id);
@@ -1037,6 +1035,7 @@ function PageTabsBar({
       // no-op
     } finally {
       setBusy(false);
+      setDeleting(null);
     }
   };
 
@@ -1075,7 +1074,7 @@ function PageTabsBar({
   if (!dash.can_edit) {
     if (pages.length <= 1) return null;
     return (
-      <div className="flex items-center gap-1.5 mt-5 mb-4 flex-wrap">
+      <div className={cn("flex items-center gap-1.5 flex-wrap", className)} data-page-tabs="">
         {pages.map((p) => (
           <button
             key={p.id}
@@ -1095,7 +1094,7 @@ function PageTabsBar({
   }
 
   return (
-    <div className="flex items-center gap-1.5 mt-5 mb-4 flex-wrap">
+    <div className={cn("flex items-center gap-1.5 flex-wrap", className)} data-page-tabs="" data-page-tabs-editable="">
       {pages.map((p, i) => {
         const isActive = activePageId === p.id;
         return (
@@ -1242,7 +1241,7 @@ function PageTabsBar({
                     className="w-full text-left text-xs px-2 py-1.5 rounded-md hover:bg-red-500/10 text-red-400 transition-colors flex items-center gap-2 disabled:opacity-50"
                     onClick={() => {
                       setOpenMenuId(null);
-                      remove(p);
+                      setDeleting(p);
                     }}
                   >
                     <TrashIcon /> Delete page
@@ -1261,6 +1260,38 @@ function PageTabsBar({
       >
         <PlusIcon className="w-3 h-3" /> Add page
       </button>
+      <ConfirmDialog
+        open={deleting !== null}
+        title={`Delete the page "${deleting?.name || ""}"?`}
+        confirmLabel="Delete page"
+        busy={busy}
+        onCancel={() => setDeleting(null)}
+        onConfirm={() => { if (deleting) remove(deleting); }}
+      >
+        Every block on it is deleted too. This can't be undone.
+      </ConfirmDialog>
+    </div>
+  );
+}
+
+// The app chrome every state of this page sits in (sidebar + top bar).
+function PageFrame({
+  workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated, style, children,
+}: {
+  workspaces: WorkspaceSummary[];
+  activeWorkspaceId: string;
+  switchWorkspace: (id: string) => void;
+  handleWorkspaceCreated: (ws: WorkspaceSummary) => void;
+  style?: React.CSSProperties;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex">
+      <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
+      <div className="dash-shell flex-1 min-w-0 min-h-screen flex flex-col bg-base" style={style}>
+        <TopNav hideLogo />
+        {children}
+      </div>
     </div>
   );
 }
@@ -1270,64 +1301,69 @@ export default function DashboardBuilderView() {
   const [dash, setDash] = useState<DashboardBuilderDetail | null>(null);
   const [error, setError] = useState("");
   const [activePageId, setActivePageId] = useState<string | null>(null);
-  // 2026-09-24 (Phase 2): edit mode by default for whoever can actually
-  // edit this dashboard - a view-only visitor never sees "edit" at all
-  // (guarded below in the render, not just here) since dash.can_edit isn't
-  // known until the fetch below resolves.
-  const [mode, setMode] = useState<"edit" | "view">("edit");
+  // 2026-10-07 (dashboard edit mode): view by default; ?edit=1 is the
+  // editor (see the note at the top of this file). Only ever honoured for
+  // someone who can_edit - guarded in the body, since that is not known
+  // until the fetch below resolves.
+  const [editing, setEditing] = useEditMode();
   // 2026-09-25d (elite pass) - see the file-top note above.
   const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
+  const frame = { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated };
 
   useEffect(() => {
     if (!dashboardId) return;
+    let cancelled = false;
     dashboardBuilderApi
       .get(dashboardId)
       .then((data) => {
+        if (cancelled) return;
         setDash(data);
         setActivePageId(data.pages[0]?.id || null);
-        if (!data.can_edit) setMode("view");
+        // A dashboard with no block on any page has nothing to view yet
+        // ("Create your own", a blank start) - nor has one whose blocks
+        // were all added but never built (a template's layout): its owner
+        // opens in the editor.
+        const blank = data.pages.every((p) => p.blocks.every((b) => isEmptyBlock(b)));
+        const wantsEdit = readEditFromUrl();
+        if (data.can_edit && (blank || wantsEdit)) setEditing(true);
+        else if (wantsEdit) setEditing(false);
       })
-      .catch((err) =>
-        setError(err?.response?.status === 404 ? "Dashboard not found." : "Couldn't load this dashboard.")
-      );
+      .catch((err) => {
+        if (!cancelled) setError(err?.response?.status === 404 ? "Dashboard not found." : "Couldn't load this dashboard.");
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dashboardId]);
 
   if (error) {
     return (
-      <div className="flex">
-        <AppSidebar
-          workspaces={workspaces}
-          activeWorkspaceId={activeWorkspaceId}
-          onWorkspaceSwitch={switchWorkspace}
-          onWorkspaceCreated={handleWorkspaceCreated}
-        />
-        <div className="flex-1 min-w-0 flex flex-col min-h-screen">
-          <TopNav hideLogo />
-          <div className="max-w-6xl mx-auto px-6 py-8">
-            <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 inline-block">{error}</div>
-            <div className="mt-4">
-              <Link to="/dashboards" className="text-sm text-primary hover:underline">&larr; Back to Dashboards</Link>
-            </div>
+      <PageFrame {...frame}>
+        <div className="px-6 py-8">
+          <div role="alert" className="inline-flex items-center gap-2 rounded-card border border-danger-border bg-danger-fill px-4 py-2.5 text-ui text-danger">
+            <WarningIcon size={14} /> {error}
+          </div>
+          <div className="mt-4">
+            <Link to="/dashboards" className="text-ui font-medium text-brand-ink hover:underline">&larr; Back to Dashboards</Link>
           </div>
         </div>
-      </div>
+      </PageFrame>
     );
   }
 
   if (!dash) {
     return (
-      <div className="flex">
-        <AppSidebar
-          workspaces={workspaces}
-          activeWorkspaceId={activeWorkspaceId}
-          onWorkspaceSwitch={switchWorkspace}
-          onWorkspaceCreated={handleWorkspaceCreated}
-        />
-        <div className="flex-1 min-w-0 flex flex-col min-h-screen">
-          <TopNav hideLogo />
-          <div className="max-w-6xl mx-auto px-6 py-8 text-sm text-muted">Loading&hellip;</div>
+      <PageFrame {...frame}>
+        <div className="flex flex-col gap-4 px-6 py-6" aria-busy="true" data-dashboard-loading="">
+          <div className="ui-shimmer h-6 w-72" />
+          <div className="ui-shimmer h-4 w-96 max-w-full" />
+          <div className="mt-2 grid grid-cols-2 gap-4 lg:grid-cols-4">
+            {[0, 1, 2, 3].map((i) => <div key={i} className="ui-shimmer h-28 !rounded-card" />)}
+          </div>
+          <span className="sr-only">Loading&hellip;</span>
         </div>
-      </div>
+      </PageFrame>
     );
   }
 
@@ -1343,41 +1379,40 @@ export default function DashboardBuilderView() {
       setDash={setDash}
       activePage={activePage}
       setActivePageId={setActivePageId}
-      mode={mode}
-      setMode={setMode}
+      editing={editing}
+      setEditing={setEditing}
     />
   );
 }
 
-// Split out so useDashboardFilters (a hook, which can't be called
-// conditionally) only ever runs once `dash` is loaded and `activePage` is
-// known - the loading/error early-returns above happen before this
-// component even mounts.
+// Split out so the engine hooks (which can't be called conditionally) only
+// ever run once `dash` is loaded and `activePage` is known - the
+// loading/error early-returns above happen before this component mounts.
 function DashboardBuilderViewBody({
   dash,
   setDash,
   activePage,
   setActivePageId,
-  mode,
-  setMode,
+  editing,
+  setEditing,
   workspaces,
   activeWorkspaceId,
   switchWorkspace,
   handleWorkspaceCreated,
 }: {
   dash: DashboardBuilderDetail;
-  setDash: (d: DashboardBuilderDetail) => void;
+  setDash: Dispatch<SetStateAction<DashboardBuilderDetail | null>>;
   activePage: DashboardBuilderDetail["pages"][number] | undefined;
   setActivePageId: (id: string) => void;
-  mode: "edit" | "view";
-  setMode: (m: "edit" | "view") => void;
+  editing: boolean;
+  setEditing: (on: boolean) => void;
   // 2026-09-25d (elite pass) - see the file-top note above.
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string;
   switchWorkspace: (id: string) => void;
   handleWorkspaceCreated: (ws: WorkspaceSummary) => void;
 }) {
-  const filterState = useDashboardFilters(dash.id, activePage);
+  const isEditing = dash.can_edit && editing;
 
   // Phase 5, Batch A (2026-09-28, data governance & quality): whether any
   // quality check on this dashboard's own data source is currently
@@ -1391,8 +1426,9 @@ function DashboardBuilderViewBody({
   // rendering, which happens exactly as it always did regardless of
   // whether this succeeds.
   const [hasFailingQualityChecks, setHasFailingQualityChecks] = useState(false);
-  // File sources: the column list the ParametersEditor's pickers need
-  // (a warehouse dashboard reads dash.tables instead).
+  // File sources: the column list the editor's pickers need (the filters
+  // editor, the step-by-step builder, the AI examples). A warehouse
+  // dashboard reads dash.tables instead.
   const [editorColumns, setEditorColumns] = useState<{ name: string; dtype: string }[] | undefined>(undefined);
   useEffect(() => {
     if (!dash.datasource_id || dash.warehouse_native || !dash.can_edit) return;
@@ -1451,23 +1487,14 @@ function DashboardBuilderViewBody({
   };
   const pageBgTriple = activePage?.background_color ? hexToRgbTriple(activePage.background_color) : null;
 
-  // Every block-mutating action anywhere on this page (build manually,
-  // ask AI, restyle, delete, add) flows through here - re-running the
-  // active filter selection afterward means an override never lingers on
-  // a block whose real, persisted content just changed underneath it.
-  const handleDashChange = (d: DashboardBuilderDetail) => {
-    setDash(d);
-    filterState.refresh();
-    if (mode === "view") run.rerun();
-  };
-
-  // 2026-10-07 (Option A dashboard view): the view/preview mode renders
-  // src/dashboard's DashboardShell (header + filter rail + KPI strip +
-  // block grid) through this one engine hook. A warehouse dashboard runs
-  // every block inside the warehouse (POST /pages/{id}/run); a file
-  // dashboard keeps today's preview-filtered path under the same skin.
-  // Disabled while editing so the canvas's own filter state stays the only
-  // thing firing requests there.
+  // 2026-10-07 (Option A dashboard view): DashboardShell (header + filter
+  // rail + KPI strip + block grid) through this one engine hook. A
+  // warehouse dashboard runs every block inside the warehouse (POST
+  // /pages/{id}/run); a file dashboard keeps today's preview-filtered path
+  // under the same skin.
+  // 2026-10-07 (dashboard edit mode): the engine STAYS ON while editing -
+  // the editor shows the same live numbers as the view and re-runs just
+  // the block that changed.
   const warehouse = Boolean(dash.warehouse_native);
   const source = useMemo<RunSource>(
     () =>
@@ -1480,13 +1507,15 @@ function DashboardBuilderViewBody({
         : {
             kind: "file",
             datasourceId: dash.datasource_id,
+            // What a file block's subtitle calls its table ("... · Bookings export").
+            name: dash.datasource_name,
             preview: (pageId, filters, blockFilters) => dashboardBuilderApi.previewFiltered(dash.id, pageId, filters, blockFilters),
             distinctValues: dash.datasource_id
               ? (column, search) =>
                   datasourceApi.getColumnDistinctValues(dash.datasource_id as string, column, null, { search, limit: 200 }).then((r) => ({ values: r.values }))
               : undefined,
           },
-    [warehouse, dash.id, dash.datasource_id]
+    [warehouse, dash.id, dash.datasource_id, dash.datasource_name]
   );
   const persistSavedViews = useCallback(
     async (views: Parameters<typeof dashboardBuilderApi.updateSavedViews>[1]) => {
@@ -1500,7 +1529,6 @@ function DashboardBuilderViewBody({
     dashboard: dash,
     page: activePage,
     source,
-    enabled: !(dash.can_edit && mode === "edit"),
     persistSavedViews: dash.can_edit ? persistSavedViews : undefined,
   });
   const columnsFor = useCallback(
@@ -1517,7 +1545,9 @@ function DashboardBuilderViewBody({
   // renderings) and the canvas's owner actions - each one the existing
   // block endpoint plus setDash, nothing the grid couldn't also show.
   const [renderMode, setRenderMode] = useDashboardViewMode(dash.id);
-  const comments = useComments(dash.id, { enabled: !(dash.can_edit && mode === "edit") });
+  const comments = useComments(dash.id);
+  // The editor: always mounted (hooks), only handed to the shell while editing.
+  const editor = useDashboardEditor({ dash, setDash, page: activePage, run, warehouse, fileColumns: editorColumns });
   const canvasOwner = useMemo<CanvasOwnerActions | null>(
     () =>
       dash.can_edit
@@ -1537,7 +1567,7 @@ function DashboardBuilderViewBody({
   );
   const ownerActions = dash.can_edit
     ? {
-        onEdit: () => setMode("edit"),
+        onEdit: () => setEditing(true),
         onSwap: async (block: DashboardBlock, payload: { chart_type?: string; type?: DashboardBlockType }) => {
           const updated = await dashboardBuilderApi.swapBlock(dash.id, block.id, payload);
           setDash(updated);
@@ -1564,330 +1594,130 @@ function DashboardBuilderViewBody({
       }
     : undefined;
 
-  // 2026-09-25 (Round 2): inline rename - there was no way to fix a
-  // dashboard's name at all before this round, which mattered a lot more
-  // once "Create your own" could hand someone one permanently called
-  // "Untitled dashboard." Same pattern as DashboardView.tsx's own rename.
-  const [renaming, setRenaming] = useState(false);
-  const [nameDraft, setNameDraft] = useState(dash.name);
-  const [savingName, setSavingName] = useState(false);
-
-  const startRename = () => {
-    setNameDraft(dash.name);
-    setRenaming(true);
+  const renameDashboard = async (name: string) => {
+    setDash(await dashboardBuilderApi.rename(dash.id, name));
+  };
+  const done = () => {
+    editor.flushLayout();
+    setEditing(false);
   };
 
-  const commitRename = async () => {
-    const trimmed = nameDraft.trim();
-    setRenaming(false);
-    if (!trimmed || trimmed === dash.name) return;
-    setSavingName(true);
-    try {
-      setDash(await dashboardBuilderApi.rename(dash.id, trimmed));
-    } catch {
-      setNameDraft(dash.name);
-    } finally {
-      setSavingName(false);
-    }
-  };
+  // Branding and Merge sit behind the edit header's "More" menu, each in a Sheet.
+  const [moreSheet, setMoreSheet] = useState<"branding" | "merge" | null>(null);
+  const canMerge = dash.sibling_dashboards.length > 0;
 
-  const qualityBanner = hasFailingQualityChecks ? (
-    <div className="max-w-6xl mx-auto px-4 sm:px-6 pt-4 w-full">
-      <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
-        One or more data-quality checks are failing on a data source this dashboard uses.
-        {dash.datasource_id && (
-          <>
-            {" "}
-            <Link to={`/workspace/${dash.datasource_id}?tab=quality`} className="underline hover:no-underline">
-              Review the checks
-            </Link>
-          </>
-        )}
-      </div>
-    </div>
-  ) : null;
-
-  const viewMode = !(dash.can_edit && mode === "edit");
-
-  if (viewMode) {
-    return (
-      <div className="flex">
-        <AppSidebar
-          workspaces={workspaces}
-          activeWorkspaceId={activeWorkspaceId}
-          onWorkspaceSwitch={switchWorkspace}
-          onWorkspaceCreated={handleWorkspaceCreated}
-        />
-        <div className="dash-shell flex-1 min-w-0 min-h-screen flex flex-col bg-base" style={shellStyle}>
-          <TopNav hideLogo />
-          {qualityBanner}
-          <DashboardShell
-            dashboard={dash}
-            page={activePage}
-            run={run}
-            source={source}
-            mode={warehouse ? "warehouse" : "file"}
-            owner={ownerActions}
-            fetchSql={fetchSql}
-            view={renderMode}
-            onViewChange={setRenderMode}
-            canvasOwner={canvasOwner}
-            comments={comments}
-            onEditDashboard={dash.can_edit ? () => setMode("edit") : undefined}
-            onUpgradeBlocks={upgradeBlocks}
-            headerExtra={
-              <>
-                {logoUrl && <img src={logoUrl} alt="" className="h-8 w-auto max-w-[140px] object-contain rounded-md" />}
-                <PublishPanel dash={dash} onChange={handleDashChange} />
-              </>
-            }
-            beforeContent={
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-                <div className="flex items-center gap-3 flex-wrap">
-                  <Link to="/dashboards" className="text-caption text-muted hover:text-text transition">&larr; Dashboards</Link>
-                  {activePage && <DataFreshnessBadge blocks={activePage.blocks} />}
-                </div>
-                <PageTabsBar dash={{ ...dash, can_edit: false }} activePageId={activePage?.id} setActivePageId={setActivePageId} onChange={handleDashChange} />
-              </div>
-            }
-            style={pageBgTriple ? { background: `rgb(${pageBgTriple} / 0.35)` } : undefined}
-          />
-        </div>
-      </div>
-    );
-  }
+  const tabs = (
+    <PageTabsBar
+      dash={isEditing ? dash : { ...dash, can_edit: false }}
+      activePageId={activePage?.id}
+      setActivePageId={setActivePageId}
+      onChange={setDash}
+      className=""
+    />
+  );
 
   return (
-    <div className="flex">
-      <AppSidebar
-        workspaces={workspaces}
-        activeWorkspaceId={activeWorkspaceId}
-        onWorkspaceSwitch={switchWorkspace}
-        onWorkspaceCreated={handleWorkspaceCreated}
-      />
-      <div className="dash-shell flex-1 min-w-0 min-h-screen flex flex-col" style={shellStyle}>
-        <TopNav hideLogo />
-        {hasFailingQualityChecks && (
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 pt-4 w-full">
-            <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
-              One or more data-quality checks are failing on a data source this dashboard uses.
-              {dash.datasource_id && (
-                <>
-                  {" "}
-                  <Link to={`/workspace/${dash.datasource_id}?tab=quality`} className="underline hover:no-underline">
-                    Review the checks
-                  </Link>
-                </>
-              )}
-            </div>
-          </div>
-        )}
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-8 w-full flex-1">
-          <Link to="/dashboards" className="text-xs text-muted hover:text-text transition inline-block mb-3">&larr; Dashboards</Link>
-
-        <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
-          <div className="min-w-0">
-            {logoUrl && (
-              <img src={logoUrl} alt="" className="h-9 w-auto max-w-[160px] object-contain mb-2 rounded-md" />
-            )}
-            {renaming ? (
-              <input
-                autoFocus
-                className="input text-2xl font-bold tracking-tight py-1 w-full max-w-md"
-                value={nameDraft}
-                onChange={(e) => setNameDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") commitRename();
-                  if (e.key === "Escape") setRenaming(false);
-                }}
-                onBlur={commitRename}
-                maxLength={120}
-              />
-            ) : (
-            <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2 flex-wrap">
-              {/* 2026-09-25h (inline editing round): the name itself is now
-                  the click target, not just the small pencil next to it -
-                  the whole point of "click the thing you see to edit it"
-                  is that the thing itself is clickable. The pencil stays
-                  too, both for a visible hint that this is editable and as
-                  a second way in for anyone who'd rather not click text. */}
-              {dash.can_edit ? (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  className="cursor-text hover:bg-surface2 rounded-md px-1 -mx-1 transition"
-                  title="Click to rename this dashboard"
-                  onClick={startRename}
-                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); startRename(); } }}
-                >
-                  {dash.name}
-                </span>
-              ) : (
-                dash.name
-              )}
-              {dash.can_edit && (
-                <button
-                  type="button"
-                  className="opacity-50 hover:opacity-100 transition text-base"
-                  title="Rename this dashboard"
-                  onClick={startRename}
-                >
-                  &#9998;
-                </button>
-              )}
-              {savingName && <span className="text-xs font-normal text-accent">Saving&hellip;</span>}
-              <span className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-accent/15 text-accent border border-accent/30">
-                Dashboard
-              </span>
-            </h1>
-            )}
-            <div className="text-xs text-muted mt-1.5">
-              {dash.is_published ? "Published - anyone with the link can view it" : "Not published yet - only you can see this"}
-            </div>
-            {/* 2026-09-29 (design revamp): "i want a option like see from
-                which project this dashboard created" - links back to the
-                exact chat analysis this dashboard was generated from (see
-                DashboardBuilderOut.source_conversation_title's own backend
-                comment). Only shown when that Project still exists -
-                omitted, not a dead link, for a dashboard started blank or
-                whose source chat has since been deleted. */}
-            {dash.source_conversation_title && dash.source_conversation_datasource_id && (
-              <Link
-                to={`/workspace/${dash.source_conversation_datasource_id}?conversation=${dash.source_conversation_id}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs text-muted hover:text-primary transition mt-1 inline-flex items-center gap-1"
-                title="Open the chat analysis this dashboard was built from in a new tab"
-              >
-                <FolderIcon className="w-3 h-3" /> Built from &ldquo;{dash.source_conversation_title}&rdquo;
-                <ExternalLinkIcon className="w-2.5 h-2.5 opacity-60" />
+    <PageFrame workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} switchWorkspace={switchWorkspace} handleWorkspaceCreated={handleWorkspaceCreated} style={shellStyle}>
+      {hasFailingQualityChecks && (
+        <div className="px-4 pt-4 sm:px-6" data-quality-banner="">
+          <div role="status" className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-card border border-danger-border bg-danger-fill px-4 py-2.5 text-ui text-danger">
+            <WarningIcon size={14} className="shrink-0" />
+            <span>One or more data-quality checks are failing on a data source this dashboard uses.</span>
+            {dash.datasource_id && (
+              <Link to={`/workspace/${dash.datasource_id}?tab=quality`} className="font-medium underline underline-offset-2 hover:no-underline">
+                Review the checks
               </Link>
             )}
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {dash.can_edit && (
-              <div className="flex items-center rounded-lg border border-border overflow-hidden text-xs">
-                <button
-                  type="button"
-                  className="px-2.5 py-1.5 transition bg-primary text-white"
-                  onClick={() => setMode("edit")}
-                >
-                  Edit
-                </button>
-                <button
-                  type="button"
-                  className="px-2.5 py-1.5 transition text-muted hover:text-text hover:bg-surface2"
-                  onClick={() => setMode("view")}
-                >
-                  Preview
-                </button>
-              </div>
-            )}
-            <BrandingPanel
-              dash={dash}
-              onChange={handleDashChange}
-              logoUrl={logoUrl}
-              backgroundImageUrl={backgroundImageUrl}
-              onAssetChanged={bumpBranding}
-            />
-            <MergeDashboardsPanel dash={dash} onChange={handleDashChange} />
-            <PublishPanel dash={dash} onChange={handleDashChange} />
-          </div>
         </div>
-
-        <PageTabsBar dash={dash} activePageId={activePage?.id} setActivePageId={setActivePageId} onChange={handleDashChange} />
-
-        {/* 2026-09-25g (live-data freshness round): shown regardless of
-            filter state - see DashboardBlocks.tsx's own comment for why
-            this is a real, honest "last computed" signal rather than a
-            simulated "live" pulse. */}
-        {activePage && (
-          <div className="mb-1.5">
-            <DataFreshnessBadge blocks={activePage.blocks} />
-          </div>
-        )}
-
-        {/* 2026-09-25e (elite pass): replaces the old bare "Filtering N
-            active" line with the real, honest version of the reference
-            dashboards' own filter-bar footer ("Showing 6,709 reviews · all
-            departments · all years") - a real server-counted row count
-            (filterState.matchedRows, never fabricated - see
-            lib/useDashboardFilters.ts) plus every filter block's current
-            state, not just the ones actively set, so at rest it reads as
-            a clear summary of what's being shown rather than only
-            appearing once something is filtered.
-
-            2026-09-29 (Hex-reference filter-bar round): an ACTIVE filter
-            is now a real removable chip (click × to clear just that one),
-            not just bolded text - the reference mockup's own "Q3 ×"
-            token - plus a "Reset filters" action that clears every
-            page-wide filter at once (filterState.resetFilters, one state
-            update + one request - see its own comment for why this isn't
-            just a loop over setFilterValue). An inactive filter block
-            stays plain text ("Division: All") exactly as before - nothing
-            to remove yet. */}
-        {activePage && filterState.matchedRows !== null && (
-          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 mb-2">
-            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-muted">
-              <span
-                className={`w-1.5 h-1.5 rounded-full shrink-0 ${filterState.loading ? "bg-accent animate-pulse" : "bg-accent/40"}`}
-              />
-              <span className="font-semibold text-text tabular-nums">{filterState.matchedRows.toLocaleString()}</span>
-              <span>row{filterState.matchedRows === 1 ? "" : "s"} match</span>
-              {activePage.blocks
-                .filter((b) => b.type === "filter" && b.config?.column)
-                .map((b) => {
-                  const val = filterState.values[b.id];
-                  const active = isSpecActive(val);
-                  const label = b.title || b.config?.column || "Filter";
-                  if (!active) {
-                    return (
-                      <span key={b.id} className="flex items-center gap-1.5">
-                        <span aria-hidden="true" className="text-border">&middot;</span>
-                        <span>{label}: {describeFilterSpec(val)}</span>
-                      </span>
-                    );
-                  }
-                  return (
-                    <button
-                      key={b.id}
-                      type="button"
-                      onClick={() => filterState.setFilterValue(b.id, null)}
-                      title={`Clear ${label} filter`}
-                      className="flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 font-medium text-primary hover:bg-primary/20 transition"
-                    >
-                      <span>{label}: {describeFilterSpec(val)}</span>
-                      <span aria-hidden="true">&times;</span>
-                    </button>
-                  );
-                })}
-            </div>
-            {activePage.blocks.some((b) => b.type === "filter" && isSpecActive(filterState.values[b.id])) && (
-              <button
-                type="button"
-                onClick={filterState.resetFilters}
-                className="text-[11px] text-muted hover:text-text transition shrink-0"
+      )}
+      <DashboardShell
+        dashboard={dash}
+        page={activePage}
+        run={run}
+        source={source}
+        mode={warehouse ? "warehouse" : "file"}
+        owner={ownerActions}
+        fetchSql={fetchSql}
+        view={renderMode}
+        onViewChange={setRenderMode}
+        canvasOwner={canvasOwner}
+        comments={comments}
+        onEditDashboard={dash.can_edit ? () => setEditing(true) : undefined}
+        onUpgradeBlocks={upgradeBlocks}
+        editing={isEditing ? { editor, onDone: done, onRename: renameDashboard } : null}
+        subtitleExtra={
+          dash.can_edit && dash.source_conversation_title && dash.source_conversation_datasource_id ? (
+            // "see from which project this dashboard was created": the chat
+            // analysis it was generated from, opened beside the dashboard.
+            <Link
+              to={`/workspace/${dash.source_conversation_datasource_id}?conversation=${dash.source_conversation_id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-source-link=""
+              className="ui-focus inline-flex max-w-full items-center gap-1 rounded text-ui text-muted hover:text-brand-ink hover:underline"
+              title="Open the chat analysis this dashboard was built from in a new tab"
+            >
+              <span className="truncate">Built from &ldquo;{dash.source_conversation_title}&rdquo;</span>
+              <ExternalIcon size={12} className="shrink-0" />
+            </Link>
+          ) : undefined
+        }
+        headerExtra={
+          <>
+            {logoUrl && <img src={logoUrl} alt="" className="h-8 w-auto max-w-[140px] object-contain rounded-md" />}
+            {isEditing && (
+              <Popover
+                align="end"
+                width={220}
+                haspopup="menu"
+                role="menu"
+                ariaLabel="More"
+                trigger={(api) => (
+                  <button type="button" className={buttonClasses({ variant: "secondary" })} data-popover-trigger="" data-edit-more="" {...api.props}>
+                    <MoreIcon size={15} /> More
+                  </button>
+                )}
               >
-                Reset filters
-              </button>
+                {({ close }) => (
+                  <div className="py-1">
+                    <MenuRow icon={<KitPaletteIcon size={14} />} onClick={() => { close(); setMoreSheet("branding"); }}>Branding…</MenuRow>
+                    {canMerge && <MenuRow icon={<KitMergeIcon size={14} />} onClick={() => { close(); setMoreSheet("merge"); }}>Merge dashboards…</MenuRow>}
+                  </div>
+                )}
+              </Popover>
             )}
-          </div>
-        )}
-
-        {/* 2026-10-07 (Option A dashboard view): the rail's definition -
-            which columns become filters, the date column and the default
-            period - lives with the editor, right above the canvas. */}
-        <ParametersEditor dash={dash} onChange={handleDashChange} columns={editorColumns} className="mt-4" />
-
-        <div className="mt-6" style={pageBgTriple ? { background: `rgb(${pageBgTriple} / 0.35)`, borderRadius: 20, padding: 16 } : undefined}>
-          {!activePage ? (
-            <div className="text-sm text-muted py-10 text-center">This dashboard has no pages yet.</div>
-          ) : (
-            <DashboardCanvas dash={dash} page={activePage} onChange={handleDashChange} filterState={filterState} />
-          )}
-        </div>
-        </div>
-      </div>
-    </div>
+            <PublishPanel dash={dash} onChange={setDash} triggerClassName={buttonClasses({ variant: "secondary" })} />
+          </>
+        }
+        contextRow={{
+          left: (
+            <>
+              <Link to="/dashboards" className="ui-focus rounded text-caption text-muted transition hover:text-text">&larr; Dashboards</Link>
+              {/* 2026-10-07 (real end-to-end run): only for a dashboard whose
+                  numbers are stored on its blocks. A warehouse-native one is
+                  recomputed on every run - the header already says
+                  "refreshed just now" - and block.data_updated_at there is
+                  only when a block's QUERY was last saved, so this badge sat
+                  next to it saying "Data updated 10 minutes ago" (and would
+                  say "3 days ago" next week) about live numbers. */}
+              {activePage && !dash.warehouse_native && <DataFreshnessBadge blocks={activePage.blocks} />}
+            </>
+          ),
+          tabs,
+        }}
+        style={pageBgTriple ? { background: `rgb(${pageBgTriple} / 0.35)` } : undefined}
+      />
+      {isEditing && (
+        <>
+          <Sheet open={moreSheet === "branding"} onClose={() => setMoreSheet(null)} title="Branding" subtitle="Logo, colours and background, wherever this dashboard is viewed." size="sm" id="edit-branding">
+            <BrandingPanel inline dash={dash} onChange={setDash} logoUrl={logoUrl} backgroundImageUrl={backgroundImageUrl} onAssetChanged={bumpBranding} />
+          </Sheet>
+          <Sheet open={moreSheet === "merge"} onClose={() => setMoreSheet(null)} title="Merge dashboards" size="sm" id="edit-merge">
+            <MergeDashboardsPanel inline dash={dash} onChange={setDash} onMerged={() => setMoreSheet(null)} />
+          </Sheet>
+        </>
+      )}
+    </PageFrame>
   );
 }

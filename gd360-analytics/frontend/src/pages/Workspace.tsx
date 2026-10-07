@@ -396,6 +396,10 @@ function SaveChartMenu({
   );
 }
 
+// ChartCanvas's own card chrome around its plot: p-4 top and bottom (32px)
+// plus the one-line "..." menu row above the plot (34px).
+const CHART_CARD_CHROME_PX = 66;
+
 export default function Workspace() {
   const { datasourceId } = useParams();
   const navigate = useNavigate();
@@ -1018,6 +1022,9 @@ export default function Workspace() {
   // data_loader.default_table_for_preview) when nothing is explicitly
   // requested.
   const [activeOriginalTable, setActiveOriginalTable] = useState<string | null>(null);
+  // The Chart tab's chart reports its own minimum plot height here (see
+  // the warehouse-turn chart slot below).
+  const [chartFloorPx, setChartFloorPx] = useState(380);
   const originalTables = useMemo(
     () => (dsInfo && hasMultipleTables(dsInfo.kind, dsInfo.schema_cache) ? Object.keys(dsInfo.schema_cache || {}) : []),
     [dsInfo]
@@ -2709,8 +2716,20 @@ export default function Workspace() {
                 {/* For a warehouse turn the pane scrolls (see the container
                     above) so the result table, SQL and footer below never
                     squeeze the chart itself under a readable height. */}
-                <div className={isWarehouseChartTurn ? "flex-1 min-h-[320px] shrink-0" : "flex-1 min-h-0"}>
-                  <ChartCanvas chartSpec={displaySpec} title={chartStyle.title || chartTitle} />
+                {/* 2026-10-07 (real end-to-end run): this slot's floor used
+                    to be a fixed 320px, but the chart inside refuses to be
+                    shorter than its own minimum (380px by default, more for
+                    some chart types) and its card clips what does not fit -
+                    so on a 900px-tall window, once the result table and SQL
+                    below took their share, the bottom 126px of every
+                    warehouse chart (the x axis and the low end of the y
+                    axis) was cut off. The floor is now the chart's own
+                    reported minimum plus its card's chrome. */}
+                <div
+                  className={isWarehouseChartTurn ? "flex-1 shrink-0" : "flex-1 min-h-0"}
+                  style={isWarehouseChartTurn ? { minHeight: chartFloorPx + CHART_CARD_CHROME_PX } : undefined}
+                >
+                  <ChartCanvas chartSpec={displaySpec} title={chartStyle.title || chartTitle} onMinHeight={setChartFloorPx} />
                 </div>
                 {/* Insight box + "Show how this was calculated" toggle -
                     the exact same component and classNames ChatPanel.tsx's

@@ -375,6 +375,9 @@ function PublicDashboardBody({
       warehouse
         ? {
             kind: "warehouse",
+            // 2026-10-07 (round 9): a published link never shows SQL - and
+            // the public endpoints no longer send any.
+            hideSql: true,
             run: (pageId, req, signal) =>
               byHostname
                 ? publicDashboardApi.runPageByHostname(resolverKey, pageId, req, viewerToken, signal)
@@ -386,6 +389,7 @@ function PublicDashboardBody({
           }
         : {
             kind: "file",
+            hideSql: true,
             preview: (pageId, filters, blockFilters) =>
               byHostname
                 ? publicDashboardApi.previewFilteredByHostname(resolverKey, pageId, filters, blockFilters, viewerToken)
@@ -399,8 +403,9 @@ function PublicDashboardBody({
   );
   const run = useDashboardRun({ dashboard: dash, page: activePage, source });
   // 2026-10-07 (analyst canvas round): the published link can read the
-  // page as a canvas too - SQL visible, nothing editable, no comments
-  // (there is no identity to attribute one to). Keyed by the share's
+  // page as a canvas too - nothing editable, no comments (there is no
+  // identity to attribute one to) and, since round 9, no SQL: a cell
+  // shows what it returned, never its statement. Keyed by the share's
   // slug/hostname since PublicDashboardOut never carries the id.
   const [viewMode, setViewMode] = useDashboardViewMode(`public:${resolverKey}`);
 
@@ -416,7 +421,8 @@ function PublicDashboardBody({
       onViewChange={setViewMode}
       beforeContent={
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          {activePage && <DataFreshnessBadge blocks={activePage.blocks} />}
+          {/* Stored-number dashboards only - see DashboardBuilderView's same line. */}
+          {activePage && !warehouse && <DataFreshnessBadge blocks={activePage.blocks} />}
           {dash.pages.length > 1 && (
             <div className="flex items-center gap-1.5 flex-wrap" role="tablist" aria-label="Pages">
               {dash.pages.map((p, i) => (
