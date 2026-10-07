@@ -1127,3 +1127,15 @@ input[type="radio"] {
 @container (max-width: 126px) {
   .ui-kpi-value { font-size: 20px; }
 }
+
+/* 2026-10-07 (identity-colour round): the bar + line + donut on a palette
+   card of the Appearance sheet are the real charts drawn at full size and
+   scaled down (dashboard/theme/PalettePreview.tsx). At that size their
+   words are specks, so the thumbnail keeps the marks and drops the text:
+   the card's own title and swatches say what it is. */
+.palette-thumb text,
+.palette-thumb [data-chart-legend],
+.palette-thumb [data-donut-legend],
+.palette-thumb [data-donut-label] {
+  display: none;
+}
