@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import ChartCanvas from "./ChartCanvas";
+import ChartCanvas, { type ChartExportApi } from "./ChartCanvas";
 import { datasourceApi, DashboardBlock, DashboardBlockType, ColumnFilterSpec, ColumnDistinctValue, FilterTextOp, FilterNumberOp, FilterCriterion } from "../api/client";
 import { DashboardFilterState } from "../lib/useDashboardFilters";
 import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
@@ -77,6 +77,8 @@ export const STACK_MIN_HEIGHT: Record<string, number> = {
   // pure-layout widgets - see HeadingBlock/DividerBlock below.
   heading: 64,
   divider: 40,
+  sql: 320,
+  input: 88,
 };
 
 // 2026-09-25 (Round 15, element library): the (w, h) grid units a freshly
@@ -99,6 +101,9 @@ export const BLOCK_DEFAULT_SIZE: Record<DashboardBlockType, { w: number; h: numb
   table: { w: 6, h: 6 },
   donut: { w: 6, h: 6 },
   avatar_list: { w: 6, h: 6 },
+  // 2026-10-07 (analyst canvas round): the two canvas cell kinds.
+  sql: { w: 6, h: 6 },
+  input: { w: 3, h: 2 },
 };
 
 // A small, fixed set of accent hues (see index.css's --dash-accent-0..5
@@ -545,9 +550,16 @@ export function BlockChart({
   onMinHeight,
   blockFilterCriteria,
   onBlockFilterChange,
+  bare = false,
+  onExportApi,
 }: {
   title: string | null;
   config: any;
+  // 2026-10-07 (Option A dashboard view): `bare` draws the plot without
+  // ChartCanvas's own card/export menu (the kit ChartCard supplies them);
+  // `onExportApi` is ChartCanvas's export hook, passed straight through.
+  bare?: boolean;
+  onExportApi?: (api: ChartExportApi | null) => void;
   // 2026-09-29 (design revamp): forwarded straight through to ChartCanvas -
   // see its own comment on this prop. Only BlockCard (DashboardCanvas.tsx)
   // ever passes it.
@@ -607,7 +619,7 @@ export function BlockChart({
         <div className="shrink-0 text-[11px] text-muted italic px-2 pt-1 pb-0.5">No unusual points detected.</div>
       )}
       <div className="flex-1 min-h-0">
-        <ChartCanvas chartSpec={styledSpec} title={title || undefined} dashPremium onMinHeight={onMinHeight} />
+        <ChartCanvas chartSpec={styledSpec} title={title || undefined} dashPremium onMinHeight={onMinHeight} bare={bare} onExportApi={onExportApi} />
       </div>
     </div>
   );
@@ -688,11 +700,14 @@ export function GaugeBlock({
   config,
   editable,
   onAccentColorChange,
+  bare = false,
 }: {
   title: string | null;
   config: any;
   editable?: boolean;
   onAccentColorChange?: (color: string | null) => void;
+  // 2026-10-07 (Option A dashboard view): only the arc, no card/label.
+  bare?: boolean;
 }) {
   const value = typeof config?.value === "number" ? config.value : 0;
   const min = typeof config?.min === "number" ? config.min : 0;
@@ -725,8 +740,8 @@ export function GaugeBlock({
   const display = value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
   return (
-    <div className="dash-card h-full p-5 flex flex-col gap-1 overflow-hidden relative">
-      <div className="flex items-start justify-between gap-2">
+    <div className={bare ? "h-full flex flex-col gap-1 overflow-hidden relative" : "dash-card h-full p-5 flex flex-col gap-1 overflow-hidden relative"}>
+      {!bare && <div className="flex items-start justify-between gap-2">
         <div className="text-[11px] font-semibold uppercase tracking-wide text-muted truncate">{label}</div>
         <span
           className={`dash-icon-chip ${customColor ? "" : `dash-accent-${idx}`}`}
@@ -734,7 +749,7 @@ export function GaugeBlock({
         >
           <TargetGlyph className="w-[18px] h-[18px]" />
         </span>
-      </div>
+      </div>}
       <div className="flex-1 min-h-0 flex items-center justify-center">
         <svg viewBox="0 0 200 175" className="w-full h-full max-w-[240px]" role="img" aria-label={`${label}: ${display}`}>
           <path d={trackPath} fill="none" stroke="rgb(var(--color-border))" strokeWidth={strokeW} strokeLinecap="round" />
@@ -766,7 +781,22 @@ export function GaugeBlock({
 // PowerBI-style donut callout the reference screenshots use. Capped
 // server-side to the top 6 categories + "Other" (see _run_manual_recipe) so
 // the legend never overlaps itself. config: {items: [{label, value}]}.
-export function DonutBlock({ title, config }: { title: string | null; config: any }) {
+export function DonutBlock({
+  title,
+  config,
+  onItemClick,
+  selectedLabel,
+  bare = false,
+}: {
+  title: string | null;
+  config: any;
+  // 2026-10-07 (Option A dashboard view): cross-filtering - a click on a
+  // slice, and which slice is currently the page filter (dimmed others).
+  onItemClick?: (label: string) => void;
+  selectedLabel?: string | null;
+  // Render only the ring (the caller already supplies the card + title).
+  bare?: boolean;
+}) {
   const items: { label: string; value: number }[] = Array.isArray(config?.items) ? config.items : [];
   const total = items.reduce((s, it) => s + (typeof it.value === "number" ? it.value : 0), 0);
 
@@ -799,13 +829,25 @@ export function DonutBlock({ title, config }: { title: string | null; config: an
     return `M ${x0} ${y0} A ${rOuter} ${rOuter} 0 ${large} 1 ${x1} ${y1} L ${ix1} ${iy1} A ${rInner} ${rInner} 0 ${large} 0 ${ix0} ${iy0} Z`;
   };
 
-  return (
-    <div className="dash-card h-full p-5 flex flex-col overflow-hidden">
-      {title && <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-1 truncate">{title}</div>}
+  const ring = (
       <div className="flex-1 min-h-0 flex items-center justify-center">
         <svg viewBox="0 0 300 216" className="w-full h-full" role="img" aria-label={title || "Breakdown"}>
           {segments.map((s) => (
-            <path key={s.idx} d={arcPath(s.startA, s.endA)} fill={`rgb(var(--dash-accent-${s.idx}))`} stroke="rgb(var(--color-surface))" strokeWidth="2" />
+            <path
+              key={s.idx}
+              d={arcPath(s.startA, s.endA)}
+              fill={`rgb(var(--dash-accent-${s.idx}))`}
+              stroke="rgb(var(--color-surface))"
+              strokeWidth="2"
+              opacity={selectedLabel && selectedLabel !== s.label ? 0.35 : 1}
+              data-donut-slice={s.label}
+              role={onItemClick ? "button" : undefined}
+              tabIndex={onItemClick ? 0 : undefined}
+              aria-label={onItemClick ? `${s.label}: ${Math.round(s.pct * 100)}%` : undefined}
+              style={onItemClick ? { cursor: "pointer" } : undefined}
+              onClick={onItemClick ? () => onItemClick(s.label) : undefined}
+              onKeyDown={onItemClick ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onItemClick(s.label); } } : undefined}
+            />
           ))}
           <text x={cx} y={cy - 3} textAnchor="middle" style={{ fontSize: "19px", fontWeight: 700, fill: "rgb(var(--color-text))" }}>
             {total.toLocaleString(undefined, { maximumFractionDigits: 0 })}
@@ -834,6 +876,12 @@ export function DonutBlock({ title, config }: { title: string | null; config: an
           })}
         </svg>
       </div>
+  );
+  if (bare) return <div className="h-full flex flex-col">{ring}</div>;
+  return (
+    <div className="dash-card h-full p-5 flex flex-col overflow-hidden">
+      {title && <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-1 truncate">{title}</div>}
+      {ring}
     </div>
   );
 }
@@ -847,11 +895,14 @@ export function SparklineBlock({
   config,
   editable,
   onAccentColorChange,
+  bare = false,
 }: {
   title: string | null;
   config: any;
   editable?: boolean;
   onAccentColorChange?: (color: string | null) => void;
+  // 2026-10-07 (Option A dashboard view): no card/label, the caller's.
+  bare?: boolean;
 }) {
   const rawSeries: unknown[] = Array.isArray(config?.series) ? config.series : [];
   const series: number[] = rawSeries.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
@@ -867,8 +918,8 @@ export function SparklineBlock({
   const up = deltaPct !== null && deltaPct >= 0;
 
   return (
-    <div className="dash-card h-full p-5 flex flex-col justify-between gap-3 overflow-hidden relative">
-      <div className="flex items-start justify-between gap-2">
+    <div className={bare ? "h-full flex flex-col justify-between gap-3 overflow-hidden relative" : "dash-card h-full p-5 flex flex-col justify-between gap-3 overflow-hidden relative"}>
+      {!bare && <div className="flex items-start justify-between gap-2">
         <div className="text-[11px] font-semibold uppercase tracking-wide text-muted truncate">{label}</div>
         <span
           className={`dash-icon-chip ${customColor ? "" : `dash-accent-${idx}`}`}
@@ -876,7 +927,7 @@ export function SparklineBlock({
         >
           <TrendIcon className="w-[18px] h-[18px]" />
         </span>
-      </div>
+      </div>}
       <div className="flex items-end justify-between gap-3">
         <div className="dash-kpi-value text-2xl font-bold truncate">{display}</div>
         {deltaPct !== null && (
@@ -934,22 +985,42 @@ function initials(name: string): string {
 // a thin relative-share bar - the top-N banner list style from the
 // reference dashboards. Capped server-side to the top 8 (see
 // _run_manual_recipe). config: {items: [{rank, name, value}], label}.
-export function AvatarListBlock({ title, config }: { title: string | null; config: any }) {
+export function AvatarListBlock({
+  title,
+  config,
+  onItemClick,
+  selectedName,
+  bare = false,
+}: {
+  title: string | null;
+  config: any;
+  // 2026-10-07 (Option A dashboard view): cross-filtering, same as DonutBlock.
+  onItemClick?: (name: string) => void;
+  selectedName?: string | null;
+  bare?: boolean;
+}) {
   const items: { rank?: number; name: string; value: number }[] = Array.isArray(config?.items) ? config.items : [];
   const label = title || config?.label || "Top list";
   const max = items.length ? Math.max(...items.map((it) => (typeof it.value === "number" ? it.value : 0)), 1) : 1;
 
   return (
-    <div className="dash-card h-full p-4 flex flex-col overflow-hidden">
-      <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-3 shrink-0 truncate">{label}</div>
+    <div className={bare ? "h-full flex flex-col overflow-hidden" : "dash-card h-full p-4 flex flex-col overflow-hidden"}>
+      {!bare && <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-3 shrink-0 truncate">{label}</div>}
       <div className="flex-1 min-h-0 overflow-auto flex flex-col gap-2.5">
         {items.length === 0 && <div className="text-sm text-muted italic">No data yet.</div>}
         {items.map((it, i) => {
           const idx = accentIndex(it.name || String(i));
           const val = typeof it.value === "number" ? it.value : 0;
           const pct = Math.max(4, (val / max) * 100);
+          const Row = onItemClick ? "button" : "div";
           return (
-            <div key={i} className="flex items-center gap-2.5">
+            <Row
+              key={i}
+              type={onItemClick ? "button" : undefined}
+              onClick={onItemClick ? () => onItemClick(it.name) : undefined}
+              aria-pressed={onItemClick ? selectedName === it.name : undefined}
+              className={`flex items-center gap-2.5 text-left ${onItemClick ? "ui-focus rounded-md -mx-1 px-1 hover:bg-surface2" : ""} ${selectedName && selectedName !== it.name ? "opacity-50" : ""}`}
+            >
               <span className="text-[10px] font-semibold text-muted w-4 shrink-0 text-right tabular-nums">{it.rank ?? i + 1}</span>
               <span className={`dash-icon-chip dash-icon-chip--sm dash-accent-${idx}`}>{initials(it.name)}</span>
               <div className="flex-1 min-w-0">
@@ -963,7 +1034,7 @@ export function AvatarListBlock({ title, config }: { title: string | null; confi
                   <div className="h-full rounded-full" style={{ width: `${pct}%`, background: `rgb(var(--dash-accent-${idx}))` }} />
                 </div>
               </div>
-            </div>
+            </Row>
           );
         })}
       </div>
