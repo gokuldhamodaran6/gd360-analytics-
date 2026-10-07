@@ -338,6 +338,42 @@ each new column means.
     level logo/colors/background image plus a lightweight per-page
     differentiator, without doubling the upload/storage surface this round
     adds.
+
+Canvas cells (2026-10-07, analyst canvas + dashboard-from-prompt round):
+the Option C canvas renders the SAME DashboardBlock rows as cells, so two
+block kinds were added and two config keys bind cells together. The
+contract the frontend depends on:
+
+  - type "sql": config {sql: <one SELECT>, name: <identifier, unique per
+    page; derived from the title when omitted>, parameters: [names it
+    references - server-filled], cells: [cell names it reads], computed_in,
+    spec_columns}. Written through create_block/update_block's `config`
+    (validated by _validate_cell_config: read-only, every {{name}} / @name
+    is a dashboard parameter, every {{cell:name}} exists with no loop, and
+    the bound statement passes the warehouse's zero-row check). Run by
+    POST /pages/{page_id}/run like any block: the page filters are NOT
+    pushed down (raw SQL has no spec); the request's `parameters` {name:
+    value} ARE bound (never spliced - services/dashboard_engine.
+    bind_parameters); rows are capped at DASHBOARD_MAX_BLOCK_ROWS. Its
+    BlockResult carries kind "sql", name, parameters, missing_parameters.
+  - type "input": config {parameter_id: <Dashboard.parameters[].id>,
+    parameter_name}. Rendered inline, never run.
+  - type chart/kpi/table/donut/sparkline/avatar_list with config
+    {source_block_id: <sql cell id>}: rendered from that cell's result (the
+    run result is the source's, with kind "derived" and source_block_id).
+    Dependencies are reported on the run response ({block_id: [source
+    ids]}, plus the resolved `order`); a loop is a 400 at write time and
+    at run time.
+  - Dashboard.parameters entries gained `name` (what a cell references);
+    _validate_parameters derives it from the column when omitted.
+  - POST /{dashboard_id}/blocks/{block_id}/swap re-renders a spec block
+    (or a bound block) as another chart type / block shape, no model call.
+  - POST /propose, /propose/{id}/revise, /propose/{id}/commit and GET
+    /propose/templates are the Builder's describe -> review -> publish
+    flow - see their section below. /generate on a warehouse source now
+    delegates to propose + commit, so nothing new ever loads a sample.
+  - Comments live in routers/dashboard_comments.py; DashboardBuilderOut.
+    comment_counts carries per-block {open, total}.
 """
 import copy
 import gc
@@ -356,11 +392,13 @@ from sqlalchemy.orm import Session
 from .. import models, schemas, security
 from ..database import get_db
 from ..deps import get_current_user
-from ..services import ai_engine, chart_builder, data_access_rules, render_domains, workspace_access
+from ..services import ai_engine, chart_builder, dashboard_engine, data_access_rules, render_domains, workspace_access
+from ..services import query_builder
+from ..services.connectors import ReadOnlyViolation, assert_read_only_sql
 from ..services.data_loader import load_dataframe, default_table_for_preview
 from ..services.metrics import resolve_metric_value
 from ..services.transforms import apply_transform_steps
-from .chat import _load_selected_tables, _other_sources_catalog
+from .chat import _load_selected_tables, _other_sources_catalog, _warehouse_schema_text
 from .dashboards import _can_edit, _can_view
 # 2026-09-29 (Hex-level filters round): reuses the Data tab's own,
 # already-battle-tested column-filter engine (values/text/number/date/
@@ -1552,6 +1590,12 @@ def _default_block_size(block_type: str) -> tuple[int, int]:
         return 6, 3
     if block_type == "filter":
         return 3, _FILTER_ROW_HEIGHT
+    # 2026-10-07 (analyst canvas round): a SQL cell reads best full-width
+    # (the statement + a result preview); an input is one rail control.
+    if block_type == "sql":
+        return 12, 5
+    if block_type == "input":
+        return 3, _FILTER_ROW_HEIGHT
     # 2026-09-25 (Round 15, element library): "heading" reads best as a
     # short full-width banner above whatever follows it; "divider" only
     # ever needs to be a thin full-width rule, the shortest a block can be.
@@ -1595,6 +1639,11 @@ def _default_block_config(block_type: str) -> dict:
         return {"text": ""}
     if block_type == "filter":
         return {"column": None}
+    # 2026-10-07 (analyst canvas round) - see models.DashboardBlock.
+    if block_type == "sql":
+        return {"sql": "", "name": None, "parameters": []}
+    if block_type == "input":
+        return {"parameter_id": None}
     return {}
 
 
@@ -1828,6 +1877,7 @@ def _page_out(page: models.DashboardPage) -> schemas.DashboardPageOut:
             id=b.id, type=b.type, title=b.title, x=b.x, y=b.y, w=b.w, h=b.h,
             config=b.config, position=b.position, data_updated_at=b.data_updated_at,
             can_undo=b.previous_config is not None,
+            query_sql=getattr(b, "query_sql", None), last_run=getattr(b, "last_run", None),
         )
         for b in sorted(page.blocks, key=lambda b: b.position)
     ]
@@ -1846,6 +1896,15 @@ def _dashboard_datasource(db: Session, d: models.Dashboard) -> models.DataSource
     frontend knows whether Ask AI/manual-build are even offered; the
     endpoints that actually NEED it (ask_ai_block, build_manual_block) use
     the stricter _resolve_datasource below, which raises instead."""
+    # 2026-10-07 (dashboard-from-prompt round): a dashboard committed from
+    # a proposal records its data source directly (models.Dashboard.
+    # datasource_id) - no conversation needed. The conversation walk below
+    # stays the fallback for every pre-existing row.
+    direct_id = getattr(d, "datasource_id", None)
+    if direct_id:
+        ds = db.query(models.DataSource).filter(models.DataSource.id == direct_id).first()
+        if ds:
+            return ds
     if not d.source_conversation_id:
         return None
     conv = db.query(models.Conversation).filter(models.Conversation.id == d.source_conversation_id).first()
@@ -1979,7 +2038,48 @@ def _builder_out(db: Session, d: models.Dashboard, user: models.User) -> schemas
         background_color=d.background_color,
         has_logo=bool(d.logo_image),
         has_background_image=bool(d.background_image),
+        comment_counts=_comment_counts(db, d.id),
+        **_warehouse_dashboard_fields(db, d, ds, include_tables=True),
     )
+
+
+def _comment_counts(db: Session, dashboard_id: str) -> dict:
+    """{block_id | "page:<id>" | "dashboard": {"open", "total"}} over
+    every comment of the dashboard - one query; never raises (an older
+    database without the table just yields {})."""
+    try:
+        from .dashboard_comments import comment_counts
+        return comment_counts(db, dashboard_id)
+    except Exception as e:
+        print(f"[dashboard_builder] comment counts unavailable (non-fatal): {e}")
+        return {}
+
+
+# 2026-10-06 (warehouse-native dashboards layer): the dashboard-level
+# definitions the redesigned view renders - filter rail, saved views,
+# period, date column - plus the flags that tell the frontend which run
+# path to use. Shared by _builder_out (editor) and _render_public_dashboard
+# (published view) so both read the same truth. `tables` ({table:
+# [{name, type}]}, real tables plus saved-query aliases) is only included
+# for the editor: the public viewer never needs the schema.
+def _warehouse_dashboard_fields(db: Session, d: models.Dashboard, ds: models.DataSource | None, include_tables: bool) -> dict:
+    native = dashboard_engine.is_warehouse_native(ds)
+    out = {
+        "datasource_kind": ds.kind if ds else None,
+        "warehouse_native": native,
+        "parameters": list(d.parameters or []) if isinstance(d.parameters, list) else [],
+        "saved_views": list(d.saved_views or []) if isinstance(d.saved_views, list) else [],
+        "default_period": d.default_period,
+        "date_column": d.date_column,
+    }
+    if include_tables:
+        tables: dict = {}
+        if native:
+            versions = dashboard_engine.load_versions(db, ds)
+            schema, _aliases = query_builder.with_version_aliases(ds.schema_cache, versions)
+            tables = query_builder.builder_columns(schema, None)
+        out["tables"] = tables
+    return out
 
 
 # ---------- Round 4 (2026-09-25) branding helpers ----------
@@ -2154,6 +2254,26 @@ def generate_dashboard(
         # specific DataFrame - just loaded lazily, per block, by
         # _load_table_for_block further down, once the plan says which
         # table each block actually needs.
+        # 2026-10-07 (dashboard-from-prompt round): a WAREHOUSE source never
+        # loads a sample here any more - the goal goes through the same
+        # propose -> commit path the Builder uses (one structured model
+        # call, every block a validated BlockSpec computed inside the
+        # warehouse), committed in one go with every valid block kept.
+        if dashboard_engine.is_warehouse_native(ds):
+            proposal = _build_proposal(db, user, ds, goal, conversation_id=conv.id)
+            if proposal["valid_blocks"] == 0:
+                reasons = [f'"{b["title"]}": {b["error"]}' for p in proposal["pages"] for b in p["blocks"] if b.get("error")]
+                detail = (
+                    "GD360 couldn't build anything from that description - try naming which numbers or "
+                    "breakdowns matter most (e.g. \"revenue by region this quarter, and our top 5 "
+                    "customers\"), then try again."
+                )
+                if reasons:
+                    detail += " Specifically: " + "; ".join(reasons[:3])
+                raise HTTPException(400, detail)
+            dashboard = _commit_proposal(db, user, ds, proposal, None, None, "private", source_conversation_id=conv.id)
+            return _builder_out(db, dashboard, user)
+
         table_names: list[str] = []
         original_df: pd.DataFrame | None = None
         if default_table_for_preview(ds) is not None:
@@ -2689,6 +2809,626 @@ def list_dashboards_for_conversation(
     return _dashboards_for_conversation(db, conv.id, user)
 
 
+# ---------- Dashboard from prompt (2026-10-07): propose / revise / commit ----------
+#
+# The Builder design: describe -> GD360 proposes typed blocks from the REAL
+# schema + saved metrics -> the person keeps / swaps / removes -> publish.
+# Nothing is created until commit; a proposal lives in an in-process cache
+# for 30 minutes under a proposal_id the client carries between the three
+# calls. Every proposed block is validated structurally (validate_block_
+# spec, strict) and, for a warehouse source, dry-run inside the warehouse
+# (zero rows, not billed) before it is shown; a block that fails is
+# reported as "invalid" with the real reason, never silently repaired or
+# dropped. No sample is ever loaded for a warehouse source - a file source
+# (whose data is complete inside the app) gets a deterministic pandas
+# recipe per block instead, computed at commit time by _run_manual_recipe.
+
+_PROPOSAL_TTL_SECONDS = 1800
+_PROPOSALS = dashboard_engine.TTLCache(_PROPOSAL_TTL_SECONDS, max_entries=256)
+_PROPOSAL_TYPES = {"kpi", "chart", "table", "text", "sparkline", "donut"}
+_PROPOSAL_MAX_BLOCKS = 12
+_MAX_PROPOSAL_PARAMETERS = 4
+
+_PROPOSE_TEMPLATES: list[dict] = [
+    {
+        "id": "executive_weekly", "name": "Executive weekly", "pages": 1, "period": "week",
+        "description": "A one-page leadership snapshot: the headline numbers, the trend, the two breakdowns that explain it.",
+        "goal": "A weekly executive summary for the leadership team: the four headline numbers with week-over-week change, "
+                "the main trend over time, where the volume comes from (the two most important breakdowns), and a compact "
+                "detail table.",
+        "layout_hints": ["KPI row of 4 across the top", "one wide trend chart", "two breakdowns side by side", "one detail table"],
+    },
+    {
+        "id": "operations_daily", "name": "Operations daily", "pages": 2, "period": "day",
+        "description": "Today vs. yesterday at a glance, then the operational detail by team, status and region.",
+        "goal": "A daily operations dashboard: page 1 is today's volume, completion/failure rates and backlog with day-over-day "
+                "change and a daily trend; page 2 is the operational detail - counts by status, by owner/team and by region, "
+                "and a table of the largest groups.",
+        "layout_hints": ["page 1: KPIs + daily trend", "page 2: three breakdowns and a table", "status breakdown as a donut"],
+    },
+    {
+        "id": "finance_monthly", "name": "Finance monthly", "pages": 1, "period": "month",
+        "description": "Monthly revenue, cost and margin with the month-over-month movement and the category split.",
+        "goal": "A monthly finance review: revenue, cost, margin and average value per record with month-over-month change, "
+                "a monthly trend for revenue, the split by category/segment and by region, and a monthly detail table.",
+        "layout_hints": ["KPI row", "monthly trend as an area chart", "category split as horizontal bars", "detail table by month and category"],
+    },
+]
+_PROPOSE_TEMPLATES_BY_ID = {t["id"]: t for t in _PROPOSE_TEMPLATES}
+
+
+def _metric_glossary(metrics: list) -> str:
+    from ..services.metrics import describe_metric
+    lines = []
+    for m in metrics:
+        try:
+            lines.append("- " + describe_metric(m.name, m.metric_column, m.agg, m.filters or []))
+        except Exception:
+            lines.append(f'- "{m.name}" = {m.agg} of "{m.metric_column}"')
+    return "\n".join(lines)
+
+
+def _file_schema(db: Session, ds: models.DataSource, user: models.User) -> tuple[dict, pd.DataFrame | None]:
+    """({table: [{name, type}]}, df) for a FILE source: the cached schema
+    when it has one, else derived from the loaded data (which is complete
+    inside the app for a file - never a sample of a warehouse)."""
+    cache = ds.schema_cache or {}
+    table_name = ds.name or "data"
+    if isinstance(cache, dict) and cache.get("columns") and isinstance(cache["columns"], list):
+        return {table_name: [{"name": c.get("name"), "type": c.get("type")} for c in cache["columns"] if c.get("name")]}, None
+    if isinstance(cache, dict) and cache and all(isinstance(v, list) for v in cache.values()):
+        return {str(k): [{"name": c.get("name"), "type": c.get("type")} for c in v if isinstance(c, dict)] for k, v in cache.items()}, None
+    df = load_dataframe(ds, table=None, version="original", db=db)
+    df = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
+    return {table_name: [{"name": str(c), "type": str(df[c].dtype)} for c in df.columns]}, df
+
+
+def _spec_to_recipe(spec: dict) -> dict | None:
+    """A validated BlockSpec as the manual-build recipe shape (one
+    measure, at most one group-by, five aggregations) - what a FILE
+    source's block runs through _run_manual_recipe at commit time. None
+    when the spec needs more than the recipe can express."""
+    measures = spec.get("measures") or []
+    if len(measures) != 1 or measures[0].get("expr") or measures[0].get("agg") not in ("sum", "avg", "count", "min", "max"):
+        return None
+    if spec.get("filters"):
+        return None
+    group = list(spec.get("group_by") or [])
+    time_col = (spec.get("time") or {}).get("column") if spec.get("time") else None
+    if time_col:
+        group = [time_col] + group
+    if len(group) > 1:
+        return None
+    m = measures[0]
+    return {"metric_column": m.get("column"), "agg": m["agg"], "group_by_column": group[0] if group else None}
+
+
+def _metric_to_spec(metric, table: str) -> dict:
+    """A saved MetricDefinition as a single-row KPI BlockSpec on `table`
+    (its filters translated through the same page-filter translation
+    the rail uses)."""
+    agg = metric.agg if metric.agg in query_builder.AGGS else "count"
+    measure = {"alias": re.sub(r"[^A-Za-z0-9_]+", "_", metric.name).strip("_").lower() or "value", "agg": agg,
+               "column": metric.metric_column if agg != "count" or metric.metric_column else None}
+    filters = query_builder.page_filters_to_block_filters(metric.filters or [])
+    return {"table": table, "measures": [measure], "filters": filters, "compare_prior_period": True, "sparkline": True}
+
+
+def _layout_proposal_page(blocks: list[dict]) -> None:
+    """Places a page's blocks on the 12-column grid in place: the KPI row
+    first (3x3 tiles, 4 per row), then charts/donuts/sparklines in pairs
+    (6x6), tables and text full width."""
+    y = 0
+    x = 0
+    kpis = [b for b in blocks if b["type"] in ("kpi", "sparkline")]
+    others = [b for b in blocks if b["type"] not in ("kpi", "sparkline")]
+    for b in kpis:
+        if x + 3 > _GRID_COLUMNS:
+            x, y = 0, y + 3
+        b["layout"] = {"x": x, "y": y, "w": 3, "h": 3}
+        x += 3
+    if kpis:
+        y += 3
+    x = 0
+    row_h = 0
+    for b in others:
+        if b["type"] in ("table", "text"):
+            if x:
+                x, y = 0, y + row_h
+                row_h = 0
+            h = 2 if b["type"] == "text" else 6
+            b["layout"] = {"x": 0, "y": y, "w": 12, "h": h}
+            y += h
+            continue
+        if x + 6 > _GRID_COLUMNS:
+            x, y = 0, y + row_h
+            row_h = 0
+        b["layout"] = {"x": x, "y": y, "w": 6, "h": 6}
+        x += 6
+        row_h = 6
+    for b in blocks:
+        b.setdefault("layout", {"x": 0, "y": y, "w": 6, "h": 6})
+
+
+def _fallback_proposal(goal: str, schema: dict, period: str) -> dict:
+    """A deterministic proposal from the schema alone, used only when the
+    model call failed outright: count KPI, a trend on the first date
+    column, breakdowns on the first text columns, a table. Honestly
+    labelled by the caller (ProposalOut.warning)."""
+    table = next(iter(schema.keys()), None)
+    if not table:
+        return {"title": "New dashboard", "pages": [{"title": "Overview", "blocks": []}], "suggestions": []}
+    cols = query_builder.table_columns(schema, table) or []
+    date_col = next((c["name"] for c in cols if any(k in str(c.get("type") or "").lower() for k in ("date", "time"))), None)
+    text_cols = [c["name"] for c in cols if any(k in str(c.get("type") or "").lower() for k in ("string", "object", "text", "char", "category"))][:2]
+    num_cols = [c["name"] for c in cols if any(k in str(c.get("type") or "").lower() for k in ("int", "float", "numeric", "decimal", "double"))][:2]
+    blocks = [{"type": "kpi", "title": "Rows", "intent": "KPI · count", "spec": {
+        "table": table, "measures": [{"alias": "rows", "agg": "count"}], "compare_prior_period": True, "sparkline": True}}]
+    for n in num_cols:
+        blocks.append({"type": "kpi", "title": f"Total {n}", "intent": f"KPI · sum of {n}", "spec": {
+            "table": table, "measures": [{"alias": f"sum_{n}", "agg": "sum", "column": n}], "compare_prior_period": True, "sparkline": True}})
+    if date_col:
+        blocks.append({"type": "chart", "title": f"Rows by {period}", "intent": f"Trend · rows by {period}", "chart_type": "line",
+                       "spec": {"table": table, "time": {"column": date_col, "grain": period}, "measures": [{"alias": "rows", "agg": "count"}],
+                                "order_by": [{"by": "period", "dir": "asc"}], "limit": 500}})
+    for t in text_cols:
+        blocks.append({"type": "chart", "title": f"Rows by {t}", "intent": f"Breakdown · {t}", "chart_type": "horizontal_bar",
+                       "spec": {"table": table, "group_by": [t], "measures": [{"alias": "rows", "agg": "count"}],
+                                "order_by": [{"by": "rows", "dir": "desc"}], "limit": 15}})
+    if text_cols:
+        blocks.append({"type": "table", "title": "Detail", "intent": "Table · detail", "spec": {
+            "table": table, "group_by": text_cols, "measures": [{"alias": "rows", "agg": "count"}] + [{"alias": f"sum_{n}", "agg": "sum", "column": n} for n in num_cols[:1]],
+            "order_by": [{"by": "rows", "dir": "desc"}], "limit": 100}})
+    return {"title": (goal or "New dashboard")[:80], "date_column": date_col, "pages": [{"title": "Overview", "blocks": blocks}],
+            "parameters": text_cols, "suggestions": []}
+
+
+def _build_proposal(
+    db: Session, user: models.User, ds: models.DataSource, goal: str, pages="auto", period: str | None = None,
+    template: dict | None = None, conversation_id: str | None = None, current: dict | None = None,
+    instruction: str | None = None,
+) -> dict:
+    """The proposal dict _PROPOSALS stores and ProposalOut is built from.
+    ONE model call (ai_engine.propose_dashboard), then every block is
+    validated for real - see the section comment above."""
+    started = time.perf_counter()
+    native = dashboard_engine.is_warehouse_native(ds)
+    period = dashboard_engine.normalize_period(period, template.get("period") if template else None)
+    versions = dashboard_engine.load_versions(db, ds) if native else []
+    if native:
+        schema, _ = query_builder.with_version_aliases(ds.schema_cache, versions)
+        schema_text = _warehouse_schema_text(ds, None, versions)
+    else:
+        schema, _file_df = _file_schema(db, ds, user)
+        schema_text = "\n".join(
+            f"Table `{t}`:\n" + "\n".join(f"  - {c.get('name')} ({c.get('type')})" for c in cols)
+            for t, cols in schema.items()
+        )
+    metrics = db.query(models.MetricDefinition).filter(models.MetricDefinition.datasource_id == ds.id).all()
+    metrics_by_name = {m.name.strip().lower(): m for m in metrics}
+
+    effective_goal = goal.strip()
+    if template and not effective_goal:
+        effective_goal = template["goal"]
+    if template:
+        pages = template.get("pages") or pages
+    raw = ai_engine.propose_dashboard(
+        effective_goal, schema_text, _metric_glossary(metrics), ds.kind, pages=pages, period=period,
+        template=template, current_proposal=current, instruction=instruction,
+    )
+    warning = None
+    if not isinstance(raw, dict) or not isinstance(raw.get("pages"), list):
+        if current and instruction:
+            raw = current
+            warning = "The model could not apply that instruction - the proposal is unchanged."
+        else:
+            raw = _fallback_proposal(effective_goal, schema, period)
+            warning = "The model did not answer, so this is a plain starting point built from the schema alone - revise it or describe the goal again."
+
+    primary_table = next(iter(schema.keys()), None)
+    date_column = raw.get("date_column") if isinstance(raw.get("date_column"), str) else None
+    if date_column and not any(c["name"] == date_column for t in schema for c in (query_builder.table_columns(schema, t) or [])):
+        date_column = None
+
+    used_metrics: list[str] = []
+    used_columns: list[str] = []
+    used_tables: list[str] = []
+    out_pages: list[dict] = []
+    proposed = valid = 0
+    counter = 0
+    mentioned_metrics = [m for m in metrics if m.name.strip().lower() in effective_goal.lower()]
+    metric_blocks_seen: set[str] = set()
+    raw_pages = [p for p in raw.get("pages") if isinstance(p, dict)]
+    if pages in (1, "1") and len(raw_pages) > 1:
+        merged = {"title": raw_pages[0].get("title") or "Overview", "blocks": [b for p in raw_pages for b in (p.get("blocks") or [])]}
+        raw_pages = [merged]
+    for pi, page in enumerate(raw_pages[:2]):
+        blocks_out: list[dict] = []
+        raw_blocks = [b for b in (page.get("blocks") or []) if isinstance(b, dict)]
+        # Saved metrics named in the goal that the model did not already
+        # turn into a KPI get one, in front of the KPI row (first page).
+        if pi == 0 and mentioned_metrics:
+            named = {str(b.get("from_metric") or "").strip().lower() for b in raw_blocks}
+            for m in mentioned_metrics:
+                if m.name.strip().lower() not in named and primary_table:
+                    raw_blocks.insert(0, {"type": "kpi", "title": m.name, "intent": f"KPI · {m.name} metric",
+                                          "from_metric": m.name, "spec": _metric_to_spec(m, primary_table)})
+        for rb in raw_blocks[:_PROPOSAL_MAX_BLOCKS]:
+            counter += 1
+            proposed += 1
+            btype = str(rb.get("type") or "chart").lower()
+            if btype not in _PROPOSAL_TYPES:
+                btype = "chart"
+            title = str(rb.get("title") or "").strip()[:120] or f"Block {counter}"
+            intent = str(rb.get("intent") or "").strip()[:80] or (
+                "KPI" if btype == "kpi" else "Table · detail" if btype == "table" else "Chart")
+            block = {
+                "client_id": f"b{counter}", "type": btype, "title": title, "intent": intent, "spec": None, "recipe": None,
+                "chart_type": rb.get("chart_type") if isinstance(rb.get("chart_type"), str) else None,
+                "text": None, "from_metric_id": None, "from_metric_name": None, "status": "ok", "error": None,
+                "sql": None, "columns": [],
+            }
+            if btype == "text":
+                block["text"] = str(rb.get("text") or "").strip()[:2000] or title
+                blocks_out.append(block)
+                valid += 1
+                continue
+            spec = rb.get("spec")
+            metric_name = str(rb.get("from_metric") or "").strip().lower()
+            metric = metrics_by_name.get(metric_name) if metric_name else None
+            if metric is not None:
+                block["from_metric_id"] = metric.id
+                block["from_metric_name"] = metric.name
+                if metric.name not in used_metrics:
+                    used_metrics.append(metric.name)
+                if not isinstance(spec, dict) and primary_table:
+                    spec = _metric_to_spec(metric, primary_table)
+                metric_blocks_seen.add(metric.id)
+            if not isinstance(spec, dict):
+                block["status"], block["error"] = "invalid", "The model gave this block no query spec."
+                blocks_out.append(block)
+                continue
+            try:
+                normalised = query_builder.validate_block_spec(spec, schema, strict=True)
+                public = query_builder.public_spec(normalised)
+            except query_builder.QueryBuilderError as e:
+                block["status"], block["error"], block["spec"] = "invalid", str(e), spec
+                blocks_out.append(block)
+                continue
+            block["spec"] = public
+            if btype == "kpi" and (public.get("group_by") or public.get("time")):
+                block["type"] = "chart" if public.get("time") else "table"
+            if native:
+                check = dashboard_engine.validate_spec_in_warehouse(ds, public, versions, date_column=date_column)
+                if not check["ok"]:
+                    block["status"], block["error"] = "invalid", f"The warehouse rejected this block's query: {check['error']}"
+                    blocks_out.append(block)
+                    continue
+                block["sql"], block["columns"] = check["sql"], check["columns"]
+            else:
+                recipe = _spec_to_recipe(public)
+                if recipe is None:
+                    block["status"], block["error"] = "invalid", (
+                        "A file source block needs one plain measure and at most one group-by (no filters, no expressions)."
+                    )
+                    blocks_out.append(block)
+                    continue
+                recipe["block_type"] = "kpi" if block["type"] == "kpi" else block["type"]
+                if block["type"] == "chart":
+                    recipe["chart_type"] = block["chart_type"] or ("line" if public.get("time") else "bar")
+                if recipe["agg"] == "count" and not recipe.get("metric_column"):
+                    recipe["metric_column"] = (query_builder.table_columns(schema, public["table"]) or [{}])[0].get("name")
+                block["recipe"] = recipe
+            if block["type"] == "chart" and not block["chart_type"]:
+                block["chart_type"] = "line" if public.get("time") else "bar"
+            if not date_column and public.get("time"):
+                date_column = public["time"]["column"]
+            valid += 1
+            if public["table"] not in used_tables:
+                used_tables.append(public["table"])
+            for col in list(public.get("group_by") or []) + [m.get("column") for m in public.get("measures") or [] if m.get("column")] + ([public["time"]["column"]] if public.get("time") else []):
+                if col and col not in used_columns:
+                    used_columns.append(col)
+            blocks_out.append(block)
+        _layout_proposal_page(blocks_out)
+        out_pages.append({"title": str(page.get("title") or ("Overview" if pi == 0 else f"Page {pi + 1}"))[:80], "blocks": blocks_out})
+    if not out_pages:
+        out_pages = [{"title": "Overview", "blocks": []}]
+
+    # Parameters the commit will create: the model's suggestions that are
+    # real text columns the kept blocks group by, else the group-by text
+    # columns themselves (max 4), plus a date_range on the date column.
+    text_types = ("string", "object", "text", "char", "category", "varchar")
+    group_cols: list[str] = []
+    for page in out_pages:
+        for b in page["blocks"]:
+            if b["status"] == "ok" and b.get("spec"):
+                for g in b["spec"].get("group_by") or []:
+                    if g not in group_cols:
+                        group_cols.append(g)
+
+    def _is_text(col: str) -> bool:
+        for t in schema:
+            for c in query_builder.table_columns(schema, t) or []:
+                if c["name"] == col:
+                    return any(k in str(c.get("type") or "").lower() for k in text_types)
+        return False
+
+    suggested = [c for c in (raw.get("parameters") or []) if isinstance(c, str) and c in group_cols and _is_text(c)]
+    for c in group_cols:
+        if c not in suggested and _is_text(c):
+            suggested.append(c)
+    parameters: list[dict] = []
+    for c in suggested[:_MAX_PROPOSAL_PARAMETERS]:
+        parameters.append({"id": f"p_{re.sub(r'[^A-Za-z0-9_]+', '_', c).strip('_').lower()[:24]}", "name": dashboard_engine.parameter_name({"column": c}),
+                           "column": c, "label": c.replace("_", " ").title()[:80], "control": "chips", "options_from": "distinct",
+                           "default": None, "table": None})
+    if date_column:
+        parameters.append({"id": "p_date_range", "name": "date_range", "column": date_column, "label": "Date range",
+                           "control": "date_range", "options_from": None, "default": None, "table": None})
+
+    suggestions = [str(x).strip()[:120] for x in (raw.get("suggestions") or []) if isinstance(x, str) and str(x).strip()][:4]
+    return {
+        "proposal_id": current.get("proposal_id") if current else f"prop_{secrets.token_hex(8)}",
+        "owner_id": user.id, "datasource_id": ds.id, "datasource_name": ds.name, "datasource_kind": ds.kind,
+        "warehouse_native": native, "title": str(raw.get("title") or effective_goal[:60] or "New dashboard")[:120],
+        "pages": out_pages, "used": {"metrics": used_metrics, "columns": used_columns, "tables": used_tables},
+        "suggestions": suggestions, "date_column": date_column, "period": period, "parameters": parameters,
+        "revision": (current.get("revision", 0) + 1) if current else 1, "expires_in_seconds": _PROPOSAL_TTL_SECONDS,
+        "generated_in_ms": int((time.perf_counter() - started) * 1000), "proposed_blocks": proposed, "valid_blocks": valid,
+        "warning": warning, "conversation_id": conversation_id, "goal": effective_goal,
+    }
+
+
+def _proposal_out(p: dict) -> schemas.ProposalOut:
+    return schemas.ProposalOut(**{k: v for k, v in p.items() if k in schemas.ProposalOut.model_fields})
+
+
+def _resolve_proposal_datasource(db: Session, user: models.User, datasource_id: str) -> models.DataSource:
+    ds = db.query(models.DataSource).filter(models.DataSource.id == (datasource_id or "").strip()).first()
+    if not ds:
+        raise HTTPException(404, "That data source could not be found.")
+    if not workspace_access.can_edit_datasource(db, ds, user):
+        raise HTTPException(403, "You have view-only access to that data source.")
+    return ds
+
+
+def _get_proposal(proposal_id: str, user: models.User) -> dict:
+    p = _PROPOSALS.get(proposal_id)
+    if not p:
+        raise HTTPException(404, "That proposal has expired (proposals are kept for 30 minutes) - describe the dashboard again.")
+    if p.get("owner_id") != user.id:
+        raise HTTPException(404, "That proposal has expired (proposals are kept for 30 minutes) - describe the dashboard again.")
+    return p
+
+
+@router.get("/propose/templates", response_model=list[schemas.ProposalTemplateOut])
+def list_propose_templates(user: models.User = Depends(get_current_user)):
+    """The three built-in starting points of the Builder ("Start from a
+    template"): a goal text + layout hints the proposer is given, never
+    pre-made data."""
+    return [schemas.ProposalTemplateOut(**t) for t in _PROPOSE_TEMPLATES]
+
+
+@router.post("/propose", response_model=schemas.ProposalOut)
+def propose_dashboard(
+    payload: schemas.ProposeDashboardRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Describe -> proposal. Creates NOTHING: returns a validated
+    Proposal (cached 30 minutes under proposal_id) the person reviews,
+    revises (POST /propose/{id}/revise) and commits (POST /propose/{id}/
+    commit). See the section comment above for exactly what "validated"
+    means per block."""
+    ds = _resolve_proposal_datasource(db, user, payload.datasource_id)
+    template = None
+    if payload.template_id:
+        template = _PROPOSE_TEMPLATES_BY_ID.get(payload.template_id)
+        if not template:
+            raise HTTPException(400, f"Unknown template \"{payload.template_id}\".")
+    pages = payload.pages
+    if pages not in ("auto", 1, 2, "1", "2"):
+        raise HTTPException(400, 'pages must be "auto", 1 or 2.')
+    if payload.period is not None and payload.period not in query_builder.GRAINS:
+        raise HTTPException(400, f'The period must be one of {", ".join(query_builder.GRAINS)}.')
+    if payload.conversation_id:
+        conv = db.query(models.Conversation).filter(models.Conversation.id == payload.conversation_id).first()
+        if not conv or not workspace_access.can_access_conversation(db, conv, user):
+            raise HTTPException(404, "Conversation not found.")
+    try:
+        proposal = _build_proposal(db, user, ds, payload.goal, pages=pages, period=payload.period, template=template,
+                                   conversation_id=payload.conversation_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Could not build a proposal from this data source: {e}")
+    _PROPOSALS.put(proposal["proposal_id"], proposal)
+    return _proposal_out(proposal)
+
+
+@router.post("/propose/{proposal_id}/revise", response_model=schemas.ProposalOut)
+def revise_proposal(
+    proposal_id: str,
+    payload: schemas.ReviseProposalRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """"Make it one page" / "Use last 12 months only" / "Add a cancellation
+    heatmap": one model call with the current proposal as context, the
+    result validated exactly like a fresh proposal. Same proposal_id,
+    revision + 1."""
+    current = _get_proposal(proposal_id, user)
+    ds = _resolve_proposal_datasource(db, user, current["datasource_id"])
+    instruction = payload.instruction.strip()
+    pages = current.get("pages_requested", "auto")
+    lowered = instruction.lower()
+    if "one page" in lowered or "single page" in lowered or "1 page" in lowered:
+        pages = 1
+    elif "two pages" in lowered or "2 pages" in lowered:
+        pages = 2
+    context = {k: current[k] for k in ("title", "date_column", "pages", "suggestions") if k in current}
+    context["pages"] = [{"title": p["title"], "blocks": [
+        {k: b.get(k) for k in ("client_id", "type", "title", "intent", "chart_type", "spec", "text", "from_metric_name", "status", "error")}
+        for b in p["blocks"]]} for p in current["pages"]]
+    try:
+        proposal = _build_proposal(
+            db, user, ds, current.get("goal") or "", pages=pages, period=current.get("period"),
+            conversation_id=current.get("conversation_id"), current={**context, "proposal_id": current["proposal_id"], "revision": current.get("revision", 1)},
+            instruction=instruction,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Could not revise this proposal: {e}")
+    proposal["pages_requested"] = pages
+    _PROPOSALS.put(proposal_id, proposal)
+    return _proposal_out(proposal)
+
+
+def _commit_proposal(
+    db: Session, user: models.User, ds: models.DataSource, proposal: dict, keep: list[str] | None, name: str | None,
+    visibility: str | None, source_conversation_id: str | None = None,
+) -> models.Dashboard:
+    """Creates the real Dashboard + pages + blocks from a proposal's kept
+    blocks (invalid blocks are never created, kept or not). Warehouse
+    blocks get their spec + at-rest SQL; file blocks run their recipe
+    once, here, against the file's complete data; parameters, the date
+    column and the default period come from the proposal."""
+    keep_set = set(keep) if keep else None
+    native = proposal["warehouse_native"]
+    file_df = None
+    if not native:
+        file_df = load_dataframe(ds, table=None, version="original", db=db)
+        file_df = data_access_rules.filter_dataframe_for_role(db, file_df, ds, user)
+    kept_pages: list[tuple[str, list[dict]]] = []
+    for page in proposal["pages"]:
+        blocks = [b for b in page["blocks"] if b["status"] == "ok" and (keep_set is None or b["client_id"] in keep_set)]
+        if blocks:
+            kept_pages.append((page["title"], blocks))
+    if not kept_pages:
+        raise HTTPException(400, "Nothing to create - keep at least one valid block.")
+    workspace_id = None
+    if (visibility or "private") == "workspace":
+        if ds.workspace_id and ds.workspace_id in workspace_access.member_workspace_ids(db, user.id):
+            workspace_id = ds.workspace_id
+        else:
+            raise HTTPException(400, "This data source is not in a workspace you belong to, so the dashboard can only be private.")
+    elif visibility not in (None, "private"):
+        raise HTTPException(400, 'visibility must be "private" or "workspace".')
+    used_group_cols = {g for _, blocks in kept_pages for b in blocks if b.get("spec") for g in (b["spec"].get("group_by") or [])}
+    parameters = [p for p in proposal.get("parameters") or [] if p.get("control") == "date_range" or p.get("column") in used_group_cols]
+    dashboard = models.Dashboard(
+        owner_id=user.id, name=(name or proposal["title"]).strip()[:120] or "New dashboard", layout_version=2,
+        source_conversation_id=source_conversation_id or proposal.get("conversation_id"), datasource_id=ds.id,
+        workspace_id=workspace_id, parameters=parameters, date_column=proposal.get("date_column"),
+        default_period=proposal.get("period") or "month",
+    )
+    db.add(dashboard)
+    db.flush()
+    for position, (title, blocks) in enumerate(kept_pages):
+        page = models.DashboardPage(dashboard_id=dashboard.id, name=title, position=position)
+        db.add(page)
+        db.flush()
+        for bpos, b in enumerate(blocks):
+            layout = b.get("layout") or {}
+            btype = b["type"]
+            query_sql = None
+            if btype == "text":
+                config = {"text": b.get("text") or b["title"]}
+            elif native:
+                config = {"spec": b["spec"], "computed_in": ds.kind, "spec_columns": b.get("columns") or [], "intent": b.get("intent")}
+                if btype == "chart":
+                    config["chart_type"] = b.get("chart_type") or ("line" if b["spec"].get("time") else "bar")
+                if btype in ("kpi", "sparkline"):
+                    config["label"] = b["spec"]["measures"][0]["alias"]
+                if b.get("from_metric_id"):
+                    config["metric_id"] = b["from_metric_id"]
+                    config["metric_name"] = b.get("from_metric_name")
+                query_sql = b.get("sql")
+            else:
+                recipe = dict(b.get("recipe") or {})
+                try:
+                    btype, config, _default_title = _run_manual_recipe(file_df, recipe, existing_title=b["title"])
+                except Exception as e:
+                    print(f"[dashboard_builder] proposal block {b['client_id']!r} could not be computed on commit: {e}")
+                    continue
+                config = {**config, "recipe": recipe, "intent": b.get("intent")}
+                if b.get("from_metric_id"):
+                    config["metric_id"] = b["from_metric_id"]
+            db.add(models.DashboardBlock(
+                page_id=page.id, type=btype, title=b["title"], x=int(layout.get("x", 0)), y=int(layout.get("y", 0)),
+                w=int(layout.get("w", 6)), h=int(layout.get("h", 6)), config=config, position=bpos, query_sql=query_sql,
+            ))
+    db.commit()
+    db.refresh(dashboard)
+    return dashboard
+
+
+@router.post("/propose/{proposal_id}/commit", response_model=schemas.DashboardBuilderOut, status_code=201)
+def commit_proposal(
+    proposal_id: str,
+    payload: schemas.CommitProposalRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Creates the real dashboard from the kept blocks of a proposal - the
+    only step of the flow that writes anything."""
+    proposal = _get_proposal(proposal_id, user)
+    ds = _resolve_proposal_datasource(db, user, proposal["datasource_id"])
+    dashboard = _commit_proposal(db, user, ds, proposal, payload.keep, payload.name, payload.visibility)
+    return _builder_out(db, dashboard, user)
+
+
+@router.post("/{dashboard_id}/blocks/{block_id}/swap", response_model=schemas.DashboardBuilderOut)
+def swap_block(
+    dashboard_id: str,
+    block_id: str,
+    payload: schemas.SwapBlockRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """"Swap chart": the SAME spec (or the same bound sql cell) rendered
+    as another chart type and/or another block shape (chart/table/kpi/
+    donut/sparkline/avatar_list/gauge). No model call, no new query - the
+    next run renders the same result differently. Undo-able."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    block = _get_block(db, d, block_id)
+    config = block.config or {}
+    if not isinstance(config.get("spec"), dict) and not config.get("source_block_id"):
+        raise HTTPException(400, "Only a block with a query spec (or one bound to a SQL cell) can be swapped - rebuild it instead.")
+    if payload.chart_type is None and payload.type is None:
+        raise HTTPException(400, "Nothing to swap - send chart_type and/or type.")
+    new_type = block.type
+    if payload.type is not None:
+        if payload.type not in _DATA_BLOCK_TYPES:
+            raise HTTPException(400, f"type must be one of {', '.join(sorted(_DATA_BLOCK_TYPES))}.")
+        new_type = payload.type
+    chart_type = config.get("chart_type")
+    if payload.chart_type is not None:
+        if payload.chart_type not in _SWAP_CHART_TYPES:
+            raise HTTPException(400, f"chart_type must be one of {', '.join(sorted(_SWAP_CHART_TYPES))}.")
+        chart_type = payload.chart_type
+        if payload.type is None and new_type not in ("chart",):
+            new_type = "donut" if chart_type == "donut" else "chart"
+    if chart_type == "donut" and new_type == "chart":
+        new_type = "donut"
+    _snapshot_block_config(block)
+    new_config = {k: v for k, v in config.items() if k not in ("chart_spec", "result_rows", "result_columns", "rows", "columns")}
+    if new_type == "chart":
+        spec = config.get("spec") or {}
+        new_config["chart_type"] = chart_type or ("line" if spec.get("time") else "bar")
+    else:
+        new_config.pop("chart_type", None)
+    if new_type in ("kpi", "gauge", "sparkline") and isinstance(config.get("spec"), dict):
+        new_config["label"] = new_config.get("label") or config["spec"]["measures"][0]["alias"]
+    block.type = new_type
+    block.config = new_config
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
 @router.get("/{dashboard_id}", response_model=schemas.DashboardBuilderOut)
 def get_builder_dashboard(
     dashboard_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
@@ -2782,6 +3522,19 @@ def update_dashboard(
         if not trimmed:
             raise HTTPException(400, "Dashboard name can't be empty.")
         d.name = trimmed[:120]
+    # 2026-10-06 (warehouse-native dashboards layer): "" clears, None leaves.
+    if payload.default_period is not None:
+        grain = payload.default_period.strip().lower()
+        if grain and grain not in query_builder.GRAINS:
+            raise HTTPException(400, f"The period must be one of: {', '.join(query_builder.GRAINS)}.")
+        d.default_period = grain or None
+    if payload.date_column is not None:
+        column = payload.date_column.strip()
+        if column:
+            ds = _dashboard_datasource(db, d)
+            if dashboard_engine.is_warehouse_native(ds) and not _column_exists_anywhere(db, ds, column):
+                raise HTTPException(400, f'The column "{column}" is not in any table of this dashboard\'s data source.')
+        d.date_column = column or None
     db.commit()
     db.refresh(d)
     return _builder_out(db, d, user)
@@ -2907,11 +3660,7 @@ def create_block(
     client-controlled - _default_block_size stays the only thing that
     decides how big a fresh block starts, whichever way it was placed."""
     d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
-    if payload.type not in (
-        "chart", "table", "kpi", "text", "filter",
-        "gauge", "donut", "sparkline", "avatar_list",
-        "heading", "divider",
-    ):
+    if payload.type not in _ALL_BLOCK_TYPES:
         raise HTTPException(400, "Unknown block type.")
     page = next((p for p in d.pages if p.id == payload.page_id), None)
     if not page:
@@ -2939,6 +3688,15 @@ def create_block(
     # library drag-drop, BuildDashboardModal's blank/template starts) never
     # sends this field at all.
     default_config = payload.config if payload.config else _default_block_config(payload.type)
+    # 2026-10-07 (analyst canvas round): a cell created already filled
+    # (a sql cell with its statement, an input with its parameter, a
+    # chart bound to a cell) is validated exactly like a PATCH would be.
+    if payload.type in ("sql", "input") or (payload.config and payload.type in _DATA_BLOCK_TYPES):
+        probe = models.DashboardBlock(id=f"new-{secrets.token_hex(4)}", type=payload.type, title=payload.title, config={})
+        default_config = _validate_cell_config(db, user, d, page, probe, default_config)
+        probe_query_sql = probe.query_sql
+    else:
+        probe_query_sql = None
     block = models.DashboardBlock(
         page_id=page.id,
         type=payload.type,
@@ -2946,6 +3704,7 @@ def create_block(
         x=x, y=y, w=w, h=h,
         config=default_config,
         position=len(page.blocks),
+        query_sql=probe_query_sql,
         # Not set explicitly here either way - models.DashboardBlock
         # .data_updated_at already carries its own column-level default
         # (datetime.utcnow at insert time, pre-existing, unrelated to this
@@ -2996,8 +3755,11 @@ def update_block(
     if payload.title is not None:
         block.title = payload.title.strip()[:120] or None
     if payload.config is not None:
+        new_config = payload.config
+        if block.type in ("sql", "input") or (block.type in _DATA_BLOCK_TYPES and "source_block_id" in new_config):
+            new_config = _validate_cell_config(db, user, d, block.page, block, new_config)
         _snapshot_block_config(block)
-        block.config = payload.config
+        block.config = new_config
         # A real content change (a text block's body, a filter block's
         # column) - not a position/title-only edit, which leaves this
         # column untouched. See models.DashboardBlock's own docstring for
@@ -3533,6 +4295,17 @@ def preview_filtered_blocks(
     # see the `if recipe and df is None: continue` guard below for how that
     # one real dependency is now handled per-block instead of up front.
     ds = _resolve_datasource_for_read(db, user, d)
+    # 2026-10-06 (warehouse-native dashboards layer): for a warehouse/
+    # database source the live rows are NEVER loaded into the app -
+    # load_dataframe would have pulled a row-capped SAMPLE here and
+    # recomputed recipe blocks on it, which the product rule forbids.
+    # Instead every block with a spec is computed inside the warehouse
+    # with these same filters pushed into its SQL (the engine), and
+    # df stays None so a recipe block is honestly left out rather than
+    # computed on a sample. The existing frontend keeps working on this
+    # endpoint until the redesigned view (which calls /run) lands.
+    if ds and dashboard_engine.is_warehouse_native(ds):
+        return _filter_page_blocks_warehouse(db, d, page, ds, payload, user.id)
     df = None
     if ds:
         try:
@@ -3715,6 +4488,791 @@ def _filter_page_blocks(
     # existing `!== null` guard already knows how to hide instead of
     # rendering as a misleading "0 rows match."
     return schemas.FilteredBlocksOut(blocks=out, matched_rows=len(df) if df is not None else None)
+
+
+# ============================================================================
+# 2026-10-06 (warehouse-native dashboards layer).
+#
+# The product rule: for a warehouse/database source rows are NEVER loaded
+# into GD360 for analysis. A dashboard on such a source computes EVERY
+# block inside the warehouse, with the page's filter rail pushed into the
+# SQL, on every refresh/filter change - services/dashboard_engine.py.
+# What lives here is the HTTP surface around that engine:
+#
+#   POST  /{id}/pages/{page_id}/run                 run every warehouse block
+#   GET   /{id}/parameters/{param_id}/options       a rail control's values+counts
+#   PATCH /{id}/parameters                          the filter rail definition
+#   PATCH /{id}/saved-views                         named rail states
+#   POST  /{id}/blocks/{block_id}/spec              set/replace a block's BlockSpec
+#   GET   /{id}/blocks/{block_id}/sql               "Show SQL" for the current filters
+#   POST  /{id}/upgrade-blocks                      give pre-layer blocks a spec
+#   (+ public slug/hostname twins of run and options further down)
+#
+# A block's spec lives in block.config["spec"]; the last compiled SQL and
+# the last run's cost live on the row (DashboardBlock.query_sql/last_run -
+# see that model's docstring for why not inside config).
+# ============================================================================
+
+_PARAM_CONTROLS = {"chips", "multi", "search", "segmented", "range", "date_range", "checkboxes"}
+_DATA_BLOCK_TYPES = {"chart", "table", "kpi", "gauge", "donut", "sparkline", "avatar_list"}
+# 2026-10-07 (analyst canvas round): every block type create_block accepts.
+# "sql" and "input" are the two cell kinds the canvas adds - see models.
+# DashboardBlock and the "Canvas cells" section of this module's docstring.
+_ALL_BLOCK_TYPES = _DATA_BLOCK_TYPES | {"text", "filter", "heading", "divider", "sql", "input"}
+_SWAP_CHART_TYPES = {"bar", "line", "area", "pie", "horizontal_bar", "scatter", "grouped_bar", "stacked_bar", "donut"}
+_PUBLIC_RUN_RATE_LIMIT = 30  # per minute per ip / per slug - every run is real warehouse work
+
+
+def _column_exists_anywhere(db: Session, ds: models.DataSource, column: str) -> bool:
+    versions = dashboard_engine.load_versions(db, ds)
+    schema, _ = query_builder.with_version_aliases(ds.schema_cache, versions)
+    return any(any(c["name"] == column for c in (query_builder.table_columns(schema, t) or [])) for t in schema)
+
+
+def _warehouse_page_blocks(page: models.DashboardPage, block_ids: list[str] | None = None) -> tuple[list[dict], list[str]]:
+    """([{"id", "spec"}] for every data block on the page that has a
+    spec, [ids of data blocks without one])."""
+    wanted = set(block_ids) if block_ids else None
+    runnable, skipped = [], []
+    # 2026-10-07 (analyst canvas round): a sql cell and a block bound to
+    # one (config.source_block_id) run too. A dependency is always pulled
+    # in even when `block_ids` narrows the run, so a re-run of one chart
+    # still has its source cell's result.
+    by_id = {b.id: b for b in page.blocks}
+    needed: set[str] = set()
+    if wanted is not None:
+        pending = list(wanted)
+        while pending:
+            bid = pending.pop()
+            b = by_id.get(bid)
+            if not b or bid in needed:
+                continue
+            needed.add(bid)
+            cfg = b.config or {}
+            if cfg.get("source_block_id"):
+                pending.append(cfg["source_block_id"])
+            if b.type == "sql":
+                for nm in dashboard_engine.referenced_cells(cfg.get("sql") or ""):
+                    src = next((o for o in page.blocks if o.type == "sql" and (o.config or {}).get("name") == nm), None)
+                    if src:
+                        pending.append(src.id)
+    for block in page.blocks:
+        if wanted is not None and block.id not in needed:
+            continue
+        config = block.config or {}
+        if block.type == "sql":
+            runnable.append({"id": block.id, "type": "sql", "sql": config.get("sql") or "", "name": config.get("name")})
+            continue
+        if block.type not in _DATA_BLOCK_TYPES:
+            continue
+        if config.get("source_block_id"):
+            runnable.append({"id": block.id, "type": block.type, "source_block_id": config["source_block_id"]})
+            continue
+        spec = config.get("spec")
+        if isinstance(spec, dict) and spec.get("table"):
+            runnable.append({"id": block.id, "spec": spec})
+        else:
+            skipped.append(block.id)
+    return runnable, skipped
+
+
+def _dashboard_primary_table(d: models.Dashboard, ds: models.DataSource) -> str | None:
+    """The table the page-wide COUNT(*) ("Showing X of Y rows") and the
+    filter rail refer to: the most common spec table across the
+    dashboard's blocks, else the rail's own table, else the data source's
+    first table."""
+    counts: dict[str, int] = defaultdict(int)
+    for page in d.pages:
+        for block in page.blocks:
+            spec = (block.config or {}).get("spec")
+            if isinstance(spec, dict) and spec.get("table"):
+                counts[spec["table"]] += 1
+    if counts:
+        return max(counts.items(), key=lambda kv: kv[1])[0]
+    for p in (d.parameters or []) if isinstance(d.parameters, list) else []:
+        if isinstance(p, dict) and p.get("table"):
+            return p["table"]
+    try:
+        return default_table_for_preview(ds)
+    except Exception:
+        return None
+
+
+def _run_page_for(
+    db: Session, d: models.Dashboard, page: models.DashboardPage, ds: models.DataSource,
+    payload: schemas.RunPageRequest, user_id: str, persist_last_run: bool,
+) -> schemas.RunPageOut:
+    """The shared body of the authenticated and public run endpoints."""
+    runnable, skipped = _warehouse_page_blocks(page, payload.block_ids)
+    block_filters = {bid: crits[:_MAX_FILTERS_PER_REQUEST] for bid, crits in list(payload.block_filters.items())[:20]}
+    try:
+        result = dashboard_engine.run_page(
+            db, ds, runnable, page_filters=payload.filters[:12], period=payload.period,
+            date_range=payload.date_range.as_dict() if payload.date_range else None, user_id=user_id,
+            date_column=d.date_column, block_filters=block_filters, force_refresh=payload.force_refresh,
+            count_table=_dashboard_primary_table(d, ds), default_period=d.default_period,
+            parameters=dict(list(payload.parameters.items())[:24]) if payload.parameters else None,
+            dashboard_parameters=d.parameters if isinstance(d.parameters, list) else [],
+        )
+    except dashboard_engine.DependencyCycleError as e:
+        raise HTTPException(400, str(e))
+    if persist_last_run and result["blocks"]:
+        by_id = {b.id: b for b in page.blocks}
+        changed = False
+        for bid, res in result["blocks"].items():
+            block = by_id.get(bid)
+            if block is None or res.get("status") != "ok":
+                continue
+            block.last_run = {
+                "bytes_scanned": res.get("bytes_scanned"), "duration_ms": res.get("duration_ms"),
+                "rows": res.get("row_count"), "ran_at": res.get("ran_at"), "cached": res.get("cached", False),
+            }
+            changed = True
+        if changed:
+            try:
+                db.commit()
+            except Exception as e:
+                print(f"[dashboard_builder] last_run persist failed (non-fatal): {e}")
+                db.rollback()
+    return schemas.RunPageOut(
+        blocks=result["blocks"], matched_rows=result["matched_rows"], total_rows=result.get("total_rows"),
+        computed_in=result["computed_in"], total_duration_ms=result["total_duration_ms"], period=result["period"],
+        date_range=result.get("date_range"), skipped_block_ids=skipped,
+        dependencies=result.get("dependencies") or {}, order=result.get("order") or [],
+        parameters_used=result.get("parameters_used") or {}, missing_parameters=result.get("missing_parameters") or [],
+    )
+
+
+def _block_result_to_filtered(block: models.DashboardBlock, res: dict) -> schemas.FilteredBlockOut | None:
+    """Reshapes a BlockResult into the FilteredBlockOut config the
+    existing frontend renders for each block type, so preview-filtered
+    keeps working for a warehouse dashboard until the new view lands."""
+    if res.get("status") != "ok":
+        return None
+    rows, measures = res.get("rows") or [], res.get("measures") or []
+    config = block.config or {}
+    if block.type in ("kpi", "gauge"):
+        if not rows or not measures:
+            return None
+        value = rows[0].get(measures[0])
+        out = {**config, "value": value, "label": config.get("label") or measures[0]}
+        delta = (res.get("delta") or {}).get(measures[0]) if res.get("delta") else None
+        if delta:
+            out["prior_value"] = delta.get("prior")
+            out["delta_pct"] = delta.get("pct")
+        if res.get("sparkline") and res["sparkline"].get("rows"):
+            out["sparkline_series"] = [r.get(measures[0]) for r in res["sparkline"]["rows"]]
+        return schemas.FilteredBlockOut(id=block.id, type=block.type, config=out)
+    columns = [c["name"] for c in res.get("columns") or []]
+    if block.type == "table":
+        return schemas.FilteredBlockOut(id=block.id, type="table", config={
+            "columns": columns, "rows": rows[:_MAX_TABLE_ROWS_PER_BLOCK],
+            "truncated": len(rows) > _MAX_TABLE_ROWS_PER_BLOCK or bool(res.get("truncated")),
+        })
+    if block.type == "chart":
+        chart_type = config.get("chart_type") or ("line" if res.get("time_column") else "bar")
+        if chart_type not in _FILTER_REBUILD_CHART_TYPES:
+            chart_type = "bar"
+        try:
+            block_df = pd.DataFrame(rows, columns=columns)
+            dims = ([res["time_column"]] if res.get("time_column") else []) + list(res.get("dimensions") or [])
+            if len(dims) >= 2 and measures:
+                # period/group x measure -> wide (period rows, one column per group)
+                block_df = block_df.pivot_table(index=dims[0], columns=dims[1], values=measures[0], aggfunc="sum").reset_index()
+                chart_type = chart_type if chart_type in ("grouped_bar", "stacked_bar", "line", "area") else "grouped_bar"
+            elif dims and measures:
+                block_df = block_df[[dims[0]] + measures[:1]]
+            new_spec = _rebuild_filtered_chart_spec(block_df, chart_type, block.title or "")
+        except Exception as e:
+            print(f"[dashboard_builder] warehouse chart rebuild failed for block {block.id} (non-fatal): {e}")
+            return None
+        return schemas.FilteredBlockOut(
+            id=block.id, type="chart",
+            config={**config, "chart_spec": new_spec, "chart_type": chart_type, "result_columns": [{"name": c} for c in columns],
+                    "result_rows": rows[:_MAX_TABLE_ROWS_PER_BLOCK], "computed_in": res.get("computed_in"),
+                    "run": {k: res.get(k) for k in ("bytes_scanned", "duration_ms", "row_count", "cached", "exact_total_rows")}},
+        )
+    return None
+
+
+def _filter_page_blocks_warehouse(
+    db: Session, d: models.Dashboard, page: models.DashboardPage, ds: models.DataSource,
+    payload: schemas.ApplyFiltersRequest, user_id: str,
+) -> schemas.FilteredBlocksOut:
+    """preview-filtered for a warehouse dashboard: spec'd blocks run in
+    the warehouse through the engine; spec-less AI-built blocks keep
+    filtering their OWN stored result rows (a real computed result, not a
+    sample - unchanged from before); recipe blocks are left out (no live
+    rows exist in the app to recompute them on)."""
+    run_req = schemas.RunPageRequest(filters=payload.filters, block_filters=payload.block_filters)
+    run = _run_page_for(db, d, page, ds, run_req, user_id, persist_last_run=False)
+    out: list[schemas.FilteredBlockOut] = []
+    spec_ids = set(run.blocks.keys())
+    by_id = {b.id: b for b in page.blocks}
+    for bid, res in run.blocks.items():
+        shaped = _block_result_to_filtered(by_id[bid], res)
+        if shaped:
+            out.append(shaped)
+    # Spec-less blocks: the pre-layer static path, on their own stored rows.
+    static_page = SimpleNamespaceBlocks([b for b in page.blocks if b.id not in spec_ids and not (b.config or {}).get("recipe")])
+    static = _filter_page_blocks(db, static_page, None, None, payload)
+    out.extend(static.blocks)
+    return schemas.FilteredBlocksOut(blocks=out, matched_rows=run.matched_rows)
+
+
+class SimpleNamespaceBlocks:
+    """A page stand-in with only `.blocks` - what _filter_page_blocks reads."""
+
+    def __init__(self, blocks):
+        self.blocks = blocks
+
+
+def _validate_parameters(db: Session, ds: models.DataSource | None, params: list) -> list[dict]:
+    native = dashboard_engine.is_warehouse_native(ds)
+    schema, _ = (query_builder.with_version_aliases(ds.schema_cache, dashboard_engine.load_versions(db, ds)) if native else ({}, set()))
+    out: list[dict] = []
+    seen: set[str] = set()
+    seen_names: set[str] = set()
+    for i, p in enumerate(params):
+        if not isinstance(p, dict):
+            raise HTTPException(400, f"Parameter #{i + 1} is not an object.")
+        column = (p.get("column") or "").strip()
+        control = (p.get("control") or "chips").strip().lower()
+        if not column:
+            raise HTTPException(400, f"Parameter #{i + 1} needs a column.")
+        if control not in _PARAM_CONTROLS:
+            raise HTTPException(400, f'Parameter "{column}": the control must be one of {", ".join(sorted(_PARAM_CONTROLS))}.')
+        table = (p.get("table") or "").strip() or None
+        if native:
+            if table and not query_builder.table_columns(schema, table):
+                raise HTTPException(400, f'Parameter "{column}": the table "{table}" is not in this data source.')
+            tables = [table] if table else list(schema.keys())
+            if not any(any(c["name"] == column for c in (query_builder.table_columns(schema, t) or [])) for t in tables):
+                raise HTTPException(400, f'Parameter "{column}": that column is not in this dashboard\'s data source.')
+        pid = str(p.get("id") or "").strip() or f"p_{secrets.token_hex(4)}"
+        if pid in seen:
+            raise HTTPException(400, f'Parameter ids must be unique ("{pid}" appears twice).')
+        seen.add(pid)
+        options_from = p.get("options_from")
+        if options_from not in (None, "distinct"):
+            raise HTTPException(400, f'Parameter "{column}": options_from must be "distinct" or null.')
+        # 2026-10-07 (analyst canvas round): `name` is what a SQL cell
+        # references ({{name}} / @name) - a plain identifier, unique on
+        # the dashboard; derived from the column when not given.
+        name = dashboard_engine.parameter_name({"name": p.get("name"), "column": column})
+        if not name or not dashboard_engine._PARAM_NAME_RE.match(name):
+            raise HTTPException(400, f'Parameter "{column}": the name must be a plain identifier (letters, digits, underscores).')
+        if name in seen_names:
+            raise HTTPException(400, f'Parameter names must be unique ("{name}" appears twice).')
+        seen_names.add(name)
+        out.append({
+            "id": pid, "name": name, "column": column, "label": (str(p.get("label") or column))[:80], "control": control,
+            "options_from": options_from if options_from else ("distinct" if control in ("chips", "multi", "search", "segmented", "checkboxes") else None),
+            "default": p.get("default"), "table": table,
+        })
+    return out
+
+
+def _page_cells(page: models.DashboardPage) -> list[dict]:
+    return [{"id": b.id, "type": "sql", "sql": (b.config or {}).get("sql") or "", "name": (b.config or {}).get("name")}
+            for b in page.blocks if b.type == "sql"]
+
+
+def _page_graph_blocks(page: models.DashboardPage, override: dict | None = None) -> list[dict]:
+    """The page's blocks in run_page's input shape, with `override`
+    ({"id", ...}) standing in for the block being edited - what the
+    dependency/cycle check runs on before a change is stored."""
+    out: list[dict] = []
+    for b in page.blocks:
+        if override and b.id == override["id"]:
+            continue
+        cfg = b.config or {}
+        if b.type == "sql":
+            out.append({"id": b.id, "type": "sql", "sql": cfg.get("sql") or "", "name": cfg.get("name")})
+        elif cfg.get("source_block_id"):
+            out.append({"id": b.id, "type": b.type, "source_block_id": cfg["source_block_id"]})
+        else:
+            out.append({"id": b.id, "type": b.type or "spec", "spec": cfg.get("spec")})
+    if override:
+        out.append(override)
+    return out
+
+
+def _validate_cell_config(
+    db: Session, user: models.User, d: models.Dashboard, page: models.DashboardPage, block: models.DashboardBlock,
+    config: dict,
+) -> dict:
+    """2026-10-07 (analyst canvas round): the write-time checks for the
+    canvas cell kinds, shared by create_block and update_block:
+      - "sql": config.sql is a single read-only SELECT; config.name is a
+        plain identifier unique among the page's sql cells (derived from
+        the title when missing); every {{param}} / @param it references
+        is a dashboard parameter; every {{cell:name}} exists and creates
+        no loop; the bound statement passes the warehouse's zero-row
+        validation (defaults bound, nothing read). Stores the compiled
+        statement on block.query_sql and the referenced parameter names
+        on config.parameters. An EMPTY statement is allowed (the person
+        is still typing) and skips validation.
+      - "input": config.parameter_id names one of the dashboard's
+        parameters (by id or name), or is null.
+      - a data block with config.source_block_id: the source is a sql
+        cell (or a spec block) on the same page, not itself, and the
+        binding creates no loop.
+    Raises 400 with the real reason; returns the normalised config."""
+    config = dict(config or {})
+    if block.type == "sql":
+        sql = config.get("sql")
+        if sql is None:
+            sql = ""
+        if not isinstance(sql, str):
+            raise HTTPException(400, "A SQL cell's `sql` must be a string.")
+        sql = sql.strip()
+        config["sql"] = sql
+        raw_name = config.get("name") or _slugify(block.title or "").replace("-", "_") or None
+        name = dashboard_engine.parameter_name({"name": raw_name}) if raw_name else None
+        if name is None:
+            name = f"cell_{(block.id or secrets.token_hex(3))[:6].replace('-', '')}"
+        if not dashboard_engine._PARAM_NAME_RE.match(name):
+            raise HTTPException(400, f'The cell name "{name}" must be a plain identifier (letters, digits, underscores).')
+        for other in page.blocks:
+            if other.id != block.id and other.type == "sql" and (other.config or {}).get("name") == name:
+                raise HTTPException(400, f'Another SQL cell on this page is already named "{name}" - pick a different name.')
+        config["name"] = name
+        if not sql:
+            config["parameters"] = []
+            block.query_sql = None
+            return config
+        try:
+            assert_read_only_sql(sql)
+        except ReadOnlyViolation as e:
+            raise HTTPException(400, f"A SQL cell can only run a single SELECT: {e}")
+        ds = _resolve_datasource(db, user, d)
+        if not dashboard_engine.is_warehouse_native(ds):
+            raise HTTPException(400, "SQL cells run inside a warehouse/database - this dashboard's source is a file.")
+        others = [c for c in _page_cells(page) if c["id"] != block.id]
+        # A chart bound to this cell, plus this cell reading that chart's
+        # source... cannot happen (charts are never sources), but a loop
+        # through other sql cells can - check the whole page's graph.
+        graph = _page_graph_blocks(page, {"id": block.id, "type": "sql", "sql": sql, "name": name})
+        try:
+            dashboard_engine.topological_order(dashboard_engine.dependency_graph(graph))
+        except dashboard_engine.DependencyCycleError as e:
+            raise HTTPException(400, str(e))
+        versions = dashboard_engine.load_versions(db, ds)
+        check = dashboard_engine.validate_sql_cell(
+            ds, sql, d.parameters if isinstance(d.parameters, list) else [], versions, cells=others, name=name,
+            block_id=block.id,
+        )
+        if not check["ok"]:
+            raise HTTPException(400, f"This SQL cell did not validate: {check['error']}")
+        config["parameters"] = check["parameters"]
+        config["cells"] = check["cells"]
+        config["computed_in"] = ds.kind
+        config["spec_columns"] = check["columns"]
+        block.query_sql = check["sql"]
+        return config
+    if block.type == "input":
+        pid = config.get("parameter_id")
+        if pid is not None:
+            params = d.parameters if isinstance(d.parameters, list) else []
+            match = next((p for p in params if isinstance(p, dict) and (p.get("id") == pid or p.get("name") == pid)), None)
+            if not match:
+                raise HTTPException(400, f'The parameter "{pid}" is not on this dashboard\'s filter rail - add it first.')
+            config["parameter_id"] = match.get("id")
+            config["parameter_name"] = match.get("name") or dashboard_engine.parameter_name(match)
+        return config
+    source_id = config.get("source_block_id")
+    if source_id:
+        if source_id == block.id:
+            raise HTTPException(400, "A block cannot read from itself.")
+        source = next((b for b in page.blocks if b.id == source_id), None)
+        if source is None:
+            raise HTTPException(400, "The cell this block should read from is not on this page.")
+        if source.type != "sql" and not isinstance((source.config or {}).get("spec"), dict):
+            raise HTTPException(400, "A block can only read from a SQL cell (or a block with a query spec).")
+        graph = _page_graph_blocks(page, {"id": block.id, "type": block.type, "source_block_id": source_id})
+        try:
+            dashboard_engine.topological_order(dashboard_engine.dependency_graph(graph))
+        except dashboard_engine.DependencyCycleError as e:
+            raise HTTPException(400, str(e))
+        # A block bound to a cell has no spec of its own.
+        config.pop("spec", None)
+        block.query_sql = None
+    return config
+
+
+@router.post("/{dashboard_id}/pages/{page_id}/run", response_model=schemas.RunPageOut)
+def run_page(
+    dashboard_id: str,
+    page_id: str,
+    payload: schemas.RunPageRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Runs every warehouse block on the page (or `block_ids`) inside the
+    warehouse under the page's filters/period/date range - view access
+    only (running is not editing). 400 for a dashboard whose source is a
+    file (those use preview-filtered's pandas path). The audit log and
+    the daily scan budget are the caller's own."""
+    d = _get_dashboard_v2(db, user, dashboard_id)
+    page = next((p for p in d.pages if p.id == page_id), None)
+    if not page:
+        raise HTTPException(404, "Page not found on this dashboard.")
+    ds = _resolve_datasource_for_read(db, user, d)
+    if not ds:
+        raise HTTPException(400, "This dashboard has no linked data source you can access.")
+    if not dashboard_engine.is_warehouse_native(ds):
+        raise HTTPException(400, "This dashboard's data source is a file - use preview-filtered for it.")
+    return _run_page_for(db, d, page, ds, payload, user.id, persist_last_run=True)
+
+
+@router.get("/{dashboard_id}/parameters/{param_id}/options", response_model=schemas.ParameterOptionsOut)
+def get_parameter_options(
+    dashboard_id: str,
+    param_id: str,
+    search: str | None = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """A rail control's distinct values with counts (chips, multi-select,
+    the country search) - one GROUP BY query, cached 10 minutes."""
+    d = _get_dashboard_v2(db, user, dashboard_id)
+    ds = _resolve_datasource_for_read(db, user, d)
+    if not ds or not dashboard_engine.is_warehouse_native(ds):
+        raise HTTPException(400, "Parameter options are computed in the warehouse - this dashboard's source is a file.")
+    return _parameter_options_for(db, d, ds, param_id, search, limit, user.id)
+
+
+def _parameter_options_for(db, d, ds, param_id, search, limit, user_id) -> schemas.ParameterOptionsOut:
+    params = d.parameters if isinstance(d.parameters, list) else []
+    param = next((p for p in params if isinstance(p, dict) and p.get("id") == param_id), None)
+    if not param:
+        raise HTTPException(404, "Parameter not found on this dashboard.")
+    table = param.get("table") or _dashboard_primary_table(d, ds)
+    if not table:
+        raise HTTPException(400, "This dashboard has no table to read parameter options from.")
+    res = dashboard_engine.distinct_values(
+        db, ds, table, param["column"], user_id=user_id, search=search, limit=max(1, min(200, int(limit))),
+    )
+    return schemas.ParameterOptionsOut(
+        parameter_id=param_id, column=param["column"], table=table, search=res.get("search"), values=res["values"],
+        truncated=res.get("truncated", False), cached=res.get("cached", False), error=res.get("error"),
+    )
+
+
+@router.patch("/{dashboard_id}/parameters", response_model=schemas.DashboardBuilderOut)
+def update_parameters(
+    dashboard_id: str,
+    payload: schemas.UpdateParametersRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    ds = _dashboard_datasource(db, d)
+    d.parameters = _validate_parameters(db, ds, payload.parameters)
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.patch("/{dashboard_id}/saved-views", response_model=schemas.DashboardBuilderOut)
+def update_saved_views(
+    dashboard_id: str,
+    payload: schemas.UpdateSavedViewsRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    existing = {v.get("id"): v for v in (d.saved_views or []) if isinstance(v, dict)}
+    out: list[dict] = []
+    seen: set[str] = set()
+    for i, v in enumerate(payload.saved_views):
+        if not isinstance(v, dict):
+            raise HTTPException(400, f"Saved view #{i + 1} is not an object.")
+        name = str(v.get("name") or "").strip()
+        if not name:
+            raise HTTPException(400, f"Saved view #{i + 1} needs a name.")
+        vid = str(v.get("id") or "").strip() or f"v_{secrets.token_hex(4)}"
+        if vid in seen:
+            raise HTTPException(400, f'Saved view ids must be unique ("{vid}" appears twice).')
+        seen.add(vid)
+        period = v.get("period")
+        if period is not None and period not in query_builder.GRAINS:
+            raise HTTPException(400, f'Saved view "{name}": the period must be one of {", ".join(query_builder.GRAINS)}.')
+        filters = v.get("filters") if isinstance(v.get("filters"), list) else []
+        try:
+            filters = [schemas.FilterCriterion(**f).model_dump() if isinstance(f, dict) else None for f in filters[:12]]
+        except Exception:
+            raise HTTPException(400, f'Saved view "{name}": its filters are malformed.')
+        filters = [f for f in filters if f]
+        prev = existing.get(vid) or {}
+        out.append({
+            "id": vid, "name": name[:80], "filters": filters, "period": period,
+            "date_range": query_builder.normalize_date_range(v.get("date_range")),
+            "created_by": prev.get("created_by") or v.get("created_by") or user.id,
+        })
+    d.saved_views = out
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+def _infer_block_type_for_spec(spec: dict, requested: str | None, current: str | None) -> str:
+    """An explicit block_type wins; otherwise the spec's shape decides: a
+    single-row spec (no group_by, no time) is a kpi (a gauge stays a
+    gauge), a shaped spec keeps the block's current multi-row type (chart/
+    table/donut/...) or becomes a chart."""
+    if requested in _DATA_BLOCK_TYPES:
+        return requested
+    single_row = not spec.get("group_by") and not spec.get("time")
+    if single_row:
+        return current if current in ("kpi", "gauge") else "kpi"
+    if current in _DATA_BLOCK_TYPES and current not in ("kpi", "gauge"):
+        return current
+    return "chart"
+
+
+@router.post("/{dashboard_id}/blocks/{block_id}/spec", response_model=schemas.DashboardBuilderOut)
+def set_block_spec(
+    dashboard_id: str,
+    block_id: str,
+    payload: schemas.SetBlockSpecRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Sets/replaces a block's BlockSpec. The spec is validated
+    structurally (every table/column must exist in the schema; `expr`
+    must be plain column arithmetic), compiled, and dry-validated inside
+    the warehouse with the connector's zero-row check (nothing read,
+    nothing billed) before anything is stored. Stores the compiled
+    at-rest SQL on block.query_sql. 400 with the warehouse's own message
+    when the spec does not compile or validate."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    block = _get_block(db, d, block_id)
+    ds = _resolve_datasource(db, user, d)
+    if not dashboard_engine.is_warehouse_native(ds):
+        raise HTTPException(400, "Block specs are for dashboards on a warehouse/database source.")
+    versions = dashboard_engine.load_versions(db, ds)
+    try:
+        schema, _ = query_builder.with_version_aliases(ds.schema_cache, versions)
+        normalised = query_builder.public_spec(query_builder.validate_block_spec(payload.spec, schema, strict=True))
+    except query_builder.QueryBuilderError as e:
+        raise HTTPException(400, str(e))
+    check = dashboard_engine.validate_spec_in_warehouse(ds, normalised, versions, date_column=d.date_column)
+    if not check["ok"]:
+        raise HTTPException(400, f"The warehouse rejected this block's query: {check['error']}")
+
+    _snapshot_block_config(block)
+    new_type = _infer_block_type_for_spec(normalised, payload.block_type, block.type)
+    config = {k: v for k, v in (block.config or {}).items() if k not in ("result_rows", "result_columns", "recipe", "chart_spec", "rows", "columns")}
+    config["spec"] = normalised
+    config["computed_in"] = ds.kind
+    config["spec_columns"] = check["columns"]
+    if payload.chart_type:
+        config["chart_type"] = payload.chart_type
+    elif new_type == "chart" and not config.get("chart_type"):
+        config["chart_type"] = "line" if normalised.get("time") else "bar"
+    if new_type in ("kpi", "gauge"):
+        config["label"] = config.get("label") or normalised["measures"][0]["alias"]
+    block.type = new_type
+    block.config = config
+    block.query_sql = check["sql"]
+    block.data_updated_at = datetime.utcnow()
+    if payload.title is not None:
+        block.title = payload.title.strip()[:200] or None
+    elif not block.title:
+        block.title = query_builder.describe_block_spec(normalised)[:120]
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.get("/{dashboard_id}/blocks/{block_id}/sql", response_model=schemas.BlockSqlOut)
+def get_block_sql(
+    dashboard_id: str,
+    block_id: str,
+    request: Request,
+    period: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """"Show SQL": the exact statement the engine would run for this
+    block under the given filters. Filters come as repeated query params
+    `f=<column>:<json spec>` (same specs as preview-filtered) so a plain
+    GET can carry the rail's state; none = the block's own SQL at rest."""
+    d = _get_dashboard_v2(db, user, dashboard_id)
+    block = _get_block(db, d, block_id)
+    ds = _resolve_datasource_for_read(db, user, d)
+    if not ds or not dashboard_engine.is_warehouse_native(ds):
+        raise HTTPException(400, "Show SQL is for dashboards on a warehouse/database source.")
+    config = block.config or {}
+    # 2026-10-07 (analyst canvas round): a sql cell (or a block bound to
+    # one) shows the cell's statement with the parameter placeholders in
+    # the warehouse's own form - values are bound at run time, never
+    # shown spliced in.
+    source_id = config.get("source_block_id")
+    cell = block if block.type == "sql" else (_get_block(db, d, source_id) if source_id else None)
+    if cell is not None:
+        cells = [{"id": b.id, "type": "sql", "sql": (b.config or {}).get("sql") or "", "name": (b.config or {}).get("name")}
+                 for b in cell.page.blocks if b.type == "sql"]
+        values, defs = dashboard_engine.resolve_parameter_values(d.parameters if isinstance(d.parameters, list) else [])
+        schema, _ = query_builder.with_version_aliases(ds.schema_cache, dashboard_engine.load_versions(db, ds))
+        by_id = {c["id"]: c for c in cells}
+        deps = dashboard_engine.dependency_graph(cells)
+        try:
+            dashboard_engine.topological_order(deps)
+        except dashboard_engine.DependencyCycleError as e:
+            raise HTTPException(400, str(e))
+        compiled = dashboard_engine.compile_sql_cell(ds, by_id[cell.id], by_id, deps, values, defs, schema,
+                                                     dashboard_engine.load_versions(db, ds))
+        if compiled["error"]:
+            raise HTTPException(400, compiled["error"])
+        return schemas.BlockSqlOut(
+            block_id=block.id, sql=compiled["sql"], prior_sql=None, sparkline_sql=None, dialect=ds.kind,
+            period=d.default_period or "month", date_range=None,
+            filters_applied=[{"parameter": n, "bound": True} for n in compiled["parameters"]],
+        )
+    spec = config.get("spec")
+    if not isinstance(spec, dict):
+        raise HTTPException(404, "This block has no query spec yet - upgrade it first.")
+    filters = _filters_from_query_params(request)
+    date_range = {"from": date_from, "to": date_to} if (date_from or date_to) else None
+    compiled = dashboard_engine.compile_block(
+        ds, spec, filters, period, date_range, d.date_column, dashboard_engine.load_versions(db, ds),
+        default_period=d.default_period,
+    )
+    if compiled.error:
+        raise HTTPException(400, compiled.error)
+    return schemas.BlockSqlOut(
+        block_id=block.id, sql=compiled.sql, prior_sql=compiled.prior_sql, sparkline_sql=compiled.sparkline_sql,
+        dialect=ds.kind, period=compiled.period, date_range=compiled.date_range, filters_applied=compiled.filters_applied,
+    )
+
+
+def _filters_from_query_params(request: Request) -> list[dict]:
+    import json as _json
+    out: list[dict] = []
+    for raw in request.query_params.getlist("f"):
+        column, _, spec_text = raw.partition(":")
+        if not column:
+            continue
+        spec: Any = spec_text
+        if spec_text:
+            try:
+                spec = _json.loads(spec_text)
+            except Exception:
+                spec = spec_text
+        out.append({"column": column, "spec": spec})
+    return out[:12]
+
+
+def _recipe_to_spec(recipe: dict, table: str | None) -> dict | None:
+    """A manual-build recipe ({metric_column, agg, group_by_column,
+    block_type}) is already a spec in all but name - converted
+    deterministically, no model call."""
+    if not table or not isinstance(recipe, dict):
+        return None
+    agg = recipe.get("agg")
+    column = recipe.get("metric_column")
+    if agg not in ("sum", "avg", "count", "min", "max") or not column:
+        return None
+    measure = {"alias": f"{agg}_{re.sub(r'[^A-Za-z0-9_]+', '_', column).strip('_') or 'value'}", "agg": agg, "column": column}
+    if agg == "count":
+        measure = {"alias": "count", "agg": "count", "column": None}
+    spec: dict = {"table": table, "measures": [measure], "filters": []}
+    group = recipe.get("group_by_column")
+    if group and recipe.get("block_type") not in ("kpi", "gauge"):
+        spec["group_by"] = [group]
+        spec["order_by"] = [{"by": measure["alias"], "dir": "desc"}]
+        spec["limit"] = 200
+    else:
+        spec["compare_prior_period"] = True
+        spec["sparkline"] = True
+    return spec
+
+
+@router.post("/{dashboard_id}/upgrade-blocks", response_model=schemas.UpgradeBlocksOut)
+def upgrade_blocks(
+    dashboard_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Gives every pre-layer warehouse block (an AI-built chart/table/kpi
+    carrying static result_rows, or a manual recipe) a BlockSpec so it
+    computes inside the warehouse from now on. A recipe block is
+    converted deterministically; an AI-built block's stored question
+    (config.ai_prompt, else its title) is handed to
+    ai_engine.generate_block_spec. Every candidate spec is validated
+    against the schema and dry-run inside the warehouse (zero rows, not
+    billed) before it is stored; failures are reported per block, never
+    hidden, and never change that block."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    ds = _resolve_datasource(db, user, d)
+    if not dashboard_engine.is_warehouse_native(ds):
+        raise HTTPException(400, "Only a dashboard on a warehouse/database source has blocks to upgrade.")
+    versions = dashboard_engine.load_versions(db, ds)
+    schema, _ = query_builder.with_version_aliases(ds.schema_cache, versions)
+    schema_text = _warehouse_schema_text(ds, None, versions)
+    primary_table = _dashboard_primary_table(d, ds)
+    results: list[schemas.UpgradeBlockResult] = []
+    upgraded = failed = skipped = 0
+    for page in sorted(d.pages, key=lambda p: p.position):
+        for block in sorted(page.blocks, key=lambda b: b.position):
+            config = block.config or {}
+            if block.type not in _DATA_BLOCK_TYPES:
+                continue
+            if isinstance(config.get("spec"), dict):
+                results.append(schemas.UpgradeBlockResult(block_id=block.id, title=block.title, status="already_has_spec", spec=config["spec"]))
+                skipped += 1
+                continue
+            candidate = None
+            if isinstance(config.get("recipe"), dict):
+                candidate = _recipe_to_spec(config["recipe"], config.get("source_table") or primary_table)
+                if candidate is None:
+                    results.append(schemas.UpgradeBlockResult(
+                        block_id=block.id, title=block.title, status="failed",
+                        error="This manual block's recipe (a saved metric/transform, or an unsupported aggregation) cannot be expressed as a warehouse query yet.",
+                    ))
+                    failed += 1
+                    continue
+            else:
+                question = (config.get("ai_prompt") or block.title or "").strip()
+                if not question:
+                    results.append(schemas.UpgradeBlockResult(block_id=block.id, title=block.title, status="failed", error="This block has no stored question or title to build a query from."))
+                    failed += 1
+                    continue
+                candidate = ai_engine.generate_block_spec(question, schema_text, ds.kind, title=block.title)
+                if candidate is None:
+                    results.append(schemas.UpgradeBlockResult(block_id=block.id, title=block.title, status="failed", error="The AI could not express this block as a warehouse query spec."))
+                    failed += 1
+                    continue
+            try:
+                normalised = query_builder.public_spec(query_builder.validate_block_spec(candidate, schema, strict=False))
+            except query_builder.QueryBuilderError as e:
+                results.append(schemas.UpgradeBlockResult(block_id=block.id, title=block.title, status="failed", error=str(e), spec=candidate))
+                failed += 1
+                continue
+            check = dashboard_engine.validate_spec_in_warehouse(ds, normalised, versions, date_column=d.date_column)
+            if not check["ok"]:
+                results.append(schemas.UpgradeBlockResult(block_id=block.id, title=block.title, status="failed", error=f"The warehouse rejected the query: {check['error']}", spec=normalised, sql=check.get("sql")))
+                failed += 1
+                continue
+            _snapshot_block_config(block)
+            new_config = {k: v for k, v in config.items() if k not in ("result_rows", "result_columns", "rows", "columns")}
+            new_config["spec"] = normalised
+            new_config["computed_in"] = ds.kind
+            new_config["spec_columns"] = check["columns"]
+            if block.type == "chart" and not new_config.get("chart_type"):
+                new_config["chart_type"] = "line" if normalised.get("time") else "bar"
+            block.config = new_config
+            block.query_sql = check["sql"]
+            results.append(schemas.UpgradeBlockResult(block_id=block.id, title=block.title, status="upgraded", spec=normalised, sql=check["sql"]))
+            upgraded += 1
+    db.commit()
+    return schemas.UpgradeBlocksOut(results=results, upgraded=upgraded, failed=failed, skipped=skipped)
 
 
 @router.post("/{dashboard_id}/pages", response_model=schemas.DashboardBuilderOut, status_code=201)
@@ -4164,7 +5722,44 @@ def _render_public_dashboard(
         background_color=d.background_color,
         has_logo=bool(d.logo_image),
         has_background_image=bool(d.background_image),
+        **_warehouse_dashboard_fields(db, d, _dashboard_datasource(db, d), include_tables=False),
     )
+
+
+# 2026-10-06 (warehouse-native dashboards layer): the published view of a
+# warehouse dashboard has no static rows to show - every block is a spec
+# that must be computed inside the warehouse. So, unlike the pre-layer
+# public preview (which deliberately never touched a live connection),
+# the public run/options endpoints below DO run queries, with these
+# boundaries: only for a currently-published share that passes the same
+# mode/token gate as the content fetch; only the dashboard OWNER's
+# connection, spending the OWNER's daily scan budget and writing the
+# OWNER's audit rows (an anonymous viewer has no account to charge);
+# tighter per-ip and per-slug rate limits than the content fetch; the
+# result cache absorbs repeat views of the same filter state; and nothing
+# is persisted from this path (no last_run writes).
+def _public_warehouse_context(db: Session, share: models.DashboardShare, x_dashboard_access_token: str | None):
+    _authorize_public_share(share, x_dashboard_access_token)
+    d = db.query(models.Dashboard).filter(models.Dashboard.id == share.dashboard_id).first()
+    if not d:
+        raise HTTPException(404, "This dashboard isn't available.")
+    ds = _dashboard_datasource(db, d)
+    if not ds or not dashboard_engine.is_warehouse_native(ds):
+        raise HTTPException(400, "This dashboard's blocks are not computed in a warehouse.")
+    return d, ds
+
+
+def _public_run(db, share, page_id, payload, x_dashboard_access_token) -> schemas.RunPageOut:
+    d, ds = _public_warehouse_context(db, share, x_dashboard_access_token)
+    page = next((p for p in d.pages if p.id == page_id), None)
+    if not page:
+        raise HTTPException(404, "Page not found on this dashboard.")
+    return _run_page_for(db, d, page, ds, payload, d.owner_id, persist_last_run=False)
+
+
+def _public_options(db, share, param_id, search, limit, x_dashboard_access_token) -> schemas.ParameterOptionsOut:
+    d, ds = _public_warehouse_context(db, share, x_dashboard_access_token)
+    return _parameter_options_for(db, d, ds, param_id, search, limit, d.owner_id)
 
 
 # ---------- Round 4 (2026-09-25): branding images, served publicly by slug
@@ -4296,6 +5891,114 @@ def preview_filtered_blocks_public(
     if not page:
         raise HTTPException(404, "Page not found on this dashboard.")
 
+    # 2026-10-06 (warehouse-native dashboards layer): a warehouse dashboard
+    # computes its spec'd blocks in the warehouse (owner's connection and
+    # budget - see _public_warehouse_context); a file dashboard keeps the
+    # static, no-live-connection path exactly as before.
+    ds = _dashboard_datasource(db, d)
+    if ds and dashboard_engine.is_warehouse_native(ds):
+        _check_rate_limit(f"public-run:ip:{ip}", limit=_PUBLIC_RUN_RATE_LIMIT)
+        _check_rate_limit(f"public-run:slug:{slug}", limit=_PUBLIC_RUN_RATE_LIMIT)
+        return _filter_page_blocks_warehouse(db, d, page, ds, payload, d.owner_id)
+    return _filter_page_blocks(db, page, df=None, ds=None, payload=payload)
+
+
+@public_router.post("/{slug}/pages/{page_id}/run", response_model=schemas.RunPageOut)
+def run_page_public(
+    slug: str,
+    page_id: str,
+    payload: schemas.RunPageRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_dashboard_access_token: str | None = Header(default=None, alias="X-Dashboard-Access-Token"),
+):
+    """The published view's run endpoint - same request/response as the
+    authenticated POST /dashboard-builder/{id}/pages/{page_id}/run. See
+    _public_warehouse_context for the boundaries."""
+    ip = _client_ip(request)
+    _check_rate_limit(f"public-run:ip:{ip}", limit=_PUBLIC_RUN_RATE_LIMIT)
+    _check_rate_limit(f"public-run:slug:{slug}", limit=_PUBLIC_RUN_RATE_LIMIT)
+    share = _resolve_share_by_slug(db, slug)
+    return _public_run(db, share, page_id, payload, x_dashboard_access_token)
+
+
+@public_router.get("/{slug}/parameters/{param_id}/options", response_model=schemas.ParameterOptionsOut)
+def get_parameter_options_public(
+    slug: str,
+    param_id: str,
+    request: Request,
+    search: str | None = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    x_dashboard_access_token: str | None = Header(default=None, alias="X-Dashboard-Access-Token"),
+):
+    ip = _client_ip(request)
+    _check_rate_limit(f"public-options:ip:{ip}", limit=60)
+    _check_rate_limit(f"public-options:slug:{slug}", limit=60)
+    share = _resolve_share_by_slug(db, slug)
+    return _public_options(db, share, param_id, search, limit, x_dashboard_access_token)
+
+
+@public_domains_router.post("/{hostname}/pages/{page_id}/run", response_model=schemas.RunPageOut)
+def run_page_public_by_domain(
+    hostname: str,
+    page_id: str,
+    payload: schemas.RunPageRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_dashboard_access_token: str | None = Header(default=None, alias="X-Dashboard-Access-Token"),
+):
+    ip = _client_ip(request)
+    _check_rate_limit(f"public-run:ip:{ip}", limit=_PUBLIC_RUN_RATE_LIMIT)
+    _check_rate_limit(f"public-run:domain:{hostname}", limit=_PUBLIC_RUN_RATE_LIMIT)
+    share = _resolve_share_by_domain(db, hostname)
+    return _public_run(db, share, page_id, payload, x_dashboard_access_token)
+
+
+@public_domains_router.get("/{hostname}/parameters/{param_id}/options", response_model=schemas.ParameterOptionsOut)
+def get_parameter_options_public_by_domain(
+    hostname: str,
+    param_id: str,
+    request: Request,
+    search: str | None = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    x_dashboard_access_token: str | None = Header(default=None, alias="X-Dashboard-Access-Token"),
+):
+    ip = _client_ip(request)
+    _check_rate_limit(f"public-options:ip:{ip}", limit=60)
+    _check_rate_limit(f"public-options:domain:{hostname}", limit=60)
+    share = _resolve_share_by_domain(db, hostname)
+    return _public_options(db, share, param_id, search, limit, x_dashboard_access_token)
+
+
+@public_domains_router.post("/{hostname}/pages/{page_id}/preview-filtered", response_model=schemas.FilteredBlocksOut)
+def preview_filtered_blocks_public_by_domain(
+    hostname: str,
+    page_id: str,
+    payload: schemas.ApplyFiltersRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    x_dashboard_access_token: str | None = Header(default=None, alias="X-Dashboard-Access-Token"),
+):
+    """Hostname-keyed twin of preview_filtered_blocks_public (the slug
+    router had one, the domain router did not)."""
+    ip = _client_ip(request)
+    _check_rate_limit(f"public-filter:ip:{ip}", limit=90)
+    _check_rate_limit(f"public-filter:domain:{hostname}", limit=60)
+    share = _resolve_share_by_domain(db, hostname)
+    _authorize_public_share(share, x_dashboard_access_token)
+    d = db.query(models.Dashboard).filter(models.Dashboard.id == share.dashboard_id).first()
+    if not d:
+        raise HTTPException(404, "This dashboard isn't available.")
+    page = next((p for p in d.pages if p.id == page_id), None)
+    if not page:
+        raise HTTPException(404, "Page not found on this dashboard.")
+    ds = _dashboard_datasource(db, d)
+    if ds and dashboard_engine.is_warehouse_native(ds):
+        _check_rate_limit(f"public-run:ip:{ip}", limit=_PUBLIC_RUN_RATE_LIMIT)
+        _check_rate_limit(f"public-run:domain:{hostname}", limit=_PUBLIC_RUN_RATE_LIMIT)
+        return _filter_page_blocks_warehouse(db, d, page, ds, payload, d.owner_id)
     return _filter_page_blocks(db, page, df=None, ds=None, payload=payload)
 
 
