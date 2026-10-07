@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { API_URL, publicDashboardApi, PublicDashboard } from "../api/client";
+import { useTransientTheme } from "../api/ThemeContext";
 import ThemeToggle from "../components/ThemeToggle";
 import { DataFreshnessBadge } from "../components/DashboardBlocks";
 import { DashboardShell, useDashboardRun, useDashboardViewMode, type RunSource } from "../dashboard";
@@ -236,6 +237,17 @@ export default function PublicDashboardView() {
   }, [resolverKey, storageKey]);
 
   const activePage = dash?.pages[activePageIndex];
+
+  // 2026-10-07 (identity-colour round): the published link opens in the
+  // theme its owner chose (appearance.theme_default) - shown, not saved as
+  // this browser's preference; the visitor's own toggle still wins.
+  const setTransientTheme = useTransientTheme();
+  const themeDefault = dash?.appearance?.theme_default;
+  useEffect(() => {
+    if (themeDefault !== "light" && themeDefault !== "dark") return;
+    setTransientTheme(themeDefault);
+    return () => setTransientTheme(null);
+  }, [themeDefault, setTransientTheme]);
 
   // 2026-09-25 (Round 4, branding): built from resolverKey/byHostname
   // (already known before `dash` loads), not from anything in the

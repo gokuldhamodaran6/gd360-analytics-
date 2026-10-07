@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   api, chatApi, conversationApi, datasourceApi, dashboardApi, dashboardBuilderApi, workspaceApi,
   DatasetVersion, DataSourceSummary, DataFlow, DashboardSummary, DashboardBuilderSummary, WorkspaceSummary,
-  ChatFinishRequest,
+  ChatFinishRequest, queryFiltersLine,
 } from "../api/client";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
+import { appearanceFromKit } from "../dashboard/theme/appearance";
+import { ChartThemeProvider, useChartThemeValue } from "../dashboard/theme/ChartThemeContext";
 import ChatPanel, { ChatTurn, CustomizeSeed, ORIGINAL_SOURCE_ID, otherDsSourceId, otherDsIdFromSourceId, ShowCalculation, PushdownBadge } from "../components/ChatPanel";
 import { hasMultipleTables, connectionKindMeta, CreatedDataSource } from "../components/DataSourceForm";
 import {
@@ -15,7 +17,7 @@ import {
 } from "../components/WarehouseTurn";
 import AddDataPicker from "../components/AddDataPicker";
 import GokuChat from "../components/GokuChat";
-import ChartCanvas from "../components/ChartCanvas";
+import WorkspaceChart from "../components/WorkspaceChart";
 import ExplorePanel from "../components/ExplorePanel";
 import DataTable from "../components/DataTable";
 import DataFlowMap, { FlowJumpTarget } from "../components/DataFlowMap";
@@ -27,11 +29,12 @@ import PushToDashboardMenu from "../components/PushToDashboardMenu";
 // tab-bar comment further down for why. The components themselves, their
 // backend routers, and their own standalone pages (Metrics.tsx,
 // Catalog.tsx) are untouched; only this page stopped importing them.
-import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
+import { applyChartStyle, ChartStyle } from "../lib/chartStyle";
 import {
-  CLIENT_PIVOTABLE_TYPES, ExploreConfig, ResultColumn, buildExploreFigure, defaultExploreConfig,
+  CLIENT_PIVOTABLE_TYPES, ExploreConfig, ResultColumn, defaultExploreConfig,
   isBackendTypePivotable,
 } from "../lib/exploreEngine";
+import { resolveWorkspaceChart } from "../lib/workspaceChart";
 
 // One tab in the chart history strip. Every question (or corrected answer)
 // that produces a chart gets its own entry here instead of overwriting
@@ -41,8 +44,17 @@ import {
 // and update the SAME tab in place rather than creating a duplicate.
 type ChartEntry = {
   id: string;
+  // The figure the backend stored for this answer. 2026-10-07 (chart-
+  // integrity round): it is NOT what is drawn when the answer also carries
+  // its rows - the chart is then derived from resultColumns/resultRows
+  // through the chart model (lib/workspaceChart.resolveWorkspaceChart), so
+  // a figure stored wrong long ago still opens as the right chart. null
+  // for an answer shown as a table (chartType "table").
   spec: any;
-  style: ChartStyle;
+  // ONLY the Style-panel options the person has actually set on this tab.
+  // Everything else follows the defaults of the chart that is drawn - see
+  // resolveWorkspaceChart's `styleOverrides`.
+  styleOverrides: Partial<ChartStyle>;
   title: string;
   label: string;
   messageId?: string | null;
@@ -252,12 +264,15 @@ function SaveChartMenu({
   insight,
   dsName,
   onSaved,
+  preview,
 }: {
   chartSpec: any;
   title: string;
   insight: string | null;
   dsName: string;
   onSaved: (message: string) => void;
+  // 2026-10-07: a small drawing of exactly what is about to be saved.
+  preview?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [dashboards, setDashboards] = useState<DashboardSummary[] | null>(null);
@@ -330,6 +345,11 @@ function SaveChartMenu({
             <div className="text-xs text-muted py-2">Loading&hellip;</div>
           ) : (
             <>
+              {preview && (
+                <div className="mb-2.5 rounded-lg border border-border bg-surface p-2" data-testid="save-preview" style={{ height: 170 }}>
+                  {preview}
+                </div>
+              )}
               {editableDashboards.length > 0 && (
                 <div className="mb-2.5">
                   <label className="flex items-center gap-2 text-xs mb-1.5 cursor-pointer">
@@ -773,8 +793,6 @@ export default function Workspace() {
   };
 
   const activeChart = charts.find((c) => c.id === activeChartId) || null;
-  const chartSpec = activeChart?.spec ?? null;
-  const chartStyle = activeChart?.style ?? defaultChartStyle();
   const chartTitle = activeChart?.title ?? "";
 
   // 2026-10-01 (chat-to-dashboard round): the real code and the real
@@ -800,41 +818,74 @@ export default function Workspace() {
   const lastNeedsHelpTurn = lastTurn && lastTurn.role === "assistant" && lastTurn.action === "needs_query_help" ? lastTurn : null;
   const isWarehouseChartTurn = !!activeChartTurn?.usedPushdown;
 
-  // Whether THIS chart's chart type can be redrawn client-side from its own
-  // tidy rows at all (see lib/exploreEngine.ts) - false for an older chart
-  // from before this feature, one whose result wasn't tabular, or one whose
-  // CURRENT explore.chartType is a specialized shape (heatmap, sankey, ...)
-  // that only the backend knows how to build.
+  // Whether THIS chart can be redrawn client-side from its own tidy rows by
+  // the "Edit chart" mapping (see lib/exploreEngine.ts) - false for an
+  // older chart from before this feature, one whose result wasn't tabular,
+  // or one whose CURRENT explore.chartType is a specialized shape (heatmap,
+  // sankey, ...) that only the backend knows how to build.
   const canExplore = !!(
     activeChart?.resultColumns?.length && activeChart?.resultRows?.length && activeChart?.explore &&
     (CLIENT_PIVOTABLE_TYPES as string[]).includes(activeChart.explore.chartType)
   );
 
-  // The chart actually plotted right now: the Explore panel's own live,
-  // client-built figure when this chart supports it, otherwise the fixed
-  // figure the backend built. Style (colors/title/legend/fonts) then
-  // applies identically on top either way - applyChartStyle only ever
-  // touches an already-built Plotly spec, so it does not care which of the
-  // two built it.
-  const effectiveSpec = useMemo(() => {
-    if (canExplore && activeChart?.resultColumns && activeChart?.resultRows && activeChart?.explore) {
-      const built = buildExploreFigure(activeChart.resultColumns, activeChart.resultRows, activeChart.explore);
-      if (built) return built;
-    }
-    return chartSpec;
-  }, [canExplore, activeChart, chartSpec]);
-
+  // 2026-10-07 (chart-integrity round): WHAT IS DRAWN, decided once, in one
+  // place - lib/workspaceChart.resolveWorkspaceChart (read its module
+  // comment). The answer's rows decide the chart (through the chart model),
+  // not the stored Plotly figure; the app's native renderer draws every
+  // chart the model can express and Plotly only what it cannot; rows that
+  // cannot be drawn honestly are shown as their table. Everything else on
+  // this page that needs "the chart" reads it from this one result, so
+  // what is saved or pushed to a dashboard is what is on screen:
+  //   resolved.figure   the audited, unstyled Plotly figure of it
+  //   resolved.style    the drawn chart's defaults + the person's choices
+  //   resolved.columns / rows / chartType   the table actually charted
+  //                     (the Edit-chart mapping's table once it is edited)
+  // 2026-10-07 (identity-colour round): chat charts use the workspace
+  // brand kit's palette (the kit of the workspace this data source is in)
+  // and remember each value's colour per data source, in this browser - so
+  // "City Hotel" is the same colour in every answer about it.
+  const kitWorkspace = workspaces.find((w) => w.id === (dsInfo as any)?.workspace_id) || workspaces.find((w) => w.id === activeWorkspaceId);
+  const kitAppearance = useMemo(() => appearanceFromKit(kitWorkspace?.brand_kit), [kitWorkspace?.brand_kit]);
+  const chartTheme = useChartThemeValue({ appearance: kitAppearance, localScope: datasourceId ? `ds:${datasourceId}` : null });
+  const resolvedChart = useMemo(
+    () => resolveWorkspaceChart({
+      theme: chartTheme,
+      columns: activeChart?.resultColumns,
+      rows: activeChart?.resultRows,
+      truncated: activeChart?.resultTruncated,
+      chartType: activeChart?.chartType,
+      storedSpec: activeChart?.spec,
+      explore: canExplore ? activeChart?.explore : null,
+      styleOverrides: activeChart?.styleOverrides,
+      title: activeChart?.styleOverrides?.title || activeChart?.title,
+      id: activeChart?.messageId || activeChart?.id,
+    }),
+    [activeChart, canExplore, chartTheme]
+  );
+  const chartStyle = resolvedChart.style;
+  // "Is there an answer on this tab at all" - a chart, or a result that is
+  // shown as its table. Gates the header actions and "Edit chart".
+  const hasChart = !!activeChart && resolvedChart.path !== "empty";
+  // The unstyled figure of what is on screen (Style panel, chart-type
+  // highlight) and the styled one that "Save chart" / "Add to dashboard"
+  // store. Both null when the answer is shown as a table.
+  const effectiveSpec = resolvedChart.figure;
   const displaySpec = useMemo(
     () => (effectiveSpec ? applyChartStyle(effectiveSpec, chartStyle, chartTitle) : null),
     [effectiveSpec, chartStyle, chartTitle]
   );
+  // The insight that belongs to the chart on screen (not merely the most
+  // recent one in the conversation) travels with it when it is saved.
+  const activeChartInsight = activeChartTurn ? activeChartTurn.insight ?? null : lastInsight;
+  // "Say what was filtered": the quiet line under the chart title.
+  const filtersLine = queryFiltersLine(activeChartTurn?.queryFilters);
 
   // Every style/chart-type edit from the Style tab touches only the
   // currently active tab's own style - every other tab's chart is
   // completely unaffected, exactly as asked.
   const updateStyle = (next: Partial<ChartStyle>) => {
     if (!activeChartId) return;
-    setCharts((cs) => cs.map((c) => (c.id === activeChartId ? { ...c, style: { ...c.style, ...next } } : c)));
+    setCharts((cs) => cs.map((c) => (c.id === activeChartId ? { ...c, styleOverrides: { ...c.styleOverrides, ...next } } : c)));
   };
 
   // Every Data-tab edit (X/Y/series/sort/limit/filters) touches only the
@@ -863,7 +914,7 @@ export default function Workspace() {
     if (!activeChartId || !activeChart) return;
     if (activeChart.explore || !activeChart.resultColumns?.length) return;
     if (!isBackendTypePivotable(activeChart.chartType)) return;
-    const config = defaultExploreConfig(activeChart.resultColumns, activeChart.chartType);
+    const config = defaultExploreConfig(activeChart.resultColumns, activeChart.chartType, activeChart.resultRows);
     setCharts((cs) => cs.map((c) => (c.id === activeChartId ? { ...c, explore: config } : c)));
   };
 
@@ -879,7 +930,7 @@ export default function Workspace() {
       activeChart?.resultColumns?.length && activeChart?.resultRows?.length &&
       (CLIENT_PIVOTABLE_TYPES as string[]).includes(type)
     ) {
-      const base = activeChart.explore || defaultExploreConfig(activeChart.resultColumns, activeChart.chartType);
+      const base = activeChart.explore || defaultExploreConfig(activeChart.resultColumns, activeChart.chartType, activeChart.resultRows);
       updateExplore({ ...base, chartType: type as ExploreConfig["chartType"] });
       return;
     }
@@ -888,7 +939,7 @@ export default function Workspace() {
 
   const resetActiveChartStyle = () => {
     if (!activeChartId) return;
-    setCharts((cs) => cs.map((c) => (c.id === activeChartId ? { ...c, style: defaultChartStyle(c.spec) } : c)));
+    setCharts((cs) => cs.map((c) => (c.id === activeChartId ? { ...c, styleOverrides: {} } : c)));
   };
 
   const startRenameChart = (c: ChartEntry) => {
@@ -1460,13 +1511,32 @@ export default function Workspace() {
           builderSuggestion: m.builder_suggestion ?? null,
           builderColumns: null,
           exactTotalRows: m.exact_total_rows ?? null,
+          // 2026-10-07 ("say what was filtered"): the row filters behind
+          // this answer, restored so the line under the chart title is
+          // still there after a reload.
+          queryFilters: m.query_filters ?? null,
         }));
-        setTurns(restored);
+        // 2026-10-07: this effect also runs right after the FIRST message of
+        // a brand-new chat (runPrompt writes ?conversation= into the URL),
+        // when the turn it would "restore" is already on screen - and the
+        // live turn knows things the stored message does not: the paused
+        // Step-by-step turn's "Continue -> run the analysis" action above
+        // all, which used to vanish at exactly this moment, leaving the
+        // two-step flow with no second step on a new chat. A stored
+        // message that is already a live turn keeps the live turn.
+        setTurns((prev) => restored.map((r) => {
+          if (r.role !== "assistant" || !r.messageId) return r;
+          return prev.find((p) => p.role === "assistant" && p.messageId === r.messageId) ?? r;
+        }));
 
         const restoredCharts: ChartEntry[] = [];
         for (let i = 0; i < data.messages.length; i++) {
           const m = data.messages[i];
-          if (m.role !== "assistant" || !m.chart_spec) continue;
+          // An answer has a tab when it has a chart - or when the backend
+          // declined to draw one and stored the result as a table
+          // (chart_type "table": "never a wrong chart").
+          const isTableAnswer = m.chart_type === "table" && !!m.result_rows?.length;
+          if (m.role !== "assistant" || (!m.chart_spec && !isTableAnswer)) continue;
           // The nearest preceding user turn is the question this chart
           // answers - used as its title and default tab label, the same
           // text a live turn's prompt would have used.
@@ -1479,8 +1549,8 @@ export default function Workspace() {
           }
           restoredCharts.push({
             id: m.id || makeChartId(),
-            spec: m.chart_spec,
-            style: defaultChartStyle(m.chart_spec),
+            spec: m.chart_spec ?? null,
+            styleOverrides: {},
             title: promptText,
             label: shortChartLabel(promptText),
             messageId: m.id,
@@ -1774,6 +1844,7 @@ export default function Workspace() {
         builderSuggestion: data.builder_suggestion ?? null,
         builderColumns: data.builder_columns ?? builderColumnsFromSchema(dsInfo?.schema_cache),
         exactTotalRows: data.exact_total_rows ?? null,
+        queryFilters: data.query_filters ?? null,
       }]);
 
       // A warehouse question that was NOT run (see NeedsQueryHelpCard):
@@ -1794,7 +1865,10 @@ export default function Workspace() {
         }
         setCenterTab("data");
       }
-      if (data.chart_spec) {
+      // A chart - or a result the backend declined to draw as one and sent
+      // as a table instead (chart_type "table"; the reply says why).
+      const hasChartAnswer = !!data.chart_spec || (data.chart_type === "table" && !!data.result_rows?.length);
+      if (hasChartAnswer) {
         // An analyze answer now often builds its OWN small prepared table
         // first (see ai_engine._run_analyze_with_prep) - it shows up as a
         // new version in the Data tab for transparency, but - unlike a
@@ -1814,9 +1888,14 @@ export default function Workspace() {
           // the Explore panel reseeds fresh defaults from the NEW result
           // next time it's opened, instead of remapping stale field names
           // onto a differently-shaped chart.
+          // 2026-10-07: the tab now shows THIS answer's rows, so it points
+          // at this answer's message too - the SQL, the filters line and
+          // the insight shown with the chart are the ones behind what is
+          // drawn, not the ones behind what it replaced.
           setCharts((cs) => cs.map((c) => (c.id === activeChartId ? {
             ...c,
-            spec: data.chart_spec,
+            messageId: data.message_id || c.messageId,
+            spec: data.chart_spec ?? null,
             chartType: data.chart_type ?? null,
             resultColumns: data.result_columns ?? null,
             resultRows: data.result_rows ?? null,
@@ -1831,8 +1910,8 @@ export default function Workspace() {
           const id = makeChartId();
           setCharts((cs) => [...cs, {
             id,
-            spec: data.chart_spec,
-            style: defaultChartStyle(data.chart_spec),
+            spec: data.chart_spec ?? null,
+            styleOverrides: {},
             title: prompt,
             label: shortChartLabel(prompt),
             messageId: data.message_id,
@@ -1909,9 +1988,19 @@ export default function Workspace() {
     return detail;
   };
 
+  // 2026-10-07 (chart-integrity round): a rebuild re-asks THIS chart's own
+  // question, against the tables that answer used. It used to re-send the
+  // conversation's LAST question, whatever chart tab was open - so picking
+  // "Waterfall" on the "Bookings by month" tab after asking for a scatter
+  // of rate against lead time replaced the bookings chart with a waterfall
+  // of the scatter's numbers, under the bookings title. (The chart's title
+  // is the prompt that made it - live and restored alike; renaming a tab
+  // only changes its label.)
   const applyChartOverride = (override: { chart_type?: string; title?: string }) => {
-    const lastUserPrompt = [...turns].reverse().find((t) => t.role === "user")?.content || "Update the chart";
-    runPrompt(lastUserPrompt, override);
+    const ownPrompt = (activeChart?.title || "").trim();
+    const ownTurn = activeChart?.messageId ? turns.find((t) => t.role === "assistant" && t.messageId === activeChart.messageId) : undefined;
+    const prompt = ownPrompt || [...turns].reverse().find((t) => t.role === "user")?.content || "Update the chart";
+    runPrompt(prompt, override, ownTurn?.sourceIds?.length ? { forceSourceIds: ownTurn.sourceIds } : undefined);
   };
 
   const markTurnResolved = (index: number) => {
@@ -2006,7 +2095,7 @@ export default function Workspace() {
       }));
 
       if (data.status === "corrected") {
-        if (data.chart_spec) {
+        if (data.chart_spec || (data.chart_type === "table" && data.result_rows?.length)) {
           // Update the SAME chart tab this message originally produced,
           // matched by message id, rather than opening a duplicate tab or
           // touching any other chart. If it somehow is not tracked yet
@@ -2020,8 +2109,8 @@ export default function Workspace() {
               setActiveChartId(id);
               return [...cs, {
                 id,
-                spec: data.chart_spec,
-                style: defaultChartStyle(data.chart_spec),
+                spec: data.chart_spec ?? null,
+                styleOverrides: {},
                 title: t.content || "Corrected chart",
                 label,
                 messageId: t.messageId,
@@ -2035,8 +2124,8 @@ export default function Workspace() {
             const next = [...cs];
             next[idx] = {
               ...next[idx],
-              spec: data.chart_spec,
-              style: defaultChartStyle(data.chart_spec),
+              spec: data.chart_spec ?? null,
+              styleOverrides: {},
               chartType: data.chart_type ?? next[idx].chartType ?? null,
               resultColumns: data.result_columns ?? next[idx].resultColumns ?? null,
               resultRows: data.result_rows ?? next[idx].resultRows ?? null,
@@ -2080,6 +2169,7 @@ export default function Workspace() {
     // fixed-height, overflow-hidden page had room for, and the bottom of
     // the layout was simply clipped off-screen with no way to scroll down
     // to it.
+    <ChartThemeProvider theme={chartTheme}>
     <div className="flex">
       <AppSidebar
         workspaces={workspaces}
@@ -2209,31 +2299,46 @@ export default function Workspace() {
               existing at all (i.e. this analysis has produced something
               to save/build from yet) - both actions stay put no matter
               which of the 5 tabs is active. */}
-          {chartSpec && (
+          {hasChart && (
             <>
               {saveMsg && <span className="text-xs text-accent">{saveMsg}</span>}
-              <SaveChartMenu
-                chartSpec={displaySpec}
-                title={chartStyle.title || chartTitle || "Untitled chart"}
-                insight={lastInsight}
-                dsName={dsName}
-                onSaved={setSaveMsg}
-              />
+              {/* 2026-10-07 (chart-integrity round): what is saved is the
+                  figure of what is ON SCREEN (displaySpec - the chart
+                  model's figure with this tab's style), never the stored
+                  one. A result shown as a table has no figure to pin on a
+                  chart board, so this one action is left out for it; "Add
+                  to dashboard" below adds it as a table. */}
+              {displaySpec && (
+                <SaveChartMenu
+                  chartSpec={displaySpec}
+                  title={chartStyle.title || chartTitle || "Untitled chart"}
+                  insight={activeChartInsight}
+                  dsName={dsName}
+                  onSaved={setSaveMsg}
+                  preview={<WorkspaceChart resolved={resolvedChart} variant="bare" title={chartStyle.title || chartTitle} minHeight={150} />}
+                />
+              )}
               {/* 2026-10-01 (chat-to-dashboard round): pushes this SAME
                   chart onto an existing Dashboard Builder (v2) page - see
                   PushToDashboardMenu's own module docstring for why this is
                   a separate component from SaveChartMenu above rather than
                   a third mode bolted onto it. */}
+              {/* The rows, chart type and figure pushed are the ones this
+                  tab is DRAWING (resolvedChart) - after an Edit-chart
+                  remap that is the remapped table, so the dashboard block
+                  shows what the person saw here, not the answer's
+                  original rows. */}
               <PushToDashboardMenu
                 chartSpec={displaySpec}
-                chartType={activeChart?.chartType}
-                resultColumns={activeChart?.resultColumns || undefined}
-                resultRows={activeChart?.resultRows || undefined}
+                chartType={resolvedChart.chartType ?? activeChart?.chartType}
+                resultColumns={resolvedChart.columns.length ? resolvedChart.columns : activeChart?.resultColumns || undefined}
+                resultRows={resolvedChart.columns.length ? resolvedChart.rows : activeChart?.resultRows || undefined}
                 resultTruncated={activeChart?.resultTruncated}
                 title={chartStyle.title || chartTitle || "Untitled chart"}
-                insight={lastInsight}
+                insight={activeChartInsight}
                 sourceCode={activeChartTurn?.code}
                 sourcePrompt={activeChartPrompt}
+                preview={<WorkspaceChart resolved={resolvedChart} variant="bare" title={chartStyle.title || chartTitle} minHeight={150} />}
               />
               {/* 2026-09-28: the way back to a dashboard already built
                   from this chat - see LinkedDashboardsMenu's own comment
@@ -2428,7 +2533,7 @@ export default function Workspace() {
               <button
                 className="text-sm px-4 py-2 rounded-lg font-medium btn-secondary flex items-center gap-1.5"
                 onClick={() => { ensureExploreConfig(); setStyleOpen(true); }}
-                disabled={!chartSpec}
+                disabled={!hasChart}
                 title="Change chart type, axes, styling, or view the underlying table"
               >
                 {/* 2026-09-23: was a magnifying-glass emoji labeled "Explore" -
@@ -2686,7 +2791,7 @@ export default function Workspace() {
                   </div>
                 ) : (
                 <>
-                {displaySpec && (chartStyle.title || chartTitle || activeChartPrompt) && (
+                {hasChart && (chartStyle.title || chartTitle || activeChartPrompt) && (
                   <div className="shrink-0 px-0.5 flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
                     <div className="min-w-0 flex-1">
                       <div className="text-base font-bold text-text leading-tight truncate">
@@ -2695,6 +2800,20 @@ export default function Workspace() {
                       {activeChartPrompt && (
                         <div className="text-xs text-muted mt-0.5 truncate" title={activeChartPrompt}>
                           &ldquo;{activeChartPrompt}&rdquo;{dsName ? ` · ${dsName}` : ""}
+                        </div>
+                      )}
+                      {/* 2026-10-07 ("say what was filtered"): the row
+                          filters behind the numbers on this chart, read off
+                          the SQL that ran (backend services/sql_filters.py)
+                          and stored on the message - so a chart that
+                          excludes cancelled bookings says so, and two
+                          "total revenue" charts that differ only by a
+                          filter can be told apart at a glance. "None" is
+                          said too, but only when the statement was actually
+                          read; nothing is claimed otherwise. */}
+                      {filtersLine && (
+                        <div data-testid="filters-line" className="text-xs text-muted mt-0.5 line-clamp-2" title={filtersLine}>
+                          {filtersLine}
                         </div>
                       )}
                     </div>
@@ -2729,26 +2848,30 @@ export default function Workspace() {
                   className={isWarehouseChartTurn ? "flex-1 shrink-0" : "flex-1 min-h-0"}
                   style={isWarehouseChartTurn ? { minHeight: chartFloorPx + CHART_CARD_CHROME_PX } : undefined}
                 >
-                  <ChartCanvas chartSpec={displaySpec} title={chartStyle.title || chartTitle} onMinHeight={setChartFloorPx} />
+                  {/* 2026-10-07 (chart-integrity round): the chart is drawn
+                      from the answer's ROWS by WorkspaceChart (the app's
+                      native renderer wherever the chart model can express
+                      it, Plotly - with no modebar - only where it cannot;
+                      see lib/workspaceChart.ts). The stored Plotly figure is
+                      no longer what is put on screen. */}
+                  <WorkspaceChart
+                    resolved={resolvedChart}
+                    title={chartStyle.title || chartTitle}
+                    id={activeChart?.messageId || activeChart?.id}
+                    truncated={activeChart?.resultTruncated}
+                    onMinHeight={setChartFloorPx}
+                  />
                 </div>
-                {/* Insight box + "Show how this was calculated" toggle -
-                    the exact same component and classNames ChatPanel.tsx's
-                    own chat transcript already uses for this exact turn
-                    (see ShowCalculation/t.insight there), just surfaced
-                    again here so the Chart tab itself - not only the chat
-                    history on the left - carries the honest insight and
-                    real method/code/timing behind what's on screen, the
-                    way the approved mockup shows it. activeChartTurn is the
-                    exact ChatTurn that produced displaySpec (derived above
-                    from activeChart.messageId) - nothing fabricated, and
-                    this renders nothing when that turn has neither an
-                    insight nor a method/code to show. */}
-                {activeChartTurn?.insight && (
-                  <div className="shrink-0 text-sm bg-accent/10 border border-accent/30 rounded-xl px-4 py-2.5 whitespace-pre-wrap">
-                    <span className="font-semibold text-accent">Insight: </span>
-                    {activeChartTurn.insight}
-                  </div>
-                )}
+                {/* 2026-10-07 (founder's ask): the insight used to be
+                    printed a second time here, in a box under the chart -
+                    as plain text, so its **bold** markers showed as raw
+                    asterisks. It is said once, in the chat beside this tab
+                    (ChatPanel renders the bold properly); the room it took
+                    goes to the chart above, which is the flex child that
+                    takes whatever height is left. Nothing else on this tab
+                    read from that box: the calculation toggle, the
+                    warehouse table / SQL / footer below each take their
+                    own fields off activeChartTurn. */}
                 {/* Pushdown-honesty round: the founder's own confirmed bug
                     report showed up right here - the Chart tab's own
                     Insight box said "a total dataset size of n = 2,000
@@ -2776,7 +2899,10 @@ export default function Workspace() {
                     chat), and the one-line "how this was calculated"
                     footer with the real scanned bytes/time. See
                     WarehouseTurn.tsx. */}
-                {isWarehouseChartTurn && activeChart && (
+                {/* (When the answer itself is shown as a table - the rows
+                    could not be drawn honestly as the requested chart -
+                    the card above already IS this table.) */}
+                {isWarehouseChartTurn && activeChart && resolvedChart.path !== "table" && (
                   <div className="shrink-0">
                     <WarehouseResultTable
                       columns={activeChart.resultColumns || []}
@@ -2891,7 +3017,7 @@ export default function Workspace() {
                 onStyleChange={updateStyle}
                 onChartTypeChange={onChartTypeChange}
                 onReset={resetActiveChartStyle}
-                disabled={busy || !chartSpec}
+                disabled={busy || !hasChart}
               />
             </div>
           </div>
@@ -2911,5 +3037,6 @@ export default function Workspace() {
       )}
       </div>
     </div>
+    </ChartThemeProvider>
   );
 }

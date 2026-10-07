@@ -873,7 +873,7 @@ export default function AdminDashboard() {
                       y: totalUsersBuckets.map((p) => p.cumulative_users),
                       type: "scatter",
                       mode: totalUsersLabelAll ? "lines+markers+text" : "lines",
-                      line: { color: BRAND, width: 2, shape: "spline" },
+                      line: { color: BRAND, width: 2, shape: "linear" },
                       marker: { color: BRAND, size: 6 },
                       fill: "tozeroy",
                       fillcolor: `${BRAND}1a`,
@@ -992,7 +992,7 @@ export default function AdminDashboard() {
                       y: activeUsersBuckets.map((p) => p.active_users),
                       type: "scatter",
                       mode: activeUsersLabelAll ? "lines+markers+text" : "lines+markers",
-                      line: { color: BRAND, width: 2, shape: "spline" },
+                      line: { color: BRAND, width: 2, shape: "linear" },
                       marker: { color: BRAND, size: 6 },
                       // See the "Total users over time" chart's own note above
                       // on why this is needed - the first/last point's label
@@ -1055,7 +1055,7 @@ export default function AdminDashboard() {
                       y: promptsPerUserBuckets.map((p) => p.value),
                       type: "scatter",
                       mode: promptsPerUserLabelAll ? "lines+markers+text" : "lines+markers",
-                      line: { color: BRAND, width: 2, shape: "spline" },
+                      line: { color: BRAND, width: 2, shape: "linear" },
                       marker: { color: BRAND, size: 6 },
                       fill: "tozeroy",
                       fillcolor: `${BRAND}1a`,

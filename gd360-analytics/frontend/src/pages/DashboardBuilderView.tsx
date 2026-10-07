@@ -13,6 +13,10 @@ import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { brandingBackgroundImageStyle, brandingStyleVars, hexToRgbTriple, useBrandingAsset } from "../lib/branding";
 import { ConfirmDialog, ExternalIcon, MergeIcon as KitMergeIcon, MoreIcon, PaletteIcon as KitPaletteIcon, Popover, Sheet, WarningIcon, buttonClasses, cn } from "../ui";
 import { MenuRow } from "../dashboard/menu";
+import { AppearanceSheet } from "../dashboard/theme/AppearanceSheet";
+import { BrandAssets } from "../dashboard/theme/BrandAssets";
+import { previewSamples } from "../dashboard/theme/PalettePreview";
+import { useDashboardAppearance } from "../dashboard/theme/useAppearanceEditor";
 
 // 2026-09-25d (elite pass): the dashboard builder/editor - the exact page
 // Gokul's own screenshots of the live app's edit mode were taken from -
@@ -135,17 +139,6 @@ function KebabIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
       <circle cx="12" cy="5" r="1.9" />
       <circle cx="12" cy="12" r="1.9" />
       <circle cx="12" cy="19" r="1.9" />
-    </svg>
-  );
-}
-
-function PaletteIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 21a9 9 0 1 1 0-18c4.5 0 8.5 3 8.5 6.5 0 2-1.5 3-3 3h-2a1.5 1.5 0 0 0-1 2.6c.5.5.5 1.3 0 1.8-1 1-1.5 2.3-2.5 4.1Z" />
-      <circle cx="7.5" cy="10.5" r="1.1" fill="currentColor" stroke="none" />
-      <circle cx="10.5" cy="7" r="1.1" fill="currentColor" stroke="none" />
-      <circle cx="15" cy="7.5" r="1.1" fill="currentColor" stroke="none" />
     </svg>
   );
 }
@@ -390,286 +383,12 @@ function CustomDomainEditor({ dash, onChange }: { dash: DashboardBuilderDetail; 
   );
 }
 
-// 2026-09-25 (Round 4, branding/customization): logo upload, brand-color
-// pickers, and background style/image - "complete freedom" over how a
-// dashboard looks, mirroring PublishPanel's own dropdown-button pattern so
-// this reads as a sibling of it rather than a bolted-on extra. logoUrl/
-// backgroundImageUrl are passed in (fetched once, in DashboardBuilderViewBody,
-// via useBrandingAsset) rather than fetched again here, so the thumbnail
-// preview and the actual header logo/page background always show the
-// exact same bytes with no duplicate network round trip.
-function BrandingPanel({
-  dash,
-  onChange,
-  logoUrl,
-  backgroundImageUrl,
-  onAssetChanged,
-  inline = false,
-}: {
-  dash: DashboardBuilderDetail;
-  onChange: (d: DashboardBuilderDetail) => void;
-  logoUrl: string | null;
-  backgroundImageUrl: string | null;
-  onAssetChanged: () => void;
-  // 2026-10-07 (dashboard edit mode): the panel's body only, always open -
-  // the edit header reaches it from its "More" menu and shows it in a Sheet.
-  inline?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const logoInputRef = useRef<HTMLInputElement>(null);
-  const bgInputRef = useRef<HTMLInputElement>(null);
-
-  // 2026-09-29 (design revamp): fixes the reported "branding colors has a
-  // bug". Root cause - a native <input type="color"> fires onChange on
-  // EVERY drag tick (often dozens per second while dragging the picker),
-  // and this panel used to send a full updateBranding PATCH per tick with
-  // no debounce, reading the swatch's own displayed value straight off the
-  // server-confirmed `dash` prop with nothing guarding response order. A
-  // slower early tick's response landing AFTER a later tick's faster one
-  // would silently snap the swatch back to an older color mid-drag. Fixed
-  // two ways together: colorDraft gives the input instant, purely local
-  // visual feedback independent of the network at all (so dragging itself
-  // never stutters), while colorTimer debounces the actual PATCH to once
-  // per field ~350ms after the last change, and colorSeq drops any
-  // response that isn't from the newest request for that same field.
-  const [colorDraft, setColorDraft] = useState<Partial<Record<"brand_primary_color" | "brand_accent_color" | "background_color", string>>>({});
-  const colorTimer = useRef<Partial<Record<string, ReturnType<typeof setTimeout>>>>({});
-  const colorSeq = useRef<Partial<Record<string, number>>>({});
-  useEffect(() => {
-    const timers = colorTimer.current;
-    return () => {
-      Object.values(timers).forEach((t) => t && clearTimeout(t));
-    };
-  }, []);
-
-  if (!dash.can_edit) return null;
-
-  const run = async (fn: () => Promise<DashboardBuilderDetail>, touchesAsset = true) => {
-    setBusy(true);
-    setError("");
-    try {
-      onChange(await fn());
-      if (touchesAsset) onAssetChanged();
-    } catch (err: any) {
-      setError(err?.response?.data?.detail || "Couldn't update branding. Please try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const pickLogo = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (file) run(() => dashboardBuilderApi.uploadLogo(dash.id, file));
-  };
-  const pickBackground = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (file) run(() => dashboardBuilderApi.uploadBackground(dash.id, file));
-  };
-
-  const setStyle = (style: "default" | "color" | "image") =>
-    run(() => dashboardBuilderApi.updateBranding(dash.id, { background_style: style }), false);
-
-  const setColor = (field: "brand_primary_color" | "brand_accent_color" | "background_color", value: string) => {
-    setColorDraft((d) => ({ ...d, [field]: value }));
-    const timer = colorTimer.current[field];
-    if (timer) clearTimeout(timer);
-    const seq = (colorSeq.current[field] || 0) + 1;
-    colorSeq.current[field] = seq;
-    colorTimer.current[field] = setTimeout(async () => {
-      setBusy(true);
-      setError("");
-      try {
-        const result = await dashboardBuilderApi.updateBranding(dash.id, { [field]: value });
-        if (colorSeq.current[field] !== seq) return; // a newer edit to this field already superseded this request
-        onChange(result);
-        setColorDraft((d) => {
-          const next = { ...d };
-          delete next[field];
-          return next;
-        });
-      } catch (err: any) {
-        if (colorSeq.current[field] !== seq) return;
-        setError(err?.response?.data?.detail || "Couldn't update branding. Please try again.");
-      } finally {
-        if (colorSeq.current[field] === seq) setBusy(false);
-      }
-    }, 350);
-  };
-  // Reset ("brand_primary_color"/"brand_accent_color" cleared together) and
-  // the background-color field's own reset bypass the field-level debounce
-  // above entirely - clear any pending draft/timer for the affected
-  // field(s) so a stale debounced write can never re-apply a color right
-  // after the person explicitly reset it.
-  const clearColorDraft = (...fields: Array<"brand_primary_color" | "brand_accent_color" | "background_color">) => {
-    fields.forEach((f) => {
-      const timer = colorTimer.current[f];
-      if (timer) clearTimeout(timer);
-      colorSeq.current[f] = (colorSeq.current[f] || 0) + 1; // invalidate any in-flight request for this field
-    });
-    setColorDraft((d) => {
-      const next = { ...d };
-      fields.forEach((f) => delete next[f]);
-      return next;
-    });
-  };
-
-  const activeStyle = dash.background_style || "default";
-
-  return (
-    <div className={inline ? undefined : "relative"} data-branding-panel="">
-      {!inline && (
-        <button type="button" className="btn-secondary text-xs flex items-center gap-1.5" onClick={() => setOpen((o) => !o)}>
-          <PaletteIcon /> Branding
-        </button>
-      )}
-      {(open || inline) && (
-        <div className={inline ? "" : "absolute right-0 top-full mt-2 w-80 card bg-surface shadow-2xl border border-border p-4 z-30 max-h-[75vh] overflow-y-auto"}>
-          {error && <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-3">{error}</div>}
-
-          <label className="text-[11px] text-muted uppercase tracking-wide">Logo</label>
-          <div className="flex items-center gap-2 mt-1.5 mb-3.5">
-            <div className="w-12 h-12 rounded-lg border border-border bg-surface2 flex items-center justify-center overflow-hidden shrink-0">
-              {logoUrl ? (
-                <img src={logoUrl} alt="" className="w-full h-full object-contain" />
-              ) : (
-                <span className="text-[9px] text-muted">None</span>
-              )}
-            </div>
-            <div className="flex flex-col gap-1">
-              <button
-                type="button"
-                disabled={busy}
-                className="btn-secondary text-xs px-2.5 py-1.5 disabled:opacity-50"
-                onClick={() => logoInputRef.current?.click()}
-              >
-                {dash.has_logo ? "Replace" : "Upload"}
-              </button>
-              {dash.has_logo && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  className="text-xs text-muted hover:text-red-400 transition disabled:opacity-50 text-left"
-                  onClick={() => run(() => dashboardBuilderApi.removeLogo(dash.id))}
-                >
-                  Remove
-                </button>
-              )}
-            </div>
-            <input ref={logoInputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={pickLogo} />
-          </div>
-
-          <label className="text-[11px] text-muted uppercase tracking-wide">Brand colors</label>
-          <div className="flex items-center gap-4 mt-1.5 mb-3.5">
-            <div className="flex items-center gap-1.5">
-              <input
-                type="color"
-                title="Primary color"
-                value={colorDraft.brand_primary_color ?? dash.brand_primary_color ?? "#147a5c"}
-                onChange={(e) => setColor("brand_primary_color", e.target.value)}
-                className="w-7 h-7 rounded-full border-0 bg-transparent cursor-pointer p-0"
-              />
-              <span className="text-xs text-muted">Primary</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <input
-                type="color"
-                title="Accent color"
-                value={colorDraft.brand_accent_color ?? dash.brand_accent_color ?? "#6ec9aa"}
-                onChange={(e) => setColor("brand_accent_color", e.target.value)}
-                className="w-7 h-7 rounded-full border-0 bg-transparent cursor-pointer p-0"
-              />
-              <span className="text-xs text-muted">Accent</span>
-            </div>
-            {(dash.brand_primary_color || dash.brand_accent_color) && (
-              <button
-                type="button"
-                disabled={busy}
-                className="text-xs text-muted hover:text-text transition disabled:opacity-50"
-                onClick={() => {
-                  clearColorDraft("brand_primary_color", "brand_accent_color");
-                  run(() => dashboardBuilderApi.updateBranding(dash.id, { brand_primary_color: "", brand_accent_color: "" }), false);
-                }}
-              >
-                Reset
-              </button>
-            )}
-          </div>
-
-          <label className="text-[11px] text-muted uppercase tracking-wide">Background</label>
-          <div className="flex items-center rounded-lg border border-border overflow-hidden text-xs mt-1.5 mb-2.5">
-            {(["default", "color", "image"] as const).map((s) => (
-              <button
-                key={s}
-                type="button"
-                disabled={busy}
-                className={`flex-1 px-2 py-1.5 capitalize transition ${
-                  activeStyle === s ? "bg-primary text-white" : "text-muted hover:text-text hover:bg-surface2"
-                }`}
-                onClick={() => setStyle(s)}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-
-          {activeStyle === "color" && (
-            <div className="flex items-center gap-2 mb-3.5">
-              <input
-                type="color"
-                title="Background color"
-                value={colorDraft.background_color ?? dash.background_color ?? "#0a0a0b"}
-                onChange={(e) => setColor("background_color", e.target.value)}
-                className="w-7 h-7 rounded-full border-0 bg-transparent cursor-pointer p-0"
-              />
-              <span className="text-xs text-muted">Page background</span>
-            </div>
-          )}
-
-          {activeStyle === "image" && (
-            <div className="flex items-center gap-2 mb-3.5">
-              <div className="w-12 h-9 rounded-md border border-border bg-surface2 flex items-center justify-center overflow-hidden shrink-0">
-                {backgroundImageUrl ? (
-                  <img src={backgroundImageUrl} alt="" className="w-full h-full object-cover" />
-                ) : (
-                  <span className="text-[9px] text-muted">None</span>
-                )}
-              </div>
-              <div className="flex flex-col gap-1">
-                <button
-                  type="button"
-                  disabled={busy}
-                  className="btn-secondary text-xs px-2.5 py-1.5 disabled:opacity-50"
-                  onClick={() => bgInputRef.current?.click()}
-                >
-                  {dash.has_background_image ? "Replace" : "Upload"}
-                </button>
-                {dash.has_background_image && (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    className="text-xs text-muted hover:text-red-400 transition disabled:opacity-50 text-left"
-                    onClick={() => run(() => dashboardBuilderApi.removeBackground(dash.id))}
-                  >
-                    Remove
-                  </button>
-                )}
-              </div>
-              <input ref={bgInputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={pickBackground} />
-            </div>
-          )}
-
-          <div className="text-[11px] text-muted leading-relaxed pt-2.5 border-t border-border">
-            Applies everywhere this dashboard is viewed - here, in Preview, and on the published link.
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+// 2026-10-07 (identity-colour round): the "Branding" panel that lived here
+// (logo, brand colours, page background) is now the Brand section of the
+// one Appearance sheet - src/dashboard/theme/AppearanceSheet.tsx, with the
+// logo / background controls in theme/BrandAssets.tsx on the same
+// endpoints - next to the chart palette, layout, numbers and public-link
+// settings. Nothing stored changed.
 
 // 2026-09-29 (design revamp): "merge with other dashboards in the same
 // project" - Gokul's own words. Only ever rendered when this dashboard
@@ -1602,9 +1321,20 @@ function DashboardBuilderViewBody({
     setEditing(false);
   };
 
-  // Branding and Merge sit behind the edit header's "More" menu, each in a Sheet.
-  const [moreSheet, setMoreSheet] = useState<"branding" | "merge" | null>(null);
+  // Appearance and Merge sit behind the header's "More" menu, each in a Sheet.
+  const [moreSheet, setMoreSheet] = useState<"appearance" | "merge" | null>(null);
   const canMerge = dash.sibling_dashboards.length > 0;
+  // 2026-10-07 (identity-colour round): the dashboard's appearance - every
+  // change shows on the page at once and saves by itself (see
+  // theme/useAppearanceEditor). The pin handler is what a legend key or a
+  // chip's dot calls while editing.
+  const appearance = useDashboardAppearance({ dash, setDash, onColorsReset: run.rerun });
+  const openAppearance = useCallback(() => setMoreSheet("appearance"), []);
+  // The palette cards are drawn on this page's own results.
+  const appearanceSamples = useMemo(
+    () => (moreSheet === "appearance" ? previewSamples(activePage, run, warehouse ? "warehouse" : "file", dash.datasource_name) : undefined),
+    [moreSheet, activePage, run, warehouse, dash.datasource_name]
+  );
 
   const tabs = (
     <PageTabsBar
@@ -1646,6 +1376,8 @@ function DashboardBuilderViewBody({
         onEditDashboard={dash.can_edit ? () => setEditing(true) : undefined}
         onUpgradeBlocks={upgradeBlocks}
         editing={isEditing ? { editor, onDone: done, onRename: renameDashboard } : null}
+        onPinColor={appearance.pin}
+        onOpenAppearance={openAppearance}
         subtitleExtra={
           dash.can_edit && dash.source_conversation_title && dash.source_conversation_datasource_id ? (
             // "see from which project this dashboard was created": the chat
@@ -1666,7 +1398,9 @@ function DashboardBuilderViewBody({
         headerExtra={
           <>
             {logoUrl && <img src={logoUrl} alt="" className="h-8 w-auto max-w-[140px] object-contain rounded-md" />}
-            {isEditing && (
+            {/* The owner's More menu - while viewing and while editing:
+                the dashboard's appearance is not a layout edit. */}
+            {dash.can_edit && (
               <Popover
                 align="end"
                 width={220}
@@ -1681,8 +1415,8 @@ function DashboardBuilderViewBody({
               >
                 {({ close }) => (
                   <div className="py-1">
-                    <MenuRow icon={<KitPaletteIcon size={14} />} onClick={() => { close(); setMoreSheet("branding"); }}>Branding…</MenuRow>
-                    {canMerge && <MenuRow icon={<KitMergeIcon size={14} />} onClick={() => { close(); setMoreSheet("merge"); }}>Merge dashboards…</MenuRow>}
+                    <MenuRow icon={<KitPaletteIcon size={14} />} onClick={() => { close(); openAppearance(); }}>Appearance…</MenuRow>
+                    {isEditing && canMerge && <MenuRow icon={<KitMergeIcon size={14} />} onClick={() => { close(); setMoreSheet("merge"); }}>Merge dashboards…</MenuRow>}
                   </div>
                 )}
               </Popover>
@@ -1708,15 +1442,20 @@ function DashboardBuilderViewBody({
         }}
         style={pageBgTriple ? { background: `rgb(${pageBgTriple} / 0.35)` } : undefined}
       />
+      {dash.can_edit && (
+        <AppearanceSheet
+          open={moreSheet === "appearance"}
+          onClose={() => setMoreSheet(null)}
+          controller={appearance}
+          samples={appearanceSamples}
+          registry={run.colors?.assignments ?? null}
+          brandExtra={<BrandAssets dash={dash} controller={appearance} onChange={setDash} logoUrl={logoUrl} backgroundImageUrl={backgroundImageUrl} onAssetChanged={bumpBranding} />}
+        />
+      )}
       {isEditing && (
-        <>
-          <Sheet open={moreSheet === "branding"} onClose={() => setMoreSheet(null)} title="Branding" subtitle="Logo, colours and background, wherever this dashboard is viewed." size="sm" id="edit-branding">
-            <BrandingPanel inline dash={dash} onChange={setDash} logoUrl={logoUrl} backgroundImageUrl={backgroundImageUrl} onAssetChanged={bumpBranding} />
-          </Sheet>
-          <Sheet open={moreSheet === "merge"} onClose={() => setMoreSheet(null)} title="Merge dashboards" size="sm" id="edit-merge">
-            <MergeDashboardsPanel inline dash={dash} onChange={setDash} onMerged={() => setMoreSheet(null)} />
-          </Sheet>
-        </>
+        <Sheet open={moreSheet === "merge"} onClose={() => setMoreSheet(null)} title="Merge dashboards" size="sm" id="edit-merge">
+          <MergeDashboardsPanel inline dash={dash} onChange={setDash} onMerged={() => setMoreSheet(null)} />
+        </Sheet>
       )}
     </PageFrame>
   );

@@ -108,7 +108,9 @@ export default function NewDashboard() {
               className="min-[1100px]:sticky min-[1100px]:top-4"
             />
             <div className="flex min-w-0 flex-col gap-4">
-              <ProposalPreview flow={flow} />
+              {/* The new dashboard follows the brand kit of the workspace its
+                  data source is in: the preview is drawn with it. */}
+              <ProposalPreview flow={flow} brandKit={(workspaces.find((w) => w.id === (sources || []).find((d) => d.id === sourceId)?.workspace_id) || workspaces.find((w) => w.id === activeWorkspaceId))?.brand_kit ?? null} />
               <RefineBar flow={flow} />
             </div>
           </div>
