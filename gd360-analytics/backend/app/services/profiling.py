@@ -299,3 +299,18 @@ def parse_top_values(kind: str, result_df: pd.DataFrame, columns: list[str], tot
         if cleaned:
             out[col] = cleaned[:TOP_VALUES_LIMIT]
     return out
+
+
+def profile_dataframe(df: pd.DataFrame, max_columns: int = 200) -> dict:
+    """2026-10-06 (pro local-file Data tab): the pandas counterpart of
+    build_profile_query + parse_profile_row for a CSV/Excel upload - the
+    same per-column shape (type, non_null, null_pct, distinct, min, max,
+    top_values for columns with <= TOP_VALUES_MAX_DISTINCT distinct
+    values), computed in-process over the WHOLE frame, which for a file is
+    complete data rather than a sample. Returns `computed_in: "gd360"` and
+    never a bytes_scanned/cost key. The implementation lives in
+    services/file_import.py next to the import pipeline whose type fixes
+    it reports (`mixed_types`); this is the profiling-module entry point."""
+    from .file_import import profile_dataframe as _impl
+
+    return _impl(df, max_columns=max_columns, top_values_max_distinct=TOP_VALUES_MAX_DISTINCT, top_values_limit=TOP_VALUES_LIMIT)
