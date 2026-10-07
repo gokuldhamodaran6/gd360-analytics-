@@ -1,6 +1,7 @@
 import type {
   BlockSpec, ColumnFilterSpec, DashboardDateRange, DashboardParameter, DashboardPeriod, DashboardSavedView, FilterCriterion,
 } from "../api/client";
+import { formatValue, PLAIN_FORMAT } from "./format";
 
 // 2026-10-07 (Option A dashboard view): the pure, framework-free half of
 // the run engine (useDashboardRun.ts is the stateful half). Everything a
@@ -293,22 +294,16 @@ export function describeSpec(spec: BlockSpec | null | undefined): string {
   return text;
 }
 
-export function formatNumber(v: unknown, maxFraction = 2): string {
-  if (typeof v === "number" && Number.isFinite(v)) {
-    const abs = Math.abs(v);
-    if (abs >= 1e9) return `${(v / 1e9).toLocaleString(undefined, { maximumFractionDigits: 1 })}B`;
-    if (abs >= 1e6) return `${(v / 1e6).toLocaleString(undefined, { maximumFractionDigits: 1 })}M`;
-    return v.toLocaleString(undefined, { maximumFractionDigits: abs >= 100 ? 0 : maxFraction });
-  }
-  if (v === null || v === undefined || v === "") return "—";
-  return String(v);
+// Both of these are format.ts's formatValue (the one formatter every
+// dashboard number goes through) with no block format: a KPI-sized number
+// ("auto": 119,386 / 42.7M) and a table cell (every digit).
+export function formatNumber(v: unknown): string {
+  return formatValue(v, PLAIN_FORMAT, "auto");
 }
 
 export function formatCell(v: unknown): string {
-  if (typeof v === "number" && Number.isFinite(v)) return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
   if (v === null || v === undefined) return "";
-  if (typeof v === "object") return JSON.stringify(v);
-  return String(v);
+  return formatValue(v, PLAIN_FORMAT, "full");
 }
 
 export function relativeTime(iso: string | null | undefined, nowMs = Date.now()): string | null {

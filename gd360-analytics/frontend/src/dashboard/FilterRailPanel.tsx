@@ -6,7 +6,7 @@ import {
   type CheckboxListOption,
 } from "../ui";
 import { encodeValueToken, isMultiControl, isParamValueSet, type ParamValue, valueLabel } from "./runState";
-import type { DashboardRun, RunSource } from "./useDashboardRun";
+import type { DashboardRun, DateBounds, RunSource } from "./useDashboardRun";
 import { useParameterOptions } from "./useParameterOptions";
 
 // 2026-10-07 (Option A dashboard view, Main.dc.html's left rail): one
@@ -170,7 +170,7 @@ function RangeControl({ param, value, onChange, source }: { param: DashboardPara
   );
 }
 
-function DateRangeControl({ param, value, onChange }: { param: DashboardParameter; value: ParamValue | undefined; onChange: (v: ParamValue) => void }) {
+function DateRangeControl({ param, value, onChange, bounds }: { param: DashboardParameter; value: ParamValue | undefined; onChange: (v: ParamValue) => void; bounds?: DateBounds | null }) {
   const current: DashboardDateRange = value && typeof value === "object" && !Array.isArray(value) ? (value as DashboardDateRange) : { from: null, to: null };
   return (
     <DateRangePicker
@@ -181,19 +181,25 @@ function DateRangeControl({ param, value, onChange }: { param: DashboardParamete
       label={param.label}
       months={1}
       className="w-full"
+      // The rail (and a canvas input cell) is narrower than the panel and
+      // clips what leaves it: the panel is rendered over the page instead.
+      portal
+      minDate={bounds?.min}
+      maxDate={bounds?.max}
     />
   );
 }
 
 // The right control for one parameter - the rail's sections and an
-// "input" cell on the canvas both render through this.
-export function ParameterField({ param, value, onChange, source }: { param: DashboardParameter; value: ParamValue | undefined; onChange: (v: ParamValue) => void; source: RunSource }) {
+// "input" cell on the canvas both render through this. `bounds`: a date
+// column's real first and last date (the run's date_bounds).
+export function ParameterField({ param, value, onChange, source, bounds }: { param: DashboardParameter; value: ParamValue | undefined; onChange: (v: ParamValue) => void; source: RunSource; bounds?: DateBounds | null }) {
   return (
     <div data-param-control={param.control} data-param-id={param.id}>
       {param.control === "range" ? (
         <RangeControl param={param} value={value} onChange={onChange} source={source} />
       ) : param.control === "date_range" ? (
-        <DateRangeControl param={param} value={value} onChange={onChange} />
+        <DateRangeControl param={param} value={value} onChange={onChange} bounds={bounds} />
       ) : (
         <ParameterControl param={param} value={value} onChange={onChange} source={source} />
       )}
@@ -201,7 +207,7 @@ export function ParameterField({ param, value, onChange, source }: { param: Dash
   );
 }
 
-function FilterBlockSection({ block, run, source }: { block: DashboardBlock; run: DashboardRun; source: RunSource }) {
+function FilterBlockSection({ block, run, source, onRemove }: { block: DashboardBlock; run: DashboardRun; source: RunSource; onRemove?: (block: DashboardBlock) => void }) {
   const column: string | null = block.config?.column || null;
   const value = run.state.filterBlockValues[block.id] ?? null;
   const [open, setOpen] = useState(false);
@@ -210,7 +216,14 @@ function FilterBlockSection({ block, run, source }: { block: DashboardBlock; run
   return (
     <FilterRailSection
       label={block.title || column}
-      trailing={active ? <button type="button" className="ui-focus rounded px-0.5 text-caption text-muted hover:text-text hover:underline" onClick={() => run.setFilterBlockValue(block.id, null)}>Clear</button> : undefined}
+      trailing={
+        active || onRemove ? (
+          <span className="inline-flex items-center gap-2">
+            {active && <button type="button" className="ui-focus rounded px-0.5 text-caption text-muted hover:text-text hover:underline" onClick={() => run.setFilterBlockValue(block.id, null)}>Clear</button>}
+            {onRemove && <button type="button" className="ui-focus rounded px-0.5 text-caption text-muted hover:text-danger hover:underline" onClick={() => onRemove(block)}>Remove</button>}
+          </span>
+        ) : undefined
+      }
     >
       <FilterChip active={active} value={describeFilterSpec(value)} onClick={() => setOpen((o) => !o)} aria-expanded={open} className="w-full [&>button]:w-full [&>button]:justify-between" />
       {open && (
@@ -236,19 +249,37 @@ export type FilterRailPanelProps = {
   pinned?: boolean;
   className?: string;
   width?: number;
+  // "embedded": no rail chrome (the page shows it inside a Sheet on a narrow screen).
+  variant?: "rail" | "embedded";
+  // 2026-10-07 (dashboard edit mode): the owner is editing - "Edit filters"
+  // at the top of the rail opens the rail's definition, and a legacy
+  // filter block (file dashboards) can be removed from here.
+  onEditFilters?: () => void;
+  onRemoveFilterBlock?: (block: DashboardBlock) => void;
 };
 
-export function FilterRailPanel({ run, source, page, onPinToUrl, pinned = false, className, width }: FilterRailPanelProps) {
+export function FilterRailPanel({ run, source, page, onPinToUrl, pinned = false, className, width, variant = "rail", onEditFilters, onRemoveFilterBlock }: FilterRailPanelProps) {
   const filterBlocks = (page?.blocks || []).filter((b) => b.type === "filter");
   const shown = run.matchedRows;
-  const total = run.totalRows ?? run.matchedRows;
+  // 2026-10-07 (real end-to-end run): the backend's total_rows is null when
+  // it has no count of the whole table. Substituting the matched count
+  // printed "Showing 37,518 of 37,518 rows · 1 filter" under a filter -
+  // only an unfiltered page may say its matched rows are all the rows.
+  const unfiltered = run.activeFilterCount === 0 && !run.state?.dateRange?.from && !run.state?.dateRange?.to;
+  const total = run.totalRows ?? (unfiltered ? run.matchedRows : null);
   return (
     <FilterRail
       className={className}
       width={width}
+      variant={variant}
+      titleExtra={
+        onEditFilters ? (
+          <button type="button" data-edit-filters-link="" onClick={onEditFilters} className="ui-focus rounded px-0.5 text-caption font-medium text-brand-ink hover:underline">Edit filters</button>
+        ) : undefined
+      }
       summary={
         typeof shown === "number"
-          ? { shown, total: typeof total === "number" ? total : shown, filterCount: run.activeFilterCount, onReset: run.activeFilterCount ? run.resetFilters : undefined, loading: run.loading }
+          ? { shown, total: typeof total === "number" ? total : null, filterCount: run.activeFilterCount, onReset: run.activeFilterCount ? run.resetFilters : undefined, loading: run.loading }
           : undefined
       }
       footer={
@@ -281,12 +312,12 @@ export function FilterRailPanel({ run, source, page, onPinToUrl, pinned = false,
             label={param.label || param.column}
             trailing={set ? <button type="button" className="ui-focus rounded px-0.5 text-caption text-muted hover:text-text hover:underline" onClick={() => onChange(null)}>Clear</button> : undefined}
           >
-            <ParameterField param={param} value={value} onChange={onChange} source={source} />
+            <ParameterField param={param} value={value} onChange={onChange} source={source} bounds={run.dateBounds?.[param.column]} />
           </FilterRailSection>
         );
       })}
       {filterBlocks.map((b) => (
-        <FilterBlockSection key={b.id} block={b} run={run} source={source} />
+        <FilterBlockSection key={b.id} block={b} run={run} source={source} onRemove={onRemoveFilterBlock} />
       ))}
     </FilterRail>
   );

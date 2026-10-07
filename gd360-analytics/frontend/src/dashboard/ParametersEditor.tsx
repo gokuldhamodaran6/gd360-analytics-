@@ -28,10 +28,17 @@ export type ParametersEditorProps = {
   // File sources: the datasource's columns (the canvas already has them).
   columns?: { name: string; dtype?: string }[];
   className?: string;
+  // "panel" (default): a collapsible card. "sheet": the body only, always
+  // open - the dashboard editor hosts it in a kit Sheet ("Filters").
+  variant?: "panel" | "sheet";
+  // Called after a successful save (the sheet closes itself).
+  onSaved?: () => void;
 };
 
-export function ParametersEditor({ dash, onChange, columns: fileColumns, className }: ParametersEditorProps) {
-  const [open, setOpen] = useState(false);
+export function ParametersEditor({ dash, onChange, columns: fileColumns, className, variant = "panel", onSaved }: ParametersEditorProps) {
+  const sheet = variant === "sheet";
+  const [openState, setOpen] = useState(false);
+  const open = sheet || openState;
   const [drafts, setDrafts] = useState<Draft[]>(() => (dash.parameters || []).map((p, i) => ({ ...p, key: p.id || `new-${i}` })));
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -107,6 +114,7 @@ export function ParametersEditor({ dash, onChange, columns: fileColumns, classNa
       const final = Object.keys(settings).length ? await dashboardBuilderApi.updateSettings(dash.id, settings) : updated;
       setDirty(false);
       onChange(final);
+      onSaved?.();
     } catch (e: any) {
       setError(e?.response?.data?.detail || "Couldn't save the filters.");
     } finally {
@@ -117,17 +125,19 @@ export function ParametersEditor({ dash, onChange, columns: fileColumns, classNa
   const settingsDirty = (dash.default_period || "") !== period || (dash.date_column || "") !== dateColumn;
 
   return (
-    <section data-parameters-editor="" className={cn("rounded-card border border-border bg-surface", className)}>
-      <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="ui-focus-inset flex w-full items-center justify-between gap-3 rounded-card px-4 py-3 text-left">
-        <span className="inline-flex items-center gap-2 text-ui font-semibold text-text">
-          <FilterIcon size={14} className="text-muted" />
-          Filters
-          <span className="text-caption font-normal text-muted">{drafts.length} on the rail{dash.date_column ? ` · date column ${dash.date_column}` : ""}</span>
-        </span>
-        <ChevronDownIcon size={14} className={cn("text-muted transition-transform", open && "rotate-180")} />
-      </button>
+    <section data-parameters-editor="" className={cn(!sheet && "rounded-card border border-border bg-surface", className)}>
+      {!sheet && (
+        <button type="button" aria-expanded={open} onClick={() => setOpen((o) => !o)} className="ui-focus-inset flex w-full items-center justify-between gap-3 rounded-card px-4 py-3 text-left">
+          <span className="inline-flex items-center gap-2 text-ui font-semibold text-text">
+            <FilterIcon size={14} className="text-muted" />
+            Filters
+            <span className="text-caption font-normal text-muted">{drafts.length} on the rail{dash.date_column ? ` · date column ${dash.date_column}` : ""}</span>
+          </span>
+          <ChevronDownIcon size={14} className={cn("text-muted transition-transform", open && "rotate-180")} />
+        </button>
+      )}
       {open && (
-        <div className="flex flex-col gap-4 border-t border-subtle px-4 pb-4 pt-3">
+        <div className={cn("flex flex-col gap-4", !sheet && "border-t border-subtle px-4 pb-4 pt-3")}>
           {error && <div role="alert" className="rounded-ctl border border-danger-border bg-danger-fill px-3 py-2 text-ui text-danger">{error}</div>}
           <div className="flex flex-col gap-2">
             {drafts.length === 0 && <div className="text-caption text-muted">No filters yet - add a column the viewer can narrow every chart by.</div>}

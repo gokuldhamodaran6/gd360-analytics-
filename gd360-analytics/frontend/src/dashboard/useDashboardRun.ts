@@ -30,14 +30,38 @@ export type RunSource = {
   kind: "warehouse" | "file";
   run?: (pageId: string, req: RunPageRequest, signal: AbortSignal) => Promise<RunPageResponse>;
   options?: (paramId: string, opts: { search?: string; limit?: number }, signal: AbortSignal) => Promise<ParameterOptions>;
-  preview?: (pageId: string, filters: FilterCriterion[], blockFilters: Record<string, FilterCriterion[]>) => Promise<{ blocks: FilteredBlock[]; matchedRows: number | null }>;
+  preview?: (pageId: string, filters: FilterCriterion[], blockFilters: Record<string, FilterCriterion[]>) => Promise<{ blocks: FilteredBlock[]; matchedRows: number | null; dateBounds?: Record<string, { min: string; max: string }> | null }>;
   // File sources: a column's distinct values for the rail (owner: the live
   // datasource; public: the page's own materialised rows).
   distinctValues?: (column: string, search?: string) => Promise<{ values: ColumnDistinctValue[]; dtype?: string }>;
   // File sources, owner only: lets the rail's filter-block editor read a
   // column's real dtype from the live datasource (ColumnFilterSpecEditor).
   datasourceId?: string | null;
+  // 2026-10-07 (round 9). The source's name as the person knows it
+  // ("Bookings export") - what a file block's subtitle calls its table.
+  name?: string | null;
+  // The published view: no SQL is ever shown ("Show SQL", a SQL cell's
+  // statement) - and none is in the public endpoints' responses either.
+  hideSql?: boolean;
 };
+
+export type DateBounds = { min: string; max: string };
+
+function cleanBounds(raw: unknown): Record<string, DateBounds> {
+  const out: Record<string, DateBounds> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [column, b] of Object.entries(raw as Record<string, any>)) {
+    if (b && typeof b.min === "string" && typeof b.max === "string" && /^\d{4}-\d{2}-\d{2}/.test(b.min) && /^\d{4}-\d{2}-\d{2}/.test(b.max)) {
+      out[column] = { min: b.min.slice(0, 10), max: b.max.slice(0, 10) };
+    }
+  }
+  return out;
+}
+
+function sameBounds(a: Record<string, DateBounds>, b: Record<string, DateBounds>): boolean {
+  const ka = Object.keys(a), kb = Object.keys(b);
+  return ka.length === kb.length && ka.every((k) => b[k] && a[k].min === b[k].min && a[k].max === b[k].max);
+}
 
 export type DashboardRunOptions = {
   dashboard: WarehouseDashboardFields;
@@ -71,6 +95,9 @@ export type DashboardRun = {
   totalDurationMs: number | null;
   lastRunAt: string | null;
   skippedBlockIds: string[];
+  // 2026-10-07 (dashboard edit mode): blocks the run reported as created
+  // but never built (RunPageOut.empty_block_ids; [] on an older backend).
+  emptyBlockIds: string[];
   missingParameters: string[];
   // 2026-10-07 (analyst canvas): the run response's cell graph -
   // {block_id: [source ids]} and the resolved run order - plus the
@@ -78,6 +105,11 @@ export type DashboardRun = {
   dependencies: Record<string, string[]>;
   order: string[];
   parametersUsed: Record<string, any>;
+  // 2026-10-07 (round 9): {column: {min, max}} - the real first and last
+  // date of the dashboard's date column(s), from the run (one cached
+  // MIN/MAX query in the warehouse; pandas for a file). The date pickers
+  // open on `max` and disable days outside the bounds. {} until known.
+  dateBounds: Record<string, DateBounds>;
   setParamValue: (paramId: string, value: ParamValue) => void;
   setFilterBlockValue: (blockId: string, spec: ColumnFilterSpec | null) => void;
   setCrossFilter: (cf: CrossFilter | null, column?: string) => void;
@@ -142,10 +174,19 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
   const [totalDurationMs, setTotalDurationMs] = useState<number | null>(null);
   const [lastRunAt, setLastRunAt] = useState<string | null>(null);
   const [skippedBlockIds, setSkipped] = useState<string[]>([]);
+  const [emptyBlockIds, setEmptyIds] = useState<string[]>([]);
   const [missingParameters, setMissing] = useState<string[]>([]);
   const [dependencies, setDependencies] = useState<Record<string, string[]>>({});
   const [order, setOrder] = useState<string[]>([]);
   const [parametersUsed, setParametersUsed] = useState<Record<string, any>>({});
+  const [dateBounds, setDateBounds] = useState<Record<string, DateBounds>>({});
+  // A response without bounds (a partial run, an older backend) keeps the
+  // ones already known.
+  const applyBounds = useCallback((raw: unknown) => {
+    const next = cleanBounds(raw);
+    if (Object.keys(next).length === 0) return;
+    setDateBounds((prev) => (sameBounds(prev, next) ? prev : next));
+  }, []);
 
   const seqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -192,8 +233,9 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
         }
         source
           .preview(p.id, pageFilters, activeBlockFilters)
-          .then(({ blocks, matchedRows: mr }) => {
+          .then(({ blocks, matchedRows: mr, dateBounds: bounds }) => {
             if (seq !== seqRef.current) return;
+            applyBounds(bounds);
             const hasAny = pageFilters.length > 0 || Object.keys(activeBlockFilters).length > 0;
             const next: Record<string, FilteredBlock> = {};
             if (hasAny) for (const b of blocks) next[b.id] = b;
@@ -231,12 +273,19 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
           setComputedIn(res.computed_in);
           setTotalDurationMs(res.total_duration_ms);
           setSkipped(res.skipped_block_ids || []);
+          // A partial run only speaks for the blocks it was asked about.
+          setEmptyIds((prev) => {
+            const next = res.empty_block_ids || [];
+            const merged = opts.blockIds ? [...prev.filter((id) => !opts.blockIds!.includes(id)), ...next] : next;
+            return merged.length === prev.length && merged.every((id, i) => id === prev[i]) ? prev : merged;
+          });
           setMissing(res.missing_parameters || []);
           // A partial run (block_ids) reports only the graph it touched;
           // keep the rest of the page's edges from the last full run.
           setDependencies((prev) => (opts.blockIds ? { ...prev, ...(res.dependencies || {}) } : res.dependencies || {}));
           setOrder((prev) => (opts.blockIds ? prev : res.order || []));
           setParametersUsed(res.parameters_used || {});
+          applyBounds(res.date_bounds);
           setLastRunAt(new Date().toISOString());
         })
         .catch((e: any) => {
@@ -250,7 +299,7 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
         })
         .finally(finish);
     },
-    [parameters, filterBlocks, source]
+    [parameters, filterBlocks, source, applyBounds]
   );
 
   const schedule = useCallback(() => {
@@ -266,6 +315,7 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
   useEffect(() => {
     setResults({});
     setOverrides({});
+    setEmptyIds([]);
     setReady(false);
     setError(null);
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -459,10 +509,12 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
     totalDurationMs,
     lastRunAt,
     skippedBlockIds,
+    emptyBlockIds,
     missingParameters,
     dependencies,
     order,
     parametersUsed,
+    dateBounds,
     setParamValue,
     setFilterBlockValue,
     setCrossFilter,

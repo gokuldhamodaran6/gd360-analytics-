@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { DashboardBlock, DashboardBuilderPage, DashboardParameter, DashboardPeriod, UpgradeBlocksResult, WarehouseDashboardFields } from "../api/client";
 import type { ChartExportApi } from "../components/ChartCanvas";
+import { useIsNarrow } from "../components/DashboardBlocks";
 import {
-  Button, DateRangePicker, DownloadIcon, EditIcon, FilterIcon, Popover, ProviderBadge, RefreshIcon, SavedViewSelect, SegmentedControl, WarningIcon, cn, providerDisplayName,
+  Button, CheckIcon, ConfirmDialog, DateRangePicker, DownloadIcon, EditIcon, FilterIcon, IconButton, Popover, ProviderBadge, RefreshIcon, SavedViewSelect, SegmentedControl, Sheet, StatusPill, WarningIcon, cn,
+  providerDisplayName,
 } from "../ui";
 import { downloadText, isDataBlock, isLegacyBlock, resultOk, rowsToCsv, safeFilename } from "./blockData";
 import { BlockGrid, type BlockGridProps } from "./BlockGrid";
+import { EditSheets } from "./edit/EditSheets";
+import { CONTEXT_ROW_CLASS, EditToolbar } from "./edit/EditToolbar";
+import type { DashboardEditor } from "./edit/useDashboardEditor";
 import { FilterRailPanel } from "./FilterRailPanel";
 import { KpiStrip } from "./KpiStrip";
 import { PERIOD_LABEL, PERIODS, relativeTime } from "./runState";
@@ -22,6 +27,13 @@ import type { CommentsApi } from "./comments/useComments";
 // refreshed 4 min ago · 119,386 rows", saved views, Day/Week/Month/Year,
 // date range, Export, "Edit dashboard" for the owner), the 260 px filter
 // rail, the KPI strip and the block grid.
+//
+// 2026-10-07 (dashboard edit mode): the same shell IS the editor. With an
+// `editing` prop the dashboard name becomes click-to-rename, an "Editing"
+// pill carries the save state, "Edit dashboard" becomes "Done", the
+// context row turns into the edit toolbar (Add block · Filters · hint ·
+// page tabs), and the KPI strip and block grid take the editor - same
+// chrome, same rail, same live numbers, same geometry as the view.
 
 export type DashboardShellProps = {
   dashboard: WarehouseDashboardFields & { name: string; datasource_name?: string | null };
@@ -55,7 +67,94 @@ export type DashboardShellProps = {
   onViewChange?: (v: DashboardViewMode) => void;
   canvasOwner?: CanvasOwnerActions | null;
   comments?: CommentsApi | null;
+  // The row between the header and the KPI strip: what the view shows on
+  // its left (a back link, a freshness badge) and the page tabs on its
+  // right. While editing the left side becomes the edit toolbar; the row
+  // keeps its height either way so nothing below it moves.
+  contextRow?: { left?: ReactNode; tabs?: ReactNode };
+  // A small link in the subtitle row (the owner's "Built from ..." source).
+  subtitleExtra?: ReactNode;
+  // The page is being edited (the owner pressed "Edit dashboard").
+  editing?: {
+    editor: DashboardEditor;
+    onDone: () => void;
+    onRename: (name: string) => Promise<void>;
+  } | null;
 };
+
+// The dashboard name while editing: click it (or press Enter on it) to
+// rename in place - Enter saves, Escape cancels.
+function InlineTitle({ name, onRename }: { name: string; onRename: (name: string) => Promise<void> }) {
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(name);
+  const done = useRef(false);
+  const commit = () => {
+    if (done.current) return;
+    done.current = true;
+    setRenaming(false);
+    const clean = draft.trim();
+    if (clean && clean !== name) onRename(clean).catch(() => undefined);
+  };
+  if (renaming) {
+    return (
+      <input
+        autoFocus
+        data-dashboard-name-input=""
+        aria-label="Dashboard name"
+        value={draft}
+        maxLength={120}
+        onChange={(e) => setDraft(e.target.value)}
+        onFocus={(e) => e.target.select()}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); commit(); }
+          else if (e.key === "Escape") { e.preventDefault(); done.current = true; setRenaming(false); }
+        }}
+        className="ui-focus -my-px h-[28px] w-[min(520px,100%)] min-w-0 rounded-[6px] border border-border bg-surface px-1.5 text-title font-semibold text-text"
+      />
+    );
+  }
+  return (
+    <h1 className="-mx-1.5 min-w-0 text-title font-semibold text-text">
+      <button
+        type="button"
+        data-dashboard-name=""
+        title="Click to rename"
+        onClick={() => { done.current = false; setDraft(name); setRenaming(true); }}
+        className="ui-focus block max-w-full truncate rounded-[6px] px-1.5 text-left font-semibold decoration-border-strong decoration-dashed underline-offset-4 hover:underline"
+      >
+        {name}
+      </button>
+    </h1>
+  );
+}
+
+function SaveState({ editor }: { editor: DashboardEditor }) {
+  if (editor.saveState === "saving") {
+    return (
+      <span data-save-state="saving" role="status" className="inline-flex items-center gap-1.5 text-caption text-muted">
+        <span className="ui-spinner !h-3 !w-3 !border-[1.5px]" aria-hidden="true" /> Saving…
+      </span>
+    );
+  }
+  if (editor.saveState === "error") {
+    return (
+      <span data-save-state="error" role="alert" title={editor.saveError || undefined} className="inline-flex min-w-0 items-center gap-1 text-caption text-danger">
+        <WarningIcon size={12} className="shrink-0" />
+        <span className="truncate">Couldn't save —</span>
+        <button type="button" className="ui-focus rounded px-0.5 font-medium underline underline-offset-2 hover:no-underline" onClick={editor.retrySave}>Retry</button>
+      </span>
+    );
+  }
+  if (editor.saveState === "saved") {
+    return (
+      <span data-save-state="saved" role="status" className="inline-flex items-center gap-1 text-caption text-muted">
+        <CheckIcon size={12} /> Saved
+      </span>
+    );
+  }
+  return null;
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -172,9 +271,15 @@ export function LegacyBlocksBanner({ count, onUpgrade }: { count: number; onUpgr
 
 export function DashboardShell({
   dashboard, page, run, source, mode, parameters, owner, fetchSql, onEditDashboard, headerExtra, onUpgradeBlocks, beforeContent, afterContent, hideRail = false, className, style,
-  view = "dashboard", onViewChange, canvasOwner = null, comments = null,
+  view = "dashboard", onViewChange, canvasOwner = null, comments = null, contextRow, subtitleExtra, editing = null,
 }: DashboardShellProps) {
   const canvas = view === "canvas";
+  const narrow = useIsNarrow();
+  // Layout editing belongs to the Dashboard rendering; the canvas keeps
+  // its own owner editing (the Done button stays either way).
+  const editor = editing && !canvas ? editing.editor : null;
+  const [railOpen, setRailOpen] = useState(false);
+  const [viewAction, setViewAction] = useState<{ kind: "rename" | "delete"; id: string; name: string } | null>(null);
   // The grid's "N comments" menu row opens the same thread panel the
   // canvas pins to a cell.
   const [commentsFor, setCommentsFor] = useState<DashboardBlock | null>(null);
@@ -198,6 +303,7 @@ export function DashboardShell({
     if (ok) setTimeout(() => setPinned(false), 1800);
   };
   const [savePrompt, setSavePrompt] = useState(false);
+  const [renameViewId, setRenameViewId] = useState<string | null>(null);
   const [viewName, setViewName] = useState("");
   const [viewError, setViewError] = useState<string | null>(null);
   const [tick, setTick] = useState(() => nowIso());
@@ -218,39 +324,63 @@ export function DashboardShell({
   else if (run.loading) subtitleParts.push("refreshing…");
   if (typeof totalRows === "number") subtitleParts.push(`${totalRows.toLocaleString()} rows`);
 
-  const showRail = !hideRail && !canvas;
+  const hasRail = !hideRail && !canvas;
+  const showRail = hasRail && !narrow;
+  const rail = (variant: "rail" | "embedded") => (
+    <FilterRailPanel
+      run={run}
+      source={source}
+      page={page}
+      onPinToUrl={pinToUrl}
+      pinned={pinned}
+      variant={variant}
+      // The edit toolbar is sticky above the rail: the rail sticks under it.
+      className={variant === "rail" ? cn("print:hidden", editor && "!top-[68px] !max-h-[calc(100vh-68px)]") : undefined}
+      onEditFilters={editor ? () => { setRailOpen(false); editor.openSheet({ kind: "filters" }); } : undefined}
+      onRemoveFilterBlock={editor ? (b) => editor.requestRemove(b) : undefined}
+    />
+  );
 
-  return (
-    <div className={cn("flex min-h-0 flex-1 flex-col", className)} style={style} data-dashboard-shell="">
-      <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3 px-6 pb-4 pt-5 print:px-0">
-        <div className="min-w-0">
-          <h1 className="truncate text-title font-semibold text-text">{dashboard.name}</h1>
-          <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-ui text-muted" data-dashboard-subtitle="">
-            {subtitleParts.map((p, i) => (
-              <span key={i} className="inline-flex items-center gap-1.5">
-                {i > 0 && <span aria-hidden="true">·</span>}
-                {p}
-              </span>
-            ))}
-            {run.error && (
-              <span role="alert" className="inline-flex items-center gap-1 text-danger">
-                <WarningIcon size={13} /> {run.error}
-              </span>
-            )}
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 print:hidden" data-dashboard-actions="">
+  // The page's own actions (owner): Publish and Edit dashboard, or More,
+  // Publish and Done while editing. A viewer has none.
+  const pageActions = headerExtra || editing || onEditDashboard ? (
+    <div className="flex shrink-0 flex-wrap items-center gap-2 print:hidden" data-dashboard-page-actions="">
+              {headerExtra}
+              {editing ? (
+                <Button variant="primary" icon={<CheckIcon size={15} />} onClick={editing.onDone} data-edit-done="">
+                  Done
+                </Button>
+              ) : (
+                onEditDashboard && (
+                  <Button variant="primary" icon={<EditIcon size={15} />} onClick={onEditDashboard}>
+                    Edit dashboard
+                  </Button>
+                )
+              )}
+            </div>
+  ) : null;
+  // The controls that drive the data.
+  const headerControls = (
+    <div className="flex max-w-full flex-wrap items-center gap-2 print:hidden" data-dashboard-actions="">
+          {hasRail && narrow && (
+            <span className="relative inline-flex">
+              <IconButton variant="secondary" aria-label="Show filters" title="Show filters" icon={<FilterIcon size={15} />} onClick={() => setRailOpen(true)} data-open-rail="" />
+              {run.activeFilterCount > 0 && (
+                <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-[16px] min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-white tabular-nums">{run.activeFilterCount}</span>
+              )}
+            </span>
+          )}
           {(run.savedViews.length > 0 || run.canSaveViews) && (
             <SavedViewSelect
               views={run.savedViews.map((v) => ({ id: v.id, name: v.name }))}
               value={run.state.viewId}
               onChange={run.applyView}
               dirty={run.viewDirty}
-              onSaveCurrent={run.canSaveViews ? () => { setViewName(""); setViewError(null); setSavePrompt(true); } : undefined}
-              onRename={run.canSaveViews ? (id) => { const v = run.savedViews.find((x) => x.id === id); const name = window.prompt("Rename this view", v?.name || ""); if (name && name.trim()) run.renameView(id, name).catch(() => undefined); } : undefined}
-              onDelete={run.canSaveViews ? (id) => { const v = run.savedViews.find((x) => x.id === id); if (window.confirm(`Delete the view "${v?.name || ""}"?`)) run.deleteView(id).catch(() => undefined); } : undefined}
+              onSaveCurrent={run.canSaveViews ? () => { setRenameViewId(null); setViewName(""); setViewError(null); setSavePrompt(true); } : undefined}
+              onRename={run.canSaveViews ? (id) => { const v = run.savedViews.find((x) => x.id === id); setRenameViewId(id); setViewName(v?.name || ""); setViewError(null); setSavePrompt(true); } : undefined}
+              onDelete={run.canSaveViews ? (id) => { const v = run.savedViews.find((x) => x.id === id); setViewAction({ kind: "delete", id, name: v?.name || "" }); } : undefined}
               width={240}
-              align="end"
+              align="start"
             />
           )}
           {mode === "warehouse" && (
@@ -266,9 +396,17 @@ export function DashboardShell({
               value={run.state.dateRange}
               onChange={run.setDateRange}
               align="end"
+              // Over the page and kept inside the viewport: on a phone this
+              // trigger sits at the left of a wrapped toolbar and an
+              // end-aligned panel opened off the left edge of the screen.
+              portal
               ariaLabel={dashboard.date_column ? `Date range on ${dashboard.date_column}` : "Date range"}
               label={dashboard.date_column || "Date range"}
               disabled={!dashboard.date_column}
+              // The column's real first and last date (the run carries
+              // them): the calendar opens on the data, not on today.
+              minDate={dashboard.date_column ? run.dateBounds[dashboard.date_column]?.min : undefined}
+              maxDate={dashboard.date_column ? run.dateBounds[dashboard.date_column]?.max : undefined}
             />
           )}
           {onViewChange && (
@@ -285,42 +423,93 @@ export function DashboardShell({
               Refresh
             </Button>
           )}
-          {headerExtra}
-          {onEditDashboard && (
-            <Button variant="primary" icon={<EditIcon size={15} />} onClick={onEditDashboard}>
-              Edit dashboard
-            </Button>
-          )}
         </div>
+  );
+
+  return (
+    <div className={cn("flex min-h-0 flex-1 flex-col", className)} style={style} data-dashboard-shell="" data-editing={editing ? "" : undefined}>
+      {/* Two rows, the same in view and edit so nothing below moves when
+          the page switches: (1) the name with what it is built on, and the
+          page's own actions (Publish, Edit dashboard / More, Publish,
+          Done) on the right; (2) the controls that drive the data - saved
+          view, period, date range, Dashboard · Canvas, Export, Refresh.
+          A viewer has no page actions, so the controls take that place. */}
+      <header className="flex flex-col gap-3 px-4 pb-4 pt-5 sm:px-6 print:px-0">
+        <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+          <div className="min-w-0 flex-[1_1_280px]">
+            {editing ? (
+              <div className="flex min-w-0 items-center gap-x-2.5">
+                <InlineTitle name={dashboard.name} onRename={editing.onRename} />
+                <span data-editing-pill="" className="inline-flex shrink-0"><StatusPill tone="neutral">Editing</StatusPill></span>
+                <span className="shrink-0"><SaveState editor={editing.editor} /></span>
+              </div>
+            ) : (
+              <h1 className="truncate text-title font-semibold text-text">{dashboard.name}</h1>
+            )}
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-ui text-muted" data-dashboard-subtitle="">
+              {subtitleParts.map((p, i) => (
+                <span key={i} className="inline-flex items-center gap-1.5">
+                  {i > 0 && <span aria-hidden="true">·</span>}
+                  {p}
+                </span>
+              ))}
+              {subtitleExtra && (
+                <span className="inline-flex min-w-0 items-center gap-1.5">
+                  {subtitleParts.length > 0 && <span aria-hidden="true">·</span>}
+                  {subtitleExtra}
+                </span>
+              )}
+              {run.error && (
+                <span role="alert" className="inline-flex items-center gap-1 text-danger">
+                  <WarningIcon size={13} /> {run.error}
+                </span>
+              )}
+            </div>
+          </div>
+          {pageActions ?? headerControls}
+        </div>
+        {pageActions && headerControls}
       </header>
 
       {savePrompt && (
         <form
-          className="mx-6 mb-3 flex flex-wrap items-center gap-2 rounded-card border border-border bg-surface px-4 py-3 print:hidden"
+          className="mx-4 mb-3 flex flex-wrap items-center gap-2 rounded-card border border-border bg-surface px-4 py-3 sm:mx-6 print:hidden"
           onSubmit={async (e) => {
             e.preventDefault();
             if (!viewName.trim()) return;
             try {
-              await run.saveCurrentView(viewName);
+              if (renameViewId) await run.renameView(renameViewId, viewName);
+              else await run.saveCurrentView(viewName);
               setSavePrompt(false);
             } catch (err: any) {
               setViewError(err?.response?.data?.detail || "Couldn't save this view.");
             }
           }}
         >
-          <label className="text-ui text-secondary" htmlFor="saved-view-name">Save the current filters as</label>
+          <label className="text-ui text-secondary" htmlFor="saved-view-name">{renameViewId ? "Rename this view to" : "Save the current filters as"}</label>
           <input id="saved-view-name" autoFocus value={viewName} onChange={(e) => setViewName(e.target.value)} maxLength={80} placeholder="e.g. Revenue focus" className="ui-focus h-9 min-w-[200px] rounded-ctl border border-border bg-surface px-2.5 text-ui text-text" />
-          <Button type="submit" variant="primary" size="sm" disabled={!viewName.trim()}>Save view</Button>
+          <Button type="submit" variant="primary" size="sm" disabled={!viewName.trim()}>{renameViewId ? "Rename" : "Save view"}</Button>
           <Button type="button" variant="ghost" size="sm" onClick={() => setSavePrompt(false)}>Cancel</Button>
           {viewError && <span className="text-caption text-danger">{viewError}</span>}
         </form>
       )}
 
+      {/* The context row spans the page, above the rail: the edit toolbar
+          while editing, the back link + freshness + page tabs otherwise -
+          one fixed height either way. */}
+      {editor ? (
+        <EditToolbar editor={editor} trailing={contextRow?.tabs} compact={narrow} className="mx-4 sm:mx-6" />
+      ) : (
+        contextRow && (
+          <div className={cn(CONTEXT_ROW_CLASS, "justify-between px-4 sm:px-6 print:hidden")} data-context-row="">
+            <div className="flex min-w-0 flex-wrap items-center gap-3">{contextRow.left}</div>
+            {contextRow.tabs}
+          </div>
+        )
+      )}
       <div className="flex min-h-0 flex-1 items-stretch">
-        {showRail && (
-          <FilterRailPanel run={run} source={source} page={page} onPinToUrl={pinToUrl} pinned={pinned} className="print:hidden" />
-        )}
-        <main className="min-w-0 flex-1 px-6 pb-10 pt-1 print:px-0">
+        {showRail && rail("rail")}
+        <main className="min-w-0 flex-1 px-4 pb-10 pt-1 sm:px-6 print:px-0">
           {beforeContent}
           {legacyCount > 0 && (
             <div className="mb-4">
@@ -348,8 +537,8 @@ export function DashboardShell({
             />
           ) : page ? (
             <>
-              <KpiStrip blocks={page.blocks} run={run} mode={mode} className="mb-4" />
-              <BlockGrid page={page} run={run} source={source} mode={mode} parameters={parameters ?? run.parameters} owner={ownerWithComments} fetchSql={fetchSql} onExportApi={onExportApi} />
+              <KpiStrip blocks={page.blocks} run={run} mode={mode} className="mb-4" editor={editor} canEdit={Boolean(owner)} onEdit={owner?.onEdit ? () => owner.onEdit!() : undefined} sourceName={source.name} />
+              <BlockGrid page={page} run={run} source={source} mode={mode} parameters={parameters ?? run.parameters} owner={ownerWithComments} fetchSql={fetchSql} onExportApi={onExportApi} editor={editor} />
             </>
           ) : (
             <div className="py-10 text-center text-ui text-muted">This dashboard has no pages yet.</div>
@@ -360,6 +549,21 @@ export function DashboardShell({
       {comments?.enabled && (
         <CommentsSheet open={commentsFor !== null} onClose={() => setCommentsFor(null)} blockId={commentsFor?.id || null} title={commentsFor?.title || "Block"} comments={comments} />
       )}
+      {hasRail && narrow && (
+        <Sheet open={railOpen} onClose={() => setRailOpen(false)} title="Filters" side="left" size="sm" id="filter-rail-sheet">
+          {rail("embedded")}
+        </Sheet>
+      )}
+      {editing && <EditSheets editor={editing.editor} source={source} />}
+      <ConfirmDialog
+        open={viewAction?.kind === "delete"}
+        title={`Delete the view "${viewAction?.name || ""}"?`}
+        confirmLabel="Delete"
+        onCancel={() => setViewAction(null)}
+        onConfirm={() => { const id = viewAction?.id; setViewAction(null); if (id) run.deleteView(id).catch(() => undefined); }}
+      >
+        The saved filters are removed. The dashboard itself does not change.
+      </ConfirmDialog>
     </div>
   );
 }

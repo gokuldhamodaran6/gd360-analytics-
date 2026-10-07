@@ -1,12 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { BlockResult, DashboardBlock, DashboardBlockType, DashboardParameter, FilteredBlock } from "../api/client";
 import type { ChartExportApi } from "../components/ChartCanvas";
 import { BlockFilterButton, useIsNarrow } from "../components/DashboardBlocks";
 import {
-  Button, ChartCard, CommentIcon, CopyIcon, DownloadIcon, EditIcon, FilterIcon, IconButton, MoreIcon, Popover, RefreshIcon, Sheet, SqlIcon, TrashIcon, cn,
+  BarChartIcon, Button, ChartCard, CommentIcon, ConfirmDialog, CopyIcon, DownloadIcon, EditIcon, GripIcon, HashIcon, IconButton, MoreIcon, Popover, RefreshIcon, Sheet, SqlIcon, TableIcon, TrashIcon, cn,
 } from "../ui";
-import { downloadText, isLegacyBlock, resultOk, rowsToCsv, safeFilename } from "./blockData";
+import { downloadText, isDataBlock, isEmptyBlock, isLegacyBlock, resultOk, rowsToCsv, safeFilename } from "./blockData";
 import { BlockRenderer } from "./BlockRenderer";
+import { BlockMenu } from "./edit/BlockMenu";
+import { EditGrid } from "./edit/EditGrid";
+import { BLOCK_NOUN, EmptyBlockBody, EmptyBlockPlaceholder } from "./edit/EmptyBlock";
+import { blockHeightPx, GRID_GAP_PX, isGridBlock, ROW_UNIT_PX, viewLayout } from "./edit/layout";
+import type { DashboardEditor } from "./edit/useDashboardEditor";
+import { MenuRow, SWAP_OPTIONS } from "./menu";
+import { fileBlockSpec } from "./fileData";
+import { describeSpecShort } from "./format";
 import { type CrossFilter, describeSpec, type ParamValue } from "./runState";
 import type { DashboardRun, RunSource } from "./useDashboardRun";
 
@@ -17,15 +25,25 @@ import type { DashboardRun, RunSource } from "./useDashboardRun";
 // BlockRenderer, and the "Computed in BigQuery · 119,386 rows · 0.8 s"
 // footer. KPI blocks live in KpiStrip, so the rows they occupied are
 // collapsed here; otherwise each block keeps its stored x/y/w/h.
+//
+// 2026-10-07 (dashboard edit mode): the same grid, editable. With an
+// `editor` (src/dashboard/edit/useDashboardEditor) the blocks are laid out
+// by react-grid-layout on exactly this geometry (edit/layout.ts decides it
+// for both renderings), a card's header is its drag handle, its title is
+// click-to-rename, its "..." menu becomes the edit menu, and a block that
+// was never built shows the "Describe what this block should show" state.
+// Without one, an empty block is hidden from a viewer and a slim dashed
+// placeholder for the owner.
 
-export const ROW_UNIT_PX = 48;
-const GRID_GAP_PX = 16;
+export { ROW_UNIT_PX } from "./edit/layout";
+export { MenuRow, SWAP_OPTIONS } from "./menu";
 const STACK_HEIGHT: Partial<Record<DashboardBlockType, number>> = { table: 360, chart: 340, sql: 360, donut: 320, avatar_list: 300, gauge: 260, sparkline: 220, text: 160, heading: 64, divider: 40, input: 96 };
 
 export type BlockSqlInfo = { sql: string; prior_sql?: string | null; sparkline_sql?: string | null; dialect?: string | null };
 
 export type BlockOwnerActions = {
-  onEdit?: (block: DashboardBlock) => void;
+  // "Edit dashboard": switches the page to edit mode.
+  onEdit?: (block?: DashboardBlock) => void;
   onSwap?: (block: DashboardBlock, payload: { chart_type?: string; type?: DashboardBlockType }) => Promise<void>;
   onRemove?: (block: DashboardBlock) => Promise<void>;
   commentCounts?: Record<string, { open: number; total: number }>;
@@ -48,35 +66,72 @@ export type BlockGridProps = {
   fetchSql?: (block: DashboardBlock) => Promise<BlockSqlInfo>;
   onExportApi?: (blockId: string, api: ChartExportApi | null) => void;
   className?: string;
+  // The page is being edited (see the note at the top of this file).
+  editor?: DashboardEditor | null;
 };
 
-export const SWAP_OPTIONS: { label: string; payload: { chart_type?: string; type?: DashboardBlockType } }[] = [
-  { label: "Bar chart", payload: { type: "chart", chart_type: "bar" } },
-  { label: "Horizontal bars", payload: { type: "chart", chart_type: "horizontal_bar" } },
-  { label: "Line chart", payload: { type: "chart", chart_type: "line" } },
-  { label: "Area chart", payload: { type: "chart", chart_type: "area" } },
-  { label: "Stacked bars", payload: { type: "chart", chart_type: "stacked_bar" } },
-  { label: "Pie chart", payload: { type: "chart", chart_type: "pie" } },
-  { label: "Donut", payload: { type: "donut" } },
-  { label: "Table", payload: { type: "table" } },
-  { label: "Top list", payload: { type: "avatar_list" } },
-  { label: "KPI tile", payload: { type: "kpi" } },
-];
+// A data block (or a SQL cell) that was added but never built.
+export function isBlockEmpty(block: DashboardBlock, run: Pick<DashboardRun, "emptyBlockIds">): boolean {
+  if (!isDataBlock(block) && block.type !== "sql") return false;
+  return isEmptyBlock(block) || (run.emptyBlockIds || []).includes(block.id);
+}
 
-export function MenuRow({ children, onClick, disabled, danger, icon }: { children: ReactNode; onClick?: () => void; disabled?: boolean; danger?: boolean; icon?: ReactNode }) {
+// The block title while editing: the text itself is the rename target (and
+// still part of the card's drag handle - a press that turns into a drag is
+// not a click).
+function EditableTitle({ text, renaming, onStart, onCommit, onCancel, placeholder }: { text: string; renaming: boolean; onStart: () => void; onCommit: (v: string) => void; onCancel: () => void; placeholder: string }) {
+  const [draft, setDraft] = useState(text);
+  const down = useRef<{ x: number; y: number } | null>(null);
+  const done = useRef(false);
+  useEffect(() => {
+    if (renaming) {
+      setDraft(text);
+      done.current = false;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renaming]);
+  if (renaming) {
+    const commit = () => {
+      if (done.current) return;
+      done.current = true;
+      onCommit(draft);
+    };
+    return (
+      <input
+        autoFocus
+        data-no-drag=""
+        data-title-input=""
+        aria-label="Block title"
+        value={draft}
+        maxLength={200}
+        placeholder={placeholder}
+        onChange={(e) => setDraft(e.target.value)}
+        onFocus={(e) => e.target.select()}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); commit(); }
+          else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done.current = true; onCancel(); }
+        }}
+        className="ui-focus-inset block h-[22px] w-full min-w-[120px] rounded-[4px] border-0 bg-subtle px-1 text-body font-semibold text-text"
+      />
+    );
+  }
   return (
     <button
       type="button"
-      role="menuitem"
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        "ui-focus-inset flex w-full items-center gap-2.5 px-3 py-2 text-left text-ui hover:bg-subtle disabled:cursor-default disabled:text-faint disabled:hover:bg-transparent",
-        danger ? "text-danger hover:bg-danger-fill" : "text-text"
-      )}
+      data-drag-title=""
+      data-block-title=""
+      title="Click to rename"
+      onMouseDown={(e) => { down.current = { x: e.clientX, y: e.clientY }; }}
+      onClick={(e) => {
+        const d = down.current;
+        down.current = null;
+        if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) return; // that was a drag
+        onStart();
+      }}
+      className="ui-focus-inset block max-w-full cursor-[inherit] truncate rounded-[4px] text-left font-semibold decoration-border-strong decoration-dashed underline-offset-4 hover:underline"
     >
-      {icon && <span className="inline-flex shrink-0 text-muted [&>svg]:block">{icon}</span>}
-      {children}
+      {text}
     </button>
   );
 }
@@ -135,7 +190,7 @@ export function SqlSheet({ open, onClose, block, info, loading, error }: { open:
 }
 
 export function BlockCard({
-  block, run, source, mode, parameters, owner, fetchSql, onExportApi, heightPx,
+  block, run, source, mode, parameters, owner, fetchSql, onExportApi, heightPx, editor = null, stacked = false,
 }: {
   block: DashboardBlock;
   run: DashboardRun;
@@ -146,6 +201,9 @@ export function BlockCard({
   fetchSql?: (block: DashboardBlock) => Promise<BlockSqlInfo>;
   onExportApi?: (blockId: string, api: ChartExportApi | null) => void;
   heightPx?: number;
+  editor?: DashboardEditor | null;
+  // Narrow, stacked layout: no dragging, no positions.
+  stacked?: boolean;
 }) {
   const result: BlockResult | undefined = run.results[block.id];
   const override: FilteredBlock | undefined = run.overrides[block.id];
@@ -162,14 +220,25 @@ export function BlockCard({
   const [sqlLoading, setSqlLoading] = useState(false);
   const [sqlError, setSqlError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const layoutOnly = block.type === "text" || block.type === "heading" || block.type === "divider" || block.type === "input";
-  const legacy = mode === "warehouse" && isLegacyBlock(block);
+  const empty = isBlockEmpty(block, run);
+  const legacy = mode === "warehouse" && isLegacyBlock(block) && !empty;
+  const dragClass = editor && !stacked ? "block-drag-handle" : undefined;
   const spec = block.config?.spec;
   const crossColumn = resultOk(result) ? result.dimensions?.[0] || null : null;
   const selected: CrossFilter | null = crossColumn ? run.state.crossFilters[crossColumn] || null : null;
   const filtered = run.activeFilterCount > 0 || (run.state.blockFilters[block.id]?.length || 0) > 0;
   const canCrossFilter = Boolean(crossColumn) && !layoutOnly && mode === "warehouse";
+  // A file block described the way a warehouse block's spec describes it
+  // ("Bookings by month · Bookings export") - fileData's adapter (round 9).
+  const fileSpec = useMemo(
+    () => (mode === "file" && !layoutOnly ? fileBlockSpec(block, override, { sourceName: source.name }) : null),
+    [mode, layoutOnly, block, override, source.name]
+  );
 
   const subtitle: ReactNode = useMemo(() => {
     if (layoutOnly) return undefined;
@@ -186,10 +255,20 @@ export function BlockCard({
         </span>
       );
     }
-    const base = mode === "warehouse" ? (block.type === "sql" ? "SQL cell" : spec ? describeSpec(spec) : legacy ? "Built before warehouse-native dashboards" : "") : block.config?.recipe ? `${block.config.recipe.agg} of ${block.config.recipe.metric_column}${block.config.recipe.group_by_column ? ` by ${block.config.recipe.group_by_column}` : ""}` : "";
+    // What the block shows, in the reader's words: humanised measure names,
+    // the grain, the table ("Total revenue, Total bookings by month ·
+    // Hotel_data"). The query-level sentence (describeSpec: "sum of adr *
+    // (...) from Hotel_data by ...") is the second line of the tooltip.
+    const exact = mode === "warehouse" && spec && block.type !== "sql" ? describeSpec(spec) : "";
+    const base = mode === "warehouse" ? (block.type === "sql" ? "SQL cell" : spec ? describeSpecShort(spec, resultOk(result) ? result.period : null) : legacy ? "Built before warehouse-native dashboards" : "") : fileSpec ? describeSpecShort(fileSpec) : "";
     const parts = [base, canCrossFilter ? "click a bar to filter" : "", filtered ? "filtered" : ""].filter(Boolean);
-    return parts.length ? parts.join(" · ") : undefined;
-  }, [layoutOnly, selected, mode, block, spec, legacy, canCrossFilter, filtered, run, crossColumn]);
+    if (!parts.length) return undefined;
+    // One line, always (a long description must never push the chart down
+    // or make two cards in a row start their plots at different heights);
+    // the full text is the tooltip.
+    const text = parts.join(" · ");
+    return <span data-block-subtitle="" className="block truncate" title={exact && exact !== base ? `${text}\n${exact}` : text}>{text}</span>;
+  }, [layoutOnly, selected, mode, block, spec, legacy, canCrossFilter, filtered, run, crossColumn, result, fileSpec]);
 
   const openSql = async () => {
     setSqlOpen(true);
@@ -224,20 +303,55 @@ export function BlockCard({
   const columns = owner?.columnsFor?.(block);
   const showFilterButton = !layoutOnly && mode === "warehouse" ? Boolean(owner && (columns?.length || owner.datasourceId)) : Boolean(owner?.datasourceId && (block.config?.recipe || block.config?.result_columns));
   const comments = owner?.commentCounts?.[block.id];
+  // "· N rows" in the footer is how many rows the number was computed
+  // OVER (the table's count). 2026-10-07 (real end-to-end run): when the
+  // backend had no such count it used to fall back to the result's own
+  // row count, so the same footer read "119,386 rows" one minute and
+  // "2 rows" the next for a two-bar chart. For a spec block it is now the
+  // table's count or nothing; a SQL cell's result keeps its row count.
   const computed =
     mode === "warehouse" && resultOk(result)
-      ? { provider: result.computed_in || run.computedIn || undefined, rows: result.exact_total_rows ?? result.row_count, durationMs: result.duration_ms ?? undefined, cached: Boolean(result.cached) }
+      ? { provider: result.computed_in || run.computedIn || undefined, rows: result.exact_total_rows ?? (result.spec ? undefined : result.row_count), durationMs: result.duration_ms ?? undefined, cached: Boolean(result.cached) }
       : mode === "file"
         ? { provider: "GD360", rows: typeof run.matchedRows === "number" ? run.matchedRows : (Array.isArray((override?.config ?? block.config)?.rows) ? (override?.config ?? block.config).rows.length : undefined), cached: false }
         : null;
 
-  const firstLoad = mode === "warehouse" && !run.ready && !result && !legacy;
-  const blockError = mode === "warehouse" && result && result.status !== "ok" ? result.error || "This block couldn't be computed." : null;
-  const bodyHeight = heightPx ? Math.max(120, heightPx - 56 - (computed ? 34 : 0)) : undefined;
+  const firstLoad = mode === "warehouse" && !run.ready && !result && !legacy && !empty;
+  const blockError = mode === "warehouse" && !empty && result && result.status !== "ok" ? result.error || "This block couldn't be computed." : null;
+  // The chart is drawn to the body's real height. In the grid the card has
+  // a definite height, so the body is measured (a two-line subtitle or a
+  // wrapped footer no longer pushes the plot over the card's edge); a
+  // stacked card sizes to its content and keeps the estimate.
+  // (The body only mounts once the card's first-load shimmer is gone, so
+  // the element is tracked in state, not a ref.)
+  const [bodyEl, setBodyEl] = useState<HTMLDivElement | null>(null);
+  const [measuredBody, setMeasuredBody] = useState<number | null>(null);
+  const measureBody = Boolean(heightPx) && !stacked;
+  useLayoutEffect(() => {
+    const el = bodyEl;
+    if (!measureBody || !el) {
+      setMeasuredBody(null);
+      return;
+    }
+    const measure = () => {
+      const h = el.clientHeight;
+      setMeasuredBody((prev) => (h > 0 && (prev === null || Math.abs(prev - h) > 1) ? h : prev));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [measureBody, heightPx, bodyEl]);
+  const bodyHeight = measuredBody ?? (heightPx ? Math.max(120, heightPx - 56 - (computed ? 34 : 0)) : undefined);
 
-  const toolbar = layoutOnly ? undefined : (
+  const editMenu = editor ? (
+    <BlockMenu editor={editor} block={block} variant="grid" stacked={stacked} onRename={() => setRenaming(true)} onOpenChange={setMenuOpen} />
+  ) : null;
+
+  const toolbar = layoutOnly ? undefined : empty && editor ? editMenu : (
     <>
-      {showFilterButton && (
+      {showFilterButton && !empty && (
         <span title="Filter this chart" className="inline-flex">
           <BlockFilterButton
             datasourceId={owner?.datasourceId || null}
@@ -247,10 +361,13 @@ export function BlockCard({
           />
         </span>
       )}
-      {mode === "warehouse" && !legacy && (
+      {/* Never on a published link: the statement names tables and columns. */}
+      {mode === "warehouse" && !legacy && !empty && !source.hideSql && (
         <IconButton size="sm" aria-label="Show SQL" title="Show SQL" icon={<SqlIcon size={15} />} onClick={openSql} />
       )}
+      {editMenu || (
       <Popover
+        portal
         align="end"
         width={220}
         haspopup="menu"
@@ -293,7 +410,7 @@ export function BlockCard({
             {owner && (
               <>
                 <div className="my-1 border-t border-subtle" />
-                {owner.onEdit && <MenuRow icon={<EditIcon size={14} />} onClick={() => { close(); owner.onEdit!(block); }}>Edit in canvas</MenuRow>}
+                {owner.onEdit && <MenuRow icon={<EditIcon size={14} />} onClick={() => { close(); owner.onEdit!(block); }}>Edit dashboard</MenuRow>}
                 {owner.onSwap && (spec || block.config?.source_block_id) && (
                   <div className="px-3 pb-1 pt-2">
                     <div className="mb-1 text-caption font-medium uppercase tracking-caps text-muted">Swap to</div>
@@ -317,11 +434,7 @@ export function BlockCard({
                     danger
                     icon={<TrashIcon size={14} />}
                     disabled={busy}
-                    onClick={async () => {
-                      if (!window.confirm(`Remove "${block.title || "this block"}" from the page?`)) return;
-                      setBusy(true);
-                      try { await owner.onRemove!(block); } finally { setBusy(false); close(); }
-                    }}
+                    onClick={() => { close(); setConfirmRemove(true); }}
                   >
                     Remove
                   </MenuRow>
@@ -331,36 +444,106 @@ export function BlockCard({
           </div>
         )}
       </Popover>
+      )}
     </>
   );
 
+  const removeDialog = owner?.onRemove ? (
+    <ConfirmDialog
+      open={confirmRemove}
+      title={`Remove "${block.title || "this block"}"?`}
+      busy={busy}
+      onCancel={() => setConfirmRemove(false)}
+      onConfirm={async () => {
+        setBusy(true);
+        try { await owner.onRemove!(block); } finally { setBusy(false); setConfirmRemove(false); }
+      }}
+    >
+      The block is deleted from this page. Its data stays where it is.
+    </ConfirmDialog>
+  ) : null;
+
   if (layoutOnly) {
+    const body = (
+      <BlockRenderer
+        block={block}
+        mode={mode}
+        parameters={parameters}
+        paramValue={run.state.paramValues[parameters?.find((p) => p.id === block.config?.parameter_id)?.id || ""]}
+        onParamChange={(id, v) => run.setParamValue(id, v)}
+        source={source}
+        dateBounds={run.dateBounds}
+        editing={editor ? { onSaveText: (text) => editor.updateConfig(block, { text }) } : undefined}
+      />
+    );
+    if (!editor) {
+      return (
+        <div className="h-full" data-block-id={block.id} data-block-type={block.type}>
+          {body}
+        </div>
+      );
+    }
+    // Editing: the block is typed into in place; a small chrome (grip +
+    // menu) appears on its top edge on hover or focus, clear of the words.
     return (
-      <div className="h-full" data-block-id={block.id} data-block-type={block.type}>
-        <BlockRenderer block={block} mode={mode} parameters={parameters} paramValue={run.state.paramValues[parameters?.find((p) => p.id === block.config?.parameter_id)?.id || ""]} onParamChange={(id, v) => run.setParamValue(id, v)} source={source} />
+      <div className="gd-edit-card group relative h-full rounded-card" data-block-id={block.id} data-block-type={block.type}>
+        {body}
+        <div
+          className={cn(
+            "absolute -top-5 right-2 z-[2] flex items-center rounded-ctl border border-border bg-surface shadow-card transition-opacity duration-100",
+            menuOpen ? "opacity-100" : "opacity-0 focus-within:opacity-100 group-hover:opacity-100"
+          )}
+          data-edit-chrome=""
+        >
+          {!stacked && (
+            <span className="block-drag-handle inline-flex h-7 w-6 items-center justify-center rounded-[6px] text-muted hover:bg-subtle hover:text-text" title="Drag to move" aria-hidden="true">
+              <GripIcon size={14} />
+            </span>
+          )}
+          <BlockMenu editor={editor} block={block} variant="grid" stacked={stacked} onOpenChange={setMenuOpen} />
+        </div>
       </div>
     );
   }
+
+  const titleText = block.title || (spec ? describeSpecShort(spec) : block.type === "sql" && block.config?.name ? String(block.config.name) : "Untitled block");
+  const showEmptyState = empty && Boolean(editor);
 
   return (
     <>
       <ChartCard
         id={`block-${block.id}`}
-        title={block.title || (spec ? describeSpec(spec) : "Untitled block")}
-        subtitle={subtitle}
+        title={
+          editor ? (
+            <EditableTitle
+              text={titleText}
+              renaming={renaming}
+              placeholder={`Name this ${BLOCK_NOUN[block.type] || "block"}`}
+              onStart={() => setRenaming(true)}
+              onCancel={() => setRenaming(false)}
+              onCommit={(v) => { setRenaming(false); editor.renameBlock(block, v); }}
+            />
+          ) : (
+            titleText
+          )
+        }
+        subtitle={showEmptyState ? undefined : subtitle}
         toolbar={toolbar}
-        computed={computed}
+        computed={showEmptyState ? null : computed}
         loading={firstLoad}
         error={blockError}
         onRetry={blockError ? () => run.rerunBlock(block.id) : undefined}
-        flush={block.type === "table" || block.type === "sql"}
-        className={cn("h-full", selected && "ring-1 ring-tint-border")}
+        flush={!showEmptyState && (block.type === "table" || block.type === "sql")}
+        className={cn("h-full", selected && "ring-1 ring-tint-border", editor && "gd-edit-card")}
+        headerClassName={dragClass}
         bodyClassName="flex flex-col"
       >
-        <div className="relative min-h-0 flex-1" data-block-id={block.id} data-block-type={block.type}>
-          {legacy ? (
+        <div ref={setBodyEl} className="relative min-h-0 flex-1" data-block-id={block.id} data-block-type={block.type}>
+          {showEmptyState ? (
+            <EmptyBlockBody editor={editor!} block={block} />
+          ) : legacy ? (
             <div className="flex h-full flex-col">
-              <BlockRenderer block={block} mode="file" override={override} onExportApi={block.type === "chart" ? handleExportApi : undefined} />
+              <BlockRenderer block={block} mode="file" override={override} onExportApi={block.type === "chart" ? handleExportApi : undefined} bodyHeight={bodyHeight} sourceName={source.name} />
             </div>
           ) : (
             <BlockRenderer
@@ -373,7 +556,9 @@ export function BlockCard({
               onExportApi={block.type === "chart" ? handleExportApi : undefined}
               parameters={parameters}
               source={source}
+              sourceName={source.name}
               bodyHeight={bodyHeight}
+              growToContent={stacked}
             />
           )}
           {run.loading && run.ready && !firstLoad && (
@@ -382,6 +567,7 @@ export function BlockCard({
         </div>
       </ChartCard>
       {sqlOpen && <SqlSheet open={sqlOpen} onClose={() => setSqlOpen(false)} block={block} info={sqlInfo} loading={sqlLoading} error={sqlError} />}
+      {removeDialog}
     </>
   );
 }
@@ -397,30 +583,95 @@ export function compactLayout(blocks: DashboardBlock[]): { block: DashboardBlock
   return blocks.map((b) => ({ block: b, y: map.get(b.y) ?? 0 }));
 }
 
-export function BlockGrid({ page, run, source, mode, parameters, owner, fetchSql, onExportApi, className }: BlockGridProps) {
+// What the page's grid area says when it has nothing to lay out.
+function EmptyGrid({ editor, owner, hasKpis }: { editor: DashboardEditor | null; owner?: BlockOwnerActions | null; hasKpis: boolean }) {
+  if (!editor) {
+    return (
+      <div className="py-10 text-center text-ui text-muted">
+        This page has no blocks yet.
+        {owner?.onEdit && (
+          <>
+            {" "}
+            <button type="button" className="ui-focus rounded px-0.5 font-medium text-brand-ink hover:underline" onClick={() => owner.onEdit!()}>Edit dashboard</button> to add one.
+          </>
+        )}
+      </div>
+    );
+  }
+  const quick: { type: DashboardBlockType; label: string; icon: ReactNode }[] = [
+    ...(hasKpis ? [] : [{ type: "kpi" as DashboardBlockType, label: "KPI", icon: <HashIcon size={15} /> }]),
+    { type: "chart", label: "Chart", icon: <BarChartIcon size={15} /> },
+    { type: "table", label: "Table", icon: <TableIcon size={15} /> },
+  ];
+  return (
+    <div data-empty-page="" className="flex flex-col items-center gap-3 rounded-card border border-dashed border-border-strong px-6 py-12 text-center">
+      <div className="text-section font-semibold text-text">{hasKpis ? "Add a chart or a table under the numbers" : "Start with a block"}</div>
+      <div className="max-w-[440px] text-ui text-muted">Add a block, describe what it should show, and it is built from your data. You can move and resize it afterwards.</div>
+      <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
+        {quick.map((q) => (
+          <Button key={q.type} variant="secondary" icon={q.icon} disabled={editor.adding} onClick={() => editor.addBlock(q.type)} data-quick-add={q.type}>
+            {q.label}
+          </Button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function BlockGrid({ page, run, source, mode, parameters, owner, fetchSql, onExportApi, className, editor = null }: BlockGridProps) {
   const narrow = useIsNarrow();
-  const blocks = useMemo(() => page.blocks.filter((b) => b.type !== "kpi" && b.type !== "filter"), [page.blocks]);
-  const laidOut = useMemo(() => compactLayout(blocks), [blocks]);
+  const all = useMemo(() => page.blocks.filter(isGridBlock), [page.blocks]);
+  // A block that was never built: full size with its "Describe..." state
+  // in the editor, a slim placeholder for the owner, nothing for a viewer.
+  const emptyIds = useMemo(() => new Set(all.filter((b) => isBlockEmpty(b, run)).map((b) => b.id)), [all, run]);
+  const blocks = useMemo(() => (editor || owner ? all : all.filter((b) => !emptyIds.has(b.id))), [all, editor, owner, emptyIds]);
+  const layout = useMemo(() => {
+    if (editor) return editor.gridLayout;
+    const slim: Record<string, number> = {};
+    emptyIds.forEach((id) => { slim[id] = 1; });
+    return viewLayout(blocks, slim);
+  }, [editor, blocks, emptyIds]);
+  const byId = useMemo(() => new Map(blocks.map((b) => [b.id, b])), [blocks]);
 
   // Register/unregister chart export APIs by block id (the header's
   // Export menu reads them).
   useEffect(() => () => { blocks.forEach((b) => onExportApi?.(b.id, null)); }, [blocks, onExportApi]);
 
   if (blocks.length === 0) {
-    return <div className="py-10 text-center text-ui text-muted">This page has no blocks yet.</div>;
+    return <EmptyGrid editor={editor} owner={owner} hasKpis={page.blocks.some((b) => b.type === "kpi")} />;
   }
 
+  const card = (block: DashboardBlock, heightPx: number, stacked: boolean) =>
+    !editor && emptyIds.has(block.id) ? (
+      <EmptyBlockPlaceholder onEdit={owner?.onEdit ? () => owner.onEdit!(block) : undefined} />
+    ) : (
+      <BlockCard block={block} run={run} source={source} mode={mode} parameters={parameters} owner={owner} fetchSql={fetchSql} onExportApi={onExportApi} heightPx={heightPx} editor={editor} stacked={stacked} />
+    );
+
   if (narrow) {
-    const ordered = [...laidOut].sort((a, b) => a.y - b.y || a.block.x - b.block.x);
+    const ordered = [...layout].sort((a, b) => a.y - b.y || a.x - b.x).map((it) => byId.get(it.i)).filter((b): b is DashboardBlock => Boolean(b));
     return (
-      <div className={cn("flex flex-col gap-4", className)}>
-        {ordered.map(({ block }) => (
-          <div key={block.id} style={{ minHeight: STACK_HEIGHT[block.type] ?? 240 }}>
-            <BlockCard block={block} run={run} source={source} mode={mode} parameters={parameters} owner={owner} fetchSql={fetchSql} onExportApi={onExportApi} heightPx={STACK_HEIGHT[block.type] ?? 240} />
+      <div className={cn("flex flex-col gap-4", className)} data-block-stack="">
+        {editor && (
+          <div className="text-caption text-muted" data-stack-note="">
+            Blocks are stacked on this screen. Dragging and resizing need a wider one — everything else works here.
           </div>
-        ))}
+        )}
+        {ordered.map((block) => {
+          const slim = !editor && emptyIds.has(block.id);
+          const h = slim ? ROW_UNIT_PX : STACK_HEIGHT[block.type] ?? 240;
+          return (
+            <div key={block.id} style={{ minHeight: h }}>
+              {card(block, h, true)}
+            </div>
+          );
+        })}
       </div>
     );
+  }
+
+  if (editor) {
+    return <EditGrid className={className} blocks={blocks} layout={layout} onLayoutCommit={editor.commitLayout} renderBlock={(block, heightPx) => card(block, heightPx, false)} />;
   }
 
   return (
@@ -429,12 +680,12 @@ export function BlockGrid({ page, run, source, mode, parameters, owner, fetchSql
       className={cn("grid", className)}
       style={{ gridTemplateColumns: "repeat(12, minmax(0, 1fr))", gridAutoRows: `${ROW_UNIT_PX}px`, gap: `${GRID_GAP_PX}px` }}
     >
-      {laidOut.map(({ block, y }) => {
-        const h = Math.max(1, block.h);
-        const heightPx = h * ROW_UNIT_PX + (h - 1) * GRID_GAP_PX;
+      {layout.map((it) => {
+        const block = byId.get(it.i);
+        if (!block) return null;
         return (
-          <div key={block.id} className="min-w-0" style={{ gridColumn: `${block.x + 1} / span ${Math.min(12, Math.max(1, block.w))}`, gridRow: `${y + 1} / span ${h}` }}>
-            <BlockCard block={block} run={run} source={source} mode={mode} parameters={parameters} owner={owner} fetchSql={fetchSql} onExportApi={onExportApi} heightPx={heightPx} />
+          <div key={block.id} className="min-w-0" style={{ gridColumn: `${it.x + 1} / span ${it.w}`, gridRow: `${it.y + 1} / span ${it.h}` }}>
+            {card(block, blockHeightPx(it.h), false)}
           </div>
         );
       })}
