@@ -13,9 +13,45 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// 2026-10-07 (real end-to-end run): FastAPI answers a request-validation
+// failure (HTTP 422) with `detail` as a LIST of {loc, msg, type} objects,
+// not the plain string every HTTPException this backend raises carries.
+// Dozens of call sites do `setError(err?.response?.data?.detail || "...")`
+// and then render that value - with a list there, React throws "Objects
+// are not valid as a React child" and the whole page goes blank (first
+// seen on Register: an address the backend's email validator rejects but
+// the browser's own type="email" check accepts, e.g. "name@company").
+// Turning it into one readable sentence here, once, keeps every one of
+// those call sites correct without each having to know about 422s.
+export function errorDetailText(detail: unknown): string | undefined {
+  if (detail == null) return undefined;
+  if (typeof detail === "string") return detail;
+  const one = (d: any): string => {
+    if (typeof d === "string") return d;
+    if (d && typeof d.msg === "string") {
+      const loc = Array.isArray(d.loc) ? d.loc.filter((p: unknown) => typeof p === "string" && p !== "body" && p !== "query" && p !== "path") : [];
+      const field = loc.length ? String(loc[loc.length - 1]).replace(/_/g, " ") : "";
+      const msg = d.msg.replace(/^Value error,\s*/i, "");
+      return field ? `${field.charAt(0).toUpperCase()}${field.slice(1)}: ${msg}` : msg;
+    }
+    if (d && typeof d.message === "string") return d.message;
+    try { return JSON.stringify(d); } catch { return String(d); }
+  };
+  const text = (Array.isArray(detail) ? detail.map(one) : [one(detail)]).filter(Boolean).join(" ");
+  return text || undefined;
+}
+
+function normalizeErrorDetail(err: any): void {
+  const body = err?.response?.data;
+  if (body && typeof body === "object" && !(typeof Blob !== "undefined" && body instanceof Blob) && body.detail != null && typeof body.detail !== "string") {
+    body.detail = errorDetailText(body.detail);
+  }
+}
+
 api.interceptors.response.use(
   (res) => res,
   (err) => {
+    normalizeErrorDetail(err);
     // A 401 on the login call itself just means wrong email/password -
     // that should show an error on the login form, not bounce the page
     // away before the person can read it. Only treat a 401 on some other,
@@ -1617,7 +1653,19 @@ export type RunPageResponse = {
   order: string[];
   parameters_used: Record<string, any>;
   missing_parameters: string[];
+  // 2026-10-07 (dashboard edit mode): blocks that were created but never
+  // built (no spec, no cell, no saved result) - the editor shows its
+  // "Describe what this block should show" empty state for them and a
+  // viewer never sees them. Absent on an older backend.
+  empty_block_ids?: string[];
+  // 2026-10-07 (round 9): {column: {min, max}} ("YYYY-MM-DD") - the real
+  // first and last date of the dashboard's date column and of every
+  // date_range control's column. {} on a partial run (block_ids).
+  date_bounds?: Record<string, { min: string; max: string }>;
 };
+
+// One block's grid placement in PATCH /pages/{page_id}/layout.
+export type BlockLayoutItem = { id: string; x: number; y: number; w: number; h: number };
 
 export type ParameterOptionValue = { value: string | number | boolean | null; count: number | null };
 export type ParameterOptions = {
@@ -1917,6 +1965,21 @@ export type ManualRecipe = {
   group_by_column: string | null;
   block_type: ManualBlockType;
   chart_type: RestyleChartType | null;
+  // 2026-10-07 (round 9) - what a recipe that came from a PROPOSAL may
+  // also carry (backend _spec_to_recipe): the first measure's alias
+  // ("bookings"), a count of rows rather than of a column, a date bucket
+  // for the first group-by, and - for a table or a chart - several
+  // measures and/or several group-by columns, an order and a row limit.
+  // A KPI's sparkline runs over trend_column by trend_grain.
+  alias?: string | null;
+  count_rows?: boolean;
+  time_grain?: "day" | "week" | "month" | "quarter" | "year" | null;
+  measures?: { alias: string; agg: ManualAgg; column: string | null }[];
+  group_by?: string[];
+  order_by?: { by: string; dir: "asc" | "desc" }[];
+  limit?: number | null;
+  trend_column?: string | null;
+  trend_grain?: string | null;
   // 2026-09-25 (Round 3): only meaningful when block_type === "gauge" -
   // see backend _run_manual_recipe for the defaults filled in when either
   // is left unset.
@@ -2274,11 +2337,11 @@ export const dashboardBuilderApi = {
   // matched_rows could never be anything but a number.
   previewFiltered: (dashboardId: string, pageId: string, filters: FilterCriterion[], blockFilters?: Record<string, FilterCriterion[]>) =>
     api
-      .post<{ blocks: FilteredBlock[]; matched_rows: number | null }>(
+      .post<{ blocks: FilteredBlock[]; matched_rows: number | null; date_bounds?: Record<string, { min: string; max: string }> }>(
         `/dashboard-builder/${dashboardId}/pages/${pageId}/preview-filtered`,
         { filters, block_filters: blockFilters || {} }
       )
-      .then((r) => ({ blocks: r.data.blocks, matchedRows: r.data.matched_rows })),
+      .then((r) => ({ blocks: r.data.blocks, matchedRows: r.data.matched_rows, dateBounds: r.data.date_bounds || null })),
 
   // Switches an existing chart block to a different chart type - no AI
   // call, rebuilt deterministically from the tidy data already stored on
@@ -2443,6 +2506,26 @@ export const dashboardBuilderApi = {
   // call, no new query. Edit access; undo-able.
   swapBlock: (dashboardId: string, blockId: string, payload: { chart_type?: string; type?: DashboardBlockType }) =>
     api.post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}/swap`, payload).then((r) => r.data),
+
+  // ---- 2026-10-07 (dashboard edit mode): the calls the editable dashboard
+  // (src/dashboard/edit/) makes on top of the block endpoints above. ----
+  // The whole page's layout in ONE atomic request (never a PATCH per
+  // block): every item's x/y/w/h is written or none is. 400/404 carry a
+  // readable `detail`.
+  updatePageLayout: (dashboardId: string, pageId: string, items: BlockLayoutItem[]) =>
+    api.patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/pages/${pageId}/layout`, { items }).then((r) => r.data),
+  // A copy of the block (same config, never its cached rows) placed right
+  // below the original.
+  duplicateBlock: (dashboardId: string, blockId: string) =>
+    api.post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}/duplicate`).then((r) => r.data),
+  // Sets/replaces a warehouse block's BlockSpec. The backend validates it
+  // against the schema and dry-runs it inside the warehouse first; a 400's
+  // `detail` is the warehouse's own message.
+  setBlockSpec: (
+    dashboardId: string,
+    blockId: string,
+    payload: { spec: BlockSpec; block_type?: DashboardBlockType; chart_type?: string; title?: string }
+  ) => api.post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}/spec`, payload).then((r) => r.data),
 };
 
 // ---- Dashboard from a prompt (2026-10-07, Builder.dc.html): describe ->
@@ -2627,6 +2710,15 @@ export const dashboardCommentsApi = {
 // caller - see backend routers/dashboard_builder.py's own module
 // docstring for the matching server-side reasoning.
 const publicApi = axios.create({ baseURL: API_URL });
+// Same 422-detail normalisation as `api` above (and nothing else from
+// that interceptor - see point 2).
+publicApi.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    normalizeErrorDetail(err);
+    return Promise.reject(err);
+  }
+);
 
 export const publicDashboardApi = {
   // A 404 here means "not currently published" (or the slug doesn't
