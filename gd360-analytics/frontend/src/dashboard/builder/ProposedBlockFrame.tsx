@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { ProposalBlock } from "../../api/client";
 import { Badge, CheckIcon, ChevronDownIcon, CloseIcon, Popover, SqlIcon, StatusPill, cn } from "../../ui";
 import { SWAP_OPTIONS } from "../BlockGrid";
+import { swapChoices } from "../menu";
 import { describeSpec } from "../runState";
 import type { SwapPayload } from "./useProposalFlow";
 
@@ -112,7 +113,8 @@ export function ProposedBlockFrame({ block, kept, swap, canSwap, onKeep, onRemov
                   <div className="flex flex-col gap-2 p-3">
                     <div className="text-caption font-medium uppercase tracking-caps text-muted">Show it as</div>
                     <div className="flex flex-wrap gap-1" data-swap-options="">
-                      {SWAP_OPTIONS.filter((o) => !(o.payload.type === block.type && (o.payload.chart_type || null) === currentChart)).map((o) => {
+                      {/* Only the forms this block's query can be drawn as (charts/recommend.ts). */}
+                      {swapChoices({ type: block.type as any, config: { spec: block.spec, chart_type: block.chart_type, spec_columns: block.columns } }).choices.filter((o) => !o.disabled && !(o.payload.type === block.type && (o.payload.chart_type || null) === currentChart)).map((o) => {
                         const active = swapped === o.label;
                         return (
                           <button
@@ -163,6 +165,12 @@ export function ProposedBlockFrame({ block, kept, swap, canSwap, onKeep, onRemov
         {children}
       </div>
 
+      {/* 2026-10-07 (chart-types round): why this chart form was chosen. */}
+      {block.chart_reason && !invalid && !swap && (
+        <div className="min-w-0 truncate px-1 text-caption text-secondary" data-chart-reason="" title={block.chart_reason}>
+          {block.chart_reason}{block.forecast ? " · with a forecast" : ""}
+        </div>
+      )}
       {(why || block.sql) && (
         <div className="flex min-w-0 items-baseline justify-between gap-3 px-1 text-caption text-muted">
           {why && <span className="min-w-0 truncate" data-block-why="" title={why}>{why}</span>}

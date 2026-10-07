@@ -7,6 +7,8 @@ import {
 } from "../../ui";
 import { ROW_UNIT_PX, SqlSheet, compactLayout } from "../BlockGrid";
 import { PERIOD_LABEL, PERIODS, describeSpec, normalizePeriod } from "../runState";
+import { appearanceFromKit, type BrandKit } from "../theme/appearance";
+import { ChartThemeProvider, useChartTheme, useDashboardScope } from "../theme/ChartThemeContext";
 import { ProposedBlockFrame, PROPOSAL_TYPE_LABEL, swapLabel } from "./ProposedBlockFrame";
 import type { ProposalFlow, SwapPayload } from "./useProposalFlow";
 
@@ -20,6 +22,11 @@ import type { ProposalFlow, SwapPayload } from "./useProposalFlow";
 // same kit pieces (KpiTile, ChartCard, FilterRail, SegmentedControl,
 // DateRangePicker) and the grid geometry (compactLayout, ROW_UNIT_PX)
 // the live dashboard uses, so the preview is the page it will become.
+//
+// 2026-10-07 (identity-colour round): the dashboard a proposal becomes
+// starts from its workspace's brand kit, so the preview does too - the
+// kit's corner radius and font on the preview's chrome, and one line
+// naming the palette its charts will be drawn in, with its ten colours.
 
 const GRID_GAP_PX = 16;
 const STACK_HEIGHT: Record<string, number> = { table: 320, chart: 300, donut: 300, sparkline: 220, text: 140 };
@@ -111,9 +118,38 @@ const KPI_STRIP_COLUMNS = "repeat(auto-fit, minmax(min(100%, max(260px, calc((10
 export type ProposalPreviewProps = {
   flow: ProposalFlow;
   className?: string;
+  // The workspace brand kit the new dashboard will follow (null = the
+  // product defaults).
+  brandKit?: BrandKit | null;
 };
 
-export function ProposalPreview({ flow, className }: ProposalPreviewProps) {
+// "Colours: Ocean · workspace brand" + the palette's swatches.
+function PaletteLine({ fromKit }: { fromKit: boolean }) {
+  const theme = useChartTheme();
+  return (
+    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-border px-6 py-2 text-caption text-muted" data-preview-palette={theme.palette.id}>
+      <span>Chart colours</span>
+      <span className="flex gap-[3px]" aria-hidden="true">
+        {theme.slots.map((c, i) => <span key={i} className="h-3 w-3 rounded-[3px]" style={{ background: c }} />)}
+      </span>
+      <span className="text-secondary">{theme.palette.name}</span>
+      <span aria-hidden="true">·</span>
+      <span>{fromKit ? "workspace brand" : "GD360 default"}{theme.colorMode === "single" ? " · single colour" : " · each value keeps its colour"}</span>
+    </div>
+  );
+}
+
+export function ProposalPreview({ flow, className, brandKit = null }: ProposalPreviewProps) {
+  const appearance = useMemo(() => appearanceFromKit(brandKit), [brandKit]);
+  return (
+    <ChartThemeProvider appearance={appearance} numbers={false}>
+      <PreviewBody flow={flow} className={className} fromKit={Boolean(brandKit)} appearance={appearance} />
+    </ChartThemeProvider>
+  );
+}
+
+function PreviewBody({ flow, className, fromKit, appearance }: { flow: ProposalFlow; className?: string; fromKit: boolean; appearance: ReturnType<typeof appearanceFromKit> }) {
+  const scope = useDashboardScope(appearance);
   const { proposal, loading, revising, publishing } = flow;
   // 2026-10-07 (real end-to-end run): the preview is "narrow" when ITS OWN
   // box is, not only when the window is. On the New dashboard page it sits
@@ -239,7 +275,7 @@ export function ProposalPreview({ flow, className }: ProposalPreviewProps) {
         </StatusPill>
       </div>
 
-      <div ref={shellRef} className="relative flex min-w-0 flex-col overflow-hidden rounded-card border border-border bg-surface shadow-card" data-dashboard-shell="">
+      <div ref={shellRef} className="relative flex min-w-0 flex-col overflow-hidden rounded-card border border-border bg-surface shadow-card" data-dashboard-shell="" style={scope.style} {...scope.attrs}>
         <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3 px-6 pb-4 pt-5">
           <div className="min-w-0">
             <h2 className="truncate text-title font-semibold text-text" data-preview-title="">{proposal.title}</h2>
@@ -260,6 +296,7 @@ export function ProposalPreview({ flow, className }: ProposalPreviewProps) {
           </div>
         </header>
 
+        <PaletteLine fromKit={fromKit} />
         <div className={cn("flex min-h-0 flex-1 items-stretch", narrow && "flex-col")}>
           {narrow ? (
             <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-6 py-3" data-preview-filters-inline="">
