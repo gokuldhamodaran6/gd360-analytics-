@@ -78,7 +78,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..database import SessionLocal
-from . import ai_engine, chart_builder
+from . import ai_engine, chart_builder, dashboard_engine
 from .data_loader import load_dataframe
 
 logger = logging.getLogger("gd360.scheduler")
@@ -143,6 +143,18 @@ def refresh_dashboard(db: Session, dashboard: models.Dashboard, job_type: str) -
     try:
         if not ds:
             raise RuntimeError("This dashboard has no data source to refresh from yet.")
+        # 2026-10-07 (analyst canvas round): a WAREHOUSE dashboard never
+        # loads rows into the app - every spec block, SQL cell and bound
+        # chart is recomputed inside the warehouse by the same engine the
+        # live view uses (services/dashboard_engine.run_page), with the
+        # result cache bypassed so the refresh is real. The pandas path
+        # below is only ever reached for a FILE source.
+        if dashboard_engine.is_warehouse_native(ds):
+            _refresh_warehouse_dashboard(db, dashboard, ds)
+            dashboard.last_refreshed_at = datetime.utcnow()
+            dashboard.next_refresh_at = compute_next_refresh_at(dashboard.refresh_interval, dashboard.last_refreshed_at)
+            job.status = "success"
+            return job
         original_df = load_dataframe(ds, table=None, version="original", db=db)
 
         for page in dashboard.pages:
@@ -249,6 +261,48 @@ def refresh_dashboard(db: Session, dashboard: models.Dashboard, job_type: str) -
         db.refresh(job)
 
     return job
+
+
+def _refresh_warehouse_dashboard(db: Session, dashboard: models.Dashboard, ds: models.DataSource) -> dict:
+    """Every page of a warehouse dashboard through dashboard_engine.
+    run_page with force_refresh (the cache is what the live view reads
+    for the next DASHBOARD_RESULT_CACHE_TTL_SECONDS, so a refresh also
+    warms it), persisting each block's last_run and data_updated_at. A
+    page whose cells form a loop is logged and skipped - never a failed
+    run for the whole dashboard. Returns {page_id: run result}."""
+    from ..routers.dashboard_builder import _dashboard_primary_table, _warehouse_page_blocks
+
+    out: dict = {}
+    versions = dashboard_engine.load_versions(db, ds)
+    for page in dashboard.pages:
+        runnable, _skipped = _warehouse_page_blocks(page, None)
+        if not runnable:
+            continue
+        try:
+            result = dashboard_engine.run_page(
+                db, ds, runnable, user_id=dashboard.owner_id, date_column=dashboard.date_column, versions=versions,
+                force_refresh=True, count_table=_dashboard_primary_table(dashboard, ds),
+                default_period=dashboard.default_period,
+                dashboard_parameters=dashboard.parameters if isinstance(dashboard.parameters, list) else [],
+            )
+        except dashboard_engine.DependencyCycleError as e:
+            logger.warning("[scheduler] page %s on dashboard %s skipped: %s", page.id, dashboard.id, e)
+            continue
+        out[page.id] = result
+        by_id = {b.id: b for b in page.blocks}
+        for bid, res in result["blocks"].items():
+            block = by_id.get(bid)
+            if block is None:
+                continue
+            if res.get("status") != "ok":
+                logger.warning("[scheduler] block %s on dashboard %s: %s", bid, dashboard.id, res.get("error"))
+                continue
+            block.last_run = {
+                "bytes_scanned": res.get("bytes_scanned"), "duration_ms": res.get("duration_ms"),
+                "rows": res.get("row_count"), "ran_at": res.get("ran_at"), "cached": res.get("cached", False),
+            }
+            block.data_updated_at = datetime.utcnow()
+    return out
 
 
 def _tick() -> None:
