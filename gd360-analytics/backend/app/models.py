@@ -82,6 +82,13 @@ class Workspace(Base):
     is_personal = Column(Boolean, default=False)
     invite_token = Column(String, unique=True, index=True, nullable=False, default=gen_uuid)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # 2026-10-07 (identity-colour round): the workspace brand kit - the
+    # look every dashboard of this workspace starts from and follows until
+    # its owner customises it (palette, colour mode, density, corner
+    # radius, font, currency, locale, footer note, chrome brand colours).
+    # NULL = no kit: dashboards use the product defaults. The shape and its
+    # validation live in services/appearance.py (normalize_kit).
+    brand_kit = Column(JSON, nullable=True)
 
     members = relationship("WorkspaceMember", back_populates="workspace", cascade="all, delete-orphan")
 
@@ -605,6 +612,27 @@ class Message(Base):
     pushdown_result_rows = Column(Integer, nullable=True)
     pushdown_skipped_reason = Column(Text, nullable=True)
 
+    # 2026-10-07 (chart-integrity round, "say what was filtered"): the row
+    # filters behind this answer's numbers, so a chart that excludes
+    # cancelled bookings says so and still says so after a reload:
+    #   {"parsed": bool,           False = the statement could not be read;
+    #                              nothing is claimed about its filters
+    #    "filters": [{"kind": "where" | "conditional" | "having",
+    #                 "predicate": "is_canceled = 0",
+    #                 "label": "canceled rows excluded" | None,
+    #                 "table": str | None, "applies_to": alias | None,
+    #                 "source": "query" | "saved_table",
+    #                 "saved_table": the saved table's name | None}],
+    #    "tables": [base tables read], "text": the one line shown,
+    #    "writer_note": the SQL writer's own statement of a filter it
+    #                   added unasked | None,
+    #    "carried": True when read from the source table(s)' cleaning log
+    #               (a pandas answer over saved tables)}
+    # Written by routers/chat.py from services/sql_filters.py. NULL for a
+    # file-based answer with nothing to report and for rows saved before
+    # this column existed.
+    query_filters = Column(JSON, nullable=True)
+
     conversation = relationship("Conversation", back_populates="messages")
 
 
@@ -790,6 +818,17 @@ class Dashboard(Base):
     # resolves to None for a deleted source, the same way the
     # conversation walk always has.
     datasource_id = Column(String, nullable=True)
+    # 2026-10-07 (identity-colour round): how this dashboard looks - the
+    # chart palette, colour by value or single colour, the owner's pinned
+    # value colours, the registry that keeps "City Hotel" on one colour on
+    # every chart, page and device, and the presentation settings (density,
+    # corner radius, font, currency, locale, default theme and footer note
+    # of the published link). One JSON document; its shape, validation and
+    # the only code that writes it are services/appearance.py. NULL on
+    # every pre-existing row = follow the workspace brand kit (or the
+    # product defaults). brand_primary_color / brand_accent_color /
+    # background_* / logo above are unchanged and still honoured.
+    appearance = Column(JSON, nullable=True)
 
     owner = relationship("User", back_populates="dashboards")
     charts = relationship("SavedChart", back_populates="dashboard", cascade="all, delete-orphan")

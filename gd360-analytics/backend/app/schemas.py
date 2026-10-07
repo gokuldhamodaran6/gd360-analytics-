@@ -80,6 +80,10 @@ class WorkspaceOut(BaseModel):
     datasource_count: int
     invite_token: str
     created_at: datetime
+    # 2026-10-07 (identity-colour round): the workspace brand kit (None =
+    # none set) - see WorkspaceBrandKitOut. Carried on the list so every
+    # page that knows the active workspace also knows its palette.
+    brand_kit: Optional[dict] = None
 
 
 class WorkspaceMemberOut(BaseModel):
@@ -100,6 +104,25 @@ class WorkspaceMemberRoleUpdate(BaseModel):
     # changed through this endpoint; see routers/workspaces.py
     # update_member_role for the actual validation.
     role: str
+
+
+# 2026-10-07 (identity-colour round): the workspace brand kit - see
+# models.Workspace.brand_kit and services/appearance.normalize_kit.
+class WorkspaceBrandKitOut(BaseModel):
+    workspace_id: str
+    workspace_name: str
+    # None = the workspace has no kit (dashboards use the product defaults).
+    brand_kit: Optional[dict] = None
+    # Only the workspace owner may change it.
+    can_edit: bool = False
+
+
+class WorkspaceBrandKitUpdate(BaseModel):
+    # The kit to store: any of the style fields of a dashboard appearance
+    # (palette, color_mode, single_color, theme_default, density, radius,
+    # font, currency, locale, footer_note) plus brand_primary_color /
+    # brand_accent_color. Stored as sent (validated); null clears the kit.
+    brand_kit: Optional[dict] = None
 
 
 class InvitePreviewOut(BaseModel):
@@ -216,6 +239,10 @@ class DataSourceOut(BaseModel):
     # own comment - a short, optional, human-written blurb, never
     # computed or inferred.
     description: Optional[str] = None
+    # 2026-10-07 (identity-colour round): the workspace this source lives
+    # in - the chat workspace and the prompt builder read that workspace's
+    # brand kit (palette, number settings) for the charts they draw.
+    workspace_id: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -418,6 +445,14 @@ class ChatResponse(BaseModel):
     pushdown_skipped_reason: Optional[str] = None
     builder_suggestion: Optional[dict] = None
     builder_columns: Optional[dict] = None
+    # 2026-10-07 (chart-integrity round, "say what was filtered"): the row
+    # filters behind this answer - see models.Message.query_filters for the
+    # shape. None when there is nothing to report (a file answer) or
+    # nothing is known. `chart_type` may now also be "table": the result
+    # could not be drawn as the requested chart without misrepresenting
+    # it, chart_spec is None, and reply_text ends with the plain sentence
+    # that says why - the frontend shows result_rows as a table.
+    query_filters: Optional[dict] = None
 
 
 # ---------- Verify ("Double-check this") ----------
@@ -887,6 +922,18 @@ class DashboardBuilderOut(BaseModel):
     # of threads' comments (root + replies); "open" counts those on an
     # unresolved thread. See routers/dashboard_comments.py.
     comment_counts: dict[str, dict] = {}
+    # 2026-10-07 (identity-colour round): how the dashboard looks, RESOLVED
+    # (services/appearance.effective_appearance): the chart palette, colour
+    # mode, pins, the colour registry, density / radius / font, currency /
+    # locale, the published link's default theme and footer note, plus
+    # `source` ("dashboard" | "workspace" | "default") and `brand` (the
+    # chrome colours in force). workspace_brand_kit is the kit this
+    # dashboard would follow after "Reset to workspace brand" (None when
+    # the workspace has none), brand_workspace_name whose kit that is.
+    appearance: Optional[dict] = None
+    workspace_brand_kit: Optional[dict] = None
+    brand_workspace_id: Optional[str] = None
+    brand_workspace_name: Optional[str] = None
 
 
 class PublishDashboardRequest(BaseModel):
@@ -964,6 +1011,10 @@ class PublicDashboardOut(BaseModel):
     saved_views: list[dict] = []
     default_period: Optional[str] = None
     date_column: Optional[str] = None
+    # 2026-10-07 (identity-colour round): the same resolved appearance the
+    # owner's payload carries (DashboardBuilderOut.appearance), so an
+    # anonymous viewer sees the same colours, type and number formats.
+    appearance: Optional[dict] = None
 
 
 class SetCustomDomainRequest(BaseModel):
@@ -984,6 +1035,47 @@ class UpdateBrandingRequest(BaseModel):
     brand_accent_color: Optional[str] = None
     background_style: Optional[str] = None
     background_color: Optional[str] = None
+
+
+# 2026-10-07 (identity-colour round): PATCH /dashboard-builder/{id}/appearance.
+# Every field optional; only the keys actually sent are applied (the
+# router reads model_fields_set), so "density": "compact" alone changes
+# nothing else. The shape of each field and every validation message is
+# services/appearance.py - loose types here on purpose, so a bad value is
+# answered with that module's plain sentence rather than a generic 422.
+#   palette        {"kind": "preset", "id"} | {"kind": "brand", "color"} |
+#                  {"kind": "custom", "colors": [<=10 hex], "adjust": bool}
+#   color_mode     "by_value" | "single"          single_color  hex | null
+#   theme_default  "auto" | "light" | "dark"      density  "comfortable" | "compact"
+#   radius         "sharp" | "soft" | "round"     font     a preset id
+#   currency       ISO 4217                       locale   BCP-47 | "auto"
+#   footer_note    <= 160 characters
+#   value_colors   {column: {value: hex | slot 0-9}} - REPLACES the pins
+#   reset          "workspace" (follow the workspace brand kit again) |
+#                  "colors" (forget the pins and the colour registry)
+# The colour registry (`assignments`) is never accepted from a client.
+class UpdateAppearanceRequest(BaseModel):
+    palette: Optional[Any] = None
+    color_mode: Optional[Any] = None
+    single_color: Optional[Any] = None
+    theme_default: Optional[Any] = None
+    density: Optional[Any] = None
+    radius: Optional[Any] = None
+    font: Optional[Any] = None
+    currency: Optional[Any] = None
+    locale: Optional[Any] = None
+    footer_note: Optional[str] = Field(default=None, max_length=400)
+    value_colors: Optional[Any] = None
+    reset: Optional[Any] = None
+
+
+class DashboardAppearanceOut(BaseModel):
+    # The resolved appearance after the change, and the workspace kit the
+    # dashboard follows / would follow (see DashboardBuilderOut).
+    appearance: dict
+    workspace_brand_kit: Optional[dict] = None
+    brand_workspace_id: Optional[str] = None
+    brand_workspace_name: Optional[str] = None
 
 
 # ---------- Dashboard Builder Phase 2 (2026-09-24): the real canvas editor
@@ -1016,6 +1108,11 @@ class CreateBlockRequest(BaseModel):
     # already saw, just relocated onto a dashboard. None/omitted keeps
     # create_block's original always-empty behavior exactly as before.
     config: Optional[dict] = None
+    # 2026-10-07 (chart-types round): "forecast" - the Add-block template
+    # that creates a time-series chart with its forecast already on (rows
+    # by period over the dashboard's date column; the person then edits
+    # the query). Only read for type "chart".
+    template: Optional[str] = Field(default=None, max_length=40)
 
 
 class UpdateBlockRequest(BaseModel):
@@ -1135,6 +1232,23 @@ class ManualBuildBlockRequest(BaseModel):
     # table). A file source ignores it (its recipe runs on the file's
     # data exactly as before).
     table: Optional[str] = Field(default=None, max_length=300)
+    # 2026-10-07 (chart-types round) - what the new chart forms need on top
+    # of "one measure by one column". All optional; a request without them
+    # builds exactly what it always did.
+    #   group_by_column_2   a second dimension (heatmap, pivot, stacked,
+    #                       treemap levels, a waterfall bridge)
+    #   extra_measures      [{agg, column}] more measures (scatter, bubble,
+    #                       combo panels), at most 5
+    #   time_grain          bucket group_by_column (a date column) by
+    #                       day / week / month / quarter / year
+    #   bins                {"column", "count"} - a histogram of a numeric
+    #                       column (group_by_column is then ignored)
+    #   forecast            turn the forecast on (needs time_grain)
+    group_by_column_2: Optional[str] = None
+    extra_measures: list[dict] = Field(default_factory=list, max_length=5)
+    time_grain: Optional[str] = Field(default=None, max_length=12)
+    bins: Optional[dict] = None
+    forecast: Optional[bool] = None
 
 
 class RestyleBlockRequest(BaseModel):
@@ -1163,6 +1277,43 @@ class SetBlockAccentColorRequest(BaseModel):
 class SetBlockAnalysisRequest(BaseModel):
     forecast_enabled: bool
     anomalies_enabled: bool
+
+
+# 2026-10-07 (chart-types round): the "Forecast..." sheet of a time-series
+# block - see routers/dashboard_builder.py set_block_forecast and
+# services/forecast.py. `horizon` is in periods of the block's grain;
+# `interval` is "80" | "95" | "both".
+class SetBlockForecastRequest(BaseModel):
+    enabled: bool = True
+    horizon: Optional[int] = Field(default=None, ge=1, le=90)
+    interval: str = Field(default="both", max_length=8)
+    anomalies: bool = False
+
+
+# A forecast of a series the caller already holds (a chat answer's
+# aggregated time series): stateless, the same forecaster.
+class ForecastSeriesItem(BaseModel):
+    key: str = Field(min_length=1, max_length=200)
+    values: list[Optional[float]] = Field(min_length=1, max_length=2000)
+
+
+class ForecastSeriesRequest(BaseModel):
+    periods: list[str] = Field(min_length=1, max_length=2000)
+    # ONE series (`values`), or several over the same periods (`series`):
+    # with `series_by` they are the values of one breakdown column of the
+    # measure named `measure`; without it each is a measure of its own.
+    values: Optional[list[Optional[float]]] = Field(default=None, max_length=2000)
+    series: Optional[list[ForecastSeriesItem]] = Field(default=None, max_length=24)
+    series_by: bool = False
+    measure: str = Field(default="value", min_length=1, max_length=200)
+    grain: str = Field(default="month", max_length=12)
+    horizon: Optional[int] = Field(default=None, ge=1, le=90)
+    interval: str = Field(default="both", max_length=8)
+    anomalies: bool = False
+    # A count or a sum (a period with no rows is a zero) vs an average.
+    additive: bool = True
+    # A rate: held within [0, 1].
+    rate: bool = False
 
 
 # ---------- Cross-filtering (2026-09-24, Phase 2b) ----------
@@ -1195,6 +1346,11 @@ class FilteredBlocksOut(BaseModel):
     # preview_filtered_blocks' own docstring for why everything else is
     # simply left out rather than echoed back unchanged.
     blocks: list[FilteredBlockOut]
+    # 2026-10-07 (identity-colour round): the dashboard's colour registry
+    # as it stands after this request ({"assignments": {column: {value:
+    # slot}}, "overflow": [columns], "registry_full": bool}) - see
+    # services/appearance.py. None when the dashboard is not known here.
+    colors: Optional[dict] = None
     # 2026-09-25e (elite pass, real filter-bar row count): the real number
     # of rows in the datasource that match `payload.filters` - literally
     # `len(df)` after preview_filtered_blocks applies those filters, no
@@ -1309,6 +1465,12 @@ class RunPageOut(BaseModel):
     # bounds and anchor their presets to `max` for data that ended a while
     # ago. {} on a partial run (block_ids) or when it could not be read.
     date_bounds: dict = {}
+    # 2026-10-07 (identity-colour round): the dashboard's colour registry
+    # after this run - {"assignments": {column: {value: slot 0-9}},
+    # "overflow": [columns with more values than slots], "registry_full"}.
+    # New values this run showed are already in it (services/appearance.
+    # assign_colors), so the page can colour what it just received.
+    colors: Optional[dict] = None
 
 
 class ParameterOptionsOut(BaseModel):
@@ -1475,6 +1637,11 @@ class ProposalBlockOut(BaseModel):
     # query" shows before commit).
     sql: Optional[str] = None
     columns: list[dict] = []
+    # 2026-10-07 (chart-types round): why this chart form was chosen, in
+    # one line ("Country column -> map") - services/chart_recommender.py -
+    # and the forecast options when the goal asked for one.
+    chart_reason: Optional[str] = None
+    forecast: Optional[dict] = None
 
 
 class ProposalPageOut(BaseModel):

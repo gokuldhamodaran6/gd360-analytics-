@@ -242,6 +242,21 @@ _NEW_COLUMNS = [
     # this file's own note above, a new table needs no entry here at all
     # (create_all() already creates it).
     ("dashboards", "datasource_id", "TEXT"),
+    # 2026-10-07 (chart-integrity round, "say what was filtered"): see
+    # models.Message.query_filters' own comment. messages is an existing
+    # table, so this needs the normal ALTER-TABLE treatment; nullable, and
+    # JSON follows messages.steps/pushdown_attempts' precedent (works on
+    # both Postgres and SQLite).
+    ("messages", "query_filters", "JSON"),
+    # 2026-10-07 (identity-colour round): see models.Dashboard.appearance
+    # and models.Workspace.brand_kit's own comments - a dashboard's look
+    # (palette, colour-by-value registry, pins, density, font, currency...)
+    # and the workspace-level default it starts from. dashboards and
+    # workspaces are both existing tables, so these need the normal
+    # ALTER-TABLE treatment; nullable, and JSON follows dashboards.
+    # parameters' precedent (works on both Postgres and SQLite).
+    ("dashboards", "appearance", "JSON"),
+    ("workspaces", "brand_kit", "JSON"),
 ]
 
 
