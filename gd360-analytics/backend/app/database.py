@@ -222,6 +222,26 @@ _NEW_COLUMNS = [
     ("dataset_versions", "source_table", "TEXT"),
     ("dataset_versions", "columns_json", "JSON"),
     ("dataset_versions", "row_count", "BIGINT"),
+    # 2026-10-06 (warehouse-native dashboards layer): see models.Dashboard.
+    # parameters/saved_views/default_period/date_column and models.
+    # DashboardBlock.query_sql/last_run's own docstrings. dashboards and
+    # dashboard_blocks are both existing tables, so these need the normal
+    # ALTER-TABLE treatment; all nullable, JSON follows messages.steps'
+    # precedent.
+    ("dashboards", "parameters", "JSON"),
+    ("dashboards", "saved_views", "JSON"),
+    ("dashboards", "default_period", "TEXT"),
+    ("dashboards", "date_column", "TEXT"),
+    ("dashboard_blocks", "query_sql", "TEXT"),
+    ("dashboard_blocks", "last_run", "JSON"),
+    # 2026-10-07 (dashboard-from-prompt round): see models.Dashboard.
+    # datasource_id's own comment - the direct data-source link a
+    # dashboard built from a goal (no conversation) needs. dashboards is an
+    # existing table, so this needs the normal ALTER-TABLE treatment.
+    # dashboard_comments is a brand NEW table added the same round - per
+    # this file's own note above, a new table needs no entry here at all
+    # (create_all() already creates it).
+    ("dashboards", "datasource_id", "TEXT"),
 ]
 
 
