@@ -394,7 +394,11 @@ from .. import models, schemas, security
 from ..database import get_db
 from ..deps import get_current_user
 from ..services import ai_engine, chart_builder, dashboard_engine, data_access_rules, render_domains, workspace_access
+from ..services import appearance as appearance_svc
+from ..services import chart_recommender
+from ..services import forecast as forecast_svc
 from ..services import query_builder
+from ..services.profile_cache import profile_cache_get
 from ..services.connectors import ReadOnlyViolation, assert_read_only_sql
 from ..services.data_loader import load_dataframe, default_table_for_preview
 from ..services.metrics import resolve_metric_value
@@ -870,6 +874,10 @@ def _run_grouped_measures(df: pd.DataFrame, recipe: dict, existing_title: str | 
     if tidy:
         config["result_columns"] = tidy["columns"]
         config["result_rows"] = tidy["rows"]
+    if chronological:
+        bounds = _file_time_bounds(df[group_cols[0]])
+        if bounds:
+            config["time_bounds"] = bounds
     # A Plotly figure for the surfaces that still read one (exports, the
     # older canvas editor) - best effort; the dashboard draws from the rows.
     try:
@@ -903,6 +911,61 @@ def _kpi_trend(df: pd.DataFrame, recipe: dict, metric_column: str | None, agg_fu
     points = [_safe_float(v, None) if pd.notna(v) else None for v in values.tail(_KPI_SPARKLINE_MAX_POINTS).tolist()]
     points = [v for v in points if v is not None]
     return points if len(points) > 1 else None
+
+
+def _run_histogram_recipe(df: pd.DataFrame, recipe: dict) -> tuple[str, dict, str]:
+    """A histogram of one numeric column of a FILE - the same round bin
+    edges a warehouse block gets (query_builder.histogram_edges, from the
+    column's min / max / mean / standard deviation), the same result rows
+    (one per bin, empty bins included, explicit under / overflow), counted
+    with pandas because a file's data is complete inside the app."""
+    bins = recipe.get("bins") or {}
+    column = bins.get("column") or recipe.get("metric_column")
+    if not column or column not in df.columns:
+        raise ValueError(f'Column "{column}" was not found in this data.')
+    values = pd.to_numeric(df[column], errors="coerce").dropna()
+    if not pd.api.types.is_numeric_dtype(df[column]) or values.empty:
+        raise ValueError(f'"{column}" isn\'t a numeric column, so it can\'t be drawn as a histogram.')
+    try:
+        count = int(bins.get("count") or query_builder.BIN_COUNT_DEFAULT)
+    except (TypeError, ValueError):
+        count = query_builder.BIN_COUNT_DEFAULT
+    integer = bool(pd.api.types.is_integer_dtype(df[column]))
+    stats = {"min": float(values.min()), "max": float(values.max()), "avg": float(values.mean()),
+             "std": float(values.std()) if len(values) > 1 else 0.0, "n": int(len(values))}
+    edges = query_builder.histogram_edges(stats, count, integer, bins.get("min"), bins.get("max"))
+    n, start, width, end = edges["count"], edges["start"], edges["width"], edges["end"]
+    arr = values.to_numpy(dtype=float)
+    import numpy as _np
+    idx = _np.where(arr < start, -1, _np.where(arr > end, n, _np.where(arr == end, n - 1, _np.floor((arr - start) / width).astype("int64"))))
+    counts = pd.Series(idx).value_counts().to_dict()
+
+    def edge(i: int):
+        v = start + i * width
+        return int(v) if integer else round(float(v), 10)
+
+    rows: list[dict] = []
+    if counts.get(-1):
+        rows.append({column: None, "bin_end": edge(0), "bin": -1, "count": int(counts[-1])})
+    for i in range(n):
+        rows.append({column: edge(i), "bin_end": edge(i + 1), "bin": i, "count": int(counts.get(i, 0))})
+    if counts.get(n):
+        rows.append({column: edge(n), "bin_end": None, "bin": n, "count": int(counts[n])})
+    default_title = f"Distribution of {column}"
+    config = {
+        "recipe": {**recipe, "block_type": "chart", "chart_type": "histogram", "bins": {"column": column, "count": count,
+                   "min": bins.get("min"), "max": bins.get("max")}},
+        "chart_type": "histogram",
+        "result_columns": [{"name": column, "dtype": "number", "role": "dimension"}, {"name": "bin_end", "dtype": "number", "role": "dimension"},
+                           {"name": "count", "dtype": "number", "role": "measure"}],
+        "result_rows": rows,
+        "bins": {"column": column, "start": start, "width": width, "count": n, "end": end, "integer": integer,
+                 "underflow": bool(counts.get(-1)), "overflow": bool(counts.get(n)), "stats": stats},
+    }
+    return "chart", config, default_title
+
+
+_MAP_ROW_CAP = 300
 
 
 def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | None = None) -> tuple[str, dict, str]:
@@ -939,6 +1002,8 @@ def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | Non
     # proposal's detail table, a trend split by segment) - see
     # _run_grouped_measures. Every other block type shows one measure over
     # one group-by and keeps the path below.
+    if block_type == "chart" and isinstance(recipe.get("bins"), dict):
+        return _run_histogram_recipe(df, recipe)
     if block_type in ("table", "chart") and (recipe.get("measures") or len(recipe.get("group_by") or []) > 1):
         return _run_grouped_measures(df, recipe, existing_title)
 
@@ -1040,6 +1105,13 @@ def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | Non
         return "sparkline", config, default_title
 
     row_cap = 8 if block_type == "avatar_list" else (50 if block_type in ("chart", "donut") else _MAX_TABLE_ROWS_PER_BLOCK)
+    # 2026-10-07 (chart-types round): a map colours EVERY country, not the
+    # 50 largest - asked for by name, or likely to be recommended (a
+    # country-named column with the form left to GD360).
+    wanted_chart = str(recipe.get("chart_type") or "").strip().lower()
+    if block_type == "chart" and (wanted_chart in ("map", "choropleth") or (
+            wanted_chart in ("", "auto") and chart_recommender.countries.looks_like_country_name(group_by_column))):
+        row_cap = _MAP_ROW_CAP
     try:
         wanted = int(recipe.get("limit")) if recipe.get("limit") else row_cap
     except (TypeError, ValueError):
@@ -1049,11 +1121,14 @@ def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | Non
     # chart_builder.result_to_tidy would otherwise fall back to for a bare
     # Series - so a manually-built table's headers read as "region" /
     # "revenue", not "label" / "value".
+    # (.rename first: counting a column grouped by itself - "bookings by
+    # country" as a count of Country - would otherwise collide with the
+    # index of the same name in reset_index.)
     if chronological:
-        grouped_df = _aggregate(df.groupby(group_key, sort=True)).tail(max(row_cap, 120)).reset_index()
+        grouped_df = _aggregate(df.groupby(group_key, sort=True)).tail(max(row_cap, 120)).rename("__gd360_value__").reset_index()
         grouped_df.columns = [group_by_column, value_name]
     else:
-        grouped_df = _aggregate(df.groupby(group_by_column)).reset_index()
+        grouped_df = _aggregate(df.groupby(group_by_column)).rename("__gd360_value__").reset_index()
         grouped_df.columns = [group_by_column, value_name]
         # 2026-10-07: a recipe that came from a proposal keeps the order
         # and the row limit its spec asked for ("revenue by year", in year
@@ -1064,15 +1139,25 @@ def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | Non
     metric_column = value_name
 
     if block_type == "chart":
-        ct = (chart_type or "bar").lower().strip()
-        if ct not in _RESTYLE_CHART_TYPES:
+        ct = (chart_type or ("line" if chronological else "bar")).lower().strip()
+        # 2026-10-07 (chart-types round): every form the native renderer
+        # draws from rows is kept (map, treemap, funnel, waterfall, bullet
+        # ...); the Plotly figure stored beside the rows - for the exports
+        # that still read one - is the nearest form Plotly's builder has.
+        ct = chart_recommender.normalize_chart_type(ct) or "bar"
+        if ct not in chart_recommender.BLOCK_CHART_TYPES:
             ct = "bar"
-        chart_spec = chart_builder.build_figure(grouped_df, ct, title=existing_title or default_title)
+        figure_type = ct if ct in _RESTYLE_CHART_TYPES else ("line" if chronological else "bar")
+        chart_spec = chart_builder.build_figure(grouped_df, figure_type, title=existing_title or default_title)
         tidy = chart_builder.result_to_tidy(grouped_df)
-        config = {"chart_spec": chart_spec, "recipe": recipe}
+        config = {"chart_spec": chart_spec, "recipe": recipe, "chart_type": ct}
         if tidy:
             config["result_columns"] = tidy["columns"]
             config["result_rows"] = tidy["rows"]
+        if chronological:
+            bounds = _file_time_bounds(df[group_by_column])
+            if bounds:
+                config["time_bounds"] = bounds
         return "chart", config, default_title
 
     if block_type == "donut":
@@ -1418,6 +1503,25 @@ def _block_config_shape(message: models.Message, requested_type: str) -> tuple[s
         if message.result_columns and message.result_rows:
             config["result_columns"] = message.result_columns
             config["result_rows"] = message.result_rows
+            # 2026-10-07 (chart-integrity round): the figure copied onto a
+            # dashboard passes the same audit as the one shown in chat - a
+            # message stored before the audit existed can hold a figure
+            # that contradicts its own rows; the block gets the figure
+            # rebuilt from the rows instead (or, when the rows cannot be
+            # drawn as that chart at all, the table below).
+            checked, _reason, problems = chart_builder.checked_chart_spec(
+                message.chart_spec, message.result_columns, message.result_rows, message.chart_type,
+                context=f"message={message.id} (to dashboard)", truncated=bool(message.result_truncated),
+            )
+            if problems:
+                config["chart_spec"] = checked
+        if config["chart_spec"] is None:
+            rows = (message.result_rows or [])[:_MAX_TABLE_ROWS_PER_BLOCK]
+            return "table", {
+                "columns": [c.get("name") for c in (message.result_columns or [])],
+                "rows": rows,
+                "truncated": len(message.result_rows or []) > _MAX_TABLE_ROWS_PER_BLOCK,
+            }
         # 2026-10-01 (filter-engine fix round): message.chart_type already
         # exists (the real type this chat turn's chart was rendered as -
         # see models.Message's own chart_type column) and was simply never
@@ -1824,6 +1928,15 @@ def _maybe_add_forecast_overlay(spec: dict, actual_type: str, config: dict) -> d
     text = f"{spec.get('title', '')} {spec.get('prompt', '')}".lower()
     if not any(k in text for k in _FORECAST_KEYWORDS):
         return config
+    # 2026-10-07 (chart-types round): a chart whose stored rows are a time
+    # series gets the NATIVE forecast (services/forecast.py, drawn by the
+    # dashboard's own renderer) - the option is stored, the numbers are
+    # computed when the block is read. Only a chart with no such rows
+    # still gets the old overlay drawn into its Plotly figure.
+    layout = _file_series_layout(config)
+    if layout is not None:
+        return {**config, "forecast": {"horizon": forecast_svc.DEFAULT_HORIZON[layout["grain"]], "interval": "both", "anomalies": False},
+                "chart_type": "line"}
     try:
         new_spec, _anomaly_count = chart_builder.apply_analysis_overlays(
             config["chart_spec"], forecast_enabled=True, anomalies_enabled=False
@@ -2162,11 +2275,142 @@ def _clear_auto_title(block: models.DashboardBlock) -> None:
         block.config = {k: v for k, v in (block.config or {}).items() if k != "title_auto"}
 
 
+def _file_time_bounds(series: pd.Series) -> dict | None:
+    """{"min", "max"} (ISO days) of a date column's real values - what a
+    period bucket can be covered by (partial first / last period)."""
+    try:
+        as_dates = series if pd.api.types.is_datetime64_any_dtype(series) else pd.to_datetime(series, errors="coerce")
+        as_dates = as_dates.dropna()
+        if as_dates.empty:
+            return None
+        return {"min": as_dates.min().strftime("%Y-%m-%d"), "max": as_dates.max().strftime("%Y-%m-%d")}
+    except Exception:
+        return None
+
+
+_ISO_DAY_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
+
+
+def _infer_period_grain(values: list) -> str | None:
+    """The grain a column of period starts is in, read off the dates (the
+    frontend's fileData.inferGrain, same rules): every date a 1 January ->
+    years; every date the 1st of a quarter's first month (three or more)
+    -> quarters; every date a 1st -> months; dates whole weeks apart ->
+    weeks; else days. None when a value is not an ISO date."""
+    parts = []
+    for v in values:
+        if v is None or v == "":
+            continue
+        m = _ISO_DAY_RE.match(str(v))
+        if not m:
+            return None
+        parts.append((int(m.group(1)), int(m.group(2)), int(m.group(3))))
+    if len(parts) < 2:
+        return None
+    if all(d == 1 for _y, _m, d in parts):
+        if all(m == 1 for _y, m, _d in parts):
+            return "year"
+        if len(parts) >= 3 and all((m - 1) % 3 == 0 for _y, m, _d in parts):
+            return "quarter"
+        return "month"
+    from datetime import date as _date
+    try:
+        days = sorted({_date(y, m, d).toordinal() for y, m, d in parts})
+    except ValueError:
+        return None
+    steps = [b - a for a, b in zip(days, days[1:])]
+    if len(steps) >= 2 and all(step % 7 == 0 for step in steps):
+        return "week"
+    return "day"
+
+
+def _file_series_layout(config) -> dict | None:
+    """How a FILE chart block's stored rows form a time series:
+    {"time", "series", "measures": [{alias, additive, rate}], "grain"} -
+    from its recipe (a time_grain) or, for a chart nobody described (an
+    AI answer), from a first column of ISO dates. None when the block is
+    not a time series (or is a warehouse block)."""
+    if not isinstance(config, dict) or isinstance(config.get("spec"), dict):
+        return None
+    rows = config.get("result_rows")
+    cols = [c.get("name") for c in (config.get("result_columns") or []) if isinstance(c, dict)]
+    if not isinstance(rows, list) or len(rows) < 2 or not cols:
+        return None
+    recipe = config.get("recipe") if isinstance(config.get("recipe"), dict) else None
+    numeric = [c for c in cols if any(isinstance(r.get(c), (int, float)) and not isinstance(r.get(c), bool) for r in rows if isinstance(r, dict))]
+    if recipe and recipe.get("time_grain") and not recipe.get("metric_id"):
+        groups = [g for g in (recipe.get("group_by") or []) if g] or ([recipe["group_by_column"]] if recipe.get("group_by_column") else [])
+        groups = [g for g in groups if g in cols]
+        if not groups or len(groups) > 2:
+            return None
+        measure_cols = [c for c in cols if c not in groups]
+        listed = [m for m in (recipe.get("measures") or []) if isinstance(m, dict)]
+        aggs = {m.get("alias"): m.get("agg") for m in listed} if listed else {c: recipe.get("agg") for c in measure_cols}
+        measures = [{"alias": c, "additive": str(aggs.get(c) or "sum") in ("sum", "count"), "rate": False} for c in measure_cols]
+        grain = str(recipe["time_grain"])
+        time_col, series_col = groups[0], (groups[1] if len(groups) > 1 else None)
+    elif recipe is None:
+        time_col = cols[0]
+        grain = _infer_period_grain([r.get(time_col) for r in rows if isinstance(r, dict)])
+        if grain is None:
+            return None
+        others = [c for c in cols[1:] if c not in numeric]
+        if len(others) > 1:
+            return None
+        series_col = others[0] if others else None
+        # An answer's aggregation is unknown: a missing period is a gap, not a zero.
+        measures = [{"alias": c, "additive": False, "rate": False} for c in numeric if c != time_col]
+    else:
+        return None
+    if not measures or grain not in forecast_svc.GRAINS:
+        return None
+    if series_col:
+        measures = measures[:1]
+    return {"time": time_col, "series": series_col, "measures": measures, "grain": grain}
+
+
+def _decorate_file_time_series(block_type: str, config):
+    """A FILE block's time series gets what a warehouse run adds to its
+    result (services/dashboard_engine.attach_time_analysis): `partial`
+    (buckets the data only partly covers) and, with config.forecast, the
+    `forecast_result` + `anomalies` computed on its stored, aggregated
+    rows. Computed when the block is read (cached by the rows' own
+    fingerprint), never stored - so it can never go stale against the
+    rows beside it. Any other block is returned untouched."""
+    if block_type != "chart":
+        return config
+    layout = _file_series_layout(config)
+    if layout is None:
+        return config
+    try:
+        rows = [r for r in config["result_rows"] if isinstance(r, dict)]
+        grain, time_col = layout["grain"], layout["time"]
+        periods = sorted({str(r.get(time_col))[:10] for r in rows if r.get(time_col) is not None})
+        partial = forecast_svc.partial_periods(periods, grain, config.get("time_bounds"), today=datetime.utcnow().date())
+        out = dict(config)
+        if partial.get("first") or partial.get("last"):
+            out["partial"] = partial
+        options = forecast_svc.normalize_options(config.get("forecast"), grain) if config.get("forecast") else None
+        if options:
+            key = forecast_svc.fingerprint("file", rows, layout, options, config.get("time_bounds"))
+            cached = dashboard_engine._forecast_cache.get(key)
+            if cached is None:
+                clean = [{**r, time_col: str(r.get(time_col))[:10]} for r in rows if r.get(time_col) is not None]
+                cached = forecast_svc.forecast_result(clean, time_col, layout["measures"], layout["series"], grain, options, partial=partial)
+                dashboard_engine._forecast_cache.put(key, cached)
+            out["forecast_result"] = cached
+            out["anomalies"] = cached.get("anomalies") or []
+        return out
+    except Exception as e:
+        print(f"[dashboard_builder] file time-series analysis skipped (non-fatal): {e}")
+        return config
+
+
 def _page_out(page: models.DashboardPage) -> schemas.DashboardPageOut:
     blocks = [
         schemas.DashboardBlockOut(
             id=b.id, type=b.type, title=b.title, x=b.x, y=b.y, w=b.w, h=b.h,
-            config=b.config, position=b.position, data_updated_at=b.data_updated_at,
+            config=_decorate_file_time_series(b.type, b.config), position=b.position, data_updated_at=b.data_updated_at,
             can_undo=b.previous_config is not None,
             query_sql=getattr(b, "query_sql", None), last_run=getattr(b, "last_run", None),
         )
@@ -2279,6 +2523,62 @@ def _dashboards_for_conversation(
     return out
 
 
+# ---------- 2026-10-07 (identity-colour round): appearance ----------
+# services/appearance.py owns the document, its validation and the colour
+# registry; these are the router's thin ends of it.
+
+def _brand_workspace(db: Session, d: models.Dashboard, ds: models.DataSource | None = None) -> models.Workspace | None:
+    """The workspace whose brand kit a dashboard follows: the one it is
+    shared into, else its data source's, else its owner's personal one."""
+    ws_id = d.workspace_id or (ds.workspace_id if ds is not None else None)
+    ws = db.query(models.Workspace).filter(models.Workspace.id == ws_id).first() if ws_id else None
+    if ws is None:
+        ws = (
+            db.query(models.Workspace)
+            .filter(models.Workspace.owner_id == d.owner_id, models.Workspace.is_personal.is_(True))
+            .first()
+        )
+    return ws
+
+
+def _appearance_fields(db: Session, d: models.Dashboard, ds: models.DataSource | None, include_kit: bool = True) -> dict:
+    """`appearance` (resolved) for a dashboard payload - plus, for the
+    editor, the workspace kit it follows or would follow."""
+    try:
+        ws = _brand_workspace(db, d, ds)
+        kit = appearance_svc.normalize_kit(ws.brand_kit, strict=False) if ws is not None and ws.brand_kit else None
+        out = {
+            "appearance": appearance_svc.effective_appearance(
+                d.appearance, kit, brand_primary=d.brand_primary_color, brand_accent=d.brand_accent_color
+            ),
+        }
+        if include_kit:
+            out.update({
+                "workspace_brand_kit": kit,
+                "brand_workspace_id": ws.id if ws is not None else None,
+                "brand_workspace_name": ws.name if ws is not None else None,
+            })
+        return out
+    except Exception as e:  # an older database without the columns: defaults
+        print(f"[dashboard_builder] appearance unavailable (non-fatal): {e}")
+        return {"appearance": appearance_svc.effective_appearance(None, None)}
+
+
+def _assign_stored_colors(db: Session, d: models.Dashboard) -> None:
+    """Registers the values of every result a block stores on itself (a
+    file dashboard's blocks, a pre-layer AI block). Canonical by
+    construction - nothing of the request takes part - so it is safe on
+    the public link too. Writes only when a value is new."""
+    try:
+        obs = appearance_svc.Observations()
+        for page in sorted(d.pages, key=lambda p: p.position):
+            for block in page.blocks:
+                appearance_svc.observe_stored_block(obs, block.type, block.config)
+        appearance_svc.assign_colors(db, d, obs)
+    except Exception as e:  # colour must never stand between a viewer and the dashboard
+        print(f"[dashboard_builder] stored colours not registered (non-fatal): {e}")
+
+
 def _builder_out(db: Session, d: models.Dashboard, user: models.User) -> schemas.DashboardBuilderOut:
     pages = [_page_out(p) for p in sorted(d.pages, key=lambda p: p.position)]
     share = d.share
@@ -2330,6 +2630,7 @@ def _builder_out(db: Session, d: models.Dashboard, user: models.User) -> schemas
         has_logo=bool(d.logo_image),
         has_background_image=bool(d.background_image),
         comment_counts=_comment_counts(db, d.id),
+        **_appearance_fields(db, d, ds),
         **_warehouse_dashboard_fields(db, d, ds, include_tables=True),
     )
 
@@ -3132,6 +3433,8 @@ def list_dashboards_for_conversation(
 _PROPOSAL_TTL_SECONDS = 1800
 _PROPOSALS = dashboard_engine.TTLCache(_PROPOSAL_TTL_SECONDS, max_entries=256)
 _PROPOSAL_TYPES = {"kpi", "chart", "table", "text", "sparkline", "donut"}
+# Proposal block types whose chart form the recommender decides.
+_PROPOSAL_CHARTED_TYPES = ("chart", "donut")
 _PROPOSAL_MAX_BLOCKS = 12
 _MAX_PROPOSAL_PARAMETERS = 4
 
@@ -3253,7 +3556,10 @@ def _metric_to_spec(metric, table: str) -> dict:
 def _layout_proposal_page(blocks: list[dict]) -> None:
     """Places a page's blocks on the 12-column grid in place: the KPI row
     first (3x3 tiles, 4 per row), then charts/donuts/sparklines in pairs
-    (6x6), tables and text full width."""
+    (6x6), tables and text full width. 2026-10-07 (chart-types round): a
+    map carries a ranked list - its row is two units taller (both cards,
+    so the row stays even), and a map left alone in a row takes the whole
+    width (the list then sits beside the map)."""
     y = 0
     x = 0
     kpis = [b for b in blocks if b["type"] in ("kpi", "sparkline")]
@@ -3267,21 +3573,38 @@ def _layout_proposal_page(blocks: list[dict]) -> None:
         y += 3
     x = 0
     row_h = 0
+    row: list[dict] = []
+
+    def close_row() -> None:
+        if len(row) == 1 and row[0].get("chart_type") == "map":
+            row[0]["layout"]["w"] = _GRID_COLUMNS
+
     for b in others:
         if b["type"] in ("table", "text"):
             if x:
+                close_row()
                 x, y = 0, y + row_h
                 row_h = 0
+                row = []
             h = 2 if b["type"] == "text" else 6
             b["layout"] = {"x": 0, "y": y, "w": 12, "h": h}
             y += h
             continue
         if x + 6 > _GRID_COLUMNS:
+            close_row()
             x, y = 0, y + row_h
             row_h = 0
+            row = []
         b["layout"] = {"x": x, "y": y, "w": 6, "h": 6}
+        row.append(b)
+        if any(r.get("chart_type") == "map" for r in row):
+            for r in row:
+                r["layout"]["h"] = 8
+            row_h = 8
+        else:
+            row_h = 6
         x += 6
-        row_h = 6
+    close_row()
     for b in blocks:
         b.setdefault("layout", {"x": 0, "y": y, "w": 6, "h": 6})
 
@@ -3436,6 +3759,28 @@ def _build_proposal(
             block["spec"] = public
             if btype == "kpi" and (public.get("group_by") or public.get("time")):
                 block["type"] = "chart" if public.get("time") else "table"
+            # 2026-10-07 (chart-types round): the chart form is decided by
+            # the ONE deterministic recommender - the model's chart_type is
+            # a suggestion it validates (and replaces, with a log line,
+            # when the block's shape calls for something else: a country
+            # column is a map, two dimensions a heatmap, ...). A file block
+            # keeps the forms its recipe path draws.
+            if block["type"] in _PROPOSAL_CHARTED_TYPES:
+                choice = _choose_chart(_spec_shape(ds if native else None, schema, public), block["chart_type"], False,
+                                       f"proposal block {block['client_id']}")
+                if choice["block_type"] in _PROPOSAL_CHARTED_TYPES:
+                    block["type"] = choice["block_type"]
+                    block["chart_type"] = None if choice["block_type"] == "donut" else choice["chart_type"]
+                elif choice["block_type"] == "table" and native:
+                    block["type"], block["chart_type"] = "table", None
+                else:
+                    block["chart_type"] = chart_recommender.normalize_chart_type(block["chart_type"]) or ("line" if public.get("time") else "bar")
+                block["chart_reason"] = choice["reason"]
+                if block["chart_type"] == "map":
+                    public = _map_ready_spec(public)
+                    block["spec"] = public
+                if public.get("time") and _wants_forecast(title, intent, rb.get("chart_type")):
+                    block["forecast"] = _default_forecast_options(period)
             if native:
                 check = dashboard_engine.validate_spec_in_warehouse(ds, public, versions, date_column=date_column)
                 if not check["ok"]:
@@ -3455,6 +3800,8 @@ def _build_proposal(
                 recipe["block_type"] = "kpi" if block["type"] == "kpi" else block["type"]
                 if block["type"] == "chart":
                     recipe["chart_type"] = block["chart_type"] or ("line" if public.get("time") else "bar")
+                elif block["type"] == "donut":
+                    recipe["block_type"] = "donut"
                 if recipe["agg"] == "count" and not recipe.get("metric_column"):
                     recipe["metric_column"] = (query_builder.table_columns(schema, public["table"]) or [{}])[0].get("name")
                 # 2026-10-07: validated for real, like a warehouse block's
@@ -3708,6 +4055,13 @@ def _commit_proposal(
                 config = {"spec": b["spec"], "computed_in": ds.kind, "spec_columns": b.get("columns") or [], "intent": b.get("intent")}
                 if btype == "chart":
                     config["chart_type"] = b.get("chart_type") or ("line" if b["spec"].get("time") else "bar")
+                if btype in _PROPOSAL_CHARTED_TYPES and b.get("chart_reason"):
+                    # GD360 chose this form; the first run confirms it
+                    # against the real values (see _confirm_auto_charts).
+                    config["chart_auto"] = True
+                    config["chart_reason"] = b["chart_reason"]
+                if btype == "chart" and b.get("forecast") and b["spec"].get("time"):
+                    config["forecast"] = b["forecast"]
                 if btype in ("kpi", "sparkline"):
                     config["label"] = b["spec"]["measures"][0]["alias"]
                     # 2026-10-07: a KPI that is certainly a share of a
@@ -3737,6 +4091,11 @@ def _commit_proposal(
                     print(f"[dashboard_builder] proposal block {b['client_id']!r} could not be computed on commit: {e}")
                     continue
                 config = {**config, "intent": b.get("intent")}
+                if btype == "chart" and b.get("chart_reason"):
+                    config["chart_auto"] = True
+                    config["chart_reason"] = b["chart_reason"]
+                if btype == "chart" and b.get("forecast") and (b.get("spec") or {}).get("time"):
+                    config["forecast"] = b["forecast"]
                 if btype == "kpi" and b.get("spec"):
                     # 2026-10-07 (real end-to-end run): same certainty rule
                     # as a warehouse KPI just above - a file dashboard's
@@ -3800,25 +4159,92 @@ def swap_block(
             raise HTTPException(400, f"type must be one of {', '.join(sorted(_DATA_BLOCK_TYPES))}.")
         new_type = payload.type
     chart_type = config.get("chart_type")
+    reason = None
+    auto = False
+    spec = config.get("spec") if isinstance(config.get("spec"), dict) else None
     if payload.chart_type is not None:
-        if payload.chart_type not in _SWAP_CHART_TYPES:
+        asked = payload.chart_type.strip().lower()
+        if asked != "auto":
+            asked = chart_recommender.normalize_chart_type(asked) or asked
+        if asked not in _SWAP_CHART_TYPES:
             raise HTTPException(400, f"chart_type must be one of {', '.join(sorted(_SWAP_CHART_TYPES))}.")
-        chart_type = payload.chart_type
-        if payload.type is None and new_type not in ("chart",):
-            new_type = "donut" if chart_type == "donut" else "chart"
+        # 2026-10-07 (chart-types round): a swap is only made to a form the
+        # block's data can be drawn as - the reason is the 400's message.
+        # "auto" is "swap to best": the recommender's pick for the block's
+        # CURRENT result (one block run - a cache hit when the page has
+        # just shown it; the same query the page runs, never anything more).
+        shape = None
+        if spec is not None:
+            ds = _resolve_datasource(db, user, d)
+            schema, _ = query_builder.with_version_aliases(ds.schema_cache, dashboard_engine.load_versions(db, ds))
+            shape = _spec_shape(ds, schema, spec, config)
+            if asked == "auto" and dashboard_engine.is_warehouse_native(ds):
+                try:
+                    res = dashboard_engine.run_block(db, ds, spec, user_id=user.id, date_column=d.date_column,
+                                                     default_period=d.default_period)
+                    if res.get("status") == "ok":
+                        target = isinstance(config.get("target"), (int, float)) and not isinstance(config.get("target"), bool)
+                        shape = chart_recommender.shape_from_result(res, spec, target=target)
+                except Exception as e:
+                    print(f"[dashboard_builder] swap-to-best ran on the spec's shape only (non-fatal): {e}")
+        if asked == "auto":
+            if shape is None:
+                raise HTTPException(400, "This block is drawn from a SQL cell - pick the chart type yourself.")
+            choice = _choose_chart(shape, None, False, "swap-to-best")
+            chart_type, reason, auto = choice["chart_type"], choice["reason"], True
+            new_type = choice["block_type"]
+        else:
+            if shape is not None:
+                ok, why = _fits_before_run(shape, asked)
+                if not ok:
+                    label = next((t["label"] for t in chart_recommender.CHART_TYPES if t["type"] == asked), asked)
+                    raise HTTPException(400, f"{label}: this block {why}.")
+            chart_type = asked
+            if payload.type is None and new_type not in ("chart",):
+                new_type = "donut" if chart_type == "donut" else "chart"
     if chart_type == "donut" and new_type == "chart":
         new_type = "donut"
     _snapshot_block_config(block)
     new_config = {k: v for k, v in config.items() if k not in ("chart_spec", "result_rows", "result_columns", "rows", "columns")}
     if new_type == "chart":
-        spec = config.get("spec") or {}
-        new_config["chart_type"] = chart_type or ("line" if spec.get("time") else "bar")
+        new_config["chart_type"] = chart_type or ("line" if (spec or {}).get("time") else "bar")
     else:
         new_config.pop("chart_type", None)
-    if new_type in ("kpi", "gauge", "sparkline") and isinstance(config.get("spec"), dict):
-        new_config["label"] = new_config.get("label") or config["spec"]["measures"][0]["alias"]
+    if payload.chart_type is not None or payload.type is not None:
+        if auto:
+            new_config["chart_auto"] = True
+            new_config["chart_checked"] = True
+            new_config["chart_reason"] = reason
+        else:
+            # The person picked it.
+            for key in ("chart_auto", "chart_checked", "chart_reason"):
+                new_config.pop(key, None)
+    if new_type in ("kpi", "gauge", "sparkline") and spec is not None:
+        new_config["label"] = new_config.get("label") or spec["measures"][0]["alias"]
+    # A forecast is drawn on a line / area / bar over time (or a KPI's
+    # sparkline); another form drops it rather than keep computing it unseen.
+    if new_config.get("forecast") and not (
+        (new_type == "chart" and new_config.get("chart_type") in ("line", "area", "bar", "step_line") and (spec or {}).get("time"))
+        or new_type in ("kpi", "sparkline")
+    ):
+        new_config.pop("forecast", None)
     block.type = new_type
     block.config = new_config
+    if new_type == "chart" and new_config.get("chart_type") == "map" and spec is not None:
+        # A map colours every country: a "top 10" spec is widened (the
+        # ranked list beside the map still shows the top ones). Same
+        # validation as any spec; the block's title is left alone.
+        widened = _map_ready_spec(spec)
+        if widened != spec:
+            try:
+                ds = _resolve_datasource(db, user, d)
+                if dashboard_engine.is_warehouse_native(ds):
+                    check = dashboard_engine.validate_spec_in_warehouse(ds, widened, dashboard_engine.load_versions(db, ds), date_column=d.date_column)
+                    if check["ok"]:
+                        block.config = {**new_config, "spec": check["spec"]}
+                        block.query_sql = check["sql"]
+            except HTTPException:
+                pass
     db.commit()
     db.refresh(d)
     return _builder_out(db, d, user)
@@ -3829,6 +4255,10 @@ def get_builder_dashboard(
     dashboard_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
 ):
     d = _get_dashboard_v2(db, user, dashboard_id)
+    # 2026-10-07 (identity-colour round): a block that stores its result
+    # (every block of a file dashboard) has its values registered here, so
+    # the very first paint already has its colours.
+    _assign_stored_colors(db, d)
     return _builder_out(db, d, user)
 
 
@@ -3949,6 +4379,14 @@ def update_branding(
     user: models.User = Depends(get_current_user),
 ):
     d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    # 2026-10-07 (identity-colour round): a dashboard that never had a
+    # brand colour and gets its first one keeps the chart colours it shows
+    # now (see services/appearance.materialize) - only a dashboard branded
+    # BEFORE that round resolves to the single-colour look.
+    first_brand_color = (
+        not d.brand_primary_color and payload.brand_primary_color is not None and bool(_hex_color_or_none(payload.brand_primary_color))
+    )
+    style_before = _appearance_fields(db, d, _dashboard_datasource(db, d), include_kit=False)["appearance"] if first_brand_color else None
     if payload.brand_primary_color is not None:
         d.brand_primary_color = _hex_color_or_none(payload.brand_primary_color)
     if payload.brand_accent_color is not None:
@@ -3959,8 +4397,37 @@ def update_branding(
     if payload.background_color is not None:
         d.background_color = _hex_color_or_none(payload.background_color)
     db.commit()
+    if style_before is not None:
+        appearance_svc.mutate(db, d.id, lambda doc: appearance_svc.materialize(doc, style_before))
     db.refresh(d)
     return _builder_out(db, d, user)
+
+
+# 2026-10-07 (identity-colour round): the dashboard's appearance - chart
+# palette, colour by value / single colour, pinned value colours, density,
+# corner radius, font, currency, locale, the published link's default
+# theme and footer note. Owner / editor only. Only the fields sent are
+# changed; `reset` undoes ("workspace": follow the workspace brand kit
+# again; "colors": forget the pins and the colour registry). Answers with
+# the resolved appearance alone (not the whole dashboard): the Appearance
+# sheet saves on every change, debounced, and applies it optimistically.
+@router.patch("/{dashboard_id}/appearance", response_model=schemas.DashboardAppearanceOut)
+def update_appearance(
+    dashboard_id: str,
+    payload: schemas.UpdateAppearanceRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    patch = {key: getattr(payload, key) for key in payload.model_fields_set}
+    ds = _dashboard_datasource(db, d)
+    before = _appearance_fields(db, d, ds, include_kit=False)["appearance"]
+    try:
+        appearance_svc.mutate(db, d.id, lambda doc: appearance_svc.apply_patch(doc, patch, before))
+    except appearance_svc.AppearanceError as e:
+        raise HTTPException(422, str(e))
+    db.refresh(d)
+    return schemas.DashboardAppearanceOut(**_appearance_fields(db, d, ds))
 
 
 @router.post("/{dashboard_id}/branding/logo", response_model=schemas.DashboardBuilderOut, status_code=201)
@@ -4118,9 +4585,67 @@ def create_block(
         # without this endpoint needing to stamp it a second time.
     )
     db.add(block)
+    if payload.type == "chart" and (payload.template or "").strip().lower() == "forecast" and not payload.config:
+        db.flush()
+        _fill_forecast_template(db, user, d, block)
     db.commit()
     db.refresh(d)
     return _builder_out(db, d, user)
+
+
+def _fill_forecast_template(db: Session, user: models.User, d: models.Dashboard, block: models.DashboardBlock) -> None:
+    """Add block -> "Forecast": a time-series chart that works the moment
+    it lands - rows per period over the dashboard's date column (else the
+    table's first date column), with the forecast on. Deterministic, no
+    model call; the person edits the query (the measure, the grain)
+    afterwards. With no date column to draw over, the block is left empty
+    with its forecast option set, and the empty state says what it needs."""
+    ds = _dashboard_datasource(db, d)
+    grain = d.default_period if d.default_period in forecast_svc.GRAINS else "month"
+    options = _default_forecast_options(grain)
+    if ds is not None and dashboard_engine.is_warehouse_native(ds):
+        versions = dashboard_engine.load_versions(db, ds)
+        schema, _ = query_builder.with_version_aliases(ds.schema_cache, versions)
+        table = _dashboard_primary_table(d, ds) or next(iter(schema.keys()), None)
+        columns = query_builder.table_columns(schema, table) or [] if table else []
+        names = {c["name"] for c in columns}
+        date_col = d.date_column if d.date_column in names else next(
+            (c["name"] for c in columns if re.search(r"date|time", str(c.get("type") or ""), re.IGNORECASE)), None)
+        if table and date_col:
+            spec = {"table": table, "time": {"column": date_col, "grain": grain},
+                    "measures": [{"alias": "rows", "agg": "count", "column": None}], "limit": query_builder.MAX_LIMIT}
+            try:
+                _store_block_spec(db, d, ds, block, spec, block_type="chart", chart_type="line", versions=versions,
+                                  extra_config={"forecast": options, "template": "forecast"},
+                                  auto_title=f"Rows by {grain} - forecast")
+                if not block.title:
+                    block.title = f"Rows by {grain} - forecast"
+                    block.config = {**block.config, "title_auto": True}
+                return
+            except BlockSpecStoreError as e:
+                print(f"[dashboard_builder] forecast template could not be prefilled (non-fatal): {e.message}")
+        block.config = {**(block.config or {}), "forecast": options, "template": "forecast", "chart_type": "line"}
+        return
+    # A file dashboard: the same series from the file's own rows.
+    block.config = {**(block.config or {}), "forecast": options, "template": "forecast", "chart_type": "line"}
+    if ds is None:
+        return
+    try:
+        df = load_dataframe(ds, table=None, version="original", db=db)
+        df = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
+        date_col = d.date_column if d.date_column in df.columns else next(
+            (c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])), None)
+        if not date_col:
+            return
+        recipe = {"block_type": "chart", "chart_type": "line", "group_by_column": date_col, "time_grain": grain, "agg": "count",
+                  "count_rows": True, "metric_column": date_col, "alias": "rows"}
+        _btype, config, _title = _run_manual_recipe(df, recipe, existing_title=f"Rows by {grain} - forecast")
+        block.config = {**config, "forecast": options, "template": "forecast", "chart_type": "line"}
+        if not block.title:
+            block.title = f"Rows by {grain} - forecast"
+        block.data_updated_at = datetime.utcnow()
+    except Exception as e:
+        print(f"[dashboard_builder] forecast template could not be prefilled on the file (non-fatal): {e}")
 
 
 @router.patch("/{dashboard_id}/blocks/{block_id}", response_model=schemas.DashboardBuilderOut)
@@ -4161,7 +4686,10 @@ def update_block(
     if payload.title is not None:
         block.title = payload.title.strip()[:120] or None
     if payload.config is not None:
-        new_config = payload.config
+        # 2026-10-07 (identity-colour round): a block's own colour override
+        # ("color_mode": "by_value" | "single", "single_color": hex) is
+        # stored clean or not at all.
+        new_config = appearance_svc.clean_block_color(payload.config)
         if block.type in ("sql", "input") or (block.type in _DATA_BLOCK_TYPES and "source_block_id" in new_config):
             new_config = _validate_cell_config(db, user, d, block.page, block, new_config)
         _snapshot_block_config(block)
@@ -4506,14 +5034,30 @@ def build_manual_block(
         except ValueError as e:
             raise HTTPException(400, str(e))
     else:
-        if not payload.metric_column:
+        if not payload.metric_column and not (payload.bins and payload.bins.get("column")):
             raise HTTPException(400, "Pick a column, or a saved metric, to build from.")
+        # 2026-10-07 (chart-types round): the optional extras of the new
+        # chart forms - a second group-by, more measures, a time bucket, a
+        # histogram's bins (see ManualBuildBlockRequest).
+        extras: dict = {}
+        if payload.block_type == "chart" and payload.bins and payload.bins.get("column"):
+            extras["bins"] = {"column": payload.bins.get("column"), "count": payload.bins.get("count"),
+                              "min": payload.bins.get("min"), "max": payload.bins.get("max")}
+        if payload.time_grain and payload.time_grain in _RECIPE_TIME_FREQ:
+            extras["time_grain"] = payload.time_grain
+        if payload.block_type in ("chart", "table") and (payload.group_by_column_2 or payload.extra_measures):
+            groups = [g for g in (payload.group_by_column, payload.group_by_column_2) if g]
+            extras["group_by"] = groups
+            extras["measures"] = [{"agg": payload.agg, "column": payload.metric_column}] + [
+                {"agg": str(m.get("agg") or "sum"), "column": m.get("column")} for m in payload.extra_measures if isinstance(m, dict)
+            ]
         recipe = {
-            "metric_column": payload.metric_column,
+            "metric_column": payload.metric_column or (payload.bins or {}).get("column"),
             "agg": payload.agg,
             "group_by_column": payload.group_by_column,
             "block_type": payload.block_type,
             "chart_type": payload.chart_type,
+            **extras,
             # 2026-10-07: a KPI's sparkline runs over the dashboard's date
             # column when it has one (see _kpi_trend); absent otherwise.
             **({"trend_column": d.date_column, "trend_grain": d.default_period or "month"}
@@ -4541,10 +5085,17 @@ def build_manual_block(
 
     if multi_table_default and actual_type != "text":
         config = {**config, "source_table": multi_table_default}
+    # 2026-10-07 (chart-types round): the chart form - what the builder
+    # picked when the result can be drawn as it, else (and for "auto") the
+    # recommender's choice for the rows just computed.
+    if actual_type == "chart" and config.get("result_rows") and not payload.metric_id:
+        config = _apply_file_chart_choice(config, payload.chart_type)
+        if payload.forecast and (config.get("recipe") or {}).get("time_grain"):
+            config["forecast"] = _default_forecast_options((config.get("recipe") or {}).get("time_grain"))
     auto_title = _title_is_auto(block)
     # Presentation the person chose for this block outlives a rebuild of
     # its numbers (the same keys a warehouse rebuild keeps).
-    for key in ("format", "decimals", "currency", "good_direction", "accent_color"):
+    for key in ("format", "decimals", "currency", "good_direction", "accent_color", "color_mode", "single_color"):
         if key in (block.config or {}) and key not in config and not (block.config or {}).get(f"{key}_inferred"):
             config[key] = block.config[key]
     _snapshot_block_config(block)
@@ -4581,8 +5132,33 @@ def restyle_block(
     if block.type != "chart":
         raise HTTPException(400, "Only a chart block can be restyled.")
     chart_type = payload.chart_type.lower().strip()
-    if chart_type not in _RESTYLE_CHART_TYPES:
+    # 2026-10-07 (chart-types round): every form the native renderer draws
+    # from the block's rows may be chosen - when the rows can be drawn as
+    # it (services/chart_recommender.fits; the 400 says what is missing).
+    # "auto" is the recommender's own pick.
+    native = chart_recommender.normalize_chart_type(chart_type) if chart_type != "auto" else "auto"
+    if chart_type not in _RESTYLE_CHART_TYPES and native is None:
         raise HTTPException(400, f"Unsupported chart type for restyling: {chart_type}.")
+    if native is not None and (chart_type == "auto" or chart_type not in _RESTYLE_CHART_TYPES):
+        shape = _file_result_shape(block.config or {})
+        if shape is not None:
+            if native != "auto":
+                ok, why = chart_recommender.fits(shape, native)
+                if not ok:
+                    label = next((t["label"] for t in chart_recommender.CHART_TYPES if t["type"] == native), native)
+                    raise HTTPException(400, f"{label}: this block {why}.")
+            _snapshot_block_config(block)
+            new_config = _apply_file_chart_choice(block.config or {}, None if native == "auto" else native)
+            if not ((new_config.get("recipe") or {}).get("time_grain") and new_config.get("chart_type") in ("line", "area", "bar")):
+                new_config.pop("forecast", None)
+            for key in ("forecast_enabled", "anomalies_enabled", "anomaly_count"):
+                new_config.pop(key, None)
+            block.config = new_config
+            db.commit()
+            db.refresh(d)
+            return _builder_out(db, d, user)
+        if chart_type not in _RESTYLE_CHART_TYPES:
+            raise HTTPException(400, "This chart was saved without its rows, so it cannot be redrawn as another type.")
 
     cols = (block.config or {}).get("result_columns")
     rows = (block.config or {}).get("result_rows")
@@ -4631,6 +5207,10 @@ def restyle_block(
         "anomalies_enabled": False,
         "anomaly_count": None,
     }
+    # The person picked this form (chart-types round); a native forecast
+    # is drawn on a line / area / bar only.
+    block.config = {k: v for k, v in block.config.items() if k not in ("chart_auto", "chart_checked", "chart_reason")
+                    and not (k == "forecast" and chart_type not in ("line", "area", "bar"))}
     if title != block.title:
         block.title = title
 
@@ -4710,6 +5290,24 @@ def set_block_analysis(
     if block.type != "chart":
         raise HTTPException(400, "Forecast and anomaly toggles are only available on chart blocks.")
 
+    # 2026-10-07 (chart-types round): a block the native renderer draws as
+    # a time series takes the native forecast (config.forecast - what the
+    # "Forecast..." sheet sets through PATCH .../forecast); only a chart
+    # that is still a stored Plotly figure keeps the overlay below.
+    grain = _block_time_grain(d, block)
+    if grain is not None:
+        _snapshot_block_config(block)
+        config = {k: v for k, v in (block.config or {}).items() if k not in ("forecast_enabled", "anomalies_enabled", "anomaly_count")}
+        if payload.forecast_enabled or payload.anomalies_enabled:
+            previous = config.get("forecast") if isinstance(config.get("forecast"), dict) else {}
+            config["forecast"] = {**_default_forecast_options(grain), **previous, "anomalies": bool(payload.anomalies_enabled)}
+        else:
+            config.pop("forecast", None)
+        block.config = config
+        db.commit()
+        db.refresh(d)
+        return _builder_out(db, d, user)
+
     existing_spec = (block.config or {}).get("chart_spec")
     if not existing_spec:
         raise HTTPException(400, "This chart doesn't have a spec to analyze yet.")
@@ -4733,6 +5331,153 @@ def set_block_analysis(
     db.commit()
     db.refresh(d)
     return _builder_out(db, d, user)
+
+
+def _file_result_shape(config: dict) -> dict | None:
+    """The recommender's shape for a FILE chart block, read off its recipe
+    and its stored rows (the values decide, as on a warehouse run)."""
+    recipe = config.get("recipe") if isinstance(config.get("recipe"), dict) else None
+    rows = config.get("result_rows")
+    cols = [c.get("name") for c in (config.get("result_columns") or []) if isinstance(c, dict)]
+    if not recipe or not isinstance(rows, list) or not cols:
+        return None
+    if isinstance(config.get("bins"), dict):
+        return {"time": None, "dims": [], "measures": [{"name": "count", "additive": True, "unit": "number"}], "bins": True,
+                "target": False, "negative": False, "max_ratio": None}
+    groups = [g for g in (recipe.get("group_by") or []) if g] or ([recipe["group_by_column"]] if recipe.get("group_by_column") else [])
+    groups = [g for g in groups if g in cols]
+    measure_cols = [c for c in cols if c not in groups]
+    listed = [m for m in (recipe.get("measures") or []) if isinstance(m, dict)]
+    aggs = {m.get("alias"): m.get("agg") for m in listed} if listed else {c: recipe.get("agg") for c in measure_cols}
+    timed = bool(recipe.get("time_grain")) and bool(groups)
+    result = {
+        "rows": rows, "dimensions": groups[1:] if timed else groups, "measures": measure_cols,
+        "time_column": groups[0] if timed else None, "period": recipe.get("time_grain") if timed else None,
+    }
+    spec = {"measures": [{"alias": c, "agg": aggs.get(c) or "sum"} for c in measure_cols]}
+    return chart_recommender.shape_from_result(result, spec)
+
+
+def _apply_file_chart_choice(config: dict, asked: str | None) -> dict:
+    """config with chart_type / chart_reason / chart_auto set by the
+    recommender for a file chart's rows (see _choose_chart)."""
+    shape = _file_result_shape(config)
+    if shape is None:
+        return config
+    hint = (asked or "").strip().lower()
+    hint = None if hint in ("", "auto") else hint
+    choice = _choose_chart(shape, hint, True, "build-manual (file)")
+    out = dict(config)
+    chart_type = choice["chart_type"] if choice["block_type"] in ("chart", "donut") else ("line" if shape.get("time") else "bar")
+    out["chart_type"] = chart_type
+    out["chart_reason"] = choice["reason"]
+    if hint and chart_type == chart_recommender.normalize_chart_type(hint):
+        out.pop("chart_auto", None)
+    else:
+        out["chart_auto"] = True
+        out["chart_checked"] = True
+    if isinstance(out.get("recipe"), dict):
+        out["recipe"] = {**out["recipe"], "chart_type": chart_type}
+    return out
+
+
+def _block_time_grain(d: models.Dashboard, block: models.DashboardBlock) -> str | None:
+    """The grain of the block's time axis, or None when it has none: a
+    warehouse spec's time bucket (or a KPI's sparkline over the
+    dashboard's date column), a file recipe's time_grain."""
+    config = block.config or {}
+    spec = config.get("spec") if isinstance(config.get("spec"), dict) else None
+    if spec:
+        if isinstance(spec.get("time"), dict) and spec["time"].get("column"):
+            return spec["time"].get("grain") or "month"
+        if block.type in ("kpi", "sparkline") and spec.get("sparkline"):
+            return d.default_period or "month"
+        return None
+    layout = _file_series_layout(config)
+    return layout["grain"] if layout else None
+
+
+@router.patch("/{dashboard_id}/blocks/{block_id}/forecast", response_model=schemas.DashboardBuilderOut)
+def set_block_forecast(
+    dashboard_id: str,
+    block_id: str,
+    payload: schemas.SetBlockForecastRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """The "Forecast..." sheet (2026-10-07): turns the forecast of a
+    time-series block on or off and stores its options on
+    config.forecast = {horizon, interval, anomalies}. Nothing is computed
+    here: the next run of the block carries `forecast` and `anomalies`
+    in its result (services/dashboard_engine.attach_time_analysis); a
+    file block's are computed from its stored series when the dashboard
+    is read (_decorate_file_time_series). A block with no time axis is
+    refused with the reason. Does not touch data_updated_at - the block's
+    numbers are unchanged."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    block = _get_block(db, d, block_id)
+    grain = _block_time_grain(d, block)
+    if block.type not in ("chart", "kpi", "sparkline") or grain is None:
+        raise HTTPException(400, "A forecast needs a measure over time - this block has no date axis. Add a time bucket in \"Edit query\" first.")
+    if payload.interval not in forecast_svc.INTERVALS:
+        raise HTTPException(400, 'interval must be "80", "95" or "both".')
+    _snapshot_block_config(block)
+    config = dict(block.config or {})
+    if payload.enabled:
+        g = grain if grain in forecast_svc.GRAINS else "month"
+        horizon = payload.horizon or forecast_svc.DEFAULT_HORIZON[g]
+        if horizon > forecast_svc.MAX_HORIZON[g]:
+            raise HTTPException(400, f"A forecast by {g} can look at most {forecast_svc.MAX_HORIZON[g]} {forecast_svc.GRAIN_PLURAL[g]} ahead.")
+        config["forecast"] = {"horizon": int(horizon), "interval": payload.interval, "anomalies": bool(payload.anomalies)}
+        # A forecast is drawn on a line (history solid, forecast dashed).
+        if block.type == "chart" and config.get("chart_type") not in ("line", "area", "bar", "step_line"):
+            config["chart_type"] = "line"
+    else:
+        config.pop("forecast", None)
+    # The old Plotly overlay flags describe a figure nobody draws any more.
+    for key in ("forecast_enabled", "anomalies_enabled", "anomaly_count"):
+        config.pop(key, None)
+    block.config = config
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+@router.post("/forecast/series", response_model=dict)
+def forecast_series_endpoint(
+    payload: schemas.ForecastSeriesRequest,
+    user: models.User = Depends(get_current_user),
+):
+    """A forecast of a series the caller already holds - the chat
+    workspace's "Add forecast" on an answer that is a time series (its
+    aggregated rows are already on the page; nothing is queried). The same
+    forecaster, the same refusals, the same result shape as a block's
+    `forecast` + `anomalies`."""
+    items = payload.series or ([schemas.ForecastSeriesItem(key=payload.measure, values=payload.values)] if payload.values else [])
+    if not items:
+        raise HTTPException(400, "Send the series to forecast: values, or series.")
+    if any(len(it.values) != len(payload.periods) for it in items):
+        raise HTTPException(400, "periods and values must be the same length.")
+    if len({it.key for it in items}) != len(items):
+        raise HTTPException(400, "Every series needs its own key.")
+    grain = payload.grain if payload.grain in forecast_svc.GRAINS else "month"
+    options = forecast_svc.normalize_options(
+        {"horizon": payload.horizon, "interval": payload.interval, "anomalies": payload.anomalies}, grain)
+    kind = {"additive": payload.additive, "rate": payload.rate}
+    series_column = None
+    if payload.series and payload.series_by:
+        # One measure split by a breakdown column: a row per (period, series).
+        series_column = "series"
+        rows = [
+            {"period": p, "series": it.key, payload.measure: v}
+            for it in items for p, v in zip(payload.periods, it.values) if v is not None
+        ]
+        measures = [{"alias": payload.measure, **kind}]
+    else:
+        rows = [{"period": p, **{it.key: it.values[i] for it in items}} for i, p in enumerate(payload.periods)]
+        measures = [{"alias": it.key, **kind} for it in items]
+    from datetime import date as _date
+    return forecast_svc.forecast_result(rows, "period", measures, series_column, grain, options, today=_date.today())
 
 
 @router.post("/{dashboard_id}/pages/{page_id}/preview-filtered", response_model=schemas.FilteredBlocksOut)
@@ -4831,7 +5576,32 @@ def preview_filtered_blocks(
         except Exception:
             df = None
 
-    return _filter_page_blocks(db, page, df, ds, payload, dashboard=d)
+    out = _filter_page_blocks(db, page, df, ds, payload, dashboard=d)
+    return _with_file_colors(db, d, page, out, payload, anonymous=False)
+
+
+def _with_file_colors(
+    db: Session, d: models.Dashboard, page: models.DashboardPage, out: schemas.FilteredBlocksOut,
+    payload: schemas.ApplyFiltersRequest, anonymous: bool,
+) -> schemas.FilteredBlocksOut:
+    """2026-10-07 (identity-colour round): the file-dashboard half of the
+    colour registry (see services/appearance.py, rule 7). The results the
+    page's blocks STORE are always registered - they are the dashboard's
+    own content. The filtered copies this request produced are registered
+    for a signed-in viewer, and for an anonymous one only when the request
+    carried no filter at all (then they are the same canonical results)."""
+    try:
+        obs = appearance_svc.Observations()
+        for block in page.blocks:
+            appearance_svc.observe_stored_block(obs, block.type, block.config)
+        if not anonymous or (not payload.filters and not payload.block_filters):
+            for fb in out.blocks:
+                appearance_svc.observe_stored_block(obs, fb.type, fb.config)
+        doc = appearance_svc.assign_colors(db, d, obs)
+        out.colors = appearance_svc.registry_payload(doc if doc is not None else getattr(d, "appearance", None))
+    except Exception as e:  # colour must never fail a filter request
+        print(f"[dashboard_builder] colour registry skipped (non-fatal): {e}")
+    return out
 
 
 # 2026-10-05 (public-filters round): factored out of preview_filtered_blocks
@@ -5060,6 +5830,8 @@ def _filter_page_blocks(
     # None means "no count available right now," which the frontend's
     # existing `!== null` guard already knows how to hide instead of
     # rendering as a misleading "0 rows match."
+    for fb in out:
+        fb.config = _decorate_file_time_series(fb.type, fb.config)
     return schemas.FilteredBlocksOut(blocks=out, matched_rows=len(df) if df is not None else None, date_bounds=date_bounds)
 
 
@@ -5092,7 +5864,10 @@ _DATA_BLOCK_TYPES = {"chart", "table", "kpi", "gauge", "donut", "sparkline", "av
 # "sql" and "input" are the two cell kinds the canvas adds - see models.
 # DashboardBlock and the "Canvas cells" section of this module's docstring.
 _ALL_BLOCK_TYPES = _DATA_BLOCK_TYPES | {"text", "filter", "heading", "divider", "sql", "input"}
-_SWAP_CHART_TYPES = {"bar", "line", "area", "pie", "horizontal_bar", "scatter", "grouped_bar", "stacked_bar", "donut"}
+# 2026-10-07 (chart-types round): every chart form the native renderer
+# draws (services/chart_recommender.CHART_TYPES) plus "auto" - "swap to
+# best", the recommender's own pick for the block's current result.
+_SWAP_CHART_TYPES = set(chart_recommender.BLOCK_CHART_TYPES) | {"auto"}
 _PUBLIC_RUN_RATE_LIMIT = 30  # per minute per ip / per slug - every run is real warehouse work
 
 
@@ -5143,7 +5918,15 @@ def _warehouse_page_blocks(page: models.DashboardPage, block_ids: list[str] | No
             continue
         spec = config.get("spec")
         if isinstance(spec, dict) and spec.get("table"):
-            runnable.append({"id": block.id, "spec": spec})
+            entry = {"id": block.id, "spec": spec}
+            # 2026-10-07 (chart-types round): a block with config.forecast
+            # gets its forecast (and anomalies) computed with its result.
+            if isinstance(config.get("forecast"), dict) and (block.type in ("chart", "kpi", "sparkline")):
+                entry["forecast"] = config["forecast"]
+                first = (spec.get("measures") or [{}])[0].get("alias")
+                if first and config.get("format"):
+                    entry["formats"] = {first: config.get("format")}
+            runnable.append(entry)
         else:
             skipped.append(block.id)
     return runnable, skipped
@@ -5183,12 +5966,32 @@ def _dashboard_primary_table(d: models.Dashboard, ds: models.DataSource) -> str 
         return None
 
 
+def _is_canonical_run(payload: schemas.RunPageRequest, d: models.Dashboard) -> bool:
+    """Nothing in the request shapes what the run computes: no filter, no
+    per-chart filter, no date range, no parameter value, every block, the
+    dashboard's own period. Then the results are a function of the
+    dashboard's definition and data alone."""
+    if payload.filters or payload.block_filters or payload.block_ids:
+        return False
+    if payload.date_range and any(v for v in payload.date_range.as_dict().values()):
+        return False
+    if any(v not in (None, "", [], {}) for v in (payload.parameters or {}).values()):
+        return False
+    default = dashboard_engine.normalize_period(None, d.default_period)
+    return not payload.period or dashboard_engine.normalize_period(payload.period, d.default_period) == default
+
+
 def _run_page_for(
     db: Session, d: models.Dashboard, page: models.DashboardPage, ds: models.DataSource,
-    payload: schemas.RunPageRequest, user_id: str, persist_last_run: bool,
+    payload: schemas.RunPageRequest, user_id: str, persist_last_run: bool, anonymous: bool = False,
 ) -> schemas.RunPageOut:
-    """The shared body of the authenticated and public run endpoints."""
+    """The shared body of the authenticated and public run endpoints.
+    `anonymous`: the published link - the run may register new chart
+    colours only when it is canonical (services/appearance.py, rule 7)."""
     runnable, skipped = _warehouse_page_blocks(page, payload.block_ids)
+    # Reading order (top to bottom, left to right): the order the colour
+    # registry meets this page's blocks in, whatever order they ran in.
+    reading_order = [(b.id, b.type) for b in sorted(page.blocks, key=lambda b: (b.y or 0, b.x or 0, b.position or 0, b.id))]
     # 2026-10-07 (block editing round): of the skipped (spec-less) data
     # blocks, the ones that are simply empty - see create_block.
     skipped_set = set(skipped)
@@ -5207,7 +6010,7 @@ def _run_page_for(
         raise HTTPException(400, str(e))
     if persist_last_run and result["blocks"]:
         by_id = {b.id: b for b in page.blocks}
-        changed = False
+        changed = _confirm_auto_charts(page, result["blocks"], payload, d)
         for bid, res in result["blocks"].items():
             block = by_id.get(bid)
             if block is None or res.get("status") != "ok":
@@ -5238,14 +6041,77 @@ def _run_page_for(
                 by_table[owner].append(column)
         for owner, columns in by_table.items():
             date_bounds.update(dashboard_engine.column_bounds(db, ds, owner, columns, user_id=user_id))
+    # 2026-10-07 (identity-colour round): the values this run's charts and
+    # donuts showed, in the order of their measure, get their palette slot
+    # here - before the response leaves, so the page colours them at once.
+    colors = None
+    try:
+        obs = appearance_svc.Observations()
+        if not anonymous or _is_canonical_run(payload, d):
+            for bid, btype in reading_order:
+                res = result["blocks"].get(bid)
+                if res is not None:
+                    appearance_svc.observe_result(obs, btype, res)
+        doc = appearance_svc.assign_colors(db, d, obs)
+        colors = appearance_svc.registry_payload(doc if doc is not None else getattr(d, "appearance", None))
+    except Exception as e:
+        print(f"[dashboard_builder] colour registry skipped (non-fatal): {e}")
     return schemas.RunPageOut(
         blocks=result["blocks"], matched_rows=result["matched_rows"], total_rows=result.get("total_rows"),
         computed_in=result["computed_in"], total_duration_ms=result["total_duration_ms"], period=result["period"],
         date_range=result.get("date_range"), skipped_block_ids=skipped, empty_block_ids=empty,
         dependencies=result.get("dependencies") or {}, order=result.get("order") or [],
         parameters_used=result.get("parameters_used") or {}, missing_parameters=result.get("missing_parameters") or [],
-        date_bounds=date_bounds,
+        date_bounds=date_bounds, colors=colors,
     )
+
+
+def _confirm_auto_charts(page: models.DashboardPage, results: dict, payload: schemas.RunPageRequest, d: models.Dashboard) -> bool:
+    """A chart type GD360 chose before the block had run (config.chart_auto
+    without chart_checked: a proposal, Ask AI) was chosen from column NAMES
+    and types. The first unfiltered run has the values, so the same
+    recommender is asked again with them - "is this column really
+    countries, and more than six of them?" - and the block's type is
+    corrected if the data says otherwise (logged). Done once
+    (chart_checked), on an unfiltered run only, so a filter never changes
+    a chart's form. The frontend applies the same rule to the same result
+    (charts/recommend.ts), so the page it draws right now already agrees.
+    Returns True when a block changed."""
+    if not _is_canonical_run(payload, d):
+        return False
+    changed = False
+    for block in page.blocks:
+        config = block.config or {}
+        if block.type not in ("chart", "donut") or not config.get("chart_auto") or config.get("chart_checked"):
+            continue
+        res = results.get(block.id)
+        if not isinstance(res, dict) or res.get("status") != "ok" or not res.get("rows"):
+            continue
+        current = "donut" if block.type == "donut" else config.get("chart_type")
+        target = isinstance(config.get("target"), (int, float)) and not isinstance(config.get("target"), bool)
+        try:
+            shape = chart_recommender.shape_from_result(res, config.get("spec"), target=target)
+            rec = chart_recommender.recommend(shape)
+            ok, why = chart_recommender.fits(shape, current) if current else (False, "has no chart type")
+        except Exception as e:
+            print(f"[dashboard_builder] auto chart check skipped for block {block.id} (non-fatal): {e}")
+            continue
+        new_config = {**config, "chart_checked": True}
+        if (not ok or (rec["strength"] == "strong" and rec["chart_type"] != current)) and rec["block_type"] in ("chart", "donut"):
+            print(f"[dashboard_builder] chart type corrected on first run (block {block.id}): {current!r} -> "
+                  f"{rec['chart_type']!r} ({rec['reason']}{'' if ok else '; ' + str(why)})")
+            new_config["chart_reason"] = rec["reason"]
+            if rec["block_type"] == "donut":
+                block.type = "donut"
+                new_config.pop("chart_type", None)
+            else:
+                block.type = "chart"
+                new_config["chart_type"] = rec["chart_type"]
+        elif ok and rec["chart_type"] == current:
+            new_config["chart_reason"] = rec["reason"]
+        block.config = new_config
+        changed = True
+    return changed
 
 
 def _block_result_to_filtered(block: models.DashboardBlock, res: dict) -> schemas.FilteredBlockOut | None:
@@ -5302,7 +6168,7 @@ def _block_result_to_filtered(block: models.DashboardBlock, res: dict) -> schema
 
 def _filter_page_blocks_warehouse(
     db: Session, d: models.Dashboard, page: models.DashboardPage, ds: models.DataSource,
-    payload: schemas.ApplyFiltersRequest, user_id: str,
+    payload: schemas.ApplyFiltersRequest, user_id: str, anonymous: bool = False,
 ) -> schemas.FilteredBlocksOut:
     """preview-filtered for a warehouse dashboard: spec'd blocks run in
     the warehouse through the engine; spec-less AI-built blocks keep
@@ -5310,7 +6176,7 @@ def _filter_page_blocks_warehouse(
     sample - unchanged from before); recipe blocks are left out (no live
     rows exist in the app to recompute them on)."""
     run_req = schemas.RunPageRequest(filters=payload.filters, block_filters=payload.block_filters)
-    run = _run_page_for(db, d, page, ds, run_req, user_id, persist_last_run=False)
+    run = _run_page_for(db, d, page, ds, run_req, user_id, persist_last_run=False, anonymous=anonymous)
     out: list[schemas.FilteredBlockOut] = []
     spec_ids = set(run.blocks.keys())
     by_id = {b.id: b for b in page.blocks}
@@ -5322,7 +6188,7 @@ def _filter_page_blocks_warehouse(
     static_page = SimpleNamespaceBlocks([b for b in page.blocks if b.id not in spec_ids and not (b.config or {}).get("recipe")])
     static = _filter_page_blocks(db, static_page, None, None, payload)
     out.extend(static.blocks)
-    return schemas.FilteredBlocksOut(blocks=out, matched_rows=run.matched_rows)
+    return schemas.FilteredBlocksOut(blocks=out, matched_rows=run.matched_rows, colors=run.colors)
 
 
 class SimpleNamespaceBlocks:
@@ -5625,6 +6491,124 @@ def update_saved_views(
     return _builder_out(db, d, user)
 
 
+# ---------- choosing the chart (2026-10-07, chart-types round) ----------
+#
+# services/chart_recommender.py is the ONE deterministic function that
+# decides which chart a block is drawn as. Every place a block gets its
+# type goes through _choose_chart below: the proposal (and its commit),
+# Ask AI, build-manually and "swap to best". A model's suggestion is a
+# hint that function validates; when it overrides one, that is logged.
+#
+# config keys this writes:
+#   chart_type     the form drawn
+#   chart_reason   the one line shown to the person ("Country column with
+#                  142 values -> map")
+#   chart_auto     True while GD360 chose the type (never set when the
+#                  person picked it). The first owner run confirms an auto
+#                  choice against the real values (see _confirm_auto_charts)
+#                  and sets chart_checked.
+
+def _profile_distinct(ds: models.DataSource | None, table: str | None) -> dict:
+    """{column: distinct count} from the Data tab's profile cache - a
+    number already paid for; {} when the table was not profiled recently.
+    Never runs a query."""
+    if ds is None or not table:
+        return {}
+    cached = profile_cache_get((ds.id, table))
+    cols = cached.get("columns") if isinstance(cached, dict) else None
+    if not isinstance(cols, dict):
+        return {}
+    return {name: info.get("distinct") for name, info in cols.items() if isinstance(info, dict) and isinstance(info.get("distinct"), int)}
+
+
+def _spec_shape(ds: models.DataSource | None, schema, spec: dict, config: dict | None = None) -> dict:
+    """The recommender's shape for a spec that has not run: names and
+    types from the schema, distinct counts from the profile cache."""
+    columns = query_builder.table_columns(schema, spec.get("table")) if schema is not None else None
+    cfg = config or {}
+    target = isinstance(cfg.get("target"), (int, float)) and not isinstance(cfg.get("target"), bool)
+    first = (spec.get("measures") or [{}])[0].get("alias")
+    formats = {first: cfg.get("format")} if first and cfg.get("format") else None
+    return chart_recommender.shape_from_spec(spec, columns, _profile_distinct(ds, spec.get("table")), target=target, formats=formats)
+
+
+def _choose_chart(shape: dict, hint: str | None, explicit: bool, where: str) -> dict:
+    """chart_recommender.resolve + the log line for an override."""
+    choice = chart_recommender.resolve(shape, hint, explicit)
+    if choice.get("overrode"):
+        print(
+            f"[dashboard_builder] chart type overridden ({where}): suggested {choice.get('suggested')!r} -> "
+            f"{choice['chart_type']!r} ({choice.get('override_reason')})"
+        )
+    return choice
+
+
+_MAP_MIN_LIMIT = 300
+
+
+def _map_ready_spec(spec: dict) -> dict:
+    """A map colours EVERY country, so a "top 10 countries" spec is widened
+    to all of them (largest first); the ranked list beside the map still
+    shows the top ones."""
+    if not isinstance(spec, dict) or not spec.get("group_by"):
+        return spec
+    out = dict(spec)
+    try:
+        limit = int(out.get("limit") or 0)
+    except (TypeError, ValueError):
+        limit = 0
+    if limit < _MAP_MIN_LIMIT:
+        out["limit"] = _MAP_MIN_LIMIT
+    measures = out.get("measures") or []
+    if measures and not out.get("order_by"):
+        out["order_by"] = [{"by": measures[0]["alias"], "dir": "desc"}]
+    return out
+
+
+def _fits_before_run(shape: dict, chart_type: str) -> tuple[bool, str | None]:
+    """chart_recommender.fits for a spec that has not run. One leniency: a
+    map is accepted for any single category - whether its values are
+    countries is only known from the data, and the map itself says which
+    values it could not place."""
+    ok, why = chart_recommender.fits(shape, chart_type)
+    if not ok and chart_recommender.normalize_chart_type(chart_type) == "map":
+        if len(shape.get("dims") or []) == 1 and not shape.get("time") and (shape.get("measures") or []):
+            return True, None
+    return ok, why
+
+
+# The words by which a QUESTION names a chart form ("as a pie chart",
+# "show a map of ..."). When the question names the form the model
+# returned, that form is the person's own choice; a form the model picked
+# by itself is only a suggestion the recommender weighs.
+_CHART_WORDS = {
+    "bar": ("bar", "column"), "horizontal_bar": ("bar",), "line": ("line", "trend line"), "area": ("area",),
+    "stacked_bar": ("stacked",), "stacked_bar_100": ("100%", "percent stacked", "stacked"), "stacked_area": ("stacked area", "area"),
+    "stacked_area_100": ("100%", "stacked area"), "combo": ("combo", "bars and line", "bar and line"),
+    "donut": ("donut", "doughnut"), "pie": ("pie",), "treemap": ("treemap", "tree map"), "map": ("map", "choropleth"),
+    "heatmap": ("heatmap", "heat map", "matrix"), "pivot": ("pivot",), "scatter": ("scatter",), "bubble": ("bubble",),
+    "funnel": ("funnel",), "waterfall": ("waterfall", "bridge"), "histogram": ("histogram", "distribution"),
+    "bullet": ("bullet", "progress"), "table": ("table",), "kpi": ("kpi", "tile", "single number"),
+}
+
+
+def _prompt_names_chart(prompt: str | None, chart_type: str | None) -> bool:
+    text = f" {str(prompt or '').lower()} "
+    plain = {"grouped_bar": "bar", "step_line": "line"}.get(chart_type or "", chart_type or "")
+    return any(re.search(rf"(?<![a-z]){re.escape(w)}(?![a-z])", text) or re.search(rf"(?<![a-z]){re.escape(w)}s(?![a-z])", text)
+               for w in _CHART_WORDS.get(plain, ()))
+
+
+def _wants_forecast(*texts) -> bool:
+    text = " ".join(str(t or "") for t in texts).lower()
+    return any(k in text for k in _FORECAST_KEYWORDS)
+
+
+def _default_forecast_options(grain: str | None, anomalies: bool = False) -> dict:
+    g = grain if grain in forecast_svc.GRAINS else "month"
+    return {"horizon": forecast_svc.DEFAULT_HORIZON[g], "interval": "both", "anomalies": bool(anomalies)}
+
+
 def _infer_block_type_for_spec(spec: dict, requested: str | None, current: str | None) -> str:
     """An explicit block_type wins; otherwise the spec's shape decides: a
     single-row spec (no group_by, no time) is a kpi (a gauge stays a
@@ -5632,7 +6616,9 @@ def _infer_block_type_for_spec(spec: dict, requested: str | None, current: str |
     table/donut/...) or becomes a chart."""
     if requested in _DATA_BLOCK_TYPES:
         return requested
-    single_row = not spec.get("group_by") and not spec.get("time")
+    # 2026-10-07 (chart-types round): a histogram (bins) and a date-part
+    # grouping are shaped results too - many rows, never a KPI tile.
+    single_row = not spec.get("group_by") and not spec.get("time") and not spec.get("date_parts") and not spec.get("bins")
     if single_row:
         return current if current in ("kpi", "gauge") else "kpi"
     if current in _DATA_BLOCK_TYPES and current not in ("kpi", "gauge"):
@@ -5722,8 +6708,27 @@ def _store_block_spec(
         config.update(extra_config)
     if chart_type:
         config["chart_type"] = chart_type
+        # A type the caller named: GD360 is no longer choosing it.
+        if not (extra_config or {}).get("chart_auto"):
+            config.pop("chart_auto", None)
+            config.pop("chart_checked", None)
+            if "chart_reason" not in (extra_config or {}):
+                config.pop("chart_reason", None)
+    elif new_type == "chart" and normalised.get("bins"):
+        config["chart_type"] = "histogram"
     elif new_type == "chart" and not config.get("chart_type"):
         config["chart_type"] = "line" if normalised.get("time") else "bar"
+    # A chart type the new spec's shape cannot draw does not survive it
+    # (a histogram whose bins were removed, a map whose column changed).
+    if new_type == "chart" and config.get("chart_type"):
+        ok, _why = _fits_before_run(_spec_shape(ds, schema, normalised, config), config["chart_type"])
+        if not ok:
+            choice = chart_recommender.recommend(_spec_shape(ds, schema, normalised, config))
+            config["chart_type"] = choice["chart_type"] if choice["block_type"] == "chart" else ("line" if normalised.get("time") else "bar")
+            config["chart_reason"] = choice["reason"]
+    # A forecast needs a time axis (or a KPI's sparkline).
+    if config.get("forecast") and not (normalised.get("time") or (new_type in ("kpi", "sparkline") and normalised.get("sparkline"))):
+        config.pop("forecast", None)
     if new_type in ("kpi", "gauge"):
         config["label"] = config.get("label") or normalised["measures"][0]["alias"]
     if infer_format and new_type in _SINGLE_VALUE_BLOCK_TYPES and not config.get("format"):
@@ -5777,7 +6782,7 @@ _REBUILD_DROP_KEYS = (
 )
 # The chart forms a spec block can be drawn as - what the spec writer may
 # suggest when the QUESTION names one (see BLOCK_SPEC_SYSTEM_PROMPT).
-_SPEC_CHART_TYPES = {"bar", "horizontal_bar", "line", "area", "pie", "scatter", "stacked_bar", "grouped_bar"}
+_SPEC_CHART_TYPES = set(chart_recommender.BLOCK_CHART_TYPES)
 _NON_NUMERIC_TYPE_RE = re.compile(r"char|text|string|date|time|bool|json|uuid|byte|binary|array|struct", re.IGNORECASE)
 
 
@@ -5802,6 +6807,7 @@ def _ask_ai_block_warehouse(
         raise HTTPException(400, "Ask AI fills a chart, table or KPI block - add one of those and ask there.")
     versions = dashboard_engine.load_versions(db, ds)
     schema_text = _warehouse_schema_text(ds, None, versions)
+    schema_now, _ = query_builder.with_version_aliases(ds.schema_cache, versions)
     last_error = None
     previous_spec = None
     for attempt in (1, 2):
@@ -5828,19 +6834,69 @@ def _ask_ai_block_warehouse(
         keep_type = None
         if block.type == "sparkline" and candidate.get("sparkline") and not candidate.get("group_by") and not candidate.get("time"):
             keep_type = "sparkline"
+        # 2026-10-07 (chart-types round): the chart form is decided by the
+        # ONE recommender, BEFORE the spec is stored (so a map's spec is
+        # widened to every country in the same single dry run). What it
+        # weighs, in order: a form the question itself named (the model's
+        # "chart_type"), then the form the person had already given this
+        # block - both honoured whenever the new shape can draw them - and
+        # otherwise its own rules ("Country column -> map").
+        prior_cfg = block.config or {}
+        prior_form = None
+        if not prior_cfg.get("chart_auto") and not prior_cfg.get("empty"):
+            if block.type == "chart" and prior_cfg.get("chart_type"):
+                prior_form = str(prior_cfg["chart_type"])
+            elif block.type == "donut" and (prior_cfg.get("spec") or prior_cfg.get("items") or prior_cfg.get("recipe")):
+                prior_form = "donut"
+        chart_kw: str | None = None
+        chart_extra: dict = {}
+        chart_drop: list[str] = []
+        try:
+            probe = query_builder.public_spec(query_builder.validate_block_spec(candidate, schema_now, strict=True))
+        except query_builder.QueryBuilderError:
+            probe = None  # _store_block_spec below reports the real error
+        to_store = candidate
+        if probe is not None and _infer_block_type_for_spec(probe, keep_type, block.type) in ("chart", "donut"):
+            named = chart_recommender.normalize_chart_type(suggested_chart) if suggested_chart else None
+            if suggested_chart and not named:
+                print(f"[dashboard_builder] chart type ignored (ask-ai): {suggested_chart!r} is not a chart GD360 draws")
+            # A form the QUESTION names, or the one the person had already
+            # given this block, is theirs (kept whenever the shape can draw
+            # it); a form the model chose on its own is a suggestion.
+            asked = bool(named) and _prompt_names_chart(prompt, named)
+            hint = named if asked else (prior_form or named)
+            explicit = asked or (hint is not None and hint == prior_form)
+            choice = _choose_chart(_spec_shape(ds, schema_now, probe, prior_cfg), hint, explicit, "ask-ai")
+            if choice["block_type"] in ("chart", "donut"):
+                keep_type = choice["block_type"]
+                chart_extra["chart_reason"] = choice["reason"]
+                if choice["block_type"] == "chart":
+                    chart_kw = choice["chart_type"]
+                    if chart_kw == "map":
+                        to_store = {**candidate, **{k: v for k, v in _map_ready_spec(probe).items() if k in ("limit", "order_by")}}
+                else:
+                    chart_drop.append("chart_type")
+                if hint and choice["chart_type"] == chart_recommender.normalize_chart_type(hint):
+                    chart_drop += ["chart_auto", "chart_checked"]
+                else:
+                    chart_extra["chart_auto"] = True
+                    chart_drop.append("chart_checked")
+            # "forecast", "predict", "projection" in the question turn the
+            # forecast on for a time series (the existing keyword rule).
+            if probe.get("time") and keep_type in (None, "chart") and _wants_forecast(prompt):
+                chart_extra["forecast"] = _default_forecast_options(probe["time"].get("grain"))
+                if chart_kw not in ("line", "area", "bar"):
+                    chart_kw = "line"
         try:
             _store_block_spec(
-                db, d, ds, block, candidate, block_type=keep_type, auto_title=prompt[:120],
-                extra_config={"ai_prompt": prompt}, drop_keys=_REBUILD_DROP_KEYS, infer_format=True, versions=versions,
+                db, d, ds, block, to_store, block_type=keep_type, chart_type=chart_kw, auto_title=prompt[:120],
+                extra_config={"ai_prompt": prompt, **chart_extra}, drop_keys=tuple(_REBUILD_DROP_KEYS) + tuple(chart_drop),
+                infer_format=True, versions=versions,
             )
         except BlockSpecStoreError as e:
             print(f"[dashboard_builder] Ask AI spec attempt {attempt} rejected ({e.stage}): {e.message}")
             last_error, previous_spec = e.message, candidate
             continue
-        # A chart form the question itself named wins; otherwise the
-        # block keeps the chart type it had (or the helper's default).
-        if suggested_chart in _SPEC_CHART_TYPES and block.type == "chart":
-            block.config = {**block.config, "chart_type": suggested_chart}
         return
     reason = str(last_error or "").strip().rstrip(".")
     raise HTTPException(
@@ -5941,8 +6997,9 @@ def _build_manual_block_warehouse(
         extra["metric_id"] = metric.id
         extra["metric_name"] = metric.name
     else:
-        column = payload.metric_column
-        agg = payload.agg
+        histogram = block_type == "chart" and bool(payload.bins and payload.bins.get("column"))
+        column = payload.metric_column or ((payload.bins or {}).get("column") if histogram else None)
+        agg = "count" if histogram else payload.agg
         if not column:
             raise HTTPException(400, "Pick a column, or a saved metric, to build from.")
         if agg not in _MANUAL_AGG_FUNCS:
@@ -5963,6 +7020,11 @@ def _build_manual_block_warehouse(
             spec["compare_prior_period"] = True
             spec["sparkline"] = True
             default_title = f"{agg_label} of {column}"
+        elif histogram:
+            # A histogram: the bins are computed in the warehouse.
+            spec = {"table": table, "filters": [], "bins": {"column": payload.bins.get("column"), "count": payload.bins.get("count"),
+                                                              "min": payload.bins.get("min"), "max": payload.bins.get("max")}}
+            default_title = f"Distribution of {payload.bins.get('column')}"
         else:
             group = payload.group_by_column
             if not group:
@@ -5970,20 +7032,61 @@ def _build_manual_block_warehouse(
             if group not in columns:
                 raise HTTPException(400, f'Column "{group}" was not found in the table "{table}".')
             spec["group_by"] = [group]
-            if block_type == "sparkline":
+            # 2026-10-07 (chart-types round): a time bucket, a second
+            # dimension and more measures - see ManualBuildBlockRequest.
+            grain = (payload.time_grain or "").lower().strip()
+            if grain:
+                if grain not in query_builder.GRAINS:
+                    raise HTTPException(400, f"time_grain must be one of {', '.join(query_builder.GRAINS)}.")
+                spec["time"] = {"column": group, "grain": grain}
+                spec["group_by"] = []
+            if payload.group_by_column_2:
+                if payload.group_by_column_2 not in columns:
+                    raise HTTPException(400, f'Column "{payload.group_by_column_2}" was not found in the table "{table}".')
+                if block_type not in ("chart", "table"):
+                    raise HTTPException(400, "A second group-by column is for a chart or a table.")
+                spec["group_by"] = spec["group_by"] + [payload.group_by_column_2]
+            for extra_m in payload.extra_measures:
+                e_agg, e_col = str(extra_m.get("agg") or "sum").lower(), extra_m.get("column")
+                if e_agg not in _MANUAL_AGG_FUNCS or (e_col is not None and e_col not in columns):
+                    raise HTTPException(400, f"The extra measure {e_agg} of {e_col!r} cannot be built on this table.")
+                e_alias = f"{e_agg}_{re.sub(r'[^A-Za-z0-9_]+', '_', e_col or 'rows').strip('_') or 'value'}"
+                spec["measures"].append({"alias": e_alias, "agg": e_agg, "column": e_col})
+            if spec.get("time"):
+                spec["order_by"] = [{"by": query_builder.PERIOD_ALIAS, "dir": "asc"}]
+                spec["limit"] = query_builder.MAX_LIMIT
+                default_title = f"{agg_label} of {column} by {grain}" + (f" and {payload.group_by_column_2}" if payload.group_by_column_2 else "")
+            elif block_type == "sparkline":
                 spec["order_by"] = [{"by": group, "dir": "asc"}]
                 spec["limit"] = query_builder.MAX_LIMIT
             else:
                 spec["order_by"] = [{"by": alias, "dir": "desc"}]
                 spec["limit"] = 8 if block_type == "avatar_list" else (50 if block_type in ("chart", "donut") else _MAX_TABLE_ROWS_PER_BLOCK)
-            default_title = f"{agg_label} of {column} by {group}"
+                if payload.group_by_column_2:
+                    spec["limit"] = query_builder.MAX_LIMIT
+            if not spec.get("time"):
+                default_title = f"{agg_label} of {column} by {group}" + (f" and {payload.group_by_column_2}" if payload.group_by_column_2 else "")
 
     drop = list(_REBUILD_DROP_KEYS) + ["ai_prompt", "min", "max", "target", "target_value", "max_value"]
     chart_type = None
     if block_type == "chart":
-        chart_type = (payload.chart_type or "bar").lower().strip()
-        if chart_type not in _RESTYLE_CHART_TYPES:
-            chart_type = "bar"
+        # 2026-10-07 (chart-types round): the form picked in the builder is
+        # honoured when this spec's shape can draw it; "auto" (or nothing)
+        # asks the recommender.
+        asked = (payload.chart_type or "").lower().strip()
+        asked = None if asked in ("", "auto") else asked
+        choice = _choose_chart(_spec_shape(ds, schema, spec, block.config), asked, True, "build-manual")
+        chart_type = choice["chart_type"] if choice["block_type"] == "chart" else ("bar" if not spec.get("time") else "line")
+        extra["chart_reason"] = choice["reason"]
+        if asked and chart_type == chart_recommender.normalize_chart_type(asked):
+            drop.extend(["chart_auto", "chart_checked"])
+        else:
+            extra["chart_auto"] = True
+            drop.append("chart_checked")
+        if chart_type == "map":
+            spec = _map_ready_spec(spec)
+        if payload.forecast and spec.get("time"):
+            extra["forecast"] = _default_forecast_options(spec["time"].get("grain"))
     else:
         drop.append("chart_type")
     if block_type in ("kpi", "gauge", "sparkline", "avatar_list"):
@@ -6026,9 +7129,25 @@ def set_block_spec(
     ds = _resolve_datasource(db, user, d)
     if not dashboard_engine.is_warehouse_native(ds):
         raise HTTPException(400, "Block specs are for dashboards on a warehouse/database source.")
+    chart_type = payload.chart_type
+    if chart_type is not None:
+        normal = chart_recommender.normalize_chart_type(chart_type)
+        if normal is None or normal not in chart_recommender.BLOCK_CHART_TYPES:
+            raise HTTPException(400, f"chart_type {chart_type!r} is not a chart GD360 draws.")
+        chart_type = normal
+        if isinstance(payload.spec, dict):
+            schema, _ = query_builder.with_version_aliases(ds.schema_cache, dashboard_engine.load_versions(db, ds))
+            try:
+                probe = query_builder.public_spec(query_builder.validate_block_spec(payload.spec, schema, strict=True))
+            except query_builder.QueryBuilderError as e:
+                raise HTTPException(400, str(e))
+            ok, why = _fits_before_run(_spec_shape(ds, schema, probe, block.config), chart_type)
+            if not ok:
+                label = next((t["label"] for t in chart_recommender.CHART_TYPES if t["type"] == chart_type), chart_type)
+                raise HTTPException(400, f"{label}: this query {why}.")
     try:
         _store_block_spec(
-            db, d, ds, block, payload.spec, block_type=payload.block_type, chart_type=payload.chart_type,
+            db, d, ds, block, payload.spec, block_type=payload.block_type, chart_type=chart_type,
             title=payload.title,
         )
     except BlockSpecStoreError as e:
@@ -6090,9 +7209,15 @@ def get_block_sql(
         raise HTTPException(404, "This block has no query spec yet - upgrade it first.")
     filters = _filters_from_query_params(request)
     date_range = {"from": date_from, "to": date_to} if (date_from or date_to) else None
+    versions = dashboard_engine.load_versions(db, ds)
+    # A histogram's statement carries its real bin edges (the cached MIN /
+    # MAX read the run used), never a placeholder grid.
+    edges, edge_error = dashboard_engine.resolve_bin_edges(db, ds, spec, versions, user.id)
+    if edge_error:
+        raise HTTPException(400, edge_error)
     compiled = dashboard_engine.compile_block(
-        ds, spec, filters, period, date_range, d.date_column, dashboard_engine.load_versions(db, ds),
-        default_period=d.default_period,
+        ds, spec, filters, period, date_range, d.date_column, versions,
+        default_period=d.default_period, bin_edges=edges,
     )
     if compiled.error:
         raise HTTPException(400, compiled.error)
@@ -6792,6 +7917,11 @@ def _render_public_dashboard(
     d = db.query(models.Dashboard).filter(models.Dashboard.id == share.dashboard_id).first()
     if not d:
         raise HTTPException(404, "This dashboard isn't available.")
+    # 2026-10-07 (identity-colour round): the same colours the owner sees.
+    # Stored results are registered here too (canonical - see
+    # _assign_stored_colors), then the resolved appearance goes out.
+    _assign_stored_colors(db, d)
+    ds = _dashboard_datasource(db, d)
     pages = [_public_page_out(p) for p in sorted(d.pages, key=lambda p: p.position)]
     return schemas.PublicDashboardOut(
         name=d.name,
@@ -6802,7 +7932,8 @@ def _render_public_dashboard(
         background_color=d.background_color,
         has_logo=bool(d.logo_image),
         has_background_image=bool(d.background_image),
-        **_warehouse_dashboard_fields(db, d, _dashboard_datasource(db, d), include_tables=False),
+        **_appearance_fields(db, d, ds, include_kit=False),
+        **_warehouse_dashboard_fields(db, d, ds, include_tables=False),
     )
 
 
@@ -6834,7 +7965,7 @@ def _public_run(db, share, page_id, payload, x_dashboard_access_token) -> schema
     page = next((p for p in d.pages if p.id == page_id), None)
     if not page:
         raise HTTPException(404, "Page not found on this dashboard.")
-    out = _run_page_for(db, d, page, ds, payload, d.owner_id, persist_last_run=False)
+    out = _run_page_for(db, d, page, ds, payload, d.owner_id, persist_last_run=False, anonymous=True)
     out.blocks = {bid: _strip_sql_from_result(res) for bid, res in (out.blocks or {}).items()}
     return out
 
@@ -6981,8 +8112,9 @@ def preview_filtered_blocks_public(
     if ds and dashboard_engine.is_warehouse_native(ds):
         _check_rate_limit(f"public-run:ip:{ip}", limit=_PUBLIC_RUN_RATE_LIMIT)
         _check_rate_limit(f"public-run:slug:{slug}", limit=_PUBLIC_RUN_RATE_LIMIT)
-        return _public_filtered_out(_filter_page_blocks_warehouse(db, d, page, ds, payload, d.owner_id))
-    return _public_filtered_out(_filter_page_blocks(db, page, df=None, ds=None, payload=payload))
+        return _public_filtered_out(_filter_page_blocks_warehouse(db, d, page, ds, payload, d.owner_id, anonymous=True))
+    out = _filter_page_blocks(db, page, df=None, ds=None, payload=payload)
+    return _public_filtered_out(_with_file_colors(db, d, page, out, payload, anonymous=True))
 
 
 @public_router.post("/{slug}/pages/{page_id}/run", response_model=schemas.RunPageOut)
@@ -7080,8 +8212,9 @@ def preview_filtered_blocks_public_by_domain(
     if ds and dashboard_engine.is_warehouse_native(ds):
         _check_rate_limit(f"public-run:ip:{ip}", limit=_PUBLIC_RUN_RATE_LIMIT)
         _check_rate_limit(f"public-run:domain:{hostname}", limit=_PUBLIC_RUN_RATE_LIMIT)
-        return _public_filtered_out(_filter_page_blocks_warehouse(db, d, page, ds, payload, d.owner_id))
-    return _public_filtered_out(_filter_page_blocks(db, page, df=None, ds=None, payload=payload))
+        return _public_filtered_out(_filter_page_blocks_warehouse(db, d, page, ds, payload, d.owner_id, anonymous=True))
+    out = _filter_page_blocks(db, page, df=None, ds=None, payload=payload)
+    return _public_filtered_out(_with_file_colors(db, d, page, out, payload, anonymous=True))
 
 
 # Companion to preview_filtered_blocks_public above: a filter block's own

@@ -68,6 +68,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_user
+from ..services import appearance as appearance_svc
 from ..services import audit
 
 router = APIRouter(tags=["workspaces"])
@@ -90,7 +91,15 @@ def _workspace_out(db: Session, ws: models.Workspace, user_id: str) -> schemas.W
         datasource_count=datasource_count,
         invite_token=ws.invite_token,
         created_at=ws.created_at,
+        brand_kit=_kit_of(ws),
     )
+
+
+def _kit_of(ws: models.Workspace) -> dict | None:
+    try:
+        return appearance_svc.normalize_kit(ws.brand_kit, strict=False) if ws.brand_kit else None
+    except Exception:
+        return None
 
 
 def _get_membership(db: Session, workspace_id: str, user_id: str) -> models.WorkspaceMember:
@@ -152,6 +161,52 @@ def rename_workspace(
     db.commit()
     db.refresh(ws)
     return _workspace_out(db, ws, user.id)
+
+
+# 2026-10-07 (identity-colour round): the workspace brand kit - the look
+# (chart palette, colour by value / single colour, density, corner radius,
+# font, currency, locale, footer note, chrome brand colours) every
+# dashboard of this workspace starts from and follows until its owner
+# customises it. Any member may read it (their dashboards and chat charts
+# render with it); only the workspace owner may change it, like the name.
+@router.get("/workspaces/{workspace_id}/brand-kit", response_model=schemas.WorkspaceBrandKitOut)
+def get_brand_kit(workspace_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    member = _get_membership(db, workspace_id, user.id)
+    ws = db.query(models.Workspace).filter(models.Workspace.id == workspace_id).first()
+    return schemas.WorkspaceBrandKitOut(
+        workspace_id=ws.id, workspace_name=ws.name, brand_kit=_kit_of(ws), can_edit=member.role == "owner",
+    )
+
+
+@router.put("/workspaces/{workspace_id}/brand-kit", response_model=schemas.WorkspaceBrandKitOut)
+def set_brand_kit(
+    workspace_id: str,
+    payload: schemas.WorkspaceBrandKitUpdate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    member = _get_membership(db, workspace_id, user.id)
+    if member.role != "owner":
+        raise HTTPException(403, "Only the workspace owner can change the brand kit.")
+    ws = db.query(models.Workspace).filter(models.Workspace.id == workspace_id).first()
+    if payload.brand_kit is None:
+        ws.brand_kit = None
+    else:
+        try:
+            kit = appearance_svc.normalize_kit(payload.brand_kit, strict=True) or {}
+        except appearance_svc.AppearanceError as e:
+            raise HTTPException(422, str(e))
+        # Stored complete, so a kit never half-applies when a default changes.
+        full = appearance_svc.full_style(kit)
+        for key in appearance_svc.KIT_EXTRA_KEYS:
+            full[key] = kit.get(key)
+        ws.brand_kit = {"v": 1, **full}
+    audit.log_audit_event(
+        db, actor=user, action="workspace_brand_kit_updated", workspace_id=ws.id, target_type="workspace", target_id=ws.id,
+    )
+    db.commit()
+    db.refresh(ws)
+    return schemas.WorkspaceBrandKitOut(workspace_id=ws.id, workspace_name=ws.name, brand_kit=_kit_of(ws), can_edit=True)
 
 
 @router.get("/workspaces/{workspace_id}", response_model=schemas.WorkspaceDetailOut)

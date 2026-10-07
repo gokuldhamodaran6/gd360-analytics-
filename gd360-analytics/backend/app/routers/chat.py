@@ -36,7 +36,10 @@ from ..config import get_settings
 from ..database import get_db
 from ..deps import get_current_user
 from ..schemas_extra import ChatRequestFull, VerifyRequest
-from ..services import ai_engine, data_access_rules, learned_answers, query_builder, warehouse_tables, workspace_access
+from ..services import (
+    ai_engine, chart_builder, data_access_rules, learned_answers, query_builder, sql_filters, warehouse_tables,
+    workspace_access,
+)
 from ..services.profile_cache import cached_exact_total_rows
 from ..services.warehouse_exec import clean_warehouse_error
 from ..services.transforms import apply_transform_steps, describe_transform
@@ -212,6 +215,11 @@ class PushdownOutcome:
     duration_ms: int = 0
     attempts: list = field(default_factory=list)
     skipped_reason: str | None = None
+    # 2026-10-07 ("say what was filtered"): the SQL writer's own one-line
+    # statement of a row filter it added that the question did not ask for
+    # (its `-- filters: ...` line, see ai_engine._split_filters_note). None
+    # when it wrote none, and for the builder / raw_sql / MongoDB paths.
+    writer_note: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -380,7 +388,9 @@ def _run_sql_pushdown_cycle(
         on success, {"retry": bool} otherwise - after appending this
         attempt to outcome.attempts either way."""
         try:
+            ai_engine.take_sql_writer_note()  # clear anything left by an earlier call on this thread
             sql = generate(schema_text, previous_sql, previous_error)
+            writer_note = ai_engine.take_sql_writer_note()
         except Exception as e:
             print(f"[chat] {ds.kind} pushdown SQL generation failed{' (retry)' if is_retry else ''}: {e}")
             outcome.attempts.append({"sql": None, "status": "generation_failed", "error": str(e)})
@@ -416,6 +426,8 @@ def _run_sql_pushdown_cycle(
         res = _execute_sql_attempt(db, ds, user_id, sql, is_retry=is_retry, ctes=ctes)
         outcome.attempts.append(res["attempt"])
         if "df" in res:
+            # The note belongs to the statement that actually produced the result.
+            outcome.writer_note = writer_note
             return res
         return {"retry": bool(res.get("retry")), "sql": sql, "error": res["attempt"].get("error")}
 
@@ -644,6 +656,54 @@ def _run_prewritten_sql(
         outcome.sql = res["attempt"]["sql"]
     outcome.duration_ms = int((time.perf_counter() - started) * 1000)
     return outcome
+
+
+# --- "Say what was filtered" (2026-10-07, chart-integrity round) -----------
+# Two answers titled "total revenue" showed 11.67M and 18.87M for 2016: one
+# query had added `WHERE is_canceled = 0` on its own, the saved table the
+# other read from had not, and nothing on screen said so. Every warehouse
+# answer now records the row filters its SQL applied (services/
+# sql_filters.py - a real SQL parser, never a regex over SQL text), stored
+# on the message (Message.query_filters) and shown under the chart title
+# and in the chat answer. An answer computed by pandas over saved table(s)
+# carries those tables' own filters forward (each table's cleaning log
+# records the filters of the query it was created from).
+
+def _saved_table_names(versions) -> dict[str, str]:
+    return {
+        v.sql_alias: (v.name or v.sql_alias)
+        for v in (versions or [])
+        if getattr(v, "sql_alias", None)
+    }
+
+
+def _query_filters_for(ds: models.DataSource, sql: str | None, versions=None, writer_note: str | None = None) -> dict | None:
+    """The filters record of one executed statement, in the shape stored on
+    Message.query_filters: {"parsed", "filters": [...], "tables": [...],
+    "text": the one line shown to the person (None when there are no
+    filters or the statement could not be read), "writer_note"}."""
+    if not sql:
+        return None
+    info = sql_filters.extract_query_filters(sql, ds.kind, _saved_table_names(versions))
+    info["text"] = sql_filters.describe_filters(info)
+    info["writer_note"] = writer_note or None
+    return info
+
+
+def _filters_sentence(info: dict | None) -> str | None:
+    """What is appended to the chat answer: the filters line, plus the SQL
+    writer's own statement when it added a filter nobody asked for."""
+    if not info:
+        return None
+    text = info.get("text")
+    note = (info.get("writer_note") or "").strip()
+    if text and note:
+        return f"{text}. GD360 added a filter that was not in your question: {note.rstrip('.')}."
+    if text:
+        return f"{text}."
+    if note and info.get("parsed"):
+        return f"GD360 added a filter that was not in your question: {note.rstrip('.')}."
+    return None
 
 
 # --- Selection scope for a warehouse kind ----------------------------------
@@ -1280,6 +1340,8 @@ def _warehouse_table_response(
         pushdown_result_rows=outcome.row_count,
         pushdown_attempts=list(outcome.attempts),
         exact_total_rows=outcome.row_count,
+        # The filters in the new table's own definition (2026-10-07).
+        query_filters=_query_filters_for(ds, outcome.definition_sql, versions),
     )
 
 
@@ -1601,6 +1663,20 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
             "sql": warehouse_outcome.sql,
         }
 
+    # 2026-10-07 ("say what was filtered"): the row filters behind this
+    # answer. A warehouse turn: read off the SQL that just ran (including
+    # the definitions of any saved-query table it was wrapped with). A
+    # pandas turn over saved table(s): the filters those tables carry in
+    # their cleaning log. Anything else: None - nothing is claimed.
+    query_filters = None
+    if used_pushdown:
+        query_filters = _query_filters_for(ds, warehouse_outcome.sql, warehouse_versions, warehouse_outcome.writer_note)
+    elif source_versions:
+        query_filters = sql_filters.carried_from_versions(source_versions)
+        if query_filters is not None:
+            query_filters["text"] = sql_filters.describe_filters(query_filters)
+            query_filters["writer_note"] = None
+
     history = _recent_history(db, conversation.id)
 
     # Permanent, per-account memory (2026-09-22 - see services/
@@ -1710,6 +1786,15 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
                 f"question, produced by one query that ran inside the person's "
                 f"{_PROVIDER_LABELS.get(ds.kind, ds.kind)} warehouse over every row. Chart and describe it as-is; "
                 "do not re-derive or re-aggregate it unless the question clearly needs a further step on top.)"
+            )
+        if query_filters and query_filters.get("text"):
+            # The planner writes the one-line answer the person reads: it is
+            # told exactly which row filters the query applied so that line
+            # can say so (the same list is appended to the reply below
+            # whatever the model writes).
+            analyze_prompt += (
+                f"\n\n(Context: {query_filters['text']}. State these row filters in one short clause of your "
+                "narrative - the figures only cover the rows that pass them.)"
             )
     try:
         result = ai_engine.analyze(
@@ -1839,10 +1924,14 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
     # which action produced it.
     new_version = None
     if result.get("cleaned_df") is not None:
+        # query_filters is only passed when there is something to carry: a
+        # file-based transform's call is exactly what it was before.
+        filter_kwargs = {"query_filters": query_filters} if query_filters is not None else {}
         new_version = _save_cleaning_result(
             db, ds, source_versions, payload.prompt, result,
             duration_ms=duration_ms, method_summary=method_summary,
             used_pushdown=used_pushdown, sample_row_count=sample_row_count,
+            **filter_kwargs,
         )
 
     # Named-results round (2026-09-28): when this turn's `results` are
@@ -1877,6 +1966,12 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         nulls_after = result.get("nulls_after")
         arrow = "→"
         reply_text += f" ({rows_before} {arrow} {rows_after} rows, {nulls_before} {arrow} {nulls_after} missing values)"
+
+    # "Say what was filtered": the answer itself names the row filters
+    # behind its numbers (never left to whether the model mentioned them).
+    filters_sentence = _filters_sentence(query_filters)
+    if filters_sentence and not result.get("needs_clarification") and result.get("ok", True):
+        reply_text = f"{reply_text}\n\n{filters_sentence}"
 
     # Step-by-step mode stops right after preparation - hand back a single
     # clear button that continues into the actual analysis against the
@@ -1940,6 +2035,7 @@ def chat(payload: ChatRequestFull, db: Session = Depends(get_db), user: models.U
         pushdown_result_rows=int(len(warehouse_outcome.df)) if used_pushdown else None,
         pushdown_attempts=list(warehouse_outcome.attempts) if used_pushdown else None,
         exact_total_rows=exact_total_rows,
+        query_filters=query_filters,
     )
 
 
@@ -2309,6 +2405,21 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
 
     status = audit["status"]
     if status != "corrected":
+        # 2026-10-07 (chart-integrity round): "Double-check this" also
+        # checks the stored FIGURE against the stored result table. A
+        # message saved before the audit existed can hold a figure that
+        # contradicts its own rows; it is repaired in place here (the
+        # numbers were right all along - only the picture was wrong).
+        if msg.chart_spec is not None:
+            checked, _reason, problems = chart_builder.checked_chart_spec(
+                msg.chart_spec, msg.result_columns, msg.result_rows, msg.chart_type,
+                context=f"message={msg.id} (double-check)", truncated=bool(msg.result_truncated),
+            )
+            if problems:
+                msg.chart_spec = checked
+                if checked is None:
+                    msg.chart_type = "table"
+                db.commit()
         return schemas.VerifyResponse(status=status, message=audit["message"], message_id=msg.id)
 
     result = audit["result"]
@@ -2325,11 +2436,22 @@ def verify_message(payload: VerifyRequest, db: Session = Depends(get_db), user: 
         arrow = "→"
         reply_text += f" ({rows_before} {arrow} {rows_after} rows, {nulls_before} {arrow} {nulls_after} missing values)"
 
+    corrected_spec, corrected_type = result.get("chart_spec"), result.get("chart_type")
+    if corrected_spec is not None:
+        # The corrected figure passes the same audit every stored figure does.
+        corrected_spec, table_reason, _problems = chart_builder.checked_chart_spec(
+            corrected_spec, result.get("result_columns"), result.get("result_rows"), corrected_type,
+            context=f"message={msg.id} (corrected)", truncated=bool(result.get("result_truncated", False)),
+        )
+        if corrected_spec is None:
+            corrected_type = "table"
+            if table_reason:
+                reply_text = f"{reply_text}\n\n{table_reason}"
     msg.content = reply_text
-    msg.chart_spec = result.get("chart_spec")
+    msg.chart_spec = corrected_spec
     msg.insight = result.get("insight")
     msg.code = result.get("code")
-    msg.chart_type = result.get("chart_type")
+    msg.chart_type = corrected_type
     msg.result_columns = result.get("result_columns")
     msg.result_rows = result.get("result_rows")
     msg.result_truncated = result.get("result_truncated", False)
@@ -2376,6 +2498,7 @@ def _save_cleaning_result(
     db: Session, ds: models.DataSource, source_versions: list[models.DatasetVersion], prompt: str, result: dict,
     duration_ms: int | None = None, method_summary: str | None = None,
     used_pushdown: bool | None = None, sample_row_count: int | None = None,
+    query_filters: dict | None = None,
 ) -> models.DatasetVersion:
     """Every cleaning/prep prompt becomes its own new saved table, built on
     top of whichever table(s) the person picked as the source, instead of
@@ -2393,6 +2516,16 @@ def _save_cleaning_result(
         "nulls_after": result.get("nulls_after"),
         "created_at": datetime.utcnow().isoformat(),
     }
+    # 2026-10-07 ("say what was filtered"): the row filters of the query
+    # this table's rows came from travel with the table. A later answer
+    # computed by pandas over it (or over a table built on top of it - the
+    # log is inherited below) reads them back with sql_filters.
+    # carried_from_versions, so "the figures exclude cancelled bookings"
+    # is still said two steps later.
+    if isinstance(query_filters, dict) and query_filters.get("parsed"):
+        log_entry["query_filters"] = {
+            "parsed": True, "filters": list(query_filters.get("filters") or []), "tables": list(query_filters.get("tables") or []),
+        }
     prior_log: list = []
     for v in source_versions:
         prior_log.extend(v.cleaning_log or [])
@@ -2586,8 +2719,54 @@ def _persist_and_respond(
     duration_ms=None, method_summary=None, used_pushdown=None, sample_row_count=None,
     pushdown_sql=None, pushdown_provider=None, pushdown_bytes_scanned=None, pushdown_duration_ms=None,
     pushdown_result_rows=None, pushdown_attempts=None, pushdown_skipped_reason=None, exact_total_rows=None,
-    builder_suggestion=None, builder_columns=None,
+    builder_suggestion=None, builder_columns=None, query_filters=None,
 ) -> schemas.ChatResponse:
+    # 2026-10-07 (chart-integrity round): THE AUDIT, at the one place every
+    # chat answer is stored. Whatever built this figure - a fresh plan, a
+    # replayed answer, a "Double-check this" correction, a future code path
+    # - it is verified here against the result table stored beside it
+    # (chart_builder.checked_chart_spec): every trace's categories are the
+    # dimension's values, every trace's numbers are one measure column (or
+    # one series slice), one trace per series, axis titles that name the
+    # columns on them. A figure that fails is replaced by the one rebuilt
+    # deterministically from the table; a table that cannot be drawn as
+    # that chart is stored as a table with a plain sentence. A chart that
+    # contradicts its own rows cannot be stored. The mismatch is logged on
+    # a `[chart_audit]` line with the message id once the row has one.
+    audit_notes: list[str] = []
+    if chart_spec is not None:
+        checked, table_reason, problems = chart_builder.checked_chart_spec(
+            chart_spec, result_columns, result_rows, chart_type,
+            context=f"conversation={conversation_id}", truncated=bool(result_truncated), quiet=True,
+        )
+        if problems:
+            audit_notes.append(
+                f"chart_type={chart_type} " + ("-> rebuilt from the result table" if checked is not None else "-> shown as a table")
+                + ": " + " | ".join(str(p) for p in problems[:6])
+            )
+        if checked is None:
+            chart_spec, chart_type = None, "table"
+            if table_reason and table_reason not in (reply_text or ""):
+                reply_text = f"{reply_text}\n\n{table_reason}"
+        else:
+            chart_spec = checked
+    if isinstance(results, list):
+        audited_results = []
+        for entry in results:
+            if isinstance(entry, dict) and entry.get("chart_spec") is not None:
+                checked, _reason, problems = chart_builder.checked_chart_spec(
+                    entry.get("chart_spec"), entry.get("result_columns"), entry.get("result_rows"), entry.get("chart_type"),
+                    context=f"conversation={conversation_id}", truncated=bool(entry.get("result_truncated")), quiet=True,
+                )
+                if problems:
+                    audit_notes.append(
+                        f"result={entry.get('label')!r} chart_type={entry.get('chart_type')} "
+                        + ("-> rebuilt from the result table" if checked is not None else "-> shown as a table")
+                        + ": " + " | ".join(str(p) for p in problems[:6])
+                    )
+                entry = {**entry, "chart_spec": checked, "chart_type": entry.get("chart_type") if checked is not None else None}
+            audited_results.append(entry)
+        results = audited_results
     # 2026-10-06 (warehouse-honesty round): the builder prefill rides
     # inside the existing `suggestions` JSON (no new column needed) so
     # reopening the conversation can restore it - see
@@ -2640,10 +2819,14 @@ def _persist_and_respond(
         pushdown_duration_ms=pushdown_duration_ms,
         pushdown_result_rows=pushdown_result_rows,
         pushdown_skipped_reason=pushdown_skipped_reason,
+        # "Say what was filtered" - see models.Message.query_filters.
+        query_filters=query_filters,
     )
     db.add(msg)
     db.commit()
     db.refresh(msg)
+    for note in audit_notes:
+        print(f"[chart_audit] message={msg.id} {note}")
 
     return schemas.ChatResponse(
         conversation_id=conversation_id,
@@ -2694,4 +2877,5 @@ def _persist_and_respond(
         pushdown_skipped_reason=pushdown_skipped_reason,
         builder_suggestion=builder_suggestion,
         builder_columns=builder_columns,
+        query_filters=query_filters,
     )

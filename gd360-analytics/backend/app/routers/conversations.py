@@ -19,13 +19,15 @@ Project returned here also carries created_by_*/is_own/can_edit/can_delete
 so the frontend can show who made it and which actions to offer without
 re-deriving the role logic itself.
 """
+import re
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_user
-from ..services import workspace_access
+from ..services import chart_builder, chart_model, insights, sql_filters, workspace_access
 from ..services.profile_cache import cached_exact_total_rows
 
 
@@ -60,6 +62,131 @@ def _restored_exact_total_rows(ds, m) -> int | None:
     except Exception as e:  # noqa: BLE001
         print(f"[conversations] exact_total_rows restore skipped (non-fatal): {e}")
         return None
+
+
+
+def _audited_chart(m) -> tuple[object, str | None]:
+    """2026-10-07 (chart-integrity round): the load path's audit. A message
+    stored before figures were audited can hold a chart that contradicts
+    its own result rows (a pivoted result drawn as one measure against
+    another). Every stored figure is checked here against the chart model
+    of the rows stored beside it and, when it fails, the figure REBUILT
+    from those rows is what is served - so an old conversation opens with
+    the right chart without the question being asked again. Read-only: the
+    row itself is not rewritten ("Double-check this" repairs it in place).
+    Returns (chart_spec, chart_type); chart_type is "table" when the rows
+    cannot be drawn as that chart at all."""
+    spec, chart_type = m.chart_spec, m.chart_type
+    if not spec:
+        return spec, chart_type
+    try:
+        checked, _reason, problems = chart_builder.checked_chart_spec(
+            spec, m.result_columns, m.result_rows, chart_type,
+            context=f"message={m.id} (stored)", truncated=bool(m.result_truncated),
+        )
+    except Exception as e:  # noqa: BLE001 - never fail a conversation load over the audit
+        print(f"[chart_audit] message={m.id} (stored) audit skipped: {e}")
+        return spec, chart_type
+    if not problems:
+        return spec, chart_type
+    return checked, (chart_type if checked is not None else "table")
+
+
+# The sentence the old deterministic insight builder wrote, whatever the
+# result looked like: "<a> leads at <v>, versus <b> at <w> - a gap of <g>
+# (<p>% relative) (n = <N>)". It took the first numeric value of a row as
+# the measure and the first other value as the label, so on a pivoted
+# result the "labels" are numbers ("7081020.069999966 leads at
+# 11789581.13"), on a time series it compares two years as if they were
+# rivals, and a missing value is printed as "None".
+_LEGACY_INSIGHT_RE = re.compile(r"\bleads at\b.{1,200}?\bversus\b.{1,200}?\ba gap of\b", re.S)
+_LEGACY_WAREHOUSE_PHRASE_RE = re.compile(r"\((computed inside your [^()]{1,160})\)")
+_LEGACY_N_RE = re.compile(r"\(n = ([\d,]+)\)")
+
+
+def _restored_insight(m) -> object:
+    """2026-10-07 (chart-integrity round): the load path's insight repair.
+    An answer stored before the insight builder was rewritten can carry the
+    old "leads at / versus" sentence. It is recognisable by its exact
+    wording, it was computed from nothing but the result rows, and those
+    rows are stored beside it - so the sentence is written again from them
+    by the current builder (services/insights.py, the same chart model the
+    chart is drawn from) and that is what is served. A model-written
+    insight is left exactly as stored: only the old template is replaced.
+    Read-only; the row is not rewritten."""
+    text = m.insight
+    if not isinstance(text, str) or not _LEGACY_INSIGHT_RE.search(text):
+        return text
+    if not m.result_columns or not m.result_rows or m.result_truncated:
+        return text
+    try:
+        model = chart_model.derive_chart_model(m.result_columns, m.result_rows, m.chart_type)
+        if model.get("kind") not in ("cartesian", "pie", "kpi"):
+            return text
+        # Where it was computed is kept as the old sentence stated it; a bare
+        # "(n = 6)" is kept only when it is a real sample size (the old
+        # sentence printed the size of the aggregated result itself).
+        n_phrase = ""
+        where = _LEGACY_WAREHOUSE_PHRASE_RE.search(text)
+        if where:
+            n_phrase = f" ({where.group(1)})"
+        else:
+            n_match = _LEGACY_N_RE.search(text)
+            n = int(n_match.group(1).replace(",", "")) if n_match else 0
+            if n >= 30 and n > len(m.result_rows):
+                n_phrase = f" (n = {n:,} rows)"
+        built = insights.build_insight(model, n_phrase)
+        if not built:
+            return text
+        print(f"[insight_audit] message={m.id} (stored) the old 'leads at / versus' insight was rewritten from the result table")
+        return built["text"]
+    except Exception as e:  # noqa: BLE001 - never fail a conversation load over the insight
+        print(f"[insight_audit] message={m.id} (stored) insight left as stored: {e}")
+        return text
+
+
+def _restored_query_filters(ds, m) -> object:
+    """The row filters behind a stored answer. An answer stored since
+    2026-10-07 carries them (Message.query_filters). An OLDER warehouse
+    answer has only the SQL that ran - which is everything needed: the
+    same parser reads it here, so the chart the founder already has
+    ("total revenue" computed WHERE is_canceled = 0) says so the next time
+    it is opened, without the question being asked again. Read-only, and
+    never a reason for a conversation not to load."""
+    if m.query_filters is not None:
+        return m.query_filters
+    if not (m.used_pushdown and m.pushdown_sql and ds is not None):
+        return None
+    try:
+        info = sql_filters.extract_query_filters(m.pushdown_sql, ds.kind)
+        info["text"] = sql_filters.describe_filters(info)
+        info["writer_note"] = None
+        return info
+    except Exception as e:  # noqa: BLE001
+        print(f"[conversations] filters for message={m.id} could not be derived (non-fatal): {e}")
+        return None
+
+
+def _audited_results(m) -> object:
+    """The same audit for every card of a multi-result answer."""
+    results = m.results
+    if not isinstance(results, list):
+        return results
+    out = []
+    for entry in results:
+        if isinstance(entry, dict) and entry.get("chart_spec"):
+            try:
+                checked, _reason, problems = chart_builder.checked_chart_spec(
+                    entry.get("chart_spec"), entry.get("result_columns"), entry.get("result_rows"), entry.get("chart_type"),
+                    context=f"message={m.id} result={entry.get('label')!r} (stored)", truncated=bool(entry.get("result_truncated")),
+                )
+                if problems:
+                    entry = {**entry, "chart_spec": checked, "chart_type": entry.get("chart_type") if checked is not None else None}
+            except Exception as e:  # noqa: BLE001
+                print(f"[chart_audit] message={m.id} (stored) result audit skipped: {e}")
+        out.append(entry)
+    return out
+
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -282,6 +409,8 @@ def get_conversation_messages(
     from .chat import PUSHDOWN_ELIGIBLE_KINDS  # noqa: WPS433
     ds = db.query(models.DataSource).filter(models.DataSource.id == conv.datasource_id).first() if conv.datasource_id else None
     pushdown_provider = ds.kind if ds and ds.kind in PUSHDOWN_ELIGIBLE_KINDS else None
+    # The load path's chart audit (see _audited_chart): once per message.
+    audited = {m.id: _audited_chart(m) for m in messages}
     return {
         "id": conv.id,
         "title": conv.title,
@@ -297,17 +426,19 @@ def get_conversation_messages(
                 "id": m.id,
                 "role": m.role,
                 "content": m.content,
-                "chart_spec": m.chart_spec,
+                # The stored figure, checked against the stored rows and
+                # rebuilt from them when it does not match (_audited_chart).
+                "chart_spec": audited[m.id][0],
                 # The chart type + tidy underlying rows this chart was built
                 # from (see chart_builder.result_to_tidy) - resuming a saved
                 # conversation needs these too, not just a live turn, so the
                 # Explore panel keeps working (instant, client-side chart
                 # type/axis/filter changes) after a page reload.
-                "chart_type": m.chart_type,
+                "chart_type": audited[m.id][1],
                 "result_columns": m.result_columns,
                 "result_rows": m.result_rows,
                 "result_truncated": m.result_truncated,
-                "insight": m.insight,
+                "insight": _restored_insight(m),
                 "suggestions": m.suggestions,
                 "needs_clarification": m.needs_clarification,
                 # Which kind of turn this was - needed so a resumed
@@ -340,7 +471,7 @@ def get_conversation_messages(
                 # - restored here too so reopening a saved conversation
                 # still shows every card of a multi-result answer, and its
                 # honest caveat, not just the first one.
-                "results": m.results,
+                "results": _audited_results(m),
                 "self_critique": m.self_critique,
                 # 2026-09-29 (plain-language findings round): the real
                 # method/code/duration behind this turn (see
@@ -383,6 +514,9 @@ def get_conversation_messages(
                 # the cache has expired, several tables were joined, or
                 # the turn was not warehouse-computed.
                 "exact_total_rows": _restored_exact_total_rows(ds, m),
+                # 2026-10-07 ("say what was filtered"): the row filters
+                # behind this answer - see models.Message.query_filters.
+                "query_filters": _restored_query_filters(ds, m),
                 "builder_suggestion": (m.suggestions or {}).get("builder_suggestion") if isinstance(m.suggestions, dict) else None,
                 "created_at": m.created_at,
             }
