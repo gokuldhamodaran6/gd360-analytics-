@@ -1,10 +1,15 @@
+import { LIGHT } from "../../ui/tokens";
+
 // 2026-10-07 (dashboard polish round): "Export PNG" for a native chart.
 // The live <svg> is cloned with every colour and font resolved (it is
 // styled through CSS variables, which do not travel with a file), given a
 // surface-coloured background and the card's title, and saved as SVG or
-// rasterised at 2x.
+// rasterised at 2x. The marks keep exactly the colours on screen - the
+// ChartTheme's (identity colours included) - because what is copied is
+// each element's computed style; this file names no colour of its own
+// (the two fallbacks are the kit's light surface and ink tokens).
 
-const COPIED = ["fill", "fill-opacity", "stroke", "stroke-width", "stroke-opacity", "stroke-linecap", "stroke-linejoin", "opacity", "font-family", "font-size", "font-weight", "font-variant-numeric", "text-anchor"] as const;
+const COPIED = ["fill", "fill-opacity", "stroke", "stroke-width", "stroke-opacity", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "vector-effect", "opacity", "font-family", "font-size", "font-weight", "font-variant-numeric", "text-anchor"] as const;
 
 function resolved(source: SVGSVGElement): SVGSVGElement {
   const clone = source.cloneNode(true) as SVGSVGElement;
@@ -44,7 +49,7 @@ export function serializeChart(svg: SVGSVGElement, title: string): { markup: str
   const bg = document.createElementNS(ns, "rect");
   bg.setAttribute("width", String(width));
   bg.setAttribute("height", String(height));
-  bg.setAttribute("fill", token(svg, "--color-surface", "#ffffff"));
+  bg.setAttribute("fill", token(svg, "--color-surface", LIGHT.surface));
   out.appendChild(bg);
   const family = getComputedStyle(svg).fontFamily || "system-ui, sans-serif";
   if (title) {
@@ -54,7 +59,7 @@ export function serializeChart(svg: SVGSVGElement, title: string): { markup: str
     t.setAttribute("font-family", family);
     t.setAttribute("font-size", "14");
     t.setAttribute("font-weight", "600");
-    t.setAttribute("fill", token(svg, "--color-text", "#161615"));
+    t.setAttribute("fill", token(svg, "--color-text", LIGHT.text));
     t.textContent = title;
     out.appendChild(t);
   }

@@ -1,14 +1,19 @@
 import { useMemo, useState } from "react";
 import { formatValue, PLAIN_FORMAT, type ValueFormat } from "../format";
+import { ColorSwatch, useChartTheme } from "../theme/ChartThemeContext";
+import { DEFAULT_CHART_THEME, type ChartTheme } from "../theme/chartTheme";
 import { fitText, makeMeasure } from "./geometry";
-import { OTHER_COLOR, SERIES_COLORS, seriesSlots } from "./model";
+import { seriesSlots } from "./model";
 import { useBox } from "./useBox";
 
-// 2026-10-07 (dashboard polish round): the part-to-whole chart. A donut is
-// the one place a single measure is coloured by category, because here the
-// category IS the identity of each mark - so the hues come in the
-// palette's fixed order, stay with their category, and a legend names
-// every one of them with its value and share.
+// 2026-10-07 (dashboard polish round): the part-to-whole chart. A donut's
+// category IS the identity of each mark, so every slice wears its VALUE's
+// colour from the ChartTheme (theme/chartTheme.ts) - the same colour that
+// value has on every other chart of the dashboard - and a legend names
+// every one of them with its value and share. A column the colour registry
+// does not know keeps the palette's fixed order, held per block
+// (seriesSlots). With `mono` (the block's own "Single" colour) the slices
+// are steps of one hue, darkest for the largest.
 //
 //   - at most 7 slices: more fold into a neutral "Other"
 //   - only slices of 4% or more are labelled on the ring (a 0.6% sliver's
@@ -21,12 +26,19 @@ export const DONUT_LABEL_MIN_SHARE = 0.04;
 const LEGEND_ROW = 22;
 
 export type DonutItem = { label: string; value: number };
-export type DonutSlice = { label: string; value: number; share: number; color: string; other: boolean; start: number; end: number };
+export type DonutSlice = { label: string; value: number; share: number; color: string; other: boolean; start: number; end: number; identity?: { column: string; value: string } };
+
+// Where the slice colours come from: the theme, the column the labels are
+// values of (null = not known), and `mono` for a one-hue donut.
+export type DonutColoring = { theme: ChartTheme; column?: string | null; mono?: string | null };
 
 /** Items -> at most seven slices, largest first, "Other" last. */
-export function donutSlices(items: DonutItem[], scope?: string | null): DonutSlice[] {
+export function donutSlices(items: DonutItem[], scope?: string | null, coloring?: DonutColoring): DonutSlice[] {
+  const theme = coloring?.theme ?? DEFAULT_CHART_THEME;
+  const column = coloring?.column || null;
   const clean = items.filter((it) => typeof it.value === "number" && Number.isFinite(it.value) && it.value > 0);
   const sorted = [...clean].sort((a, b) => b.value - a.value);
+  if (column) theme.observe(column, sorted.map((it) => it.label));
   let kept = sorted, other = 0;
   if (sorted.length > DONUT_MAX_SLICES) {
     kept = sorted.slice(0, DONUT_MAX_SLICES - 1);
@@ -34,10 +46,17 @@ export function donutSlices(items: DonutItem[], scope?: string | null): DonutSli
   }
   const total = kept.reduce((s, it) => s + it.value, 0) + other;
   if (total <= 0) return [];
-  const slots = seriesSlots(scope, kept.map((it) => it.label), DONUT_MAX_SLICES);
-  const all = [
-    ...kept.map((it, i) => ({ label: it.label, value: it.value, color: SERIES_COLORS[slots[i]], other: false })),
-    ...(other > 0 ? [{ label: "Other", value: other, color: OTHER_COLOR, other: true }] : []),
+  const known = Boolean(column) && theme.column(column!).known;
+  const ramp = coloring?.mono ? theme.rampFor(coloring.mono) : null;
+  const slots = known || ramp ? [] : seriesSlots(scope, kept.map((it) => it.label), DONUT_MAX_SLICES);
+  const colorOf = (label: string, i: number): string => {
+    // One hue: index 6 of a ramp is its highest value, so the largest slice takes it.
+    if (ramp) return ramp[6 - Math.round((i * 5) / Math.max(1, kept.length - 1))];
+    return known ? theme.colorFor(column!, label) : theme.slot(slots[i]);
+  };
+  const all: Omit<DonutSlice, "share" | "start" | "end">[] = [
+    ...kept.map((it, i) => ({ label: it.label, value: it.value, color: colorOf(it.label, i), other: false, identity: column ? { column, value: it.label } : undefined })),
+    ...(other > 0 ? [{ label: "Other", value: other, color: theme.other, other: true }] : []),
   ];
   let cursor = -90;
   return all.map((s) => {
@@ -128,8 +147,13 @@ export function ringLabels(slices: DonutSlice[], cx: number, cy: number, r: numb
 export type DonutChartProps = {
   items: DonutItem[];
   format?: ValueFormat;
-  // Keeps each category on its colour while the page is open (block id).
+  // Keeps each category on its colour while the page is open (block id) -
+  // used only for a column the colour registry does not know.
   scope?: string | null;
+  // The column the slices are values of (identity colour).
+  column?: string | null;
+  // The block's own "Single" colour: slices become steps of this one hue.
+  mono?: string | null;
   pie?: boolean;
   title?: string | null;
   onItemClick?: (label: string) => void;
@@ -137,10 +161,12 @@ export type DonutChartProps = {
   minHeight?: number;
 };
 
-export function DonutChart({ items, format = PLAIN_FORMAT, scope, pie = false, title, onItemClick, selectedLabel, minHeight }: DonutChartProps) {
+export function DonutChart({ items, format = PLAIN_FORMAT, scope, column = null, mono = null, pie = false, title, onItemClick, selectedLabel, minHeight }: DonutChartProps) {
   const [setRoot, root, size] = useBox({ w: 520, h: 260 });
+  const theme = useChartTheme();
   const [hover, setHover] = useState<string | null>(null);
-  const slices = useMemo(() => donutSlices(items, scope), [items, scope]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const slices = useMemo(() => donutSlices(items, scope, { theme, column, mono }), [items, scope, column, mono, theme.key]);
   const family = useMemo(() => (root && typeof getComputedStyle === "function" ? getComputedStyle(root).fontFamily || undefined : undefined), [root]);
   const measure = useMemo(() => makeMeasure(family), [family]);
   const total = slices.reduce((s, it) => s + it.value, 0);
@@ -170,7 +196,7 @@ export function DonutChart({ items, format = PLAIN_FORMAT, scope, pie = false, t
   const faded = (label: string) => (selectedLabel ? selectedLabel !== label : hover !== null && hover !== label);
 
   return (
-    <div ref={setRoot} data-chart="donut" className={`relative flex h-full w-full ${side ? "flex-row items-center gap-3" : "flex-col gap-2"}`} data-donut-layout={side ? "side" : "stacked"} style={{ minHeight }}>
+    <div ref={setRoot} data-chart="donut" data-color-by={column || undefined} className={`relative flex h-full w-full ${side ? "flex-row items-center gap-3" : "flex-col gap-2"}`} data-donut-layout={side ? "side" : "stacked"} style={{ minHeight }}>
       <svg width={areaW} height={areaH} viewBox={`0 0 ${areaW} ${areaH}`} role="img" aria-label={`${title || "Breakdown"}: ${slices.map((s) => `${s.label} ${shareText(s.share)}`).join(", ")}`} className="block shrink-0" style={{ fontFamily: "inherit", fontVariantNumeric: "tabular-nums" }}>
         {slices.map((s) => {
           const clickable = Boolean(onItemClick) && !s.other;
@@ -218,17 +244,22 @@ export function DonutChart({ items, format = PLAIN_FORMAT, scope, pie = false, t
       >
         {slices.map((s) => {
           const clickable = Boolean(onItemClick) && !s.other;
+          // While the owner edits, the key is its own button (the colour
+          // pin popover) beside the row - never a button inside a button.
+          const pinnable = Boolean(theme.pin && s.identity && !mono);
+          const key = <span aria-hidden="true" className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: s.color }} data-donut-swatch="" />;
           const row = (
             <>
-              <span aria-hidden="true" className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: s.color }} />
+              {!pinnable && key}
               <span className="min-w-0 flex-1 truncate text-left text-secondary" title={s.label}>{s.label}</span>
               <span className="shrink-0 font-medium tabular-nums text-text">{formatValue(s.value, format, size.w < 300 ? "compact" : "full")}</span>
               <span className="w-[38px] shrink-0 text-right tabular-nums text-muted">{shareText(s.share)}</span>
             </>
           );
-          const cls = `flex h-[22px] w-full items-center gap-1.5 rounded-[6px] px-1 text-caption ${faded(s.label) ? "opacity-50" : ""}`;
+          const cls = `flex h-[22px] min-w-0 flex-1 items-center gap-1.5 rounded-[6px] px-1 text-caption`;
           return (
-            <li key={s.label} data-donut-legend-item={s.label} onMouseEnter={() => setHover(s.label)} onMouseLeave={() => setHover(null)}>
+            <li key={s.label} data-donut-legend-item={s.label} className={`flex items-center ${faded(s.label) ? "opacity-50" : ""}`} onMouseEnter={() => setHover(s.label)} onMouseLeave={() => setHover(null)}>
+              {pinnable && <ColorSwatch column={s.identity!.column} value={s.identity!.value} label={s.label} color={s.color} />}
               {clickable ? (
                 <button type="button" className={`ui-focus ${cls} hover:bg-subtle`} aria-label={`${s.label}: ${formatValue(s.value, format, "full")}, ${shareText(s.share)}`} aria-pressed={selectedLabel === s.label} onClick={() => onItemClick!(s.label)}>{row}</button>
               ) : (

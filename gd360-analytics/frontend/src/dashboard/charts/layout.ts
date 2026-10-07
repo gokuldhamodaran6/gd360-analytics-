@@ -1,6 +1,6 @@
 import { columnFormat, formatValue, type ValueFormat } from "../format";
 import { barPath, categoryTicks, fitText, fitValueTicks, niceTicks, timeTicks, valueDomain, type AxisTick, type DateParts, type Measure } from "./geometry";
-import type { ChartModel, ChartPanel } from "./model";
+import type { ChartKind, ChartModel, ChartPanel, LegendMark } from "./model";
 
 // 2026-10-07 (dashboard polish round): ChartModel + the box it has ->
 // every mark and label, in pixels. The rule this file exists for: a label
@@ -24,8 +24,11 @@ const GAP = 2;
 export type Rect = { x: number; y: number; w: number; h: number };
 export type TextMark = { x: number; y: number; text: string; anchor: "start" | "middle" | "end"; full?: string };
 export type BarMark = { d: string; color: string; cat: number; series: number; box: Rect };
-export type LineMark = { d: string; color: string };
-export type DotMark = { cx: number; cy: number; color: string; r: number };
+export type LineMark = { d: string; color: string; name?: string };
+export type DotMark = { cx: number; cy: number; color: string; r: number; hollow?: boolean };
+// 2026-10-07 (chart-types round): the forecast overlay of one panel.
+export type BandMark = { d: string; color: string; level: "80" | "95" };
+export type AnomalyDot = { cx: number; cy: number; category: number; series: number };
 
 export type ScenePanel = {
   key: string;
@@ -44,9 +47,20 @@ export type ScenePanel = {
   points: (number | null)[][];
   // "full" | "compact" | null: how the direct labels were written.
   labelStyle: "full" | "compact" | null;
+  // This panel's mark ("bar" | "line" | "area").
+  kind: ChartKind;
+  // Forecast: the interval bands (95% under 80%), the dashed forecast
+  // lines; partial periods: the dashed segments into them; anomalies.
+  bands: BandMark[];
+  forecastLines: LineMark[];
+  dashed: LineMark[];
+  anomalies: AnomalyDot[];
+  // Per forecast series (aligned with model.forecast.series): the pixel
+  // position of each category's forecast value - where the hover marker sits.
+  forecastPoints: { series: number; ys: (number | null)[] }[];
 };
 
-export type LegendItem = { x: number; y: number; name: string; color: string | null; text: string; full: string };
+export type LegendItem = { x: number; y: number; name: string; color: string | null; text: string; full: string; identity?: { column: string; value: string }; mark?: LegendMark };
 
 export type Scene = {
   width: number;
@@ -59,6 +73,13 @@ export type Scene = {
   categoryTicks: (AxisTick & { y: number })[];
   xTitle: TextMark | null;
   note: TextMark | null;
+  // More small-print lines under the note (a forecast's caption, the
+  // partial-period note), each cut to the width.
+  captions: TextMark[];
+  // Forecast: the "last complete period" divider and the tinted region
+  // to its right.
+  divider: { x: number; y1: number; y2: number; label: TextMark | null } | null;
+  futureRegion: Rect | null;
   // Hover: the centre of each category along the category axis, the band
   // each one owns, and the area that listens.
   positions: number[];
@@ -95,7 +116,7 @@ function legendLayout(model: ChartModel, width: number, measure: Measure): { ite
       row = maxRows - 1;
       break;
     }
-    items.push({ x, y: row * rowH, name: it.name, color: it.color, text: fit.text, full: it.name });
+    items.push({ x, y: row * rowH, name: it.name, color: it.color, text: fit.text, full: it.name, identity: it.identity, mark: it.mark });
     x += w + gap;
   }
   return { items, height: (Math.min(row, maxRows - 1) + 1) * rowH + 6 };
@@ -175,33 +196,121 @@ export function layoutChart(model: ChartModel, width: number, height: number, { 
 
 // ---- vertical: bars / lines / areas over a category or period axis ----
 
+/** A histogram's x ticks: bin edges at a round interval, thinned until
+ *  their labels have air between them. */
+function edgeTicks(edges: number[], x0: number, bandW: number, offset: number, integer: boolean, measure: Measure, left: number, right: number): (AxisTick & { y: number })[] {
+  const text = (v: number) => (integer ? Math.round(v).toLocaleString() : Number(v.toPrecision(6)).toLocaleString(undefined, { maximumFractionDigits: 6 }));
+  const n = edges.length;
+  for (const step of [1, 2, 4, 5, 10, 20]) {
+    const picked: (AxisTick & { y: number })[] = [];
+    let lastEnd = -Infinity, ok = true;
+    for (let i = 0; i < n; i += step) {
+      const x = x0 + (i + offset) * bandW;
+      const t = text(edges[i]);
+      const w = measure(t, TICK_SIZE);
+      let xa = x - w / 2, anchor: AxisTick["anchor"] = "middle", tx = x;
+      if (xa < left) { xa = left; tx = left; anchor = "start"; }
+      else if (xa + w > right) { xa = right - w; tx = right; anchor = "end"; }
+      if (xa < lastEnd + 8) { ok = false; break; }
+      lastEnd = xa + w;
+      picked.push({ index: i, x: tx, text: t, full: t, cut: false, anchor, y: 0 });
+    }
+    if (ok && picked.length >= 2) return picked;
+  }
+  return [];
+}
+
+/** The histogram's end bars say what they hold: "575+" under the bar of
+ *  everything above the drawn range, "< 0" under the one below it. Edge
+ *  ticks that would touch those labels give way. */
+function endBinTicks(ticks: (AxisTick & { y: number })[], hist: NonNullable<ChartModel["histogram"]>, x0: number, bandW: number, nBars: number, measure: Measure, left: number, right: number): (AxisTick & { y: number })[] {
+  const text = (v: number) => (hist.integer ? Math.round(v).toLocaleString() : Number(v.toPrecision(6)).toLocaleString(undefined, { maximumFractionDigits: 6 }));
+  const extra: (AxisTick & { y: number; x0: number; x1: number })[] = [];
+  const add = (barIndex: number, label: string, full: string) => {
+    const w = measure(label, TICK_SIZE);
+    let cx = x0 + (barIndex + 0.5) * bandW;
+    cx = Math.max(left + w / 2, Math.min(right - w / 2, cx));
+    extra.push({ index: -1 - extra.length, x: cx, text: label, full, cut: false, anchor: "middle", y: 0, x0: cx - w / 2, x1: cx + w / 2 });
+  };
+  if (hist.underflow) add(0, `< ${text(hist.edges[0])}`, `Below ${text(hist.edges[0])}`);
+  if (hist.overflow) add(nBars - 1, `${text(hist.edges[hist.edges.length - 1])}+`, `${text(hist.edges[hist.edges.length - 1])} and above`);
+  if (!extra.length) return ticks;
+  const kept = ticks.filter((t) => {
+    const w = measure(t.text, TICK_SIZE);
+    const a = t.anchor === "start" ? t.x : t.anchor === "end" ? t.x - w : t.x - w / 2;
+    return extra.every((e) => a + w + 6 <= e.x0 || a >= e.x1 + 6);
+  });
+  return [...kept, ...extra.map(({ x0: _a, x1: _b, ...t }) => t)].sort((a, b) => a.x - b.x);
+}
+
+/** `text` on at most `maxLines` lines of `width` (the last one cut with an ellipsis). */
+function wrapLines(text: string, width: number, measure: Measure, maxLines: number): string[] {
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let line = "";
+  for (let i = 0; i < words.length; i++) {
+    const next = line ? `${line} ${words[i]}` : words[i];
+    if (measure(next, TICK_SIZE) <= width || !line) { line = next; continue; }
+    lines.push(line);
+    line = words[i];
+    if (lines.length === maxLines - 1) {
+      lines.push(fitText([line, ...words.slice(i + 1)].join(" "), width, measure, TICK_SIZE).text);
+      return lines;
+    }
+  }
+  if (line) lines.push(measure(line, TICK_SIZE) <= width ? line : fitText(line, width, measure, TICK_SIZE).text);
+  return lines;
+}
+
 function layoutVertical(model: ChartModel, W: number, H: number, measure: Measure): Scene {
   const n = model.categories.length;
-  const isBar = model.kind === "bar";
+  const kindOf = (p: ChartPanel): ChartKind => p.kind || model.kind;
+  const anyBar = model.panels.some((p) => kindOf(p) === "bar");
+  const isBar = anyBar;
   const legend = legendLayout(model, W, measure);
   const noteFit = model.note ? fitText(model.note, W, measure, TICK_SIZE) : null;
-  const noteH = noteFit ? 16 : 0;
+  // A caption (the partial-period line, the forecast line) wraps onto a
+  // second line on a narrow card rather than ending in "...".
+  const captionFits = (model.captions || []).flatMap((c) => wrapLines(c, W, measure, 2).map((line) => ({ full: c, fit: { text: line } })));
+  const noteH = (noteFit ? 16 : 0) + captionFits.length * 15 + (captionFits.length && !noteFit ? 1 : 0);
   const xAxisH = 22;
   const xTitleH = model.xTitle ? 16 : 0;
   const count = model.panels.length;
   const gap = count > 1 ? 14 : 0;
-  const top = legend.height;
+  const forecast = model.forecast || null;
+  const hist = model.histogram || null;
+  // The divider's label sits in a strip above the plot.
+  const top = legend.height + (forecast ? 14 : 0);
   const availH = Math.max(40 * count, H - top - xAxisH - xTitleH - noteH);
   const panelH = (availH - gap * (count - 1)) / count;
 
   // A bar panel with one series keeps room above its tallest bar for the
   // value label, whether or not the labels end up fitting.
-  const wantsBarLabels = (p: ChartPanel) => isBar && p.series.length === 1 && !model.stacked && n <= 24;
-  const wantsEndLabel = (p: ChartPanel) => !isBar && p.series.length === 1 && n > 1;
+  const wantsBarLabels = (p: ChartPanel) => kindOf(p) === "bar" && p.series.length === 1 && !model.stacked && n <= 24 && !hist;
+  const wantsEndLabel = (p: ChartPanel) => kindOf(p) !== "bar" && p.series.length === 1 && n > 1 && !forecast;
 
   const pre = model.panels.map((p, i) => {
+    const barPanel = kindOf(p) === "bar";
     const titleH = p.title ? 18 : 0;
     const head = wantsBarLabels(p) ? 15 : 7;
     const y = top + i * (panelH + gap) + titleH + head;
     const h = Math.max(24, panelH - titleH - head);
     const stack = stackOf(p, n, model.stacked);
-    const [lo, hi] = valueDomain(extent(stack, n), isBar || model.stacked || model.kind === "area");
-    const ticks = niceTicks(lo, hi, Math.max(2, Math.min(5, Math.round(h / 38))));
+    const values = extent(stack, n);
+    if (forecast) {
+      for (const o of forecast.series) {
+        if (o.panel !== i) continue;
+        for (const arr of [o.values, o.lo95 || o.lo80, o.hi95 || o.hi80]) if (arr) for (const v of arr) if (v !== null) values.push(v);
+      }
+    }
+    if (model.anomalies) for (const a of model.anomalies) if (a.panel === i) values.push(a.value);
+    let [lo, hi] = valueDomain(values, barPanel || model.stacked || kindOf(p) === "area");
+    let ticks = niceTicks(lo, hi, Math.max(2, Math.min(5, Math.round(h / 38))));
+    if (model.normalized) {
+      // A 100% stack: the axis is exactly 0 to 100%.
+      lo = 0; hi = 1;
+      ticks = h >= 150 ? [0, 0.25, 0.5, 0.75, 1] : [0, 0.5, 1];
+    }
     const label = tickLabel(p.format);
     const tickW = Math.max(...ticks.map((t) => measure(label(t), TICK_SIZE)));
     let endText: string | null = null;
@@ -211,7 +320,7 @@ function layoutVertical(model: ChartModel, W: number, H: number, measure: Measur
       for (let c = n - 1; c >= 0 && last === null; c--) last = vals[c] ?? null;
       if (last !== null) endText = formatValue(last, p.format, W >= 420 ? "auto" : "compact");
     }
-    return { p, titleH, y, h, stack, ticks, label, tickW, endText, panelTop: top + i * (panelH + gap) };
+    return { p, titleH, y, h, stack, ticks, label, tickW, endText, panelTop: top + i * (panelH + gap), barPanel };
   });
 
   const left = Math.ceil(Math.max(20, ...pre.map((x) => x.tickW)) + 8);
@@ -232,8 +341,10 @@ function layoutVertical(model: ChartModel, W: number, H: number, measure: Measur
     band = (plotW - pad * 2) / (n - 1);
     xs = model.categories.map((_, i) => plotX + pad + band * i);
   }
+  const partial = model.partial || null;
+  const isPartial = (c: number) => Boolean(partial && (partial.first === c || partial.last === c));
 
-  const panels: ScenePanel[] = pre.map(({ p, y, h, stack, ticks, label, endText, panelTop }) => {
+  const panels: ScenePanel[] = pre.map(({ p, y, h, stack, ticks, label, endText, panelTop, barPanel }, pi) => {
     const lo = ticks[0], hi = ticks[ticks.length - 1];
     const py = (v: number) => y + h - ((v - lo) / (hi - lo || 1)) * h;
     const zero = py(Math.min(Math.max(0, lo), hi));
@@ -248,12 +359,16 @@ function layoutVertical(model: ChartModel, W: number, H: number, measure: Measur
       bars: [], areas: [], lines: [], dots: [], labels: [],
       points: p.series.map((_, si) => stack.hi[si].map((v) => (v === null ? null : py(v)))),
       labelStyle: null,
+      kind: kindOf(p),
+      bands: [], forecastLines: [], dashed: [], anomalies: [], forecastPoints: [],
     };
 
-    if (isBar) {
+    if (barPanel) {
       const k = model.stacked ? 1 : p.series.length;
-      const inner = Math.max(1, Math.min(band * 0.72, band - GAP));
-      const barW = Math.max(1, Math.min(MAX_BAR, (inner - GAP * (k - 1)) / k));
+      // A histogram's bars touch (2 px of surface between them), as wide
+      // as their bin; every other bar is at most 24 px.
+      const inner = hist ? Math.max(1, band - (band > 6 ? GAP : 1)) : Math.max(1, Math.min(band * 0.72, band - GAP));
+      const barW = hist ? inner : Math.max(1, Math.min(MAX_BAR, (inner - GAP * (k - 1)) / k));
       const groupW = barW * k + GAP * (k - 1);
       for (let c = 0; c < n; c++) {
         // The outermost segment of a stack is the only rounded one.
@@ -269,8 +384,9 @@ function layoutVertical(model: ChartModel, W: number, H: number, measure: Measur
           if (model.stacked && a !== 0 && y1 - y0 > GAP + 1) { if (up) y1 -= GAP; else y0 += GAP; }
           const hh = Math.max(b === 0 ? 0 : 1, y1 - y0);
           const rounded = !model.stacked || (up ? si === topSeries : si === bottomSeries);
-          const d = rounded ? barPath(x, up ? y1 - hh : y0, barW, hh, up ? "top" : "bottom") : barPath(x, up ? y1 - hh : y0, barW, hh, "top", 0);
-          if (d) scene.bars.push({ d, color: s.color, cat: c, series: si, box: { x, y: up ? y1 - hh : y0, w: barW, h: hh } });
+          const radius = hist ? Math.min(2, barW / 2) : 4;
+          const d = rounded ? barPath(x, up ? y1 - hh : y0, barW, hh, up ? "top" : "bottom", radius) : barPath(x, up ? y1 - hh : y0, barW, hh, "top", 0);
+          if (d) scene.bars.push({ d, color: s.colors?.[c] ?? s.color, cat: c, series: si, box: { x, y: up ? y1 - hh : y0, w: barW, h: hh } });
         });
       }
       if (wantsBarLabels(p)) {
@@ -293,7 +409,10 @@ function layoutVertical(model: ChartModel, W: number, H: number, measure: Measur
       const baseY = (si: number, c: number) => (stack.lo[si][c] === null ? null : py(Math.min(Math.max(stack.lo[si][c] as number, lo), hi)));
       p.series.forEach((s, si) => {
         const ys = scene.points[si];
-        if (model.kind === "area") {
+        // The solid line stops short of a partial period; the segment
+        // into it is drawn dashed and its point hollow.
+        const solid = partial && !model.stacked ? ys.map((v, c) => (isPartial(c) ? null : v)) : ys;
+        if (scene.kind === "area") {
           // The fill: along the line, back along its base (the series under
           // it when stacked, the baseline otherwise).
           let run: number[] = [];
@@ -308,17 +427,27 @@ function layoutVertical(model: ChartModel, W: number, H: number, measure: Measur
           for (let c = 0; c < n; c++) { if (ys[c] === null) flush(); else run.push(c); }
           flush();
         }
-        const d = linePath(xs, ys, model.step);
-        if (d) scene.lines.push({ d, color: s.color });
-        const present = ys.map((v, c) => (v === null ? -1 : c)).filter((c) => c >= 0);
+        const d = linePath(xs, solid, model.step);
+        if (d) scene.lines.push({ d, color: s.color, name: s.name });
+        if (solid !== ys) {
+          for (const c of [partial!.first, partial!.last]) {
+            if (c === null || c === undefined || ys[c] === null) continue;
+            const neighbour = c === 0 ? 1 : c - 1;
+            if (ys[neighbour] !== null && ys[neighbour] !== undefined) {
+              scene.dashed.push({ d: `M${xs[neighbour].toFixed(2)} ${(ys[neighbour] as number).toFixed(2)}L${xs[c].toFixed(2)} ${(ys[c] as number).toFixed(2)}`, color: s.color, name: s.name });
+            }
+            scene.dots.push({ cx: xs[c], cy: ys[c] as number, color: s.color, r: 3.5, hollow: true });
+          }
+        }
+        const present = solid.map((v, c) => (v === null ? -1 : c)).filter((c) => c >= 0);
         if (!present.length) return;
         if (present.length <= 12 && band >= 22) {
-          for (const c of present) scene.dots.push({ cx: xs[c], cy: ys[c] as number, color: s.color, r: 4 });
+          for (const c of present) scene.dots.push({ cx: xs[c], cy: solid[c] as number, color: s.color, r: 4 });
         } else {
           // Isolated points (no neighbour to draw a line to) and the end point.
-          for (const c of present) if (ys[c - 1] == null && ys[c + 1] == null) scene.dots.push({ cx: xs[c], cy: ys[c] as number, color: s.color, r: 4 });
+          for (const c of present) if (solid[c - 1] == null && solid[c + 1] == null) scene.dots.push({ cx: xs[c], cy: solid[c] as number, color: s.color, r: 4 });
           const last = present[present.length - 1];
-          if (!scene.dots.some((dot) => dot.cx === xs[last] && dot.cy === ys[last])) scene.dots.push({ cx: xs[last], cy: ys[last] as number, color: s.color, r: 4 });
+          if (!scene.dots.some((dot) => dot.cx === xs[last] && dot.cy === solid[last])) scene.dots.push({ cx: xs[last], cy: solid[last] as number, color: s.color, r: 4 });
         }
       });
       if (showEnd && endText) {
@@ -331,16 +460,71 @@ function layoutVertical(model: ChartModel, W: number, H: number, measure: Measur
         }
       }
     }
+
+    // ---- forecast: bands (95% first, under the 80%), then the dashed line ----
+    if (forecast) {
+      const clampY = (v: number) => Math.min(Math.max(py(v), y - 2), y + h + 2);
+      forecast.series.forEach((o, oi) => {
+        if (o.panel !== pi) return;
+        const idx: number[] = [];
+        for (let c = 0; c < n; c++) if (o.values[c] !== null && o.values[c] !== undefined) idx.push(c);
+        if (idx.length < 2) return;
+        const bandPath = (loArr: (number | null)[], hiArr: (number | null)[]) => {
+          const pts = idx.filter((c) => loArr[c] !== null && hiArr[c] !== null);
+          if (pts.length < 2) return "";
+          const upper = pts.map((c, i) => `${i ? "L" : "M"}${xs[c].toFixed(2)} ${clampY(hiArr[c] as number).toFixed(2)}`).join("");
+          const lower = [...pts].reverse().map((c) => `L${xs[c].toFixed(2)} ${clampY(loArr[c] as number).toFixed(2)}`).join("");
+          return `${upper}${lower}Z`;
+        };
+        if (o.lo95 && o.hi95) { const d = bandPath(o.lo95, o.hi95); if (d) scene.bands.push({ d, color: o.color, level: "95" }); }
+        if (o.lo80 && o.hi80) { const d = bandPath(o.lo80, o.hi80); if (d) scene.bands.push({ d, color: o.color, level: "80" }); }
+        const ys = o.values.map((v) => (v === null || v === undefined ? null : clampY(v)));
+        const d = linePath(xs, ys, false);
+        if (d) scene.forecastLines.push({ d, color: o.color, name: p.series[o.series]?.name });
+        const lastIdx = idx[idx.length - 1];
+        scene.dots.push({ cx: xs[lastIdx], cy: ys[lastIdx] as number, color: o.color, r: 3.5, hollow: true });
+        scene.forecastPoints.push({ series: oi, ys });
+      });
+    }
+    if (model.anomalies) {
+      for (const a of model.anomalies) {
+        if (a.panel !== pi || a.category >= n) continue;
+        scene.anomalies.push({ cx: xs[a.category], cy: py(a.value), category: a.category, series: a.series });
+      }
+    }
     return scene;
   });
 
   const lastPlot = panels[panels.length - 1].plot;
   const tickY = lastPlot.y + lastPlot.h + 16;
-  const ticks = model.time
-    ? timeTicks(model.categories.map((c) => c.date as DateParts), xs, model.grain, measure, 0, W, TICK_SIZE)
-    : categoryTicks(model.categories.map((c) => c.label), xs, isBar || n === 1 ? band : Math.max(band, 1), measure, 0, W, TICK_SIZE);
+  const ticks = hist
+    ? endBinTicks(edgeTicks(hist.edges, plotX, band, hist.underflow ? 1 : 0, hist.integer, measure, 0, W), hist, plotX, band, n, measure, 0, W)
+    : model.time
+      ? timeTicks(model.categories.map((c) => c.date as DateParts), xs, model.grain, measure, 0, W, TICK_SIZE)
+      : categoryTicks(model.categories.map((c) => c.label), xs, isBar || n === 1 ? band : Math.max(band, 1), measure, 0, W, TICK_SIZE);
 
   const firstPlot = panels[0].plot;
+  let divider: Scene["divider"] = null;
+  let futureRegion: Rect | null = null;
+  if (forecast && forecast.anchor >= 0 && forecast.anchor < n) {
+    // Between the last fitted period and the first forecast one.
+    const ax = xs[forecast.anchor];
+    const next = xs[Math.min(n - 1, forecast.anchor + 1)];
+    const dx = isBar ? ax + band / 2 : ax + (next - ax) / 2;
+    const text = forecast.dividerLabel;
+    const tw = measure(text, TICK_SIZE);
+    // The label sits left of the line (over history) where it fits there.
+    const fitsLeft = dx - 6 - tw >= plotX;
+    divider = {
+      x: dx, y1: firstPlot.y - 4, y2: lastPlot.y + lastPlot.h,
+      label: { x: fitsLeft ? dx - 6 : Math.min(dx + 6, W - tw), y: firstPlot.y - 8, text, anchor: fitsLeft ? "end" : "start" },
+    };
+    futureRegion = { x: dx, y: firstPlot.y - 4, w: Math.max(0, plotX + plotW - dx), h: lastPlot.y + lastPlot.h - firstPlot.y + 4 };
+  }
+  let lineY = H - 4 - captionFits.length * 15;
+  const note = noteFit ? { x: 0, y: lineY, text: noteFit.text, anchor: "start" as const, full: model.note || undefined } : null;
+  const captions: TextMark[] = captionFits.map((c, i) => ({ x: 0, y: H - 4 - (captionFits.length - 1 - i) * 15, text: c.fit.text, anchor: "start" as const, full: c.full }));
+  void lineY;
   return {
     width: W,
     height: H,
@@ -349,7 +533,10 @@ function layoutVertical(model: ChartModel, W: number, H: number, measure: Measur
     panels,
     categoryTicks: ticks.map((t) => ({ ...t, y: tickY })),
     xTitle: model.xTitle ? { x: plotX + plotW / 2, y: tickY + 16, text: fitText(model.xTitle, plotW, measure, TICK_SIZE).text, anchor: "middle" } : null,
-    note: noteFit ? { x: 0, y: H - 4, text: noteFit.text, anchor: "start", full: model.note || undefined } : null,
+    note,
+    captions,
+    divider,
+    futureRegion,
     positions: xs,
     band,
     area: { x: plotX, y: firstPlot.y, w: plotW, h: lastPlot.y + lastPlot.h - firstPlot.y },
@@ -438,6 +625,8 @@ function layoutHorizontal(model: ChartModel, W: number, H: number, measure: Meas
       bars: [], areas: [], lines: [], dots: [], labels: [],
       points: p.series.map((_, si) => stack.hi[si].slice(0, shown).map((v) => (v === null ? null : px(v)))),
       labelStyle,
+      kind: "hbar",
+      bands: [], forecastLines: [], dashed: [], anomalies: [], forecastPoints: [],
     };
     const k = model.stacked ? 1 : p.series.length;
     const inner = Math.max(1, Math.min(rowH * 0.7, rowH - 4));
@@ -456,7 +645,7 @@ function layoutHorizontal(model: ChartModel, W: number, H: number, measure: Meas
         const ww = Math.max(b === 0 ? 0 : 1, x1 - x0);
         const rounded = !model.stacked || (fwd ? si === endSeries : si === startSeries);
         const d = barPath(fwd ? x0 : x1 - ww, y, ww, barH, fwd ? "right" : "left", rounded ? 4 : 0);
-        if (d) scene.bars.push({ d, color: s.color, cat: c, series: si, box: { x: fwd ? x0 : x1 - ww, y, w: ww, h: barH } });
+        if (d) scene.bars.push({ d, color: s.colors?.[c] ?? s.color, cat: c, series: si, box: { x: fwd ? x0 : x1 - ww, y, w: ww, h: barH } });
       });
       if (labelStyle) {
         const v = vals[c];
@@ -479,6 +668,9 @@ function layoutHorizontal(model: ChartModel, W: number, H: number, measure: Meas
     }),
     xTitle: null,
     note: noteFit ? { x: 0, y: H - 4, text: noteFit.text, anchor: "start", full: noteText || undefined } : null,
+    captions: [],
+    divider: null,
+    futureRegion: null,
     positions: ys,
     band: rowH,
     area: { x: 0, y: plotTop, w: W, h: rowsH },
