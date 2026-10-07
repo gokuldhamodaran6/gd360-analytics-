@@ -1032,6 +1032,26 @@ class UpdateBlockRequest(BaseModel):
     config: Optional[dict] = None
 
 
+# 2026-10-07 (block editing round): PATCH /dashboard-builder/{id}/pages/
+# {page_id}/layout - every block the canvas moved/resized in ONE gesture
+# (react-grid-layout reports the whole compacted layout at once), stored
+# in one transaction instead of one PATCH per block. Layout only: never a
+# content change, so no undo snapshot and no data_updated_at bump. The
+# ranges (1-200 items, w 1..12, h >= 1, x/y >= 0, x + w <= 12, unique ids
+# that all belong to that page) are checked in the endpoint so every
+# violation is a 400 with a specific message.
+class PageLayoutItem(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    x: int
+    y: int
+    w: int
+    h: int
+
+
+class UpdatePageLayoutRequest(BaseModel):
+    items: list[PageLayoutItem]
+
+
 class AskAiBlockRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=2000)
 
@@ -1108,6 +1128,13 @@ class ManualBuildBlockRequest(BaseModel):
     # when either (or both) is left unset.
     target_value: Optional[float] = None
     max_value: Optional[float] = None
+    # 2026-10-07 (block editing on a warehouse source): WAREHOUSE/DATABASE
+    # sources only - which table (or saved-query alias) metric_column/
+    # group_by_column belong to. Omitted = the dashboard's own table (the
+    # one most of its blocks already use, else the data source's first
+    # table). A file source ignores it (its recipe runs on the file's
+    # data exactly as before).
+    table: Optional[str] = Field(default=None, max_length=300)
 
 
 class RestyleBlockRequest(BaseModel):
@@ -1187,6 +1214,11 @@ class FilteredBlocksOut(BaseModel):
     # happened to match) still correctly returns the integer 0 and still
     # correctly shows "0 rows match."
     matched_rows: int | None = None
+    # 2026-10-07: {column: {"min": "YYYY-MM-DD", "max": "YYYY-MM-DD"}} for
+    # the dashboard's date column and its date_range controls, from the
+    # complete (unfiltered) file - what the date pickers open on. {} when
+    # the file could not be loaded or holds no dates.
+    date_bounds: dict = {}
 
 
 # ---------- Warehouse-native dashboards (2026-10-06) ----------
@@ -1254,6 +1286,12 @@ class RunPageOut(BaseModel):
     # (an AI-built block from before this layer - see POST /upgrade-blocks)
     # or are not data blocks.
     skipped_block_ids: list[str] = []
+    # 2026-10-07 (block editing round): the subset of skipped_block_ids
+    # that are simply EMPTY - a data block added to a warehouse dashboard
+    # and not built yet (config.empty == true: no spec, no bound cell, no
+    # stored result). Not a legacy block and not an error: render "empty,
+    # not built yet". Every id here is also in skipped_block_ids.
+    empty_block_ids: list[str] = []
     # 2026-10-07 (analyst canvas round): {block_id: [block ids it needs
     # first]} - a chart bound to a sql cell, a sql cell reading another
     # as a CTE; `order` is the resolved run order. A loop is rejected
@@ -1264,6 +1302,13 @@ class RunPageOut(BaseModel):
     # referenced parameters that had no value (bound as NULL / empty).
     parameters_used: dict[str, Any] = {}
     missing_parameters: list[str] = []
+    # 2026-10-07: {column: {"min": "YYYY-MM-DD", "max": "YYYY-MM-DD"}} -
+    # the real first and last date of the dashboard's date column and of
+    # every date_range control's column (one cached MIN/MAX query in the
+    # warehouse). The date pickers open on `max`, disable days outside the
+    # bounds and anchor their presets to `max` for data that ended a while
+    # ago. {} on a partial run (block_ids) or when it could not be read.
+    date_bounds: dict = {}
 
 
 class ParameterOptionsOut(BaseModel):
