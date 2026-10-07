@@ -200,6 +200,53 @@ def warm_cache(datasource_id: str, df: pd.DataFrame, table: str | None = None) -
     _cache_put(f"original:{datasource_id}:{table or ''}", df)
 
 
+def drop_cached_original(datasource_id: str, table: str | None = None) -> None:
+    """2026-10-06 (pro local-file Data tab): forgets this process's parsed
+    copy of one original table/sheet, so the next load re-reads the stored
+    bytes. The ONE caller is routers/datasources.py's re-run-import
+    endpoint, which changes HOW the unchanged bytes are read (header row,
+    delimiter, type fixes - see services/file_import.py), so the cached
+    frame no longer equals what the stored settings produce. Same single-
+    process caveat as warm_cache above."""
+    global _df_cache_total_bytes
+    key = f"original:{datasource_id}:{table or ''}"
+    with _df_cache_lock:
+        if key in _df_cache:
+            _df_cache.pop(key, None)
+            _df_cache_total_bytes -= _df_cache_bytes.pop(key, 0)
+
+
+def file_import_settings_for(ds: models.DataSource, sheet: str | None) -> tuple[dict | None, dict | None]:
+    """The import settings + summary a person chose for one sheet of a
+    CSV/Excel upload (POST /datasources/{id}/import), or (None, None) when
+    the file has only ever been read with pandas' defaults. Stored inside
+    DataSource.connection_info ("import_by_sheet", keyed by sheet name,
+    "" for a CSV / single-sheet file) - never a new column."""
+    info = ds.connection_info or {}
+    by_sheet = info.get("import_by_sheet") or {}
+    entry = by_sheet.get(sheet or "")
+    if not isinstance(entry, dict):
+        return None, None
+    return entry.get("settings"), entry.get("summary")
+
+
+def _load_file_original(ds: models.DataSource, ext_hint: str, sheet: str | None) -> pd.DataFrame:
+    """One sheet of an uploaded file, exactly as the last import run read
+    it: with the chosen settings (header row, delimiter, decimal/thousands,
+    trim, skip-empty) and the type fixes that run recorded - so a restart
+    of this process rebuilds the SAME frame the person saw, never a fresh
+    inference that could drift. A file with no stored settings reads with
+    the plain FileConnector exactly as it always did."""
+    settings, summary = file_import_settings_for(ds, sheet)
+    if not settings:
+        return FileConnector(ds.file_data, ext_hint).load_dataframe(sheet_name=sheet if sheet else 0)
+    from . import file_import
+
+    filename = (ds.connection_info or {}).get("original_filename") or ("upload" + ext_hint)
+    df = file_import.load_with_settings(ds.file_data, filename, {**settings, "sheet": sheet or settings.get("sheet")})
+    return file_import.reapply_recorded_fixes(df, summary, settings)
+
+
 def dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8")
 
@@ -296,6 +343,16 @@ def _load_original(
         # upload time and never changes afterward. The cache key includes
         # the sheet so two different sheets of the same workbook are never
         # confused for each other.
+        # 2026-10-06 (pro local-file Data tab): a CSV/Excel upload that has
+        # been re-imported with chosen settings (see _load_file_original)
+        # rebuilds that exact frame on a cache miss; everything else (the
+        # "api" kind included) reads through the plain FileConnector as
+        # before.
+        if ds.kind in ("csv", "excel"):
+            return _load_and_cache(
+                f"original:{ds.id}:{sheet or ''}",
+                lambda: _load_file_original(ds, ext_hint, sheet),
+            )
         return _load_and_cache(
             f"original:{ds.id}:{sheet or ''}",
             lambda: FileConnector(ds.file_data, ext_hint).load_dataframe(sheet_name=sheet if sheet else 0),
