@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
 from .database import init_db
 from .routers import (
-    auth, datasources, chat, dashboards, dashboard_builder, admin, conversations, goku,
+    auth, datasources, chat, dashboards, dashboard_builder, dashboard_comments, admin, conversations, goku,
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
     data_access_rules, ml_models, metric_definitions, transforms, pipelines,
 )
@@ -129,6 +129,9 @@ app.include_router(dashboards.router)
 app.include_router(dashboard_builder.router)
 app.include_router(dashboard_builder.public_router)
 app.include_router(dashboard_builder.public_domains_router)
+# 2026-10-07 (analyst canvas round): block/page/dashboard comment threads -
+# authenticated only, see routers/dashboard_comments.py.
+app.include_router(dashboard_comments.router)
 app.include_router(admin.router)
 app.include_router(conversations.router)
 app.include_router(goku.router)
