@@ -41,6 +41,21 @@ BlockResult shape (run_page's per-block value, run_block's return):
    "sparkline": {"columns", "rows", "sql", "grain"}|None,
    "spec": <normalised spec>}
 
+2026-10-07 (chart-types round) - a BlockResult may also carry:
+  "date_parts": {alias: "weekday"|"month"|...}  the derived dimensions;
+  "bins": {"column", "start", "width", "count", "end", "integer",
+           "underflow", "overflow"}             a histogram's edges (rows are
+                                                one per bin, empty bins included);
+  "partial": {"first": {...}|None, "last": {"period", "through", "days", "of"}|None}
+                                                buckets the data only partly covers;
+  "forecast": {"status": "ok"|"refused", "reason", "horizon", "interval",
+               "points": [{period, value, lo80, hi80, lo95, hi95}], "method",
+               "season_length", "backtest": {mape, smape, mase, folds, ...},
+               "notes": [...], "series": [per-series forecasts]}
+  "anomalies": [{period, value, expected, lo, hi, direction, series}]
+when run_page's block entry has "forecast": {horizon, interval, anomalies}
+(the block's config.forecast). None of these holds SQL.
+
 2026-10-07 (analyst canvas round) - cells. run_page's `blocks` may now
 also carry:
   {"id", "type": "sql", "sql": <raw SELECT>, "name": <cell name>} - a SQL
@@ -78,6 +93,7 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..config import get_settings
+from . import forecast as forecast_svc
 from . import query_builder as qb
 from . import warehouse_exec
 from . import warehouse_tables
@@ -141,6 +157,10 @@ class TTLCache:
 
 _result_cache = TTLCache(settings.DASHBOARD_RESULT_CACHE_TTL_SECONDS)
 _options_cache = TTLCache(settings.DASHBOARD_OPTIONS_CACHE_TTL_SECONDS)
+# 2026-10-07 (chart-types round): a forecast is a pure function of the
+# block's aggregated rows and its options, so it is cached by a fingerprint
+# of exactly those - alongside the block result it was computed from.
+_forecast_cache = TTLCache(settings.DASHBOARD_RESULT_CACHE_TTL_SECONDS, max_entries=256)
 
 
 def params_fingerprint(params) -> str:
@@ -161,6 +181,7 @@ def cache_key(ds_id: str, sql: str, params=None) -> tuple:
 def clear_caches() -> None:
     _result_cache.clear()
     _options_cache.clear()
+    _forecast_cache.clear()
 
 
 # --- helpers ----------------------------------------------------------------
@@ -280,11 +301,13 @@ class Compiled:
     date_range: dict | None = None
     period: str = "month"
     error: str | None = None
+    bin_edges: dict | None = None
 
 
 def compile_block(
     ds, block_spec: dict, page_filters=None, period: str | None = None, date_range=None,
     date_column: str | None = None, versions=None, block_filters=None, default_period: str | None = None,
+    bin_edges: dict | None = None,
 ) -> Compiled:
     """Compiles one block: main SQL with the page (+ per-block) filters and
     the date range pushed down, the prior-period SQL (same spec over the
@@ -303,20 +326,20 @@ def compile_block(
     try:
         sql, spec = qb.build_block_sql(
             block_spec, ds.kind, schema, info, aliases, extra_filters=extra, date_range=rng,
-            date_column=date_column, grain_override=grain,
+            date_column=date_column, grain_override=grain, bin_edges=bin_edges,
         )
         sql = warehouse_exec.wrap_ctes(sql, ctes)
     except (qb.QueryBuilderError, Exception) as e:
         return Compiled(spec=block_spec if isinstance(block_spec, dict) else {}, sql="", error=str(e), period=grain,
                         date_range=rng)
-    compiled = Compiled(spec=spec, sql=sql, filters_applied=extra, date_range=rng, period=grain)
+    compiled = Compiled(spec=spec, sql=sql, filters_applied=extra, date_range=rng, period=grain, bin_edges=bin_edges)
     if spec.get("compare_prior_period"):
         prior_rng = qb.prior_period_range(rng)
         if prior_rng:
             try:
                 prior_sql, _ = qb.build_block_sql(
                     block_spec, ds.kind, schema, info, aliases, extra_filters=extra, date_range=prior_rng,
-                    date_column=date_column, grain_override=grain,
+                    date_column=date_column, grain_override=grain, bin_edges=bin_edges,
                 )
                 compiled.prior_sql = warehouse_exec.wrap_ctes(prior_sql, ctes)
                 compiled.prior_range = prior_rng
@@ -327,7 +350,8 @@ def compile_block(
         tcol = date_column if (date_column and date_column in known) else (spec["time"]["column"] if spec.get("time") else None)
         if tcol:
             series_spec = {
-                **spec, "time": {"column": tcol, "grain": grain}, "group_by": [],
+                **{k: v for k, v in spec.items() if k not in ("bins", "date_parts")},
+                "time": {"column": tcol, "grain": grain}, "group_by": [],
                 "order_by": [{"by": qb.PERIOD_ALIAS, "dir": "asc"}], "limit": SPARKLINE_MAX_POINTS,
                 "compare_prior_period": False, "sparkline": False,
             }
@@ -473,8 +497,12 @@ def _assemble(compiled: Compiled, ds, main: _Job, prior: _Job | None, spark: _Jo
     spec = compiled.spec
     result = _materialize(main, ds, spec.get("limit"), compiled.sql)
     result["computed_in"] = ds.kind
-    result["dimensions"] = list(spec.get("group_by") or [])
+    result["dimensions"] = list(spec.get("group_by") or []) + [p["alias"] for p in (spec.get("date_parts") or [])]
     result["measures"] = [m["alias"] for m in (spec.get("measures") or [])]
+    if spec.get("date_parts"):
+        result["date_parts"] = {p["alias"]: p["part"] for p in spec["date_parts"]}
+    if spec.get("bins") and compiled.bin_edges and result.get("status") == "ok":
+        result = histogram_result(result, spec, compiled.bin_edges)
     result["time_column"] = qb.PERIOD_ALIAS if spec.get("time") else None
     result["exact_total_rows"] = cached_exact_total_rows(ds.id, spec.get("table"))
     result["spec"] = spec
@@ -504,6 +532,184 @@ def _invalid_result(compiled: Compiled, ds) -> dict:
         "time_column": None, "exact_total_rows": None, "prior": None, "delta": None, "sparkline": None,
         "spec": compiled.spec, "period": compiled.period, "date_range": compiled.date_range, "filters_applied": [],
     }
+
+
+# --- histograms, partial periods, forecasts (2026-10-07, chart-types round) -----
+
+def resolve_bin_edges(db: Session, ds, block_spec: dict, versions=None, user_id: str | None = None,
+                      force_refresh: bool = False) -> tuple[dict | None, str | None]:
+    """(edges, error) for a `bins` spec: the person's own min / max when
+    both are set, else ONE cached `SELECT MIN, MAX, AVG, STDDEV, COUNT`
+    of the binned column under the block's own filters (the page's
+    filters are deliberately left out, so the bars do not change width
+    while someone cross-filters). (None, None) for a spec without bins."""
+    bins = (block_spec or {}).get("bins") if isinstance(block_spec, dict) else None
+    if not isinstance(bins, dict) or not bins.get("column"):
+        return None, None
+    if versions is None:
+        versions = load_versions(db, ds)
+    schema, aliases = schema_with_aliases(ds, versions)
+    try:
+        sql, spec = qb.build_bins_stats_sql(block_spec, ds.kind, schema, ds.connection_info or {}, aliases)
+        sql = warehouse_exec.wrap_ctes(sql, version_ctes(versions))
+    except Exception as e:
+        return None, str(e)
+    b = spec["bins"]
+    if b.get("min") is not None and b.get("max") is not None:
+        try:
+            edges = qb.histogram_edges({"min": b["min"], "max": b["max"]}, b["count"], b.get("integer", False), b["min"], b["max"])
+            # The person's range may leave values outside it: both tails are possible.
+            return {**edges, "underflow": True, "overflow": True}, None
+        except Exception as e:
+            return None, str(e)
+    key = cache_key(ds.id, sql)
+    stats = None if force_refresh else _options_cache.get(key)
+    if stats is None:
+        if warehouse_exec.daily_budget_exhausted(db, ds, user_id):
+            return None, "Today's warehouse scan budget for your account is used up."
+        res = warehouse_exec.execute_sql(db, ds, user_id, sql)
+        if "df" not in res or not len(res["df"]):
+            return None, (res.get("attempt") or {}).get("error") or "The column's range could not be read."
+        row = [_json_scalar(v) for v in res["df"].iloc[0].tolist()]
+        stats = dict(zip(("min", "max", "avg", "std", "n"), row + [None] * 5))
+        _options_cache.put(key, stats)
+    if stats.get("min") is None or stats.get("max") is None or not stats.get("n"):
+        return None, f"The column {b['column']!r} has no values to draw a histogram of."
+    try:
+        edges = qb.histogram_edges(stats, b["count"], b.get("integer", False), b.get("min"), b.get("max"))
+    except Exception as e:
+        return None, str(e)
+    return {**edges, "stats": {k: stats.get(k) for k in ("min", "max", "avg", "std", "n")}}, None
+
+
+def histogram_result(result: dict, spec: dict, edges: dict) -> dict:
+    """The (bin index, measures) rows of a histogram query as one row per
+    bin, empty bins included: {<column>: bin start, "bin_end": bin end,
+    "bin": index, <measure>: n}. Values outside the drawn range come back
+    as their own rows (bin -1: below `start`; bin `count`: above `end`)
+    only when there are any. `result["bins"]` carries the edges."""
+    column = spec["bins"]["column"]
+    measures = [m["alias"] for m in (spec.get("measures") or [])]
+    by_bin: dict[int, dict] = {}
+    for row in result.get("rows") or []:
+        raw = row.get(qb.BIN_ALIAS, row.get(qb.BIN_ALIAS.upper()))
+        try:
+            idx = int(raw)
+        except (TypeError, ValueError):
+            continue
+        by_bin[idx] = row
+    n, start, width = int(edges["count"]), edges["start"], edges["width"]
+
+    def edge(i: int):
+        v = start + i * width
+        return int(v) if edges.get("integer") else round(float(v), 10)
+
+    rows: list[dict] = []
+    under = by_bin.get(-1)
+    if under and any((under.get(m) or 0) for m in measures):
+        rows.append({column: None, "bin_end": edge(0), "bin": -1, **{m: under.get(m) or 0 for m in measures}})
+    for i in range(n):
+        src = by_bin.get(i) or {}
+        rows.append({column: edge(i), "bin_end": edge(i + 1), "bin": i, **{m: src.get(m) or 0 for m in measures}})
+    over = by_bin.get(n)
+    if over and any((over.get(m) or 0) for m in measures):
+        rows.append({column: edge(n), "bin_end": None, "bin": n, **{m: over.get(m) or 0 for m in measures}})
+    types = {c["name"]: c.get("type") for c in result.get("columns") or []}
+    out = dict(result)
+    out["rows"] = rows
+    out["row_count"] = len(rows)
+    out["truncated"] = False
+    out["columns"] = [{"name": column, "type": "int64" if edges.get("integer") else "float64"}, {"name": "bin_end", "type": "float64"}] + [
+        {"name": m, "type": types.get(m)} for m in measures
+    ]
+    out["dimensions"] = [column]
+    out["bins"] = {
+        "column": column, "start": edges["start"], "width": edges["width"], "count": n, "end": edges["end"],
+        "integer": bool(edges.get("integer")), "underflow": bool(under and rows and rows[0]["bin"] == -1),
+        "overflow": bool(over and rows and rows[-1]["bin"] == n), "stats": edges.get("stats"),
+    }
+    return out
+
+
+def _clamp_bounds(bounds: dict | None, date_range: dict | None) -> dict | None:
+    """The time column's real first / last date, narrowed to the page's
+    date range - what a bucket can actually be covered by."""
+    lo = (bounds or {}).get("min")
+    hi = (bounds or {}).get("max")
+    rng = date_range or {}
+    if rng.get("from") and (lo is None or str(rng["from"]) > str(lo)):
+        lo = str(rng["from"])[:10]
+    if rng.get("to") and (hi is None or str(rng["to"]) < str(hi)):
+        hi = str(rng["to"])[:10]
+    if lo is None and hi is None:
+        return None
+    return {"min": lo, "max": hi}
+
+
+def _forecast_measures(spec: dict, formats: dict | None = None) -> list[dict]:
+    """[{alias, additive, rate}] for the forecaster: a count or a sum has
+    zeros where it has no rows; an average of a 0/1 flag (or a measure
+    the block shows as a percent) is a rate and stays within [0, 1]."""
+    out = []
+    for i, m in enumerate(spec.get("measures") or []):
+        agg = str(m.get("agg") or "").lower()
+        rate = (formats or {}).get(m["alias"]) == "percent"
+        if not rate and agg == "avg":
+            try:
+                rate = qb.infer_number_format({**spec, "measures": [m], "group_by": [], "time": None}) == "percent"
+            except Exception:
+                rate = False
+        out.append({"alias": m["alias"], "additive": agg in ("sum", "count", "count_distinct"), "rate": bool(rate)})
+    return out
+
+
+def attach_time_analysis(
+    result: dict, spec: dict, period: str, bounds: dict | None, date_range: dict | None, options: dict | None,
+    formats: dict | None = None,
+) -> None:
+    """Adds, in place, what a time series knows beyond its rows:
+      result["partial"]   buckets the data only partly covers (always, for
+                          a time series - a line chart draws them dashed);
+      result["forecast"] / result["anomalies"]   when the block has
+                          config.forecast (see services/forecast.py).
+    Never raises: a forecast that cannot be computed is a refusal with a
+    reason, and anything unexpected leaves the result as it was."""
+    try:
+        if result.get("status") != "ok":
+            return
+        rows = result.get("rows") or []
+        time_col = result.get("time_column")
+        measures = _forecast_measures(spec, formats)
+        series_col = None
+        if not time_col:
+            # A KPI tile: its sparkline is the series.
+            spark = result.get("sparkline") or {}
+            if not options or spark.get("status") not in (None, "ok") or not spark.get("rows"):
+                return
+            rows, time_col, period = spark["rows"], qb.PERIOD_ALIAS, spark.get("grain") or period
+            measures = measures[:1]
+        else:
+            dims = result.get("dimensions") or []
+            if len(dims) == 1:
+                series_col, measures = dims[0], measures[:1]
+            elif len(dims) > 1:
+                options = None
+        clamped = _clamp_bounds(bounds, date_range)
+        periods = sorted({str(r.get(time_col)) for r in rows if r.get(time_col) is not None})
+        partial = forecast_svc.partial_periods(periods, period, clamped, today=date.today())
+        if partial.get("first") or partial.get("last"):
+            result["partial"] = partial
+        if not options:
+            return
+        key = forecast_svc.fingerprint(rows, time_col, measures, series_col, period, options, clamped)
+        cached = _forecast_cache.get(key)
+        if cached is None:
+            cached = forecast_svc.forecast_result(rows, time_col, measures, series_col, period, options, partial=partial)
+            _forecast_cache.put(key, cached)
+        result["forecast"] = cached
+        result["anomalies"] = cached.get("anomalies") or []
+    except Exception as e:  # pragma: no cover - defensive: a forecast never fails a block
+        print(f"[dashboard_engine] time analysis skipped (non-fatal): {e}")
 
 
 # --- parameters (2026-10-07) -------------------------------------------------
@@ -1206,9 +1412,15 @@ def run_page(
         if b.get("source_block_id"):
             continue
         spec = b.get("spec")
+        edges = None
+        if isinstance(spec, dict) and spec.get("bins"):
+            edges, edge_error = resolve_bin_edges(db, ds, spec, versions, user_id, force_refresh=force_refresh)
+            if edge_error:
+                compiled[bid] = Compiled(spec=spec, sql="", error=edge_error, period=grain, date_range=qb.normalize_date_range(date_range))
+                continue
         c = compile_block(
             ds, spec, page_filters, grain, date_range, date_column, versions,
-            block_filters=(block_filters or {}).get(bid), default_period=default_period,
+            block_filters=(block_filters or {}).get(bid), default_period=default_period, bin_edges=edges,
         )
         compiled[bid] = c
         if c.error:
@@ -1290,6 +1502,16 @@ def run_page(
             continue
         main, prior, spark = per_block[bid]
         out[bid] = _assemble(c, ds, main, prior, spark)
+        # A time series: mark partial buckets; forecast when the block asks.
+        options = forecast_svc.normalize_options(b.get("forecast"), c.period) if b.get("forecast") else None
+        if out[bid].get("status") == "ok" and (c.spec.get("time") or (options and out[bid].get("sparkline"))):
+            known_cols = {col["name"] for col in qb.table_columns(schema, c.spec.get("table")) or []}
+            tcol = c.spec["time"]["column"] if c.spec.get("time") else (
+                date_column if (date_column and date_column in known_cols) else None)
+            bounds = None
+            if tcol:
+                bounds = column_bounds(db, ds, c.spec["table"], [tcol], user_id=user_id, versions=versions).get(tcol)
+            attach_time_analysis(out[bid], c.spec, c.period, bounds, c.date_range, options, formats=b.get("formats"))
 
     def _count_value(job, sql) -> int | None:
         if job is None:

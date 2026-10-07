@@ -52,6 +52,7 @@ QueryBuilderSpec API above is unchanged and still used by routers/chat.py.
 """
 from __future__ import annotations
 
+import math
 import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -477,7 +478,22 @@ def describe_spec(spec: dict) -> str:
 #    "filters": [{"column", "op", "value"}, ...]     (the block's OWN, always applied),
 #    "order_by": [{"by": <measure alias | group col | "period">, "dir": "asc"|"desc"}, ...],
 #    "limit": <int, 1..MAX_LIMIT>,
-#    "compare_prior_period": bool, "sparkline": bool}
+#    "compare_prior_period": bool, "sparkline": bool,
+#    "date_parts": [{"column": <date column>, "part": "weekday"|"month"|"quarter"|"day"|"hour",
+#                    "alias": <ident>}, ...]          (2026-10-07, chart-types round)
+#    "bins": {"column": <numeric column>, "count": <2..60>, "min": <n>|null, "max": <n>|null} | null}
+#
+# date_parts are dimensions DERIVED from a date column - the weekday or
+# the month-of-year of each row, as an integer the frontend labels and
+# orders (weekday 1 = Monday .. 7 = Sunday on every dialect; month 1..12;
+# quarter 1..4; day 1..31; hour 0..23). They are what a "month x weekday"
+# heatmap groups by, and count towards MAX_GROUP_BY with group_by.
+#
+# bins turns the spec into a HISTOGRAM of one numeric column: the query
+# groups by a bin index computed in the warehouse (build_bins_stats_sql
+# reads MIN / MAX / AVG / STDDEV first - one row; histogram_edges turns
+# that into round bin edges deterministically; the main query is then
+# CASE / FLOOR over literal edges). No row is ever pulled to be binned.
 #
 # The time bucket is always rendered as the ISO date of the bucket START
 # ("2017-03-01" for March 2017 at month grain, the Monday for week grain)
@@ -486,6 +502,10 @@ def describe_spec(spec: dict) -> str:
 # ============================================================================
 
 GRAINS = ("day", "week", "month", "quarter", "year")
+DATE_PARTS = ("weekday", "month", "quarter", "day", "hour")
+BIN_ALIAS = "bin"
+BIN_COUNT_DEFAULT = 20
+BIN_COUNT_MIN, BIN_COUNT_MAX = 2, 60
 PERIOD_ALIAS = "period"
 MAX_MEASURES = 6
 MAX_ORDER_BY = 3
@@ -690,6 +710,167 @@ def time_bucket_expr(kind: str, column: str, grain: str) -> str:
     raise BlockSpecError("Time bucketing is only available for SQL warehouses and databases.")
 
 
+def date_part_expr(kind: str, column: str, part: str) -> str:
+    """The SQL for one calendar part of `column` as an INTEGER, the same
+    number on every dialect: weekday 1 = Monday .. 7 = Sunday (ISO),
+    month 1..12, quarter 1..4, day (of month) 1..31, hour 0..23."""
+    if part not in DATE_PARTS:
+        raise BlockSpecError(f"The date part {part!r} is not supported. Use one of: {', '.join(DATE_PARTS)}.")
+    col = _quote_ident(kind, column)
+    if kind == "bigquery":
+        if part == "weekday":
+            # DAYOFWEEK: 1 = Sunday .. 7 = Saturday.
+            return f"MOD(EXTRACT(DAYOFWEEK FROM DATE({col})) + 5, 7) + 1"
+        if part == "hour":
+            return f"EXTRACT(HOUR FROM {col})"
+        return f"EXTRACT({part.upper()} FROM DATE({col}))"
+    if kind == "snowflake":
+        return {"weekday": f"DAYOFWEEKISO({col})", "month": f"MONTH({col})", "quarter": f"QUARTER({col})",
+                "day": f"DAYOFMONTH({col})", "hour": f"HOUR({col})"}[part]
+    if kind in ("postgres", "supabase"):
+        field = "ISODOW" if part == "weekday" else part.upper()
+        return f"CAST(EXTRACT({field} FROM CAST({col} AS TIMESTAMP)) AS INTEGER)"
+    if kind == "mysql":
+        return {"weekday": f"WEEKDAY({col}) + 1", "month": f"MONTH({col})", "quarter": f"QUARTER({col})",
+                "day": f"DAYOFMONTH({col})", "hour": f"HOUR({col})"}[part]
+    if kind == "sqlserver":
+        if part == "weekday":
+            # Independent of @@DATEFIRST: day 0 (1900-01-01) was a Monday.
+            return f"(DATEDIFF(DAY, 0, {col}) % 7) + 1"
+        return f"DATEPART({part.upper()}, {col})"
+    raise BlockSpecError("Date parts are only available for SQL warehouses and databases.")
+
+
+# --- histogram bins -----------------------------------------------------------
+
+_STDDEV_FN = {"bigquery": "STDDEV_SAMP", "snowflake": "STDDEV_SAMP", "postgres": "STDDEV_SAMP", "supabase": "STDDEV_SAMP",
+              "mysql": "STDDEV_SAMP", "sqlserver": "STDEV"}
+_INT_CAST = {"bigquery": "INT64", "snowflake": "INTEGER", "postgres": "INTEGER", "supabase": "INTEGER", "mysql": "SIGNED",
+             "sqlserver": "INT"}
+BIN_STATS_COLUMNS = ("gd360_min", "gd360_max", "gd360_avg", "gd360_std", "gd360_n")
+
+
+_NICE_MULTS = (1.0, 2.0, 2.5, 5.0)
+
+
+def _nice_step(span: float, count: int, integer: bool) -> float:
+    """The round step (1, 2, 2.5 or 5 x 10^k; a whole number for an
+    integer column) whose bin count over `span` is closest to `count` -
+    the larger step on a tie."""
+    if not span > 0:
+        return 1.0
+    raw = span / max(1, count)
+    k = math.floor(math.log10(raw))
+    best, best_cost = None, None
+    for exp in (k - 1, k, k + 1):
+        for mult in _NICE_MULTS:
+            step = mult * (10.0 ** exp)
+            if integer and (step < 1 or abs(step - round(step)) > 1e-9):
+                continue
+            bins = math.ceil(span / step - 1e-9)
+            if bins < 1 or bins > BIN_COUNT_MAX:
+                continue
+            cost = abs(bins - count)
+            if best is None or cost < best_cost or (cost == best_cost and step > best):
+                best, best_cost = step, cost
+    return best if best is not None else (max(1.0, float(math.ceil(raw))) if integer else raw)
+
+
+def histogram_edges(stats: dict, count: int = BIN_COUNT_DEFAULT, integer: bool = False,
+                    lo: float | None = None, hi: float | None = None) -> dict:
+    """Round, deterministic bin edges from a column's summary statistics
+    ({"min", "max", "avg", "std", "n"}).
+
+    The range drawn is [min, max] cut to the mean +/- 4 standard
+    deviations: a handful of extreme values (an ADR of 5,400 beside a
+    typical 100) would otherwise leave one bar and nineteen empty bins.
+    What falls outside is not dropped - it is counted in an explicit
+    underflow ("below x") and overflow ("x and above") bin. `lo` / `hi`
+    are the person's own range (bins.min / bins.max) and win.
+
+    Returns {"start", "width", "count", "end", "underflow": bool,
+    "overflow": bool, "integer": bool}; bin i covers [start + i*width,
+    start + (i+1)*width), the last bin also its right edge."""
+    count = max(BIN_COUNT_MIN, min(BIN_COUNT_MAX, int(count or BIN_COUNT_DEFAULT)))
+    mn, mx = stats.get("min"), stats.get("max")
+    if mn is None or mx is None:
+        raise BlockSpecError("This column has no values to bin.")
+    mn, mx = float(mn), float(mx)
+    a, b = mn, mx
+    avg, std = stats.get("avg"), stats.get("std")
+    if isinstance(avg, (int, float)) and isinstance(std, (int, float)) and std and std > 0:
+        a = max(mn, float(avg) - 4.0 * float(std))
+        b = min(mx, float(avg) + 4.0 * float(std))
+    if lo is not None:
+        a = float(lo)
+    if hi is not None:
+        b = float(hi)
+    if b < a:
+        a, b = b, a
+    if b == a:
+        b = a + (1.0 if integer else max(abs(a) * 0.1, 1.0))
+    step = _nice_step(b - a, count, integer)
+    start = math.floor(a / step + 1e-9) * step
+    if integer:
+        # Whole numbers: the top value gets a bin of its own ([7, 8) for a
+        # column that ends at 7), never a share of the one below it.
+        end = (math.floor(b / step + 1e-9) + 1) * step
+    else:
+        end = math.ceil(b / step - 1e-9) * step
+    if end <= start:
+        end = start + step
+    n = int(round((end - start) / step))
+    # Round-off from 0.1-style steps must not leak into the SQL literals.
+    digits = max(0, -int(math.floor(math.log10(step))) + 2) if step < 1 else 2
+    start, end, step = round(start, digits), round(end, digits), round(step, digits)
+    if integer:
+        start, end, step = int(start), int(end), int(step)
+    return {"start": start, "width": step, "count": n, "end": end, "underflow": mn < start, "overflow": mx > end,
+            "integer": bool(integer)}
+
+
+def is_integer_type(col_type) -> bool:
+    return _type_family(col_type) == "int"
+
+
+def bin_index_expr(kind: str, column: str, edges: dict) -> str:
+    """The bin index of `column` under `edges`: -1 below the range, count
+    above it, 0 .. count-1 inside (the top edge belongs to the last bin)."""
+    col = _quote_ident(kind, column)
+    start, width, n, end = edges["start"], edges["width"], int(edges["count"]), edges["end"]
+    floor = f"CAST(FLOOR(({col} - {_render_value(start)}) * 1.0 / {_render_value(width)}) AS {_INT_CAST.get(kind, 'INTEGER')})"
+    return (
+        f"CASE WHEN {col} < {_render_value(start)} THEN -1 WHEN {col} > {_render_value(end)} THEN {n} "
+        f"WHEN {col} = {_render_value(end)} THEN {n - 1} ELSE {floor} END"
+    )
+
+
+def build_bins_stats_sql(
+    spec, kind: str, schema_cache, connection_info: dict | None = None, alias_tables: set[str] | None = None,
+) -> tuple[str, dict]:
+    """ONE row - MIN, MAX, AVG, STDDEV and the non-null COUNT of the
+    binned column under the block's OWN filters (never the page's: the
+    bin edges must not move while someone cross-filters) - the input of
+    histogram_edges. Returns (sql, normalised_spec)."""
+    if kind not in SQL_KINDS:
+        raise BlockSpecError("Warehouse-native blocks only work for SQL warehouses and databases right now.")
+    s = validate_block_spec(spec, schema_cache, strict=True)
+    if not s.get("bins"):
+        raise BlockSpecError("This block has no binned column.")
+    col = _quote_ident(kind, s["bins"]["column"])
+    parts = [
+        f"MIN({col}) AS {_quote_ident(kind, 'gd360_min')}", f"MAX({col}) AS {_quote_ident(kind, 'gd360_max')}",
+        f"AVG({col} * 1.0) AS {_quote_ident(kind, 'gd360_avg')}",
+        f"{_STDDEV_FN.get(kind, 'STDDEV_SAMP')}({col}) AS {_quote_ident(kind, 'gd360_std')}",
+        f"COUNT({col}) AS {_quote_ident(kind, 'gd360_n')}",
+    ]
+    sql = f"SELECT {', '.join(parts)} FROM {qualified_table_ident(kind, s['table'], connection_info, alias_tables)}"
+    where = [render_filter(kind, f) for f in s["filters"]]
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    return sql, public_spec(s)
+
+
 # --- BlockSpec validation --------------------------------------------------
 
 def _validate_filter(f, known: set[str], table: str, strict: bool = True) -> dict | None:
@@ -792,11 +973,97 @@ def validate_block_spec(spec, schema_cache, strict: bool = True) -> dict:
         fail_or_skip(f"You can group by at most {MAX_GROUP_BY} columns.")
         group_by = group_by[:MAX_GROUP_BY]
 
+    # date_parts: dimensions derived from a date column (weekday, month ...)
+    parts_raw = s.get("date_parts") or []
+    if not isinstance(parts_raw, list):
+        fail_or_skip("date_parts must be a list of {column, part} entries.")
+        parts_raw = []
+    date_parts: list[dict] = []
+    part_aliases: set[str] = set()
+    for p in parts_raw:
+        p = _as_spec_dict(p) if not isinstance(p, dict) else p
+        pcol, part = p.get("column"), str(p.get("part") or "").lower()
+        if not isinstance(pcol, str) or pcol not in known:
+            fail_or_skip(f"The date column {pcol!r} does not exist in {table!r}.")
+            continue
+        if part not in DATE_PARTS:
+            fail_or_skip(f"The date part {p.get('part')!r} is not supported. Use one of: {', '.join(DATE_PARTS)}.")
+            continue
+        ptype = next((c.get("type") for c in cols if c["name"] == pcol), None)
+        if _type_family(ptype) in ("int", "float", "bool"):
+            fail_or_skip(f"{pcol!r} is a number, not a date - a {part} can only be read off a date or timestamp column.")
+            continue
+        alias = str(p.get("alias") or part)
+        if not _ALIAS_RE.match(alias):
+            fail_or_skip(f"The name {alias!r} must be a plain identifier (letters, digits, underscores).")
+            continue
+        base, n = alias, 2
+        while alias in part_aliases or alias in group_by or alias == PERIOD_ALIAS or alias in known:
+            alias = f"{base}_{n}" if base != part else f"{pcol}_{part}" if n == 2 and f"{pcol}_{part}" not in known else f"{base}_{n}"
+            n += 1
+            if n > 50:
+                break
+        if not _ALIAS_RE.match(alias):
+            alias = re.sub(r"[^A-Za-z0-9_]+", "_", alias).strip("_")[:60] or f"{part}_{len(date_parts) + 1}"
+        part_aliases.add(alias)
+        date_parts.append({"column": pcol, "part": part, "alias": alias})
+    if len(group_by) + len(date_parts) > MAX_GROUP_BY:
+        fail_or_skip(f"You can group by at most {MAX_GROUP_BY} columns (date parts included).")
+        date_parts = date_parts[: max(0, MAX_GROUP_BY - len(group_by))]
+        part_aliases = {p["alias"] for p in date_parts}
+
+    # bins: a histogram of one numeric column
+    bins_raw = s.get("bins")
+    bins_out = None
+    if bins_raw:
+        b = _as_spec_dict(bins_raw) if not isinstance(bins_raw, dict) else bins_raw
+        bcol = b.get("column")
+        btype = next((c.get("type") for c in cols if c["name"] == bcol), None) if isinstance(bcol, str) else None
+        if not isinstance(bcol, str) or bcol not in known:
+            fail_or_skip(f"The column to bin, {bcol!r}, does not exist in {table!r}.")
+        elif _type_family(btype) in ("other", "bool"):
+            fail_or_skip(f"{bcol!r} is not a numeric column, so it cannot be binned into a histogram.")
+        else:
+            try:
+                bcount = int(b.get("count") if b.get("count") is not None else BIN_COUNT_DEFAULT)
+            except (TypeError, ValueError):
+                bcount = None
+            if bcount is None or not (BIN_COUNT_MIN <= bcount <= BIN_COUNT_MAX):
+                fail_or_skip(f"The number of bins must be between {BIN_COUNT_MIN} and {BIN_COUNT_MAX}.")
+                bcount = BIN_COUNT_DEFAULT
+            bounds = {}
+            bad_bound = False
+            for key in ("min", "max"):
+                raw_v = b.get(key)
+                if raw_v is None or raw_v == "":
+                    bounds[key] = None
+                    continue
+                try:
+                    v = float(raw_v)
+                    if math.isnan(v) or math.isinf(v):
+                        raise ValueError
+                except (TypeError, ValueError):
+                    fail_or_skip(f"The histogram's {key} must be a number.")
+                    bad_bound = True
+                    v = None
+                bounds[key] = (int(v) if v is not None and v == int(v) and abs(v) < 1e15 else v)
+            if not bad_bound and bounds["min"] is not None and bounds["max"] is not None and bounds["min"] >= bounds["max"]:
+                fail_or_skip("The histogram's min must be below its max.")
+                bounds = {"min": None, "max": None}
+            if time_out or group_by or date_parts:
+                fail_or_skip("A histogram bins ONE column: remove the group-by, the date parts and the time bucket.")
+                time_out, group_by, date_parts, part_aliases = None, [], [], set()
+            bins_out = {"column": bcol, "count": bcount, "min": bounds.get("min"), "max": bounds.get("max"),
+                        "integer": _type_family(btype) == "int"}
+
     # measures
     measures_raw = s.get("measures")
     if not measures_raw and (s.get("agg") or s.get("measure")):
         # Accept the chat QueryBuilderSpec's single-measure shape too.
         measures_raw = [{"agg": s.get("agg") or "count", "column": s.get("measure")}]
+    if bins_out is not None and (not isinstance(measures_raw, list) or not measures_raw):
+        # A histogram counts rows per bin unless the spec says otherwise.
+        measures_raw = [{"alias": "count", "agg": "count"}]
     if not isinstance(measures_raw, list) or not measures_raw:
         if strict:
             raise BlockSpecError("A block needs at least one measure.")
@@ -836,7 +1103,7 @@ def validate_block_spec(spec, schema_cache, strict: bool = True) -> dict:
             if not alias[0].isalpha() and alias[0] != "_":
                 alias = "m_" + alias
         base, n = alias, 2
-        while alias in taken_aliases or alias == PERIOD_ALIAS or alias in group_by:
+        while alias in taken_aliases or alias == PERIOD_ALIAS or alias in group_by or alias in part_aliases or (bins_out is not None and alias == BIN_ALIAS):
             alias = f"{base}_{n}"
             n += 1
         taken_aliases.add(alias)
@@ -870,7 +1137,7 @@ def validate_block_spec(spec, schema_cache, strict: bool = True) -> dict:
     if not isinstance(order_raw, list):
         fail_or_skip("order_by must be a list of {by, dir} entries.")
         order_raw = []
-    sortable = set(group_by) | taken_aliases | ({PERIOD_ALIAS} if time_out else set())
+    sortable = set(group_by) | taken_aliases | part_aliases | ({PERIOD_ALIAS} if time_out else set())
     order_by: list[dict] = []
     for o in order_raw[:MAX_ORDER_BY]:
         o = _as_spec_dict(o) if not isinstance(o, dict) else o
@@ -900,6 +1167,10 @@ def validate_block_spec(spec, schema_cache, strict: bool = True) -> dict:
         "filters": filters, "order_by": order_by, "limit": limit,
         "compare_prior_period": bool(s.get("compare_prior_period")),
         "sparkline": bool(s.get("sparkline")),
+        # Present only when used, so every spec stored before these existed
+        # normalises to exactly what it did.
+        **({"date_parts": date_parts} if date_parts else {}),
+        **({"bins": bins_out} if bins_out else {}),
         "_measure_tokens": {m["alias"]: m["_tokens"] for m in measures},
     }
 
@@ -1152,7 +1423,7 @@ def _measure_sql(kind: str, m: dict, tokens) -> str:
 def build_block_sql(
     spec, kind: str, schema_cache, connection_info: dict | None = None, alias_tables: set[str] | None = None,
     extra_filters: list[dict] | None = None, date_range=None, date_column: str | None = None,
-    grain_override: str | None = None,
+    grain_override: str | None = None, bin_edges: dict | None = None,
 ) -> tuple[str, dict]:
     """Validates a BlockSpec (strictly) and renders ONE aggregate query
     for `kind`. `extra_filters` are already-translated page filters
@@ -1162,12 +1433,20 @@ def build_block_sql(
     (the dashboard's time column, when it belongs to this table; else the
     spec's own time column) is pushed down as >= from / < to+1.
     `grain_override` (the page's period control) replaces the spec's
-    grain when the spec has a time bucket. Returns (sql, normalised_spec)."""
+    grain when the spec has a time bucket. `bin_edges` (histogram_edges'
+    result) are the resolved edges of a `bins` spec; without them a
+    placeholder grid over [0, count] is rendered - enough for a zero-row
+    validation, never for a run. Returns (sql, normalised_spec)."""
     if kind not in SQL_KINDS:
         raise BlockSpecError("Warehouse-native blocks only work for SQL warehouses and databases right now.")
     s = validate_block_spec(spec, schema_cache, strict=True)
     known = {c["name"] for c in table_columns(schema_cache, s["table"]) or []}
     tokens_by_alias = s.get("_measure_tokens") or {}
+    bins = s.get("bins")
+    bin_sql = None
+    if bins:
+        edges = bin_edges or {"start": 0, "width": 1, "count": bins["count"], "end": bins["count"]}
+        bin_sql = bin_index_expr(kind, bins["column"], edges)
 
     time_sql = None
     if s["time"]:
@@ -1183,10 +1462,20 @@ def build_block_sql(
         q = _quote_ident(kind, g)
         select_parts.append(q)
         group_parts.append(q)
+    for p in s.get("date_parts") or []:
+        part_sql = date_part_expr(kind, p["column"], p["part"])
+        select_parts.append(f"{part_sql} AS {_quote_ident(kind, p['alias'])}")
+        group_parts.append(part_sql)
+    if bin_sql:
+        select_parts.append(f"{bin_sql} AS {_quote_ident(kind, BIN_ALIAS)}")
+        group_parts.append(bin_sql)
     for m in s["measures"]:
         select_parts.append(f"{_measure_sql(kind, m, tokens_by_alias.get(m['alias']))} AS {_quote_ident(kind, m['alias'])}")
 
     where_parts = [render_filter(kind, f) for f in s["filters"]]
+    not_null: list[str] = ([bins["column"]] if bins else []) + [p["column"] for p in s.get("date_parts") or []]
+    for column in dict.fromkeys(not_null):
+        where_parts.append(f"{_quote_ident(kind, column)} IS NOT NULL")
     for f in extra_filters or []:
         if not isinstance(f, dict) or f.get("column") not in known:
             continue
@@ -1199,11 +1488,15 @@ def build_block_sql(
             where_parts.append(render_filter(kind, f))
 
     order_by = list(s["order_by"])
+    if bin_sql:
+        order_by = [{"by": BIN_ALIAS, "dir": "asc"}]
     if not order_by:
         if time_sql:
             order_by = [{"by": PERIOD_ALIAS, "dir": "asc"}]
         elif s["group_by"]:
             order_by = [{"by": s["measures"][0]["alias"], "dir": "desc"}]
+        elif s.get("date_parts"):
+            order_by = [{"by": p["alias"], "dir": "asc"} for p in s["date_parts"]]
     order_sql = ""
     if order_by:
         order_sql = " ORDER BY " + ", ".join(f"{_quote_ident(kind, o['by'])} {o['dir'].upper()}" for o in order_by)
@@ -1334,6 +1627,10 @@ def describe_block_spec(spec: dict) -> str:
     dims = list(spec.get("group_by") or [])
     if spec.get("time"):
         dims.insert(0, f"{spec['time']['column']} by {spec['time']['grain']}")
+    for p in spec.get("date_parts") or []:
+        dims.append(f"{p['part']} of {p['column']}")
+    if spec.get("bins"):
+        dims.append(f"{spec['bins']['column']} in {spec['bins']['count']} bins")
     if dims:
         text += " by " + ", ".join(dims)
     if spec.get("filters"):

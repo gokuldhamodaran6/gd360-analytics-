@@ -37,7 +37,9 @@ import pandas as pd
 import requests
 
 from ..config import get_settings
+from . import chart_model, insights
 from .chart_builder import build_figure, result_to_dataframe, result_to_summary, result_to_tidy
+from .chart_model import ChartNotDrawable
 from .chart_suggester import profile_dataframe, suggest_charts, suggest_stats
 from .metrics import describe_metric, match_metric_by_name, resolve_metric_value
 from .sandbox import run_sandboxed
@@ -575,6 +577,18 @@ written as ordinary characters with nothing wrapped around it. The only correct 
 your response is as a currency prefix directly on a real dollar amount, exactly like "$5,911.55" - never doubled,
 never closing a pair, never around anything that is not an actual amount of money.
 
+How to use "computed" (when present): "statement" is the key finding already worked out from the result table,
+with the right labels and the numbers formatted for a reader; "facts" holds the figures behind it. Build your Key
+insight on that statement - you may rephrase it and add context from the question, but keep its labels and its
+numbers. A label is always a name from the data (a year, a hotel, a segment) or a measure's name - never write a
+number where a name belongs. Write numbers the way the statement does (11.67M, 673,501, 37.0%) - never a raw
+float such as 11673501.429999981. When the breakdown is over time (years, months, dates) describe the trend -
+from the first period to the last, the peak and the low with their periods, the latest change - not a "leader
+versus a laggard". When several series are shown, say which is ahead in which periods. Skip empty values; never
+print "None", "null" or "NaN". Mention n only when "source_row_count" or "warehouse_total_rows" is present. Every
+number you write must appear in the summary or follow from it by one step of arithmetic on two of its values - a
+number that does not is treated as an error and your whole answer is discarded.
+
 Answers computed inside the person's own data warehouse: when the summary has "computed_in_warehouse" set to
 true, these figures were produced by one query that ran inside the person's warehouse over EVERY row of the
 table - not on a sample, an extract, or a preview. Say so, in plain words, in the Key insight (for example
@@ -654,6 +668,17 @@ Strict rules:
   this same round for the warning this module's own silence made necessary). This is prompt guidance for a
   language model, not a guaranteed code path - it makes success at this shape of question more likely, not
   certain.
+- Row filters (2026-10-07): never add a row filter the question did not ask for - no excluding cancelled,
+  refunded, test, internal or empty rows, no restricting dates, statuses or categories "to be safe". A filter the
+  person cannot see changes every number in the answer, and the same question then gives two different totals
+  depending on who asked. Add one only when the question's own words require it or the requested figure is
+  undefined without it, and then write it as a plain predicate in the WHERE clause of the query that reads the
+  table (never hidden in a join condition or a nested subquery): GD360 reads that WHERE clause and shows the
+  person exactly which filters were applied. If you did add a filter the question did not literally ask for, end
+  your answer with ONE extra final line of the exact form
+  -- filters: <the filter in plain words, and why it was needed>
+  (a SQL comment; leave the line out entirely when you added none). That line is your one-line answer to "what did
+  you filter?" and is shown to the person next to the result.
 - If the question asks you to PRODUCE A TABLE OF ROWS rather than a summary - cleaning or transforming the data,
   filtering rows into a new table, adding or deriving a column, deduplicating, reshaping, "give me the rows where
   ...", anything whose answer is a row-level result set rather than an aggregate/breakdown/top-N - respond with
@@ -662,6 +687,60 @@ Strict rules:
   with one aggregate query.)
 - If the question genuinely cannot be answered from the given schema (it needs a column or table that does not
   exist), respond with exactly: NOT_POSSIBLE"""
+
+
+# 2026-10-07 (chart-integrity round, "say what was filtered"): a SQL writer
+# that adds a row filter the question did not ask for must say so on one
+# final `-- filters: ...` line (see the "Row filters" rule in the three
+# pushdown prompts). The line is taken off the SQL here - what runs is the
+# statement alone - and kept in a ContextVar for the duration of the call
+# so routers/chat.py can read it right after the writer returns
+# (take_sql_writer_note) and show it beside the filters the parser found.
+# A ContextVar rather than a second return value: the three writers are
+# called through `generate(schema_text, previous_sql, previous_error) ->
+# str` lambdas and patched as such by the tests; their contract stays "the
+# SQL text".
+_SQL_WRITER_NOTE: contextvars.ContextVar = contextvars.ContextVar("gd360_sql_writer_note", default=None)
+_FILTERS_TRAILER_RE = re.compile(r"\n?[ \t]*--[ \t]*filters?[ \t]*:[ \t]*(.*?)[ \t]*;?[ \t]*$", re.IGNORECASE)
+
+
+def _split_filters_note(sql: str) -> tuple[str, str | None]:
+    """("SELECT ...", "excludes cancelled bookings ...") from a writer's
+    answer that ends with a `-- filters: ...` line; (sql, None) otherwise.
+    "none" / "n/a" / an empty note count as no note."""
+    text = (sql or "").rstrip()
+    m = _FILTERS_TRAILER_RE.search(text)
+    if not m or "\n" in text[m.start():].strip("\n"):
+        return sql, None
+    note = m.group(1).strip().strip("`").strip()
+    body = text[:m.start()].rstrip()
+    if not body:
+        return sql, None
+    if not note or note.lower().rstrip(".") in ("none", "n/a", "no", "no filters", "no filter", "nothing"):
+        return body, None
+    return body, note[:400]
+
+
+def take_sql_writer_note() -> str | None:
+    """The `-- filters:` note of the SQL writer call that just returned on
+    this thread (None when it wrote none), cleared as it is read."""
+    note = _SQL_WRITER_NOTE.get()
+    _SQL_WRITER_NOTE.set(None)
+    return note
+
+
+def _finish_sql_writer_answer(raw: str) -> str:
+    """Shared tail of the three pushdown writers: trim, drop a code fence
+    the model added anyway, take the `-- filters:` note off."""
+    sql = (raw or "").strip()
+    if sql.startswith("```"):
+        sql = sql.strip("`")
+        if sql[:3].lower() == "sql":
+            sql = sql[3:]
+        sql = sql.strip()
+    sql, note = _split_filters_note(sql)
+    _SQL_WRITER_NOTE.set(note)
+    return sql
 
 
 def generate_bigquery_sql(
@@ -700,16 +779,9 @@ def generate_bigquery_sql(
         {"role": "user", "content": user_content},
     ]
     raw = _call_llm_resilient(messages, max_tokens=_SQL_WRITER_MAX_TOKENS)
-    sql = raw.strip()
-    # Cheap insurance against the model adding a code fence anyway, despite
-    # being told not to - mirrors how _extract_json tolerates the same
-    # habit elsewhere in this file.
-    if sql.startswith("```"):
-        sql = sql.strip("`")
-        if sql[:3].lower() == "sql":
-            sql = sql[3:]
-        sql = sql.strip()
-    return sql
+    # Trims, tolerates a code fence the model added anyway, and takes the
+    # `-- filters:` note off (see _finish_sql_writer_answer).
+    return _finish_sql_writer_answer(raw)
 
 
 # --- Snowflake pushdown (Enterprise Scale Roadmap, Phase 2) --------------
@@ -760,6 +832,17 @@ Strict rules:
   this same round for the warning this module's own silence made necessary). This is prompt guidance for a
   language model, not a guaranteed code path - it makes success at this shape of question more likely, not
   certain.
+- Row filters (2026-10-07): never add a row filter the question did not ask for - no excluding cancelled,
+  refunded, test, internal or empty rows, no restricting dates, statuses or categories "to be safe". A filter the
+  person cannot see changes every number in the answer, and the same question then gives two different totals
+  depending on who asked. Add one only when the question's own words require it or the requested figure is
+  undefined without it, and then write it as a plain predicate in the WHERE clause of the query that reads the
+  table (never hidden in a join condition or a nested subquery): GD360 reads that WHERE clause and shows the
+  person exactly which filters were applied. If you did add a filter the question did not literally ask for, end
+  your answer with ONE extra final line of the exact form
+  -- filters: <the filter in plain words, and why it was needed>
+  (a SQL comment; leave the line out entirely when you added none). That line is your one-line answer to "what did
+  you filter?" and is shown to the person next to the result.
 - If the question asks you to PRODUCE A TABLE OF ROWS rather than a summary - cleaning or transforming the data,
   filtering rows into a new table, adding or deriving a column, deduplicating, reshaping, "give me the rows where
   ...", anything whose answer is a row-level result set rather than an aggregate/breakdown/top-N - respond with
@@ -797,13 +880,7 @@ def generate_snowflake_sql(
         {"role": "user", "content": user_content},
     ]
     raw = _call_llm_resilient(messages, max_tokens=_SQL_WRITER_MAX_TOKENS)
-    sql = raw.strip()
-    if sql.startswith("```"):
-        sql = sql.strip("`")
-        if sql[:3].lower() == "sql":
-            sql = sql[3:]
-        sql = sql.strip()
-    return sql
+    return _finish_sql_writer_answer(raw)
 
 
 # --- Plain-database pushdown: Postgres/MySQL/SQL Server/Supabase ---------
@@ -882,6 +959,17 @@ Strict rules:
   "which is highest/lowest" question. Never a bare `SELECT *` with no WHERE/row cap against what could be a huge
   table - the whole point of this path is that the database summarizes the data, not GD360.
 - {dialect_notes}
+- Row filters (2026-10-07): never add a row filter the question did not ask for - no excluding cancelled,
+  refunded, test, internal or empty rows, no restricting dates, statuses or categories "to be safe". A filter the
+  person cannot see changes every number in the answer, and the same question then gives two different totals
+  depending on who asked. Add one only when the question's own words require it or the requested figure is
+  undefined without it, and then write it as a plain predicate in the WHERE clause of the query that reads the
+  table (never hidden in a join condition or a nested subquery): GD360 reads that WHERE clause and shows the
+  person exactly which filters were applied. If you did add a filter the question did not literally ask for, end
+  your answer with ONE extra final line of the exact form
+  -- filters: <the filter in plain words, and why it was needed>
+  (a SQL comment; leave the line out entirely when you added none). That line is your one-line answer to "what did
+  you filter?" and is shown to the person next to the result.
 - If the question asks you to PRODUCE A TABLE OF ROWS rather than a summary - cleaning or transforming the data,
   filtering rows into a new table, adding or deriving a column, deduplicating, reshaping, "give me the rows where
   ...", anything whose answer is a row-level result set rather than an aggregate/breakdown/top-N - respond with
@@ -902,13 +990,7 @@ Strict rules:
         {"role": "user", "content": user_content},
     ]
     raw = _call_llm_resilient(messages, max_tokens=_SQL_WRITER_MAX_TOKENS)
-    sql = raw.strip()
-    if sql.startswith("```"):
-        sql = sql.strip("`")
-        if sql[:3].lower() == "sql":
-            sql = sql[3:]
-        sql = sql.strip()
-    return sql
+    return _finish_sql_writer_answer(raw)
 
 
 # --- Warehouse table definitions (2026-10-06, "generated data is a saved
@@ -1041,6 +1123,12 @@ Strict rules:
   whole point of this path is that MongoDB summarizes the data, not GD360. End the pipeline with a $limit stage
   (a small one, sized to the question) unless it already ends in a $group/$count that naturally returns few
   results.
+- Row filters (2026-10-07): never add a $match the question did not ask for - no excluding cancelled, refunded,
+  test, internal or empty documents, no restricting dates, statuses or categories "to be safe". A filter the
+  person cannot see changes every number in the answer. Add one only when the question's own words require it or
+  the requested figure is undefined without it, and then write it as its own top-level $match stage (never hidden
+  inside a $lookup or $facet sub-pipeline): GD360 reads the pipeline's $match stages and shows the person exactly
+  which filters were applied.
 - If the question genuinely cannot be answered from the given schema (it needs a collection or field that does not
   exist), respond with exactly: NOT_POSSIBLE"""
 
@@ -1162,12 +1250,24 @@ shape, with no markdown code fences, no explanation, nothing before or after the
  "limit": <integer 1..5000>,
  "compare_prior_period": <true | false>,
  "sparkline": <true | false>,
- "chart_type": "bar" | "horizontal_bar" | "line" | "area" | "pie" | "scatter" | "stacked_bar" | "grouped_bar" | null}
+ "date_parts": [{"column": "<date/timestamp column>", "part": "weekday" | "month" | "quarter" | "day" | "hour"}, ...],
+ "bins": {"column": "<numeric column>", "count": <2..60>} | null,
+ "chart_type": <one of the chart types listed below> | null}
+
+Chart types (GD360 chooses the form itself from the result's shape; name one only as the rules say):
+__CHART_TYPE_GUIDE__
 
 Strict rules:
 - Use ONLY table and column names that appear, spelled exactly, in the schema you are given. Never invent one.
 - "chart_type" is ONLY for a question that itself names a chart form ("as a pie chart", "horizontal bars", "a line
-  chart"); null in every other case.
+  chart", "on a map", "as a heatmap", "a histogram of ...", "a funnel", "a waterfall", "a scatter of X against Y");
+  null in every other case. A form the result cannot be drawn as is replaced.
+- "date_parts" groups by a calendar part of a date column (the weekday or the month of the year of each row) - for
+  "by weekday", "month by weekday", "by hour of day". They are extra group-by dimensions; omit the key otherwise.
+- "bins" is ONLY for the distribution of ONE numeric column ("distribution of lead time", "histogram of price"): give
+  the column, leave group_by empty, time null and measures a single count. null in every other case.
+- Two measures per category (a relationship: "ADR against lead time by segment") is one group_by column and two
+  measures.
 - "time" is for a trend over time (bucketed by grain, the result has a "period" column); null otherwise.
 - group_by has at most 3 columns. measures has 1 to 6 entries. A measure has EITHER "column" OR "expr", never both;
   agg "count" with column null and expr null means COUNT(*).
@@ -1178,6 +1278,19 @@ Strict rules:
 - filters are the block's OWN permanent conditions implied by the question (e.g. is_canceled = 0 for "kept
   bookings"); all AND-ed. Do not add date filters - the dashboard's date range is applied separately.
 - If the question cannot be expressed in this shape (raw rows, a join, a transformation), respond with exactly: null"""
+
+
+def _with_chart_guide(prompt: str) -> str:
+    """The prompt with its chart list filled in from the ONE catalog
+    (services/chart_recommender.CHART_TYPES - the same lines
+    frontend/src/dashboard/charts/README.md documents)."""
+    from . import chart_recommender
+    return prompt.replace("__CHART_TYPE_GUIDE__", chart_recommender.chart_type_guide())
+
+
+# The constant IS the prompt that is sent (callers and tests compare the
+# system message with it): the chart list is filled in once, at import.
+BLOCK_SPEC_SYSTEM_PROMPT = _with_chart_guide(BLOCK_SPEC_SYSTEM_PROMPT)
 
 
 def generate_block_spec(
@@ -1219,7 +1332,7 @@ def generate_block_spec(
                 f"Write a corrected spec."
             )
         messages = [
-            {"role": "system", "content": BLOCK_SPEC_SYSTEM_PROMPT},
+            {"role": "system", "content": _with_chart_guide(BLOCK_SPEC_SYSTEM_PROMPT)},
             {"role": "user", "content": user},
         ]
         raw = _call_llm_resilient(messages, max_tokens=_SQL_WRITER_MAX_TOKENS)
@@ -1261,7 +1374,7 @@ no explanation, nothing before or after the JSON - of exactly this shape:
             "blocks": [{"type": "kpi" | "chart" | "table" | "text" | "sparkline" | "donut",
                         "title": "<block title>",
                         "intent": "<'KPI · Revenue' / 'Trend · revenue by month' / 'Breakdown · country' / 'Table · detail'>",
-                        "chart_type": "line" | "bar" | "horizontal_bar" | "area" | "pie" | "stacked_bar" | "grouped_bar" | null,
+                        "chart_type": <a chart type from the list below> | null,
                         "from_metric": "<exact saved metric name>" | null,
                         "text": "<for a text block only: one or two plain sentences>" | null,
                         "spec": <BlockSpec> | null}, ...]}, ...],
@@ -1274,10 +1387,20 @@ A BlockSpec is exactly:
  "column": "<column>" | null, "expr": "<column arithmetic>" | null}, ...],
  "filters": [{"column": "<column>", "op": "="|"!="|">"|">="|"<"|"<="|"is_null"|"is_not_null"|"in"|"between", "value": ...}, ...],
  "order_by": [{"by": "<alias | group_by column | 'period'>", "dir": "asc"|"desc"}], "limit": <1..5000>,
- "compare_prior_period": <bool>, "sparkline": <bool>}
+ "compare_prior_period": <bool>, "sparkline": <bool>,
+ "date_parts": [{"column": "<date column>", "part": "weekday"|"month"|"quarter"|"day"|"hour"}, ...],
+ "bins": {"column": "<numeric column>", "count": <2..60>} | null}
+
+Chart types - suggest the one that fits each chart block (GD360 checks every suggestion against the block's real
+shape with a deterministic rule and replaces one that does not fit: a country column becomes a map, two dimensions
+a heatmap, a binned column a histogram):
+__CHART_TYPE_GUIDE__
 
 Strict rules:
 - Use ONLY table and column names spelled exactly as in the schema. Never invent a column, a table or a number.
+- "date_parts" (group by the weekday / month-of-year of a date column) and "bins" (a histogram of ONE numeric
+  column: no group_by, no time, a single count measure) are optional; omit them unless a block needs them.
+- A block whose title or intent says forecast / projection is a "chart" with "time" set (GD360 adds the forecast).
 - 6 to 10 blocks in total. Always include: a KPI row (3-4 "kpi" blocks, each a spec with no time and no group_by,
   one measure, compare_prior_period true, sparkline true), ONE trend over the dashboard's date column ("chart" with
   "time" set and chart_type "line" or "area"), TWO breakdowns ("chart" or "donut" with one group_by column, ordered by
@@ -1293,6 +1416,9 @@ Strict rules:
   a date or a free-text column.
 - "suggestions": 2-4 short, concrete, buildable follow-ups for this data.
 - Respond with raw JSON only."""
+
+
+PROPOSE_DASHBOARD_SYSTEM_PROMPT = _with_chart_guide(PROPOSE_DASHBOARD_SYSTEM_PROMPT)
 
 
 def _parse_json_object(raw: str | None) -> dict | None:
@@ -1353,7 +1479,7 @@ def propose_dashboard(
             )
         user += f"\nGoal: {goal.strip()}"
         messages = [
-            {"role": "system", "content": PROPOSE_DASHBOARD_SYSTEM_PROMPT},
+            {"role": "system", "content": _with_chart_guide(PROPOSE_DASHBOARD_SYSTEM_PROMPT)},
             {"role": "user", "content": user},
         ]
         raw = _call_llm_resilient(messages, max_tokens=_PROPOSE_MAX_TOKENS)
@@ -3633,10 +3759,12 @@ def _run_transform(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, 
     chart_spec = None
 
     new_profile = profile_dataframe(cleaned)
-    summary = result_to_summary(cleaned)
     # The real row count behind this result, so the insight can cite an
-    # actual sample size (n) instead of leaving it unstated.
-    _stamp_source_rows(summary, rows_after)
+    # actual sample size (n) instead of leaving it unstated. 2026-10-07: the
+    # summary also carries the table's chart model when it has one (one
+    # dimension, measures, one row per value), so a small summary table
+    # gets a real sentence and anything else a plain "table of N rows" one.
+    summary = _summary_for_insight(cleaned, "bar", rows_after)
     insight = _generate_insight(prompt, summary)
 
     # 2026-10-05 bug fix: "Filtering the dataset for employees where
@@ -3727,8 +3855,7 @@ def _run_analyze_with_prep(
         # chart gets attached here either. The real chart is built once the
         # person continues past this pause, further down in this function.
         prep_chart_spec = None
-        prep_summary = result_to_summary(prepped)
-        _stamp_source_rows(prep_summary, rows_after)
+        prep_summary = _summary_for_insight(prepped, "bar", rows_after)
         prep_insight = _generate_insight(prompt, prep_summary)
         return {
             "needs_clarification": False,
@@ -3955,13 +4082,15 @@ def _run_analyze_with_prep(
         or _fallback_chart_title(plan.get("x_label"), plan.get("y_label"), prompt)
     )
     try:
-        chart_spec = build_figure(result, chart_type, title, plan.get("x_label"), plan.get("y_label"))
+        chart_spec, chart_type, table_note = _chart_for_result(result, chart_type, title, plan.get("x_label"), plan.get("y_label"))
     except Exception as e:
         out = _no_result(profile, _ANALYZE_FAILURE_NARRATIVE)
         out["action"] = "analyze"
         out["_retry_needed"] = True
         out["_retry_detail"] = f"Could not render the result as a {chart_type} chart: {e}"
         return out
+    if table_note:
+        combined_narrative = f"{combined_narrative}\n\n{table_note}"
 
     # The same underlying rows this chart was built from, serialized tidy -
     # lets the frontend's Explore panel remap axes/chart type/filters
@@ -3969,8 +4098,7 @@ def _run_analyze_with_prep(
     # one fixed Plotly figure above. See result_to_tidy's own docstring.
     tidy = result_to_tidy(result)
 
-    summary = result_to_summary(result)
-    _stamp_source_rows(summary, rows_after)
+    summary = _summary_for_insight(result, chart_type, rows_after)
     insight = _generate_insight(prompt, summary)
 
     return {
@@ -4195,7 +4323,7 @@ def _build_result_entry(prompt: str, label: str, value: Any, plan: dict, chart_o
     chart_spec = None
     try:
         inferred = _infer_chart_type(prompt, value, chart_type)
-        chart_spec = build_figure(value, inferred, str(label), None, None)
+        chart_spec = build_figure(value, inferred, str(label), None, None, context=f"result {label!r}")
         chart_type = inferred
     except Exception:
         # Falls back to a table-only card - result_to_tidy above already
@@ -4377,7 +4505,7 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
         or _fallback_chart_title(plan.get("x_label"), plan.get("y_label"), prompt)
     )
     try:
-        chart_spec = build_figure(result, chart_type, title, plan.get("x_label"), plan.get("y_label"))
+        chart_spec, chart_type, table_note = _chart_for_result(result, chart_type, title, plan.get("x_label"), plan.get("y_label"))
     except Exception as e:
         out = _no_result(profile, _ANALYZE_FAILURE_NARRATIVE)
         out["action"] = "analyze"
@@ -4388,18 +4516,19 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
     # See the identical call in _run_analyze_with_prep above.
     tidy = result_to_tidy(result)
 
-    summary = result_to_summary(result)
     # The real row count of the table this was computed from, so the
-    # insight can cite an actual sample size (n) instead of leaving it
-    # unstated or, worse, the model guessing one.
-    _stamp_source_rows(summary, int(len(next(iter(tables.values())))))
+    # insight can cite an actual sample size (n) when that is meaningful.
+    summary = _summary_for_insight(result, chart_type, int(len(next(iter(tables.values())))))
     insight = _generate_insight(prompt, summary)
+    analyze_narrative = plan.get("narrative") or "Here is your analysis."
+    if table_note:
+        analyze_narrative = f"{analyze_narrative}\n\n{table_note}"
 
     return {
         "needs_clarification": False,
         "clarifying_question": None,
         "action": "analyze",
-        "narrative": plan.get("narrative") or "Here is your analysis.",
+        "narrative": analyze_narrative,
         "self_critique": (plan.get("self_critique") or "").strip() or None,
         "chart_spec": chart_spec,
         # The chart_type actually used, after any override/inference - kept
@@ -4423,65 +4552,159 @@ def _run_analyze(prompt: str, tables: dict[str, pd.DataFrame], profile: dict, pl
     }
 
 
+def _chart_for_result(
+    result: Any, chart_type: str, title: str, x_label: str | None, y_label: str | None, context: str | None = None,
+) -> tuple[dict | None, str, str | None]:
+    """(chart_spec, chart_type, table_note) for one result.
+
+    2026-10-07 (chart-integrity round): build_figure builds every standard
+    chart from the chart model of the result table and audits the figure
+    against it. When the table cannot be drawn as the requested chart
+    without misrepresenting it (ChartNotDrawable), this returns no figure,
+    chart_type "table" and the plain sentence that says why - the answer
+    is then the table plus that sentence. Never a wrong chart, and not a
+    failed turn either: the numbers are right, only the picture is
+    withheld. Any other exception (a specialised chart type handed the
+    wrong shape) still propagates, and the caller's retry gives the model
+    a chance to reshape its result."""
+    try:
+        return build_figure(result, chart_type, title, x_label, y_label, context=context), chart_type, None
+    except ChartNotDrawable as e:
+        note = str(e).strip() or None
+        if note:
+            print(f"[chart_audit] {context or 'answer'} chart_type={chart_type} -> table: {note}")
+        return None, "table", note
+
+
+def _insight_model(result: Any, chart_type: str | None) -> dict | None:
+    """The chart model an insight is written from - the same derivation
+    the chart itself uses (chart_model.derive_chart_model over the tidy
+    rows). None when the result has no such reading: a specialised chart
+    (scatter, histogram, heatmap ...), a result that is shown as a table,
+    or rows past the tidy cap."""
+    ct = chart_model.normalize_chart_type(chart_type)
+    if ct == "table" or ct not in chart_model.STANDARD_TYPES:
+        return None
+    try:
+        tidy = result_to_tidy(result)
+        if tidy is None:
+            scalar = None if isinstance(result, (pd.DataFrame, pd.Series, dict, list, str)) else result
+            try:
+                value = float(scalar)
+            except (TypeError, ValueError):
+                return None
+            tidy = {"columns": [{"name": "value", "dtype": "number", "role": "measure"}], "rows": [{"value": value}], "truncated": False}
+        if tidy.get("truncated"):
+            return None
+        model = chart_model.derive_chart_model(tidy["columns"], tidy["rows"], ct)
+    except Exception as e:
+        print(f"[ai_engine] could not derive a chart model for the insight: {e}")
+        return None
+    return model if model.get("kind") in ("cartesian", "pie", "kpi") else None
+
+
+def _summary_for_insight(result: Any, chart_type: str | None, source_rows: int | None) -> dict:
+    """The insight writer's summary of one result: result_to_summary (now
+    taken from the normalised table, index included), stamped with what
+    "n" means, plus - under the private key "_chart_model", never sent to
+    the model - the chart model the deterministic insight and the number
+    validation are computed from."""
+    summary = result_to_summary(result)
+    _stamp_source_rows(summary, source_rows)
+    summary["_chart_model"] = _insight_model(result, chart_type)
+    if chart_model.normalize_chart_type(chart_type) in ("scatter", "bubble"):
+        summary["_scatter"] = _scatter_facts(result)
+    return summary
+
+
+def _scatter_facts(result: Any) -> dict | None:
+    """What a scatter of this result shows, computed in Python: the two
+    plotted measures (the same first two build_figure plots), how many
+    complete points there are and their Pearson correlation. None when
+    there are fewer than 3 complete points or either measure is constant."""
+    try:
+        tidy = result_to_tidy(result)
+        if not tidy or tidy.get("truncated"):
+            return None
+        names = [c["name"] for c in tidy["columns"] if c.get("role") == "measure"]
+        if len(names) < 2:
+            return None
+        xn, yn = names[0], names[1]
+        pts = [(float(r[xn]), float(r[yn])) for r in tidy["rows"] if chart_model.is_number(r.get(xn)) and chart_model.is_number(r.get(yn))]
+        if len(pts) < 3:
+            return None
+        n = len(pts)
+        mx, my = sum(p[0] for p in pts) / n, sum(p[1] for p in pts) / n
+        sxx = sum((p[0] - mx) ** 2 for p in pts)
+        syy = sum((p[1] - my) ** 2 for p in pts)
+        if sxx <= 0 or syy <= 0:
+            return None
+        r_value = sum((p[0] - mx) * (p[1] - my) for p in pts) / (sxx * syy) ** 0.5
+        if r_value != r_value or abs(r_value) > 1.0000001:
+            return None
+        return {"x": xn, "y": yn, "n": n, "r": round(r_value, 2)}
+    except Exception as e:
+        print(f"[ai_engine] could not summarise the scatter for its insight: {e}")
+        return None
+
+
+def _n_phrase(summary: dict) -> str:
+    """The row-count clause of an insight, or "" when there is no
+    meaningful one. A warehouse answer says where it was computed (and the
+    table's real row count when known). Otherwise n is the size of the
+    table the result was computed FROM, and it is only worth stating when
+    that table is real data rather than an already-aggregated handful of
+    rows: at least 30 rows and more rows than the result itself has. (The
+    old sentence closed with "(n = 6)" for a pivot of a six-row summary.)"""
+    shape = summary.get("shape")
+    result_rows = shape[0] if isinstance(shape, list) and shape and isinstance(shape[0], int) else 1
+    if summary.get("computed_in_warehouse"):
+        # The table's real row count is worth citing; the row count of an
+        # already-aggregated saved query (6 rows behind a 3-row pivot) is
+        # not - "n = 6" there is the old "(n = 6)" again. Where it was
+        # computed is still said.
+        total = summary.get("warehouse_total_rows")
+        if isinstance(total, int) and not isinstance(total, bool) and (total < 30 or total <= result_rows):
+            return _warehouse_phrase({**summary, "warehouse_total_rows": None})
+        return _warehouse_phrase(summary)
+    n = summary.get("source_row_count")
+    if not isinstance(n, int) or isinstance(n, bool) or n < 30:
+        return ""
+    if n <= result_rows:
+        return ""
+    return f" (n = {n:,} rows)"
+
+
 def _augment_summary_with_computed_stats(summary: dict) -> dict:
-    """Pre-computes a small set of comparison statistics in Python - the
-    gap between the top and bottom category, that gap expressed as
-    percentage points (when the values are ratios/proportions between 0
-    and 1) and as a relative percent change, plus the full ranking - and
-    attaches them under summary["computed"]. This exists specifically so
-    the insight-writing model is never the one doing the subtraction: a
-    model composing a sentence and doing arithmetic in the same breath is
-    exactly where a wrong number (e.g. writing "6.4 percentage points" for
-    a gap that is actually 3.4) can slip in even when every input number it
-    was given was correct. Every figure here is computed with plain Python
-    arithmetic on numbers already present in the summary, so it is
-    guaranteed correct; the model is only ever asked to narrate it."""
-    preview = summary.get("preview") or []
-    if not isinstance(preview, list) or len(preview) < 2 or len(preview) > 12:
+    """Attaches, under summary["computed"], the figures the insight writer
+    may narrate - worked out in Python from the CHART MODEL (the same
+    derivation the chart is drawn from), so the model never does the
+    arithmetic and never has to guess which column is the label.
+
+    2026-10-07 (chart-integrity round): this used to take "the first
+    numeric value of the first preview row" as the measure and "the first
+    other value" as the label. On a pivoted result both are measures, so
+    it ranked one hotel's revenue under the other hotel's revenue as its
+    NAME - and that is what the insight then said. Now "computed" is:
+      statement  the deterministic key sentence (labels are dimension
+                 values or measure names; numbers are already formatted)
+      facts      the numbers behind it (first / last / peak / trough /
+                 changes for a period axis; top / bottom / gap for
+                 categories; per-period comparisons for several series)
+    and it is only present when the result has a chart model."""
+    model = summary.get("_chart_model")
+    built = insights.build_insight(model) if model else None
+    if not built:
+        scatter = summary.get("_scatter")
+        if isinstance(scatter, dict):
+            # A scatter has no chart model; what it shows - which measure is
+            # on which axis, how many complete points, their correlation - is
+            # still computed here rather than left to the model's arithmetic.
+            summary = dict(summary)
+            summary["computed"] = {"facts": {"x": scatter["x"], "y": scatter["y"], "points": scatter["n"], "correlation": scatter["r"]}}
         return summary
-    first = preview[0]
-    if not isinstance(first, dict):
-        return summary
-
-    numeric_col = None
-    label_col = None
-    for key, val in first.items():
-        if numeric_col is None and isinstance(val, (int, float)) and not isinstance(val, bool):
-            numeric_col = key
-        elif label_col is None:
-            label_col = key
-    if numeric_col is None:
-        return summary
-
-    rows = []
-    for r in preview:
-        if not isinstance(r, dict) or numeric_col not in r:
-            continue
-        val = r.get(numeric_col)
-        if not isinstance(val, (int, float)) or isinstance(val, bool):
-            continue
-        rows.append((str(r.get(label_col, "item")), float(val)))
-    if len(rows) < 2:
-        return summary
-
-    ranked = sorted(rows, key=lambda x: x[1], reverse=True)
-    top_label, top_val = ranked[0]
-    bottom_label, bottom_val = ranked[-1]
-    gap = top_val - bottom_val
-
-    computed = {
-        "ranked": [{"label": lbl, "value": round(v, 4)} for lbl, v in ranked],
-        "top": {"label": top_label, "value": round(top_val, 4)},
-        "bottom": {"label": bottom_label, "value": round(bottom_val, 4)},
-        "gap_absolute": round(gap, 4),
-    }
-    if bottom_val:
-        computed["gap_relative_percent"] = round(gap / bottom_val * 100, 2)
-    if all(0 <= v <= 1 for _, v in rows):
-        computed["gap_percentage_points"] = round(gap * 100, 2)
-
     summary = dict(summary)
-    summary["computed"] = computed
+    summary["computed"] = {"statement": built["key"], "facts": built["facts"]}
     return summary
 
 
@@ -4536,91 +4759,127 @@ def _warehouse_phrase(summary: dict) -> str:
 
 
 def _fallback_insight(summary: dict) -> str:
-    """Used only if the model genuinely could not write an insight after
-    every retry below (e.g. a transient provider error) - builds a plain,
-    still-structured insight straight from the computed summary instead of
-    a message with no real content in it. Every number here is read
-    directly out of the summary (including the Python-computed "computed"
-    section, when present), never invented, so it stays accurate even
-    though it is simpler than what the model would normally write."""
+    """The deterministic insight: used when the model could not write one
+    (a provider error, an empty answer) AND when the one it wrote quotes a
+    number that is not in the result table (see _generate_insight).
+
+    2026-10-07 (chart-integrity round): written by services/insights.py
+    from the chart model in summary["_chart_model"] - the same derivation
+    the chart is drawn from - so labels are always dimension values or
+    measure names, numbers are formatted for people, a period axis gets a
+    trend sentence, several series are compared per period, nulls are
+    skipped and "n" appears only when it is a meaningful row count. A
+    result with no chart model (a bare number, a table, a specialised
+    chart) gets a plain, true sentence about what it is."""
     scalar = summary.get("scalar_result")
-    if isinstance(scalar, (int, float)):
-        value = round(scalar, 3)
-        n = summary.get("source_row_count")
-        n_text = f" (n = {n})" if isinstance(n, int) else ""
-        if summary.get("computed_in_warehouse"):
-            n_text = _warehouse_phrase(summary)
+    if isinstance(scalar, (int, float)) and not isinstance(scalar, bool):
         return (
-            f"**Key insight:** The computed result for this request is {value}{n_text}.\n"
+            f"**Key insight:** The computed result for this request is {insights.format_number(float(scalar))}{_n_phrase(summary)}.\n"
             f"**Implication:** Compare this figure against what you would expect for these columns to judge "
             f"whether it is strong, weak, or typical.\n"
             f"**Next step:** Break this down further - for example by a category or over time - to see what is "
             f"driving this number."
         )
-    computed = summary.get("computed") or {}
-    top = computed.get("top")
-    bottom = computed.get("bottom")
-    if top and bottom:
-        top_label = top.get("label")
-        top_value = top.get("value")
-        bottom_label = bottom.get("label")
-        bottom_value = bottom.get("value")
-        gap_points = computed.get("gap_percentage_points")
-        gap_abs = computed.get("gap_absolute")
-        gap_rel = computed.get("gap_relative_percent")
-        gap_desc = f"{gap_points} percentage points" if gap_points is not None else f"{gap_abs}"
-        relative = f" ({gap_rel}% relative)" if gap_rel is not None else ""
-        n = summary.get("source_row_count")
-        n_text = f" (n = {n})" if isinstance(n, int) else ""
-        if summary.get("computed_in_warehouse"):
-            n_text = _warehouse_phrase(summary)
+    built = insights.build_insight(summary.get("_chart_model"), _n_phrase(summary))
+    if built:
+        return built["text"]
+    scatter = summary.get("_scatter")
+    if isinstance(scatter, dict):
+        r_value = scatter["r"]
+        strength = "strong" if abs(r_value) >= 0.7 else "moderate" if abs(r_value) >= 0.4 else "weak" if abs(r_value) >= 0.2 else "no clear"
+        xh, yh = chart_model.humanize(scatter["x"]), chart_model.humanize(scatter["y"])
+        if strength == "no clear":
+            key = f"Across {scatter['n']:,} points there is no clear linear relationship between {xh} and {yh} (correlation {r_value:+.2f})."
+            implication = f"Knowing {xh} tells you little about {yh} here."
+        else:
+            direction = "rise" if r_value > 0 else "fall"
+            key = f"Across {scatter['n']:,} points, {yh} tends to {direction} as {xh} rises - a {strength} relationship (correlation {r_value:+.2f})."
+            implication = "A correlation describes how the two move together; it does not show that one causes the other."
+        where = _warehouse_phrase(summary).strip() if summary.get("computed_in_warehouse") else ""
+        where = f" This was {where[1:-1]}." if where.startswith("(") and where.endswith(")") else ""
         return (
-            f"**Key insight:** {top_label} leads at {top_value}, versus {bottom_label} at "
-            f"{bottom_value} - a gap of {gap_desc}{relative}{n_text}.\n"
-            f"**Implication:** {top_label} is meaningfully ahead of {bottom_label} on this measure.\n"
-            f"**Next step:** Look into what is different about {top_label} versus {bottom_label} to "
-            f"understand what is driving this gap."
+            f"**Key insight:** {key}{where}\n"
+            f"**Implication:** {implication}\n"
+            f"**Next step:** Look at the points furthest from the trend to see what sets them apart."
         )
-    preview = summary.get("preview") or []
-    if preview:
-        first = preview[0]
-        pairs = ", ".join(f"{k}: {v}" for k, v in list(first.items())[:4])
+    shape = summary.get("shape")
+    columns = [str(c) for c in (summary.get("columns") or [])]
+    if isinstance(shape, list) and len(shape) == 2 and columns:
+        rows, cols = shape
+        shown = ", ".join(columns[:6]) + (f" and {len(columns) - 6} more" if len(columns) > 6 else "")
+        where = _warehouse_phrase(summary).strip() if summary.get("computed_in_warehouse") else ""
+        where = f" This was {where[1:-1]}." if where.startswith("(") and where.endswith(")") else ""
+        return (
+            f"**Key insight:** The result has {rows:,} row{'s' if rows != 1 else ''} and {cols} "
+            f"column{'s' if cols != 1 else ''} ({shown}).{where}\n"
+            f"**Implication:** It is shown as it was computed; no single figure summarises it.\n"
+            f"**Next step:** Ask for one measure by one category or over time to get a comparison or a trend."
+        )
+    if summary.get("preview"):
         where = _warehouse_phrase(summary) if summary.get("computed_in_warehouse") else ""
         return (
-            f"**Key insight:** The leading result shown above is {pairs}{where}.\n"
-            f"**Implication:** This is the top figure in the breakdown you asked for.\n"
-            f"**Next step:** Compare it against the rest of the results in the chart above to see how much it "
-            f"stands out."
+            f"**Key insight:** The result above was computed as requested{where}.\n"
+            f"**Implication:** It is shown as it was computed; no single figure summarises it.\n"
+            f"**Next step:** Ask for one measure by one category or over time to get a comparison or a trend."
         )
     return "Insight generation is temporarily unavailable, but the result above reflects the requested analysis."
 
 
+def _summary_numbers(value: Any, out: list[float], depth: int = 0) -> list[float]:
+    """Every number anywhere in an insight summary (preview rows, describe
+    stats, row counts) - what a model-written insight may also quote."""
+    if depth > 6 or len(out) > 5000:
+        return out
+    if isinstance(value, bool):
+        return out
+    if isinstance(value, (int, float)):
+        out.append(float(value))
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            if not str(k).startswith("_"):
+                _summary_numbers(v, out, depth + 1)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _summary_numbers(v, out, depth + 1)
+    return out
+
+
 def _generate_insight(prompt: str, summary: dict) -> str:
     summary = _augment_summary_with_computed_stats(summary)
+    model = summary.get("_chart_model")
+    # What the model sees: everything except the private "_..." keys.
+    llm_summary = {k: v for k, v in summary.items() if not str(k).startswith("_")}
     messages = [
         {"role": "system", "content": INSIGHT_SYSTEM_PROMPT},
-        {"role": "user", "content": f"The user asked: {prompt}\n\nResult data summary (JSON): {json.dumps(summary)[:4000]}"},
+        {"role": "user", "content": f"The user asked: {prompt}\n\nResult data summary (JSON): {json.dumps(llm_summary, default=str)[:4000]}"},
     ]
-    # A real, model-written insight is noticeably richer than the plain
-    # template _fallback_insight below falls back to (it cites the sample
-    # size, phrases the gap in natural language, and reads like an analyst
-    # wrote it), so it is worth one retry before giving up on it. The
-    # first attempt already has a generous token budget, so a failure here
-    # is usually either a transient provider hiccup or an empty response
-    # from a reasoning model that used its whole budget thinking rather
-    # than answering - both recover fine on a second try. The one case
-    # where retrying is pure waste is a real "tokens per day" rate limit,
-    # since a second call in the same second will hit the exact same wall -
-    # that case is detected and skipped so this never doubles the cost of
-    # an insight during an actual rate-limit stretch. Every failure is
-    # logged so a genuine, repeated provider problem is visible in the
-    # service logs.
+    # A real, model-written insight is richer than the deterministic one, so
+    # it is worth one retry before giving up on it. The first attempt
+    # already has a generous token budget, so a failure here is usually
+    # either a transient provider hiccup or an empty response from a
+    # reasoning model that used its whole budget thinking rather than
+    # answering - both recover fine on a second try. The one case where
+    # retrying is pure waste is a real "tokens per day" rate limit - that
+    # case is detected and skipped. Every failure is logged.
+    #
+    # 2026-10-07 (chart-integrity round): a model-written insight is only
+    # used when every number it quotes is traceable to the result table
+    # (its values, its labels, the figures computed from them, the row
+    # counts in the summary) within the rounding the sentence itself uses.
+    # One number that is not - a mis-copied value, arithmetic gone wrong,
+    # a statistic that was never computed - and the deterministic insight
+    # is used instead: a plainer sentence that is right beats a fluent one
+    # that is not.
     last_error_text = ""
     for attempt in (1, 2):
         try:
             text = _call_llm(messages, max_tokens=1400).strip()
             if text:
-                return text
+                untraceable = insights.validate_insight_numbers(text, model, _summary_numbers(llm_summary, []))
+                if not untraceable:
+                    return text
+                print(f"[insight_audit] the written insight quotes {untraceable[:6]} which are not in the result table; using the deterministic insight instead")
+                break
             last_error_text = "empty response"
         except Exception as e:
             last_error_text = str(e)
@@ -4671,9 +4930,7 @@ def _attach_entry_insights(
         value = raw_values_by_label.get(label)
         if value is None:
             continue
-        summary = result_to_summary(value)
-        _stamp_source_rows(summary, source_row_count)
-        summaries[label] = summary
+        summaries[label] = _summary_for_insight(value, entry.get("chart_type") or "bar", source_row_count)
     insights: dict[str, str] = {}
     if summaries:
         max_workers = max(1, min(settings.INSIGHT_MAX_CONCURRENT, len(summaries)))
@@ -4801,7 +5058,13 @@ def verify_answer(
 
     summary = result_to_summary(result)
     summary["source_row_count"] = int(len(result)) if action == "transform" else int(len(df))
+    if action != "transform":
+        # The same chart model the answer's own insight is written from, so
+        # the reviewer is shown the same labelled figures (see
+        # _augment_summary_with_computed_stats).
+        summary["_chart_model"] = _insight_model(result, chart_type)
     summary = _augment_summary_with_computed_stats(summary)
+    summary = {k: v for k, v in summary.items() if not str(k).startswith("_")}
 
     not_applicable = "n/a"
     none_shown = "(none)"
