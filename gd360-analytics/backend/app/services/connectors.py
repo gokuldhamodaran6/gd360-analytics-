@@ -258,7 +258,14 @@ class SQLConnector:
         engine.dispose()
         return schema
 
-    def load_dataframe(self, query_or_table: str, is_raw_sql: bool = False, row_limit: int | None = None) -> pd.DataFrame:
+    def load_dataframe(
+        self, query_or_table: str, is_raw_sql: bool = False, row_limit: int | None = None,
+        params: dict | None = None,
+    ) -> pd.DataFrame:
+        """`params` (2026-10-07, SQL cells with dashboard parameters): a
+        {name: value} mapping for the `:name` placeholders in a raw
+        statement, handed to SQLAlchemy as real bound parameters - the
+        value never touches the SQL text. Only read when is_raw_sql."""
         row_limit = row_limit or settings.MAX_ROWS_LOADED_PER_QUERY
         # This is the call every chat turn and every dashboard refresh
         # actually goes through - see this class's own module-level
@@ -297,6 +304,8 @@ class SQLConnector:
                     sql = f"SELECT TOP {row_limit} * FROM {quoted}"
                 else:
                     sql = f"SELECT * FROM {quoted} LIMIT {row_limit}"
+            if is_raw_sql and params:
+                return pd.read_sql(text(sql), engine, params=dict(params))
             return pd.read_sql(text(sql), engine)
         finally:
             engine.dispose()
@@ -310,20 +319,21 @@ class SQLConnector:
     # materialises the whole result in this process.
     # -----------------------------------------------------------------
 
-    def describe_query(self, sql: str) -> list[dict]:
+    def describe_query(self, sql: str, params: dict | None = None) -> list[dict]:
         """Runs the dialect's zero-row validation statement (`SELECT * FROM
         (<sql>) AS gd360_v WHERE 1=0`, or `SELECT TOP 0 * ...` on SQL
         Server - see warehouse_tables.zero_row_validation_sql) and returns
         [{name, type}] from the cursor description. Raises the database's
         own error for an invalid definition - that text is what the SQL
-        writer gets for its one bounded retry."""
+        writer gets for its one bounded retry. `params` binds `:name`
+        placeholders (see load_dataframe)."""
         from .warehouse_tables import columns_from_cursor_description, zero_row_validation_sql
         assert_read_only_sql(sql)
         statement = zero_row_validation_sql(self.kind, sql)
         engine = create_engine(self.url, pool_pre_ping=True, connect_args=self.connect_args)
         try:
             with engine.connect() as conn:
-                result = conn.execute(text(statement))
+                result = conn.execute(text(statement), dict(params) if params else {})
                 description = getattr(result.cursor, "description", None) if result.cursor is not None else None
                 columns = columns_from_cursor_description(self.kind, description)
                 if not columns:
@@ -778,16 +788,36 @@ class BigQueryConnector:
         cfg.default_dataset = f"{self.project_id}.{self.dataset_id}"
         return cfg
 
-    def estimate_query_bytes(self, sql: str) -> int:
+    @staticmethod
+    def query_parameters(params) -> list:
+        """2026-10-07 (SQL cells with dashboard parameters): the dialect-
+        neutral parameter list services/dashboard_engine.bind_parameters
+        produces - [{"name", "type", "value"}] for a scalar, [{"name",
+        "type", "values"}] for an array - as BigQuery's own
+        ScalarQueryParameter / ArrayQueryParameter objects. These travel
+        in the job config, NEVER in the SQL text, so a value like
+        "'; DROP TABLE x; --" is just a string BigQuery compares against."""
+        out = []
+        for p in params or []:
+            if "values" in p:
+                out.append(bq.ArrayQueryParameter(p["name"], p.get("type") or "STRING", list(p["values"])))
+            else:
+                out.append(bq.ScalarQueryParameter(p["name"], p.get("type") or "STRING", p.get("value")))
+        return out
+
+    def estimate_query_bytes(self, sql: str, params=None) -> int:
         """A BigQuery dry run - tells you how much data a query would scan
         without running it or being billed for it. This is the number
         run_pushdown_query checks against its byte budget before the real
         query ever touches anything."""
         client = self._bq_client()
-        job = client.query(sql, job_config=self._job_config(dry_run=True, use_query_cache=False))
+        cfg = self._job_config(dry_run=True, use_query_cache=False)
+        if params:
+            cfg.query_parameters = self.query_parameters(params)
+        job = client.query(sql, job_config=cfg)
         return job.total_bytes_processed or 0
 
-    def run_pushdown_query(self, sql: str, max_bytes: int) -> tuple[pd.DataFrame, int]:
+    def run_pushdown_query(self, sql: str, max_bytes: int, params=None) -> tuple[pd.DataFrame, int]:
         """Runs one AI-written SQL query directly inside BigQuery. Two
         guards before any real data is touched: assert_read_only_sql (a
         single plain SELECT, no writes - the same check load_dataframe's
@@ -801,7 +831,7 @@ class BigQueryConnector:
         audit log and the per-user daily cost budget, on top of the
         per-query ceiling enforced right here."""
         assert_read_only_sql(sql)
-        estimated = self.estimate_query_bytes(sql)
+        estimated = self.estimate_query_bytes(sql, params=params)
         if estimated > max_bytes:
             raise QueryTooExpensive(
                 f"This question would need to scan about {estimated / (1024 ** 3):.1f} GB of data, over this "
@@ -810,7 +840,10 @@ class BigQueryConnector:
                 estimated_bytes=estimated,
             )
         client = self._bq_client()
-        job = client.query(sql, job_config=self._job_config(use_query_cache=True))
+        cfg = self._job_config(use_query_cache=True)
+        if params:
+            cfg.query_parameters = self.query_parameters(params)
+        job = client.query(sql, job_config=cfg)
         df = job.result().to_dataframe()
         return df, estimated
 
@@ -820,17 +853,21 @@ class BigQueryConnector:
     # iter_query_rows above for the same two helpers on plain SQL kinds.
     # -----------------------------------------------------------------
 
-    def describe_query(self, sql: str) -> tuple[list[dict], int]:
+    def describe_query(self, sql: str, params=None) -> tuple[list[dict], int]:
         """Validates a definition with BigQuery's own free dry run (no row
         is read, nothing is billed) and returns ([{name, type}] from the
         job's result schema, estimated_bytes). An invalid definition
         raises BigQuery's own error (e.g. "Unrecognized name: foo") - that
-        text is what the SQL writer gets for its one bounded retry."""
+        text is what the SQL writer gets for its one bounded retry.
+        `params` (see query_parameters) binds @name references."""
         from .warehouse_tables import columns_from_bq_schema
         assert_read_only_sql(sql)
         client = self._bq_client()
         try:
-            job = client.query(sql, job_config=self._job_config(dry_run=True, use_query_cache=False))
+            cfg = self._job_config(dry_run=True, use_query_cache=False)
+            if params:
+                cfg.query_parameters = self.query_parameters(params)
+            job = client.query(sql, job_config=cfg)
             return columns_from_bq_schema(getattr(job, "schema", None)), int(job.total_bytes_processed or 0)
         finally:
             client.close()
@@ -1008,7 +1045,9 @@ class SnowflakeConnector:
             print(f"[connectors] Snowflake bytes_scanned lookup failed (non-fatal): {e}")
             return None
 
-    def run_pushdown_query(self, sql: str, statement_timeout_seconds: int) -> tuple[pd.DataFrame, int | None]:
+    def run_pushdown_query(
+        self, sql: str, statement_timeout_seconds: int, params: dict | None = None,
+    ) -> tuple[pd.DataFrame, int | None]:
         """Runs one AI-written SQL query directly inside Snowflake. One
         guard before any real data is touched: assert_read_only_sql (a
         single plain SELECT, no writes - the same check load_dataframe's
@@ -1026,7 +1065,12 @@ class SnowflakeConnector:
         conn = self._connect(statement_timeout_seconds=statement_timeout_seconds)
         try:
             cur = conn.cursor()
-            cur.execute(sql)
+            # `params` (2026-10-07): the connector's own pyformat binding
+            # (%(name)s placeholders) - values never enter the SQL text.
+            if params:
+                cur.execute(sql, dict(params))
+            else:
+                cur.execute(sql)
             df = cur.fetch_pandas_all()
             bytes_scanned = self._bytes_scanned_for_query(conn, cur.sfqid)
             return df, bytes_scanned
@@ -1039,18 +1083,23 @@ class SnowflakeConnector:
     # services/warehouse_tables.py.
     # -----------------------------------------------------------------
 
-    def describe_query(self, sql: str, statement_timeout_seconds: int | None = None) -> list[dict]:
+    def describe_query(
+        self, sql: str, statement_timeout_seconds: int | None = None, params: dict | None = None,
+    ) -> list[dict]:
         """Runs `SELECT * FROM (<sql>) AS gd360_v LIMIT 0` and returns
         [{name, type}] from the cursor description (Snowflake's own type
         names via FIELD_ID_TO_NAME). An invalid definition raises
-        Snowflake's own error."""
+        Snowflake's own error. `params` binds %(name)s placeholders."""
         from .warehouse_tables import columns_from_cursor_description, zero_row_validation_sql
         assert_read_only_sql(sql)
         statement = zero_row_validation_sql("snowflake", sql)
         conn = self._connect(statement_timeout_seconds=statement_timeout_seconds)
         try:
             cur = conn.cursor()
-            cur.execute(statement)
+            if params:
+                cur.execute(statement, dict(params))
+            else:
+                cur.execute(statement)
             return columns_from_cursor_description("snowflake", cur.description)
         finally:
             conn.close()
