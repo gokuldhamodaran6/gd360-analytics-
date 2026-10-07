@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useExclusiveOpen } from "../lib/useExclusiveOpen";
 import { cn } from "./cn";
 
@@ -12,6 +13,14 @@ import { cn } from "./cn";
 // trigger when the panel closes from Escape, ArrowDown on the trigger opens
 // the panel, and the panel is positioned under/over the trigger without a
 // portal (so clicks inside it are "inside" for the registry's check).
+//
+// `portal` (2026-10-07, dashboard edit mode): a menu that opens from inside
+// a clipped or transformed box - a chart card (overflow hidden), a grid
+// item being laid out with CSS transforms - is rendered into <body> with
+// fixed positioning instead, flipped above the trigger when there is no
+// room below and kept inside the viewport. The portaled panel carries the
+// same `data-exclusive-id`, so the registry still counts clicks in it as
+// "inside".
 
 export type PopoverTriggerApi = {
   open: boolean;
@@ -43,7 +52,11 @@ export type PopoverProps = {
   disabled?: boolean;
   // Focus the first focusable element inside the panel when it opens.
   autoFocus?: boolean;
+  // Render the panel into <body> (fixed, viewport-aware). See the note above.
+  portal?: boolean;
 };
+
+const VIEWPORT_GAP = 8;
 
 export function Popover({
   trigger,
@@ -59,11 +72,57 @@ export function Popover({
   onOpenChange,
   disabled = false,
   autoFocus = true,
+  portal = false,
 }: PopoverProps) {
   const [open, setOpenRaw, id] = useExclusiveOpen();
   const wrapRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const wasOpen = useRef(false);
+  const [fixed, setFixed] = useState<{ top: number; left: number; maxHeight: number } | null>(null);
+
+  // Portal mode: place the panel from the trigger's box, re-placed while
+  // the page scrolls or resizes underneath it.
+  const place = useCallback(() => {
+    const wrap = wrapRef.current, panel = panelRef.current;
+    if (!wrap || !panel || typeof window === "undefined") return;
+    const t = wrap.getBoundingClientRect();
+    const pw = panel.offsetWidth, ph = panel.scrollHeight;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const below = vh - t.bottom - VIEWPORT_GAP - 6;
+    const above = t.top - VIEWPORT_GAP - 6;
+    // Under the trigger when it fits there (or over it for side="top");
+    // otherwise on the other side when it fits there; otherwise slid up
+    // just far enough to be whole - a menu is never opened half off the
+    // screen or scrolled when the viewport could show all of it.
+    const maxHeight = Math.max(120, vh - VIEWPORT_GAP * 2);
+    const h = Math.min(ph, maxHeight);
+    const fitsBelow = h <= below, fitsAbove = h <= above;
+    const top =
+      side === "top" && fitsAbove ? t.top - 6 - h
+      : fitsBelow ? t.bottom + 6
+      : fitsAbove ? t.top - 6 - h
+      : Math.max(VIEWPORT_GAP, vh - VIEWPORT_GAP - h);
+    const rawLeft = align === "end" ? t.right - pw : t.left;
+    const left = Math.min(Math.max(VIEWPORT_GAP, rawLeft), Math.max(VIEWPORT_GAP, vw - pw - VIEWPORT_GAP));
+    setFixed((prev) => (prev && prev.top === top && prev.left === left && prev.maxHeight === maxHeight ? prev : { top, left, maxHeight }));
+  }, [align, side]);
+  useLayoutEffect(() => {
+    if (!portal || !open) {
+      setFixed(null);
+      return;
+    }
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    // The trigger can move under an open menu without a scroll (a grid
+    // block sliding to a new slot); follow it.
+    const follow = window.setInterval(place, 150);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+      window.clearInterval(follow);
+    };
+  }, [portal, open, place]);
 
   const setOpen = useCallback(
     (next: boolean) => {
@@ -128,6 +187,31 @@ export function Popover({
   const style: Record<string, string | number> = {};
   if (width === "trigger") style.width = "100%";
   else if (width !== undefined) style.width = typeof width === "number" ? `${width}px` : width;
+
+  if (portal) {
+    if (width === "trigger" && wrapRef.current) style.width = `${wrapRef.current.offsetWidth}px`;
+    return (
+      <div ref={wrapRef} data-exclusive-id={id} className={cn("relative", width === "trigger" ? "block w-full" : "inline-block", className)}>
+        {trigger(api)}
+        {open && typeof document !== "undefined" &&
+          createPortal(
+            <div data-exclusive-id={id} data-popover-portal="" className="fixed z-[70]" style={{ top: fixed?.top ?? 0, left: fixed?.left ?? 0, opacity: fixed ? 1 : 0, pointerEvents: fixed ? undefined : "none" }}>
+              <div
+                ref={panelRef}
+                role={role}
+                aria-label={ariaLabel}
+                onKeyDown={onPanelKeyDown}
+                style={{ ...style, maxHeight: fixed?.maxHeight, maxWidth: `calc(100vw - ${VIEWPORT_GAP * 2}px)` }}
+                className={cn("min-w-[180px] overflow-y-auto rounded-card border border-border bg-surface shadow-pop", panelClassName)}
+              >
+                {typeof children === "function" ? children({ close: () => { setOpen(false); focusTrigger(); } }) : children}
+              </div>
+            </div>,
+            document.body
+          )}
+      </div>
+    );
+  }
 
   return (
     <div ref={wrapRef} data-exclusive-id={id} className={cn("relative", width === "trigger" ? "block w-full" : "inline-block", className)}>

@@ -44,18 +44,28 @@ export function Sheet({ open, onClose, title, subtitle, children, footer, size =
     const first = nodes.find((n) => !n.hasAttribute("data-sheet-close")) || nodes[0] || panel;
     first?.focus();
 
+    // A kit Popover in portal mode is rendered into <body>, outside this
+    // panel; it carries the same data-exclusive-id as its wrapper in here.
+    const ownedPortals = (): HTMLElement[] =>
+      Array.from(document.querySelectorAll<HTMLElement>("[data-popover-portal]")).filter((p) => {
+        const owner = p.getAttribute("data-exclusive-id");
+        return !!owner && !!panel && Array.from(panel.querySelectorAll("[data-exclusive-id]")).some((w) => w.getAttribute("data-exclusive-id") === owner);
+      });
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         // A kit Popover open inside the sheet gets Escape first (it closes
         // itself through the exclusivity registry); the sheet closes on the
         // next Escape.
         const innerOpen = panel?.querySelector('[data-exclusive-id] > [role="dialog"], [data-exclusive-id] > [role="listbox"], [data-exclusive-id] > [role="menu"]');
-        if (innerOpen) return;
+        if (innerOpen || ownedPortals().length > 0) return;
         e.stopPropagation();
         onClose();
         return;
       }
       if (e.key !== "Tab" || !panel) return;
+      // Focus inside a portaled Popover this sheet opened: that panel
+      // handles its own Tab (it closes and hands focus back to its trigger).
+      if (ownedPortals().some((p) => p.contains(document.activeElement))) return;
       const list = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
       if (list.length === 0) { e.preventDefault(); panel.focus(); return; }
       const firstEl = list[0], lastEl = list[list.length - 1];

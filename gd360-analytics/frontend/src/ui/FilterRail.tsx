@@ -59,19 +59,28 @@ export type FilterRailProps = {
   sticky?: boolean;
   className?: string;
   ariaLabel?: string;
+  // "embedded": the same sections with no rail chrome of their own (no
+  // fixed width, border, padding or heading) - for a narrow screen, where
+  // the page shows the rail inside a Sheet that already has a title.
+  variant?: "rail" | "embedded";
 };
 
-export function FilterRail({ children, title = "Filters", titleExtra, summary, footer, note, width = 260, sticky = true, className, ariaLabel = "Filters" }: FilterRailProps) {
+export function FilterRail({ children, title = "Filters", titleExtra, summary, footer, note, width = 260, sticky = true, className, ariaLabel = "Filters", variant = "rail" }: FilterRailProps) {
+  const embedded = variant === "embedded";
   return (
     <aside
       aria-label={ariaLabel}
-      style={{ width: `${width}px`, minWidth: `${width}px` }}
+      style={embedded ? undefined : { width: `${width}px`, minWidth: `${width}px` }}
       className={cn(
-        "flex shrink-0 flex-col gap-5 border-r border-border bg-surface px-5 pb-4 pt-5",
-        sticky && "sticky top-0 max-h-screen overflow-y-auto",
+        "flex flex-col gap-5",
+        !embedded && "shrink-0 border-r border-border bg-surface px-5 pb-4 pt-5",
+        !embedded && sticky && "sticky top-0 max-h-screen overflow-y-auto",
         className
       )}
     >
+      {embedded ? (
+        titleExtra && <div className="flex items-center justify-end">{titleExtra}</div>
+      ) : (
       <div className="flex items-center justify-between">
         <h2 className="inline-flex items-center gap-1.5 text-caption font-semibold uppercase tracking-caps text-secondary">
           <FilterIcon size={13} className="text-muted" />
@@ -79,10 +88,12 @@ export function FilterRail({ children, title = "Filters", titleExtra, summary, f
         </h2>
         {titleExtra}
       </div>
+      )}
       <div className="flex flex-col gap-5">{children}</div>
       {(summary || footer || note) && (
         <div className="mt-auto flex flex-col gap-2 border-t border-subtle pt-3">
-          {summary && <ResetFiltersLine {...summary} />}
+          {/* In the 260 px rail the sentence wraps under itself, next to its dot - never the dot alone on a line. */}
+          {summary && <ResetFiltersLine {...summary} className={cn("flex-nowrap items-start [&>span:first-child]:mt-[5px] [&>span:first-child]:shrink-0", summary.className)} />}
           {footer}
           {note && <div className="text-caption text-muted">{note}</div>}
         </div>

@@ -33,20 +33,23 @@ export type ChartCardProps = {
   leading?: ReactNode;
   className?: string;
   bodyClassName?: string;
+  // Extra classes on the header row (the dashboard editor marks it as the
+  // card's drag handle).
+  headerClassName?: string;
   id?: string;
   // Rendered as a <section> labelled by its title.
   as?: "section" | "div" | "article";
 };
 
 export function ChartCard({
-  title, subtitle, toolbar, children, footer: footerProp, computed, loading = false, error, onRetry, bodyHeight, flush = false, leading, className, bodyClassName, id, as = "section",
+  title, subtitle, toolbar, children, footer: footerProp, computed, loading = false, error, onRetry, bodyHeight, flush = false, leading, className, bodyClassName, headerClassName, id, as = "section",
 }: ChartCardProps) {
   const Tag = as;
   const footer = footerProp !== undefined ? footerProp : computed ? <ComputedIn {...computed} /> : undefined;
   const bodyStyle = bodyHeight !== undefined ? { height: typeof bodyHeight === "number" ? `${bodyHeight}px` : bodyHeight } : undefined;
   return (
     <Tag id={id} aria-busy={loading || undefined} className={cn("flex min-w-0 flex-col overflow-hidden rounded-card border border-border bg-surface shadow-card", className)}>
-      <header className="flex items-start justify-between gap-3 px-4 pb-2.5 pt-3.5">
+      <header className={cn("flex items-start justify-between gap-3 px-4 pb-2.5 pt-3.5", headerClassName)}>
         <div className="flex min-w-0 items-start gap-2.5">
           {leading && <span className="mt-0.5 shrink-0">{leading}</span>}
           <div className="flex min-w-0 flex-col gap-0.5">

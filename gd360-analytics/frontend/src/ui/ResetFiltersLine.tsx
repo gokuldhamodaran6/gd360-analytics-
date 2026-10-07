@@ -9,7 +9,10 @@ import { cn } from "./cn";
 
 export type ResetFiltersLineProps = {
   shown: number;
-  total: number;
+  // null when the total is not known (the run could not count the whole
+  // table): the line then says "Showing 37,518 rows", never "of" a number
+  // it does not have.
+  total: number | null;
   filterCount?: number;
   onReset?: () => void;
   resetLabel?: string;
@@ -25,12 +28,12 @@ export type ResetFiltersLineProps = {
 const fmt = (n: number) => n.toLocaleString();
 
 export function ResetFiltersLine({ shown, total, filterCount, onReset, resetLabel = "Reset", note, trailing, noun = "rows", loading = false, className }: ResetFiltersLineProps) {
-  const filtered = shown !== total || (filterCount ?? 0) > 0;
+  const filtered = (total !== null && shown !== total) || (filterCount ?? 0) > 0;
   return (
     <div role="status" aria-live="polite" className={cn("flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-secondary tabular-nums", className)}>
       <span aria-hidden="true" className={cn("inline-block h-[7px] w-[7px] rounded-full", loading ? "bg-warning animate-pulse" : filtered ? "bg-primary" : "bg-faint")} />
       <span>
-        Showing <strong className="font-semibold text-text">{fmt(shown)}</strong> of {fmt(total)} {noun}
+        Showing <strong className="font-semibold text-text">{fmt(shown)}</strong>{total !== null && <> of {fmt(total)}</>} {noun}
         {typeof filterCount === "number" && filterCount > 0 && <> · {filterCount} {filterCount === 1 ? "filter" : "filters"}</>}
         {note && <> · {note}</>}
       </span>

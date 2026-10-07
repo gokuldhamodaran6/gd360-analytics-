@@ -397,3 +397,78 @@ export const SidebarIcon = (p: IconProps) => (
     <path d="M9 4v16" />
   </Base>
 );
+
+// 2026-10-07 (dashboard edit mode): the block-palette and edit-affordance
+// glyphs, same weight as everything above.
+export const ArrowLeftIcon = (p: IconProps) => (
+  <Base strokeWidth={2} {...p}>
+    <path d="M19 12H5M12 19l-7-7 7-7" />
+  </Base>
+);
+
+export const GripIcon = (p: IconProps) => (
+  <Base strokeWidth={2.6} {...p}>
+    <path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" />
+  </Base>
+);
+
+export const HashIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M5 9h14M5 15h14M10 4L8 20M16 4l-2 16" />
+  </Base>
+);
+
+export const DonutIcon = (p: IconProps) => (
+  <Base {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <circle cx="12" cy="12" r="4" />
+    <path d="M12 3v5M19.8 16.5l-4.3-2.5" />
+  </Base>
+);
+
+export const ListIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M9 6h12M9 12h9M9 18h6" />
+    <path d="M4 6h.01M4 12h.01M4 18h.01" strokeWidth={2.6} />
+  </Base>
+);
+
+export const TextIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M4 6h16M4 11h16M4 16h10" />
+  </Base>
+);
+
+export const HeadingIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M6 5v14M18 5v14M6 12h12" />
+  </Base>
+);
+
+export const DividerIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M3 12h18" />
+    <path d="M8 6h8M8 18h8" strokeOpacity={0.45} />
+  </Base>
+);
+
+export const PaletteIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M12 21a9 9 0 1 1 0-18c4.5 0 8.5 3 8.5 6.5 0 2-1.5 3-3 3h-2a1.5 1.5 0 0 0-1 2.6c.5.5.5 1.3 0 1.8-1 1-1.5 2.3-2.5 4.1z" />
+    <path d="M7.5 10.5h.01M10.5 7h.01M15 7.5h.01" strokeWidth={2.6} />
+  </Base>
+);
+
+export const MergeIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M7 3v6a4 4 0 0 0 4 4h6" />
+    <path d="M7 21v-6a4 4 0 0 1 4-4" />
+    <path d="M14 10l3 3-3 3" />
+  </Base>
+);
+
+export const ResizeIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M14 20h6v-6M10 4H4v6M20 20l-7-7M4 4l7 7" />
+  </Base>
+);

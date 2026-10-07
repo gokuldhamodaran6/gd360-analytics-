@@ -22,15 +22,31 @@ import { Popover } from "./Popover";
 
 export type DateRange = { from: ISODate | null; to: ISODate | null };
 
-export type DateRangePreset = { id: string; label: string; range: (today: YMD) => DateRange };
+// `range(anchor)`: the anchor is today - or, for data that ended a while
+// ago, the data's last day (see DATA_ANCHOR_AFTER_DAYS). `dataLabel` is
+// what the preset is called then: "Last 30 days" of a table that stops in
+// 2017 is the last 30 days OF THE DATA, and says so.
+export type DateRangePreset = { id: string; label: string; range: (anchor: YMD) => DateRange; dataLabel?: string | ((anchor: YMD) => string) };
 
 export const DEFAULT_PRESETS: DateRangePreset[] = [
-  { id: "7d", label: "Last 7 days", range: (t) => ({ from: toISO(addDays(t, -6)), to: toISO(t) }) },
-  { id: "30d", label: "Last 30 days", range: (t) => ({ from: toISO(addDays(t, -29)), to: toISO(t) }) },
-  { id: "12m", label: "Last 12 months", range: (t) => ({ from: toISO(addDays(addMonths(t, -12), 1)), to: toISO(t) }) },
-  { id: "ytd", label: "This year", range: (t) => ({ from: toISO({ y: t.y, m: 1, d: 1 }), to: toISO(t) }) },
+  { id: "7d", label: "Last 7 days", dataLabel: "Last 7 days of data", range: (t) => ({ from: toISO(addDays(t, -6)), to: toISO(t) }) },
+  { id: "30d", label: "Last 30 days", dataLabel: "Last 30 days of data", range: (t) => ({ from: toISO(addDays(t, -29)), to: toISO(t) }) },
+  { id: "12m", label: "Last 12 months", dataLabel: "Last 12 months of data", range: (t) => ({ from: toISO(addDays(addMonths(t, -12), 1)), to: toISO(t) }) },
+  { id: "ytd", label: "This year", dataLabel: (t) => `Latest year (${t.y})`, range: (t) => ({ from: toISO({ y: t.y, m: 1, d: 1 }), to: toISO(t) }) },
   { id: "all", label: "All time", range: () => ({ from: null, to: null }) },
 ];
+
+// Data whose last day is more than this many days before today is "old":
+// the presets count back from that last day instead of from today.
+export const DATA_ANCHOR_AFTER_DAYS = 60;
+
+/** What the presets count back from: today, or the data's last day when
+ *  the data ended more than DATA_ANCHOR_AFTER_DAYS ago. */
+export function presetAnchor(today: YMD, maxDate?: ISODate | null): { anchor: YMD; onData: boolean } {
+  const max = parseISO(maxDate || null);
+  if (max && compareYMD(max, today) < 0 && daysBetween(max, today) > DATA_ANCHOR_AFTER_DAYS) return { anchor: max, onData: true };
+  return { anchor: today, onData: false };
+}
 
 export type DateRangePickerProps = {
   value: DateRange;
@@ -53,7 +69,28 @@ export type DateRangePickerProps = {
   months?: 1 | 2;
   // Closed-chip wording (see above).
   format?: "days" | "months";
+  // Render the panel into <body> (Popover's portal mode). For a picker
+  // that lives in a narrow, clipping container - the filter rail is 240 px
+  // wide and the panel is ~430: without this the calendar was cut off at
+  // the rail's edge.
+  portal?: boolean;
 };
+
+// True on a phone-width screen. False where there is no matchMedia.
+const NARROW_QUERY = "(max-width: 520px)";
+function useNarrowViewport(): boolean {
+  const read = () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(NARROW_QUERY).matches;
+  const [narrow, setNarrow] = useState<boolean>(read);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia(NARROW_QUERY);
+    const on = () => setNarrow(mq.matches);
+    on();
+    mq.addEventListener?.("change", on);
+    return () => mq.removeEventListener?.("change", on);
+  }, []);
+  return narrow;
+}
 
 function clampISO(iso: ISODate | null, min?: ISODate, max?: ISODate): ISODate | null {
   if (!iso) return iso;
@@ -75,23 +112,50 @@ export function DateRangePicker({
   className,
   disabled = false,
   ariaLabel,
-  months = 2,
+  months: monthsProp = 2,
   format = "days",
+  portal = false,
 }: DateRangePickerProps) {
+  // 2026-10-07 (round 9): on a phone the panel is one month with the
+  // presets as a wrapping row above it. Side by side it was ~400 px wide -
+  // wider than a 390 px screen, so the calendar's last columns and the end
+  // date were cut off inside the filters sheet.
+  const narrow = useNarrowViewport();
+  const months = narrow ? 1 : monthsProp;
   const today = useMemo(() => parseISO(todayProp) || todayYMD(), [todayProp]);
+  // The first month the calendar shows. With a value: the value's month.
+  // Without one: the month the DATA ends in (2026-10-07 - it used to open
+  // on today's month, a page of disabled days for a table that stops in
+  // 2017), placed last when two months are shown so both are inside the
+  // data; today's month only when the data's range is not known.
+  const homeView = (): YMD => {
+    const picked = parseISO(value.from) || parseISO(value.to);
+    if (picked) return { y: picked.y, m: picked.m, d: 1 };
+    const max = parseISO(maxDate);
+    if (max) {
+      const min = parseISO(minDate);
+      const first = addMonths({ y: max.y, m: max.m, d: 1 }, -(months - 1));
+      // A table that lives inside one month: that month first.
+      return min && compareYMD(first, { y: min.y, m: min.m, d: 1 }) < 0 ? { y: min.y, m: min.m, d: 1 } : first;
+    }
+    return { y: today.y, m: today.m, d: 1 };
+  };
   const [draft, setDraft] = useState<DateRange>(value);
   const [anchor, setAnchor] = useState<YMD | null>(null); // first click of a new range
   const [hover, setHover] = useState<YMD | null>(null);
-  const [view, setView] = useState<YMD>(() => { const s = parseISO(value.from) || parseISO(value.to) || today; return { y: s.y, m: s.m, d: 1 }; });
+  const [view, setView] = useState<YMD>(homeView);
   const [open, setOpen] = useState(false);
 
-  // Resync the draft whenever the panel opens or the committed value changes.
+  // Resync the draft whenever the panel opens, the committed value changes
+  // or the data's bounds arrive.
   useEffect(() => {
     setDraft(value);
     setAnchor(null);
-    const s = parseISO(value.from) || parseISO(value.to) || today;
-    setView({ y: s.y, m: s.m, d: 1 });
-  }, [value.from, value.to, open]); // eslint-disable-line react-hooks/exhaustive-deps
+    setView(homeView());
+  }, [value.from, value.to, open, minDate, maxDate]); // eslint-disable-line react-hooks/exhaustive-deps
+  const preset = useMemo(() => presetAnchor(today, maxDate), [today, maxDate]);
+  const presetLabel = (p: DateRangePreset) => (preset.onData && p.dataLabel ? (typeof p.dataLabel === "function" ? p.dataLabel(preset.anchor) : p.dataLabel) : p.label);
+  const presetRange = (p: DateRangePreset): DateRange => { const r = p.range(preset.anchor); return { from: clampISO(r.from, minDate, maxDate), to: clampISO(r.to, minDate, maxDate) }; };
 
   const active = !!(value.from || value.to);
   const a11yLabel = ariaLabel || (typeof label === "string" ? label : "Date range");
@@ -122,7 +186,7 @@ export function DateRangePicker({
     return { s, e };
   }, [anchor, hover, draft]);
 
-  const activePresetId = presets.find((p) => { const r = p.range(today); return r.from === draft.from && r.to === draft.to; })?.id;
+  const activePresetId = presets.find((p) => { const r = presetRange(p); return r.from === draft.from && r.to === draft.to; })?.id;
 
   const summaryText = (() => {
     const s = parseISO(draft.from), e = parseISO(draft.to);
@@ -141,6 +205,7 @@ export function DateRangePicker({
       className={className}
       onOpenChange={setOpen}
       autoFocus={false}
+      portal={portal}
       trigger={(api) =>
         variant === "chip" ? (
           <FilterChip
@@ -169,25 +234,34 @@ export function DateRangePicker({
       }
     >
       {({ close }) => (
-        <div className="flex w-max max-w-[calc(100vw-32px)]">
-          <div className="flex w-[148px] shrink-0 flex-col gap-0.5 border-r border-border p-2">
-            <div className="px-2 pb-1 pt-1 text-caption font-medium uppercase tracking-caps text-muted">Presets</div>
+        <div className={cn("flex", narrow ? "w-[min(326px,calc(100vw-48px))] flex-col" : "w-max max-w-[calc(100vw-32px)]")} data-layout={narrow ? "stacked" : "side"}>
+          <div
+            className={cn("flex shrink-0 gap-0.5 border-border p-2", narrow ? "flex-row flex-wrap border-b" : "flex-col border-r", !narrow && (preset.onData ? "w-[176px]" : "w-[148px]"))}
+            data-preset-anchor={preset.onData ? "data" : "today"}
+          >
+            <div className={cn("px-2 pb-1 pt-1 text-caption font-medium uppercase tracking-caps text-muted", narrow && "w-full")}>Presets</div>
             {presets.map((p) => (
               <button
                 key={p.id}
                 type="button"
-                onClick={() => { const r = p.range(today); onChange({ from: clampISO(r.from, minDate, maxDate), to: clampISO(r.to, minDate, maxDate) }); close(); }}
+                data-preset={p.id}
+                onClick={() => { onChange(presetRange(p)); close(); }}
                 className={cn(
-                  "ui-focus rounded-[6px] px-2 py-1.5 text-left text-[13px] font-medium",
+                  "ui-focus whitespace-nowrap rounded-[6px] px-2 py-1.5 text-left text-[13px] font-medium",
                   activePresetId === p.id ? "bg-tint text-brand-ink" : "text-text hover:bg-subtle"
                 )}
               >
-                {p.label}
+                {presetLabel(p)}
               </button>
             ))}
+            {preset.onData && maxDate && (
+              <div className={cn("px-2 pb-1 text-[11.5px] leading-snug text-muted", narrow ? "w-full pt-1" : "mt-auto pt-2")} data-preset-note="">
+                The data ends {formatRange(maxDate, maxDate)}.
+              </div>
+            )}
           </div>
-          <div className="flex flex-col gap-3 p-3">
-            <div className={cn("grid gap-4", months === 2 ? "grid-cols-2" : "grid-cols-1")}>
+          <div className="flex min-w-0 flex-col gap-3 p-3">
+            <div className={cn("grid gap-4", months === 2 ? "grid-cols-2" : "grid-cols-1", narrow && "justify-items-center")}>
               {Array.from({ length: months }, (_, i) => addMonths(view, i)).map((mv, i) => (
                 <MonthGrid
                   key={`${mv.y}-${mv.m}`}
@@ -206,7 +280,7 @@ export function DateRangePicker({
                 />
               ))}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <Input
                 type="date"
                 aria-label="Start date"
@@ -305,8 +379,11 @@ function MonthGrid({
               onFocus={() => onHover(d)}
               className={cn(
                 "ui-focus-inset h-[26px] leading-[26px] transition-colors",
-                outside ? "text-faint" : "text-text",
-                disabled && "cursor-not-allowed text-faint/60",
+                // A day outside the data reads as unavailable. (It used to
+                // carry both text-text and text-faint/60 - the second is not
+                // a class Tailwind can build from a CSS-variable colour, so a
+                // disabled day looked exactly like an enabled one.)
+                disabled ? "cursor-not-allowed text-faint opacity-40" : outside ? "text-faint" : "text-text",
                 within && !start && !end && "bg-tint text-brand-ink",
                 (start || end) && "bg-primary font-semibold text-white",
                 start && !end && "rounded-l-[6px]",
