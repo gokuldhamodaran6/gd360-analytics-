@@ -38,6 +38,7 @@ from ..deps import get_current_user
 from ..schemas_extra import ChatRequestFull, VerifyRequest
 from ..services import ai_engine, data_access_rules, learned_answers, query_builder, warehouse_tables, workspace_access
 from ..services.profile_cache import cached_exact_total_rows
+from ..services.warehouse_exec import clean_warehouse_error
 from ..services.transforms import apply_transform_steps, describe_transform
 from ..services.connectors import (
     BigQueryConnector, SnowflakeConnector, SQLConnector, MongoConnector, QueryTooExpensive, ReadOnlyViolation,
@@ -306,7 +307,11 @@ def _execute_sql_attempt(
         label = "giving up" if is_retry else "will retry once with the error shown to the model"
         print(f"[chat] {kind} pushdown query failed, {label}: {e}")
         _log_pushdown(db, user_id, ds.id, kind, sql, None, "error", str(e))
-        return {"retry": not is_retry, "attempt": {"sql": sql, "status": "error", "error": str(e)}}
+        # 2026-10-07: the attempt the person sees (and the model's one retry
+        # reads) carries the database's own sentence - not the driver class,
+        # the echoed statement and a documentation link. The full text is in
+        # the log line and the audit row just above.
+        return {"retry": not is_retry, "attempt": {"sql": sql, "status": "error", "error": clean_warehouse_error(e)}}
 
 
 def _daily_budget_exhausted(db: Session, ds: models.DataSource, user_id: str) -> bool:
@@ -431,7 +436,7 @@ def _run_sql_pushdown_cycle(
         # Nothing in the cycle is supposed to raise past here; this is the
         # last-line guard that keeps a surprise from turning into a 500.
         print(f"[chat] {ds.kind} pushdown cycle raised unexpectedly: {e}")
-        outcome.attempts.append({"sql": None, "status": "error", "error": str(e)})
+        outcome.attempts.append({"sql": None, "status": "error", "error": clean_warehouse_error(e)})
     outcome.duration_ms = int((time.perf_counter() - started) * 1000)
     return outcome
 
@@ -576,7 +581,7 @@ def _try_mongo_pushdown(
     except Exception as e:
         print(f"[chat] Mongo pushdown query failed: {e}")
         _log_pushdown(db, user_id, ds.id, "mongodb", log_text, None, "error", str(e))
-        outcome.attempts.append({"sql": log_text, "status": "error", "error": str(e)})
+        outcome.attempts.append({"sql": log_text, "status": "error", "error": clean_warehouse_error(e)})
     outcome.duration_ms = int((time.perf_counter() - started) * 1000)
     return outcome
 
@@ -1025,7 +1030,7 @@ def _validate_definition(
     except Exception as e:
         print(f"[chat] {ds.kind} table definition failed validation{' (retry)' if is_retry else ''}: {e}")
         _log_pushdown(db, user_id, ds.id, ds.kind, definition_sql, None, "error", str(e))
-        return {"retry": not is_retry, "attempt": {"sql": definition_sql, "status": "error", "error": str(e)}}
+        return {"retry": not is_retry, "attempt": {"sql": definition_sql, "status": "error", "error": clean_warehouse_error(e)}}
     if not columns:
         err = "The query returned no columns."
         _log_pushdown(db, user_id, ds.id, ds.kind, definition_sql, None, "error", err)
@@ -1215,7 +1220,7 @@ def _build_warehouse_table(
             outcome.bytes_scanned = count_bytes if count_bytes is not None else final.get("estimated_bytes")
     except Exception as e:
         print(f"[chat] {ds.kind} saved-query creation raised unexpectedly: {e}")
-        outcome.attempts.append({"sql": None, "status": "error", "error": str(e)})
+        outcome.attempts.append({"sql": None, "status": "error", "error": clean_warehouse_error(e)})
     outcome.duration_ms = int((time.perf_counter() - started) * 1000)
     return outcome
 

@@ -62,6 +62,7 @@ from ..services.profiling import (
     profile_dataframe,
 )
 from ..services.pushdown_budget import log_pushdown, todays_pushdown_bytes
+from ..services.warehouse_exec import clean_warehouse_error
 from ..services.dtype_utils import normalize_dtypes_dict, coerce_dates_for_json
 
 router = APIRouter(prefix="/datasources", tags=["datasources"])
@@ -256,7 +257,8 @@ def connect_database(
         connector.test_connection()
         schema = connector.introspect_schema()
     except Exception as e:
-        raise HTTPException(400, f"Could not connect: {e}")
+        print(f"[datasources] could not connect ({payload.kind}): {e}")
+        raise HTTPException(400, f"Could not connect: {clean_warehouse_error(e)}")
 
     secret_blob = f"{payload.username}␟{payload.password}"
     ds = models.DataSource(
@@ -308,7 +310,8 @@ def connect_warehouse(
             connector.test_connection()
             schema = connector.introspect_schema()
         except Exception as e:
-            raise HTTPException(400, f"Could not connect: {e}")
+            print(f"[datasources] could not connect ({payload.kind}): {e}")
+            raise HTTPException(400, f"Could not connect: {clean_warehouse_error(e)}")
 
         ds = models.DataSource(
             owner_id=user.id,
@@ -334,7 +337,8 @@ def connect_warehouse(
             connector.test_connection()
             schema = connector.introspect_schema()
         except Exception as e:
-            raise HTTPException(400, f"Could not connect: {e}")
+            print(f"[datasources] could not connect ({payload.kind}): {e}")
+            raise HTTPException(400, f"Could not connect: {clean_warehouse_error(e)}")
 
         ds = models.DataSource(
             owner_id=user.id,
@@ -1479,7 +1483,8 @@ def preview_datasource(
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(400, f"Could not run this saved query inside your warehouse: {e}")
+            print(f"[datasources] saved query sample failed for {ds.id}: {e}")
+            raise HTTPException(400, f"Could not run this saved query inside your warehouse: {clean_warehouse_error(e)}")
         out = _sample_rows_response(ds, df, None, n)
         out.update({
             "version_id": active_version.id,
@@ -2690,7 +2695,7 @@ def download_warehouse_version(
         raise HTTPException(400, str(e))
     except Exception as e:
         log_pushdown(db, user.id, ds.id, ds.kind, sql, None, "error", str(e))
-        raise HTTPException(400, f"Could not run this saved query inside your warehouse: {e}")
+        raise HTTPException(400, f"Could not run this saved query inside your warehouse: {clean_warehouse_error(e)}")
 
     def _with_header():
         yield header

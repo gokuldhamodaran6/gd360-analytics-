@@ -377,6 +377,7 @@ contract the frontend depends on:
 """
 import copy
 import gc
+import json
 import re
 import secrets
 import time
@@ -703,6 +704,207 @@ def _metric_kpi_or_gauge_config(
     return _kpi_or_gauge_config(value, block_type, metric.name, recipe, target_value, max_value)
 
 
+# A recipe's `time_grain` -> the pandas period it is bucketed by.
+_RECIPE_TIME_FREQ = {"day": "D", "week": "W", "month": "M", "quarter": "Q", "year": "Y"}
+
+# 2026-10-07 (real end-to-end run): what a FILE block's recipe can hold
+# beyond the manual form's one measure over one group-by. A proposal's
+# "Top markets: bookings, cancellation rate, ADR by country" table is
+# several (aggregation, column) measures over one group-by; "Hotel and
+# segment detail" groups by two columns; a trend split by segment is a
+# time bucket plus a series column. None of that needs an expression or a
+# filter, so pandas computes it the same way the warehouse would.
+_MAX_RECIPE_MEASURES = 6
+_MAX_RECIPE_GROUP_BY = 3
+_KPI_SPARKLINE_MAX_POINTS = 60
+_RECIPE_AGG_LABEL = {"sum": "Sum", "avg": "Average", "count": "Count", "min": "Min", "max": "Max"}
+
+
+def _recipe_alias(raw, agg: str, column: str | None, taken: set[str]) -> str:
+    """The result column a measure is written to: the proposal's own
+    alias ("bookings", "cancellation_rate"), else "<agg>_<column>". Never
+    a name another column of the result already has."""
+    base = re.sub(r"[^A-Za-z0-9_]+", "_", str(raw or "")).strip("_")
+    if not base:
+        base = f"{agg}_{re.sub(r'[^A-Za-z0-9_]+', '_', str(column or 'rows')).strip('_') or 'rows'}".lower()
+    candidate, n = base, 2
+    while candidate in taken:
+        candidate = f"{base}_{n}"
+        n += 1
+    taken.add(candidate)
+    return candidate
+
+
+def _bucket_dates(series: pd.Series, grain: str | None) -> pd.Series | None:
+    """`series` as the first day of the period each date falls in
+    ("2016-03-01"), or None when the column holds no dates."""
+    freq = _RECIPE_TIME_FREQ.get(str(grain or "").lower())
+    if not freq:
+        return None
+    as_dates = series
+    if not pd.api.types.is_datetime64_any_dtype(as_dates):
+        as_dates = pd.to_datetime(as_dates, errors="coerce")
+    if not as_dates.notna().any():
+        return None
+    try:
+        as_dates = as_dates.dt.tz_localize(None)
+    except (TypeError, AttributeError):
+        pass
+    return as_dates.dt.to_period(freq).dt.start_time.dt.strftime("%Y-%m-%d")
+
+
+def _recipe_order(frame: pd.DataFrame, recipe: dict, group_cols: list[str], default_by: str | None, chronological: bool) -> pd.DataFrame:
+    """Rows in the order the recipe asks for (`order_by`: [{by, dir}] - a
+    result column, or "period" for the time bucket), else in time order
+    for a trend, else by the first measure, largest first."""
+    by: list[str] = []
+    ascending: list[bool] = []
+    for o in recipe.get("order_by") or []:
+        if not isinstance(o, dict):
+            continue
+        name = o.get("by")
+        if name == "period" and chronological and group_cols:
+            name = group_cols[0]
+        if name in frame.columns and name not in by:
+            by.append(name)
+            ascending.append(str(o.get("dir") or "asc").lower() != "desc")
+    if not by:
+        if chronological:
+            return frame
+        if default_by and default_by in frame.columns:
+            by, ascending = [default_by], [False]
+    if not by:
+        return frame
+    return frame.sort_values(by=by, ascending=ascending, kind="stable")
+
+
+def _run_grouped_measures(df: pd.DataFrame, recipe: dict, existing_title: str | None = None) -> tuple[str, dict, str]:
+    """A table or a chart over one OR MORE group-by columns with one OR
+    MORE plain measures - _run_manual_recipe's branch for a recipe that
+    carries `measures` ([{alias, agg, column}]) / `group_by` ([columns]).
+    Same error contract (ValueError with the sentence to show)."""
+    block_type = recipe.get("block_type")
+    raw_measures = [m for m in (recipe.get("measures") or []) if isinstance(m, dict)]
+    if not raw_measures:
+        raw_measures = [{"alias": recipe.get("alias"), "agg": recipe.get("agg"), "column": recipe.get("metric_column")}]
+    if len(raw_measures) > _MAX_RECIPE_MEASURES:
+        raise ValueError(f"A block can show at most {_MAX_RECIPE_MEASURES} measures.")
+    group_cols = [g for g in (recipe.get("group_by") or []) if g]
+    if not group_cols and recipe.get("group_by_column"):
+        group_cols = [recipe["group_by_column"]]
+    if not group_cols:
+        raise ValueError("Pick a column to group by for a table or a chart.")
+    if len(group_cols) > _MAX_RECIPE_GROUP_BY:
+        raise ValueError(f"A block can group by at most {_MAX_RECIPE_GROUP_BY} columns.")
+    for g in group_cols:
+        if g not in df.columns:
+            raise ValueError(f'Column "{g}" was not found in this data.')
+
+    taken = set(group_cols)
+    measures: list[dict] = []
+    for i, m in enumerate(raw_measures):
+        agg, column = m.get("agg"), m.get("column")
+        if agg not in _MANUAL_AGG_FUNCS:
+            raise ValueError("Unknown aggregation.")
+        count_rows = agg == "count" and (not column or (i == 0 and recipe.get("count_rows")))
+        if not count_rows:
+            if column not in df.columns:
+                raise ValueError(f'Column "{column}" was not found in this data.')
+            if agg in _MANUAL_AGG_NEEDS_NUMERIC and not pd.api.types.is_numeric_dtype(df[column]):
+                raise ValueError(
+                    f'"{column}" isn\'t a numeric column, so it can\'t be summed or averaged - '
+                    "try Count, Min, or Max instead, or pick a numeric column."
+                )
+        measures.append({"alias": _recipe_alias(m.get("alias"), agg, column, taken), "agg": agg,
+                         "column": None if count_rows else column})
+
+    work = df
+    chronological = False
+    bucketed = _bucket_dates(df[group_cols[0]], recipe.get("time_grain"))
+    if bucketed is not None:
+        work = df.assign(**{group_cols[0]: bucketed})
+        chronological = True
+    grouped = work.groupby(group_cols, sort=True)
+    series: dict[str, pd.Series] = {}
+    for m in measures:
+        if m["column"] is None:
+            series[m["alias"]] = grouped.size()
+        else:
+            series[m["alias"]] = grouped[m["column"]].agg(_MANUAL_AGG_FUNCS[m["agg"]])
+    frame = pd.DataFrame(series)
+    frame.index.names = group_cols
+    frame = frame.reset_index()
+    frame = _recipe_order(frame, recipe, group_cols, measures[0]["alias"], chronological)
+
+    single_category_axis = len(group_cols) == 1 and not chronological
+    if block_type == "table":
+        cap = _MAX_TABLE_ROWS_PER_BLOCK
+    else:
+        cap = 50 if single_category_axis else 2000
+    try:
+        wanted = int(recipe.get("limit")) if recipe.get("limit") else cap
+    except (TypeError, ValueError):
+        wanted = cap
+    limit = max(1, min(cap, wanted))
+    truncated = len(frame) > limit
+    # A trend keeps its latest periods; anything else its first rows.
+    frame = frame.tail(limit) if chronological and not recipe.get("order_by") else frame.head(limit)
+
+    names = ", ".join(
+        f"{_RECIPE_AGG_LABEL[m['agg']]} of {m['column']}" if m["column"] else "Count of rows" for m in measures
+    )
+    default_title = f"{names} by {', '.join(group_cols)}"
+    tidy = chart_builder.result_to_tidy(frame)
+    stored = {**recipe, "measures": measures, "group_by": group_cols}
+    if block_type == "table":
+        config = {
+            "columns": [c["name"] for c in (tidy["columns"] if tidy else [])],
+            "rows": tidy["rows"] if tidy else [],
+            "truncated": truncated,
+            "recipe": stored,
+        }
+        return "table", config, default_title
+
+    ct = (recipe.get("chart_type") or ("line" if chronological else "bar")).lower().strip()
+    config = {"recipe": stored, "chart_type": ct}
+    if tidy:
+        config["result_columns"] = tidy["columns"]
+        config["result_rows"] = tidy["rows"]
+    # A Plotly figure for the surfaces that still read one (exports, the
+    # older canvas editor) - best effort; the dashboard draws from the rows.
+    try:
+        wide = None
+        if len(group_cols) == 1:
+            wide = frame.set_index(group_cols[0])
+        elif len(group_cols) == 2 and len(measures) == 1:
+            wide = frame.pivot_table(index=group_cols[0], columns=group_cols[1], values=measures[0]["alias"], aggfunc="sum")
+        if wide is not None and not wide.empty:
+            wide.index.name = group_cols[0]
+            figure_type = ct if ct in ("line", "area", "stacked_bar", "grouped_bar", "stacked_area") else "grouped_bar"
+            config["chart_spec"] = chart_builder.build_figure(wide, figure_type, title=existing_title or default_title)
+    except Exception as e:
+        print(f"[dashboard_builder] no Plotly figure for a multi-measure file chart (non-fatal): {e}")
+    return "chart", config, default_title
+
+
+def _kpi_trend(df: pd.DataFrame, recipe: dict, metric_column: str | None, agg_func: str, count_rows: bool) -> list | None:
+    """The KPI's own number per period over `recipe["trend_column"]` (the
+    dashboard's date column), oldest first - the tile's sparkline, the same
+    line a warehouse KPI draws. None when there is no such column or it
+    holds no dates."""
+    column = recipe.get("trend_column")
+    if not column or column not in df.columns:
+        return None
+    bucketed = _bucket_dates(df[column], recipe.get("trend_grain") or "month")
+    if bucketed is None:
+        return None
+    grouped = df.groupby(bucketed, sort=True)
+    values = grouped.size() if count_rows else grouped[metric_column].agg(agg_func)
+    points = [_safe_float(v, None) if pd.notna(v) else None for v in values.tail(_KPI_SPARKLINE_MAX_POINTS).tolist()]
+    points = [v for v in points if v is not None]
+    return points if len(points) > 1 else None
+
+
 def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | None = None) -> tuple[str, dict, str]:
     """The actual column + aggregation computation behind both
     build_manual_block (a fresh build) and preview_filtered_blocks (a
@@ -731,47 +933,98 @@ def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | Non
     block_type = recipe.get("block_type")
     chart_type = recipe.get("chart_type")
 
-    if agg not in _MANUAL_AGG_FUNCS:
-        raise ValueError("Unknown aggregation.")
     if block_type not in ("kpi", "table", "chart", "gauge", "donut", "sparkline", "avatar_list"):
         raise ValueError("Unknown block type.")
-    if metric_column not in df.columns:
-        raise ValueError(f'Column "{metric_column}" was not found in this data.')
-    if agg in _MANUAL_AGG_NEEDS_NUMERIC and not pd.api.types.is_numeric_dtype(df[metric_column]):
-        raise ValueError(
-            f'"{metric_column}" isn\'t a numeric column, so it can\'t be summed or averaged - '
-            "try Count, Min, or Max instead, or pick a numeric column."
-        )
+    # 2026-10-07: several measures and/or several group-by columns (a
+    # proposal's detail table, a trend split by segment) - see
+    # _run_grouped_measures. Every other block type shows one measure over
+    # one group-by and keeps the path below.
+    if block_type in ("table", "chart") and (recipe.get("measures") or len(recipe.get("group_by") or []) > 1):
+        return _run_grouped_measures(df, recipe, existing_title)
+
+    if agg not in _MANUAL_AGG_FUNCS:
+        raise ValueError("Unknown aggregation.")
+    # `count_rows`: a count with no column of its own (a proposal's
+    # "bookings") counts ROWS - never the non-null values of whichever
+    # column happens to come first in the file.
+    count_rows = agg == "count" and bool(recipe.get("count_rows"))
+    if not count_rows:
+        if metric_column not in df.columns:
+            raise ValueError(f'Column "{metric_column}" was not found in this data.')
+        if agg in _MANUAL_AGG_NEEDS_NUMERIC and not pd.api.types.is_numeric_dtype(df[metric_column]):
+            raise ValueError(
+                f'"{metric_column}" isn\'t a numeric column, so it can\'t be summed or averaged - '
+                "try Count, Min, or Max instead, or pick a numeric column."
+            )
     agg_func = _MANUAL_AGG_FUNCS[agg]
-    agg_label = {"sum": "Sum", "avg": "Average", "count": "Count", "min": "Min", "max": "Max"}[agg]
+    agg_label = _RECIPE_AGG_LABEL[agg]
+    measure_words = "Count of rows" if count_rows else f"{agg_label} of {metric_column}"
+    # The result column the measure is written to: the proposal's alias
+    # ("bookings") when the recipe carries one, else the source column's
+    # own name (what a manually-built block has always used).
+    value_name = metric_column
+    if recipe.get("alias") and (not group_by_column or recipe["alias"] != group_by_column):
+        value_name = re.sub(r"[^A-Za-z0-9_]+", "_", str(recipe["alias"])).strip("_") or metric_column
+    if count_rows and not value_name:
+        value_name = "rows"
+
+    def _aggregate(grouped):
+        return grouped.size() if count_rows else grouped[metric_column].agg(agg_func)
 
     if block_type in ("kpi", "gauge"):
-        value = df[metric_column].agg(agg_func)
+        value = len(df) if count_rows else df[metric_column].agg(agg_func)
         # pandas .agg() returns a numpy scalar (e.g. numpy.float64), not a
         # plain Python number - .item() converts it, since neither the
         # JSON DB column nor the API response can serialize a numpy type
         # directly (this would otherwise 500 on commit).
         value = value.item() if hasattr(value, "item") else value
-        default_title = f"{agg_label} of {metric_column}"
-        return _kpi_or_gauge_config(
+        default_title = measure_words
+        shaped = _kpi_or_gauge_config(
             value, block_type, default_title, recipe, recipe.get("target_value"), recipe.get("max_value"),
         )
+        if block_type == "kpi":
+            # 2026-10-07: the tile's sparkline, when the dashboard has a
+            # date column (recipe.trend_column) - recomputed with the
+            # value on every filter change, like the value itself.
+            try:
+                trend = _kpi_trend(df, recipe, metric_column, agg_func, count_rows)
+            except Exception as e:
+                print(f"[dashboard_builder] KPI trend could not be computed (non-fatal): {e}")
+                trend = None
+            if trend:
+                shaped[1]["sparkline"] = trend
+                shaped[1]["sparkline_grain"] = str(recipe.get("trend_grain") or "month")
+        return shaped
 
     if not group_by_column:
         raise ValueError("Pick a column to group by for a table, chart, donut, sparkline, or top list.")
     if group_by_column not in df.columns:
         raise ValueError(f'Column "{group_by_column}" was not found in this data.')
 
+    # 2026-10-07: a recipe with a `time_grain` (a trend proposed over a date
+    # column - see _spec_to_recipe) groups by the PERIOD each date falls
+    # in, in time order, never by the raw dates ranked by value.
+    group_key: Any = group_by_column
+    chronological = False
+    bucketed = _bucket_dates(df[group_by_column], recipe.get("time_grain"))
+    if bucketed is not None:
+        group_key = bucketed.rename(group_by_column)
+        chronological = True
+    # The measure's result column must not collide with the group column
+    # ("count of Hotel by Hotel").
+    if value_name == group_by_column:
+        value_name = f"{agg}_{value_name}"
+
     if block_type == "sparkline":
         # Deliberately NOT value-sorted (unlike every other grouped branch
         # below) - a trend's whole point is order, not rank. pandas'
         # groupby default (sort=True) sorts by the group KEY itself, which
         # reads as chronological for a date/sequence group-by column.
-        grouped = df.groupby(group_by_column, sort=True)[metric_column].agg(agg_func).tail(30)
+        grouped = _aggregate(df.groupby(group_key, sort=True)).tail(30)
         grouped_df = grouped.reset_index()
-        grouped_df.columns = [group_by_column, metric_column]
-        default_title = f"{agg_label} of {metric_column} by {group_by_column}"
-        series = [_safe_float(v, None) if pd.notna(v) else None for v in grouped_df[metric_column].tolist()]
+        grouped_df.columns = [group_by_column, value_name]
+        default_title = f"{measure_words} by {group_by_column}"
+        series = [_safe_float(v, None) if pd.notna(v) else None for v in grouped_df[value_name].tolist()]
         clean = [v for v in series if v is not None]
         current = clean[-1] if clean else None
         first = clean[0] if clean else None
@@ -786,19 +1039,29 @@ def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | Non
         }
         return "sparkline", config, default_title
 
-    grouped = (
-        df.groupby(group_by_column)[metric_column]
-        .agg(agg_func)
-        .sort_values(ascending=False)
-        .head(8 if block_type == "avatar_list" else (50 if block_type in ("chart", "donut") else _MAX_TABLE_ROWS_PER_BLOCK))
-    )
+    row_cap = 8 if block_type == "avatar_list" else (50 if block_type in ("chart", "donut") else _MAX_TABLE_ROWS_PER_BLOCK)
+    try:
+        wanted = int(recipe.get("limit")) if recipe.get("limit") else row_cap
+    except (TypeError, ValueError):
+        wanted = row_cap
+    limit = max(1, min(row_cap, wanted))
     # Named columns, not the generic "label"/"value" that
     # chart_builder.result_to_tidy would otherwise fall back to for a bare
     # Series - so a manually-built table's headers read as "region" /
     # "revenue", not "label" / "value".
-    grouped_df = grouped.reset_index()
-    grouped_df.columns = [group_by_column, metric_column]
-    default_title = f"{agg_label} of {metric_column} by {group_by_column}"
+    if chronological:
+        grouped_df = _aggregate(df.groupby(group_key, sort=True)).tail(max(row_cap, 120)).reset_index()
+        grouped_df.columns = [group_by_column, value_name]
+    else:
+        grouped_df = _aggregate(df.groupby(group_by_column)).reset_index()
+        grouped_df.columns = [group_by_column, value_name]
+        # 2026-10-07: a recipe that came from a proposal keeps the order
+        # and the row limit its spec asked for ("revenue by year", in year
+        # order - not the three years ranked by revenue); a manually-built
+        # block has neither and stays largest first.
+        grouped_df = _recipe_order(grouped_df, recipe, [group_by_column], value_name, False).head(limit)
+    default_title = f"{measure_words} by {group_by_column}"
+    metric_column = value_name
 
     if block_type == "chart":
         ct = (chart_type or "bar").lower().strip()
@@ -1871,6 +2134,34 @@ def _snapshot_block_config(block: models.DashboardBlock) -> None:
     block.previous_config = {"type": block.type, "config": block.config}
 
 
+# 2026-10-07 (real end-to-end run): a block's title used to be written
+# once - from the question it was first built with, or from its first
+# query - and never again, so after "Change with AI" or "Edit query" the
+# card still carried the OLD question as its name. config.title_auto marks
+# a title GD360 wrote: while it is set, a new prompt / a new query writes
+# the title again; the moment the person renames the block (update_block,
+# or an explicit title on set_block_spec) the mark is removed and the
+# title is theirs for good. A block whose title was typed is never touched.
+
+def _title_is_auto(block: models.DashboardBlock) -> bool:
+    return not block.title or bool((block.config or {}).get("title_auto"))
+
+
+def _set_auto_title(block: models.DashboardBlock, title: str | None) -> None:
+    """Writes a system-generated title and marks it (config.title_auto).
+    Call AFTER block.config has been assigned its new value."""
+    clean = (title or "").strip()[:120]
+    if not clean:
+        return
+    block.title = clean
+    block.config = {**(block.config or {}), "title_auto": True}
+
+
+def _clear_auto_title(block: models.DashboardBlock) -> None:
+    if (block.config or {}).get("title_auto") is not None:
+        block.config = {k: v for k, v in (block.config or {}).items() if k != "title_auto"}
+
+
 def _page_out(page: models.DashboardPage) -> schemas.DashboardPageOut:
     blocks = [
         schemas.DashboardBlockOut(
@@ -2622,7 +2913,11 @@ def generate_dashboard(
     if conv.datasource_id:
         try:
             hist_ds = db.query(models.DataSource).filter(models.DataSource.id == conv.datasource_id).first()
-            if hist_ds and workspace_access.can_edit_datasource(db, hist_ds, user):
+            # 2026-10-07: never for a warehouse/database source - its rows
+            # are not loaded into the app, not even to suggest filters
+            # (a warehouse dashboard's filters are its parameter rail).
+            if hist_ds and not dashboard_engine.is_warehouse_native(hist_ds) \
+                    and workspace_access.can_edit_datasource(db, hist_ds, user):
                 hist_df = load_dataframe(hist_ds, table=None, version="original", db=db)
                 hist_df = data_access_rules.filter_dataframe_for_role(db, hist_df, hist_ds, user)
                 suggested_filter_cols = _suggest_filter_columns(hist_df)
@@ -2743,10 +3038,15 @@ def create_from_template(
     # like the chat-history path above: no data source, or a load/access
     # failure, just means no filters get suggested.
     suggested_filter_cols: list[str] = []
+    tmpl_native = False
     if conv.datasource_id:
         try:
             tmpl_ds = db.query(models.DataSource).filter(models.DataSource.id == conv.datasource_id).first()
-            if tmpl_ds and workspace_access.can_edit_datasource(db, tmpl_ds, user):
+            # 2026-10-07: never for a warehouse/database source - its rows
+            # are not loaded into the app, not even to suggest filters
+            # (a warehouse dashboard's filters are its parameter rail).
+            tmpl_native = dashboard_engine.is_warehouse_native(tmpl_ds)
+            if tmpl_ds and not tmpl_native and workspace_access.can_edit_datasource(db, tmpl_ds, user):
                 tmpl_df = load_dataframe(tmpl_ds, table=None, version="original", db=db)
                 tmpl_df = data_access_rules.filter_dataframe_for_role(db, tmpl_df, tmpl_ds, user)
                 suggested_filter_cols = _suggest_filter_columns(tmpl_df)
@@ -2774,7 +3074,13 @@ def create_from_template(
                 type=block_def["type"],
                 title=block_def.get("title"),
                 x=block_def["x"], y=block_def["y"] + y_shift, w=block_def["w"], h=block_def["h"],
-                config=_default_block_config(block_def["type"]),
+                # A template's data block on a warehouse source is "empty,
+                # not built yet" exactly like one create_block adds.
+                config=(
+                    {**_default_block_config(block_def["type"]), "empty": True}
+                    if tmpl_native and block_def["type"] in _DATA_BLOCK_TYPES
+                    else _default_block_config(block_def["type"])
+                ),
                 position=block_position,
             ))
             block_position += 1
@@ -2884,12 +3190,24 @@ def _file_schema(db: Session, ds: models.DataSource, user: models.User) -> tuple
 
 
 def _spec_to_recipe(spec: dict) -> dict | None:
-    """A validated BlockSpec as the manual-build recipe shape (one
-    measure, at most one group-by, five aggregations) - what a FILE
-    source's block runs through _run_manual_recipe at commit time. None
-    when the spec needs more than the recipe can express."""
-    measures = spec.get("measures") or []
-    if len(measures) != 1 or measures[0].get("expr") or measures[0].get("agg") not in ("sum", "avg", "count", "min", "max"):
+    """A validated BlockSpec as the recipe a FILE source's block runs
+    through _run_manual_recipe (pandas, on the complete file): plain
+    measures - sum / average / count / min / max of a column, or a count
+    of rows - over up to three group-by columns, the first of which may be
+    a date bucketed by the spec's time grain. None when the spec needs
+    more than that (an expression, a filter, another aggregation).
+
+    The legacy keys (metric_column / agg / group_by_column) always describe
+    the FIRST measure over the FIRST group-by, so everything that reads a
+    manual recipe keeps working; `measures` / `group_by` are only present
+    when there is more than one of either (2026-10-07 - a proposed
+    multi-measure table used to come back "invalid" on every CSV)."""
+    measures = [m for m in (spec.get("measures") or []) if isinstance(m, dict)]
+    if not measures or len(measures) > _MAX_RECIPE_MEASURES:
+        return None
+    if any(m.get("expr") or m.get("agg") not in _MANUAL_AGG_FUNCS for m in measures):
+        return None
+    if any(m.get("agg") != "count" and not m.get("column") for m in measures):
         return None
     if spec.get("filters"):
         return None
@@ -2897,10 +3215,28 @@ def _spec_to_recipe(spec: dict) -> dict | None:
     time_col = (spec.get("time") or {}).get("column") if spec.get("time") else None
     if time_col:
         group = [time_col] + group
-    if len(group) > 1:
+    if len(group) > _MAX_RECIPE_GROUP_BY:
         return None
     m = measures[0]
-    return {"metric_column": m.get("column"), "agg": m["agg"], "group_by_column": group[0] if group else None}
+    recipe = {"metric_column": m.get("column"), "agg": m["agg"], "group_by_column": group[0] if group else None}
+    if m.get("alias"):
+        recipe["alias"] = m["alias"]
+    if m["agg"] == "count" and not m.get("column"):
+        recipe["count_rows"] = True
+    if time_col:
+        # 2026-10-07 (real end-to-end run): keep the trend's grain. Without
+        # it "bookings by month" on a file became a group-by on every single
+        # DATE, ranked by count - the fifty busiest days joined by a line.
+        recipe["time_grain"] = (spec.get("time") or {}).get("grain") or "month"
+    if len(measures) > 1 or len(group) > 1:
+        recipe["measures"] = [{"alias": x.get("alias"), "agg": x["agg"], "column": x.get("column")} for x in measures]
+        recipe["group_by"] = group
+    order = [{"by": o.get("by"), "dir": o.get("dir") or "asc"} for o in (spec.get("order_by") or []) if isinstance(o, dict) and o.get("by")]
+    if order:
+        recipe["order_by"] = order
+    if spec.get("limit") and group:
+        recipe["limit"] = spec["limit"]
+    return recipe
 
 
 def _metric_to_spec(metric, table: str) -> dict:
@@ -2995,11 +3331,13 @@ def _build_proposal(
     native = dashboard_engine.is_warehouse_native(ds)
     period = dashboard_engine.normalize_period(period, template.get("period") if template else None)
     versions = dashboard_engine.load_versions(db, ds) if native else []
+    file_df = None
+    file_df_failed = False
     if native:
         schema, _ = query_builder.with_version_aliases(ds.schema_cache, versions)
         schema_text = _warehouse_schema_text(ds, None, versions)
     else:
-        schema, _file_df = _file_schema(db, ds, user)
+        schema, file_df = _file_schema(db, ds, user)
         schema_text = "\n".join(
             f"Table `{t}`:\n" + "\n".join(f"  - {c.get('name')} ({c.get('type')})" for c in cols)
             for t, cols in schema.items()
@@ -3109,7 +3447,8 @@ def _build_proposal(
                 recipe = _spec_to_recipe(public)
                 if recipe is None:
                     block["status"], block["error"] = "invalid", (
-                        "A file source block needs one plain measure and at most one group-by (no filters, no expressions)."
+                        "A block on a file needs plain measures (sum, average, count, min or max of a column), at most "
+                        f"{_MAX_RECIPE_GROUP_BY} group-by columns, and no filters or expressions."
                     )
                     blocks_out.append(block)
                     continue
@@ -3118,6 +3457,29 @@ def _build_proposal(
                     recipe["chart_type"] = block["chart_type"] or ("line" if public.get("time") else "bar")
                 if recipe["agg"] == "count" and not recipe.get("metric_column"):
                     recipe["metric_column"] = (query_builder.table_columns(schema, public["table"]) or [{}])[0].get("name")
+                # 2026-10-07: validated for real, like a warehouse block's
+                # zero-row check - the recipe is computed once on the file's
+                # own rows (complete inside the app), so a block that cannot
+                # be computed says why HERE instead of silently missing from
+                # the published dashboard.
+                if file_df is None and not file_df_failed:
+                    try:
+                        file_df = load_dataframe(ds, table=None, version="original", db=db)
+                        file_df = data_access_rules.filter_dataframe_for_role(db, file_df, ds, user)
+                    except Exception as e:
+                        print(f"[dashboard_builder] proposal: the file could not be loaded to check its blocks (non-fatal): {e}")
+                        file_df, file_df_failed = None, True
+                if file_df is not None:
+                    try:
+                        _run_manual_recipe(file_df, dict(recipe), existing_title=title)
+                    except ValueError as e:
+                        block["status"], block["error"] = "invalid", str(e)
+                        blocks_out.append(block)
+                        continue
+                    except Exception as e:
+                        block["status"], block["error"] = "invalid", f"This block could not be computed on the file: {e}"
+                        blocks_out.append(block)
+                        continue
                 block["recipe"] = recipe
             if block["type"] == "chart" and not block["chart_type"]:
                 block["chart_type"] = "line" if public.get("time") else "bar"
@@ -3298,9 +3660,15 @@ def _commit_proposal(
     keep_set = set(keep) if keep else None
     native = proposal["warehouse_native"]
     file_df = None
+    format_schema = None
     if not native:
         file_df = load_dataframe(ds, table=None, version="original", db=db)
         file_df = data_access_rules.filter_dataframe_for_role(db, file_df, ds, user)
+        # Column types for infer_number_format, the same way the proposal saw them.
+        format_schema, _ = _file_schema(db, ds, user)
+    else:
+        # Column types for infer_number_format (real tables + saved-query aliases).
+        format_schema, _ = query_builder.with_version_aliases(ds.schema_cache, dashboard_engine.load_versions(db, ds))
     kept_pages: list[tuple[str, list[dict]]] = []
     for page in proposal["pages"]:
         blocks = [b for b in page["blocks"] if b["status"] == "ok" and (keep_set is None or b["client_id"] in keep_set)]
@@ -3342,18 +3710,45 @@ def _commit_proposal(
                     config["chart_type"] = b.get("chart_type") or ("line" if b["spec"].get("time") else "bar")
                 if btype in ("kpi", "sparkline"):
                     config["label"] = b["spec"]["measures"][0]["alias"]
+                    # 2026-10-07: a KPI that is certainly a share of a
+                    # whole (the average of a 0/1 flag) is shown as a
+                    # percentage; anything less certain is left unset.
+                    inferred = query_builder.infer_number_format(b["spec"], b.get("title"), format_schema)
+                    if inferred:
+                        config["format"] = inferred
+                        config["format_inferred"] = True
+                    if query_builder.infer_good_direction(b["spec"], b.get("title")):
+                        config["good_direction"] = "down"
+                        config["good_direction_inferred"] = True
                 if b.get("from_metric_id"):
                     config["metric_id"] = b["from_metric_id"]
                     config["metric_name"] = b.get("from_metric_name")
                 query_sql = b.get("sql")
             else:
                 recipe = dict(b.get("recipe") or {})
+                if recipe.get("block_type") == "kpi" and proposal.get("date_column") and proposal["date_column"] in file_df.columns:
+                    # The tile's sparkline: the same number per period over
+                    # the dashboard's date column (see _kpi_trend).
+                    recipe["trend_column"] = proposal["date_column"]
+                    recipe["trend_grain"] = proposal.get("period") or "month"
                 try:
                     btype, config, _default_title = _run_manual_recipe(file_df, recipe, existing_title=b["title"])
                 except Exception as e:
                     print(f"[dashboard_builder] proposal block {b['client_id']!r} could not be computed on commit: {e}")
                     continue
-                config = {**config, "recipe": recipe, "intent": b.get("intent")}
+                config = {**config, "intent": b.get("intent")}
+                if btype == "kpi" and b.get("spec"):
+                    # 2026-10-07 (real end-to-end run): same certainty rule
+                    # as a warehouse KPI just above - a file dashboard's
+                    # "Cancellation rate" read 0.37 next to a warehouse
+                    # one's 37.3%.
+                    inferred = query_builder.infer_number_format(b["spec"], b.get("title"), format_schema)
+                    if inferred:
+                        config["format"] = inferred
+                        config["format_inferred"] = True
+                    if query_builder.infer_good_direction(b["spec"], b.get("title")):
+                        config["good_direction"] = "down"
+                        config["good_direction_inferred"] = True
                 if b.get("from_metric_id"):
                     config["metric_id"] = b["from_metric_id"]
             db.add(models.DashboardBlock(
@@ -3697,6 +4092,16 @@ def create_block(
         probe_query_sql = probe.query_sql
     else:
         probe_query_sql = None
+    # 2026-10-07 (block editing round): on a WAREHOUSE dashboard a data
+    # block that starts with nothing in it is marked config.empty so the
+    # run response can tell "added, not built yet" (RunPageOut.
+    # empty_block_ids) apart from a pre-layer block that has a stored
+    # result but no spec (skipped_block_ids alone - "upgrade it").
+    # _store_block_spec removes the marker the moment the block is built.
+    # A file dashboard's empty block is unchanged ({}).
+    if not payload.config and payload.type in _DATA_BLOCK_TYPES \
+            and dashboard_engine.is_warehouse_native(_dashboard_datasource(db, d)):
+        default_config = {**default_config, "empty": True}
     block = models.DashboardBlock(
         page_id=page.id,
         type=payload.type,
@@ -3752,6 +4157,7 @@ def update_block(
         block.w = payload.w
     if payload.h is not None:
         block.h = payload.h
+    renamed = payload.title is not None and (payload.title.strip()[:120] or None) != block.title
     if payload.title is not None:
         block.title = payload.title.strip()[:120] or None
     if payload.config is not None:
@@ -3765,6 +4171,9 @@ def update_block(
         # column untouched. See models.DashboardBlock's own docstring for
         # why this is set explicitly rather than via onupdate.
         block.data_updated_at = datetime.utcnow()
+    if renamed:
+        # The person typed this title: it is no longer GD360's to rewrite.
+        _clear_auto_title(block)
 
     db.commit()
     db.refresh(d)
@@ -3778,6 +4187,74 @@ def delete_block(
     d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
     block = _get_block(db, d, block_id)
     db.delete(block)
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+def _free_slot_below(page: models.DashboardPage, source: models.DashboardBlock) -> tuple[int, int]:
+    """Where a copy of `source` lands: directly below it (same column,
+    same size) when that space is free, else at the bottom of the page in
+    the same column - _place_new_block's own "append below everything"
+    rule. Never overlaps a block and never moves one."""
+    x, y, w, h = source.x, source.y + source.h, source.w, source.h
+    overlaps = any(
+        b.x < x + w and x < b.x + b.w and b.y < y + h and y < b.y + b.h
+        for b in page.blocks
+    )
+    if overlaps:
+        y = max((b.y + b.h for b in page.blocks), default=0)
+    return x, y
+
+
+def _unique_cell_name(page: models.DashboardPage, name: str | None) -> str:
+    """A SQL cell name for a copy: "<name>_copy", then "<name>_copy2",
+    ... - a plain identifier no other sql cell on the page uses (a cell
+    is referenced by name as {{cell:<name>}}, so two cannot share one)."""
+    taken = {(b.config or {}).get("name") for b in page.blocks if b.type == "sql"}
+    base = re.sub(r"[^A-Za-z0-9_]+", "_", str(name or "cell")).strip("_") or "cell"
+    if not re.match(r"[A-Za-z_]", base):
+        base = f"cell_{base}"
+    base = f"{base[:48]}_copy"
+    candidate, n = base, 2
+    while candidate in taken:
+        candidate = f"{base}{n}"
+        n += 1
+    return candidate
+
+
+@router.post("/{dashboard_id}/blocks/{block_id}/duplicate", response_model=schemas.DashboardBuilderOut, status_code=201)
+def duplicate_block(
+    dashboard_id: str, block_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)
+):
+    """Copies one block onto the same page: its type, title ("<title>
+    copy"), config (a deep copy - a spec, a chart type, a stored result,
+    all of it), compiled query_sql and size. The copy lands directly
+    below the original when that space is free, else at the bottom of
+    the page; no other block moves. A SQL cell's copy gets its own
+    unique config.name (cells are referenced by name). Nothing is run or
+    loaded - a spec block's copy computes on the next page run like any
+    other. Comments, the undo snapshot and last_run are not copied."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    source = _get_block(db, d, block_id)
+    page = next((p for p in d.pages if p.id == source.page_id), None)
+    if not page:
+        raise HTTPException(404, "Block not found on this dashboard.")
+    config = copy.deepcopy(source.config) if source.config is not None else {}
+    if source.type == "sql":
+        config["name"] = _unique_cell_name(page, config.get("name"))
+    x, y = _free_slot_below(page, source)
+    db.add(models.DashboardBlock(
+        page_id=page.id,
+        type=source.type,
+        title=(f"{source.title} copy")[:120] if source.title else None,
+        x=x, y=y, w=source.w, h=source.h,
+        config=config,
+        position=max((b.position or 0 for b in page.blocks), default=-1) + 1,
+        query_sql=source.query_sql,
+        # The copy's numbers are exactly as old as the original's.
+        data_updated_at=source.data_updated_at,
+    ))
     db.commit()
     db.refresh(d)
     return _builder_out(db, d, user)
@@ -3846,6 +4323,18 @@ def ask_ai_block(
     block = _get_block(db, d, block_id)
     ds = _resolve_datasource(db, user, d)
 
+    # 2026-10-07 (block editing on a warehouse source): a warehouse/
+    # database source NEVER reaches load_dataframe/analyze below. The
+    # question becomes a BlockSpec the warehouse computes (validated and
+    # dry-run before it is stored, one bounded retry), or a 422 that says
+    # nothing was computed - see _ask_ai_block_warehouse. Everything
+    # below this branch is the file-source path, unchanged.
+    if dashboard_engine.is_warehouse_native(ds):
+        _ask_ai_block_warehouse(db, d, ds, block, payload.prompt)
+        db.commit()
+        db.refresh(d)
+        return _builder_out(db, d, user)
+
     # 2026-10-01 (lineage round): this used to pass table=None unconditionally,
     # which load_dataframe silently turns into "raise NeedsTableSelection" for
     # ANY multi-table source (BigQuery/Snowflake/a multi-table SQL connection/
@@ -3907,12 +4396,13 @@ def ask_ai_block(
     # question to re-ask. This is purely additive: nothing here changes
     # what ask_ai_block itself returns or how this block renders today.
     config["ai_prompt"] = payload.prompt.strip()
+    auto_title = _title_is_auto(block)
     _snapshot_block_config(block)
     block.type = actual_type
     block.config = config
     block.data_updated_at = datetime.utcnow()
-    if not block.title:
-        block.title = payload.prompt.strip()[:120]
+    if auto_title:
+        _set_auto_title(block, payload.prompt)
 
     db.commit()
     db.refresh(d)
@@ -3946,6 +4436,18 @@ def build_manual_block(
     d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
     block = _get_block(db, d, block_id)
     ds = _resolve_datasource(db, user, d)
+
+    # 2026-10-07 (block editing on a warehouse source): a warehouse/
+    # database source NEVER reaches load_dataframe below - the recipe is
+    # translated into a BlockSpec the warehouse computes (see
+    # _build_manual_block_warehouse); a recipe feature that only exists as
+    # an in-app pandas computation is a 400 naming it. Everything below
+    # this branch is the file-source path, unchanged.
+    if dashboard_engine.is_warehouse_native(ds):
+        _build_manual_block_warehouse(db, d, ds, block, payload)
+        db.commit()
+        db.refresh(d)
+        return _builder_out(db, d, user)
 
     # 2026-10-01 (lineage round): see ask_ai_block's identical comment just
     # above in this file - the same NeedsTableSelection-becomes-a-bare-400
@@ -4012,6 +4514,10 @@ def build_manual_block(
             "group_by_column": payload.group_by_column,
             "block_type": payload.block_type,
             "chart_type": payload.chart_type,
+            # 2026-10-07: a KPI's sparkline runs over the dashboard's date
+            # column when it has one (see _kpi_trend); absent otherwise.
+            **({"trend_column": d.date_column, "trend_grain": d.default_period or "month"}
+               if payload.block_type == "kpi" and d.date_column and d.date_column in df.columns else {}),
             # 2026-09-25 (Round 3): only read when block_type == "gauge" - see
             # _run_manual_recipe. Carried in the stored recipe itself (not a
             # separate column) so a later cross-filter recompute
@@ -4035,12 +4541,18 @@ def build_manual_block(
 
     if multi_table_default and actual_type != "text":
         config = {**config, "source_table": multi_table_default}
+    auto_title = _title_is_auto(block)
+    # Presentation the person chose for this block outlives a rebuild of
+    # its numbers (the same keys a warehouse rebuild keeps).
+    for key in ("format", "decimals", "currency", "good_direction", "accent_color"):
+        if key in (block.config or {}) and key not in config and not (block.config or {}).get(f"{key}_inferred"):
+            config[key] = block.config[key]
     _snapshot_block_config(block)
     block.type = actual_type
     block.config = config
     block.data_updated_at = datetime.utcnow()
-    if not block.title:
-        block.title = default_title
+    if auto_title:
+        _set_auto_title(block, default_title)
 
     db.commit()
     db.refresh(d)
@@ -4101,8 +4613,13 @@ def restyle_block(
     # overlay decision no longer honestly applies to it - clear it the same
     # way idempotent re-runs of apply_analysis_overlays already do, rather
     # than carrying a flag forward that no longer matches what's drawn.
+    restyled_recipe = (block.config or {}).get("recipe")
     block.config = {
         **block.config,
+        # 2026-10-07: a recipe block is recomputed from its recipe on every
+        # filter change - the recipe has to say the new chart type too, or
+        # the first filter draws the old one again.
+        **({"recipe": {**restyled_recipe, "chart_type": chart_type}} if isinstance(restyled_recipe, dict) and not restyled_recipe.get("metric_id") else {}),
         "chart_spec": new_spec,
         # 2026-10-01 (filter-engine fix round): restyle always targets one
         # of _RESTYLE_CHART_TYPES, so the new type is already known with
@@ -4314,7 +4831,7 @@ def preview_filtered_blocks(
         except Exception:
             df = None
 
-    return _filter_page_blocks(db, page, df, ds, payload)
+    return _filter_page_blocks(db, page, df, ds, payload, dashboard=d)
 
 
 # 2026-10-05 (public-filters round): factored out of preview_filtered_blocks
@@ -4329,14 +4846,61 @@ def preview_filtered_blocks(
 # recipe-based block is skipped below exactly like it already is when the
 # editor's own live datasource fails to load, and a self-contained
 # AI-built table/chart block never reads df/ds at all).
+def _date_bound_columns(d: models.Dashboard | None) -> list[str]:
+    """The columns a dashboard's date pickers range over: its own date
+    column (the header's range) and every date_range control on the rail."""
+    if d is None:
+        return []
+    out: list[str] = []
+    if d.date_column:
+        out.append(d.date_column)
+    for p in (d.parameters or []) if isinstance(d.parameters, list) else []:
+        if isinstance(p, dict) and p.get("control") == "date_range" and p.get("column") and p["column"] not in out:
+            out.append(p["column"])
+    return out
+
+
+def _file_date_bounds(d: models.Dashboard | None, ds: models.DataSource | None, df: pd.DataFrame | None) -> dict:
+    """{column: {"min": "YYYY-MM-DD", "max": "YYYY-MM-DD"}} for a FILE
+    dashboard's date columns, from the complete, UNFILTERED frame - what
+    the date pickers open on and disable days outside of (2026-10-07: a
+    picker used to open on today's month for data that ends years ago).
+    Cached with the options TTL; a column with no dates is left out."""
+    columns = _date_bound_columns(d)
+    if df is None or not columns:
+        return {}
+    out: dict = {}
+    for column in columns:
+        if column not in df.columns:
+            continue
+        key = ("file-date-bounds", getattr(ds, "id", None), column, int(len(df)))
+        hit = dashboard_engine._options_cache.get(key)
+        if hit is None:
+            try:
+                series = df[column]
+                if not pd.api.types.is_datetime64_any_dtype(series):
+                    series = pd.to_datetime(series, errors="coerce")
+                series = series.dropna()
+                hit = {"min": series.min().strftime("%Y-%m-%d"), "max": series.max().strftime("%Y-%m-%d")} if len(series) else {}
+            except Exception as e:
+                print(f"[dashboard_builder] date bounds for {column!r} could not be read (non-fatal): {e}")
+                hit = {}
+            dashboard_engine._options_cache.put(key, hit)
+        if hit:
+            out[column] = hit
+    return out
+
+
 def _filter_page_blocks(
     db: Session,
     page: models.DashboardPage,
     df: pd.DataFrame | None,
     ds: models.DataSource | None,
     payload: schemas.ApplyFiltersRequest,
+    dashboard: models.Dashboard | None = None,
 ) -> schemas.FilteredBlocksOut:
     active_filters = payload.filters[:_MAX_FILTERS_PER_REQUEST]
+    date_bounds = _file_date_bounds(dashboard, ds, df)
     if df is not None:
         df = _apply_filters(df, active_filters)
 
@@ -4469,8 +5033,17 @@ def _filter_page_blocks(
             new_spec = _rebuild_filtered_chart_spec(block_df, chart_type, block.title or "")
         except Exception:
             continue
+        # 2026-10-07: the filtered ROWS go back too (not only the rebuilt
+        # figure) - the dashboard draws its native chart from them, and the
+        # block's CSV export is then the filtered result as well.
+        try:
+            filtered_rows = json.loads(block_df.to_json(orient="records", date_format="iso"))
+        except Exception:
+            filtered_rows = None
         out.append(schemas.FilteredBlockOut(
-            id=block.id, type="chart", config={**(block.config or {}), "chart_spec": new_spec, "chart_type": chart_type}
+            id=block.id, type="chart",
+            config={**(block.config or {}), "chart_spec": new_spec, "chart_type": chart_type,
+                    **({"result_rows": filtered_rows} if filtered_rows is not None else {})},
         ))
 
     # 2026-09-25e (elite pass): `df` above already has payload.filters
@@ -4487,7 +5060,7 @@ def _filter_page_blocks(
     # None means "no count available right now," which the frontend's
     # existing `!== null` guard already knows how to hide instead of
     # rendering as a misleading "0 rows match."
-    return schemas.FilteredBlocksOut(blocks=out, matched_rows=len(df) if df is not None else None)
+    return schemas.FilteredBlocksOut(blocks=out, matched_rows=len(df) if df is not None else None, date_bounds=date_bounds)
 
 
 # ============================================================================
@@ -4576,6 +5149,18 @@ def _warehouse_page_blocks(page: models.DashboardPage, block_ids: list[str] | No
     return runnable, skipped
 
 
+def _is_empty_warehouse_block(block) -> bool:
+    """True for a data block that was added to a warehouse dashboard and
+    has not been built yet: it carries create_block's config.empty marker
+    and still has no spec and no bound cell. (A pre-layer block - a stored
+    result or a recipe with no spec - never carries the marker.)"""
+    config = block.config or {}
+    return (
+        block.type in _DATA_BLOCK_TYPES and config.get("empty") is True
+        and not isinstance(config.get("spec"), dict) and not config.get("source_block_id")
+    )
+
+
 def _dashboard_primary_table(d: models.Dashboard, ds: models.DataSource) -> str | None:
     """The table the page-wide COUNT(*) ("Showing X of Y rows") and the
     filter rail refer to: the most common spec table across the
@@ -4604,6 +5189,10 @@ def _run_page_for(
 ) -> schemas.RunPageOut:
     """The shared body of the authenticated and public run endpoints."""
     runnable, skipped = _warehouse_page_blocks(page, payload.block_ids)
+    # 2026-10-07 (block editing round): of the skipped (spec-less) data
+    # blocks, the ones that are simply empty - see create_block.
+    skipped_set = set(skipped)
+    empty = [b.id for b in page.blocks if b.id in skipped_set and _is_empty_warehouse_block(b)]
     block_filters = {bid: crits[:_MAX_FILTERS_PER_REQUEST] for bid, crits in list(payload.block_filters.items())[:20]}
     try:
         result = dashboard_engine.run_page(
@@ -4634,12 +5223,28 @@ def _run_page_for(
             except Exception as e:
                 print(f"[dashboard_builder] last_run persist failed (non-fatal): {e}")
                 db.rollback()
+    # 2026-10-07 (real end-to-end run): the real first and last date of
+    # the dashboard's date column(s) - one cached MIN/MAX query - so the
+    # date pickers open on the data, not on today. A partial run (one
+    # block) does not repeat it.
+    date_bounds: dict = {}
+    if not payload.block_ids:
+        table = _dashboard_primary_table(d, ds)
+        params = [p for p in (d.parameters or []) if isinstance(p, dict)] if isinstance(d.parameters, list) else []
+        by_table: dict[str, list[str]] = defaultdict(list)
+        for column in _date_bound_columns(d):
+            owner = next((p.get("table") for p in params if p.get("column") == column and p.get("table")), None) or table
+            if owner and column not in by_table[owner]:
+                by_table[owner].append(column)
+        for owner, columns in by_table.items():
+            date_bounds.update(dashboard_engine.column_bounds(db, ds, owner, columns, user_id=user_id))
     return schemas.RunPageOut(
         blocks=result["blocks"], matched_rows=result["matched_rows"], total_rows=result.get("total_rows"),
         computed_in=result["computed_in"], total_duration_ms=result["total_duration_ms"], period=result["period"],
-        date_range=result.get("date_range"), skipped_block_ids=skipped,
+        date_range=result.get("date_range"), skipped_block_ids=skipped, empty_block_ids=empty,
         dependencies=result.get("dependencies") or {}, order=result.get("order") or [],
         parameters_used=result.get("parameters_used") or {}, missing_parameters=result.get("missing_parameters") or [],
+        date_bounds=date_bounds,
     )
 
 
@@ -4895,8 +5500,10 @@ def _validate_cell_config(
             dashboard_engine.topological_order(dashboard_engine.dependency_graph(graph))
         except dashboard_engine.DependencyCycleError as e:
             raise HTTPException(400, str(e))
-        # A block bound to a cell has no spec of its own.
+        # A block bound to a cell has no spec of its own - and is no
+        # longer an empty, not-built-yet block.
         config.pop("spec", None)
+        config.pop("empty", None)
         block.query_sql = None
     return config
 
@@ -5033,6 +5640,371 @@ def _infer_block_type_for_spec(spec: dict, requested: str | None, current: str |
     return "chart"
 
 
+class BlockSpecStoreError(Exception):
+    """A candidate BlockSpec that _store_block_spec refused, with the
+    plain reason. `stage` is "spec" (it failed query_builder's structural
+    validation against the schema - `message` is that error as-is) or
+    "warehouse" (it compiled but the warehouse's own zero-row check
+    rejected it - `message` is "The warehouse rejected this block's
+    query: <the warehouse's error>", `sql` the statement it rejected).
+    Nothing was stored and nothing was read. Typed (not an HTTPException)
+    so a caller can feed the reason back to the model and try once more."""
+
+    def __init__(self, message: str, stage: str, spec=None, sql: str | None = None):
+        super().__init__(message)
+        self.message = message
+        self.stage = stage
+        self.spec = spec
+        self.sql = sql
+
+
+# What a pre-layer block rendered from (a stored result / a pandas recipe) -
+# gone the moment the block has a spec the warehouse computes.
+_LEGACY_RENDER_KEYS = ("result_rows", "result_columns", "recipe", "chart_spec", "rows", "columns")
+# A block that shows ONE number (config.label / config.format apply to it).
+_SINGLE_VALUE_BLOCK_TYPES = ("kpi", "gauge", "sparkline")
+
+
+def _store_block_spec(
+    db: Session, d: models.Dashboard, ds: models.DataSource, block: models.DashboardBlock, spec, *,
+    block_type: str | None = None, chart_type: str | None = None, title: str | None = None,
+    extra_config: dict | None = None, drop_keys: tuple = (), infer_format: bool = False, versions=None,
+    auto_title: str | None = None,
+) -> dict:
+    """The ONE way a BlockSpec gets onto a block (set_block_spec, Ask AI
+    and build-manually on a warehouse source): validate structurally
+    against the schema (strict), dry-run inside the warehouse with the
+    connector's zero-row check (nothing read, nothing billed), and only
+    then write config.spec / computed_in / spec_columns, the compiled
+    at-rest SQL on block.query_sql, the inferred block type and the
+    title. Raises BlockSpecStoreError - and changes NOTHING - when either
+    check fails. Never loads a row and never commits (the caller does).
+
+    `block_type`/`chart_type`/`title` mean exactly what SetBlockSpecRequest's
+    fields mean (an explicit block type wins over the spec's shape; a
+    title of None keeps the block's own, or describes the spec when it
+    has none or its title is one GD360 wrote - config.title_auto).
+    `auto_title` is a title the CALLER generated (the question asked, a
+    manual build's "Sum of adr by hotel"): it replaces the block's title
+    only while that title is GD360's own. `extra_config` is merged over the kept config (after the
+    spec keys, before the chart-type/label defaults); `drop_keys` are
+    extra config keys the caller knows are stale (a previous build's
+    label, its bound cell, ...). `infer_format` asks for a number format
+    on a single-value block (query_builder.infer_number_format). Returns
+    the normalised spec that was stored."""
+    if versions is None:
+        versions = dashboard_engine.load_versions(db, ds)
+    try:
+        schema, _ = query_builder.with_version_aliases(ds.schema_cache, versions)
+        normalised = query_builder.public_spec(query_builder.validate_block_spec(spec, schema, strict=True))
+    except query_builder.QueryBuilderError as e:
+        raise BlockSpecStoreError(str(e), "spec", spec=spec if isinstance(spec, dict) else None)
+    check = dashboard_engine.validate_spec_in_warehouse(ds, normalised, versions, date_column=d.date_column)
+    if not check["ok"]:
+        raise BlockSpecStoreError(
+            f"The warehouse rejected this block's query: {check['error']}", "warehouse", spec=normalised, sql=check.get("sql"),
+        )
+
+    _snapshot_block_config(block)
+    new_type = _infer_block_type_for_spec(normalised, block_type, block.type)
+    dropped = set(_LEGACY_RENDER_KEYS) | set(drop_keys) | {"empty"}
+    config = {k: v for k, v in (block.config or {}).items() if k not in dropped}
+    # A number format GD360 inferred belongs to the spec it was inferred
+    # from - it never outlives it (a format the person chose is kept).
+    if config.pop("format_inferred", None):
+        config.pop("format", None)
+    if config.pop("good_direction_inferred", None):
+        config.pop("good_direction", None)
+    config["spec"] = normalised
+    config["computed_in"] = ds.kind
+    config["spec_columns"] = check["columns"]
+    if extra_config:
+        config.update(extra_config)
+    if chart_type:
+        config["chart_type"] = chart_type
+    elif new_type == "chart" and not config.get("chart_type"):
+        config["chart_type"] = "line" if normalised.get("time") else "bar"
+    if new_type in ("kpi", "gauge"):
+        config["label"] = config.get("label") or normalised["measures"][0]["alias"]
+    if infer_format and new_type in _SINGLE_VALUE_BLOCK_TYPES and not config.get("format"):
+        inferred = query_builder.infer_number_format(normalised, None, schema)
+        if inferred:
+            config["format"] = inferred
+            config["format_inferred"] = True
+    if new_type in _SINGLE_VALUE_BLOCK_TYPES and not config.get("good_direction"):
+        direction_title = auto_title if (auto_title is not None and _title_is_auto(block)) else (title if title is not None else block.title)
+        if query_builder.infer_good_direction(normalised, direction_title):
+            config["good_direction"] = "down"
+            config["good_direction_inferred"] = True
+    was_auto = _title_is_auto(block)
+    config.pop("title_auto", None)
+    block.type = new_type
+    block.config = config
+    block.query_sql = check["sql"]
+    block.data_updated_at = datetime.utcnow()
+    if auto_title is not None:
+        # The caller's own generated title (the question, "Sum of adr by
+        # hotel"): written only while the block's title is GD360's.
+        if was_auto:
+            _set_auto_title(block, auto_title)
+    elif title is not None:
+        # An explicit title is the person's.
+        block.title = title.strip()[:200] or None
+    elif was_auto:
+        _set_auto_title(block, query_builder.describe_block_spec(normalised))
+    return normalised
+
+
+# ---------- Ask AI / build-manually on a WAREHOUSE source (2026-10-07) ----------
+#
+# The product rule: for a warehouse/database source GD360 never loads rows
+# into pandas to compute an answer - not a sample, not the table. Both
+# block-editing endpoints therefore branch on dashboard_engine.
+# is_warehouse_native(ds) BEFORE anything is loaded and end in
+# _store_block_spec: the block gets a BlockSpec the engine computes inside
+# the warehouse (one SQL query per block, on run), or the request fails
+# with the plain reason and computes nothing. A file source never reaches
+# these functions.
+
+# Config keys a previous build of the block left behind that a NEW build
+# must not inherit: a pre-layer block's frozen numbers, the old build's
+# label/explanation/lineage, the saved metric or SQL cell it used to read
+# from. (Presentation the person set - accent_color, chart_style, a
+# gauge's target/max, a number format they chose - is kept.)
+_REBUILD_DROP_KEYS = (
+    "value", "prior_value", "delta_pct", "sparkline_series", "items", "series", "categories", "truncated", "label",
+    "source_code", "ai_explanation", "source_table", "source_block_id", "metric_id", "metric_name", "intent", "text",
+)
+# The chart forms a spec block can be drawn as - what the spec writer may
+# suggest when the QUESTION names one (see BLOCK_SPEC_SYSTEM_PROMPT).
+_SPEC_CHART_TYPES = {"bar", "horizontal_bar", "line", "area", "pie", "scatter", "stacked_bar", "grouped_bar"}
+_NON_NUMERIC_TYPE_RE = re.compile(r"char|text|string|date|time|bool|json|uuid|byte|binary|array|struct", re.IGNORECASE)
+
+
+def _ask_ai_block_warehouse(
+    db: Session, d: models.Dashboard, ds: models.DataSource, block: models.DashboardBlock, prompt: str,
+) -> None:
+    """Ask AI on a warehouse source: the model writes a BlockSpec (never
+    SQL, never pandas) from the question and the real schema - real
+    tables plus saved-query aliases, exactly what upgrade_blocks/propose
+    hand it - and _store_block_spec validates + dry-runs it before it is
+    stored. ONE bounded retry: when the first spec fails structural
+    validation or the warehouse's zero-row check, the exact spec and the
+    exact error go back to the model for one corrected attempt (the same
+    shape as chat's _run_sql_pushdown_cycle). No retry when the model
+    produced no spec at all. Two failures -> 422 with the last error;
+    the block is untouched and nothing was read. Mutates the block; the
+    caller commits."""
+    prompt = (prompt or "").strip()
+    if not prompt:
+        raise HTTPException(400, "Type a question for this block first.")
+    if block.type not in _DATA_BLOCK_TYPES and block.type != "text":
+        raise HTTPException(400, "Ask AI fills a chart, table or KPI block - add one of those and ask there.")
+    versions = dashboard_engine.load_versions(db, ds)
+    schema_text = _warehouse_schema_text(ds, None, versions)
+    last_error = None
+    previous_spec = None
+    for attempt in (1, 2):
+        if attempt == 1:
+            candidate = ai_engine.generate_block_spec(prompt, schema_text, ds.kind, title=block.title)
+        else:
+            candidate = ai_engine.generate_block_spec(
+                prompt, schema_text, ds.kind, title=block.title, previous_spec=previous_spec, previous_error=last_error,
+            )
+        if not isinstance(candidate, dict):
+            # No spec to correct: the model said the question does not fit
+            # one aggregate query (or did not answer). Keep the first
+            # attempt's real error when this is the retry.
+            last_error = last_error or (
+                "the question could not be expressed as one aggregate query over this data source's tables"
+            )
+            break
+        suggested_chart = candidate.get("chart_type")
+        suggested_chart = suggested_chart.strip().lower() if isinstance(suggested_chart, str) else None
+        # The block's type follows the spec's shape unless its current
+        # type can show that shape (_infer_block_type_for_spec). One case
+        # that rule does not know: a SPARKLINE block shows a one-row spec
+        # too, through the spec's own sparkline series - it stays one.
+        keep_type = None
+        if block.type == "sparkline" and candidate.get("sparkline") and not candidate.get("group_by") and not candidate.get("time"):
+            keep_type = "sparkline"
+        try:
+            _store_block_spec(
+                db, d, ds, block, candidate, block_type=keep_type, auto_title=prompt[:120],
+                extra_config={"ai_prompt": prompt}, drop_keys=_REBUILD_DROP_KEYS, infer_format=True, versions=versions,
+            )
+        except BlockSpecStoreError as e:
+            print(f"[dashboard_builder] Ask AI spec attempt {attempt} rejected ({e.stage}): {e.message}")
+            last_error, previous_spec = e.message, candidate
+            continue
+        # A chart form the question itself named wins; otherwise the
+        # block keeps the chart type it had (or the helper's default).
+        if suggested_chart in _SPEC_CHART_TYPES and block.type == "chart":
+            block.config = {**block.config, "chart_type": suggested_chart}
+        return
+    reason = str(last_error or "").strip().rstrip(".")
+    raise HTTPException(
+        422,
+        f"Nothing was computed: GD360 could not turn that question into a valid {ds.kind} query for this block "
+        f"({reason}). Try rephrasing the question, or use \"Edit query\" to build this block's query yourself.",
+    )
+
+
+def _warehouse_block_table(d: models.Dashboard, ds: models.DataSource, schema: dict, requested: str | None) -> str:
+    """The table a manually-built warehouse block reads: the one the
+    request names, else the dashboard's own table (the one most of its
+    blocks already use, else its filter rail's, else the data source's
+    first table - _dashboard_primary_table), else the first table of the
+    schema (what the propose/generate path starts from)."""
+    if requested:
+        if not query_builder.table_columns(schema, requested):
+            raise HTTPException(400, f'The table "{requested}" is not one of this data source\'s tables.')
+        return requested
+    primary = _dashboard_primary_table(d, ds)
+    if primary and query_builder.table_columns(schema, primary):
+        return primary
+    first = next((t for t in schema if query_builder.table_columns(schema, t)), None) if isinstance(schema, dict) else None
+    if not first:
+        raise HTTPException(400, "This data source has no tables to build a block from yet.")
+    return first
+
+
+def _build_manual_block_warehouse(
+    db: Session, d: models.Dashboard, ds: models.DataSource, block: models.DashboardBlock,
+    payload: schemas.ManualBuildBlockRequest,
+) -> None:
+    """Build-manually on a warehouse source: the form's recipe (column +
+    aggregation + optional group-by, or a saved metric) is translated
+    deterministically into a BlockSpec - the same numbers the pandas
+    recipe would give a file, as ONE aggregate query the warehouse runs:
+
+      kpi / gauge            -> one row: <agg>(<column>), prior-period
+                                comparison + sparkline on
+      table/chart/donut/     -> GROUP BY <group_by_column>, ordered by the
+        avatar_list             measure descending, the same row caps the
+                                recipe uses (200 / 50 / 50 / 8)
+      sparkline              -> GROUP BY <group_by_column>, ordered by
+                                the group ascending (a trend's point is
+                                its order)
+      "count"                -> COUNT(<column>) - the non-null count,
+                                exactly what the pandas recipe counts
+      a saved metric         -> its column/aggregation/filters as a
+                                one-row spec (kpi/gauge only)
+
+    payload.filters (the page filters active while building) are not
+    baked in: the engine pushes the page's live filters into every run.
+    A feature that only exists as an in-app pandas computation (a saved
+    table / transform) is refused by name with a 400 - never computed on
+    loaded rows. Mutates the block; the caller commits."""
+    if payload.transform_id:
+        raise HTTPException(
+            400,
+            "Saved tables (transform_id) are not supported on a warehouse/database source: a saved table is computed "
+            "inside the app from loaded rows, and GD360 never loads a warehouse's rows. Pick the warehouse table "
+            "(or a saved query) directly instead. Nothing was computed.",
+        )
+    block_type = payload.block_type
+    if block_type not in ("kpi", "table", "chart", "gauge", "donut", "sparkline", "avatar_list"):
+        raise HTTPException(400, "Unknown block type.")
+    single_value = block_type in ("kpi", "gauge")
+    versions = dashboard_engine.load_versions(db, ds)
+    schema, _ = query_builder.with_version_aliases(ds.schema_cache, versions)
+    table = _warehouse_block_table(d, ds, schema, (payload.table or "").strip() or None)
+    columns = {c["name"]: c for c in query_builder.table_columns(schema, table) or []}
+    extra: dict = {}
+
+    if payload.metric_id:
+        metric = (
+            db.query(models.MetricDefinition)
+            .filter(models.MetricDefinition.id == payload.metric_id, models.MetricDefinition.datasource_id == ds.id)
+            .first()
+        )
+        if not metric:
+            raise HTTPException(404, "That metric no longer exists.")
+        if not single_value:
+            raise HTTPException(400, "A saved metric can only be used for a KPI or gauge block.")
+        if metric.agg not in _MANUAL_AGG_FUNCS:
+            raise HTTPException(400, f'The saved metric "{metric.name}" uses an aggregation ("{metric.agg}") a warehouse block cannot run.')
+        # Every one of the metric's own filters must make it into the
+        # query - a filter the translation would skip is refused by name,
+        # never dropped (that would be a different number).
+        for f in metric.filters or []:
+            if not query_builder.page_filters_to_block_filters([f]):
+                column = f.get("column") if isinstance(f, dict) else None
+                raise HTTPException(
+                    400,
+                    f'The saved metric "{metric.name}" has a filter on "{column}" that cannot be expressed as a '
+                    "warehouse query, so this block was not built. Nothing was computed.",
+                )
+        spec = _metric_to_spec(metric, table)
+        default_title = metric.name
+        extra["metric_id"] = metric.id
+        extra["metric_name"] = metric.name
+    else:
+        column = payload.metric_column
+        agg = payload.agg
+        if not column:
+            raise HTTPException(400, "Pick a column, or a saved metric, to build from.")
+        if agg not in _MANUAL_AGG_FUNCS:
+            raise HTTPException(400, "Unknown aggregation.")
+        if column not in columns:
+            raise HTTPException(400, f'Column "{column}" was not found in the table "{table}".')
+        if agg in _MANUAL_AGG_NEEDS_NUMERIC and _NON_NUMERIC_TYPE_RE.search(str(columns[column].get("type") or "")):
+            raise HTTPException(
+                400,
+                f'"{column}" isn\'t a numeric column, so it can\'t be summed or averaged - '
+                "try Count, Min, or Max instead, or pick a numeric column.",
+            )
+        agg_label = {"sum": "Sum", "avg": "Average", "count": "Count", "min": "Min", "max": "Max"}[agg]
+        alias = f"{agg}_{re.sub(r'[^A-Za-z0-9_]+', '_', column).strip('_') or 'value'}"
+        measure = {"alias": alias, "agg": agg, "column": column}
+        spec = {"table": table, "measures": [measure], "filters": []}
+        if single_value:
+            spec["compare_prior_period"] = True
+            spec["sparkline"] = True
+            default_title = f"{agg_label} of {column}"
+        else:
+            group = payload.group_by_column
+            if not group:
+                raise HTTPException(400, "Pick a column to group by for a table, chart, donut, sparkline, or top list.")
+            if group not in columns:
+                raise HTTPException(400, f'Column "{group}" was not found in the table "{table}".')
+            spec["group_by"] = [group]
+            if block_type == "sparkline":
+                spec["order_by"] = [{"by": group, "dir": "asc"}]
+                spec["limit"] = query_builder.MAX_LIMIT
+            else:
+                spec["order_by"] = [{"by": alias, "dir": "desc"}]
+                spec["limit"] = 8 if block_type == "avatar_list" else (50 if block_type in ("chart", "donut") else _MAX_TABLE_ROWS_PER_BLOCK)
+            default_title = f"{agg_label} of {column} by {group}"
+
+    drop = list(_REBUILD_DROP_KEYS) + ["ai_prompt", "min", "max", "target", "target_value", "max_value"]
+    chart_type = None
+    if block_type == "chart":
+        chart_type = (payload.chart_type or "bar").lower().strip()
+        if chart_type not in _RESTYLE_CHART_TYPES:
+            chart_type = "bar"
+    else:
+        drop.append("chart_type")
+    if block_type in ("kpi", "gauge", "sparkline", "avatar_list"):
+        extra["label"] = default_title
+    if block_type == "gauge":
+        # The live value decides the rest (the gauge's range is drawn
+        # from the run's number); only what the person set is stored.
+        if payload.target_value is not None:
+            extra["target"] = _safe_float(payload.target_value, None)
+        if payload.max_value is not None:
+            extra["max"] = _safe_float(payload.max_value, None)
+        extra = {k: v for k, v in extra.items() if v is not None}
+    try:
+        _store_block_spec(
+            db, d, ds, block, spec, block_type=block_type, chart_type=chart_type,
+            auto_title=default_title, extra_config=extra, drop_keys=tuple(drop), versions=versions,
+        )
+    except BlockSpecStoreError as e:
+        raise HTTPException(400, f"{e.message.rstrip('.')}. Nothing was computed.")
+
+
 @router.post("/{dashboard_id}/blocks/{block_id}/spec", response_model=schemas.DashboardBuilderOut)
 def set_block_spec(
     dashboard_id: str,
@@ -5047,42 +6019,20 @@ def set_block_spec(
     the warehouse with the connector's zero-row check (nothing read,
     nothing billed) before anything is stored. Stores the compiled
     at-rest SQL on block.query_sql. 400 with the warehouse's own message
-    when the spec does not compile or validate."""
+    when the spec does not compile or validate. (_store_block_spec does
+    the work - shared with Ask AI and build-manually.)"""
     d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
     block = _get_block(db, d, block_id)
     ds = _resolve_datasource(db, user, d)
     if not dashboard_engine.is_warehouse_native(ds):
         raise HTTPException(400, "Block specs are for dashboards on a warehouse/database source.")
-    versions = dashboard_engine.load_versions(db, ds)
     try:
-        schema, _ = query_builder.with_version_aliases(ds.schema_cache, versions)
-        normalised = query_builder.public_spec(query_builder.validate_block_spec(payload.spec, schema, strict=True))
-    except query_builder.QueryBuilderError as e:
-        raise HTTPException(400, str(e))
-    check = dashboard_engine.validate_spec_in_warehouse(ds, normalised, versions, date_column=d.date_column)
-    if not check["ok"]:
-        raise HTTPException(400, f"The warehouse rejected this block's query: {check['error']}")
-
-    _snapshot_block_config(block)
-    new_type = _infer_block_type_for_spec(normalised, payload.block_type, block.type)
-    config = {k: v for k, v in (block.config or {}).items() if k not in ("result_rows", "result_columns", "recipe", "chart_spec", "rows", "columns")}
-    config["spec"] = normalised
-    config["computed_in"] = ds.kind
-    config["spec_columns"] = check["columns"]
-    if payload.chart_type:
-        config["chart_type"] = payload.chart_type
-    elif new_type == "chart" and not config.get("chart_type"):
-        config["chart_type"] = "line" if normalised.get("time") else "bar"
-    if new_type in ("kpi", "gauge"):
-        config["label"] = config.get("label") or normalised["measures"][0]["alias"]
-    block.type = new_type
-    block.config = config
-    block.query_sql = check["sql"]
-    block.data_updated_at = datetime.utcnow()
-    if payload.title is not None:
-        block.title = payload.title.strip()[:200] or None
-    elif not block.title:
-        block.title = query_builder.describe_block_spec(normalised)[:120]
+        _store_block_spec(
+            db, d, ds, block, payload.spec, block_type=payload.block_type, chart_type=payload.chart_type,
+            title=payload.title,
+        )
+    except BlockSpecStoreError as e:
+        raise HTTPException(400, e.message)
     db.commit()
     db.refresh(d)
     return _builder_out(db, d, user)
@@ -5228,6 +6178,13 @@ def upgrade_blocks(
                 results.append(schemas.UpgradeBlockResult(block_id=block.id, title=block.title, status="already_has_spec", spec=config["spec"]))
                 skipped += 1
                 continue
+            # 2026-10-07 (block editing round): an empty, not-built-yet
+            # block (create_block's config.empty) has nothing to upgrade -
+            # it is not a pre-layer block.
+            if _is_empty_warehouse_block(block):
+                results.append(schemas.UpgradeBlockResult(block_id=block.id, title=block.title, status="skipped"))
+                skipped += 1
+                continue
             candidate = None
             if isinstance(config.get("recipe"), dict):
                 candidate = _recipe_to_spec(config["recipe"], config.get("source_table") or primary_table)
@@ -5289,6 +6246,69 @@ def create_page(
     name = (payload.name or "").strip()[:80] or f"Page {len(d.pages) + 1}"
     page = models.DashboardPage(dashboard_id=d.id, name=name, position=len(d.pages))
     db.add(page)
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+_MAX_LAYOUT_ITEMS = 200
+_MAX_LAYOUT_Y = 100_000
+_MAX_LAYOUT_H = 1_000
+
+
+# Registered BEFORE PATCH /{dashboard_id}/pages/{page_id} (update_page,
+# just below). The two cannot actually collide - a path parameter never
+# matches a "/", so ".../pages/<id>/layout" is never read as a page id -
+# but the more specific route goes first so that stays obvious.
+@router.patch("/{dashboard_id}/pages/{page_id}/layout", response_model=schemas.DashboardBuilderOut)
+def update_page_layout(
+    dashboard_id: str,
+    page_id: str,
+    payload: schemas.UpdatePageLayoutRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Moves/resizes many blocks of ONE page in one transaction - what the
+    canvas sends after a drag or resize re-flows several blocks at once
+    (instead of one PATCH per block that could leave the page half-moved).
+    Body: {"items": [{"id", "x", "y", "w", "h"}, ...]} - 1 to 200 items,
+    each id once, every id a block of THIS page; w 1..12, h >= 1,
+    x >= 0, y >= 0, x + w <= 12. Everything is checked before anything is
+    written: one bad item (400) or one id that is not on this page (400)
+    and no block moves. Layout only - block content, the undo snapshot
+    and data_updated_at are untouched. Blocks not listed keep their
+    place. Edit rights required, like update_block."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    page = next((p for p in d.pages if p.id == page_id), None)
+    if not page:
+        raise HTTPException(404, "Page not found on this dashboard.")
+    items = payload.items
+    if not items:
+        raise HTTPException(400, "Nothing to update - send at least one block's position.")
+    if len(items) > _MAX_LAYOUT_ITEMS:
+        raise HTTPException(400, f"At most {_MAX_LAYOUT_ITEMS} blocks can be moved in one request.")
+    by_id = {b.id: b for b in page.blocks}
+    seen: set[str] = set()
+    for it in items:
+        if it.id in seen:
+            raise HTTPException(400, f'Block "{it.id}" appears more than once in this layout.')
+        seen.add(it.id)
+        if not (1 <= it.w <= _GRID_COLUMNS):
+            raise HTTPException(400, f'Block "{it.id}": width must be between 1 and {_GRID_COLUMNS} columns.')
+        if not (1 <= it.h <= _MAX_LAYOUT_H):
+            raise HTTPException(400, f'Block "{it.id}": height must be between 1 and {_MAX_LAYOUT_H}.')
+        if it.x < 0 or not (0 <= it.y <= _MAX_LAYOUT_Y):
+            raise HTTPException(400, f'Block "{it.id}": x and y cannot be negative (y at most {_MAX_LAYOUT_Y}).')
+        if it.x + it.w > _GRID_COLUMNS:
+            raise HTTPException(400, f'Block "{it.id}": x + width cannot exceed the {_GRID_COLUMNS}-column grid.')
+    foreign = [it.id for it in items if it.id not in by_id]
+    if foreign:
+        raise HTTPException(
+            400, "These blocks are not on this page, so nothing was moved: " + ", ".join(foreign[:10]) + ".",
+        )
+    for it in items:
+        block = by_id[it.id]
+        block.x, block.y, block.w, block.h = it.x, it.y, it.w, it.h
     db.commit()
     db.refresh(d)
     return _builder_out(db, d, user)
@@ -5693,6 +6713,66 @@ def _authorize_public_share(share: models.DashboardShare, x_dashboard_access_tok
             raise HTTPException(403, "Your access to this dashboard has been revoked or was never granted.")
 
 
+# 2026-10-07 (real end-to-end run): what a published link must never carry.
+# "Show SQL" on the public view handed table and column names - and a SQL
+# cell's whole statement - to anyone with the link. Hiding the button is
+# not enough (the text was still in the response), so the public endpoints
+# strip it server-side: every compiled statement of a block result (`sql`,
+# `prior.sql`, `sparkline.sql`), a block's stored `query_sql`, a SQL cell's
+# own `config.sql` and the pandas `source_code` an AI-built file block kept
+# for its owner's lineage panel - and a failed block's error is the plain
+# "couldn't be computed" (the database's own sentence names columns and
+# may quote the statement). The owner's endpoints are unchanged.
+_PUBLIC_RESULT_SQL_KEYS = ("sql", "query_sql")
+_PUBLIC_GENERIC_ERROR_STATUSES = ("error", "invalid_spec", "invalid_sql", "rejected_unsafe")
+_PUBLIC_BLOCK_ERROR = "This block couldn't be computed right now."
+_PUBLIC_CONFIG_DROP_KEYS = ("sql", "source_code", "query_sql")
+
+
+def _strip_sql_from_result(result: dict) -> dict:
+    """A BlockResult without any SQL text (a copy; the engine's cached
+    result is never mutated)."""
+    if not isinstance(result, dict):
+        return result
+    out = {k: v for k, v in result.items() if k not in _PUBLIC_RESULT_SQL_KEYS}
+    for nested in ("prior", "sparkline"):
+        if isinstance(out.get(nested), dict):
+            out[nested] = {k: v for k, v in out[nested].items() if k not in _PUBLIC_RESULT_SQL_KEYS}
+            if out[nested].get("error"):
+                out[nested]["error"] = _PUBLIC_BLOCK_ERROR
+    # A database's own error sentence names columns and can quote a line
+    # of the statement - an anonymous viewer cannot act on either.
+    if out.get("status") in _PUBLIC_GENERIC_ERROR_STATUSES and out.get("error"):
+        out["error"] = _PUBLIC_BLOCK_ERROR
+    return out
+
+
+def _public_block_config(block_type: str, config) -> dict:
+    """A block's config as an anonymous viewer may receive it. A SQL cell
+    keeps `has_sql` so the page still knows the cell is built (and shows
+    its result) without ever holding the statement."""
+    if not isinstance(config, dict):
+        return {}
+    out = {k: v for k, v in config.items() if k not in _PUBLIC_CONFIG_DROP_KEYS}
+    if block_type == "sql":
+        out["has_sql"] = bool(str(config.get("sql") or "").strip())
+    return out
+
+
+def _public_page_out(page: models.DashboardPage) -> schemas.DashboardPageOut:
+    out = _page_out(page)
+    for b in out.blocks:
+        b.query_sql = None
+        b.config = _public_block_config(b.type, b.config)
+    return out
+
+
+def _public_filtered_out(out: schemas.FilteredBlocksOut) -> schemas.FilteredBlocksOut:
+    for b in out.blocks:
+        b.config = _public_block_config(b.type, b.config)
+    return out
+
+
 def _render_public_dashboard(
     db: Session, share: models.DashboardShare, x_dashboard_access_token: str | None
 ) -> schemas.PublicDashboardOut:
@@ -5712,7 +6792,7 @@ def _render_public_dashboard(
     d = db.query(models.Dashboard).filter(models.Dashboard.id == share.dashboard_id).first()
     if not d:
         raise HTTPException(404, "This dashboard isn't available.")
-    pages = [_page_out(p) for p in sorted(d.pages, key=lambda p: p.position)]
+    pages = [_public_page_out(p) for p in sorted(d.pages, key=lambda p: p.position)]
     return schemas.PublicDashboardOut(
         name=d.name,
         pages=pages,
@@ -5754,7 +6834,9 @@ def _public_run(db, share, page_id, payload, x_dashboard_access_token) -> schema
     page = next((p for p in d.pages if p.id == page_id), None)
     if not page:
         raise HTTPException(404, "Page not found on this dashboard.")
-    return _run_page_for(db, d, page, ds, payload, d.owner_id, persist_last_run=False)
+    out = _run_page_for(db, d, page, ds, payload, d.owner_id, persist_last_run=False)
+    out.blocks = {bid: _strip_sql_from_result(res) for bid, res in (out.blocks or {}).items()}
+    return out
 
 
 def _public_options(db, share, param_id, search, limit, x_dashboard_access_token) -> schemas.ParameterOptionsOut:
@@ -5899,8 +6981,8 @@ def preview_filtered_blocks_public(
     if ds and dashboard_engine.is_warehouse_native(ds):
         _check_rate_limit(f"public-run:ip:{ip}", limit=_PUBLIC_RUN_RATE_LIMIT)
         _check_rate_limit(f"public-run:slug:{slug}", limit=_PUBLIC_RUN_RATE_LIMIT)
-        return _filter_page_blocks_warehouse(db, d, page, ds, payload, d.owner_id)
-    return _filter_page_blocks(db, page, df=None, ds=None, payload=payload)
+        return _public_filtered_out(_filter_page_blocks_warehouse(db, d, page, ds, payload, d.owner_id))
+    return _public_filtered_out(_filter_page_blocks(db, page, df=None, ds=None, payload=payload))
 
 
 @public_router.post("/{slug}/pages/{page_id}/run", response_model=schemas.RunPageOut)
@@ -5998,8 +7080,8 @@ def preview_filtered_blocks_public_by_domain(
     if ds and dashboard_engine.is_warehouse_native(ds):
         _check_rate_limit(f"public-run:ip:{ip}", limit=_PUBLIC_RUN_RATE_LIMIT)
         _check_rate_limit(f"public-run:domain:{hostname}", limit=_PUBLIC_RUN_RATE_LIMIT)
-        return _filter_page_blocks_warehouse(db, d, page, ds, payload, d.owner_id)
-    return _filter_page_blocks(db, page, df=None, ds=None, payload=payload)
+        return _public_filtered_out(_filter_page_blocks_warehouse(db, d, page, ds, payload, d.owner_id))
+    return _public_filtered_out(_filter_page_blocks(db, page, df=None, ds=None, payload=payload))
 
 
 # Companion to preview_filtered_blocks_public above: a filter block's own
