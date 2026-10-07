@@ -10,7 +10,20 @@ import { SearchInput } from "./Input";
 // - the parent re-queries the warehouse for the typed text and passes the
 // new `options` back (with `loading` while it does).
 
-export type CheckboxListOption = { value: string; label?: ReactNode; count?: number | string; disabled?: boolean };
+// `swatch`: a small mark drawn before the label (a value's chart colour) -
+// decorative; the label still names the value.
+export type CheckboxListOption = { value: string; label?: ReactNode; count?: number | string; disabled?: boolean; swatch?: ReactNode };
+
+/** A row's label with its optional swatch in front. */
+export function optionLabelNode(o: CheckboxListOption): ReactNode {
+  if (!o.swatch) return o.label ?? o.value;
+  return (
+    <span className="inline-flex max-w-full items-center gap-1.5 align-top">
+      {o.swatch}
+      <span className="min-w-0 truncate">{o.label ?? o.value}</span>
+    </span>
+  );
+}
 
 export type CheckboxListProps = {
   options: CheckboxListOption[];
@@ -103,7 +116,7 @@ export function CheckboxList({
           visible.map((o) => (
             <Checkbox
               key={o.value}
-              label={o.label ?? o.value}
+              label={optionLabelNode(o)}
               count={o.count !== undefined ? formatCount(o.count) : undefined}
               checked={selectedSet.has(o.value)}
               disabled={o.disabled}

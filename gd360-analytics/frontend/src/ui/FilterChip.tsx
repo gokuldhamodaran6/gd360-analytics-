@@ -23,10 +23,13 @@ export type FilterChipProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "val
   dashed?: boolean;
   // Numbers inside (date ranges) read better tabular.
   tabular?: boolean;
+  // A control of its own at the chip's left edge (a colour swatch that
+  // opens a picker): rendered BESIDE the chip's button, never inside it.
+  leading?: ReactNode;
 };
 
 export const FilterChip = forwardRef<HTMLButtonElement, FilterChipProps>(function FilterChip(
-  { label, value, count, active = false, icon, caret = true, onClear, clearLabel = "Clear filter", dashed = false, tabular = false, className, children, disabled, ...rest },
+  { label, value, count, active = false, icon, caret = true, onClear, clearLabel = "Clear filter", dashed = false, tabular = false, leading, className, children, disabled, ...rest },
   ref
 ) {
   const showClear = !!onClear && active;
@@ -39,7 +42,7 @@ export const FilterChip = forwardRef<HTMLButtonElement, FilterChipProps>(functio
         disabled={disabled}
         className={cn(
           "ui-focus inline-flex h-chip items-center gap-1.5 rounded-full border text-[13px] font-medium whitespace-nowrap transition-colors duration-100",
-          "pl-3 pr-2.5",
+          leading ? "pl-7 pr-2.5" : "pl-3 pr-2.5",
           dashed
             ? "border-dashed border-border-strong bg-transparent text-secondary hover:bg-subtle hover:text-text"
             : active
@@ -62,6 +65,7 @@ export const FilterChip = forwardRef<HTMLButtonElement, FilterChipProps>(functio
         )}
         {caret && !dashed && <ChevronDownIcon size={13} className={cn("shrink-0", active ? "text-brand-ink/80" : "text-muted")} />}
       </button>
+      {leading && <span className="absolute left-[5px] inline-flex items-center">{leading}</span>}
       {showClear && (
         <button
           type="button"

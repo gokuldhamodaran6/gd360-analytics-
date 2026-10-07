@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { Checkbox } from "./Checkbox";
-import { labelText, type CheckboxListOption } from "./CheckboxList";
+import { labelText, optionLabelNode, type CheckboxListOption } from "./CheckboxList";
 import { cn } from "./cn";
 import { SearchInput } from "./Input";
 
@@ -83,7 +83,7 @@ export function OptionSearch({
           rows.map((o) => (
             <Checkbox
               key={o.value}
-              label={o.label ?? o.value}
+              label={optionLabelNode(o)}
               count={o.count !== undefined ? formatCount(o.count) : undefined}
               checked={selectedSet.has(o.value)}
               disabled={o.disabled}

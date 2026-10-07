@@ -16,6 +16,9 @@ export type SparklineProps = {
   area?: boolean;
   endDot?: boolean;
   className?: string;
+  // A concrete colour for the line (a dashboard's chart theme); default:
+  // the text-* class, i.e. the brand primary.
+  color?: string;
   // Accessible description; omit to mark as decorative.
   label?: string;
 };
@@ -29,7 +32,7 @@ export function downsample(values: number[], max = SPARKLINE_MAX_POINTS): number
   return out;
 }
 
-export function Sparkline({ data, width = 120, height = 32, strokeWidth = 2, area = false, endDot = true, className, label }: SparklineProps) {
+export function Sparkline({ data, width = 120, height = 32, strokeWidth = 2, area = false, endDot = true, className, color, label }: SparklineProps) {
   const { points, path, areaPath, last } = useMemo(() => {
     const vals = downsample(data.filter((n) => Number.isFinite(n)));
     if (vals.length === 0) return { points: "", path: "", areaPath: "", last: null as { x: number; y: number } | null };
@@ -56,6 +59,7 @@ export function Sparkline({ data, width = 120, height = 32, strokeWidth = 2, are
       height={height}
       viewBox={`0 0 ${width} ${height}`}
       className={cn("block shrink-0 text-primary", className)}
+      style={color ? { color } : undefined}
       role={label ? "img" : undefined}
       aria-label={label}
       aria-hidden={label ? undefined : true}

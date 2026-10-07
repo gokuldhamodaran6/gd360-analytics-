@@ -80,6 +80,8 @@ export type KpiTileProps = {
   caption?: ReactNode;
   sparkline?: number[];
   sparklineLabel?: string;
+  // The sparkline's colour (a dashboard's chart theme); default: brand primary.
+  sparklineColor?: string;
   // Small source note bottom-right ("cell 5 · bookings_total").
   footnote?: ReactNode;
   loading?: boolean;
@@ -111,7 +113,7 @@ export function DeltaPill({ delta, className }: { delta: KpiDelta; className?: s
   );
 }
 
-export function KpiTile({ label, value, unit, delta, caption, sparkline, sparklineLabel, footnote, loading = false, reserveDeltaRow = false, className, onClick, selected = false }: KpiTileProps) {
+export function KpiTile({ label, value, unit, delta, caption, sparkline, sparklineLabel, sparklineColor, footnote, loading = false, reserveDeltaRow = false, className, onClick, selected = false }: KpiTileProps) {
   const Tag = onClick ? "button" : "div";
   const hasSparkline = Boolean(sparkline && sparkline.length > 1 && !loading);
   const captionText = typeof delta?.caption === "string" ? delta.caption : undefined;
@@ -162,7 +164,7 @@ export function KpiTile({ label, value, unit, delta, caption, sparkline, sparkli
       )}
       {(hasSparkline || reserveDeltaRow) && (
         <div data-kpi-sparkline-row="" className="mt-auto flex h-[34px] items-end pt-0.5">
-          {hasSparkline && <Sparkline data={sparkline!} width={120} height={32} label={sparklineLabel} />}
+          {hasSparkline && <Sparkline data={sparkline!} width={120} height={32} label={sparklineLabel} color={sparklineColor} />}
         </div>
       )}
       {(caption || footnote) && (

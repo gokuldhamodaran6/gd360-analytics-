@@ -38,7 +38,7 @@ export { FilterChip } from "./FilterChip";
 export type { FilterChipProps } from "./FilterChip";
 export { ChipGroup } from "./ChipGroup";
 export type { ChipGroupProps } from "./ChipGroup";
-export { CheckboxList, labelText } from "./CheckboxList";
+export { CheckboxList, labelText, optionLabelNode } from "./CheckboxList";
 export type { CheckboxListOption, CheckboxListProps } from "./CheckboxList";
 export { MultiSelect } from "./MultiSelect";
 export type { MultiSelectOption, MultiSelectProps } from "./MultiSelect";

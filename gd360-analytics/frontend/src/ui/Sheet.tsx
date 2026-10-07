@@ -24,6 +24,10 @@ export type SheetProps = {
   closeLabel?: string;
   // Disable backdrop-click close (e.g. an unsaved form).
   persistent?: boolean;
+  // False: no dimming behind the panel - the page stays fully visible
+  // (a sheet whose changes preview live on the page underneath). The
+  // backdrop still closes the sheet on a click.
+  scrim?: boolean;
   className?: string;
   id?: string;
 };
@@ -31,7 +35,7 @@ export type SheetProps = {
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 const WIDTH = { sm: "w-sheet", md: "w-[520px]", lg: "w-[720px]" };
 
-export function Sheet({ open, onClose, title, subtitle, children, footer, size = "sm", side = "right", headerExtra, closeLabel = "Close", persistent = false, className, id }: SheetProps) {
+export function Sheet({ open, onClose, title, subtitle, children, footer, size = "sm", side = "right", headerExtra, closeLabel = "Close", persistent = false, scrim = true, className, id }: SheetProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
 
@@ -87,7 +91,7 @@ export function Sheet({ open, onClose, title, subtitle, children, footer, size =
 
   return createPortal(
     <div className="fixed inset-0 z-[60] flex" role="presentation">
-      <div className="ui-sheet-backdrop absolute inset-0 bg-black/40" onClick={persistent ? undefined : onClose} aria-hidden="true" />
+      <div className={cn("ui-sheet-backdrop absolute inset-0", scrim ? "bg-black/40" : "bg-transparent")} data-sheet-backdrop={scrim ? "scrim" : "clear"} onClick={persistent ? undefined : onClose} aria-hidden="true" />
       <div
         ref={panelRef}
         id={id}
