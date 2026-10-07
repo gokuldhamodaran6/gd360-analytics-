@@ -9,7 +9,7 @@ from sqlalchemy import (
     Column, String, DateTime, ForeignKey, Text, JSON, Boolean, Integer, LargeBinary, BigInteger,
     Float, UniqueConstraint, Index,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import backref, relationship
 
 from .database import Base
 
@@ -750,6 +750,47 @@ class Dashboard(Base):
     # recomputed that time.
     last_refreshed_at = Column(DateTime, nullable=True)
 
+    # 2026-10-06 (warehouse-native dashboards layer): the dashboard-level
+    # definitions behind the filter rail, period control and saved views
+    # of the redesigned dashboard view (see services/dashboard_engine.py
+    # and routers/dashboard_builder.py's run_page / parameters / saved-
+    # views endpoints). All nullable, all only meaningful on a
+    # layout_version==2 dashboard whose data source is a warehouse/
+    # database; every pre-existing row is untouched (NULL = no rail, no
+    # period control, no saved views).
+    #   parameters  - [{id, column, label, control: "chips"|"multi"|
+    #                 "search"|"segmented"|"range"|"date_range"|
+    #                 "checkboxes", options_from: "distinct"|null,
+    #                 default}] - one entry per control on the rail.
+    #   saved_views - [{id, name, filters, period, date_range, created_by}]
+    #                 - a named snapshot of the rail's state.
+    #   default_period - "day"|"week"|"month"|"quarter"|"year": the grain
+    #                 time charts and KPI sparklines bucket by unless the
+    #                 viewer picks another.
+    #   date_column - the table column the period/date-range controls
+    #                 apply to (every block's date_range filter is pushed
+    #                 down on this column when its table has it).
+    parameters = Column(JSON, nullable=True)
+    saved_views = Column(JSON, nullable=True)
+    default_period = Column(String, nullable=True)
+    date_column = Column(String, nullable=True)
+    # 2026-10-07 (dashboard-from-prompt round): the data source this
+    # dashboard is built against, recorded DIRECTLY. Before this round a
+    # dashboard only knew its data source through source_conversation_id
+    # (routers/dashboard_builder._dashboard_datasource walked
+    # dashboard -> conversation -> datasource), which meant a dashboard
+    # could not exist without a chat. The propose/commit flow starts from
+    # a data source and a goal, no conversation, so this column is the
+    # primary link now and the conversation walk is the fallback for every
+    # pre-existing row (NULL here). Never required. Deliberately a plain
+    # String, not a ForeignKey: the production column is added through
+    # _NEW_COLUMNS (a bare ALTER TABLE ADD COLUMN, which cannot add a
+    # constraint), and a hard FK would also block deleting a data source
+    # that a dashboard still points at - _dashboard_datasource simply
+    # resolves to None for a deleted source, the same way the
+    # conversation walk always has.
+    datasource_id = Column(String, nullable=True)
+
     owner = relationship("User", back_populates="dashboards")
     charts = relationship("SavedChart", back_populates="dashboard", cascade="all, delete-orphan")
     pages = relationship(
@@ -759,6 +800,8 @@ class Dashboard(Base):
     share = relationship(
         "DashboardShare", back_populates="dashboard", uselist=False, cascade="all, delete-orphan",
     )
+    # 2026-10-07: block/page/dashboard comments - see DashboardComment.
+    comments = relationship("DashboardComment", cascade="all, delete-orphan")
 
 
 class SavedChart(Base):
@@ -823,7 +866,26 @@ class DashboardBlock(Base):
     x/y/w/h place this block on a 12-column grid, in grid units (not
     pixels) - the same coordinate system PowerBI/Hex-style canvases use, so
     Phase 2's drag/resize editor can read and write these directly with no
-    schema change."""
+    schema change.
+
+    2026-10-07 (analyst canvas round): the canvas renders these SAME rows
+    as cells, so two more kinds exist and two config keys bind cells
+    together - see routers/dashboard_builder.py's module docstring
+    ("Canvas cells") for the full contract:
+      - "sql": {sql: <the person's own SELECT>, name?: <cte-safe cell
+        name>, parameters?: [names it references]} - run inside the
+        warehouse as a raw statement through services/dashboard_engine
+        with the page's filter rail NOT pushed down (raw SQL has no spec)
+        but with dashboard parameters bound ({{name}} / @name - see
+        services/dashboard_engine.bind_parameters: values are always
+        bound, never spliced into the text). A sql cell may read another
+        sql cell's result as a CTE with {{cell:<name>}}.
+      - "input": {parameter_id: <Dashboard.parameters[].id>} - a rail
+        parameter rendered inline on the canvas; never executed.
+      - "chart" | "kpi" | "table" | "donut" | "sparkline" | "avatar_list"
+        with config.source_block_id: rendered from THAT sql cell's result
+        instead of an own spec. run_page resolves the dependency order
+        and rejects loops."""
     __tablename__ = "dashboard_blocks"
 
     id = Column(String, primary_key=True, default=gen_uuid)
@@ -878,6 +940,25 @@ class DashboardBlock(Base):
     # last change" option only ever shows when there is genuinely something
     # to revert to.
     previous_config = Column(JSON, nullable=True)
+    # 2026-10-06 (warehouse-native dashboards layer): for a block on a
+    # warehouse/database source, config["spec"] holds its BlockSpec (see
+    # services/query_builder.validate_block_spec) and the engine compiles
+    # that spec plus the page's live filters into one query per run. These
+    # two columns are the block's OWN record of its last compile/run,
+    # kept on the row rather than inside `config` on purpose:
+    #   - `config` is what _snapshot_block_config/undo_block snapshot and
+    #     restore, and what update_block lets a client replace wholesale.
+    #     The last compiled SQL and the last run's cost are observations
+    #     about the block, not part of its definition - undoing an edit
+    #     must not "undo" an audit fact, and a client PATCHing config must
+    #     not be able to forge one.
+    #   - query_sql is the SQL compiled for the block's OWN spec with no
+    #     page filters (what "Show SQL" shows at rest; the filtered variant
+    #     is GET /blocks/{id}/sql). last_run is {bytes_scanned,
+    #     duration_ms, rows, ran_at, cached} from the most recent run_page
+    #     that executed it.
+    query_sql = Column(Text, nullable=True)
+    last_run = Column(JSON, nullable=True)
 
     page = relationship("DashboardPage", back_populates="blocks")
 
@@ -957,6 +1038,60 @@ class DashboardShareEmail(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     share = relationship("DashboardShare", back_populates="allowed_emails")
+
+
+class DashboardComment(Base):
+    """2026-10-07 (analyst canvas + dashboard-from-prompt round): one
+    comment on a layout_version=2 dashboard - see routers/
+    dashboard_comments.py for the endpoints and the permission rules.
+
+    Where it hangs:
+      - block_id set: on that block (a chart, a SQL cell, a KPI row...).
+        The canvas and the dashboard both show a block's thread count
+        from DashboardBuilderOut.comment_counts without a second request.
+      - block_id NULL, page_id set: on the page as a whole.
+      - both NULL: on the dashboard as a whole.
+    anchor (optional, free-form JSON) is the chart ELEMENT the comment is
+    pinned to, so it stays on the data point rather than a pixel:
+    {"kind": "bar" | "point" | "cell", "key": <the x value / row key /
+    cell id>, ...}. The backend stores it as given; only the renderer
+    interprets it.
+
+    Threads: parent_id NULL = a top-level comment (a thread root);
+    parent_id set = a reply to that root (replies are flat - one level,
+    never a reply to a reply - the same shape every comment UI the
+    designs reference uses). A reply inherits its root's block/page/
+    anchor; its own block_id/page_id are copied from the root at insert
+    time so counting per block stays one query.
+
+    resolved_at is set on the ROOT only (resolving a thread resolves all
+    of it); mentions is ["name", ...] - the @tokens parsed out of body at
+    write time (no notification is sent yet: Notifications v1 exists but
+    SMTP is off, so this just records who was named). block_id/page_id
+    carry no FK on purpose: a deleted block or page leaves its comments
+    orphaned-but-readable at the dashboard level rather than failing the
+    delete, and the dashboard-level cascade below is the only thing that
+    removes them."""
+    __tablename__ = "dashboard_comments"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    dashboard_id = Column(String, ForeignKey("dashboards.id"), nullable=False, index=True)
+    block_id = Column(String, nullable=True, index=True)
+    page_id = Column(String, nullable=True)
+    parent_id = Column(String, ForeignKey("dashboard_comments.id"), nullable=True, index=True)
+    author_id = Column(String, ForeignKey("users.id"), nullable=False)
+    body = Column(Text, nullable=False)
+    anchor = Column(JSON, nullable=True)
+    mentions = Column(JSON, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    author = relationship("User")
+    replies = relationship(
+        "DashboardComment", cascade="all, delete-orphan", backref=backref("parent", remote_side=[id]),
+        order_by="DashboardComment.created_at",
+    )
 
 
 class PushdownQueryLog(Base):
