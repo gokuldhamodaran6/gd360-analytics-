@@ -1,10 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { dashboardBuilderApi, DashboardBuilderDetail, DashboardBuilderPage, WorkspaceSummary, qualityChecksApi } from "../api/client";
+import {
+  dashboardBuilderApi, DashboardBlock, DashboardBuilderDetail, DashboardBuilderPage, DashboardBlockType, datasourceApi, WorkspaceSummary, qualityChecksApi,
+} from "../api/client";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
-import { DashboardBlockGrid, DataFreshnessBadge, describeFilterSpec, isSpecActive } from "../components/DashboardBlocks";
+import { DataFreshnessBadge, describeFilterSpec, isSpecActive } from "../components/DashboardBlocks";
 import DashboardCanvas from "../components/DashboardCanvas";
+import { DashboardShell, ParametersEditor, useComments, useDashboardRun, useDashboardViewMode, type CanvasOwnerActions, type RunSource } from "../dashboard";
 import { useDashboardFilters } from "../lib/useDashboardFilters";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { brandingBackgroundImageStyle, brandingStyleVars, hexToRgbTriple, useBrandingAsset } from "../lib/branding";
@@ -1388,6 +1391,22 @@ function DashboardBuilderViewBody({
   // rendering, which happens exactly as it always did regardless of
   // whether this succeeds.
   const [hasFailingQualityChecks, setHasFailingQualityChecks] = useState(false);
+  // File sources: the column list the ParametersEditor's pickers need
+  // (a warehouse dashboard reads dash.tables instead).
+  const [editorColumns, setEditorColumns] = useState<{ name: string; dtype: string }[] | undefined>(undefined);
+  useEffect(() => {
+    if (!dash.datasource_id || dash.warehouse_native || !dash.can_edit) return;
+    let cancelled = false;
+    datasourceApi
+      .preview(dash.datasource_id, null, 1, 0)
+      .then((p) => {
+        if (!cancelled) setEditorColumns(p.columns.map((name: string) => ({ name, dtype: p.dtypes?.[name] || "" })));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [dash.datasource_id, dash.warehouse_native, dash.can_edit]);
   useEffect(() => {
     let cancelled = false;
     if (!dash.datasource_id) {
@@ -1439,7 +1458,111 @@ function DashboardBuilderViewBody({
   const handleDashChange = (d: DashboardBuilderDetail) => {
     setDash(d);
     filterState.refresh();
+    if (mode === "view") run.rerun();
   };
+
+  // 2026-10-07 (Option A dashboard view): the view/preview mode renders
+  // src/dashboard's DashboardShell (header + filter rail + KPI strip +
+  // block grid) through this one engine hook. A warehouse dashboard runs
+  // every block inside the warehouse (POST /pages/{id}/run); a file
+  // dashboard keeps today's preview-filtered path under the same skin.
+  // Disabled while editing so the canvas's own filter state stays the only
+  // thing firing requests there.
+  const warehouse = Boolean(dash.warehouse_native);
+  const source = useMemo<RunSource>(
+    () =>
+      warehouse
+        ? {
+            kind: "warehouse",
+            run: (pageId, req, signal) => dashboardBuilderApi.runPage(dash.id, pageId, req, signal),
+            options: (paramId, opts, signal) => dashboardBuilderApi.parameterOptions(dash.id, paramId, opts, signal),
+          }
+        : {
+            kind: "file",
+            datasourceId: dash.datasource_id,
+            preview: (pageId, filters, blockFilters) => dashboardBuilderApi.previewFiltered(dash.id, pageId, filters, blockFilters),
+            distinctValues: dash.datasource_id
+              ? (column, search) =>
+                  datasourceApi.getColumnDistinctValues(dash.datasource_id as string, column, null, { search, limit: 200 }).then((r) => ({ values: r.values }))
+              : undefined,
+          },
+    [warehouse, dash.id, dash.datasource_id]
+  );
+  const persistSavedViews = useCallback(
+    async (views: Parameters<typeof dashboardBuilderApi.updateSavedViews>[1]) => {
+      const updated = await dashboardBuilderApi.updateSavedViews(dash.id, views);
+      setDash(updated);
+      return updated.saved_views;
+    },
+    [dash.id, setDash]
+  );
+  const run = useDashboardRun({
+    dashboard: dash,
+    page: activePage,
+    source,
+    enabled: !(dash.can_edit && mode === "edit"),
+    persistSavedViews: dash.can_edit ? persistSavedViews : undefined,
+  });
+  const columnsFor = useCallback(
+    (block: DashboardBlock) => {
+      const table = block.config?.spec?.table as string | undefined;
+      const cols = table ? dash.tables?.[table] : undefined;
+      return cols ? cols.map((c) => ({ name: c.name, dtype: String(c.type || "") })) : undefined;
+    },
+    [dash.tables]
+  );
+  // 2026-10-07 (analyst canvas round): Dashboard · Canvas - two renderings
+  // of the same blocks (remembered per dashboard, mirrored as ?mode=),
+  // the comment threads (one hook per dashboard, counts shared by both
+  // renderings) and the canvas's owner actions - each one the existing
+  // block endpoint plus setDash, nothing the grid couldn't also show.
+  const [renderMode, setRenderMode] = useDashboardViewMode(dash.id);
+  const comments = useComments(dash.id, { enabled: !(dash.can_edit && mode === "edit") });
+  const canvasOwner = useMemo<CanvasOwnerActions | null>(
+    () =>
+      dash.can_edit
+        ? {
+            updateBlock: async (blockId, payload) => { const d = await dashboardBuilderApi.updateBlock(dash.id, blockId, payload); setDash(d); return d; },
+            createBlock: async (type, title, config) => {
+              if (!activePage) throw new Error("This dashboard has no page to add a cell to.");
+              const d = await dashboardBuilderApi.createBlock(dash.id, activePage.id, type, title, undefined, config);
+              setDash(d);
+              return d;
+            },
+            deleteBlock: async (blockId) => { const d = await dashboardBuilderApi.deleteBlock(dash.id, blockId); setDash(d); return d; },
+            swapBlock: async (blockId, payload) => { const d = await dashboardBuilderApi.swapBlock(dash.id, blockId, payload); setDash(d); return d; },
+          }
+        : null,
+    [dash.can_edit, dash.id, activePage, setDash]
+  );
+  const ownerActions = dash.can_edit
+    ? {
+        onEdit: () => setMode("edit"),
+        onSwap: async (block: DashboardBlock, payload: { chart_type?: string; type?: DashboardBlockType }) => {
+          const updated = await dashboardBuilderApi.swapBlock(dash.id, block.id, payload);
+          setDash(updated);
+          run.rerunBlock(block.id);
+        },
+        onRemove: async (block: DashboardBlock) => {
+          setDash(await dashboardBuilderApi.deleteBlock(dash.id, block.id));
+        },
+        commentCounts: dash.comment_counts,
+        datasourceId: dash.datasource_id,
+        columnsFor,
+      }
+    : null;
+  const fetchSql = warehouse
+    ? (block: DashboardBlock) =>
+        dashboardBuilderApi.blockSql(dash.id, block.id, { filters: run.filters, period: run.state.period, date_range: run.state.dateRange })
+    : undefined;
+  const upgradeBlocks = dash.can_edit && warehouse
+    ? async () => {
+        const result = await dashboardBuilderApi.upgradeBlocks(dash.id);
+        setDash(await dashboardBuilderApi.get(dash.id));
+        run.rerun();
+        return result;
+      }
+    : undefined;
 
   // 2026-09-25 (Round 2): inline rename - there was no way to fix a
   // dashboard's name at all before this round, which mattered a lot more
@@ -1467,6 +1590,72 @@ function DashboardBuilderViewBody({
       setSavingName(false);
     }
   };
+
+  const qualityBanner = hasFailingQualityChecks ? (
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 pt-4 w-full">
+      <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
+        One or more data-quality checks are failing on a data source this dashboard uses.
+        {dash.datasource_id && (
+          <>
+            {" "}
+            <Link to={`/workspace/${dash.datasource_id}?tab=quality`} className="underline hover:no-underline">
+              Review the checks
+            </Link>
+          </>
+        )}
+      </div>
+    </div>
+  ) : null;
+
+  const viewMode = !(dash.can_edit && mode === "edit");
+
+  if (viewMode) {
+    return (
+      <div className="flex">
+        <AppSidebar
+          workspaces={workspaces}
+          activeWorkspaceId={activeWorkspaceId}
+          onWorkspaceSwitch={switchWorkspace}
+          onWorkspaceCreated={handleWorkspaceCreated}
+        />
+        <div className="dash-shell flex-1 min-w-0 min-h-screen flex flex-col bg-base" style={shellStyle}>
+          <TopNav hideLogo />
+          {qualityBanner}
+          <DashboardShell
+            dashboard={dash}
+            page={activePage}
+            run={run}
+            source={source}
+            mode={warehouse ? "warehouse" : "file"}
+            owner={ownerActions}
+            fetchSql={fetchSql}
+            view={renderMode}
+            onViewChange={setRenderMode}
+            canvasOwner={canvasOwner}
+            comments={comments}
+            onEditDashboard={dash.can_edit ? () => setMode("edit") : undefined}
+            onUpgradeBlocks={upgradeBlocks}
+            headerExtra={
+              <>
+                {logoUrl && <img src={logoUrl} alt="" className="h-8 w-auto max-w-[140px] object-contain rounded-md" />}
+                <PublishPanel dash={dash} onChange={handleDashChange} />
+              </>
+            }
+            beforeContent={
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <Link to="/dashboards" className="text-caption text-muted hover:text-text transition">&larr; Dashboards</Link>
+                  {activePage && <DataFreshnessBadge blocks={activePage.blocks} />}
+                </div>
+                <PageTabsBar dash={{ ...dash, can_edit: false }} activePageId={activePage?.id} setActivePageId={setActivePageId} onChange={handleDashChange} />
+              </div>
+            }
+            style={pageBgTriple ? { background: `rgb(${pageBgTriple} / 0.35)` } : undefined}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex">
@@ -1580,14 +1769,14 @@ function DashboardBuilderViewBody({
               <div className="flex items-center rounded-lg border border-border overflow-hidden text-xs">
                 <button
                   type="button"
-                  className={`px-2.5 py-1.5 transition ${mode === "edit" ? "bg-primary text-white" : "text-muted hover:text-text hover:bg-surface2"}`}
+                  className="px-2.5 py-1.5 transition bg-primary text-white"
                   onClick={() => setMode("edit")}
                 >
                   Edit
                 </button>
                 <button
                   type="button"
-                  className={`px-2.5 py-1.5 transition ${mode === "view" ? "bg-primary text-white" : "text-muted hover:text-text hover:bg-surface2"}`}
+                  className="px-2.5 py-1.5 transition text-muted hover:text-text hover:bg-surface2"
                   onClick={() => setMode("view")}
                 >
                   Preview
@@ -1685,13 +1874,16 @@ function DashboardBuilderViewBody({
           </div>
         )}
 
+        {/* 2026-10-07 (Option A dashboard view): the rail's definition -
+            which columns become filters, the date column and the default
+            period - lives with the editor, right above the canvas. */}
+        <ParametersEditor dash={dash} onChange={handleDashChange} columns={editorColumns} className="mt-4" />
+
         <div className="mt-6" style={pageBgTriple ? { background: `rgb(${pageBgTriple} / 0.35)`, borderRadius: 20, padding: 16 } : undefined}>
           {!activePage ? (
             <div className="text-sm text-muted py-10 text-center">This dashboard has no pages yet.</div>
-          ) : dash.can_edit && mode === "edit" ? (
-            <DashboardCanvas dash={dash} page={activePage} onChange={handleDashChange} filterState={filterState} />
           ) : (
-            <DashboardBlockGrid blocks={activePage.blocks} datasourceId={dash.datasource_id} filterState={filterState} />
+            <DashboardCanvas dash={dash} page={activePage} onChange={handleDashChange} filterState={filterState} />
           )}
         </div>
         </div>
