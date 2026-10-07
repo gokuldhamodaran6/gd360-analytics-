@@ -1,10 +1,10 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
 import {
   BuilderColumns, ChatFinishRequest, DatasetVersion, DataSourceSummary, datasourceApi, PushdownAttempt,
-  PushdownSkippedReason, QueryBuilderSpec, ResultEntry, SAVE_AS_TABLE_PROMPT,
+  PushdownSkippedReason, QueryBuilderSpec, QueryFilters, ResultEntry, SAVE_AS_TABLE_PROMPT,
 } from "../api/client";
 import PushToDashboardMenu from "./PushToDashboardMenu";
-import ChartCanvas from "./ChartCanvas";
+import WorkspaceChart from "./WorkspaceChart";
 import { hasMultipleTables, connectionKindMeta } from "./DataSourceForm";
 import { BUILDER_KINDS, ComputedInBadge, NeedsQueryHelpCard, providerLabel, SqlThatRan, WarehouseTrace } from "./WarehouseTurn";
 
@@ -222,6 +222,11 @@ export type ChatTurn = {
   builderSuggestion?: QueryBuilderSpec | null;
   builderColumns?: BuilderColumns | null;
   exactTotalRows?: number | null;
+  // 2026-10-07 ("say what was filtered"): the row filters behind this
+  // answer's numbers (api/client.ts QueryFilters). The chat answer's own
+  // text already names them (the backend appends the line to the reply);
+  // the Chart tab shows them as a quiet line under the chart title.
+  queryFilters?: QueryFilters | null;
 };
 
 // What a caller can drop into the composer (see the customizeSeed effect
@@ -608,7 +613,21 @@ function ResultCard({
       <div className="p-2">
         {entry.chart_spec && !showTable ? (
           <div style={{ height: 220 }}>
-            <ChartCanvas chartSpec={entry.chart_spec} title={entry.label} />
+            {/* 2026-10-07 (chart-integrity round): drawn from this card's
+                own rows by the same component as the Chart tab (the native
+                renderer wherever the chart model can express it) - never
+                straight from the stored figure when the rows are there. */}
+            <WorkspaceChart
+              variant="bare"
+              chartSpec={entry.chart_spec}
+              columns={columns.length ? (columns as any) : null}
+              rows={rows.length ? rows : null}
+              chartType={entry.chart_type}
+              truncated={entry.result_truncated}
+              title={entry.label}
+              id={entry.version_id || entry.label}
+              minHeight={200}
+            />
           </div>
         ) : rows.length > 0 && columns.length > 0 ? (
           <div className="overflow-x-auto max-h-56">

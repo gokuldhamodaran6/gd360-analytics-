@@ -229,19 +229,12 @@ export default function ChartStylePanel({
     })).filter((group) => group.types.length > 0);
   }, [chartSearch]);
 
-  if (!chartSpec) {
-    return (
-      <div className="card p-6 text-sm text-muted text-center">
-        Ask GD360 for a chart first, then come back here to style it: colors, titles, labels and more.
-      </div>
-    );
-  }
-
-  const activeType = detectChartType(chartSpec);
-  const names = seriesLabels(chartSpec);
-  const showAxes = hasCartesianAxes(chartSpec);
-  const isHeatmap = isHeatmapSpec(chartSpec);
-  const cappedNames = names.slice(0, 20);
+  // 2026-10-07: every hook of this component runs BEFORE the "no chart
+  // yet" return further down. That return used to sit here, above three
+  // more hooks - so the first time a chart on screen was replaced by an
+  // answer with no figure (a rebuild that comes back as a table) while this
+  // panel was open, React threw "Rendered fewer hooks than expected" and
+  // the whole page fell to the error screen.
 
   // Every distinct bar/slice/series this chart actually has, by its real
   // name - not just the ones seriesLabels considers "renameable" (see
@@ -250,7 +243,7 @@ export default function ChartStylePanel({
   // 10-bar chart's picker only ever showed 6 swatches: it used to size
   // itself off `names` above, which returns nothing at all for a
   // single-categorical bar chart.
-  const colorLabels = useMemo(() => colorableLabels(chartSpec), [chartSpec]);
+  const colorLabels = useMemo(() => (chartSpec ? colorableLabels(chartSpec) : []), [chartSpec]);
   // Exactly as many swatches as this chart actually has colorable things -
   // 2 bars gets 2 swatches, 10 unique bars gets 10, never a padded-out
   // fixed count of 6 generic "Bar N" placeholders that don't correspond to
@@ -273,6 +266,20 @@ export default function ChartStylePanel({
     const data = Array.isArray(chartSpec?.data) ? chartSpec.data : [];
     return data.some((t: any) => t?.meta?.role === "trend_line");
   }, [chartSpec]);
+
+  if (!chartSpec) {
+    return (
+      <div className="card p-6 text-sm text-muted text-center">
+        Ask GD360 for a chart first, then come back here to style it: colors, titles, labels and more.
+      </div>
+    );
+  }
+
+  const activeType = detectChartType(chartSpec);
+  const names = seriesLabels(chartSpec);
+  const showAxes = hasCartesianAxes(chartSpec);
+  const isHeatmap = isHeatmapSpec(chartSpec);
+  const cappedNames = names.slice(0, 20);
 
   const setSeriesName = (i: number, value: string) => {
     const next = [...style.seriesNames];

@@ -12,7 +12,8 @@ import { ChipCloseIcon, SourceDot } from "./ChatPanel";
 // 30 px "G" mark, muted stroke icons, the active one in brand ink on the
 // brand tint. Navigation, routes, the workspace switcher and the mobile
 // drawer behave exactly as they did.
-import { BarChartIcon, ClockIcon, DatabaseIcon, FlaskIcon, GridIcon, NetworkIcon, ShieldCheckIcon, SidebarIcon } from "../ui";
+import { BarChartIcon, ClockIcon, DatabaseIcon, FlaskIcon, GridIcon, NetworkIcon, PaletteIcon, ShieldCheckIcon, SidebarIcon } from "../ui";
+import { BrandKitSheet } from "../dashboard/theme/BrandKitSheet";
 
 // 2026-09-23: the persistent left nav rail from the workspace-structure
 // revamp, modeled on the reference screenshots Gokul shared (a "Data
@@ -344,6 +345,7 @@ function WorkspaceSwitcher({
   onSwitch,
   onOpenCreate,
   onOpenInvite,
+  onOpenBrandKit,
   collapsed = false,
 }: {
   workspaces: WorkspaceSummary[];
@@ -351,6 +353,8 @@ function WorkspaceSwitcher({
   onSwitch: (id: string) => void;
   onOpenCreate: () => void;
   onOpenInvite: () => void;
+  // 2026-10-07 (identity-colour round): the active workspace's brand kit.
+  onOpenBrandKit: () => void;
   // 2026-09-28 (collapsible icon rail): desktop-only, defaulted false so
   // the mobile drawer (which never passes this) keeps today's always-full
   // avatar+name+chevron button exactly as-is.
@@ -461,6 +465,17 @@ function WorkspaceSwitcher({
             }`}
           >
             <UserPlusIcon className="w-3.5 h-3.5 text-muted" /> Invite teammates
+          </button>
+          {/* 2026-10-07 (identity-colour round): the look every dashboard of
+              this workspace starts from - palette, colour by value, type,
+              numbers. Any member can open it; the owner can change it. */}
+          <button
+            type="button"
+            data-open-brand-kit=""
+            onClick={() => { setOpen(false); onOpenBrandKit(); }}
+            className="ui-focus-inset w-full flex items-center gap-2.5 px-3.5 py-2 text-ui text-left hover:bg-subtle transition-colors"
+          >
+            <PaletteIcon size={14} className="text-muted" /> Brand kit…
           </button>
         </div>
       )}
@@ -1034,6 +1049,7 @@ function SidebarNav({
   onSwitch,
   onOpenCreate,
   onOpenInvite,
+  onOpenBrandKit,
   onNavigate,
   collapsed = false,
   onToggleCollapse,
@@ -1044,6 +1060,7 @@ function SidebarNav({
   onSwitch: (id: string) => void;
   onOpenCreate: () => void;
   onOpenInvite: () => void;
+  onOpenBrandKit: () => void;
   onNavigate: () => void;
   // 2026-09-28 (collapsible icon rail): both desktop-only. `collapsed`
   // defaults false and `onToggleCollapse` defaults undefined, so the
@@ -1075,6 +1092,7 @@ function SidebarNav({
         onSwitch={onSwitch}
         onOpenCreate={onOpenCreate}
         onOpenInvite={onOpenInvite}
+        onOpenBrandKit={onOpenBrandKit}
         collapsed={collapsed}
       />
 
@@ -1217,6 +1235,7 @@ export default function AppSidebar({
   const { user } = useAuth();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
+  const [showBrandKit, setShowBrandKit] = useState(false);
   // 2026-09-25e (responsive pass): this used to just be "hidden lg:flex" -
   // every page that renders this sidebar (Dashboard, Dashboards,
   // DataSources, NewProject, DashboardBuilderView) genuinely had NO way to
@@ -1324,6 +1343,10 @@ export default function AppSidebar({
               setMobileOpen(false);
               setShowInviteModal(true);
             }}
+            onOpenBrandKit={() => {
+              setMobileOpen(false);
+              setShowBrandKit(true);
+            }}
             onNavigate={() => setMobileOpen(false)}
           />
         </div>
@@ -1349,6 +1372,7 @@ export default function AppSidebar({
           onSwitch={onWorkspaceSwitch}
           onOpenCreate={() => setShowCreateModal(true)}
           onOpenInvite={() => setShowInviteModal(true)}
+          onOpenBrandKit={() => setShowBrandKit(true)}
           onNavigate={() => {}}
           collapsed={collapsed}
           onToggleCollapse={toggleCollapsed}
@@ -1369,6 +1393,15 @@ export default function AppSidebar({
           workspaceId={activeWorkspaceId}
           currentUserId={user.id}
           onClose={() => setShowInviteModal(false)}
+        />
+      )}
+      {showBrandKit && activeWorkspaceId && (
+        <BrandKitSheet
+          open
+          onClose={() => setShowBrandKit(false)}
+          workspaceId={activeWorkspaceId}
+          workspaceName={workspaces.find((w) => w.id === activeWorkspaceId)?.name}
+          initial={workspaces.find((w) => w.id === activeWorkspaceId)?.brand_kit ?? null}
         />
       )}
     </>

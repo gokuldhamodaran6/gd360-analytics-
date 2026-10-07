@@ -364,6 +364,21 @@ export function downloadRowsAsCsv(
 
 // The Chart tab's "Result · 3 rows · this is the only data GD360 received"
 // block with the CSV download and a compact preview of those rows.
+// 2026-10-07 (chart-integrity round): a fractional number is shown rounded
+// and grouped ("5,171,503.51"), with the exact value on hover and in the
+// CSV - a SUM of doubles otherwise prints its floating-point noise
+// ("5171503.509999998") right under a chart that says 5.17M. Whole numbers
+// (years, ids, counts) and text are printed exactly as before.
+function resultCellText(v: unknown): string {
+  if (typeof v === "number" && Number.isFinite(v) && !Number.isInteger(v)) {
+    return v.toLocaleString("en-US", { maximumFractionDigits: Math.abs(v) >= 100 ? 2 : 4 });
+  }
+  return String(v ?? "");
+}
+function resultCellTitle(v: unknown): string | undefined {
+  return typeof v === "number" && Number.isFinite(v) && !Number.isInteger(v) ? String(v) : undefined;
+}
+
 export function WarehouseResultTable({
   columns, rows, resultRows, truncated,
 }: {
@@ -380,6 +395,10 @@ export function WarehouseResultTable({
           <span className="text-[12px] font-semibold">Result</span>
           <span className="text-[11px] text-muted truncate">
             {fmtInt(n)} row{n === 1 ? "" : "s"} · this is the only data GD360 received
+            {/* 2026-10-07: a pandas step after the query (a pivot, a
+                shift) can reshape those rows - say so, instead of a "6
+                rows" caption sitting on a 3-row table. */}
+            {!truncated && rows.length > 0 && rows.length !== n ? ` · shown as the ${fmtInt(rows.length)}-row table the chart is drawn from` : ""}
           </span>
         </div>
         <button
@@ -407,7 +426,7 @@ export function WarehouseResultTable({
               {rows.slice(0, 50).map((r, ri) => (
                 <tr key={ri} className="border-b border-border/50">
                   {columns.map((c) => (
-                    <td key={c.name} className="px-3 py-1 text-text/80">{String(r[c.name] ?? "")}</td>
+                    <td key={c.name} className="px-3 py-1 text-text/80" title={resultCellTitle(r[c.name])}>{resultCellText(r[c.name])}</td>
                   ))}
                 </tr>
               ))}

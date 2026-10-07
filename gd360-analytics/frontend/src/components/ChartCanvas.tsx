@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Plot, { Plotly } from "../lib/plotly";
 import { useTheme } from "../api/ThemeContext";
-import { figureNotes, kitPlotlyFigure, readKitTokens } from "../dashboard/plotlyKit";
+import { figureNotes, kitPlotlyFigure, readKitTokens, themedKitTokens } from "../dashboard/plotlyKit";
+import { useChartTheme } from "../dashboard/theme/ChartThemeContext";
 import { suggestedChartMinHeight } from "../lib/chartStyle";
 import { useExclusiveOpen } from "../lib/useExclusiveOpen";
 
@@ -128,9 +129,12 @@ export default function ChartCanvas({
   // registry, like everything else.
   const [menuOpen, setMenuOpen, menuSlotId] = useExclusiveOpen();
   const { theme } = useTheme();
+  // 2026-10-07 (identity-colour round): the dashboard's chart theme - a
+  // kit figure takes its series colours from it (plotlyKit.themedKitTokens).
+  const chartTheme = useChartTheme();
   const cardClass = dashPremium ? "dash-card" : "card";
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const chartSpec = useMemo(() => (kit && rawSpec ? kitPlotlyFigure(rawSpec, readKitTokens()) : rawSpec), [rawSpec, kit, theme]);
+  const chartSpec = useMemo(() => (kit && rawSpec ? kitPlotlyFigure(rawSpec, themedKitTokens(readKitTokens(), chartTheme)) : rawSpec), [rawSpec, kit, theme, chartTheme.key]);
   // Sentences the figure carried inside its plot: printed under it (kit only).
   const notes = useMemo(() => (kit && rawSpec ? figureNotes(rawSpec) : []), [rawSpec, kit]);
 

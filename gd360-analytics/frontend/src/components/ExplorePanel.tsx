@@ -123,6 +123,20 @@ function FilterChip({
 // is what makes it feel instant even on a few thousand rows, unlike the Data
 // tab's server-paginated preview (DataTable.tsx), which is a different,
 // much larger table.
+// 2026-10-07: a fractional number is shown rounded and grouped, the exact
+// value on hover (same rule as the Chart tab's result table) - a SUM of
+// doubles otherwise prints "5171503.5100000035" beside a chart that reads
+// 5.17M. Whole numbers and text are printed as they are.
+function exploreCellText(v: unknown): string {
+  if (typeof v === "number" && Number.isFinite(v) && !Number.isInteger(v)) {
+    return v.toLocaleString("en-US", { maximumFractionDigits: Math.abs(v) >= 100 ? 2 : 4 });
+  }
+  return String(v ?? "");
+}
+function exploreCellTitle(v: unknown): string | undefined {
+  return typeof v === "number" && Number.isFinite(v) && !Number.isInteger(v) ? String(v) : undefined;
+}
+
 function ExploreTable({ columns, rows }: { columns: ResultColumn[]; rows: Record<string, any>[] }) {
   const [search, setSearch] = useState("");
   const [sortField, setSortField] = useState<string | null>(null);
@@ -180,8 +194,8 @@ function ExploreTable({ columns, rows }: { columns: ResultColumn[]; rows: Record
             {filtered.slice(0, 1000).map((row, i) => (
               <tr key={i} className="odd:bg-surface2/40 hover:bg-surface2/80">
                 {columns.map((c) => (
-                  <td key={c.name} className="px-2.5 py-1.5 whitespace-nowrap border-b border-border/60 text-muted">
-                    {String(row[c.name] ?? "")}
+                  <td key={c.name} className="px-2.5 py-1.5 whitespace-nowrap border-b border-border/60 text-muted tabular-nums" title={exploreCellTitle(row[c.name])}>
+                    {exploreCellText(row[c.name])}
                   </td>
                 ))}
               </tr>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { dashboardBuilderApi, DashboardPickerEntry } from "../api/client";
 
 // 2026-10-01 (chat-to-dashboard round): "i want chart turn my charts into
@@ -38,6 +38,7 @@ export default function PushToDashboardMenu({
   sourcePrompt,
   sourceTable,
   compact,
+  preview,
 }: {
   chartSpec?: any;
   chartType?: string | null;
@@ -62,6 +63,10 @@ export default function PushToDashboardMenu({
   // Smaller trigger button for a tight card header (ResultCard) vs the
   // workspace header's normal-sized button (next to "Save chart").
   compact?: boolean;
+  // 2026-10-07 (chart-integrity round): a small drawing of exactly what is
+  // about to be added (the caller's own chart component, so it is the same
+  // picture the dashboard block will show). Optional.
+  preview?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [dashboards, setDashboards] = useState<DashboardPickerEntry[] | null>(null);
@@ -211,6 +216,11 @@ export default function PushToDashboardMenu({
             </div>
           ) : (
             <>
+              {preview && (
+                <div className="mb-2.5 rounded-lg border border-border bg-surface p-2" data-testid="push-preview" style={{ height: 170 }}>
+                  {preview}
+                </div>
+              )}
               <label className="block mb-2.5">
                 <span className="block text-[11px] font-medium text-muted mb-1">Dashboard</span>
                 <select className="input text-xs w-full" value={dashboardId} onChange={(e) => onPickDashboard(e.target.value)}>

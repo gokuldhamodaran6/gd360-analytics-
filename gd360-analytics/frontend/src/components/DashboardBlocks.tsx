@@ -1292,12 +1292,17 @@ export function ColumnFilterSpecEditor({
   spec,
   onChange,
   fetchDistinctValues,
+  valueSwatch,
 }: {
   datasourceId: string | null;
   column: string;
   dtype?: string;
   spec: ColumnFilterSpec | null;
   onChange: (spec: ColumnFilterSpec | null) => void;
+  // 2026-10-07 (identity-colour round): a small mark drawn before a value
+  // in the Values list - the dashboard's filter rail passes the value's
+  // chart colour, so the list doubles as a legend. Decorative.
+  valueSwatch?: (value: string | number | boolean | null) => React.ReactNode;
   // 2026-10-05 (public-filters round): override for where the Values tab's
   // list (and, when `dtype` above wasn't already known, this column's
   // dtype) comes from. Default (omitted) is the original behavior - the
@@ -1445,6 +1450,7 @@ export function ColumnFilterSpecEditor({
                     }`}
                   >
                     <input type="checkbox" className="accent-primary" checked={checked} onChange={() => toggleValue(v.value)} />
+                    {valueSwatch?.(v.value)}
                     <span className="truncate flex-1">{v.value === null ? "(Blanks)" : String(v.value)}</span>
                     <span className={`tabular-nums ${checked ? "text-primary/70" : "text-muted"}`}>{v.count}</span>
                   </label>
