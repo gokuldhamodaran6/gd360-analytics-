@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
-import { dashboardApi, DashboardSummary, WorkspaceSummary } from "../api/client";
+import { dashboardApi, dashboardBuilderApi, DashboardSummary, WorkspaceSummary } from "../api/client";
+import { relativeTime } from "../dashboard/runState";
+import { ProviderBadge } from "../ui";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
@@ -179,10 +181,56 @@ function CreateChartBoardModal({
 // original chart-count line and a neutral icon, with no "Dashboard" pill
 // anywhere near it - the exact distinction this round's bug report asked
 // for.
-function DashboardCard({ d, onDeleted }: { d: DashboardSummary; onDeleted: (id: string) => void }) {
+// 2026-10-07 (Option A dashboard view): what a real dashboard's card
+// shows beyond the list endpoint's own fields - the provider it computes
+// in and when a block last ran. GET /dashboards (DashboardOut) carries
+// neither, so Dashboards below reads them from each v2 dashboard's own
+// GET /dashboard-builder/{id} (bounded, after the list renders) - see
+// DashboardMeta / useDashboardMeta.
+type DashboardMeta = { datasource_kind: string | null; warehouse_native: boolean; last_refreshed: string | null };
+
+function metaOf(detail: Awaited<ReturnType<typeof dashboardBuilderApi.get>>): DashboardMeta {
+  let latest = 0;
+  for (const page of detail.pages) {
+    for (const b of page.blocks) {
+      for (const iso of [b.last_run?.ran_at, b.data_updated_at]) {
+        if (!iso) continue;
+        const t = new Date(iso).getTime();
+        if (Number.isFinite(t) && t > latest) latest = t;
+      }
+    }
+  }
+  return { datasource_kind: detail.datasource_kind, warehouse_native: Boolean(detail.warehouse_native), last_refreshed: latest ? new Date(latest).toISOString() : null };
+}
+
+const META_FETCH_CAP = 40;
+
+function useDashboardMeta(dashboards: DashboardSummary[] | null): Record<string, DashboardMeta> {
+  const [meta, setMeta] = useState<Record<string, DashboardMeta>>({});
+  useEffect(() => {
+    if (!dashboards) return;
+    let cancelled = false;
+    const ids = dashboards.filter((d) => d.layout_version === 2).map((d) => d.id).slice(0, META_FETCH_CAP);
+    ids.forEach((id) => {
+      dashboardBuilderApi
+        .get(id)
+        .then((detail) => {
+          if (!cancelled) setMeta((m) => ({ ...m, [id]: metaOf(detail) }));
+        })
+        .catch(() => undefined);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [dashboards]);
+  return meta;
+}
+
+function DashboardCard({ d, onDeleted, meta }: { d: DashboardSummary; onDeleted: (id: string) => void; meta?: DashboardMeta }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const isDashboard = d.layout_version === 2;
+  const refreshed = meta?.last_refreshed ? relativeTime(meta.last_refreshed) : null;
 
   const doDelete = async () => {
     setBusy(true);
@@ -247,8 +295,14 @@ function DashboardCard({ d, onDeleted }: { d: DashboardSummary; onDeleted: (id: 
       ) : (
         <>
           {isDashboard ? (
-            <div className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-accent/15 text-accent border border-accent/30 w-fit">
-              Dashboard
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <div className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-accent/15 text-accent border border-accent/30 w-fit">
+                Dashboard
+              </div>
+              {meta?.datasource_kind && (
+                <ProviderBadge provider={meta.datasource_kind} title={meta.warehouse_native ? `Computed in ${meta.datasource_kind}` : "Computed in GD360"} />
+              )}
+              {refreshed && <span className="text-[10px] text-muted tabular-nums">refreshed {refreshed}</span>}
             </div>
           ) : (
             <div className="text-xs text-muted">
@@ -286,11 +340,13 @@ function DashboardSection({
   items,
   viewMode,
   onDeleted,
+  meta,
 }: {
   title: string;
   items: DashboardSummary[];
   viewMode: "grid" | "list";
   onDeleted: (id: string) => void;
+  meta?: Record<string, DashboardMeta>;
 }) {
   if (items.length === 0) return null;
   const personal = items.filter((d) => !d.workspace_id);
@@ -311,7 +367,7 @@ function DashboardSection({
           <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2">Personal</div>
           <div className={gridClass}>
             {personal.map((d) => (
-              <DashboardCard key={d.id} d={d} onDeleted={onDeleted} />
+              <DashboardCard key={d.id} d={d} onDeleted={onDeleted} meta={meta?.[d.id]} />
             ))}
           </div>
         </div>
@@ -323,7 +379,7 @@ function DashboardSection({
           </div>
           <div className={gridClass}>
             {list.map((d) => (
-              <DashboardCard key={d.id} d={d} onDeleted={onDeleted} />
+              <DashboardCard key={d.id} d={d} onDeleted={onDeleted} meta={meta?.[d.id]} />
             ))}
           </div>
         </div>
@@ -361,6 +417,7 @@ export default function Dashboards() {
   // module docstring above for the full reasoning.
   const trueDashboards = (dashboards || []).filter((d) => d.layout_version === 2);
   const chartBoards = (dashboards || []).filter((d) => d.layout_version !== 2);
+  const meta = useDashboardMeta(dashboards);
 
   return (
     <div className="dash-shell flex min-h-screen">
@@ -382,8 +439,15 @@ export default function Dashboards() {
           </div>
           <div className="flex items-center gap-2.5">
             {dashboards && dashboards.length > 0 && <ViewToggle mode={viewMode} onChange={setViewMode} />}
-            <button type="button" className="btn-primary text-sm flex items-center gap-1.5" onClick={() => setShowCreate(true)}>
-              <PlusIcon /> New chart board
+            {/* 2026-10-07 (dashboard from a prompt): the real entry point -
+                describe it, GD360 proposes it from your data, refine, publish
+                (pages/NewDashboard.tsx). The chart board stays a secondary
+                action. */}
+            <Link to="/dashboards/new" className="btn-primary text-sm flex items-center gap-1.5" data-new-dashboard-cta="">
+              <PlusIcon /> New dashboard
+            </Link>
+            <button type="button" className="btn-secondary text-sm flex items-center gap-1.5" onClick={() => setShowCreate(true)}>
+              New chart board
             </button>
           </div>
         </div>
@@ -395,17 +459,20 @@ export default function Dashboards() {
         {dashboards !== null && dashboards.length === 0 && (
           <div className="dash-card p-8 text-center">
             <div className="text-sm text-muted mb-4 leading-relaxed">
-              You don&rsquo;t have any dashboards or chart boards yet. Ask a question in a Project&rsquo;s
-              chat and use &ldquo;Build Dashboard&rdquo; to build a real dashboard from it, or start a simple
-              chart board here to pin individual charts onto.
+              You don&rsquo;t have any dashboards or chart boards yet. Describe the dashboard you need and
+              GD360 proposes one from your real data - or start a simple chart board here to pin
+              individual charts onto.
             </div>
-            <button type="button" className="btn-primary text-sm" onClick={() => setShowCreate(true)}>
-              + New chart board
-            </button>
+            <div className="flex items-center justify-center gap-2.5">
+              <Link to="/dashboards/new" className="btn-primary text-sm">+ New dashboard</Link>
+              <button type="button" className="btn-secondary text-sm" onClick={() => setShowCreate(true)}>
+                New chart board
+              </button>
+            </div>
           </div>
         )}
 
-        <DashboardSection title="Dashboards" items={trueDashboards} viewMode={viewMode} onDeleted={removeById} />
+        <DashboardSection title="Dashboards" items={trueDashboards} viewMode={viewMode} onDeleted={removeById} meta={meta} />
         <DashboardSection title="Saved Charts" items={chartBoards} viewMode={viewMode} onDeleted={removeById} />
       </div>
       </div>
