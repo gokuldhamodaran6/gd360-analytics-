@@ -1,18 +1,17 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { dashboardBuilderApi, datasourceApi, type DashboardTemplate, type DashboardTemplateBlock, type DataSourceSummary } from "../api/client";
+import { dashboardBuilderApi, type DashboardTemplate, type DashboardTemplateBlock } from "../api/client";
 
-// 2026-09-28: raised from 500 - real usage showed people pasting a
-// genuinely detailed, multi-part description (several metrics/models named
-// at once) into this box, and 500 chars cut that off mid-sentence with no
-// visible warning (see the counter added next to the textarea below).
-// 2000 comfortably fits a detailed paragraph while still keeping this a
-// "describe what you want," not "paste your whole spec" field - backend's
-// _generate_goal_plan already caps at 10 planned blocks regardless of how
-// long the description is, so a longer goal cannot balloon into an
-// unbounded number of blocks.
-const _GOAL_MAX_LEN = 2000;
+// 2026-10-07 (dashboard from a prompt, Builder.dc.html): "Build with AI"
+// no longer asks its one question here and fires /generate - it hands off
+// to /dashboards/new (pages/NewDashboard.tsx) with this chat's data source
+// and conversation preselected, where the person sees the proposal in the
+// real dashboard chrome, keeps / swaps / removes blocks, refines it and
+// publishes. The old goal step and the datasource picker it carried are
+// gone with it (the Builder's composer has both); /generate stays on the
+// backend for API callers. "Create your own" and "Start from a template"
+// are unchanged - both create a real v2 dashboard tied to this chat.
 
 // 2026-09-24 (Dashboard Builder Phase 1): the choice Gokul asked for right
 // in the chat flow - "so only they done with analysis our dashboard button
@@ -197,23 +196,9 @@ export default function BuildDashboardModal({
   onClose: () => void;
 }) {
   const navigate = useNavigate();
-  const [step, setStep] = useState<"choose" | "goal" | "templates">("choose");
-  const [goal, setGoal] = useState("");
-  const [building, setBuilding] = useState(false);
+  const [step, setStep] = useState<"choose" | "templates">("choose");
   const [creatingBlank, setCreatingBlank] = useState(false);
   const [error, setError] = useState("");
-
-  // 2026-09-28 (datasource picker round): real usage showed the goal-
-  // driven build silently inheriting whatever data source happened to be
-  // behind the currently-open chat, which is not necessarily the one the
-  // person actually meant. "" (the default) keeps that original
-  // conversation-derived behavior exactly as it always worked - picking
-  // one here sends it as an explicit override instead (see
-  // dashboardBuilderApi.generate). Fetched lazily the first time the
-  // goal step is reached, same pattern as the template gallery below.
-  const [datasources, setDatasources] = useState<DataSourceSummary[] | null>(null);
-  const [datasourcesLoading, setDatasourcesLoading] = useState(false);
-  const [selectedDatasourceId, setSelectedDatasourceId] = useState("");
 
   // 2026-09-25 (Round 5, template gallery) - the catalog for the
   // "templates" step. Fetched lazily the first time that step is
@@ -230,30 +215,9 @@ export default function BuildDashboardModal({
   useEffect(() => {
     if (open) {
       setStep("choose");
-      setGoal("");
       setError("");
-      // 2026-09-28: defaults to the REAL id of this chat's own data source
-      // (not "" any more) - so the very first render of the picker below
-      // already shows and pre-selects an actual name, before the person
-      // has to open the dropdown or even notice it exists.
-      setSelectedDatasourceId(currentDatasourceId || "");
     }
-  }, [open, currentDatasourceId]);
-
-  useEffect(() => {
-    if (step !== "goal" || datasources !== null || datasourcesLoading) return;
-    setDatasourcesLoading(true);
-    datasourceApi
-      .list()
-      .then((list) => setDatasources(list))
-      // Best-effort only - the picker just quietly stays hidden/empty if
-      // this fails; it's never required to build (an unpicked build falls
-      // back to the exact original conversation-derived resolution), so a
-      // transient failure here shouldn't block or scare anyone off the
-      // main "Build with AI" flow.
-      .catch(() => setDatasources([]))
-      .finally(() => setDatasourcesLoading(false));
-  }, [step, datasources, datasourcesLoading]);
+  }, [open]);
 
   useEffect(() => {
     if (step !== "templates" || templates !== null || templatesLoading) return;
@@ -268,21 +232,14 @@ export default function BuildDashboardModal({
 
   if (!open) return null;
 
-  const goToBuild = async (goalText: string, datasourceId?: string) => {
-    if (!conversationId) return;
-    setBuilding(true);
-    setError("");
-    try {
-      const dash = await dashboardBuilderApi.generate(conversationId, goalText, datasourceId);
-      onClose();
-      navigate(`/dashboard-builder/${dash.id}`);
-    } catch (err: any) {
-      setError(
-        err?.response?.data?.detail ||
-          "Couldn't build a dashboard from this yet. Ask a question in the chat first, then try again."
-      );
-      setBuilding(false);
-    }
+  // 2026-10-07: "Build with AI" -> the Builder (/dashboards/new) with this
+  // chat's data source and conversation preselected.
+  const goToBuilder = () => {
+    const q = new URLSearchParams();
+    if (currentDatasourceId) q.set("datasource", currentDatasourceId);
+    if (conversationId) q.set("conversation", conversationId);
+    onClose();
+    navigate(`/dashboards/new${q.toString() ? `?${q.toString()}` : ""}`);
   };
 
   const createOwn = async () => {
@@ -318,7 +275,7 @@ export default function BuildDashboardModal({
     }
   };
 
-  const busy = building || creatingBlank || !!applyingTemplateKey;
+  const busy = creatingBlank || !!applyingTemplateKey;
 
   return createPortal(
     <div
@@ -354,8 +311,8 @@ export default function BuildDashboardModal({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <button
                 type="button"
-                disabled={!conversationId}
-                onClick={() => setStep("goal")}
+                data-build-with-ai=""
+                onClick={goToBuilder}
                 className="text-left border border-border rounded-2xl p-4 hover:border-primary hover:bg-primary/5 transition disabled:opacity-50 disabled:cursor-not-allowed group"
               >
                 <span className="dash-icon-chip dash-accent-0 mb-3 group-hover:brightness-110 transition">
@@ -363,8 +320,8 @@ export default function BuildDashboardModal({
                 </span>
                 <div className="font-semibold text-sm mb-1">Build with AI</div>
                 <div className="text-xs text-muted leading-relaxed">
-                  Tell GD360 what you want to see - it plans and builds a complete dashboard for exactly
-                  that, from your real data.
+                  Describe what you want to see - GD360 proposes a dashboard from {currentDatasourceName ? <span className="font-medium text-text">{currentDatasourceName}</span> : "your real data"}, you keep,
+                  swap or remove each block, refine it, then publish.
                 </div>
               </button>
 
@@ -405,112 +362,6 @@ export default function BuildDashboardModal({
               Either way, you&rsquo;ll be able to add pages, rearrange blocks and style charts once it&rsquo;s
               created - and publish this dashboard publicly whenever you&rsquo;re ready.
             </p>
-          </>
-        ) : step === "goal" ? (
-          <>
-            <button
-              type="button"
-              className="text-xs text-muted hover:text-text transition flex items-center gap-1 mb-3 disabled:opacity-40"
-              onClick={() => setStep("choose")}
-              disabled={building}
-            >
-              <ArrowLeftIcon /> Back
-            </button>
-            <h2 className="text-lg font-bold mb-1">What should this dashboard show?</h2>
-            <p className="text-xs text-muted mb-4 leading-relaxed max-w-sm">
-              Describe who it&rsquo;s for or what matters most - GD360 will plan the right KPIs, charts and
-              tables and build fresh ones from your real data to match.
-            </p>
-
-            {error && (
-              <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-3">
-                {error}
-              </div>
-            )}
-
-            <textarea
-              autoFocus
-              className="input text-sm w-full min-h-[110px] resize-none"
-              placeholder='e.g. "A revenue overview for my exec team" or "Customer churn broken down by region" - a longer, detailed description (several metrics at once) works too'
-              value={goal}
-              onChange={(e) => setGoal(e.target.value)}
-              maxLength={_GOAL_MAX_LEN}
-              disabled={building}
-            />
-            {/* 2026-09-28: this was capped at 500 chars with no visible
-                counter - a longer, detailed description (e.g. several
-                metrics pasted in at once) got silently truncated mid-
-                sentence with no warning at all, which could leave the
-                planning step reading a half-finished sentence. Raised the
-                cap to a size that comfortably fits a genuinely detailed,
-                multi-part description, and this counter makes the limit
-                visible instead of invisible. */}
-            <div className="text-[11px] text-muted mt-1 text-right">
-              {goal.length}/{_GOAL_MAX_LEN}
-            </div>
-
-            {/* 2026-09-28 (data-source visibility round): this used to be
-                hidden entirely unless there were 2+ data sources, and even
-                then defaulted to a vague "use this analysis's own data
-                source" option with no real name shown - a silent default a
-                person had no way to notice was wrong before clicking
-                Build. Now it's ALWAYS shown (once the list has loaded) and
-                ALWAYS names, in plain text above the dropdown, exactly
-                which real data source is about to be used - so a wrong
-                one is obvious before building, not after. The current
-                chat's own data source is pinned first in the list and
-                selected by default; picking a different one explicitly
-                overrides it. */}
-            {!datasourcesLoading && datasources && datasources.length > 0 && (
-              <div className="mt-3">
-                <div className="text-[11px] text-muted mb-1">
-                  Building from:{" "}
-                  <span className="font-semibold text-text">
-                    {datasources.find((d) => d.id === selectedDatasourceId)?.name ||
-                      currentDatasourceName ||
-                      "this analysis's data"}
-                  </span>
-                </div>
-                <select
-                  className="input text-sm w-full"
-                  value={selectedDatasourceId}
-                  onChange={(e) => setSelectedDatasourceId(e.target.value)}
-                  disabled={building}
-                >
-                  {currentDatasourceId && (
-                    <option value={currentDatasourceId}>
-                      {currentDatasourceName || "This chat's data"} (this chat&rsquo;s data)
-                    </option>
-                  )}
-                  {datasources
-                    .filter((ds) => ds.id !== currentDatasourceId)
-                    .map((ds) => (
-                      <option key={ds.id} value={ds.id}>
-                        {ds.name}
-                      </option>
-                    ))}
-                </select>
-              </div>
-            )}
-
-            <div className="flex items-center gap-2.5 mt-3">
-              <button
-                type="button"
-                disabled={building || !goal.trim()}
-                onClick={() => goToBuild(goal.trim(), selectedDatasourceId || currentDatasourceId || undefined)}
-                className="btn-primary text-sm flex-1 disabled:opacity-50"
-              >
-                {building ? "Building…" : "Build dashboard"}
-              </button>
-              <button
-                type="button"
-                disabled={building}
-                onClick={() => goToBuild("")}
-                className="text-xs text-muted hover:text-text transition disabled:opacity-40 shrink-0"
-              >
-                Skip - use everything from this analysis
-              </button>
-            </div>
           </>
         ) : (
           <>
