@@ -154,6 +154,29 @@ class Settings(BaseSettings):
     # page_size, Snowflake fetchmany size, SQLAlchemy yield_per).
     WAREHOUSE_DOWNLOAD_BATCH_ROWS: int = 5_000
 
+    # --- Warehouse-native dashboards (2026-10-06) ---
+    # services/dashboard_engine.py: every block of a dashboard on a
+    # warehouse/database source is ONE query run inside the warehouse with
+    # the page's filters pushed into its SQL - never a sample pulled into
+    # pandas. These bound what that costs.
+    # How long a block's result stays cached in-process, keyed by
+    # (datasource id, sha256 of the exact compiled SQL): a filter change
+    # that compiles to the same SQL for a block (or a second viewer of the
+    # same page) is free; after this many seconds the warehouse is asked
+    # again. Short on purpose - a dashboard is meant to be fresh.
+    DASHBOARD_RESULT_CACHE_TTL_SECONDS: int = 120
+    # The filter rail's parameter options (distinct values + counts) change
+    # far more slowly than block results, so they are cached longer.
+    DASHBOARD_OPTIONS_CACHE_TTL_SECONDS: int = 600
+    # Hard cap on the rows ONE block's query may return (already-aggregated
+    # rows; the LIMIT in its SQL). Matches query_builder.MAX_LIMIT.
+    DASHBOARD_MAX_BLOCK_ROWS: int = 5000
+    # How many block queries one page run executes concurrently. The
+    # connectors are blocking, so a bounded ThreadPoolExecutor runs them;
+    # every worker constructs its own connector/client (nothing is shared
+    # across threads - a BigQuery client is not safe to share that way).
+    DASHBOARD_RUN_MAX_PARALLEL: int = 4
+
     # --- MongoDB pushdown (Enterprise Scale Roadmap, Phase 2) ---
     # Like the plain SQL databases (Postgres/MySQL/SQL Server/Supabase),
     # a customer's own MongoDB server has no per-query metered billing to
