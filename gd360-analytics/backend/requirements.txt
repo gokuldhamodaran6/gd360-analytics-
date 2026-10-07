@@ -16,6 +16,18 @@ numpy==1.26.4
 scipy==1.13.1
 plotly==5.24.1
 sqlparse==0.5.1
+# 2026-10-07 (chart-integrity round, "say what was filtered"): a real SQL
+# parser for services/sql_filters.py, which reads the WHERE predicates and
+# conditional aggregates off the statement a chat answer ran so the answer
+# can say which rows it covers ("Filters applied by this query:
+# is_canceled = 0"). sqlparse above only tokenises (it is what the
+# read-only guard uses); listing a statement's filters reliably - across
+# CTEs, subqueries, quoted identifiers and five dialects (BigQuery,
+# Snowflake, Postgres, MySQL, T-SQL) - needs a parse tree. sqlglot is pure
+# Python with no dependencies of its own (the optional Rust tokenizer,
+# sqlglot[rs], is deliberately not installed), so it adds no system
+# packages to the Dockerfile.
+sqlglot==30.21.0
 psycopg2-binary==2.9.9
 pymysql==1.1.1
 pymssql==2.3.2
