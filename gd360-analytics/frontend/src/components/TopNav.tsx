@@ -1,8 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
 import ThemeToggle from "./ThemeToggle";
+import {
+  Avatar, Button, ChevronDownIcon, CreditCardIcon, LogoutIcon, Popover, SettingsIcon, ShieldIcon,
+  TopBar, TopBarSearch, Breadcrumb as KitBreadcrumb, type BreadcrumbItem,
+} from "../ui";
 
 // Display-only check for showing the Admin link in the nav. The real
 // access control happens on the backend (see ADMIN_EMAILS in config.py) -
@@ -14,255 +18,178 @@ import ThemeToggle from "./ThemeToggle";
 // drift out of sync with this one.
 export const ADMIN_EMAILS = ["gokuldhamodaran6@gmail.com", "gokuldhamodaranb@gmail.com"];
 
-// 2026-09-25f (command palette round): the visible way to discover Cmd+K
-// on any authenticated page (every caller of this component - see
-// CommandPalette.tsx's own module comment for why a shortcut alone isn't
-// enough). Clicking it dispatches the same custom "open" event the
-// keyboard shortcut fires internally, since the palette itself is mounted
-// once at the app root (App.tsx) rather than owned by this bar - a plain
-// DOM event is the lightest way to reach it from here without adding a
-// Context provider just for one open/close boolean.
-function SearchIcon({ className = "w-4 h-4" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="11" cy="11" r="7" />
-      <path d="M21 21l-4.3-4.3" />
-    </svg>
-  );
+// 2026-10-06 (design-system kit): the top bar is now the System.dc.html /
+// Main.dc.html chrome - a 56 px bar with a breadcrumb on the left and, on
+// the right, a 240 px search field (which opens the command palette, same
+// custom event as before), the page's own actions ("Share", a primary
+// button - passed in by the page via `actions`), the theme toggle and the
+// avatar menu. Every behaviour from before is kept: the account menu's
+// routes (/profile, /admin), logout, the "My Subscription" info panel, the
+// optional "+ Connect data" page action, and `hideLogo` for pages that
+// already show the wordmark in AppSidebar. New, all optional: `breadcrumb`
+// (an array of {label, to?} rendered as "Dashboards / Hotel performance"),
+// `actions` (a right-hand slot) and `leading` (anything else on the left,
+// e.g. a draft status pill).
+// 2026-10-07: the frame itself is now the kit's TopBar (src/ui/TopBar.tsx)
+// - this file only supplies the app-specific parts: react-router links in
+// the breadcrumb, the command-palette search, the theme toggle and the
+// account menu.
+
+export type Crumb = { label: ReactNode; to?: string };
+
+function toItems(items: Crumb[]): BreadcrumbItem[] {
+  return items.map((c) => ({ label: c.label, href: c.to }));
 }
 
-function ChevronDownIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M6 9l6 6 6-6" />
-    </svg>
-  );
-}
+const renderRouterLink: NonNullable<Parameters<typeof KitBreadcrumb>[0]["renderLink"]> = (item, className, children) => (
+  <Link to={item.href!} className={className}>{children}</Link>
+);
 
-function SubscriptionIcon({ className = "w-4 h-4" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="2" y="5" width="20" height="14" rx="2.5" />
-      <path d="M2 10h20" />
-    </svg>
-  );
-}
-
-function SettingsIcon({ className = "w-4 h-4" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
-  );
-}
-
-function LogoutIcon({ className = "w-4 h-4" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-      <path d="M16 17l5-5-5-5" />
-      <path d="M21 12H9" />
-    </svg>
-  );
-}
-
-function ShieldIcon({ className = "w-4 h-4" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 2l8 4v6c0 5-3.4 8.4-8 10-4.6-1.6-8-5-8-10V6z" />
-    </svg>
-  );
-}
-
-function initials(nameOrEmail: string): string {
-  const trimmed = (nameOrEmail || "").trim();
-  if (!trimmed) return "?";
-  const parts = trimmed.split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-  return trimmed.slice(0, 2).toUpperCase();
-}
-
-// The account menu, opened by clicking the name/avatar top right - name,
+// The account menu, opened by clicking the avatar top right - name,
 // chevron, then a real dropdown (My Subscription / Account Settings /
-// Logout, plus Admin for Gokul's own account), replacing what used to be a
-// plain profile text link with no menu at all. "My Subscription" opens a
+// Logout, plus Admin for Gokul's own account). "My Subscription" opens a
 // small honest info panel rather than a page, since this app has no real
 // billing/plan system yet (see its own body text below) - a dead link or a
 // fabricated invoice history would be worse than a plain, true statement.
+// 2026-10-06: rebuilt on the kit's Popover, so it also takes part in the
+// app-wide "only one menu open at a time" rule (src/lib/useExclusiveOpen).
 function AccountMenu({ isAdmin }: { isAdmin: boolean }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
-  const [open, setOpen] = useState(false);
   const [showPlan, setShowPlan] = useState(false);
-  const btnRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (e: MouseEvent) => {
-      if (menuRef.current?.contains(e.target as Node) || btnRef.current?.contains(e.target as Node)) return;
-      setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
 
   const label = user?.full_name || user?.email || "Account";
+  const itemClass = "ui-focus-inset w-full flex items-center gap-2.5 px-3 py-2 text-ui text-left hover:bg-subtle transition-colors";
 
   return (
-    <div className="relative">
-      <button
-        ref={btnRef}
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-2 pl-1.5 pr-2.5 py-1.5 rounded-full hover:bg-surface2 transition"
+    <>
+      <Popover
+        align="end"
+        width={224}
+        haspopup="menu"
+        role="menu"
+        ariaLabel="Account"
+        trigger={(api) => (
+          <button
+            type="button"
+            data-popover-trigger=""
+            aria-label={`Account menu for ${label}`}
+            {...api.props}
+            className="ui-focus flex items-center gap-2 rounded-full pl-1 pr-2 py-1 hover:bg-subtle transition-colors"
+          >
+            <Avatar name={label} size="sm" title="" />
+            <span className="text-ui font-medium hidden md:inline max-w-[10rem] truncate">{label}</span>
+            <ChevronDownIcon size={13} className={`text-muted transition-transform ${api.open ? "rotate-180" : ""}`} />
+          </button>
+        )}
       >
-        <span className="w-7 h-7 rounded-full bg-primary text-white text-xs font-bold flex items-center justify-center shrink-0">
-          {initials(label)}
-        </span>
-        <span className="text-sm font-medium hidden md:inline max-w-[10rem] truncate">{label}</span>
-        <ChevronDownIcon className={`w-3.5 h-3.5 text-muted transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
-
-      {open && (
-        <div
-          ref={menuRef}
-          className="absolute right-0 top-full mt-2 w-56 card bg-surface shadow-2xl border border-border py-1.5 z-40"
-          role="menu"
-        >
-          <button
-            type="button"
-            role="menuitem"
-            className="w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-left hover:bg-surface2 transition"
-            onClick={() => { setOpen(false); setShowPlan(true); }}
-          >
-            <SubscriptionIcon className="w-4 h-4 text-muted" /> My Subscription
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-left hover:bg-surface2 transition"
-            onClick={() => { setOpen(false); navigate("/profile"); }}
-          >
-            <SettingsIcon className="w-4 h-4 text-muted" /> Account Settings
-          </button>
-          {isAdmin && (
-            <button
-              type="button"
-              role="menuitem"
-              className="w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-left hover:bg-surface2 transition"
-              onClick={() => { setOpen(false); navigate("/admin"); }}
-            >
-              <ShieldIcon className="w-4 h-4 text-muted" /> Admin
+        {({ close }) => (
+          <div className="py-1.5">
+            <div className="px-3 pb-1.5 pt-1">
+              <div className="text-ui font-medium truncate">{user?.full_name || "Signed in"}</div>
+              {user?.email && <div className="text-caption text-muted truncate">{user.email}</div>}
+            </div>
+            <div className="border-t border-border my-1" />
+            <button type="button" role="menuitem" className={itemClass} onClick={() => { close(); setShowPlan(true); }}>
+              <CreditCardIcon size={15} className="text-muted" /> My Subscription
             </button>
-          )}
-          <div className="border-t border-border my-1.5" />
-          <button
-            type="button"
-            role="menuitem"
-            className="w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-left hover:bg-surface2 transition text-red-400"
-            onClick={() => { setOpen(false); logout(); }}
-          >
-            <LogoutIcon /> Logout
-          </button>
-        </div>
-      )}
+            <button type="button" role="menuitem" className={itemClass} onClick={() => { close(); navigate("/profile"); }}>
+              <SettingsIcon size={15} className="text-muted" /> Account Settings
+            </button>
+            {isAdmin && (
+              <button type="button" role="menuitem" className={itemClass} onClick={() => { close(); navigate("/admin"); }}>
+                <ShieldIcon size={15} className="text-muted" /> Admin
+              </button>
+            )}
+            <div className="border-t border-border my-1" />
+            <button type="button" role="menuitem" className={`${itemClass} text-danger`} onClick={() => { close(); logout(); }}>
+              <LogoutIcon size={15} /> Logout
+            </button>
+          </div>
+        )}
+      </Popover>
 
       {showPlan &&
         createPortal(
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
             onClick={(e) => { if (e.target === e.currentTarget) setShowPlan(false); }}
           >
-            <div className="card bg-surface w-full max-w-sm p-6 relative">
-              <div className="font-bold text-lg mb-1">Your plan</div>
+            <div role="dialog" aria-modal="true" aria-labelledby="plan-title" className="w-full max-w-sm rounded-card border border-border bg-surface p-6 shadow-pop">
+              <div id="plan-title" className="text-section font-semibold mb-1">Your plan</div>
               <div className="verify-bar pl-4 py-2.5 mt-3">
-                <div className="text-sm font-semibold">Free plan &middot; Unlimited usage</div>
-                <div className="text-xs text-muted mt-1 leading-relaxed">
+                <div className="text-ui font-semibold">Free plan &middot; Unlimited usage</div>
+                <div className="text-caption text-muted mt-1 leading-relaxed">
                   GD360 is in early access - every feature is free and unlimited for now. Paid plans
                   aren't available yet, and you'll be told clearly before anything about your account
                   changes.
                 </div>
               </div>
-              <button type="button" className="btn-secondary w-full mt-5" onClick={() => setShowPlan(false)}>
+              <Button variant="secondary" className="w-full mt-5" onClick={() => setShowPlan(false)}>
                 Close
-              </button>
+              </Button>
             </div>
           </div>,
           document.body
         )}
-    </div>
+    </>
   );
+}
+
+export function Breadcrumb({ items }: { items: Crumb[] }) {
+  return <KitBreadcrumb items={toItems(items)} renderLink={renderRouterLink} />;
 }
 
 export default function TopNav({
   onConnectData,
   hideLogo = false,
+  breadcrumb,
+  leading,
+  actions,
 }: {
   onConnectData?: () => void;
   // True on any page that already renders its own branding via
-  // AppSidebar.tsx (currently just Dashboard.tsx) - avoids the logo
-  // showing twice on screen at once, which is what happened before this
-  // flag existed. Every other page (Workspace, Profile, admin) has no
-  // sidebar yet, so they keep passing this as false/omitted and this bar
-  // stays their only source of branding.
+  // AppSidebar.tsx - avoids the logo showing twice on screen at once.
   hideLogo?: boolean;
+  breadcrumb?: Crumb[];
+  leading?: ReactNode;
+  actions?: ReactNode;
 }) {
   const { user } = useAuth();
   const isAdmin = !!user?.email && ADMIN_EMAILS.includes(user.email.toLowerCase());
+  const wordmark =
+    !breadcrumb?.length && !hideLogo ? (
+      <Link to="/" className="ui-focus flex shrink-0 items-center gap-2.5 rounded">
+        <span className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-ctl bg-primary text-body font-bold text-white">G</span>
+        <span className="text-section font-semibold text-text">GD360 Analytics</span>
+      </Link>
+    ) : null;
 
   return (
-    // flex-wrap (plus shrinking padding/text/button sizes below sm) keeps
-    // this row from overflowing horizontally on a phone-width viewport.
-    // 2026-09-23: the wordmark/logo moved to the new left sidebar
-    // (AppSidebar.tsx) as part of the workspace-structure revamp, so this
-    // bar's own job shrank to page-level actions + the account menu - kept
-    // as its own component (rather than folded into the sidebar) since
-    // Workspace.tsx, Profile.tsx and the admin pages all still render it
-    // without the sidebar for now. The "+ Connect data" header button was
-    // also retired from here (Dashboard.tsx no longer passes onConnectData)
-    // since "+ New Project" on the Projects page is now the one obvious
-    // place to start something new - the prop stays optional so any page
-    // that still wants a header action can pass it back.
-    <div className="flex flex-wrap items-center justify-between gap-y-2 gap-x-3 px-4 sm:px-6 py-3 sm:py-4 border-b border-border">
-      {hideLogo ? (
-        <span />
-      ) : (
-        <Link to="/" className="flex items-center gap-2.5 shrink-0">
-          <span className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-white font-bold text-sm shrink-0">
-            G
-          </span>
-          <span className="text-base sm:text-lg font-extrabold gradient-text">GD360 Analytics</span>
-        </Link>
-      )}
-      <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end">
-        <button
-          type="button"
-          onClick={() => window.dispatchEvent(new Event("gd360:open-command-palette"))}
-          aria-label="Search and jump to anything"
-          title="Search / jump to anything"
-          className="h-9 shrink-0 rounded-lg border border-border bg-surface2 hover:bg-border/60 flex items-center gap-1.5 px-2.5 sm:pr-2 text-muted hover:text-text transition"
-        >
-          <SearchIcon />
-          <span className="hidden sm:inline text-[11px] font-medium">Search</span>
-          <span className="hidden sm:inline-flex items-center justify-center text-[10px] font-semibold px-1.5 py-0.5 rounded border border-border bg-surface text-muted">
-            {typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent || "") ? "⌘K" : "Ctrl K"}
-          </span>
-        </button>
-        <ThemeToggle />
-        {onConnectData && (
-          <button className="btn-primary text-xs sm:text-sm px-3 py-1.5 sm:px-4 sm:py-2" onClick={onConnectData}>
-            + Connect data
-          </button>
-        )}
-        <AccountMenu isAdmin={isAdmin} />
-      </div>
-    </div>
+    <TopBar
+      // `clearMobileMenu` clears the mobile menu button AppSidebar pins top-left.
+      clearMobileMenu
+      breadcrumb={breadcrumb && breadcrumb.length > 0 ? toItems(breadcrumb) : undefined}
+      renderLink={renderRouterLink}
+      leading={
+        <>
+          {wordmark}
+          {leading}
+        </>
+      }
+      search={<TopBarSearch onOpen={() => window.dispatchEvent(new Event("gd360:open-command-palette"))} />}
+      actions={
+        <>
+          {actions}
+          {onConnectData && (
+            <Button variant="primary" onClick={onConnectData}>
+              + Connect data
+            </Button>
+          )}
+          <ThemeToggle />
+        </>
+      }
+      avatar={<AccountMenu isAdmin={isAdmin} />}
+    />
   );
 }
