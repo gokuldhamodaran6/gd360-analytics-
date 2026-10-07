@@ -680,6 +680,11 @@ class DashboardTemplateOut(BaseModel):
 # routers/dashboard_builder.py's update_dashboard.
 class UpdateDashboardRequest(BaseModel):
     name: Optional[str] = Field(default=None, max_length=120)
+    # 2026-10-06 (warehouse-native dashboards layer): the dashboard's
+    # period grain and time column - see models.Dashboard.default_period/
+    # date_column. "" clears either back to NULL; None/omitted leaves it.
+    default_period: Optional[str] = Field(default=None, max_length=16)
+    date_column: Optional[str] = Field(default=None, max_length=200)
 
 
 class DashboardBlockOut(BaseModel):
@@ -689,7 +694,11 @@ class DashboardBlockOut(BaseModel):
     # in routers/dashboard_builder.py's own module docstring. 2026-09-25
     # (Round 15): added "heading" | "divider" - the element library's two
     # pure-layout widgets, no computed data.
-    type: str  # "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut" | "sparkline" | "avatar_list" | "heading" | "divider"
+    # 2026-10-07 (analyst canvas round): added "sql" | "input" - see
+    # models.DashboardBlock's docstring and routers/dashboard_builder.py
+    # ("Canvas cells") for their config shapes; a chart/kpi/table may also
+    # carry config.source_block_id to render from a sql cell's result.
+    type: str  # "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut" | "sparkline" | "avatar_list" | "heading" | "divider" | "sql" | "input"
     title: Optional[str] = None
     x: int
     y: int
@@ -710,6 +719,11 @@ class DashboardBlockOut(BaseModel):
     # feature only used right after an edit); the frontend just needs the
     # yes/no to decide whether to show the option at all.
     can_undo: bool = False
+    # 2026-10-06 (warehouse-native dashboards layer): see models.
+    # DashboardBlock.query_sql/last_run. Both None for a block that has no
+    # spec (a file-source block, or a warehouse block not yet upgraded).
+    query_sql: Optional[str] = None
+    last_run: Optional[dict] = None
 
 
 class DashboardPageOut(BaseModel):
@@ -854,6 +868,25 @@ class DashboardBuilderOut(BaseModel):
     background_color: Optional[str] = None
     has_logo: bool = False
     has_background_image: bool = False
+    # 2026-10-06 (warehouse-native dashboards layer) - see
+    # WarehouseDashboardFields below.
+    datasource_kind: Optional[str] = None
+    warehouse_native: bool = False
+    parameters: list[dict] = []
+    saved_views: list[dict] = []
+    default_period: Optional[str] = None
+    date_column: Optional[str] = None
+    # Every table the dashboard's blocks could be built from, with its
+    # columns ({table: [{name, type}]}) - what the filter-rail/spec editors
+    # need to populate selects. Empty for a file source.
+    tables: dict[str, list[dict]] = {}
+    # 2026-10-07 (comments round): {block_id: {"open": n, "total": n}} for
+    # every block that has at least one comment thread, so the canvas can
+    # show "2 replies" without a second request. Page-level threads are
+    # keyed "page:<page_id>", dashboard-level ones "dashboard". Counts are
+    # of threads' comments (root + replies); "open" counts those on an
+    # unresolved thread. See routers/dashboard_comments.py.
+    comment_counts: dict[str, dict] = {}
 
 
 class PublishDashboardRequest(BaseModel):
@@ -920,6 +953,17 @@ class PublicDashboardOut(BaseModel):
     background_color: Optional[str] = None
     has_logo: bool = False
     has_background_image: bool = False
+    # 2026-10-06 (warehouse-native dashboards layer): the published view
+    # renders the same filter rail / period control / saved views as the
+    # editor, so it needs the same definitions (never the datasource id,
+    # never credentials). warehouse_native tells the viewer to call the
+    # public run endpoint instead of preview-filtered.
+    datasource_kind: Optional[str] = None
+    warehouse_native: bool = False
+    parameters: list[dict] = []
+    saved_views: list[dict] = []
+    default_period: Optional[str] = None
+    date_column: Optional[str] = None
 
 
 class SetCustomDomainRequest(BaseModel):
@@ -1143,6 +1187,315 @@ class FilteredBlocksOut(BaseModel):
     # happened to match) still correctly returns the integer 0 and still
     # correctly shows "0 rows match."
     matched_rows: int | None = None
+
+
+# ---------- Warehouse-native dashboards (2026-10-06) ----------
+# For a dashboard on a warehouse/database source every block is a BlockSpec
+# (services/query_builder.validate_block_spec) compiled into ONE query that
+# runs inside the warehouse with the page's filters pushed down - see
+# services/dashboard_engine.py and routers/dashboard_builder.py's run_page.
+# The filter payload reuses FilterCriterion/ApplyFiltersRequest's shapes
+# exactly (the Data tab's own _apply_column_filter vocabulary), so the
+# same rail drives the pandas path for a file source and the SQL path for a
+# warehouse source.
+
+class DateRangeIn(BaseModel):
+    # Inclusive ISO dates ("YYYY-MM-DD"); either end may be omitted for an
+    # open-ended range. The engine pushes this down on the dashboard's
+    # date_column as >= from AND < to + 1 day.
+    from_: Optional[str] = Field(default=None, alias="from", max_length=40)
+    to: Optional[str] = Field(default=None, max_length=40)
+    model_config = {"populate_by_name": True}
+
+    def as_dict(self) -> dict:
+        return {"from": self.from_, "to": self.to}
+
+
+class RunPageRequest(BaseModel):
+    filters: list[FilterCriterion] = Field(default_factory=list, max_length=12)
+    block_filters: dict[str, list[FilterCriterion]] = Field(default_factory=dict)
+    # The time grain for time charts and KPI sparklines this run
+    # ("day"|"week"|"month"|"quarter"|"year"); None = the dashboard's
+    # default_period, else "month".
+    period: Optional[str] = Field(default=None, max_length=16)
+    date_range: Optional[DateRangeIn] = None
+    # Only these blocks (e.g. the one a person just edited); None = every
+    # warehouse block on the page.
+    block_ids: Optional[list[str]] = Field(default=None, max_length=100)
+    # Skip the result cache for this run (the "Refresh" button).
+    force_refresh: bool = False
+    # 2026-10-07 (analyst canvas round): the viewer's current value for
+    # each rail parameter, keyed by the parameter's name (or id) - what a
+    # SQL cell's {{name}} / @name references are BOUND to (never spliced
+    # into the SQL). A list for a multi-select, {from, to} for a
+    # date_range control (the request's own date_range fills a
+    # date_range parameter that has no explicit value here).
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class RunPageOut(BaseModel):
+    # {block_id: BlockResult} - see services/dashboard_engine.BlockResult
+    # for the exact shape: {status, columns, rows, row_count, truncated,
+    # sql, bytes_scanned, duration_ms, cached, prior, delta, sparkline,
+    # exact_total_rows, computed_in, error, dimensions, measures,
+    # time_column, spec}.
+    blocks: dict[str, dict]
+    # COUNT(*) of the dashboard's table under the page filters (cached),
+    # None when it could not be computed this run.
+    matched_rows: int | None = None
+    # The unfiltered row count of the dashboard's table when the Data tab's
+    # profile already paid for it (never a fresh query), else None.
+    total_rows: int | None = None
+    computed_in: str
+    total_duration_ms: int
+    period: str
+    date_range: Optional[dict] = None
+    # Blocks on the page that were skipped because they have no spec yet
+    # (an AI-built block from before this layer - see POST /upgrade-blocks)
+    # or are not data blocks.
+    skipped_block_ids: list[str] = []
+    # 2026-10-07 (analyst canvas round): {block_id: [block ids it needs
+    # first]} - a chart bound to a sql cell, a sql cell reading another
+    # as a CTE; `order` is the resolved run order. A loop is rejected
+    # with a 400 before anything runs.
+    dependencies: dict[str, list[str]] = {}
+    order: list[str] = []
+    # The parameter values the SQL cells were bound to, by name, and the
+    # referenced parameters that had no value (bound as NULL / empty).
+    parameters_used: dict[str, Any] = {}
+    missing_parameters: list[str] = []
+
+
+class ParameterOptionsOut(BaseModel):
+    parameter_id: str
+    column: str
+    table: str
+    search: Optional[str] = None
+    values: list[dict]  # [{value, count}]
+    truncated: bool = False
+    cached: bool = False
+    error: Optional[str] = None
+
+
+class UpdateParametersRequest(BaseModel):
+    # The whole rail, replaced: [{id, column, label, control, options_from,
+    # default, table?}] - validated server-side (column must exist on the
+    # dashboard's table; control must be a known kind).
+    parameters: list[dict] = Field(default_factory=list, max_length=24)
+
+
+class UpdateSavedViewsRequest(BaseModel):
+    # The whole list, replaced: [{id, name, filters, period, date_range,
+    # created_by}]. id/created_by are filled in server-side when missing.
+    saved_views: list[dict] = Field(default_factory=list, max_length=50)
+
+
+class SetBlockSpecRequest(BaseModel):
+    spec: dict
+    title: Optional[str] = Field(default=None, max_length=200)
+    # Chart type for a chart block (bar/line/area/pie/...); kpi/table are
+    # inferred from the spec's shape when omitted.
+    chart_type: Optional[str] = Field(default=None, max_length=40)
+    block_type: Optional[str] = Field(default=None, max_length=40)
+
+
+class BlockSqlOut(BaseModel):
+    block_id: str
+    sql: str
+    prior_sql: Optional[str] = None
+    sparkline_sql: Optional[str] = None
+    dialect: str
+    period: str
+    date_range: Optional[dict] = None
+    filters_applied: list[dict] = []
+
+
+class UpgradeBlockResult(BaseModel):
+    block_id: str
+    title: Optional[str] = None
+    status: str  # "upgraded" | "already_has_spec" | "skipped" | "failed"
+    error: Optional[str] = None
+    spec: Optional[dict] = None
+    sql: Optional[str] = None
+
+
+class UpgradeBlocksOut(BaseModel):
+    results: list[UpgradeBlockResult]
+    upgraded: int
+    failed: int
+    skipped: int
+
+
+# ---------- Block comments (2026-10-07) - see models.DashboardComment and
+# routers/dashboard_comments.py ----------
+class CommentCreateRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=5000)
+    # Where it hangs: a block, else a page, else the dashboard. A reply
+    # (parent_id set) inherits its root's block/page/anchor.
+    block_id: Optional[str] = None
+    page_id: Optional[str] = None
+    parent_id: Optional[str] = None
+    # The chart element it is pinned to - {kind: "bar"|"point"|"cell",
+    # key: <value>, ...}, stored as given.
+    anchor: Optional[dict] = None
+
+
+class CommentUpdateRequest(BaseModel):
+    # body: author only. resolved: author or a dashboard editor; applies
+    # to the whole thread (set on the root).
+    body: Optional[str] = Field(default=None, min_length=1, max_length=5000)
+    resolved: Optional[bool] = None
+
+
+class CommentAuthorOut(BaseModel):
+    id: str
+    name: str
+    initials: str
+    email: Optional[str] = None
+
+
+class CommentOut(BaseModel):
+    id: str
+    dashboard_id: str
+    block_id: Optional[str] = None
+    page_id: Optional[str] = None
+    parent_id: Optional[str] = None
+    author: CommentAuthorOut
+    body: str
+    anchor: Optional[dict] = None
+    mentions: list[str] = []
+    resolved_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+    # What the CALLER may do with this comment.
+    can_edit: bool = False
+    can_resolve: bool = False
+    can_delete: bool = False
+
+
+class CommentThreadOut(CommentOut):
+    replies: list[CommentOut] = []
+    reply_count: int = 0
+    resolved: bool = False
+
+
+class CommentsOut(BaseModel):
+    threads: list[CommentThreadOut]
+    # {block_id | "page:<id>" | "dashboard": {"open", "total"}} - the same
+    # shape as DashboardBuilderOut.comment_counts, for the scope queried.
+    counts: dict[str, dict] = {}
+    total: int = 0
+    open: int = 0
+
+
+# ---------- Dashboard from prompt (2026-10-07) - propose / revise / commit.
+# See routers/dashboard_builder.py's propose_dashboard for the flow. ----------
+class ProposeDashboardRequest(BaseModel):
+    datasource_id: str = Field(min_length=1)
+    goal: str = Field(min_length=3, max_length=2000)
+    # "auto" lets the model decide (1 or 2); 1 or 2 forces it.
+    pages: Any = "auto"
+    # The dashboard's default period grain ("day"|"week"|"month"|
+    # "quarter"|"year"); None = month.
+    period: Optional[str] = Field(default=None, max_length=16)
+    # One of GET /dashboard-builder/propose/templates' ids - its goal
+    # text and layout hints are merged into the request.
+    template_id: Optional[str] = None
+    # Optional: the chat this dashboard should link back to ("Built from").
+    conversation_id: Optional[str] = None
+
+
+class ProposalBlockOut(BaseModel):
+    client_id: str
+    type: str  # "kpi" | "chart" | "table" | "text" | "sparkline" | "donut"
+    title: str
+    # A short label like "KPI · Revenue metric" / "Trend · revenue by month".
+    intent: str
+    # The validated BlockSpec (warehouse) or None for a text block / an
+    # invalid block. For a file source: the spec the recipe was derived
+    # from (see `recipe`).
+    spec: Optional[dict] = None
+    # File sources only: the deterministic pandas recipe (manual-build
+    # shape) that will compute this block at commit time.
+    recipe: Optional[dict] = None
+    chart_type: Optional[str] = None
+    # Text blocks: the note's body.
+    text: Optional[str] = None
+    layout: dict  # {x, y, w, h} on a 12-column grid
+    from_metric_id: Optional[str] = None
+    from_metric_name: Optional[str] = None
+    status: str  # "ok" | "invalid"
+    error: Optional[str] = None
+    # The compiled at-rest SQL for an ok warehouse block (what "see its
+    # query" shows before commit).
+    sql: Optional[str] = None
+    columns: list[dict] = []
+
+
+class ProposalPageOut(BaseModel):
+    title: str
+    blocks: list[ProposalBlockOut]
+
+
+class ProposalOut(BaseModel):
+    proposal_id: str
+    datasource_id: str
+    datasource_name: Optional[str] = None
+    datasource_kind: Optional[str] = None
+    warehouse_native: bool
+    title: str
+    pages: list[ProposalPageOut]
+    used: dict  # {"metrics": [names], "columns": [names], "tables": [names]}
+    suggestions: list[str] = []
+    date_column: Optional[str] = None
+    period: str = "month"
+    # Parameters the commit will create (one per filterable dimension the
+    # kept blocks use + a date_range on the date column) - so the review
+    # screen can show them.
+    parameters: list[dict] = []
+    revision: int = 1
+    # How long the server keeps this proposal (seconds from creation).
+    expires_in_seconds: int = 1800
+    generated_in_ms: int = 0
+    # Honest counts: how many blocks the model proposed vs. survived
+    # validation.
+    proposed_blocks: int = 0
+    valid_blocks: int = 0
+    # Set when the model call failed outright (the proposal is then a
+    # deterministic fallback built from the schema alone).
+    warning: Optional[str] = None
+
+
+class ProposalTemplateOut(BaseModel):
+    id: str
+    name: str
+    description: str
+    goal: str
+    pages: int
+    period: str
+    layout_hints: list[str] = []
+
+
+class ReviseProposalRequest(BaseModel):
+    instruction: str = Field(min_length=1, max_length=1000)
+
+
+class CommitProposalRequest(BaseModel):
+    # The client_ids to keep; everything else in the proposal is dropped.
+    # Empty/omitted = every valid block.
+    keep: Optional[list[str]] = None
+    name: Optional[str] = Field(default=None, max_length=120)
+    # "private" (only you) | "workspace" (shared with the data source's
+    # workspace, same view/edit split as every shared dashboard).
+    visibility: Optional[str] = Field(default="private", max_length=20)
+
+
+class SwapBlockRequest(BaseModel):
+    # Either/both: a new chart_type for a chart block, or a new block type
+    # (chart/table/kpi/donut/sparkline/avatar_list/gauge) for the same
+    # spec. No model call - the same query, another shape.
+    chart_type: Optional[str] = Field(default=None, max_length=40)
+    type: Optional[str] = Field(default=None, max_length=40)
 
 
 # ---------- Folders (2026-09-23, folders round: organizes Projects on the
