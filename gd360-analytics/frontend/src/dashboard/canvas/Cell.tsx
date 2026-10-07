@@ -4,7 +4,8 @@ import {
   ArrowDownIcon, ArrowUpIcon, Badge, CommentIcon, CopyIcon, DownloadIcon, EditIcon, IconButton, MoreIcon, Popover, RefreshIcon, SqlIcon, TrashIcon, cn,
 } from "../../ui";
 import { downloadText, resultOk, rowsToCsv, safeFilename } from "../blockData";
-import { MenuRow, SWAP_OPTIONS, SqlSheet, type BlockSqlInfo } from "../BlockGrid";
+import { MenuRow, SqlSheet, type BlockSqlInfo } from "../BlockGrid";
+import { SwapChips } from "../menu";
 import { BlockComments } from "../comments/CommentThread";
 import { TYPE_LABEL, formatIndexSet, sourcesOf, type CellInfo } from "./cells";
 import { DataCell } from "./DataCell";
@@ -222,21 +223,9 @@ export const Cell = forwardRef<HTMLElement, CellProps>(function Cell(props, ref)
                     <>
                       <div className="my-1 border-t border-subtle" />
                       {swappable && (
-                        <div className="px-3 pb-1 pt-2">
-                          <div className="mb-1 text-caption font-medium uppercase tracking-caps text-muted">Swap chart</div>
-                          <div className="flex flex-wrap gap-1">
-                            {SWAP_OPTIONS.filter((o) => !(o.payload.type === block.type && (o.payload.chart_type || null) === (block.config?.chart_type || null))).map((o) => (
-                              <button
-                                key={o.label}
-                                type="button"
-                                disabled={busy}
-                                className="ui-focus rounded-full border border-border bg-surface px-2 py-[2px] text-caption text-secondary hover:border-border-strong hover:bg-subtle hover:text-text disabled:opacity-60"
-                                onClick={() => act(async () => { await owner.swapBlock!(block.id, o.payload); rerunWithDependents(block.id); close(); })}
-                              >
-                                {o.label}
-                              </button>
-                            ))}
-                          </div>
+                        <div className="pt-2">
+                          <div className="mb-1 px-3 text-caption font-medium uppercase tracking-caps text-muted">Swap chart</div>
+                          <SwapChips block={block} result={run.results[block.id]} busy={busy} onSwap={(payload) => act(async () => { await owner.swapBlock!(block.id, payload); rerunWithDependents(block.id); close(); })} />
                         </div>
                       )}
                       {onMove && <MenuRow icon={<ArrowUpIcon size={14} />} disabled={busy || !canMoveUp} onClick={() => { close(); act(() => onMove("up")); }}>Move up</MenuRow>}

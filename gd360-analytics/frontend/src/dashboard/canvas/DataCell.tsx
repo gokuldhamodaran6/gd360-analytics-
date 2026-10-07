@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ComputedIn, Select, cn } from "../../ui";
-import { resultOk } from "../blockData";
-import { BlockRenderer } from "../BlockRenderer";
+import { crossFilterColumn, resultOk } from "../blockData";
+import { BlockRenderer, hasTableView } from "../BlockRenderer";
 import { fileBlockSpec } from "../fileData";
 import { describeSpecShort } from "../format";
 import { describeSpec, type CrossFilter } from "../runState";
@@ -17,17 +17,21 @@ import type { CellBodyProps } from "./types";
 // lists the page's SQL cells by name and PATCHes config.source_block_id.
 // Clicking a bar after "Comment" hands the cell an anchor instead of a
 // cross-filter.
+// 2026-10-07 (chart-types round): every chart cell has "View as table" -
+// the same rows the chart was drawn from, as a table, and back.
 
 export function DataCell({ cell, cells, run, source, mode, parameters, owner, pickingAnchor, onPickAnchor, compact, rerunWithDependents }: CellBodyProps) {
   const block = cell.block;
   const result = run.results[block.id];
   const [binding, setBinding] = useState(false);
   const [bindError, setBindError] = useState<string | null>(null);
+  const [asTable, setAsTable] = useState(false);
+  const tableToggle = hasTableView(block.type) && block.config?.chart_type !== "pivot" && !block.config?.empty && (mode === "file" || resultOk(result));
   const sqlCells = cells.filter((c) => c.kind === "sql");
   const sources = sourcesOf(block.id, run.dependencies, cells, block);
   const bound = Boolean(block.config?.source_block_id);
   const spec = block.config?.spec;
-  const crossColumn = resultOk(result) ? result.dimensions?.[0] || null : null;
+  const crossColumn = resultOk(result) ? crossFilterColumn(result, block) : null;
   const selected: CrossFilter | null = crossColumn ? run.state.crossFilters[crossColumn] || null : null;
   const kind = block.type === "donut" ? "slice" : block.type === "table" ? "row" : block.type === "sparkline" || (block.config?.chart_type === "line" || block.config?.chart_type === "area") ? "point" : "bar";
 
@@ -68,9 +72,20 @@ export function DataCell({ cell, cells, run, source, mode, parameters, owner, pi
 
   return (
     <div data-data-cell={block.type} className="flex flex-col">
-      {(subtitleParts.length > 0 || owner) && (
+      {(subtitleParts.length > 0 || owner || tableToggle) && (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 pb-2 text-[12.5px] text-muted">
           {subtitleParts.length > 0 && <span data-cell-subtitle="" className="min-w-0 truncate" title={spec && mode === "warehouse" ? `${subtitleParts.join(" · ")}\n${describeSpec(spec)}` : subtitleParts.join(" · ")}>{subtitleParts.join(" · ")}</span>}
+          {tableToggle && !compact && (
+            <button
+              type="button"
+              data-view-as-table-toggle=""
+              aria-pressed={asTable}
+              onClick={() => setAsTable((v) => !v)}
+              className={cn("ui-focus rounded-full border px-2 py-[1px] text-caption", !owner && "ml-auto", asTable ? "border-tint-border bg-tint text-brand-ink" : "border-border bg-surface text-secondary hover:border-border-strong hover:text-text")}
+            >
+              {asTable ? "View as chart" : "View as table"}
+            </button>
+          )}
           {owner && !compact && (
             <label className="ml-auto flex items-center gap-1.5 text-caption">
               <span className="text-muted">Bind to cell</span>
@@ -122,6 +137,7 @@ export function DataCell({ cell, cells, run, source, mode, parameters, owner, pi
             sourceName={source.name}
             bodyHeight={height}
             growToContent
+            viewAsTable={asTable}
           />
         )}
         {run.loading && run.ready && result && <div aria-hidden="true" className="ui-shimmer pointer-events-none absolute inset-0 rounded-ctl opacity-30" />}
