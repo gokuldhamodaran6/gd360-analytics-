@@ -53,7 +53,14 @@ function ResultPreview({ result, blockTitle }: { result: BlockResult; blockTitle
     () =>
       (result.columns || []).map((c) => {
         const numeric = result.rows?.some((r) => typeof r[c.name] === "number") ?? false;
-        return { key: c.name, header: c.name, mono: true, numeric, render: (row) => formatCell(row[c.name]) };
+        // A whole number in a column the result calls a dimension (a year,
+        // an id) is printed as it is - "2015", not "2,015" - the same rule
+        // a table block's cells follow (BlockRenderer resultTableColumns).
+        const dimension = (result.dimensions || []).includes(c.name);
+        return {
+          key: c.name, header: c.name, mono: true, numeric,
+          render: (row) => { const v = row[c.name]; return dimension && typeof v === "number" && Number.isInteger(v) ? String(v) : formatCell(v); },
+        };
       }),
     [result]
   );
@@ -80,7 +87,7 @@ function ResultPreview({ result, blockTitle }: { result: BlockResult; blockTitle
   );
 }
 
-export function SqlCell({ cell, cells, run, owner, editing, onStartEdit, onStopEdit, rerunWithDependents, mode, parameters }: CellBodyProps) {
+export function SqlCell({ cell, cells, run, owner, editing, onStartEdit, onStopEdit, rerunWithDependents, mode, parameters, source }: CellBodyProps) {
   const block = cell.block;
   const storedSql: string = typeof block.config?.sql === "string" ? block.config.sql : "";
   const storedName: string = (block.config?.name as string) || "";
@@ -186,9 +193,14 @@ export function SqlCell({ cell, cells, run, owner, editing, onStartEdit, onStopE
         </div>
       ) : (
         <div className="px-4 pb-2 pt-1">
-          <pre data-sql-readonly="" className="m-0 overflow-x-auto whitespace-pre-wrap break-words rounded-ctl border border-border bg-subtle/60 px-3 py-2.5 font-mono text-[12.5px] leading-[1.55] text-text">
-            {storedSql ? <Highlighted sql={storedSql} known={known} /> : <span className="text-faint">This cell has no statement yet.</span>}
-          </pre>
+          {/* 2026-10-07 (round 9): a published link shows what the cell
+              returned, never the statement (which names tables and
+              columns) - the public endpoints do not send it either. */}
+          {!source?.hideSql && (
+            <pre data-sql-readonly="" className="m-0 overflow-x-auto whitespace-pre-wrap break-words rounded-ctl border border-border bg-subtle/60 px-3 py-2.5 font-mono text-[12.5px] leading-[1.55] text-text">
+              {storedSql ? <Highlighted sql={storedSql} known={known} /> : <span className="text-faint">This cell has no statement yet.</span>}
+            </pre>
+          )}
           {mode === "warehouse" && result && (
             <div className="mt-2 flex justify-end">
               <Button size="sm" variant="ghost" icon={<PlayIcon size={14} />} onClick={() => rerunWithDependents(block.id)} title="Recompute this cell" data-run-cell="">Run cell</Button>

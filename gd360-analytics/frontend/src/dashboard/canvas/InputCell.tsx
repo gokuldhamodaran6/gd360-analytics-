@@ -52,7 +52,7 @@ export function InputCell({ cell, run, source, parameters, owner }: CellBodyProp
         )}
       </div>
       {error && <div role="alert" className="mb-2 text-caption text-danger">{error}</div>}
-      {param && <ParameterField param={param} value={value} onChange={(v) => run.setParamValue(param.id, v)} source={source} />}
+      {param && <ParameterField param={param} value={value} onChange={(v) => run.setParamValue(param.id, v)} source={source} bounds={run.dateBounds?.[param.column]} />}
     </div>
   );
 }

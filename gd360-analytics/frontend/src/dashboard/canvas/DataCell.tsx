@@ -2,6 +2,8 @@ import { useState } from "react";
 import { ComputedIn, Select, cn } from "../../ui";
 import { resultOk } from "../blockData";
 import { BlockRenderer } from "../BlockRenderer";
+import { fileBlockSpec } from "../fileData";
+import { describeSpecShort } from "../format";
 import { describeSpec, type CrossFilter } from "../runState";
 import { formatIndexSet, slimConfig, sourcesOf } from "./cells";
 import type { CellBodyProps } from "./types";
@@ -32,7 +34,12 @@ export function DataCell({ cell, cells, run, source, mode, parameters, owner, pi
   const subtitleParts: string[] = [];
   if (sources.length) subtitleParts.push(`from cell${sources.length > 1 ? "s" : ""} ${formatIndexSet(sources)}`);
   if (sources.length || (spec && run.parameters.length)) subtitleParts.push("parameters applied");
-  else if (spec && mode === "warehouse") subtitleParts.push(describeSpec(spec));
+  else if (spec && mode === "warehouse") subtitleParts.push(describeSpecShort(spec, resultOk(result) ? result.period : null));
+  else if (mode === "file") {
+    // The same sentence the dashboard grid gives a file block (round 9).
+    const fileSpec = fileBlockSpec(block, run.overrides[block.id], { sourceName: source.name });
+    if (fileSpec) subtitleParts.push(describeSpecShort(fileSpec));
+  }
   if (run.activeFilterCount > 0 && !sources.length) subtitleParts.push("filtered");
 
   const bind = async (sourceId: string) => {
@@ -54,7 +61,7 @@ export function DataCell({ cell, cells, run, source, mode, parameters, owner, pi
   };
 
   const computed = mode === "warehouse" && resultOk(result)
-    ? { provider: result.computed_in || run.computedIn || undefined, rows: result.exact_total_rows ?? result.row_count, durationMs: result.duration_ms ?? undefined, cached: Boolean(result.cached) }
+    ? { provider: result.computed_in || run.computedIn || undefined, rows: result.exact_total_rows ?? (result.spec ? undefined : result.row_count), durationMs: result.duration_ms ?? undefined, cached: Boolean(result.cached) }
     : mode === "file" ? { provider: "GD360", rows: typeof run.matchedRows === "number" ? run.matchedRows : undefined } : null;
   const height = compact ? 120 : block.type === "kpi" ? 140 : block.type === "table" ? 360 : 300;
   const noData = mode === "warehouse" && !result && run.ready && !bound && !spec;
@@ -63,7 +70,7 @@ export function DataCell({ cell, cells, run, source, mode, parameters, owner, pi
     <div data-data-cell={block.type} className="flex flex-col">
       {(subtitleParts.length > 0 || owner) && (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 pb-2 text-[12.5px] text-muted">
-          {subtitleParts.length > 0 && <span data-cell-subtitle="">{subtitleParts.join(" · ")}</span>}
+          {subtitleParts.length > 0 && <span data-cell-subtitle="" className="min-w-0 truncate" title={spec && mode === "warehouse" ? `${subtitleParts.join(" · ")}\n${describeSpec(spec)}` : subtitleParts.join(" · ")}>{subtitleParts.join(" · ")}</span>}
           {owner && !compact && (
             <label className="ml-auto flex items-center gap-1.5 text-caption">
               <span className="text-muted">Bind to cell</span>
@@ -112,7 +119,9 @@ export function DataCell({ cell, cells, run, source, mode, parameters, owner, pi
             }
             parameters={parameters}
             source={source}
+            sourceName={source.name}
             bodyHeight={height}
+            growToContent
           />
         )}
         {run.loading && run.ready && result && <div aria-hidden="true" className="ui-shimmer pointer-events-none absolute inset-0 rounded-ctl opacity-30" />}

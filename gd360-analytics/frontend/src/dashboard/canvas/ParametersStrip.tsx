@@ -83,7 +83,7 @@ export function ParametersStrip({ run, source, className }: ParametersStripProps
                     <button type="button" className="ui-focus rounded px-0.5 text-[11px] text-muted hover:text-text hover:underline" onClick={() => onChange(null)}>Clear</button>
                   )}
                 </div>
-                <ParameterField param={param} value={value} onChange={onChange} source={source} />
+                <ParameterField param={param} value={value} onChange={onChange} source={source} bounds={run.dateBounds?.[param.column]} />
               </div>
             );
           })}

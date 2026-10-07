@@ -117,8 +117,15 @@ export const Cell = forwardRef<HTMLElement, CellProps>(function Cell(props, ref)
     setActionError(null);
     try { await fn(); } catch (e: any) { const d = e?.response?.data?.detail; setActionError(typeof d === "string" ? d : e?.message || "That didn't work."); } finally { setBusy(false); }
   };
+  const stored = mode === "file" ? run.overrides[block.id]?.config ?? block.config ?? {} : null;
+  const storedColumns: string[] = stored
+    ? (Array.isArray(stored.columns) ? stored.columns : Array.isArray(stored.result_columns) ? stored.result_columns : []).map((c: any) => (typeof c === "string" ? c : String(c?.name ?? "")))
+    : [];
+  const storedRows: Record<string, any>[] = stored ? (Array.isArray(stored.rows) ? stored.rows : Array.isArray(stored.result_rows) ? stored.result_rows : []) : [];
+  const canDownload = resultOk(result) || storedColumns.length > 0;
   const downloadCsv = () => {
     if (resultOk(result)) downloadText(`${safeFilename(block.title || cell.name)}.csv`, rowsToCsv(result.columns.map((c) => c.name), result.rows));
+    else if (storedColumns.length) downloadText(`${safeFilename(block.title || cell.name)}.csv`, rowsToCsv(storedColumns, storedRows));
   };
 
   const bodyProps: CellBodyProps = {
@@ -178,12 +185,15 @@ export const Cell = forwardRef<HTMLElement, CellProps>(function Cell(props, ref)
           </div>
           <div className="flex shrink-0 items-center gap-0.5" data-cell-toolbar="">
             {cell.kind === "sql" ? (
-              <button type="button" className="ui-focus h-7 rounded-ctl px-2 text-caption font-medium text-secondary hover:bg-subtle hover:text-text" onClick={() => setSqlCollapsed((c) => !c)} aria-expanded={!sqlCollapsed} data-toggle-sql="">
-                {sqlCollapsed ? "Show SQL" : "Hide SQL"}
-              </button>
+              // A published link never shows (or receives) the statement.
+              !source.hideSql && (
+                <button type="button" className="ui-focus h-7 rounded-ctl px-2 text-caption font-medium text-secondary hover:bg-subtle hover:text-text" onClick={() => setSqlCollapsed((c) => !c)} aria-expanded={!sqlCollapsed} data-toggle-sql="">
+                  {sqlCollapsed ? "Show SQL" : "Hide SQL"}
+                </button>
+              )
             ) : cell.kind === "text" ? (
               owner && !editing && <button type="button" className="ui-focus inline-flex h-7 items-center gap-1 rounded-ctl px-2 text-caption font-medium text-secondary hover:bg-subtle hover:text-text" onClick={onStartEdit} data-edit-cell=""><EditIcon size={13} /> Edit</button>
-            ) : isData && mode === "warehouse" ? (
+            ) : isData && mode === "warehouse" && !source.hideSql ? (
               <button type="button" className="ui-focus inline-flex h-7 items-center gap-1 rounded-ctl px-2 text-caption font-medium text-secondary hover:bg-subtle hover:text-text" onClick={openSql} data-show-sql=""><SqlIcon size={13} /> Show SQL</button>
             ) : null}
             {comments.enabled && (
@@ -206,7 +216,7 @@ export const Cell = forwardRef<HTMLElement, CellProps>(function Cell(props, ref)
                     <MenuRow icon={<RefreshIcon size={14} />} onClick={() => { close(); rerunWithDependents(block.id); }}>Recompute</MenuRow>
                   )}
                   {(cell.kind === "sql" || isData) && (
-                    <MenuRow icon={<DownloadIcon size={14} />} onClick={() => { close(); downloadCsv(); }} disabled={!resultOk(result)}>Download CSV</MenuRow>
+                    <MenuRow icon={<DownloadIcon size={14} />} onClick={() => { close(); downloadCsv(); }} disabled={!canDownload}>Download CSV</MenuRow>
                   )}
                   {owner && (
                     <>
