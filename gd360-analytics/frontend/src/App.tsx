@@ -7,6 +7,7 @@ import Landing from "./pages/Landing";
 import Dashboard from "./pages/Dashboard";
 import Workspace from "./pages/Workspace";
 import Dashboards from "./pages/Dashboards";
+import NewDashboard from "./pages/NewDashboard";
 import DashboardView from "./pages/DashboardView";
 import DashboardBuilderView from "./pages/DashboardBuilderView";
 import PublicDashboardView from "./pages/PublicDashboardView";
@@ -99,6 +100,10 @@ export default function App() {
       <Route path="/project/new" element={<Protected><NewProject /></Protected>} />
       <Route path="/workspace/:datasourceId" element={<Protected><Workspace /></Protected>} />
       <Route path="/dashboards" element={<Protected><Dashboards /></Protected>} />
+      {/* 2026-10-07 (dashboard from a prompt): describe -> propose -> refine
+          -> publish (Builder.dc.html). Listed before /dashboards/:dashboardId
+          so "new" is never read as an id. */}
+      <Route path="/dashboards/new" element={<Protected><NewDashboard /></Protected>} />
       <Route path="/dashboards/:dashboardId" element={<Protected><DashboardView /></Protected>} />
       {/* 2026-09-24 (Dashboard Builder Phase 1): the new pages+blocks kind
           of dashboard gets its own viewer at a deliberately different path
