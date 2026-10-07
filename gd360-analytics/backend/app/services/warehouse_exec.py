@@ -39,6 +39,7 @@ deliberately identical so the two can be unified in a later pass.
 from __future__ import annotations
 
 import json
+import re
 
 from sqlalchemy.orm import Session
 
@@ -124,6 +125,114 @@ def run_sql(ds: models.DataSource, sql: str, ctes: list[tuple[str, str]] | None 
     raise ValueError(f"run_sql does not handle kind {kind!r}")
 
 
+# --- error messages (2026-10-07, real end-to-end run) -------------------------
+#
+# What a failed statement used to put on the page, verbatim:
+#   (psycopg2.errors.UndefinedColumn) column "x" does not exist
+#   LINE 1: SELECT x FROM ...
+#   [SQL: SELECT x FROM ...]
+#   (Background on this error at: https://sqlalche.me/e/20/f405)
+# The driver's class name, an echo of the whole statement and a link to
+# SQLAlchemy's documentation are noise to the person reading a dashboard.
+# clean_warehouse_error keeps what the DATABASE said - its own sentence,
+# plus a short LINE / HINT when it gave one - and drops the wrapping. It is
+# the one function every warehouse failure passes through on its way to an
+# HTTP `detail`, a block result's `error` or a chat attempt's `error`; the
+# full original text still goes to the server log and the audit row.
+
+_ERR_SQL_ECHO_RE = re.compile(r"\s*\[SQL:.*", re.S)
+_ERR_PARAMS_RE = re.compile(r"\s*\[parameters:.*", re.S)
+_ERR_BACKGROUND_RE = re.compile(r"\s*\(Background on this error at:[^)]*\)", re.I)
+_ERR_CLASS_PREFIX_RE = re.compile(r"^\((?:[A-Za-z_]\w*\.)+[A-Za-z_]\w*\)\s*")
+_ERR_DBAPI_TUPLE_RE = re.compile(r"""^\(\s*(?:-?\d+|'[^']*'|"[^"]*")\s*,\s*b?(?P<q>['"])(?P<msg>.*)(?P=q)\s*\)\s*$""", re.S)
+_ERR_HTTP_PREFIX_RE = re.compile(r"^\d{3}\s+(?:(?:GET|POST|PUT|PATCH|DELETE)\s+\S+?:\s+)?(?:Bad Request:\s+)?")
+_ERR_BQ_REASON_RE = re.compile(r";\s*reason:\s*\w+.*", re.S)
+_ERR_URL_RE = re.compile(r"\(?https?://\S+\)?")
+_ERR_SNOWFLAKE_CODE_RE = re.compile(r"^\d{6}\s*\([0-9A-Za-z]{5}\):\s*")
+_ERR_QUERY_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:\s*", re.I)
+_ERR_MYSQL_CODE_RE = re.compile(r"^\d{3,5}\s*\([0-9A-Za-z]{5}\):\s*")
+_ERR_ODBC_TAG_RE = re.compile(r"^(?:\[[^\]]*\]\s*)+")
+_ERR_ODBC_TAIL_RE = re.compile(r"(?:\s*\(\d+\))?\s*\(SQL[A-Za-z]+\)\s*$")
+_ERR_DROP_LINE_RE = re.compile(
+    r"^(?:\^+|location:\s*\S+|job id:\s*\S+|\(job id:[^)]*\)|context:.*|query id:.*|db-lib error message.*|"
+    r"general sql server error.*)$",
+    re.I,
+)
+_ERR_HINT_MAX = 160
+_ERR_LINE_MAX = 80
+
+
+def clean_warehouse_error(error, fallback: str = "The warehouse rejected this query.") -> str:
+    """A driver / SQLAlchemy / BigQuery / Snowflake exception (or its text)
+    as the sentence the database itself wrote: no driver class prefix, no
+    `[SQL: ...]` echo, no sqlalche.me link, no job URL or job id. A
+    `LINE n: ...` position is kept when it shows a whole short line (not a
+    "..." excerpt of a long one), and so is a short HINT / DETAIL. Text that
+    carries none of that wrapping (one of GD360's own messages) comes back
+    unchanged, so the function is safe to apply twice."""
+    text = "" if error is None else str(error)
+    text = text.replace("\r\n", "\n").replace("\\n", "\n").strip()
+    if not text:
+        return fallback
+    text = _ERR_SQL_ECHO_RE.sub("", text)
+    text = _ERR_PARAMS_RE.sub("", text)
+    text = _ERR_BACKGROUND_RE.sub("", text)
+    text = _ERR_CLASS_PREFIX_RE.sub("", text.strip())
+    m = _ERR_DBAPI_TUPLE_RE.match(text.strip())
+    if m:
+        # (1054, "Unknown column 'foo' in 'field list'") / ('42S22', "[42S22] [Microsoft]...")
+        text = m.group("msg").replace("\\'", "'").replace('\\"', '"')
+    text = _ERR_HTTP_PREFIX_RE.sub("", text.strip())
+    text = _ERR_BQ_REASON_RE.sub("", text)
+    text = _ERR_URL_RE.sub("", text)
+
+    lines: list[str] = []
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line or _ERR_DROP_LINE_RE.match(line):
+            continue
+        lines.append(line)
+    if not lines:
+        return fallback
+
+    head = lines[0]
+    for rx in (_ERR_SNOWFLAKE_CODE_RE, _ERR_QUERY_ID_RE, _ERR_MYSQL_CODE_RE):
+        head = rx.sub("", head)
+    head = _ERR_ODBC_TAG_RE.sub("", head)
+    head = _ERR_ODBC_TAIL_RE.sub("", head).strip()
+    rest = lines[1:]
+    # Snowflake / some drivers break the sentence over two lines:
+    #   "SQL compilation error: error line 1 at position 7" / "invalid identifier 'FOO'"
+    if rest and not re.match(r"^(LINE\s+\d+:|HINT:|DETAIL:)", rest[0], re.I) and (
+        head.endswith(":") or re.search(r"\b(?:at|line) (?:position )?\d+$", head, re.I) or not head
+    ):
+        joined = rest.pop(0)
+        head = f"{head} {joined}".strip() if head.endswith(":") or not head else f"{head}: {joined}"
+    if not head:
+        return fallback
+
+    extras: list[str] = []
+    for line in rest:
+        mm = re.match(r"^(LINE\s+\d+:)\s*(.*)$", line, re.I)
+        if mm:
+            # Kept only when it is the whole (short) line of a short
+            # statement. Postgres cuts a long line to an excerpt with "..."
+            # - a fragment of generated SQL that tells the reader nothing
+            # the sentence did not.
+            excerpt = mm.group(2).strip()
+            if excerpt and len(excerpt) <= _ERR_LINE_MAX and not excerpt.startswith("...") and not excerpt.endswith("..."):
+                extras.append(f"{mm.group(1).upper().replace('LINE', 'Line')} {excerpt}")
+            continue
+        mm = re.match(r"^(HINT|DETAIL):\s*(.*)$", line, re.I)
+        if mm:
+            if mm.group(2) and len(mm.group(2)) <= _ERR_HINT_MAX:
+                extras.append(f"{mm.group(1).capitalize()}: {mm.group(2)}")
+            continue
+    out = " · ".join([head.rstrip()] + extras)
+    out = re.sub(r"[ \t]+", " ", out).strip()
+    return out[:600] if out else fallback
+
+
 def classify_error(e: Exception) -> str:
     """The PushdownQueryLog status for an execution failure - the same
     vocabulary routers/chat.py uses."""
@@ -156,8 +265,10 @@ def execute_sql(
         return {"attempt": {"sql": wrapped, "status": "rejected_too_expensive", "error": str(e)}}
     except Exception as e:
         status = classify_error(e)
+        # The audit row keeps the driver's full text; the caller (a block
+        # result, a rail control) gets the database's own sentence.
         log_pushdown(db, user_id, ds.id, ds.kind, wrapped, None, status, str(e))
-        return {"attempt": {"sql": wrapped, "status": status, "error": str(e)}}
+        return {"attempt": {"sql": wrapped, "status": status, "error": clean_warehouse_error(e)}}
     log_pushdown(db, user_id, ds.id, ds.kind, wrapped, bytes_scanned, "ok")
     return {"df": df, "bytes_scanned": bytes_scanned, "attempt": {"sql": wrapped, "status": "ok", "error": None}}
 

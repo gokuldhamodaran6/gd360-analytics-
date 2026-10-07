@@ -1161,10 +1161,13 @@ shape, with no markdown code fences, no explanation, nothing before or after the
  "order_by": [{"by": "<measure alias | group_by column | 'period'>", "dir": "asc" | "desc"}, ...],
  "limit": <integer 1..5000>,
  "compare_prior_period": <true | false>,
- "sparkline": <true | false>}
+ "sparkline": <true | false>,
+ "chart_type": "bar" | "horizontal_bar" | "line" | "area" | "pie" | "scatter" | "stacked_bar" | "grouped_bar" | null}
 
 Strict rules:
 - Use ONLY table and column names that appear, spelled exactly, in the schema you are given. Never invent one.
+- "chart_type" is ONLY for a question that itself names a chart form ("as a pie chart", "horizontal bars", "a line
+  chart"); null in every other case.
 - "time" is for a trend over time (bucketed by grain, the result has a "period" column); null otherwise.
 - group_by has at most 3 columns. measures has 1 to 6 entries. A measure has EITHER "column" OR "expr", never both;
   agg "count" with column null and expr null means COUNT(*).
@@ -1177,19 +1180,44 @@ Strict rules:
 - If the question cannot be expressed in this shape (raw rows, a join, a transformation), respond with exactly: null"""
 
 
-def generate_block_spec(question: str, schema_text: str, dialect: str | None = None, title: str | None = None) -> dict | None:
+def generate_block_spec(
+    question: str, schema_text: str, dialect: str | None = None, title: str | None = None,
+    previous_spec=None, previous_error: str | None = None,
+) -> dict | None:
     """Asks the model for a BlockSpec JSON for `question` against
     `schema_text` (the same `Table \\`name\\`:` lines chat's SQL writers
     see). Returns the parsed dict (NOT yet validated - the caller runs
     query_builder.validate_block_spec and a zero-row warehouse check) or
     None when the model said null / answered non-JSON / the call failed.
     Never raises - a failure is reported per block by the caller, never
-    turned into a 500."""
+    turned into a 500.
+
+    The returned dict is the model's JSON object as-is: the BlockSpec keys
+    plus an optional top-level "chart_type" (a chart form the QUESTION
+    named, else null/absent). "chart_type" is not part of the spec -
+    validate_block_spec ignores it; a caller that wants it reads it off
+    this dict before validating.
+
+    2026-10-07 (block editing on a warehouse source): `previous_spec` /
+    `previous_error` are optional and used ONLY for the one bounded retry
+    routers/dashboard_builder.py's ask_ai_block makes after a first spec
+    fails validation (structurally, or the warehouse's own zero-row
+    check) - the same correction block generate_bigquery_sql's
+    previous_sql/previous_error pair appends: the exact previous spec and
+    the exact error, so the model can see precisely what it got wrong.
+    The system prompt is unchanged either way."""
     try:
         user = f"Dataset schema ({dialect or 'SQL'}):\n{schema_text}\n\n"
         if title and title.strip() and title.strip() != (question or "").strip():
             user += f"Block title: {title.strip()}\n"
         user += f"Question: {question}"
+        if previous_spec is not None and previous_error:
+            previous_text = previous_spec if isinstance(previous_spec, str) else json.dumps(previous_spec, default=str)
+            user += (
+                f"\n\nYour previous attempt:\n{previous_text[:6000]}\n\n"
+                f"It failed with this error:\n{str(previous_error)[:2000]}\n\n"
+                f"Write a corrected spec."
+            )
         messages = [
             {"role": "system", "content": BLOCK_SPEC_SYSTEM_PROMPT},
             {"role": "user", "content": user},
@@ -2129,7 +2157,14 @@ def _fallback_chart_title(x_label: str | None, y_label: str | None, prompt: str)
         return str(y_label)
     if x_label:
         return str(x_label)
-    cleaned = (prompt or "").strip().rstrip("?").strip()
+    # 2026-10-07 (real end-to-end run): only the person's own words. For a
+    # warehouse turn routers/chat.py appends an internal note to the prompt
+    # ("\n\n(Context: the table \"Query result\" is the already-computed
+    # answer ...") before calling analyze(); when the same question was
+    # asked a second time (the replay path sets title None) that note
+    # became the chart's title: 'Overall bookings every year (Context: the
+    # table "Query result" is the already-c'.
+    cleaned = (prompt or "").split("\n\n(Context:", 1)[0].strip().rstrip("?").strip()
     lowered = cleaned.lower()
     for opener in _QUESTION_OPENERS:
         if lowered.startswith(opener):

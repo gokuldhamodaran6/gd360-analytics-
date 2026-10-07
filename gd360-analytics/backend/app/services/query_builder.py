@@ -1292,6 +1292,34 @@ def build_distinct_values_sql(
             f"GROUP BY {col} ORDER BY {count_alias} DESC LIMIT {limit}")
 
 
+def build_column_bounds_sql(
+    table: str, columns: list[str], kind: str, schema_cache, connection_info: dict | None = None,
+    alias_tables: set[str] | None = None,
+) -> tuple[str, list[str]]:
+    """(`SELECT MIN(a), MAX(a), MIN(b), MAX(b) FROM <table>`, [a, b]) - the
+    ONE query behind the date pickers' bounds: the real first and last
+    value of each of `columns` that the table has, in that order (a pair
+    of result columns per name, read by position). Raises BlockSpecError
+    when none of the columns is in the table."""
+    if kind not in SQL_KINDS:
+        raise BlockSpecError("Warehouse-native blocks only work for SQL warehouses and databases right now.")
+    cols = table_columns(schema_cache, table)
+    if not cols:
+        raise BlockSpecError(f"The table {table!r} is not one of this data source's tables.")
+    known = {c["name"] for c in cols}
+    present: list[str] = []
+    for c in columns or []:
+        if c in known and c not in present:
+            present.append(c)
+    if not present:
+        raise BlockSpecError(f"None of these columns exist in {table!r}.")
+    parts = []
+    for i, c in enumerate(present):
+        q = _quote_ident(kind, c)
+        parts.append(f"MIN({q}) AS {_quote_ident(kind, f'gd360_min_{i}')}, MAX({q}) AS {_quote_ident(kind, f'gd360_max_{i}')}")
+    return f"SELECT {', '.join(parts)} FROM {qualified_table_ident(kind, table, connection_info, alias_tables)}", present
+
+
 def describe_block_spec(spec: dict) -> str:
     """One readable line for a BlockSpec - the block's default subtitle."""
     parts = []
@@ -1314,3 +1342,172 @@ def describe_block_spec(spec: dict) -> str:
             for f in spec["filters"]
         )
     return text
+
+
+# --- number format (2026-10-07) ---------------------------------------------
+#
+# A KPI tile's display format, inferred from its spec. Deliberately small and
+# conservative: a format is only returned when the spec itself makes it
+# certain enough to show without asking - never "probably". `None` means
+# "leave config.format unset" (the frontend then shows a plain number).
+
+NUMBER_FORMATS = ("number", "percent", "currency", "compact")
+
+# Words that say "this is a fraction of a whole" in a measure alias / block title.
+_RATE_WORDS = frozenset({"rate", "share", "percent", "percentage", "pct"})
+# Words that say a COLUMN already stores a rate - its scale (0..1 or 0..100)
+# is unknown from the schema, so no format is ever inferred for it.
+_STORED_RATE_WORDS = _RATE_WORDS | {"ratio", "proportion", "fraction"}
+# Money words (the alias/title of a money measure).
+_MONEY_WORDS = frozenset({"revenue", "sales", "amount", "price", "cost", "adr"})
+# "rate" next to one of these is a per-unit amount or a change, not a share
+# of a whole ("average daily rate", "exchange rate", "growth rate").
+_NOT_A_SHARE_WORDS = frozenset({
+    "daily", "hourly", "nightly", "weekly", "monthly", "yearly", "annual", "exchange", "interest", "tax", "growth",
+    "heart", "bit", "frame", "room", "pay",
+})
+_FLAG_PREFIXES = ("is", "has", "was", "did", "can", "should")
+_FLAG_SUFFIXES = ("flag", "bool", "indicator")
+_WORD_RE = re.compile(r"[A-Za-z]+")
+_CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _word_list(text) -> list[str]:
+    """Lower-cased words of an identifier / title, in order: snake_case,
+    camelCase, spaces and punctuation all split ("isCanceled" ->
+    ["is", "canceled"])."""
+    if not isinstance(text, str) or not text:
+        return []
+    return [w.lower() for w in _WORD_RE.findall(_CAMEL_RE.sub(" ", text))]
+
+
+def _says_rate(text, max_words: int | None = None) -> bool:
+    """True when `text` NAMES a rate: its first or last word is a rate
+    word ("cancellation_rate", "pct_canceled", "Repeat guest share") or
+    it carries a % sign - and it is not a per-unit amount ("average daily
+    rate"). `max_words` keeps a long sentence (a question that merely
+    mentions a rate) from counting."""
+    words = _word_list(text)
+    if not words or (max_words is not None and len(words) > max_words):
+        return False
+    if set(words) & _NOT_A_SHARE_WORDS:
+        return False
+    return words[0] in _RATE_WORDS or words[-1] in _RATE_WORDS or "%" in text
+
+
+def _is_flag_name(column: str) -> bool:
+    words = _word_list(column)
+    if len(words) < 2:
+        return False
+    return words[0] in _FLAG_PREFIXES or words[-1] in _FLAG_SUFFIXES
+
+
+def _type_family(col_type) -> str:
+    """"bool" | "int" | "float" | "other" | "unknown" for a schema type
+    string of any supported warehouse (INT64, BIGINT, BOOLEAN, FLOAT64,
+    NUMERIC(10,2), VARCHAR, DATE, ...)."""
+    t = str(col_type or "").strip().lower()
+    if not t:
+        return "unknown"
+    if "bool" in t or t == "bit":
+        return "bool"
+    if any(k in t for k in ("char", "text", "string", "date", "time", "json", "uuid", "byte", "binary", "array", "struct")):
+        return "other"
+    if "int" in t and "interval" not in t and "point" not in t:
+        return "int"
+    if any(k in t for k in ("float", "double", "real", "numeric", "decimal", "number", "money")):
+        return "float"
+    return "unknown"
+
+
+# Words that name something a business wants LESS of. Deliberately short
+# and unambiguous: "cost"/"time"/"price" are left out (a lower cost is good,
+# a lower price is not always), so nothing is flipped on a guess.
+_LOWER_IS_BETTER_WORDS = frozenset({
+    "cancel", "canceled", "cancelled", "cancellation", "cancellations", "cancelation",
+    "churn", "churned", "refund", "refunds", "refunded", "chargeback", "chargebacks",
+    "error", "errors", "failure", "failures", "failed", "defect", "defects",
+    "complaint", "complaints", "delay", "delays", "delayed", "late", "bounce", "bounced",
+    "downtime", "outage", "outages", "overdue", "noshow",
+})
+
+
+def infer_good_direction(spec, title: str | None = None) -> str | None:
+    """"down" when a single-measure block clearly counts or rates something
+    a business wants less of (cancellations, churn, refunds, errors,
+    delays...), else None (the frontend's default is "up"). Looks at the
+    measure's alias, its column and a short title (at most 5 words). Pure
+    and deterministic; never returns "up" - an unset value already means it."""
+    if not isinstance(spec, dict):
+        return None
+    measures = spec.get("measures")
+    if not isinstance(measures, list) or len(measures) != 1 or not isinstance(measures[0], dict):
+        return None
+    m = measures[0]
+    words = set(_word_list(m.get("alias"))) | set(_word_list(m.get("column") if isinstance(m.get("column"), str) else None))
+    title_words = _word_list(title)
+    if len(title_words) <= 5:
+        words |= set(title_words)
+    if "no" in words and "show" in words:
+        return "down"
+    return "down" if words & _LOWER_IS_BETTER_WORDS else None
+
+
+def infer_number_format(spec, title: str | None = None, schema=None, currency: str | None = None) -> str | None:
+    """The display format for a block whose spec has exactly ONE measure,
+    or None when it is not certain. Pure and deterministic.
+
+    "percent" (the value is a 0..1 fraction; the frontend renders it x100
+    with a % sign) only for an AVG of a plain column (no `expr`) that is a
+    0/1 flag:
+      - the column is named like a flag (is_*/has_*/was_*/did_*/can_*/
+        should_*, *_flag/*_bool/*_indicator) and is not a text/date
+        column, or
+      - the column is a boolean/integer column per `schema` AND the
+        measure's alias, or a short block `title` (at most 4 words),
+        NAMES a rate: it starts or ends with rate/share/percent/
+        percentage/pct or carries a % sign, and is not a per-unit amount
+        such as "daily rate". A longer title (a whole question that
+        merely mentions a rate) never counts.
+    Never for a column that itself stores a rate (name says rate/pct/
+    ratio/...: its scale is unknown), never for sum/count/min/max, never
+    when the alias/title also names money.
+
+    "currency" only when the alias/title names money (revenue, sales,
+    amount, price, cost, adr), the aggregation keeps the unit (sum/avg/
+    min/max) AND the caller knows the currency (`currency`) - with no
+    known currency the format is left unset rather than guessed.
+
+    "number"/"compact" are never inferred."""
+    if not isinstance(spec, dict):
+        return None
+    measures = spec.get("measures")
+    if not isinstance(measures, list) or len(measures) != 1 or not isinstance(measures[0], dict):
+        return None
+    m = measures[0]
+    agg = str(m.get("agg") or "").lower()
+    column = m.get("column") if isinstance(m.get("column"), str) else None
+    label_words = set(_word_list(m.get("alias"))) | set(_word_list(title))
+    says_rate = _says_rate(m.get("alias")) or _says_rate(title, max_words=4)
+    says_money = bool(label_words & _MONEY_WORDS)
+    if says_rate and says_money:
+        return None
+
+    if agg == "avg" and column and not m.get("expr") and not says_money:
+        column_words = set(_word_list(column))
+        col_type = None
+        for c in table_columns(schema, spec.get("table")) or []:
+            if c["name"] == column:
+                col_type = c.get("type")
+                break
+        family = _type_family(col_type)
+        if not (column_words & _STORED_RATE_WORDS) and not (column_words & _MONEY_WORDS):
+            if _is_flag_name(column) and family != "other":
+                return "percent"
+            if family in ("bool", "int") and says_rate:
+                return "percent"
+        return None
+
+    if says_money and not says_rate and agg in ("sum", "avg", "min", "max") and currency:
+        return "currency"
+    return None

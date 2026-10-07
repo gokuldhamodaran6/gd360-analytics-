@@ -539,7 +539,45 @@ def load_version_dataframe(version: models.DatasetVersion, ds: models.DataSource
         # `ds` (optional) only names the provider in the message; without
         # it the version's own datasource relationship is used.
         raise WarehouseQueryHasNoFile(warehouse_no_file_message(version, ds))
-    return _load_and_cache(f"version:{version.id}", lambda: FileConnector(version.data, ".csv").load_dataframe())
+    return _load_and_cache(
+        f"version:{version.id}",
+        lambda: _restore_datetime_columns(FileConnector(version.data, ".csv").load_dataframe()),
+    )
+
+
+_ISO_DATETIME_RE = r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)?$"
+
+
+def _restore_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """2026-10-07 (real end-to-end run): a saved table is stored as CSV
+    (dataframe_to_csv_bytes), and CSV has no date type - a datetime column
+    is written as "2015-01-04" and came back as plain text. So the moment
+    a person applied ONE cleaning suggestion to an uploaded file, the new
+    version's date column was text again: the Data tab re-offered "Convert
+    `Booking Date` from text to date" for a fix the import had already
+    made, the date-coverage tile went blank and the column could no longer
+    be a dashboard's time axis.
+
+    pandas writes a datetime column in exactly one shape (ISO date, or ISO
+    date + time), so a text column where EVERY non-empty value has that
+    shape is read back as the datetime it was. Anything else - one stray
+    value is enough - is left untouched as text."""
+    for col in df.columns:
+        s = df[col]
+        if s.dtype != object:
+            continue
+        non_null = s.dropna()
+        if non_null.empty or not isinstance(non_null.iloc[0], str):
+            continue
+        try:
+            if not non_null.head(50).str.match(_ISO_DATETIME_RE).all() or not non_null.str.match(_ISO_DATETIME_RE).all():
+                continue
+            parsed = pd.to_datetime(s, errors="coerce", format="ISO8601")
+        except Exception:
+            continue
+        if int(parsed.notna().sum()) == int(non_null.shape[0]):
+            df[col] = parsed
+    return df
 
 
 def ensure_legacy_migrated(db: Session, ds: models.DataSource) -> None:

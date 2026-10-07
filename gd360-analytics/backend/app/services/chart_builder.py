@@ -808,6 +808,32 @@ def _build_faceted_bar(result: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def _whole_number_axis(x: Any, max_span: int = 30) -> dict:
+    """2026-10-07 (real end-to-end run, "overall bookings every year"):
+    axis settings for an x column of whole numbers used as a DIMENSION -
+    years, a week number, a party size. Plotly sees numbers and draws a
+    continuous axis, so three bars at 2015/2016/2017 got ticks at
+    "2,014.5", "2015", "2,015.5"... - half-years that do not exist, with a
+    thousands separator on a year. When every x value is a whole number
+    and they span at most `max_span`, tick exactly on the whole numbers
+    and print them plainly. Returns {} (change nothing) for text, dates,
+    fractional numbers, or a wide numeric range, where Plotly's own tick
+    choice is the right one."""
+    try:
+        values = pd.Series(x)
+        if pd.api.types.is_bool_dtype(values) or not pd.api.types.is_numeric_dtype(values):
+            return {}
+        values = values.dropna().astype(float)
+        if values.empty or not np.isfinite(values).all() or not (values == values.round()).all():
+            return {}
+        low, high = int(values.min()), int(values.max())
+        if high - low > max_span:
+            return {}
+        return {"tickmode": "linear", "tick0": low, "dtick": 1, "tickformat": "d"}
+    except Exception:
+        return {}
+
+
 def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | None = None, y_label: str | None = None) -> dict:
     chart_type = (chart_type or "bar").lower().strip()
 
@@ -1326,6 +1352,8 @@ def build_figure(result: Any, chart_type: str, title: str = "", x_label: str | N
         hoverlabel=dict(bgcolor="#1E1E2E", font_size=13),
         legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
     )
+    if not multi_panel_used and chart_type in ("bar", "column", "line", "area"):
+        fig.update_layout(xaxis=_whole_number_axis(df["x"]))
     if not multi_panel_used:
         # The normal case: one shared y axis, titled from the AI's own
         # y_label (or blank). The two-panel comparison chart above already

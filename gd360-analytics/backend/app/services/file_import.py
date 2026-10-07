@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import os
 import re
 from datetime import datetime
@@ -182,7 +183,10 @@ def detect_header_row(raw: pd.DataFrame) -> int:
         return 1
     for i, (_, row) in enumerate(head.iterrows()):
         cells = [v for v in row.tolist() if not (v is None or (isinstance(v, float) and np.isnan(v)))]
-        if len(cells) < max(1, int(widest * 0.6)):
+        # At least 60% as wide as the widest row - rounded UP: with int() a
+        # 2-cell note line above a 4-column header (2 < int(2.4) is false)
+        # was taken for the header.
+        if len(cells) < max(1, math.ceil(widest * 0.6)):
             continue
         texty = sum(1 for v in cells if isinstance(v, str) and not _looks_numeric(v))
         if texty >= max(1, int(len(cells) * 0.6)):
@@ -201,7 +205,7 @@ def _detect_date_format_from_values(values: pd.Series) -> str | None:
     slash_ymd = sample.str.match(r"^\d{4}/\d{1,2}/\d{1,2}$")
     if slash_ymd.mean() >= 0.9:
         return "YYYY/MM/DD"
-    dmy_or_mdy = sample.str.extract(r"^(\d{1,2})([/-])(\d{1,2})\2(\d{2,4})$")
+    dmy_or_mdy = sample.str.extract(r"^(\d{1,2})([/-])(\d{1,2})\2(\d{2,4})(?:[ T]\d{1,2}:\d{2}.*)?$")
     ok = dmy_or_mdy[0].notna()
     if ok.mean() >= 0.9:
         first = pd.to_numeric(dmy_or_mdy.loc[ok, 0])
@@ -254,6 +258,30 @@ def excel_sheet_names(data: bytes) -> list[str]:
         return list(pd.ExcelFile(buf).sheet_names)
 
 
+def _csv_head_rows(text: str, delimiter: str, n: int) -> pd.DataFrame:
+    """The first `n` physical lines of a CSV as a header-less frame, every
+    row padded to the widest one (an empty cell is None).
+
+    2026-10-07 (real end-to-end run): this scan used to be a header-less
+    pandas read, which takes the column count from the FIRST line and
+    treats every wider line as a bad line. A real export with a one-cell
+    title line above the header ("Hotel bookings export - Lisbon group")
+    therefore lost its header row and every data row from the scan, the
+    3-cell note line under the title was picked as the header, and the
+    upload failed with "Error tokenizing data. C error: Expected 3 fields
+    in line 4, saw 14". csv.reader keeps ragged lines as they are, so
+    detect_header_row sees the same rows a person does - like the Excel
+    path always did."""
+    rows: list[list] = []
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
+    for i, row in enumerate(reader):
+        if i >= n:
+            break
+        rows.append([c if c.strip() != "" else None for c in row])
+    width = max((len(r) for r in rows), default=0)
+    return pd.DataFrame([r + [None] * (width - len(r)) for r in rows], dtype=object)
+
+
 def inspect_file(data: bytes, filename: str | None) -> dict:
     """What the Data tab's import card needs before any setting is chosen.
     `sheets[*].rows` is the data row count under the detected header row
@@ -295,10 +323,9 @@ def inspect_file(data: bytes, filename: str | None) -> dict:
     encoding = detect_encoding(data)
     text = data.decode(encoding, errors="replace")
     delimiter = detect_delimiter(text)
-    raw = pd.read_csv(io.StringIO(text), sep=delimiter, header=None, nrows=HEADER_SCAN_ROWS, engine="python",
-                      skip_blank_lines=False, dtype=object, on_bad_lines="skip")
+    raw = _csv_head_rows(text, delimiter, HEADER_SCAN_ROWS)
     header_row = detect_header_row(raw)
-    typed = pd.read_csv(io.StringIO(text), sep=delimiter, header=header_row - 1, engine="c", low_memory=False)
+    typed = pd.read_csv(io.StringIO(text), sep=delimiter, skiprows=header_row - 1, header=0, engine="c", low_memory=False)
     typed = typed.dropna(how="all")
     stem = os.path.splitext(os.path.basename(filename or "data.csv"))[0] or "data"
     out["sheets"] = [{"name": stem, "rows": int(len(typed)), "cols": int(typed.shape[1]), "detected_header_row": header_row}]
@@ -341,8 +368,12 @@ def load_with_settings(data: bytes, filename: str | None, settings: dict | None)
             thousands = s["thousands"]
         if thousands == s["decimal"]:
             thousands = None
+        # `skiprows` counts physical lines, exactly like the 1-based header
+        # row the import card shows. `header=<n>` alone does not: pandas
+        # skips blank lines before counting, so one empty line above the
+        # header made it take the first DATA row as the header.
         df = pd.read_csv(
-            io.StringIO(text), sep=sep, header=header, decimal=s["decimal"], thousands=thousands,
+            io.StringIO(text), sep=sep, skiprows=header, header=0, decimal=s["decimal"], thousands=thousands,
             skip_blank_lines=s["skip_empty_rows"], low_memory=False,
         )
     if s["skip_empty_rows"]:
@@ -400,14 +431,25 @@ def _date_matched(values: pd.Series, date_format: str | None) -> int:
 
 
 def _to_datetime(s: pd.Series, date_format: str | None) -> pd.Series:
-    fmt = _DATE_FORMAT_STRPTIME.get(date_format or "")
+    # 2026-10-07 (real end-to-end run): with the date format left on "auto"
+    # (the default - `date_format` is None here) every value went straight
+    # to pandas' flexible parser, which reads an ambiguous "04/01/2015"
+    # month-first. A DD/MM/YYYY file - which the import card itself
+    # reports as "detected: DD/MM/YYYY" - therefore had every date whose
+    # day is 12 or less silently turned into the wrong date (4 January ->
+    # 1 April), with "0 lost". On auto, the column's own values now pick
+    # the format, by the same rule the import card's detection uses.
+    chosen = date_format if date_format in _DATE_FORMAT_STRPTIME else _detect_date_format_from_values(s)
+    fmt = _DATE_FORMAT_STRPTIME.get(chosen or "")
     if fmt:
         parsed = pd.to_datetime(s, format=fmt, errors="coerce")
         missing = parsed.isna() & s.notna()
         if missing.any():
             # A sheet can mix "2017-03-01" and "2017-03-01 14:00" - the
-            # strict format catches the first, the flexible parser the rest.
-            parsed = parsed.where(~missing, pd.to_datetime(s[missing], errors="coerce", format="mixed"))
+            # strict format catches the first, the flexible parser the rest
+            # (day-first when the format is, so "04/01/2015 14:00" agrees
+            # with "04/01/2015").
+            parsed = parsed.where(~missing, pd.to_datetime(s[missing], errors="coerce", format="mixed", dayfirst=fmt.startswith("%d")))
         return parsed
     return pd.to_datetime(s, errors="coerce", format="mixed")
 

@@ -369,7 +369,12 @@ def _run_job(ds_plain, job: _Job) -> _Job:
         job.outcome = {"error": str(e), "status": "rejected_too_expensive", "bytes": e.estimated_bytes,
                        "duration_ms": int((time.perf_counter() - started) * 1000)}
     except Exception as e:
-        job.outcome = {"error": str(e), "status": warehouse_exec.classify_error(e), "bytes": None,
+        # The block's `error` is the database's own sentence (no driver
+        # class, no statement echo, no documentation link); the full text
+        # goes to the server log and, as `raw_error`, to the audit row.
+        print(f"[dashboard_engine] {getattr(ds_plain, 'kind', '?')} query failed: {e}")
+        job.outcome = {"error": warehouse_exec.clean_warehouse_error(e), "raw_error": str(e),
+                       "status": warehouse_exec.classify_error(e), "bytes": None,
                        "duration_ms": int((time.perf_counter() - started) * 1000)}
     return job
 
@@ -412,7 +417,8 @@ def _execute_jobs(db: Session, ds, user_id: str, jobs: list[_Job], force_refresh
             if "df" in out:
                 log_pushdown(db, user_id, ds.id, ds.kind, job.sql, out.get("bytes_scanned"), "ok")
             else:
-                log_pushdown(db, user_id, ds.id, ds.kind, job.sql, out.get("bytes"), out.get("status") or "error", out.get("error"))
+                log_pushdown(db, user_id, ds.id, ds.kind, job.sql, out.get("bytes"), out.get("status") or "error",
+                             out.get("raw_error") or out.get("error"))
     # Share outcomes across duplicate-SQL jobs.
     for job in jobs:
         if job.sql and job.cached is None and job.outcome is None and job.dedupe_key in to_run:
@@ -524,6 +530,50 @@ _IN_CONTEXT_RE = re.compile(
     r"(?P<kw>\bIN\s+UNNEST\s*\(\s*|\bIN\s*\(\s*|\bNOT\s+IN\s+UNNEST\s*\(\s*|\bNOT\s+IN\s*\(\s*|\bIN\s+|\bNOT\s+IN\s+)$",
     re.IGNORECASE,
 )
+
+
+# 2026-10-07 (real end-to-end run): `col IN ({{p}})` with nothing picked.
+# An empty multi-select means "all" everywhere else in the product; in a
+# SQL cell it used to bind `IN (NULL)`, match no row, and leave the page
+# saying "Waiting for a value: hotel, market_segment" over an empty table.
+# When the predicate is the plain shape - a (qualified, optionally quoted)
+# column name directly before [NOT] IN, standing on its own after WHERE /
+# AND / OR / ON / HAVING / WHEN or an opening parenthesis - the whole
+# predicate is replaced by a tautology every dialect accepts. Anything
+# more involved (an expression, a NOT in front, arithmetic) keeps the old
+# behaviour and is still reported in missing_parameters.
+_IDENT_PART = r'(?:"[^"\n]+"|`[^`\n]+`|\[[^\]\n]+\]|[A-Za-z_][A-Za-z0-9_$]*)'
+_IN_SUBJECT_RE = re.compile(r"(?P<subject>" + _IDENT_PART + r"(?:\s*\.\s*" + _IDENT_PART + r")*)\s*$")
+_PREDICATE_LEAD_RE = re.compile(r"(?:^|\(|\b(?:WHERE|AND|OR|ON|HAVING|WHEN))\s*$", re.IGNORECASE)
+_SQL_KEYWORDS = frozenset((
+    "select", "from", "where", "and", "or", "not", "on", "having", "when", "then", "else", "end", "case", "in", "is",
+    "null", "like", "between", "exists", "all", "any", "some", "as", "by", "group", "order", "limit", "join", "union",
+    "true", "false", "distinct", "with", "over", "using",
+))
+_NO_FILTER_SQL = "(1 = 1)"
+_ALL_WHEN_EMPTY_CONTROLS = frozenset(("chips", "multi", "search", "checkboxes", "segmented"))
+
+
+def _is_empty_selection(value) -> bool:
+    return value is None or value == "" or (isinstance(value, (list, tuple)) and len(value) == 0)
+
+
+def _plain_in_predicate(lead: str, lead_masked: str) -> int | None:
+    """Where the predicate `<column> [NOT] IN (...)` starts inside `lead`
+    (the text between the previous reference and the IN keyword), when
+    the thing before IN is just a column name standing as a predicate of
+    its own; None otherwise. `lead_masked` is the same text with quoted
+    strings/identifiers blanked, used to look at what precedes the column."""
+    m = _IN_SUBJECT_RE.search(lead)
+    if not m:
+        return None
+    subject = m.group("subject")
+    last = re.split(r"\s*\.\s*", subject)[-1]
+    if last.lower() in _SQL_KEYWORDS:
+        return None
+    if not _PREDICATE_LEAD_RE.search(lead_masked[:m.start("subject")]):
+        return None
+    return m.start("subject")
 
 
 class DependencyCycleError(ValueError):
@@ -716,8 +766,17 @@ def _coerce_scalar(value):
 
 
 def bind_parameters(sql: str, values: dict, kind: str, param_defs: dict | None = None, schema=None) -> tuple[str, object, list[str]]:
+    """(sql, params, referenced_names) - see bind_parameters_detailed, which
+    also reports the parameters whose empty selection became "no filter"."""
+    bound_sql, params, used, _relaxed = bind_parameters_detailed(sql, values, kind, param_defs, schema)
+    return bound_sql, params, used
+
+
+def bind_parameters_detailed(
+    sql: str, values: dict, kind: str, param_defs: dict | None = None, schema=None,
+) -> tuple[str, object, list[str], list[str]]:
     """Rewrites every parameter reference in `sql` into the dialect's own
-    placeholder and returns (sql, params, referenced_names):
+    placeholder and returns (sql, params, referenced_names, unfiltered):
       - bigquery: `@name` + [{"name", "type", "value"}] / [{"name",
         "type", "values"}] (BigQueryConnector.query_parameters turns these
         into Scalar/ArrayQueryParameter objects in the job config).
@@ -730,13 +789,21 @@ def bind_parameters(sql: str, values: dict, kind: str, param_defs: dict | None =
     IN context is treated as a one-element list. `{{x.from}}`/`{{x.to}}`
     read a {from, to} value. Raises ParameterError for a reference to a
     name not in `values` (the dashboard's parameters). The value text
-    never enters the SQL."""
+    never enters the SQL.
+
+    An EMPTY selection of a multi-value parameter in a plain `col IN
+    ({{p}})` / `col NOT IN ({{p}})` predicate means "no filter": the
+    predicate is replaced by `(1 = 1)` (valid in every dialect here) and
+    nothing is bound for it. `unfiltered` lists the parameters EVERY one of
+    whose references was relaxed that way - they are not "missing"."""
     param_defs = param_defs or {}
     masked = _mask_literals(sql or "")
     out_parts: list[str] = []
     bq_params: list[dict] = []
     dict_params: dict = {}
     used: list[str] = []
+    relaxed: set[str] = set()
+    strict: set[str] = set()
     pos = 0
     is_bq = kind == "bigquery"
     is_snow = kind == "snowflake"
@@ -803,7 +870,16 @@ def bind_parameters(sql: str, values: dict, kind: str, param_defs: dict | None =
             # Normalise the IN context: drop the opening "UNNEST(" / "(" the
             # person wrote and the matching ")" after the reference, then
             # emit the dialect's own form.
-            lead = sql[pos:ctx.start()]
+            # 2026-10-07 (real end-to-end run): `ctx` was matched inside
+            # `before`, which starts at `pos` - its offsets are relative to
+            # `pos`, not to the statement. Using ctx.start() as an absolute
+            # index was only right for the FIRST reference (pos == 0): for
+            # any later IN-parameter everything between the previous
+            # reference and this "IN (" was dropped, so
+            #   WHERE hotel IN ({{hotel}}) AND market_segment IN ({{market_segment}})
+            # reached the warehouse as
+            #   WHERE hotel IN (:hotel_0)IN (:market_segment_0)
+            lead = sql[pos:pos + ctx.start()]
             in_word = "NOT IN" if "NOT" in kw_upper else "IN"
             after_pos = m.end()
             if "(" in kw:
@@ -813,10 +889,21 @@ def bind_parameters(sql: str, values: dict, kind: str, param_defs: dict | None =
                     raise ParameterError(f"Unbalanced parentheses around the parameter \"{base}\".")
                 after_pos += closing.end()
             items = list(value) if is_list else ([] if value is None else [value])
+            if not items and not part:
+                pdef = param_defs.get(base)
+                multi = (pdef or {}).get("control") in _ALL_WHEN_EMPTY_CONTROLS if pdef else is_list
+                start = _plain_in_predicate(lead, masked[pos:pos + ctx.start()]) if multi else None
+                if start is not None:
+                    out_parts.append(lead[:start] + _NO_FILTER_SQL)
+                    relaxed.add(base)
+                    pos = after_pos
+                    continue
+            strict.add(base)
             rendered = bind_list(bound_name, items, column_type)
             out_parts.append(lead + f"{in_word} " + rendered)
             pos = after_pos
             continue
+        strict.add(base)
         if is_list:
             # A list outside an IN context: still bound, as an array.
             rendered = bind_list(bound_name, list(value), column_type)
@@ -828,7 +915,7 @@ def bind_parameters(sql: str, values: dict, kind: str, param_defs: dict | None =
         pos = m.end()
     out_parts.append(sql[pos:])
     bound_sql = "".join(out_parts)
-    return bound_sql, (bq_params if is_bq else dict_params), used
+    return bound_sql, (bq_params if is_bq else dict_params), used, [n for n in used if n in relaxed and n not in strict]
 
 
 # --- cells & dependencies ---------------------------------------------------
@@ -956,15 +1043,18 @@ def compile_sql_cell(
         main, cell_ctes = inline_cell_ctes(block, blocks_by_id, deps)
         all_ctes = version_ctes(versions) + cell_ctes
         wrapped = warehouse_exec.wrap_ctes(main, all_ctes) if all_ctes else warehouse_tables.strip_trailing_semicolon(main)
-        bound, params, used = bind_parameters(wrapped, values, ds.kind, param_defs, schema)
+        bound, params, used, unfiltered = bind_parameters_detailed(wrapped, values, ds.kind, param_defs, schema)
         assert_read_only_sql(bound)
         if row_limit:
             bound = warehouse_tables.sample_sql(ds.kind, bound, row_limit)
     except (ParameterError, warehouse_tables.CteConflict) as e:
-        return {"sql": "", "params": None, "parameters": referenced_parameters(raw), "error": str(e)}
+        return {"sql": "", "params": None, "parameters": referenced_parameters(raw), "unfiltered_parameters": [], "error": str(e)}
     except Exception as e:
-        return {"sql": "", "params": None, "parameters": referenced_parameters(raw), "error": str(e)}
-    return {"sql": bound, "params": params, "parameters": used, "error": None}
+        return {"sql": "", "params": None, "parameters": referenced_parameters(raw), "unfiltered_parameters": [], "error": str(e)}
+    return {"sql": bound, "params": params, "parameters": used, "unfiltered_parameters": unfiltered, "error": None}
+
+
+_YEAR_NAME_RE = re.compile(r"(^|_)(year|yr)(_|$)")
 
 
 def _infer_shape(columns: list[dict], rows: list[dict]) -> tuple[list[str], list[str], str | None]:
@@ -982,7 +1072,17 @@ def _infer_shape(columns: list[dict], rows: list[dict]) -> tuple[list[str], list
         if is_time and time_col is None:
             time_col = name
             continue
-        (measures if is_num else dims).append(name)
+        # 2026-10-07 (real end-to-end run): a whole-number column named as a
+        # year ("arrival_date_year": 2015, 2016, 2017) is something to group
+        # by, not something to add up. As a measure it was printed "2,015"
+        # in the cell's result and offered as the VALUE of a chart bound to
+        # the cell.
+        is_year = (
+            is_num and bool(_YEAR_NAME_RE.search(name.lower()))
+            and isinstance(sample, (int, float)) and not isinstance(sample, bool)
+            and float(sample).is_integer() and 1000 <= sample <= 2999
+        )
+        (measures if is_num and not is_year else dims).append(name)
     return dims, measures, time_col
 
 
@@ -1038,8 +1138,9 @@ def validate_sql_cell(
     try:
         columns, estimated = warehouse_exec.describe_sql(ds, compiled["sql"], params=compiled["params"] or None)
     except Exception as e:
+        print(f"[dashboard_engine] {ds.kind} SQL cell failed validation: {e}")
         return {"ok": False, "sql": compiled["sql"], "columns": [], "estimated_bytes": None, "parameters": compiled["parameters"],
-                "cells": referenced_cells(sql), "error": str(e)}
+                "cells": referenced_cells(sql), "error": warehouse_exec.clean_warehouse_error(e)}
     return {"ok": True, "sql": compiled["sql"], "columns": columns, "estimated_bytes": estimated,
             "parameters": compiled["parameters"], "cells": referenced_cells(sql), "error": None}
 
@@ -1090,7 +1191,11 @@ def run_page(
         if b.get("type") == "sql":
             c = compile_sql_cell(ds, b, blocks_by_id, deps, values, defs, schema, versions,
                                  row_limit=settings.DASHBOARD_MAX_BLOCK_ROWS)
-            c["missing_parameters"] = [n for n in c.get("parameters") or [] if n in missing]
+            # A parameter whose empty selection reads as "all" in this cell
+            # (see bind_parameters_detailed) is not one the cell waits for.
+            c["missing_parameters"] = [
+                n for n in c.get("parameters") or [] if n in missing and n not in (c.get("unfiltered_parameters") or [])
+            ]
             sql_compiled[bid] = c
             if c["error"]:
                 continue
@@ -1116,6 +1221,8 @@ def run_page(
 
     count_job = None
     count_sql = None
+    total_job = None
+    total_sql = None
     if count_table:
         try:
             count_sql = qb.build_count_sql(
@@ -1126,6 +1233,27 @@ def run_page(
             count_sql = warehouse_exec.wrap_ctes(count_sql, version_ctes(versions))
             count_job = _Job(key="page:count", sql=count_sql)
             jobs.append(count_job)
+            # 2026-10-07 (real end-to-end run): the "of N rows" half of the
+            # rail's "Showing 37,518 of 119,386 rows". It used to come ONLY
+            # from the Data tab's profile cache (5 minutes, in-process), so
+            # for anyone who had not just opened that tab - every public
+            # viewer, every owner after a deploy - total_rows was null and
+            # the page printed the filtered count twice ("Showing 37,518 of
+            # 37,518 rows · 1 filter"). When the profile has no number, the
+            # same COUNT(*) without the page's filters supplies it: on an
+            # unfiltered run it IS the count query (one job, not two), and
+            # on a filtered run it is normally a result-cache hit from the
+            # unfiltered load that preceded it.
+            if cached_exact_total_rows(ds.id, count_table) is None:
+                total_sql = warehouse_exec.wrap_ctes(
+                    qb.build_count_sql(count_table, ds.kind, schema, ds.connection_info or {}, _aliases),
+                    version_ctes(versions),
+                )
+                if total_sql == count_sql:
+                    total_job = count_job
+                else:
+                    total_job = _Job(key="page:total", sql=total_sql)
+                    jobs.append(total_job)
         except Exception as e:
             print(f"[dashboard_engine] matched_rows count could not be compiled (non-fatal): {e}")
 
@@ -1163,24 +1291,40 @@ def run_page(
         main, prior, spark = per_block[bid]
         out[bid] = _assemble(c, ds, main, prior, spark)
 
-    matched_rows = None
-    if count_job is not None:
-        count_result = _materialize(count_job, ds, None, count_sql)
+    def _count_value(job, sql) -> int | None:
+        if job is None:
+            return None
+        count_result = _materialize(job, ds, None, sql)
         if count_result.get("status") == "ok" and count_result.get("rows"):
             row = {str(k).lower(): v for k, v in count_result["rows"][0].items()}
             v = row.get(COUNT_ALIAS)
             if v is None and row:
                 v = next(iter(row.values()))
             try:
-                matched_rows = int(v) if v is not None else None
+                return int(v) if v is not None else None
             except (TypeError, ValueError):
-                matched_rows = None
+                return None
+        return None
+
+    matched_rows = _count_value(count_job, count_sql)
+    total_rows = cached_exact_total_rows(ds.id, count_table) if count_table else None
+    if total_rows is None and total_job is not None:
+        total_rows = matched_rows if total_job is count_job else _count_value(total_job, total_sql)
+    # A block's own "computed over N rows" comes from the same profile
+    # cache; when that was cold, a block on the counted table takes the
+    # page's count instead of leaving the footer without one.
+    if total_rows is not None:
+        for bid, c in compiled.items():
+            r = out.get(bid)
+            if r is not None and not c.error and r.get("exact_total_rows") is None and (c.spec or {}).get("table") == count_table:
+                r["exact_total_rows"] = total_rows
 
     referenced = {n for c in sql_compiled.values() for n in (c.get("parameters") or [])}
+    waiting = {n for c in sql_compiled.values() for n in (c.get("missing_parameters") or [])}
     return {
         "blocks": out,
         "matched_rows": matched_rows,
-        "total_rows": cached_exact_total_rows(ds.id, count_table) if count_table else None,
+        "total_rows": total_rows,
         "computed_in": ds.kind,
         "total_duration_ms": int((time.perf_counter() - started) * 1000),
         "period": grain,
@@ -1189,7 +1333,7 @@ def run_page(
         "dependencies": {bid: list(needs) for bid, needs in deps.items() if needs},
         "order": order,
         "parameters_used": {n: values[n] for n in values if n in referenced},
-        "missing_parameters": [n for n in missing if n in referenced],
+        "missing_parameters": [n for n in missing if n in waiting],
     }
 
 
@@ -1262,6 +1406,57 @@ def distinct_values(
     return {**result, "cached": False}
 
 
+def _iso_day(v) -> str | None:
+    """A MIN/MAX result as "YYYY-MM-DD", or None when it is not a date."""
+    text = _json_scalar(v)
+    if isinstance(text, str) and len(text) >= 10 and _ISO_DATE_RE.match(text[:10]):
+        return text[:10]
+    return None
+
+
+def column_bounds(
+    db: Session, ds, table: str, columns: list[str], user_id: str | None = None, versions=None,
+    force_refresh: bool = False,
+) -> dict:
+    """{column: {"min": "YYYY-MM-DD", "max": "YYYY-MM-DD"}} - the real
+    first and last date of each of `columns` in `table`, via ONE
+    `SELECT MIN(..), MAX(..)` query cached for
+    DASHBOARD_OPTIONS_CACHE_TTL_SECONDS (a failed read is cached too, so
+    a broken column is not retried on every run). A column that is not in
+    the table, or whose values are not dates, is left out. Never raises."""
+    columns = [c for c in (columns or []) if isinstance(c, str) and c]
+    if not table or not columns:
+        return {}
+    if versions is None:
+        versions = load_versions(db, ds)
+    schema, aliases = schema_with_aliases(ds, versions)
+    try:
+        sql, present = qb.build_column_bounds_sql(table, columns, ds.kind, schema, ds.connection_info or {}, aliases)
+        sql = warehouse_exec.wrap_ctes(sql, version_ctes(versions))
+    except Exception:
+        return {}
+    key = cache_key(ds.id, sql)
+    if not force_refresh:
+        hit = _options_cache.get(key)
+        if hit is not None:
+            return dict(hit)
+    if warehouse_exec.daily_budget_exhausted(db, ds, user_id):
+        return {}
+    res = warehouse_exec.execute_sql(db, ds, user_id, sql)
+    out: dict = {}
+    if "df" in res and len(res["df"]):
+        row = list(res["df"].iloc[0].tolist())
+        for i, column in enumerate(present):
+            lo = _iso_day(row[2 * i]) if len(row) > 2 * i else None
+            hi = _iso_day(row[2 * i + 1]) if len(row) > 2 * i + 1 else None
+            if lo and hi:
+                out[column] = {"min": lo, "max": hi}
+    else:
+        print(f"[dashboard_engine] date bounds could not be read for {table} (non-fatal): {(res.get('attempt') or {}).get('error')}")
+    _options_cache.put(key, out)
+    return dict(out)
+
+
 # --- validation -------------------------------------------------------------
 
 def validate_spec_in_warehouse(ds, block_spec: dict, versions=None, date_column: str | None = None) -> dict:
@@ -1281,5 +1476,7 @@ def validate_spec_in_warehouse(ds, block_spec: dict, versions=None, date_column:
     try:
         columns, estimated = warehouse_exec.describe_sql(ds, sql)
     except Exception as e:
-        return {"ok": False, "spec": spec, "sql": sql, "columns": [], "estimated_bytes": None, "error": str(e)}
+        print(f"[dashboard_engine] {ds.kind} spec failed validation: {e}")
+        return {"ok": False, "spec": spec, "sql": sql, "columns": [], "estimated_bytes": None,
+                "error": warehouse_exec.clean_warehouse_error(e)}
     return {"ok": True, "spec": spec, "sql": sql, "columns": columns, "estimated_bytes": estimated, "error": None}
