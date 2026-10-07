@@ -1139,6 +1139,202 @@ def suggest_query_spec(prompt: str, schema_text: str) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+# 2026-10-06 (warehouse-native dashboards layer): the structured BlockSpec
+# writer. A dashboard block on a warehouse source is never freeform SQL -
+# it is a BlockSpec (services/query_builder.validate_block_spec) the engine
+# compiles deterministically, so the model only ever proposes a small JSON
+# document that is then validated against the real schema and dry-run
+# inside the warehouse before it is stored (routers/dashboard_builder.py
+# upgrade_blocks / set_block_spec). Same pattern as suggest_query_spec
+# above, richer shape.
+BLOCK_SPEC_SYSTEM_PROMPT = """You are the GD360 dashboard block-spec writer. A dashboard block on a data warehouse
+must be described as ONE structured aggregate query spec - never SQL - as a single raw JSON object of exactly this
+shape, with no markdown code fences, no explanation, nothing before or after the JSON:
+
+{"table": "<table name>",
+ "time": {"column": "<date/timestamp column>", "grain": "day" | "week" | "month" | "quarter" | "year"} | null,
+ "group_by": ["<column>", ...],
+ "measures": [{"alias": "<short_snake_case_name>", "agg": "count" | "sum" | "avg" | "min" | "max" | "count_distinct",
+               "column": "<column>" | null, "expr": "<arithmetic over columns>" | null}, ...],
+ "filters": [{"column": "<column>", "op": "=" | "!=" | ">" | ">=" | "<" | "<=" | "is_null" | "is_not_null" | "in" | "between",
+              "value": <string | number | [..] | null>}, ...],
+ "order_by": [{"by": "<measure alias | group_by column | 'period'>", "dir": "asc" | "desc"}, ...],
+ "limit": <integer 1..5000>,
+ "compare_prior_period": <true | false>,
+ "sparkline": <true | false>}
+
+Strict rules:
+- Use ONLY table and column names that appear, spelled exactly, in the schema you are given. Never invent one.
+- "time" is for a trend over time (bucketed by grain, the result has a "period" column); null otherwise.
+- group_by has at most 3 columns. measures has 1 to 6 entries. A measure has EITHER "column" OR "expr", never both;
+  agg "count" with column null and expr null means COUNT(*).
+- "expr" may ONLY contain column names, numbers, + - * / and parentheses (for example "adr * (stays_in_week_nights +
+  stays_in_weekend_nights)"). No functions, no CASE, no strings.
+- A single headline number (a KPI tile) is a spec with no time and no group_by, one or two measures,
+  compare_prior_period true and sparkline true.
+- filters are the block's OWN permanent conditions implied by the question (e.g. is_canceled = 0 for "kept
+  bookings"); all AND-ed. Do not add date filters - the dashboard's date range is applied separately.
+- If the question cannot be expressed in this shape (raw rows, a join, a transformation), respond with exactly: null"""
+
+
+def generate_block_spec(question: str, schema_text: str, dialect: str | None = None, title: str | None = None) -> dict | None:
+    """Asks the model for a BlockSpec JSON for `question` against
+    `schema_text` (the same `Table \\`name\\`:` lines chat's SQL writers
+    see). Returns the parsed dict (NOT yet validated - the caller runs
+    query_builder.validate_block_spec and a zero-row warehouse check) or
+    None when the model said null / answered non-JSON / the call failed.
+    Never raises - a failure is reported per block by the caller, never
+    turned into a 500."""
+    try:
+        user = f"Dataset schema ({dialect or 'SQL'}):\n{schema_text}\n\n"
+        if title and title.strip() and title.strip() != (question or "").strip():
+            user += f"Block title: {title.strip()}\n"
+        user += f"Question: {question}"
+        messages = [
+            {"role": "system", "content": BLOCK_SPEC_SYSTEM_PROMPT},
+            {"role": "user", "content": user},
+        ]
+        raw = _call_llm_resilient(messages, max_tokens=_SQL_WRITER_MAX_TOKENS)
+    except Exception as e:
+        print(f"[ai_engine] generate_block_spec failed (non-fatal): {e}")
+        return None
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text[:4].lower() == "json":
+            text = text[4:]
+        text = text.strip()
+    if not text or text.lower() == "null":
+        return None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        try:
+            parsed = _extract_json(text)
+        except Exception:
+            return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+# 2026-10-07 (dashboard-from-prompt round): the whole-dashboard proposer.
+# ONE structured call: the goal + the real schema + the saved metrics in,
+# a JSON proposal of 6-10 typed blocks out, every block a BlockSpec in the
+# exact shape BLOCK_SPEC_SYSTEM_PROMPT above describes. The router
+# (routers/dashboard_builder.py propose_dashboard) validates every block
+# against the schema and dry-runs it in the warehouse before it is shown;
+# a block that fails is reported as invalid, never silently repaired.
+PROPOSE_DASHBOARD_SYSTEM_PROMPT = """You are the GD360 dashboard proposer. Given a person's goal, the REAL schema of their data and
+their saved metric definitions, propose ONE complete dashboard as a single raw JSON object - no markdown fences,
+no explanation, nothing before or after the JSON - of exactly this shape:
+
+{"title": "<short dashboard title>",
+ "date_column": "<the date/timestamp column the dashboard's time controls apply to>" | null,
+ "pages": [{"title": "<page title>",
+            "blocks": [{"type": "kpi" | "chart" | "table" | "text" | "sparkline" | "donut",
+                        "title": "<block title>",
+                        "intent": "<'KPI · Revenue' / 'Trend · revenue by month' / 'Breakdown · country' / 'Table · detail'>",
+                        "chart_type": "line" | "bar" | "horizontal_bar" | "area" | "pie" | "stacked_bar" | "grouped_bar" | null,
+                        "from_metric": "<exact saved metric name>" | null,
+                        "text": "<for a text block only: one or two plain sentences>" | null,
+                        "spec": <BlockSpec> | null}, ...]}, ...],
+ "parameters": ["<low-cardinality column worth a filter control>", ...],
+ "suggestions": ["<a short follow-up the person could ask for, e.g. 'Add a cancellation heatmap'>", ...]}
+
+A BlockSpec is exactly:
+{"table": "<table>", "time": {"column": "<date column>", "grain": "day"|"week"|"month"|"quarter"|"year"} | null,
+ "group_by": ["<column>", ...], "measures": [{"alias": "<snake_case>", "agg": "count"|"sum"|"avg"|"min"|"max"|"count_distinct",
+ "column": "<column>" | null, "expr": "<column arithmetic>" | null}, ...],
+ "filters": [{"column": "<column>", "op": "="|"!="|">"|">="|"<"|"<="|"is_null"|"is_not_null"|"in"|"between", "value": ...}, ...],
+ "order_by": [{"by": "<alias | group_by column | 'period'>", "dir": "asc"|"desc"}], "limit": <1..5000>,
+ "compare_prior_period": <bool>, "sparkline": <bool>}
+
+Strict rules:
+- Use ONLY table and column names spelled exactly as in the schema. Never invent a column, a table or a number.
+- 6 to 10 blocks in total. Always include: a KPI row (3-4 "kpi" blocks, each a spec with no time and no group_by,
+  one measure, compare_prior_period true, sparkline true), ONE trend over the dashboard's date column ("chart" with
+  "time" set and chart_type "line" or "area"), TWO breakdowns ("chart" or "donut" with one group_by column, ordered by
+  the measure desc, limit 10-20) and ONE "table" (group_by of 2-3 columns, several measures, limit 50-200).
+- When a saved metric fits the goal, the KPI for it sets "from_metric" to that metric's exact name AND still gives
+  the equivalent spec (its column/agg/filters).
+- "expr" may only contain column names, numbers, + - * / and parentheses. No functions, no CASE, no strings.
+- A rate (cancellation rate, conversion) is avg of a 0/1 column, or a sum/count expressed as a measure - never a
+  made-up column.
+- Do not add date filters - the dashboard's own date range is applied separately.
+- One page unless the person asks for two or the goal clearly splits (e.g. overview + detail); never more than two.
+- "parameters": 1-4 real low-cardinality text columns used as group_by somewhere (a country, a segment, a hotel), never
+  a date or a free-text column.
+- "suggestions": 2-4 short, concrete, buildable follow-ups for this data.
+- Respond with raw JSON only."""
+
+
+def _parse_json_object(raw: str | None) -> dict | None:
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text[:4].lower() == "json":
+            text = text[4:]
+        text = text.strip()
+    if not text or text.lower() == "null":
+        return None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        try:
+            parsed = _extract_json(text)
+        except Exception:
+            return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+_PROPOSE_MAX_TOKENS = 6000
+
+
+def propose_dashboard(
+    goal: str, schema_text: str, metric_glossary: str, dialect: str | None = None, pages="auto",
+    period: str | None = None, template: dict | None = None, current_proposal: dict | None = None,
+    instruction: str | None = None,
+) -> dict | None:
+    """ONE structured model call -> the proposal JSON described in
+    PROPOSE_DASHBOARD_SYSTEM_PROMPT (NOT yet validated - the router runs
+    every block through query_builder.validate_block_spec + a zero-row
+    warehouse check and marks failures invalid). With `current_proposal`
+    and `instruction` this is the REVISE call: the current proposal is
+    the context and the instruction ("make it one page", "use last 12
+    months only", "add a cancellation heatmap") is applied to it. Returns
+    None when the model said null / answered non-JSON / the call failed.
+    Never raises."""
+    try:
+        user = f"Dataset schema ({dialect or 'SQL'}):\n{schema_text}\n\n"
+        user += "Saved metrics:\n" + (metric_glossary.strip() if metric_glossary and metric_glossary.strip() else "(none)") + "\n\n"
+        if template:
+            user += f"Template: {template.get('name')} - {template.get('goal')}\n"
+            hints = template.get("layout_hints") or []
+            if hints:
+                user += "Layout hints: " + "; ".join(hints) + "\n"
+            user += "\n"
+        if pages in (1, 2, "1", "2"):
+            user += f"Pages: exactly {pages}.\n"
+        else:
+            user += "Pages: 1, or 2 when the goal clearly splits.\n"
+        if period:
+            user += f"Default period grain: {period}.\n"
+        if current_proposal and instruction:
+            user += (
+                "Current proposal (JSON):\n" + json.dumps(current_proposal, default=str)[:12000]
+                + f"\n\nRevise it as asked, keeping everything else the same, and return the FULL revised proposal: {instruction.strip()}\n"
+            )
+        user += f"\nGoal: {goal.strip()}"
+        messages = [
+            {"role": "system", "content": PROPOSE_DASHBOARD_SYSTEM_PROMPT},
+            {"role": "user", "content": user},
+        ]
+        raw = _call_llm_resilient(messages, max_tokens=_PROPOSE_MAX_TOKENS)
+    except Exception as e:
+        print(f"[ai_engine] propose_dashboard failed (non-fatal): {e}")
+        return None
+    return _parse_json_object(raw)
+
+
 GOKU_SYSTEM_PROMPT = """You are Goku, a friendly, world-class data analyst assistant embedded inside the GD360
 Analytics workspace. Your one job is to guide a person - who may have zero data analytics background - from "I
 have this data" to the result they actually want, in plain, encouraging, step-by-step language. You never run
