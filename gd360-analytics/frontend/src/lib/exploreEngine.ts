@@ -27,6 +27,8 @@
 // rest of the app needs to know whether a given spec came from the backend
 // or was built here.
 
+import { deriveChartModel, figureFromModel, type ModelRoles } from "./chartModel";
+
 export type ColumnDType = "number" | "string" | "date" | "boolean";
 export type ColumnRole = "dimension" | "measure";
 
@@ -158,19 +160,44 @@ export function isBackendTypePivotable(backendType: string | null | undefined): 
   return Object.prototype.hasOwnProperty.call(CHART_TYPE_ALIASES, backendType);
 }
 
-export function defaultExploreConfig(columns: ResultColumn[], backendChartType?: string | null): ExploreConfig {
+export function defaultExploreConfig(columns: ResultColumn[], backendChartType?: string | null, rows?: Record<string, any>[] | null): ExploreConfig {
+  const chartType = normalizeChartType(backendChartType);
+
+  // 2026-10-07 (chart-integrity round): opening "Edit chart" must show the
+  // SAME chart that was on screen a moment ago. The starting mapping is
+  // therefore read off the chart model of the result table (lib/chartModel
+  // - the derivation the chart itself is drawn from): its x dimension, its
+  // series dimension, and EVERY measure it plots. This used to take "the
+  // first dimension, the first measure" - which silently dropped the
+  // second hotel from a two-hotel chart, and treated a year column of
+  // whole numbers as something to add up - and capped the axis at the
+  // first 25 values with no sign that anything had been cut.
+  if (rows && rows.length && chartType !== "scatter" && chartType !== "histogram") {
+    const model = deriveChartModel(columns, rows, chartType);
+    if ((model.kind === "cartesian" || model.kind === "pie") && model.x && !model.transposed) {
+      return {
+        chartType,
+        xField: model.x.name,
+        yFields: model.series_by && model.measure
+          ? [{ field: model.measure, agg: "sum" }]
+          : model.series.map((s) => ({ field: s.name, agg: "sum" as Aggregation })),
+        colorField: model.series_by,
+        sortDir: "none",
+        limit: null,
+        filters: [],
+      };
+    }
+  }
+
   const dimensions = columns.filter((c) => c.role === "dimension");
   const measures = columns.filter((c) => c.role === "measure");
   const dateCol = dimensions.find((c) => c.dtype === "date");
-  const chartType = normalizeChartType(backendChartType);
-
   const xField = (dateCol || dimensions[0] || columns[0])?.name ?? null;
-  const firstMeasure = measures[0]?.name ?? (columns.find((c) => c.name !== xField)?.name ?? null);
+  const firstMeasure = measures.find((c) => c.name !== xField)?.name ?? (columns.find((c) => c.name !== xField)?.name ?? null);
   const yFields: YField[] = firstMeasure ? [{ field: firstMeasure, agg: "sum" }] : [];
 
   // A second dimension (distinct from X) becomes the default series split
-  // for a fresh grouped/stacked bar or multi-line chart, mirroring what the
-  // backend's own faceted_bar/dual-axis logic already tends to produce.
+  // for a fresh grouped/stacked bar or multi-line chart.
   const secondDimension = dimensions.find((c) => c.name !== xField)?.name ?? null;
   const colorField =
     (chartType === "grouped_bar" || chartType === "stacked_bar" || chartType === "stacked_area") && secondDimension
@@ -183,7 +210,9 @@ export function defaultExploreConfig(columns: ResultColumn[], backendChartType?:
     yFields,
     colorField,
     sortDir: chartType === "pie" || chartType === "donut" ? "desc" : "none",
-    limit: dimensions.length && chartType !== "scatter" && chartType !== "histogram" ? 25 : null,
+    // No default cap: a chart never opens with part of its axis cut off.
+    // "Top N" is the person's own choice.
+    limit: null,
     filters: [],
   };
 }
@@ -198,7 +227,7 @@ function toNumber(v: any): number | null {
 
 function aggregate(values: number[], agg: Aggregation): number {
   if (agg === "count") return values.length;
-  if (values.length === 0) return 0;
+  if (values.length === 0) return 0;  // (exploreTable keeps an empty bucket as a gap instead - see there)
   if (agg === "sum") return values.reduce((a, b) => a + b, 0);
   if (agg === "avg") return values.reduce((a, b) => a + b, 0) / values.length;
   if (agg === "min") return Math.min(...values);
@@ -470,6 +499,124 @@ function cartesianFigure(rows: Record<string, any>[], config: ExploreConfig): Fi
   return { data, layout };
 }
 
+// ---- the table an Edit-chart mapping describes --------------------------
+//
+// 2026-10-07 (chart-integrity round): every bar / line / area / pie the
+// "Edit chart" panel can describe is first reduced to ONE small table -
+// (x, measures...) or (x, series, measure) - with the roles the person
+// chose. That table goes through the same chart model as any other result
+// (lib/chartModel.deriveChartModel), so an edited chart is drawn by the
+// same renderer, audited by the same rules and saved with the same rows
+// as an untouched one. A bucket with no numeric value is a GAP (null),
+// not a zero: "no previous year" is not "a previous year of 0".
+
+export type ExploreTable = {
+  columns: ResultColumn[];
+  rows: Record<string, any>[];
+  chartType: ExploreChartType;
+  roles: ModelRoles;
+};
+
+const TABLE_TYPES = new Set<ExploreChartType>(["bar", "horizontal_bar", "grouped_bar", "stacked_bar", "line", "step_line", "area", "stacked_area", "pie", "donut"]);
+
+function bucketValue(values: number[] | undefined, counted: number, agg: Aggregation): number | null {
+  if (agg === "count") return counted;
+  if (!values || !values.length) return null;
+  return aggregate(values, agg);
+}
+
+/** The aggregated table of an Edit-chart mapping, or null when the mapping
+ *  is incomplete or the chart type is not a rows-by-category chart
+ *  (scatter, histogram - those are drawn by buildExploreFigure). */
+export function exploreTable(columns: ResultColumn[], rows: Record<string, any>[], config: ExploreConfig): ExploreTable | null {
+  const { xField, yFields, colorField, chartType, sortDir, limit } = config;
+  if (!TABLE_TYPES.has(chartType) || !xField || !yFields.length || !rows.length) return null;
+  const filtered = applyFilters(rows, config.filters, columns);
+  const xCol = columns.find((c) => c.name === xField);
+  const pie = chartType === "pie" || chartType === "donut";
+  const split = Boolean(colorField) && colorField !== xField && !pie;
+  const ys = (split || pie ? yFields.slice(0, 1) : yFields).filter((y) => y.field && y.field !== xField);
+  if (!ys.length) return null;
+  // Two Y entries on the same field (sum and average, say) need two names.
+  const seenNames = new Map<string, number>();
+  for (const y of ys) seenNames.set(y.field, (seenNames.get(y.field) || 0) + 1);
+  const yName = (y: YField) => ((seenNames.get(y.field) || 0) > 1 ? `${y.field} (${y.agg})` : y.field);
+
+  type Bucket = { x: any; cells: Map<string, { values: number[]; counted: number }> };
+  const order: string[] = [];
+  const buckets = new Map<string, Bucket>();
+  const seriesOrder: string[] = [];
+  for (const row of filtered) {
+    const key = String(row[xField]);
+    let b = buckets.get(key);
+    if (!b) {
+      b = { x: row[xField] ?? null, cells: new Map() };
+      buckets.set(key, b);
+      order.push(key);
+    }
+    for (const y of ys) {
+      const cellKey = split ? String(row[colorField as string] ?? "—") : yName(y);
+      if (split && !seriesOrder.includes(cellKey)) seriesOrder.push(cellKey);
+      let cell = b.cells.get(cellKey);
+      if (!cell) {
+        cell = { values: [], counted: 0 };
+        b.cells.set(cellKey, cell);
+      }
+      cell.counted += 1;
+      const n = toNumber(row[y.field]);
+      if (n !== null) cell.values.push(n);
+    }
+  }
+  const agg0 = ys[0].agg;
+  const total = (key: string) => {
+    let sum = 0;
+    for (const [name, cell] of buckets.get(key)!.cells) {
+      const agg = split ? agg0 : (ys.find((y) => yName(y) === name)?.agg ?? agg0);
+      if (split || name === yName(ys[0])) sum += bucketValue(cell.values, cell.counted, agg) ?? 0;
+    }
+    return sum;
+  };
+  let keys = order;
+  const dir = pie && sortDir === "none" ? "desc" : sortDir;
+  if (dir !== "none") keys = [...keys].sort((a, b) => (dir === "asc" ? total(a) - total(b) : total(b) - total(a)));
+  if (limit && keys.length > limit) keys = keys.slice(0, limit);
+
+  const xColumn: ResultColumn = { name: xField, dtype: xCol?.dtype ?? "string", role: "dimension" };
+  if (split) {
+    const measure = yName(ys[0]);
+    const out: Record<string, any>[] = [];
+    for (const key of keys) {
+      const b = buckets.get(key)!;
+      for (const s of seriesOrder) {
+        const cell = b.cells.get(s);
+        if (!cell) continue;
+        out.push({ [xField]: b.x, [colorField as string]: s, [measure]: bucketValue(cell.values, cell.counted, agg0) });
+      }
+    }
+    return {
+      columns: [xColumn, { name: colorField as string, dtype: "string", role: "dimension" }, { name: measure, dtype: "number", role: "measure" }],
+      rows: out,
+      chartType,
+      roles: { x: xField, seriesBy: colorField, measures: [measure], keepOrder: dir !== "none" },
+    };
+  }
+  const out = keys.map((key) => {
+    const b = buckets.get(key)!;
+    const row: Record<string, any> = { [xField]: b.x };
+    for (const y of ys) {
+      const cell = b.cells.get(yName(y));
+      row[yName(y)] = cell ? bucketValue(cell.values, cell.counted, y.agg) : null;
+    }
+    return row;
+  });
+  return {
+    columns: [xColumn, ...ys.map((y) => ({ name: yName(y), dtype: "number" as ColumnDType, role: "measure" as ColumnRole }))],
+    rows: out,
+    chartType,
+    roles: { x: xField, seriesBy: null, measures: ys.map(yName), keepOrder: dir !== "none" },
+  };
+}
+
 // The single entry point: (tidy columns + rows + config) -> a plain Plotly
 // figure, or null when the config is not yet complete enough to plot
 // (e.g. no X field chosen yet).
@@ -484,6 +631,22 @@ export function buildExploreFigure(
   }
   if (config.chartType === "scatter") {
     return scatterFigure(filtered, config);
+  }
+  // 2026-10-07 (chart-integrity round): bars, lines, areas and pies are the
+  // figure of the chart model of the mapping's table (exploreTable) - x on
+  // a category axis, one trace per series, straight segments, gaps left as
+  // gaps. The two hand-built figures below remain only as the fallback for
+  // a mapping the model declines (it then says why, and the workspace
+  // shows the table instead of this figure).
+  const table = exploreTable(columns, rows, config);
+  if (table) {
+    const model = deriveChartModel(table.columns, table.rows, table.chartType, table.roles);
+    // Axis titles as this engine has always written them: the field names
+    // (figureFromModel keeps them only because they name those fields).
+    const figure = model.kind === "cartesian" || model.kind === "pie"
+      ? figureFromModel(model, { xLabel: table.roles.x, yLabel: table.roles.measures.join(", ") })
+      : null;
+    if (figure) return figure;
   }
   if (config.chartType === "pie" || config.chartType === "donut") {
     return pieFigure(filtered, config);

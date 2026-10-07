@@ -79,6 +79,19 @@ export function useWorkspaceNav() {
     })();
   }, []);
 
+  // 2026-10-07 (identity-colour round): a brand kit saved from the sidebar
+  // (dashboard/theme/BrandKitSheet) reaches every page's copy of the list.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onKit = (e: Event) => {
+      const d = (e as CustomEvent).detail;
+      if (!d || typeof d.workspaceId !== "string") return;
+      setWorkspaces((list) => list.map((w) => (w.id === d.workspaceId ? { ...w, brand_kit: d.kit ?? null } : w)));
+    };
+    window.addEventListener("gd360:brand-kit", onKit);
+    return () => window.removeEventListener("gd360:brand-kit", onKit);
+  }, []);
+
   // Callers pass their own onSwitched to re-load whatever page-specific
   // data depends on the active workspace (Projects/data sources on the
   // Projects page, dashboards on the Dashboards page, etc.) - this hook

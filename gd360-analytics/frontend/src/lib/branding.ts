@@ -34,11 +34,17 @@ export function hexToRgbTriple(hex: string | null | undefined): string | null {
 // rotating widget-accent token) so a branded dashboard's gauges/donuts/
 // sparklines/avatar-list chips lean the SAME accent rather than one this
 // dashboard's owner never chose.
-export function brandingStyleVars(b: DashboardBranding | null | undefined): React.CSSProperties {
+//
+// 2026-10-07 (identity-colour round): the chrome colours in force are
+// `appearance.brand` when the payload carries one - the dashboard's own
+// brand colours, or its workspace brand kit's while it follows the kit -
+// and the dashboard's own columns otherwise (an older backend).
+export function brandingStyleVars(b: (DashboardBranding & { appearance?: { brand?: { primary: string | null; accent: string | null } } | null }) | null | undefined): React.CSSProperties {
   if (!b) return {};
   const style: Record<string, string> = {};
-  const primary = hexToRgbTriple(b.brand_primary_color);
-  const accent = hexToRgbTriple(b.brand_accent_color);
+  const brand = b.appearance?.brand;
+  const primary = hexToRgbTriple(brand ? brand.primary : b.brand_primary_color);
+  const accent = hexToRgbTriple(brand ? brand.accent : b.brand_accent_color);
   if (primary) style["--color-primary"] = primary;
   if (accent) {
     style["--color-accent"] = accent;

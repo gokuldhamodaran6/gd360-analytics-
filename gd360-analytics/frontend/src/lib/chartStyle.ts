@@ -577,6 +577,15 @@ function paletteColors(style: ChartStyle, count: number): string[] {
   return out;
 }
  
+/** The colours a style's palette gives `count` items - null for the
+ *  default palette ("original"), where the caller keeps its own colours.
+ *  Used by the workspace's native chart to honour a palette the person
+ *  picked in the Style panel without re-implementing the palettes. */
+export function stylePaletteColors(style: ChartStyle, count: number): string[] | null {
+  if (style.paletteId === "original") return null;
+  return paletteColors(style, count);
+}
+
 /** The colors this style paints onto a chart's bars/slices/series. Every
  * distinct thing on a chart - each bar, each pie slice, each line in a
  * multi-line comparison - always gets its own distinct, colorblind-safe
@@ -612,20 +621,58 @@ const VALUE_FORMAT = ",.2~f";
  * the true result off a bar that is, visually, empty. Used for both the
  * on-bar label and the hover readout (see the bar/histogram branches
  * below) so the two always agree with each other. */
-// 2026-09-25c (elite pass): a real line/area series that should get the
-// smooth, premium curve treatment (spline shape, heavier stroke, soft
-// translucent fill) - deliberately excluded: a step line (t.line.shape
-// "hv" - the right-angle jump IS the data, e.g. a price that only changes
-// at discrete moments) and a bubble chart (marker.size is an array - each
-// point's SIZE already carries meaning, so it stays a plain marker plot,
-// never connected by a curve). Anything without an explicit "lines" mode
-// (a bare scatter/dot plot, or a chart type this can't confidently
-// recognize) is left untouched rather than guessed at.
-function isSmoothableLineTrace(t: any): boolean {
+// A real line/area series (a scatter trace drawn with lines): it gets the
+// heavier stroke and the soft translucent fill of the premium treatment.
+// Excluded: a bubble chart (marker.size is an array - each point's SIZE
+// already carries meaning, so it stays a plain marker plot). Anything
+// without an explicit "lines" mode (a bare scatter/dot plot) is left
+// untouched rather than guessed at.
+//
+// 2026-10-07 (chart-integrity round): this used to also set
+// `line.shape = "spline"`. A spline is drawn THROUGH the points, but
+// between them it follows a curve the data never took: a three-year
+// revenue line (4.5M, 11.7M, 9.8M) visibly peaked ABOVE its own 2016 value
+// somewhere "between 2016 and 2017" - a number that exists nowhere in the
+// table. A line now connects real points with straight segments, always.
+// The one shape that survives is "hv" (a step line), and only where the
+// backend asked for it: there the right-angle jump IS the data.
+function isStyledLineTrace(t: any): boolean {
   if (t?.type !== "scatter") return false;
   if (Array.isArray(t?.marker?.size)) return false;
-  if (t?.line?.shape === "hv") return false;
   return (t?.mode || "").includes("lines");
+}
+
+/** The only line shapes a data line may have: "hv" when the figure asked
+ *  for a step line, straight segments otherwise. Never a smoothed curve. */
+function honestLineShape(t: any): "hv" | "linear" {
+  return t?.line?.shape === "hv" ? "hv" : "linear";
+}
+
+const ISO_DATE_AXIS_RE = /^\d{4}-\d{2}(-\d{2})?([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+
+/** What kind of axis a trace's category values need, or null to leave
+ *  Plotly's own choice alone.
+ *
+ *  2026-10-07 (chart-integrity round): Plotly "auto-types" an axis from its
+ *  values, and text that looks numeric - the years "2015", "2016", "2017" -
+ *  becomes a LINEAR axis with ticks at "2,015.5" and "2,016.5": half-years
+ *  that do not exist, with a thousands separator on a year. So:
+ *    text that is all ISO dates          -> "date" (a real time axis)
+ *    any other text (names, "2015", ids) -> "category" (one tick per value)
+ *    whole numbers on a bar / line trace, distinct and at most 60 of them
+ *    (years, month numbers, ids)         -> "category"
+ *  Anything else (a genuine numeric x) is left to Plotly. */
+function categoryAxisTypeFor(values: any[], traceType: string, mode: string): "category" | "date" | null {
+  const present = values.filter((v) => v !== null && v !== undefined && v !== "");
+  if (!present.length) return null;
+  if (present.every((v) => typeof v === "string")) {
+    return present.every((v) => ISO_DATE_AXIS_RE.test(v.trim())) ? "date" : "category";
+  }
+  const marksOnly = traceType === "scatter" && !mode.includes("lines");
+  if (!marksOnly && present.length <= 60 && present.every((v) => typeof v === "number" && Number.isInteger(v)) && new Set(present).size === present.length) {
+    return "category";
+  }
+  return null;
 }
 
 function formatValueSmart(v: any): string {
@@ -758,19 +805,18 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
       const t = data[i];
       t.marker = { ...(t.marker || {}), color: c };
       if (t.line || t.type === "scatter") t.line = { ...(t.line || {}), color: c };
-      // ---- Elite pass: turn a flat, kinked polyline into the smooth,
-      // gradient-washed curve every one of the reference dashboards (Vision
-      // UI, Horizon UI) uses for a trend line - a rendering hint only, so
-      // the line still passes through every real value exactly where it
-      // should; nothing about the underlying data changes. A translucent
-      // fill only ever gets ADDED where the AI already asked for one
-      // (t.fill !== "none") - a plain line chart stays a plain line,
-      // never grows a fill it didn't have. ----
-      if (isSmoothableLineTrace(t)) {
+      // ---- A heavier stroke, slightly larger markers and a translucent
+      // fill for a real line/area series. The fill is only ever tinted
+      // where the figure already asked for one (t.fill !== "none") - a
+      // plain line chart stays a plain line. The line itself is drawn with
+      // straight segments: nothing is smoothed (see isStyledLineTrace). ----
+      if (isStyledLineTrace(t)) {
+        const { smoothing: _smoothing, ...lineRest } = t.line || {};
         t.line = {
-          ...t.line,
-          shape: "spline",
-          smoothing: t.line?.smoothing ?? 0.65,
+          ...lineRest,
+          // Straight segments between real points ("hv" only for a step
+          // line the backend asked for) - see isStyledLineTrace.
+          shape: honestLineShape(t),
           width: Math.max(t.line?.width ?? 0, 3),
         };
         if (typeof t.marker?.size === "number") {
@@ -783,6 +829,17 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
     });
   }
  
+  // ---- No data line is ever smoothed, whatever built the figure: a line
+  // trace that arrives with shape "spline" (a figure saved by an older
+  // version of this file) is drawn with straight segments again. ----
+  data.forEach((t) => {
+    if (isDecorativeTrace(t)) return;
+    if ((t?.type === "scatter" || t?.type === "scattergl" || t?.type === undefined) && t?.line && typeof t.line === "object" && t.line.shape === "spline") {
+      const { smoothing: _smoothing, ...lineRest } = t.line;
+      t.line = { ...lineRest, shape: "linear" };
+    }
+  });
+
   // ---- Accent colors: a decorative trace (right now just a scatter plot's
   // regression trend line - see isDecorativeTrace) is deliberately never
   // touched by the palette logic above, but a person can still give it its
@@ -948,6 +1005,27 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
     layout.yaxis.tickfont = { size: baseSize };
     layout.xaxis.zeroline = false;
     layout.yaxis.zeroline = false;
+
+    // ---- The category axis is typed explicitly (never left to Plotly's
+    // guess) - see categoryAxisTypeFor: text is one tick per value, ISO
+    // dates are a real date axis, a handful of whole numbers on a bar or
+    // line are categories too. An axis the figure already typed is kept. ----
+    const categoryKey = horizontal ? "yaxis" : "xaxis";
+    if (!layout[categoryKey].type || layout[categoryKey].type === "-") {
+      let wanted: "category" | "date" | null = null;
+      let consistent = true;
+      data.forEach((t) => {
+        if (isDecorativeTrace(t) || !consistent) return;
+        const type = t?.type || "scatter";
+        if (!["scatter", "scattergl", "bar", "waterfall"].includes(type)) return;
+        const cats = type === "bar" && t.orientation === "h" ? t.y : t.x;
+        if (!Array.isArray(cats)) return;
+        const kind = categoryAxisTypeFor(cats, type, typeof t.mode === "string" ? t.mode : "");
+        if (kind === null || (wanted !== null && wanted !== kind)) consistent = false;
+        else wanted = kind;
+      });
+      if (consistent && wanted) layout[categoryKey].type = wanted;
+    }
   }
 
   // ---- Value-axis range padding for "outside" bar labels ----
@@ -1163,7 +1241,13 @@ export function applyChartStyle(rawSpec: any, style: ChartStyle, fallbackTitle?:
       const baseMode = (t.mode || "lines+markers").replace("+text", "");
       const wantsText = style.dataLabels && !isDualAxisCombo;
       t.mode = wantsText ? `${baseMode}+text` : baseMode;
-      t.text = wantsText ? t.y || t.x : undefined;
+      // 2026-10-07: the labels are formatted like every other value label
+      // ("13,198,578.53"), never the raw float - a SUM of doubles prints
+      // as "13198578.529999968" otherwise - and are not clipped at the
+      // plot's edge (the first and last points sit on it).
+      const labelValues: any[] | undefined = Array.isArray(t.y) ? t.y : Array.isArray(t.x) ? t.x : undefined;
+      t.text = wantsText && labelValues ? labelValues.map((v) => (typeof v === "number" ? formatValueSmart(v) : v)) : undefined;
+      if (wantsText) t.cliponaxis = false;
       t.textposition = "top center";
     }
   });
