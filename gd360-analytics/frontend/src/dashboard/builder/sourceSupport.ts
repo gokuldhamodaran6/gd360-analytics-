@@ -9,8 +9,9 @@ import { providerDisplayName } from "../../ui";
 // (services/warehouse_exec.SQL_WAREHOUSE_KINDS) and otherwise derives a
 // file schema through _file_schema / load_dataframe, which covers every
 // loadable kind (csv, excel, api, google_sheets, microsoft_excel, mongodb)
-// with the file-source recipe limits (_spec_to_recipe: one plain measure,
-// at most one group-by, no filters). A streaming source has no loadable
+// with the file-source recipe limits (_spec_to_recipe: plain measures -
+// sum / average / count / min / max of a column - over up to three
+// group-by columns, no filters, no expressions). A streaming source has no loadable
 // table until events arrive, so it is routed to the blank canvas instead.
 
 export const WAREHOUSE_KINDS = ["bigquery", "snowflake", "postgres", "mysql", "sqlserver", "supabase"] as const;
@@ -27,7 +28,7 @@ export function proposalSupport(kind: string | null | undefined): SourceSupport 
     return { level: "warehouse", note: "Every block is a query checked in the warehouse before you see it; numbers compute on publish." };
   }
   if ((FILE_LIKE_KINDS as readonly string[]).includes(k)) {
-    return { level: "file", note: "Computed in GD360 on publish. Blocks stay simple here: one measure and at most one group-by each." };
+    return { level: "file", note: "Computed in GD360 on publish. Blocks use plain measures here (sum, average, count, min, max) with no filters or formulas of their own." };
   }
   if (k === "streaming") {
     return { level: "unsupported", reason: "A streaming source has no table to propose from until events have arrived. Start from a blank canvas in its project instead." };

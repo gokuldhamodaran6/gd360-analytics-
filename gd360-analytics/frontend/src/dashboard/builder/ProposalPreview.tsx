@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { DashboardBlock, DashboardParameter, DashboardPeriod, DashboardProposal, ProposalBlock } from "../../api/client";
 import { TextBlock, useIsNarrow } from "../../components/DashboardBlocks";
+import { useBox } from "../charts/useBox";
 import {
   BarChartIcon, ChartCard, ChartIcon, DateRangePicker, FilterRail, FilterRailSection, KpiTile, ProviderBadge, SegmentedControl, Skeleton, SparkleIcon, StatusPill, TableIcon, cn, providerDisplayName,
 } from "../../ui";
@@ -100,6 +101,13 @@ function ParameterPreview({ param }: { param: DashboardParameter }) {
   );
 }
 
+// Below this width (of the window, or of the preview's own card) the
+// preview stacks: filters inline, one block per row.
+const PREVIEW_DESKTOP_MIN_PX = 900;
+// Up to four KPI tiles in a row, but never a tile narrower than the
+// Keep / Swap / Remove bar above it (about 250px) - fewer per row instead.
+const KPI_STRIP_COLUMNS = "repeat(auto-fit, minmax(min(100%, max(260px, calc((100% - 48px) / 4))), 1fr))";
+
 export type ProposalPreviewProps = {
   flow: ProposalFlow;
   className?: string;
@@ -107,7 +115,16 @@ export type ProposalPreviewProps = {
 
 export function ProposalPreview({ flow, className }: ProposalPreviewProps) {
   const { proposal, loading, revising, publishing } = flow;
-  const narrow = useIsNarrow(900);
+  // 2026-10-07 (real end-to-end run): the preview is "narrow" when ITS OWN
+  // box is, not only when the window is. On the New dashboard page it sits
+  // beside the 380px composer and the app sidebar, so on a 1440px window
+  // it is about 730px wide - and the desktop arrangement (a 260px rail, a
+  // 12-column grid, four KPI tiles in a row) was being squeezed into it:
+  // 94px KPI tiles with their Keep/Swap/Remove bars overlapping each
+  // other, 200px charts whose placeholder ran over the card footer.
+  const viewportNarrow = useIsNarrow(PREVIEW_DESKTOP_MIN_PX);
+  const [shellRef, , shellBox] = useBox({ w: 1280, h: 1 });
+  const narrow = viewportNarrow || shellBox.w < PREVIEW_DESKTOP_MIN_PX;
   const [pageIndex, setPageIndex] = useState(0);
   const [sqlFor, setSqlFor] = useState<ProposalBlock | null>(null);
   const page = proposal?.pages[Math.min(pageIndex, Math.max(0, (proposal?.pages.length || 1) - 1))];
@@ -183,7 +200,9 @@ export function ProposalPreview({ flow, className }: ProposalPreviewProps) {
         <KpiTile
           label={b.title}
           value={<span className="text-faint">—</span>}
-          caption={`Will compute in ${provider} on publish${b.spec?.compare_prior_period ? " · vs prior period" : ""}`}
+          // A file KPI has no prior period (its delta is "vs all rows",
+          // and only while a filter is on): the frame does not promise one.
+          caption={`Will compute in ${provider} on publish${proposal.warehouse_native && b.spec?.compare_prior_period ? " · vs prior period" : ""}`}
           className="h-full"
         />
       </div>
@@ -220,7 +239,7 @@ export function ProposalPreview({ flow, className }: ProposalPreviewProps) {
         </StatusPill>
       </div>
 
-      <div className="relative flex min-w-0 flex-col overflow-hidden rounded-card border border-border bg-surface shadow-card" data-dashboard-shell="">
+      <div ref={shellRef} className="relative flex min-w-0 flex-col overflow-hidden rounded-card border border-border bg-surface shadow-card" data-dashboard-shell="">
         <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3 px-6 pb-4 pt-5">
           <div className="min-w-0">
             <h2 className="truncate text-title font-semibold text-text" data-preview-title="">{proposal.title}</h2>
@@ -265,7 +284,7 @@ export function ProposalPreview({ flow, className }: ProposalPreviewProps) {
           )}
           <main className="min-w-0 flex-1 px-6 pb-8 pt-1">
             {kpis.length > 0 && (
-              <div data-kpi-strip="" className={cn("mb-5 grid gap-4")} style={{ gridTemplateColumns: narrow ? "repeat(2, minmax(0, 1fr))" : `repeat(${Math.min(kpis.length, 4)}, minmax(0, 1fr))` }}>
+              <div data-kpi-strip="" className={cn("mb-5 grid gap-4")} style={{ gridTemplateColumns: KPI_STRIP_COLUMNS }}>
                 {kpis.map((b) => frameFor(b, kpiTile(b), "h-full"))}
               </div>
             )}
