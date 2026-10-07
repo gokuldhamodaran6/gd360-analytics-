@@ -151,6 +151,12 @@ export type DatasetVersion = {
   // The definition's result schema captured at creation: [{name, type}].
   columns_json?: { name: string; type?: string | null }[] | null;
   parent_version_ids?: string[] | null;
+  // 2026-10-06 (pro local-file Data tab): a file-backed version's own
+  // cleaning log (inherited steps plus its own, same shape the preview
+  // returns) so the versions rail can caption "reservation_status_date
+  // -> date" without a preview call per version. For a file version
+  // `row_count` above is its exact row count (not null).
+  cleaning_log?: CleaningLogEntry[];
 };
 
 export function isWarehouseQueryVersion(v: Pick<DatasetVersion, "source_kind"> | null | undefined): boolean {
@@ -444,6 +450,90 @@ export type DataProfile = {
   // never exact, and DataTable.tsx must show it with a "~"/"estimated"
   // label, never the exact pill's checkmark.
   estimated_total_rows?: number;
+  // 2026-10-06 (pro local-file Data tab): "gd360" when the profile was
+  // computed with pandas inside GD360 over a COMPLETE uploaded CSV/Excel
+  // file (backend services/file_import.py profile_dataframe) - such a
+  // profile never carries bytes_scanned. Absent for a warehouse profile.
+  computed_in?: "gd360";
+};
+
+// 2026-10-06 (pro local-file Data tab) - the import pipeline for an
+// uploaded CSV/Excel file. See backend routers/datasources.py
+// get_file_import / rerun_file_import and services/file_import.py.
+export type FileImportSettings = {
+  sheet: string | null;
+  header_row: number;
+  delimiter: "auto" | "," | "\t" | ";" | "|";
+  decimal: "." | ",";
+  thousands: "auto" | "," | "." | " " | "none";
+  date_format: "auto" | "YYYY-MM-DD" | "DD/MM/YYYY" | "MM/DD/YYYY" | "YYYY/MM/DD" | "DD-MM-YYYY" | "MM-DD-YYYY";
+  trim_whitespace: boolean;
+  skip_empty_rows: boolean;
+};
+
+export type FileTypeFix = {
+  column: string;
+  kind: "to_date" | "to_number" | "to_bool";
+  from: string;
+  to: string;
+  matched: number;
+  total: number;
+  lost: number;
+};
+
+// The summary of the last import run for one sheet - every number is a
+// count over the whole sheet.
+export type FileImportSummary = {
+  sheet: string | null;
+  header_row: number;
+  delimiter: string;
+  date_format: string;
+  rows: number;
+  columns: number;
+  type_fixes: FileTypeFix[];
+  fixed_count: number;
+  errors: number;
+  mixed_type_columns: Record<string, number>;
+  imported_at: string;
+};
+
+export type FileImportState = {
+  kind: "csv" | "excel";
+  filename: string | null;
+  size_bytes: number;
+  sheets: { name: string; rows: number | null; cols: number | null }[];
+  // The sheet this state describes (null for a CSV / single-sheet file).
+  sheet: string | null;
+  sheet_key: string;
+  detected: { header_row: number; delimiter: string | null; encoding: string | null; date_format: string | null };
+  settings: FileImportSettings;
+  // null until an import has run for this sheet (an upload that predates
+  // this layer) - the Data tab then offers "Run import".
+  summary: FileImportSummary | null;
+  imported: boolean;
+  uploaded_at: string | null;
+  uploaded_by: string | null;
+  uploaded_by_initials: string | null;
+};
+
+// One cleaning suggestion computed over the whole file - see backend
+// services/file_import.py suggest_cleaning. `affected_rows` is exact.
+export type CleaningSuggestion = {
+  id: string;
+  kind: "to_date" | "to_number" | "to_bool" | "drop_duplicates" | "fill_empty" | "trim_whitespace" | "standardise";
+  column: string | null;
+  title: string;
+  reason: string;
+  affected_rows: number;
+  params: Record<string, any>;
+};
+
+export type CleaningSuggestions = {
+  suggestions: CleaningSuggestion[];
+  total_rows: number;
+  version_id: string | null;
+  computed_in: "gd360";
+  duration_ms: number;
 };
 
 // What the natural-language filter bar gets back - `filters` is keyed by
@@ -733,6 +823,38 @@ export const datasourceApi = {
     api.patch<{ id: string; name: string }>(`/datasources/${id}/versions/${versionId}`, { name }).then((r) => r.data),
 
   deleteVersion: (id: string, versionId: string) => api.delete(`/datasources/${id}/versions/${versionId}`),
+
+  // 2026-10-06 (pro local-file Data tab) - see FileImportState. `table` is
+  // the sheet name of a multi-sheet workbook (undefined = first/only).
+  getFileImport: (id: string, table?: string | null) =>
+    api.get<FileImportState>(`/datasources/${id}/import`, { params: { table: table || undefined } }).then((r) => r.data),
+
+  // Re-runs the import for one sheet with these settings (any subset; the
+  // rest keep their current value) and returns the refreshed state. The
+  // backend reloads the frame from the stored bytes, re-infers and
+  // applies type fixes, refreshes the schema and drops its caches.
+  rerunFileImport: (id: string, settings: Partial<FileImportSettings>) =>
+    api.post<FileImportState>(`/datasources/${id}/import`, settings).then((r) => r.data),
+
+  // Up to 8 cleaning suggestions over the whole sheet / saved version.
+  getCleaningSuggestions: (id: string, versionId: string | null, table?: string | null) =>
+    api
+      .get<CleaningSuggestions>(`/datasources/${id}/cleaning-suggestions`, {
+        params: { version_id: versionId || undefined, table: versionId ? undefined : table || undefined },
+      })
+      .then((r) => r.data),
+
+  // Applies the chosen suggestions in order and saves a NEW version (the
+  // original is never changed); returns that version's list entry plus
+  // `applied` (one cleaning-log entry per step).
+  applyCleaningSuggestions: (id: string, ids: string[], versionId: string | null, table?: string | null) =>
+    api
+      .post<DatasetVersion & { applied: CleaningLogEntry[] }>(`/datasources/${id}/cleaning-suggestions/apply`, {
+        ids,
+        version_id: versionId || undefined,
+        table: versionId ? undefined : table || undefined,
+      })
+      .then((r) => r.data),
 
   // Removes a connected data source entirely - used by the "New data" flow
   // to clean up an abandoned Google Sheets/Excel OAuth connect (see
@@ -1380,7 +1502,174 @@ export const dashboardApi = {
 // two pure-layout widgets alongside the original data block types, both
 // drag-and-droppable from the canvas's new element library the same way
 // every other type already is.
-export type DashboardBlockType = "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut" | "sparkline" | "avatar_list" | "heading" | "divider";
+// 2026-10-07 (analyst canvas round): "sql" | "input" added - the two canvas
+// cell kinds (see backend routers/dashboard_builder.py, "Canvas cells").
+export type DashboardBlockType = "chart" | "table" | "kpi" | "text" | "filter" | "gauge" | "donut" | "sparkline" | "avatar_list" | "heading" | "divider" | "sql" | "input";
+
+// ---- Warehouse-native dashboards (2026-10-06/07) - the contract behind the
+// Option A dashboard view (src/dashboard/). Every shape here mirrors the
+// backend verbatim: services/query_builder.py (BlockSpec), services/
+// dashboard_engine.py (BlockResult), schemas.py (RunPageRequest/Out,
+// ParameterOptionsOut, BlockSqlOut, UpgradeBlocksOut) and the parameter /
+// saved-view dicts _validate_parameters / update_saved_views write. ----
+
+export type BlockSpecMeasure = {
+  alias: string;
+  agg: "count" | "sum" | "avg" | "min" | "max" | "count_distinct";
+  column?: string | null;
+  expr?: string | null;
+};
+export type BlockSpecFilter = { column: string; op: string; value?: any };
+export type BlockSpec = {
+  table: string;
+  time?: { column: string; grain: "day" | "week" | "month" | "quarter" | "year" } | null;
+  group_by?: string[];
+  measures: BlockSpecMeasure[];
+  filters?: BlockSpecFilter[];
+  order_by?: { by: string; dir: "asc" | "desc" }[];
+  limit?: number;
+  compare_prior_period?: boolean;
+  sparkline?: boolean;
+};
+
+// A rail control's definition (Dashboard.parameters[]). `control` is one of
+// backend _PARAM_CONTROLS; `name` is what a SQL cell references ({{name}}).
+export type DashboardParameterControl = "chips" | "multi" | "search" | "segmented" | "range" | "date_range" | "checkboxes";
+export type DashboardParameter = {
+  id: string;
+  name?: string;
+  column: string;
+  label: string;
+  control: DashboardParameterControl;
+  options_from?: "distinct" | null;
+  default?: any;
+  table?: string | null;
+};
+
+// A saved filter state (Dashboard.saved_views[]) - see update_saved_views.
+export type DashboardSavedView = {
+  id: string;
+  name: string;
+  filters: FilterCriterion[];
+  period?: string | null;
+  date_range?: { from: string | null; to: string | null } | null;
+  created_by?: string | null;
+};
+
+export type DashboardPeriod = "day" | "week" | "month" | "quarter" | "year";
+export type DashboardDateRange = { from: string | null; to: string | null };
+
+export type BlockResultStatus =
+  | "ok" | "error" | "rejected_unsafe" | "rejected_too_expensive" | "budget_exhausted" | "invalid_spec" | "invalid_sql";
+export type BlockResultColumn = { name: string; type?: string | null };
+export type BlockResult = {
+  status: BlockResultStatus;
+  error?: string | null;
+  columns: BlockResultColumn[];
+  rows: Record<string, any>[];
+  row_count: number;
+  truncated?: boolean;
+  sql?: string;
+  bytes_scanned?: number | null;
+  duration_ms?: number;
+  cached?: boolean;
+  computed_in?: string;
+  ran_at?: string;
+  dimensions?: string[];
+  measures?: string[];
+  time_column?: string | null;
+  exact_total_rows?: number | null;
+  prior?: { columns: BlockResultColumn[]; rows: Record<string, any>[]; row_count: number; sql?: string; date_range?: DashboardDateRange | null; status?: string } | null;
+  delta?: Record<string, { current: number | null; prior: number | null; abs: number | null; pct: number | null }> | null;
+  sparkline?: { columns: BlockResultColumn[]; rows: Record<string, any>[]; sql?: string; grain?: string; status?: string } | null;
+  spec?: BlockSpec | null;
+  period?: string;
+  date_range?: DashboardDateRange | null;
+  filters_applied?: any[];
+  // 2026-10-07 (analyst canvas round): a sql cell / a block bound to one.
+  kind?: "sql" | "derived";
+  name?: string | null;
+  source_block_id?: string | null;
+  parameters?: string[];
+  missing_parameters?: string[];
+};
+
+export type RunPageRequest = {
+  filters?: FilterCriterion[];
+  block_filters?: Record<string, FilterCriterion[]>;
+  period?: DashboardPeriod | string | null;
+  date_range?: DashboardDateRange | null;
+  block_ids?: string[] | null;
+  force_refresh?: boolean;
+  parameters?: Record<string, any>;
+};
+
+export type RunPageResponse = {
+  blocks: Record<string, BlockResult>;
+  matched_rows: number | null;
+  total_rows: number | null;
+  computed_in: string;
+  total_duration_ms: number;
+  period: string;
+  date_range: DashboardDateRange | null;
+  skipped_block_ids: string[];
+  dependencies: Record<string, string[]>;
+  order: string[];
+  parameters_used: Record<string, any>;
+  missing_parameters: string[];
+};
+
+export type ParameterOptionValue = { value: string | number | boolean | null; count: number | null };
+export type ParameterOptions = {
+  parameter_id: string;
+  column: string;
+  table: string;
+  search?: string | null;
+  values: ParameterOptionValue[];
+  truncated: boolean;
+  cached: boolean;
+  error?: string | null;
+};
+
+export type BlockSql = {
+  block_id: string;
+  sql: string;
+  prior_sql?: string | null;
+  sparkline_sql?: string | null;
+  dialect: string;
+  period: string;
+  date_range?: DashboardDateRange | null;
+  filters_applied: any[];
+};
+
+export type UpgradeBlockResult = {
+  block_id: string;
+  title: string | null;
+  status: "upgraded" | "already_has_spec" | "skipped" | "failed";
+  error?: string | null;
+  spec?: BlockSpec | null;
+  sql?: string | null;
+};
+export type UpgradeBlocksResult = { results: UpgradeBlockResult[]; upgraded: number; failed: number; skipped: number };
+
+export type BlockLastRun = {
+  bytes_scanned?: number | null;
+  duration_ms?: number | null;
+  rows?: number | null;
+  ran_at?: string | null;
+  cached?: boolean;
+};
+
+// The dashboard-level warehouse fields shared by DashboardBuilderDetail
+// and PublicDashboard (backend _warehouse_dashboard_fields).
+export type WarehouseDashboardFields = {
+  datasource_kind: string | null;
+  warehouse_native: boolean;
+  parameters: DashboardParameter[];
+  saved_views: DashboardSavedView[];
+  default_period: DashboardPeriod | string | null;
+  date_column: string | null;
+};
 
 // 2026-09-25 (Round 5, template gallery): what GET /dashboard-builder/
 // templates returns - a LAYOUT catalog only (page names, block types,
@@ -1458,6 +1747,11 @@ export type DashboardBlock = {
   // models.DashboardBlock.previous_config's own docstring. Drives whether
   // DashboardCanvas.tsx's kebab menu shows an "Undo last change" option.
   can_undo?: boolean;
+  // 2026-10-06 (warehouse-native dashboards layer): the compiled at-rest
+  // SQL of a spec'd block and its last run's stats - both null for a
+  // file-source block or a warehouse block not yet upgraded.
+  query_sql?: string | null;
+  last_run?: BlockLastRun | null;
 };
 
 export type DashboardBuilderPage = {
@@ -1551,7 +1845,13 @@ export type DashboardBuilderDetail = DashboardBranding & {
   custom_domain: string | null;
   custom_domain_status: "pending_dns" | "pending_ssl" | "live" | null;
   custom_domain_error: string | null;
-};
+  // 2026-10-06/07 (warehouse-native dashboards + comments): every table the
+  // blocks could be built from ({table: [{name, type}]}, empty for a file
+  // source) and per-block {open, total} comment counts (keyed by block
+  // id, "page:<id>" or "dashboard").
+  tables: Record<string, { name: string; type?: string | null }[]>;
+  comment_counts: Record<string, { open: number; total: number }>;
+} & WarehouseDashboardFields;
 
 // 2026-09-28 (senior-UX round): the lightweight shape behind
 // dashboardBuilderApi.listByConversation - just enough to list and link to
@@ -1588,7 +1888,7 @@ export type DashboardPickerEntry = {
 // 2026-09-25 (Round 4): also carries the owner's branding (DashboardBranding)
 // - never the dashboard's own id, same privacy boundary this type already
 // held before this round.
-export type PublicDashboard = DashboardBranding & {
+export type PublicDashboard = DashboardBranding & WarehouseDashboardFields & {
   name: string;
   pages: DashboardBuilderPage[];
 };
@@ -2076,6 +2376,232 @@ export const dashboardBuilderApi = {
       .get(`/dashboard-builder/${dashboardId}/branding/${kind}`, { responseType: "blob" })
       .then((r) => URL.createObjectURL(r.data))
       .catch(() => null as string | null),
+
+  // ---- Warehouse-native dashboards (2026-10-06/07) - the calls behind
+  // src/dashboard/ (the Option A view). Every warehouse block is a
+  // BlockSpec computed INSIDE the warehouse on each run; nothing here ever
+  // loads rows into the app. See backend routers/dashboard_builder.py
+  // run_page / get_parameter_options / update_parameters /
+  // update_saved_views / get_block_sql / upgrade_blocks / swap_block. ----
+
+  // Runs every warehouse block on the page under the rail's state. View
+  // access only. 400 for a file-source dashboard (use previewFiltered).
+  // `signal` lets the engine hook cancel an in-flight run when the filters
+  // change again before it lands.
+  runPage: (dashboardId: string, pageId: string, req: RunPageRequest, signal?: AbortSignal) =>
+    api
+      .post<RunPageResponse>(`/dashboard-builder/${dashboardId}/pages/${pageId}/run`, {
+        filters: req.filters || [],
+        block_filters: req.block_filters || {},
+        period: req.period || undefined,
+        date_range: req.date_range && (req.date_range.from || req.date_range.to) ? req.date_range : undefined,
+        block_ids: req.block_ids || undefined,
+        force_refresh: req.force_refresh || false,
+        parameters: req.parameters || {},
+      }, { signal })
+      .then((r) => r.data),
+  // A rail control's distinct values with counts (one GROUP BY, cached
+  // server-side 10 minutes). `search` narrows case-insensitively.
+  parameterOptions: (dashboardId: string, paramId: string, opts: { search?: string; limit?: number } = {}, signal?: AbortSignal) =>
+    api
+      .get<ParameterOptions>(`/dashboard-builder/${dashboardId}/parameters/${paramId}/options`, {
+        params: { search: opts.search || undefined, limit: opts.limit || undefined },
+        signal,
+      })
+      .then((r) => r.data),
+  // Replaces the whole rail: [{id?, column, label, control, options_from?,
+  // default?, table?}] - validated server-side (column must exist).
+  updateParameters: (dashboardId: string, parameters: Partial<DashboardParameter>[]) =>
+    api.patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/parameters`, { parameters }).then((r) => r.data),
+  // Replaces the whole saved-view list; ids are minted server-side when
+  // missing, so "save current view" sends the existing list + one new entry.
+  updateSavedViews: (dashboardId: string, savedViews: Partial<DashboardSavedView>[]) =>
+    api.patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/saved-views`, { saved_views: savedViews }).then((r) => r.data),
+  // The dashboard's period grain and time column ("" clears either).
+  updateSettings: (dashboardId: string, payload: { default_period?: string; date_column?: string }) =>
+    api.patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}`, payload).then((r) => r.data),
+  // "Show SQL": the exact statement for this block under the given rail
+  // state. Filters travel as repeated `f=<column>:<json spec>` params.
+  blockSql: (
+    dashboardId: string,
+    blockId: string,
+    opts: { filters?: FilterCriterion[]; period?: string | null; date_range?: DashboardDateRange | null } = {}
+  ) => {
+    const params = new URLSearchParams();
+    for (const f of opts.filters || []) params.append("f", `${f.column}:${JSON.stringify(f.spec)}`);
+    if (opts.period) params.set("period", opts.period);
+    if (opts.date_range?.from) params.set("date_from", opts.date_range.from);
+    if (opts.date_range?.to) params.set("date_to", opts.date_range.to);
+    const qs = params.toString();
+    return api.get<BlockSql>(`/dashboard-builder/${dashboardId}/blocks/${blockId}/sql${qs ? `?${qs}` : ""}`).then((r) => r.data);
+  },
+  // Gives every pre-layer warehouse block a BlockSpec; per-block failures
+  // are reported, never hidden. Edit access.
+  upgradeBlocks: (dashboardId: string) =>
+    api.post<UpgradeBlocksResult>(`/dashboard-builder/${dashboardId}/upgrade-blocks`).then((r) => r.data),
+  // The same spec rendered as another chart type / block shape - no model
+  // call, no new query. Edit access; undo-able.
+  swapBlock: (dashboardId: string, blockId: string, payload: { chart_type?: string; type?: DashboardBlockType }) =>
+    api.post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}/swap`, payload).then((r) => r.data),
+};
+
+// ---- Dashboard from a prompt (2026-10-07, Builder.dc.html): describe ->
+// propose -> refine -> publish. Verbatim from backend schemas.py
+// ProposeDashboardRequest / ProposalOut / ProposalBlockOut /
+// ProposalTemplateOut / ReviseProposalRequest / CommitProposalRequest and
+// routers/dashboard_builder.py's propose_dashboard / revise_proposal /
+// commit_proposal. Nothing is created until commit: a proposal lives in a
+// 30-minute server cache under proposal_id. The server validates every
+// block (spec + a zero-row warehouse dry run) before it is shown, but never
+// RUNS it - so a proposal carries specs + at-rest SQL, never numbers; the
+// preview says "Will compute on publish" and the real run happens on the
+// dashboard page afterwards. ----
+export type ProposalBlockType = "kpi" | "chart" | "table" | "text" | "sparkline" | "donut";
+export type ProposalBlock = {
+  // Stable within one proposal revision (b1, b2, ...) - what `keep` lists.
+  client_id: string;
+  type: ProposalBlockType;
+  title: string;
+  // "KPI · Revenue metric" / "Trend · revenue by month" / "Breakdown · country".
+  intent: string;
+  // The validated BlockSpec (warehouse), the spec the recipe came from
+  // (file), or null for a text / invalid block.
+  spec: BlockSpec | null;
+  // File sources only: the pandas recipe computed at commit time.
+  recipe: ManualRecipe | null;
+  chart_type: string | null;
+  text: string | null;
+  layout: { x: number; y: number; w: number; h: number };
+  from_metric_id: string | null;
+  from_metric_name: string | null;
+  // "invalid" blocks are shown with their real reason and never created.
+  status: "ok" | "invalid";
+  error: string | null;
+  // Compiled at-rest SQL for an ok warehouse block ("Show SQL" before commit).
+  sql: string | null;
+  columns: { name: string; type?: string | null }[];
+};
+export type ProposalPage = { title: string; blocks: ProposalBlock[] };
+export type DashboardProposal = {
+  proposal_id: string;
+  datasource_id: string;
+  datasource_name: string | null;
+  datasource_kind: string | null;
+  warehouse_native: boolean;
+  title: string;
+  pages: ProposalPage[];
+  used: { metrics?: string[]; columns?: string[]; tables?: string[] };
+  suggestions: string[];
+  date_column: string | null;
+  period: string;
+  // The rail the commit will create (same shape as Dashboard.parameters).
+  parameters: DashboardParameter[];
+  revision: number;
+  expires_in_seconds: number;
+  generated_in_ms: number;
+  proposed_blocks: number;
+  valid_blocks: number;
+  // Set when the model call failed and this is the schema-only fallback.
+  warning: string | null;
+};
+export type ProposalTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  goal: string;
+  pages: number;
+  period: string;
+  layout_hints: string[];
+};
+export type ProposeDashboardPayload = {
+  datasource_id: string;
+  goal: string;
+  template_id?: string | null;
+  pages?: "auto" | 1 | 2;
+  period?: string | null;
+  conversation_id?: string | null;
+};
+export const dashboardProposalApi = {
+  templates: () => api.get<ProposalTemplate[]>("/dashboard-builder/propose/templates").then((r) => r.data),
+  propose: (payload: ProposeDashboardPayload) =>
+    api
+      .post<DashboardProposal>("/dashboard-builder/propose", {
+        datasource_id: payload.datasource_id,
+        goal: payload.goal,
+        template_id: payload.template_id || undefined,
+        pages: payload.pages || undefined,
+        period: payload.period || undefined,
+        conversation_id: payload.conversation_id || undefined,
+      })
+      .then((r) => r.data),
+  // One model call with the current proposal as context; same proposal_id,
+  // revision + 1. The backend's ReviseProposalRequest only reads
+  // `instruction` - `keep` rides along so the request records which
+  // blocks the person has kept (ignored server-side today; the client
+  // re-applies its keep/remove state to the revised proposal itself).
+  revise: (proposalId: string, payload: { instruction: string; keep?: string[] }) =>
+    api.post<DashboardProposal>(`/dashboard-builder/propose/${proposalId}/revise`, payload).then((r) => r.data),
+  // The only step that writes: creates the dashboard from the kept blocks.
+  // `name` is the dashboard title (CommitProposalRequest.name); `keep` the
+  // client_ids to create (omitted = every valid block).
+  commit: (proposalId: string, payload: { name: string; keep: string[]; visibility?: "private" | "workspace" }) =>
+    api.post<DashboardBuilderDetail>(`/dashboard-builder/propose/${proposalId}/commit`, payload).then((r) => r.data),
+};
+
+// ---- Block / page / dashboard comments (2026-10-07, analyst canvas round)
+// - verbatim from backend schemas.py CommentOut / CommentThreadOut /
+// CommentsOut and routers/dashboard_comments.py. Authenticated only: the
+// published (public) view has no identity to attribute a comment to, so it
+// never calls these. ----
+export type CommentAuthor = { id: string; name: string; initials: string; email: string | null };
+// Where on a chart a thread is pinned: {kind: "bar" | "slice" | "row" |
+// "point" | "cell", key: <the category value>} - stored as given.
+export type CommentAnchor = { kind: string; key: string | number | boolean | null; column?: string | null; [k: string]: any };
+export type DashboardComment = {
+  id: string;
+  dashboard_id: string;
+  block_id: string | null;
+  page_id: string | null;
+  parent_id: string | null;
+  author: CommentAuthor;
+  body: string;
+  anchor: CommentAnchor | null;
+  mentions: string[];
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+  // What the CALLER may do with this comment.
+  can_edit: boolean;
+  can_resolve: boolean;
+  can_delete: boolean;
+};
+export type CommentThread = DashboardComment & { replies: DashboardComment[]; reply_count: number; resolved: boolean };
+export type CommentCounts = Record<string, { open: number; total: number }>;
+export type CommentsResponse = { threads: CommentThread[]; counts: CommentCounts; total: number; open: number };
+
+export const dashboardCommentsApi = {
+  // Threads for one block (block_id), one page's page-level threads
+  // (page_id) or the whole dashboard; resolved threads only with
+  // include_resolved. View access.
+  list: (dashboardId: string, opts: { block_id?: string; page_id?: string; include_resolved?: boolean } = {}, signal?: AbortSignal) =>
+    api
+      .get<CommentsResponse>(`/dashboard-builder/${dashboardId}/comments`, {
+        params: { block_id: opts.block_id || undefined, page_id: opts.page_id || undefined, include_resolved: opts.include_resolved ? true : undefined },
+        signal,
+      })
+      .then((r) => r.data),
+  // A new thread (block_id / page_id / neither, optional anchor) or a reply
+  // (parent_id). Returns the whole thread the comment belongs to.
+  create: (dashboardId: string, payload: { body: string; block_id?: string | null; page_id?: string | null; parent_id?: string | null; anchor?: CommentAnchor | null }) =>
+    api.post<CommentThread>(`/dashboard-builder/${dashboardId}/comments`, payload).then((r) => r.data),
+  // body: the author only. resolved: the author or an editor (applies to
+  // the thread). Returns the thread.
+  update: (dashboardId: string, commentId: string, payload: { body?: string; resolved?: boolean }) =>
+    api.patch<CommentThread>(`/dashboard-builder/${dashboardId}/comments/${commentId}`, payload).then((r) => r.data),
+  // The author or the dashboard owner; a root takes its replies with it.
+  // Returns the remaining threads for the same block/page.
+  remove: (dashboardId: string, commentId: string) =>
+    api.delete<CommentsResponse>(`/dashboard-builder/${dashboardId}/comments/${commentId}`).then((r) => r.data),
 };
 
 // 2026-09-24 (Phase 3): a deliberately SEPARATE axios instance with NO
@@ -2199,7 +2725,71 @@ export const publicDashboardApi = {
         headers: viewerToken ? { "X-Dashboard-Access-Token": viewerToken } : undefined,
       })
       .then((r) => r.data),
+
+  // ---- Warehouse-native dashboards (2026-10-06): the published view's
+  // twins of dashboardBuilderApi.runPage / parameterOptions, keyed by slug
+  // or (white-label) hostname. Same request/response; the owner's
+  // connection and budget pay for every run (see backend
+  // _public_warehouse_context), rate-limited per ip and per share. ----
+  runPage: (slug: string, pageId: string, req: RunPageRequest, viewerToken?: string, signal?: AbortSignal) =>
+    publicApi
+      .post<RunPageResponse>(`/public/dashboards/${slug}/pages/${pageId}/run`, publicRunBody(req), {
+        headers: viewerToken ? { "X-Dashboard-Access-Token": viewerToken } : undefined,
+        signal,
+      })
+      .then((r) => r.data),
+  runPageByHostname: (hostname: string, pageId: string, req: RunPageRequest, viewerToken?: string, signal?: AbortSignal) =>
+    publicApi
+      .post<RunPageResponse>(`/public/domains/${encodeURIComponent(hostname)}/pages/${pageId}/run`, publicRunBody(req), {
+        headers: viewerToken ? { "X-Dashboard-Access-Token": viewerToken } : undefined,
+        signal,
+      })
+      .then((r) => r.data),
+  parameterOptions: (slug: string, paramId: string, opts: { search?: string; limit?: number } = {}, viewerToken?: string, signal?: AbortSignal) =>
+    publicApi
+      .get<ParameterOptions>(`/public/dashboards/${slug}/parameters/${paramId}/options`, {
+        params: { search: opts.search || undefined, limit: opts.limit || undefined },
+        headers: viewerToken ? { "X-Dashboard-Access-Token": viewerToken } : undefined,
+        signal,
+      })
+      .then((r) => r.data),
+  parameterOptionsByHostname: (hostname: string, paramId: string, opts: { search?: string; limit?: number } = {}, viewerToken?: string, signal?: AbortSignal) =>
+    publicApi
+      .get<ParameterOptions>(`/public/domains/${encodeURIComponent(hostname)}/parameters/${paramId}/options`, {
+        params: { search: opts.search || undefined, limit: opts.limit || undefined },
+        headers: viewerToken ? { "X-Dashboard-Access-Token": viewerToken } : undefined,
+        signal,
+      })
+      .then((r) => r.data),
+  // The hostname twin of previewFiltered above (the backend grew one in the
+  // warehouse-native layer: preview_filtered_blocks_public_by_domain).
+  previewFilteredByHostname: (
+    hostname: string,
+    pageId: string,
+    filters: FilterCriterion[],
+    blockFilters: Record<string, FilterCriterion[]> | undefined,
+    viewerToken?: string
+  ) =>
+    publicApi
+      .post<{ blocks: FilteredBlock[]; matched_rows: number | null }>(
+        `/public/domains/${encodeURIComponent(hostname)}/pages/${pageId}/preview-filtered`,
+        { filters, block_filters: blockFilters || {} },
+        { headers: viewerToken ? { "X-Dashboard-Access-Token": viewerToken } : undefined }
+      )
+      .then((r) => ({ blocks: r.data.blocks, matchedRows: r.data.matched_rows })),
 };
+
+function publicRunBody(req: RunPageRequest) {
+  return {
+    filters: req.filters || [],
+    block_filters: req.block_filters || {},
+    period: req.period || undefined,
+    date_range: req.date_range && (req.date_range.from || req.date_range.to) ? req.date_range : undefined,
+    block_ids: req.block_ids || undefined,
+    force_refresh: req.force_refresh || false,
+    parameters: req.parameters || {},
+  };
+}
 
 // ---- Scheduled auto-refresh + background jobs (2026-09-28, pages/Jobs.tsx)
 // - see backend routers/jobs.py's own module docstring for the full
