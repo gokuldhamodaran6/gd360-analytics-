@@ -282,6 +282,11 @@ const BLOCK_TYPE_LABEL: Record<DashboardBlockType, string> = {
   // NO_DATA_TYPES below for why neither ever offers Ask AI/Build manually.
   heading: "Heading",
   divider: "Divider",
+  // 2026-10-07 (analyst canvas round): the two canvas cell kinds - rendered
+  // by the Option A view (src/dashboard/), never offered by this editor's
+  // element library (see ELEMENT_LIBRARY_TYPES below).
+  sql: "SQL cell",
+  input: "Input",
 };
 
 // 2026-09-25 (Round 3): these four are only ever filled in through "Build
