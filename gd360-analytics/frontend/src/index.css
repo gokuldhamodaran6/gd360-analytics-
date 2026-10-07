@@ -113,6 +113,13 @@
   --color-series-4: 201 133 0;
   --color-series-5: 213 81 129;
   --color-series-6: 0 131 0;
+  /* 2026-10-07 (dashboard polish round): chart furniture for the native
+     charts (src/dashboard/charts). Gridlines are one step off the surface
+     (System.dc.html: the Subtle fill in light, Border in dark - the same
+     pair as src/ui/tokens.ts GRIDLINE); the baseline / crosshair / donut
+     leader is one step stronger. Solid hairlines, never dashed. */
+  --chart-grid: 42 42 46;
+  --chart-axis: 58 58 63;
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
   --shadow-pop: 0 8px 24px -8px rgb(0 0 0 / 0.6), 0 1px 2px rgb(0 0 0 / 0.4);
 }
@@ -145,6 +152,8 @@
   --color-series-4: 201 133 0;
   --color-series-5: 213 81 129;
   --color-series-6: 0 131 0;
+  --chart-grid: 241 241 237;
+  --chart-axis: 212 212 206;
   --shadow-card: 0 1px 2px rgb(22 22 21 / 0.04);
   --shadow-pop: 0 8px 24px -8px rgb(22 22 21 / 0.18), 0 1px 2px rgb(22 22 21 / 0.06);
 }
@@ -995,6 +1004,83 @@ input[type="radio"] {
 .ui-number::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .ui-number { -moz-appearance: textfield; appearance: textfield; }
 
+/* ============================================================
+   2026-10-07 (dashboard edit mode, src/dashboard/edit/): the editable
+   dashboard's affordances. All quiet, all on the kit tokens: a 1 px
+   dashed outline + a grab cursor when a block is hovered, the resize
+   corner only on hover / focus, a tinted dashed slot where a dragged
+   block will land. react-grid-layout's own stylesheet supplies the
+   mechanics (positions, transitions); this restyles its two visible
+   parts - the placeholder and the handle.
+   ============================================================ */
+.gd-edit-card {
+  outline: 1px dashed transparent;
+  outline-offset: 3px;
+  transition: outline-color 0.12s ease;
+}
+.gd-edit-card:hover,
+.gd-edit-card:focus-within {
+  outline-color: rgb(var(--color-border-strong));
+}
+.block-drag-handle { cursor: grab; }
+.gd-edit-grid--busy .block-drag-handle { cursor: grabbing; }
+.gd-edit-grid--busy .react-grid-item:not(.react-draggable-dragging):not(.resizing) .gd-edit-card { outline-color: transparent; }
+.gd-edit-grid .react-grid-item.react-draggable-dragging > .gd-edit-card,
+.gd-edit-grid .react-grid-item.resizing > .gd-edit-card,
+.gd-edit-grid .react-grid-item.react-draggable-dragging > * > .gd-edit-card {
+  outline-color: rgb(var(--color-accent));
+  box-shadow: var(--shadow-pop);
+}
+.gd-edit-grid .react-grid-item.react-grid-placeholder {
+  background: rgb(var(--color-tint));
+  border: 1px dashed rgb(var(--color-tint-border));
+  border-radius: var(--radius-card);
+  opacity: 0.75;
+}
+.gd-edit-grid .react-grid-item > .gd-resize-handle {
+  right: 1px;
+  bottom: 1px;
+  width: 20px;
+  height: 20px;
+  opacity: 0;
+  cursor: se-resize;
+  transition: opacity 0.12s ease;
+  z-index: 2;
+}
+.gd-edit-grid .react-grid-item > .gd-resize-handle::after {
+  right: 5px;
+  bottom: 5px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid rgb(var(--color-muted));
+  border-bottom: 2px solid rgb(var(--color-muted));
+  border-bottom-right-radius: 3px;
+}
+.gd-edit-grid .react-grid-item:hover > .gd-resize-handle,
+.gd-edit-grid .react-grid-item:focus-within > .gd-resize-handle,
+.gd-edit-grid .react-grid-item.resizing > .gd-resize-handle {
+  opacity: 1;
+}
+.gd-edit-grid .react-grid-item > .gd-resize-handle:hover::after {
+  border-color: rgb(var(--color-primary));
+}
+/* A KPI tile being dragged over another: a 2 px bar on the side it will land. */
+.gd-drop-before::before,
+.gd-drop-after::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 2px;
+  background: rgb(var(--color-accent));
+}
+.gd-drop-before::before { left: -9px; }
+.gd-drop-after::after { right: -9px; }
+@media (prefers-reduced-motion: reduce) {
+  .gd-edit-grid .react-grid-item { transition: none; }
+}
+
 /* 2026-10-07 (Option A dashboard view, src/dashboard/): "Export -> Print /
    Save as PDF" prints the dashboard body only - no app chrome, no filter
    rail, no toolbars; blocks flow one after another and never split
@@ -1012,4 +1098,32 @@ input[type="radio"] {
   [data-block-grid] > div, [data-kpi-strip] > * { break-inside: avoid; page-break-inside: avoid; margin-bottom: 12px; }
   [data-kpi-strip] { display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
   .ui-shimmer { animation: none !important; display: none !important; }
+}
+
+/* 2026-10-07 (dashboard polish round): a KPI tile in a strip (src/ui/
+   KpiTile.tsx `reserveDeltaRow`) lays itself out against its own width, so
+   the delta line - pill, then "vs prior period" - is one line on every
+   tile whether the strip has two tiles or five, on a phone or in a narrow
+   canvas cell. As the tile narrows: the caption shortens ("vs prior"), then
+   the pill drops its worded qualifier ("worse" - the arrow, the colour and
+   the screen-reader text still say it), then the number steps down a size
+   so it is never cut. Every tile of a strip is the same width, so they all
+   switch together. */
+.ui-kpi { container-type: inline-size; }
+.ui-kpi-cap-short { display: none; }
+@container (max-width: 214px) {
+  .ui-kpi-cap-long { display: none; }
+  .ui-kpi-cap-short { display: inline; }
+}
+@container (max-width: 184px) {
+  .ui-kpi-qualifier { display: none; }
+}
+@container (max-width: 150px) {
+  .ui-kpi-value { font-size: 24px; }
+}
+@container (max-width: 140px) {
+  .ui-kpi-cap { display: none; }
+}
+@container (max-width: 126px) {
+  .ui-kpi-value { font-size: 20px; }
 }

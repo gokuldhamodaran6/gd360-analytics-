@@ -26,6 +26,7 @@ import ConnectResourcePicker from "./pages/ConnectResourcePicker";
 import PrivacyPolicy from "./pages/PrivacyPolicy";
 import InviteJoin from "./pages/InviteJoin";
 import CommandPalette from "./components/CommandPalette";
+import ErrorBoundary from "./components/ErrorBoundary";
 
 function Protected({ children }: { children: JSX.Element }) {
   const { user, loading } = useAuth();
@@ -75,9 +76,13 @@ function isRecognizedHost(hostname: string): boolean {
 }
 
 export default function App() {
+  // 2026-10-07: one boundary around every page, reset on navigation, so a
+  // render error shows a notice instead of a blank screen (see
+  // components/ErrorBoundary.tsx).
+  const boundaryKey = useLocation().pathname;
   const hostname = typeof window !== "undefined" ? window.location.hostname : "";
   if (!isRecognizedHost(hostname)) {
-    return <PublicDashboardView />;
+    return <ErrorBoundary resetKey={boundaryKey}><PublicDashboardView /></ErrorBoundary>;
   }
   return (
     <>
@@ -88,6 +93,7 @@ export default function App() {
           needs to know it exists. Opened by Cmd+K/Ctrl+K anywhere, or by
           the search button every authenticated page's TopNav now shows. */}
       <CommandPalette />
+      <ErrorBoundary resetKey={boundaryKey}>
       <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
@@ -182,6 +188,7 @@ export default function App() {
       <Route path="/invite/:token" element={<Protected><InviteJoin /></Protected>} />
       <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      </ErrorBoundary>
     </>
   );
 }
