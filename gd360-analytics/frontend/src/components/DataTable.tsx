@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { datasourceApi, DataPreview, DatasetVersion, ColumnStat, ColumnDistinctValues, SavedView, DataProfile, isWarehouseQueryVersion } from "../api/client";
 import WarehouseDataView, { isProfileSupportedKind } from "./WarehouseDataView";
 import GeneratedTableView from "./GeneratedTableView";
+import FileDataView from "./FileDataView";
 
 // 2026-10-06 ("generated data is a saved query" layer): the small marker on
 // a saved-query table's tab - a tiny database glyph in the same stroke
@@ -667,6 +668,16 @@ export default function DataTable({
   const activeVersionIsQuery = isWarehouseQueryVersion(activeVersion);
   const warehouseMode = (activeVersionId === null || activeVersionIsQuery) && isProfileSupportedKind(datasourceKind);
 
+  // 2026-10-06 (pro local-file Data tab): an uploaded CSV/Excel file is
+  // COMPLETE data, so it keeps this grid - FileDataView.tsx wraps it with
+  // the import pipeline, tiles, cleaning suggestions, column profile and
+  // versions rail. Strictly by kind: MongoDB/API/Google Sheets/Microsoft
+  // Excel and every warehouse kind render exactly as before. In this mode
+  // FileDataView owns the profile fetch (it needs one per version too), so
+  // the grid's own profile effect below stays off - exactly as it
+  // effectively was for files, whose profile used to be unsupported.
+  const fileMode = datasourceKind === "csv" || datasourceKind === "excel";
+
   // Typing into a filter box should not fire a request on every keystroke -
   // wait for a short pause before actually re-querying the server. Kept as
   // a safety buffer even though the new Values/Condition panel now commits
@@ -787,6 +798,7 @@ export default function DataTable({
     if (datasourceKind === undefined) return; // don't know this source's shape yet - wait for it, don't guess
     if (originalTablesCount > 1 && !activeTable) return; // multi-table resolution genuinely still pending
     if (warehouseMode) return; // WarehouseDataView fetches the profile itself (same guards) - never twice from here
+    if (fileMode) return; // FileDataView fetches the (per-version) file profile itself - see fileMode above
     let cancelled = false;
     (async () => {
       try {
@@ -797,7 +809,7 @@ export default function DataTable({
       }
     })();
     return () => { cancelled = true; };
-  }, [datasourceId, activeVersionId, activeTable, datasourceKind, originalTablesCount, warehouseMode]);
+  }, [datasourceId, activeVersionId, activeTable, datasourceKind, originalTablesCount, warehouseMode, fileMode]);
 
   // Whether the exact, real full-table profile is actually usable right
   // now - every place below that wants to prefer it over the sample-based
@@ -1624,7 +1636,21 @@ export default function DataTable({
   }
   const lastPinnedCol = pinnedVisible.length > 0 ? pinnedVisible[pinnedVisible.length - 1] : null;
 
-  return (
+  // 2026-10-06 (pro local-file Data tab): in fileMode the grid below is
+  // handed to FileDataView as its last section, so its tab strip (the
+  // versions rail replaces it, with the same select/rename/delete) gives
+  // way to a short "which version, how many rows" caption, and its outer
+  // card fills the fixed-height slot FileDataView gives it (h-full of that
+  // slot) instead of the whole tab. Every other kind gets exactly the
+  // markup it always did.
+  const gridTabs = fileMode ? (
+    <div className="text-xs text-muted truncate" data-testid="fdv-grid-caption">
+      {activeVersion ? activeVersion.name : activeTable || "Original data"} · {preview.total_rows.toLocaleString()} rows
+      {hasActiveFilters ? " match the filters" : ""} · complete
+    </div>
+  ) : tableTabs;
+
+  const gridCard = (
     <div className="card h-full flex flex-col overflow-hidden">
       <div className="p-3 border-b border-border flex items-center gap-3 overflow-x-auto shrink-0">
         {/* Original-data tab(s): teal, the same color used for a "real,
@@ -1638,7 +1664,7 @@ export default function DataTable({
             button - every one of them is still "original data", just teal
             either way, exactly as many teal tabs as there are real source
             tables, however many that is. */}
-        {tableTabs}
+        {gridTabs}
         <div className="ml-auto flex items-center gap-2 shrink-0">
           {loading && <span className="text-[11px] text-accent animate-pulse">Updating...</span>}
           <button className="btn-secondary text-xs px-2.5 py-1.5" disabled={!!busyAction} onClick={() => doExport("csv")}>
@@ -2830,4 +2856,38 @@ export default function DataTable({
         )}
     </div>
   );
+
+  if (fileMode) {
+    return (
+      <div className="card h-full flex flex-col overflow-hidden">
+        <FileDataView
+          datasourceId={datasourceId}
+          datasourceKind={datasourceKind as "csv" | "excel"}
+          activeTable={activeTable}
+          onActiveTableChange={onActiveTableChange}
+          versions={versions}
+          activeVersionId={activeVersionId}
+          onActiveVersionChange={onActiveVersionChange}
+          onVersionsChanged={onVersionsChanged}
+          onRenameVersion={async (v, name) => {
+            if (!name || name === v.name) return;
+            try {
+              await datasourceApi.renameVersion(datasourceId, v.id, name);
+              onVersionsChanged();
+            } catch {
+              setError("Could not rename that table. Please try again.");
+            }
+          }}
+          onDeleteVersion={doDeleteVersion}
+          onAskQuestion={activeVersionId && onAskAboutVersion ? () => onAskAboutVersion(activeVersionId) : undefined}
+          onExport={doExport}
+          exportBusy={busyAction === "csv" || busyAction === "xlsx"}
+          refreshKey={refreshKey}
+          grid={gridCard}
+        />
+      </div>
+    );
+  }
+
+  return gridCard;
 }
