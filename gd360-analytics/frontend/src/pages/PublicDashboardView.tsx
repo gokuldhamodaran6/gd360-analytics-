@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { API_URL, publicDashboardApi, PublicDashboard, ColumnDistinctValue } from "../api/client";
+import { API_URL, publicDashboardApi, PublicDashboard } from "../api/client";
 import ThemeToggle from "../components/ThemeToggle";
-import { DashboardBlockGrid, DataFreshnessBadge } from "../components/DashboardBlocks";
-import { useDashboardFilters, DashboardFilterPreviewFn } from "../lib/useDashboardFilters";
-import { brandingBackgroundImageStyle, brandingStyleVars, hexToRgbTriple } from "../lib/branding";
+import { DataFreshnessBadge } from "../components/DashboardBlocks";
+import { DashboardShell, useDashboardRun, useDashboardViewMode, type RunSource } from "../dashboard";
+import { brandingBackgroundImageStyle, brandingStyleVars } from "../lib/branding";
 
 // 2026-09-24 (Dashboard Builder Phase 1 + Phase 3): the anonymous, no-login
 // viewer a published dashboard's public OR private link actually opens -
@@ -237,46 +237,6 @@ export default function PublicDashboardView() {
 
   const activePage = dash?.pages[activePageIndex];
 
-  // 2026-10-05 (public-filters round): "in published dasbpard i cannot
-  // able to use the filters" - this is the actual fix. Backed by the new
-  // publicDashboardApi.previewFiltered/getColumnFilterOptions (slug-keyed
-  // public endpoints that never touch the owner's live datasource - see
-  // that file's own comment), threaded through the same
-  // lib/useDashboardFilters.ts state machine DashboardBuilderView.tsx's
-  // owner Preview already uses, so this view's filter bar behaves
-  // identically (multi-select/range/date/text conditions, "Showing N
-  // rows," everything) rather than a second, thinner implementation.
-  //
-  // Those two endpoints only exist on the slug-keyed public_router for
-  // now - no hostname/custom-domain counterpart yet (the backend's own
-  // comment on preview_filtered_blocks_public explains why this round
-  // covers the common case first). In hostname (white-label) mode these
-  // quietly resolve to "nothing changed" instead of firing a request
-  // against a path that can't work - filters stay inert there, exactly as
-  // they were before this round, rather than erroring.
-  const previewFiltered: DashboardFilterPreviewFn = useCallback(
-    (_scopeKey, pageId, filters, blockFilters) =>
-      byHostname
-        ? Promise.resolve({ blocks: [], matchedRows: null })
-        : publicDashboardApi.previewFiltered(resolverKey, pageId, filters, blockFilters, viewerToken),
-    [byHostname, resolverKey, viewerToken]
-  );
-
-  const fetchFilterOptions = useCallback(
-    (column: string): Promise<{ values: ColumnDistinctValue[]; dtype?: string }> =>
-      byHostname || !activePage
-        ? Promise.resolve({ values: [] })
-        : publicDashboardApi.getColumnFilterOptions(resolverKey, activePage.id, column, viewerToken),
-    [byHostname, resolverKey, viewerToken, activePage]
-  );
-
-  // Same hook DashboardBuilderView.tsx's owner Preview uses - see its own
-  // module docstring. resolverKey (the slug, or the hostname in white-
-  // label mode) plays the "dashboardId" role: just a stable key this hook
-  // resets its state on when it changes, never actually sent anywhere by
-  // previewFiltered above (which is keyed by slug + page id instead).
-  const filterState = useDashboardFilters(resolverKey, activePage, previewFiltered);
-
   // 2026-09-25 (Round 4, branding): built from resolverKey/byHostname
   // (already known before `dash` loads), not from anything in the
   // response - these are plain, unauthenticated URLs the browser can just
@@ -291,7 +251,6 @@ export default function PublicDashboardView() {
     ...brandingStyleVars(dash),
     ...brandingBackgroundImageStyle(dash, backgroundImageUrl),
   };
-  const pageBgTriple = activePage?.background_color ? hexToRgbTriple(activePage.background_color) : null;
 
   // 2026-09-25 (naming fix + premium light theme foundation round): this
   // is the one surface in the whole app an external viewer - a customer,
@@ -330,7 +289,7 @@ export default function PublicDashboardView() {
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-10">
+      <div className={dash ? "w-full py-4" : "max-w-6xl mx-auto px-4 sm:px-6 py-10"}>
         {error && (
           <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 inline-block">
             {error}
@@ -356,88 +315,24 @@ export default function PublicDashboardView() {
 
         {dash && (
           <>
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-accent mb-1.5">Dashboard</div>
-            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight mb-2">{dash.name}</h1>
-
-            {/* 2026-09-25g (live-data freshness round): the one place this
-                matters most - a stranger with no GD360 account, looking at
-                someone else's numbers, gets an honest, real answer to "how
-                current is this?" instead of just having to trust it. See
-                DashboardBlocks.tsx's own comment for why this is never a
-                simulated "live" signal. */}
-            {activePage && (
-              <div className="mb-2">
-                <DataFreshnessBadge blocks={activePage.blocks} />
-              </div>
-            )}
-
-            {dash.pages.length > 1 && (
-              <div className="flex items-center gap-1.5 mt-5 mb-2 flex-wrap">
-                {dash.pages.map((p, i) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    className={`dash-pagepill text-xs font-medium px-3.5 py-1.5 border transition ${
-                      i === activePageIndex
-                        ? "bg-primary text-white border-primary"
-                        : "border-border text-muted hover:text-text hover:bg-surface2"
-                    }`}
-                    onClick={() => setActivePageIndex(i)}
-                  >
-                    {p.name}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {/* 2026-10-05 (world-class visualization round): the public link's
-                filter bar used to give a stranger zero feedback that
-                filtering was even real - a plain "All" dropdown that did
-                nothing (see DashboardBlocks.tsx's StaticFilterNote, now
-                retired for this view) with no sense of how many rows a
-                selection actually matched. filterState.matchedRows/
-                activeFilters/resetFilters all already existed for the
-                owner's own authenticated Preview (DashboardBuilderView.tsx)
-                - this is the same real, server-confirmed count and the same
-                one-click reset, just never surfaced here before this round.
-                null (not yet known, or this page has no filter blocks at
-                all to count against) hides the line entirely rather than a
-                misleading placeholder. */}
-            {activePage && filterState.matchedRows !== null && (
-              <div className="flex items-center justify-end gap-3 mt-5 text-xs">
-                <span className="text-muted font-medium tabular-nums">
-                  Showing {filterState.matchedRows.toLocaleString()} {filterState.matchedRows === 1 ? "row" : "rows"}
-                </span>
-                {filterState.activeFilters.length > 0 && (
-                  <button
-                    type="button"
-                    className="text-primary font-semibold hover:underline"
-                    onClick={() => filterState.resetFilters()}
-                  >
-                    Reset filters
-                  </button>
-                )}
-              </div>
-            )}
-
-            <div
-              className="mt-5"
-              style={pageBgTriple ? { background: `rgb(${pageBgTriple} / 0.35)`, borderRadius: 20, padding: 16 } : undefined}
-            >
-              {activePage ? (
-                <DashboardBlockGrid
-                  blocks={activePage.blocks}
-                  filterState={filterState}
-                  fetchDistinctValues={fetchFilterOptions}
-                />
-              ) : (
-                <div className="text-sm text-muted py-10 text-center">This dashboard has no pages yet.</div>
-              )}
-            </div>
+            {/* 2026-10-07 (Option A dashboard view): the published link
+                renders the SAME DashboardShell the owner's view mode does
+                (src/dashboard/), over the public run/options endpoints
+                with the viewer token - no owner-only actions, comments
+                hidden. See PublicDashboardBody below. */}
+            <PublicDashboardBody
+              dash={dash}
+              activePage={activePage}
+              activePageIndex={activePageIndex}
+              setActivePageIndex={setActivePageIndex}
+              byHostname={byHostname}
+              resolverKey={resolverKey}
+              viewerToken={viewerToken}
+            />
 
             {/* White-label: no GD360 upsell footer on a customer's own domain. */}
             {!byHostname && (
-              <div className="mt-14 pt-6 border-t border-border text-xs text-muted flex items-center justify-between flex-wrap gap-2">
+              <div className="mx-6 mt-6 pt-6 border-t border-border text-xs text-muted flex items-center justify-between flex-wrap gap-2 print:hidden">
                 <span>Built with GD360 Analytics</span>
                 <Link to="/register" className="text-primary font-medium hover:underline">Build your own dashboard &rarr;</Link>
               </div>
@@ -446,5 +341,102 @@ export default function PublicDashboardView() {
         )}
       </div>
     </div>
+  );
+}
+
+
+// Split out so useDashboardRun only ever mounts once the dashboard (and,
+// for a private share, the viewer token) is known - the gate/loading/
+// error states above render before this component exists.
+function PublicDashboardBody({
+  dash,
+  activePage,
+  activePageIndex,
+  setActivePageIndex,
+  byHostname,
+  resolverKey,
+  viewerToken,
+}: {
+  dash: PublicDashboard;
+  activePage: PublicDashboard["pages"][number] | undefined;
+  activePageIndex: number;
+  setActivePageIndex: (i: number) => void;
+  byHostname: boolean;
+  resolverKey: string;
+  viewerToken: string | undefined;
+}) {
+  const warehouse = Boolean(dash.warehouse_native);
+  // The slug-keyed and hostname-keyed public twins of run / options /
+  // preview-filtered (backend public_router / public_domains_router). The
+  // public filter-options endpoint (a file dashboard's distinct values,
+  // derived from the page's own materialised rows) is slug-only.
+  const source = useMemo<RunSource>(
+    () =>
+      warehouse
+        ? {
+            kind: "warehouse",
+            run: (pageId, req, signal) =>
+              byHostname
+                ? publicDashboardApi.runPageByHostname(resolverKey, pageId, req, viewerToken, signal)
+                : publicDashboardApi.runPage(resolverKey, pageId, req, viewerToken, signal),
+            options: (paramId, opts, signal) =>
+              byHostname
+                ? publicDashboardApi.parameterOptionsByHostname(resolverKey, paramId, opts, viewerToken, signal)
+                : publicDashboardApi.parameterOptions(resolverKey, paramId, opts, viewerToken, signal),
+          }
+        : {
+            kind: "file",
+            preview: (pageId, filters, blockFilters) =>
+              byHostname
+                ? publicDashboardApi.previewFilteredByHostname(resolverKey, pageId, filters, blockFilters, viewerToken)
+                : publicDashboardApi.previewFiltered(resolverKey, pageId, filters, blockFilters, viewerToken),
+            distinctValues:
+              !byHostname && activePage
+                ? (column) => publicDashboardApi.getColumnFilterOptions(resolverKey, activePage.id, column, viewerToken).then((r) => ({ values: r.values, dtype: r.dtype }))
+                : undefined,
+          },
+    [warehouse, byHostname, resolverKey, viewerToken, activePage]
+  );
+  const run = useDashboardRun({ dashboard: dash, page: activePage, source });
+  // 2026-10-07 (analyst canvas round): the published link can read the
+  // page as a canvas too - SQL visible, nothing editable, no comments
+  // (there is no identity to attribute one to). Keyed by the share's
+  // slug/hostname since PublicDashboardOut never carries the id.
+  const [viewMode, setViewMode] = useDashboardViewMode(`public:${resolverKey}`);
+
+  return (
+    <DashboardShell
+      dashboard={dash}
+      page={activePage}
+      run={run}
+      source={source}
+      mode={warehouse ? "warehouse" : "file"}
+      owner={null}
+      view={viewMode}
+      onViewChange={setViewMode}
+      beforeContent={
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          {activePage && <DataFreshnessBadge blocks={activePage.blocks} />}
+          {dash.pages.length > 1 && (
+            <div className="flex items-center gap-1.5 flex-wrap" role="tablist" aria-label="Pages">
+              {dash.pages.map((p, i) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={i === activePageIndex}
+                  className={`dash-pagepill text-xs font-medium px-3.5 py-1.5 border transition ${
+                    i === activePageIndex ? "bg-primary text-white border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
+                  }`}
+                  onClick={() => setActivePageIndex(i)}
+                >
+                  {p.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      }
+    />
   );
 }
