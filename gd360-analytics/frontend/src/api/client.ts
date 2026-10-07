@@ -615,6 +615,9 @@ export type DataSourceSummary = {
   id: string;
   name: string;
   kind: string;
+  // The workspace this source lives in (backend DataSourceOut) - whose
+  // brand kit its dashboards and chat charts start from.
+  workspace_id?: string | null;
   connection_info: Record<string, unknown>;
   read_only: boolean;
   schema_cache?: Record<string, unknown> | null;
@@ -1110,6 +1113,8 @@ export type ConversationMessage = {
   pushdown_skipped_reason?: PushdownSkippedReason | null;
   builder_suggestion?: QueryBuilderSpec | null;
   exact_total_rows?: number | null;
+  // 2026-10-07 ("say what was filtered"): see QueryFilters below.
+  query_filters?: QueryFilters | null;
   created_at: string;
 };
 
@@ -1187,6 +1192,45 @@ export type BuilderColumns = Record<string, { name: string; type: string | null 
 // The fields a live /chat response carries on top of the older ones -
 // Workspace.tsx reads these straight off the axios response and maps them
 // onto ChatPanel's ChatTurn (see its warehouse fields).
+// 2026-10-07 (chart-integrity round, "say what was filtered"): the row
+// filters behind an answer's numbers - read off the SQL that ran by the
+// backend (services/sql_filters.py) and stored on the message. See backend
+// models.Message.query_filters for the full meaning of each field.
+//   parsed     false = the statement could not be read; nothing is claimed
+//   filters    each WHERE predicate / conditional aggregate / HAVING
+//   text       the one line to show ("Filters applied by this query: ...");
+//              null when there are no filters (or parsed is false)
+//   writer_note  the SQL writer's own statement of a filter it added that
+//                the question did not ask for
+//   carried    true when the filters come from the saved table(s) a pandas
+//              answer was computed over
+export type QueryFilter = {
+  kind: "where" | "conditional" | "having";
+  predicate: string;
+  label?: string | null;
+  table?: string | null;
+  applies_to?: string | null;
+  source: "query" | "saved_table";
+  saved_table?: string | null;
+};
+export type QueryFilters = {
+  parsed: boolean;
+  filters: QueryFilter[];
+  tables?: string[];
+  text?: string | null;
+  writer_note?: string | null;
+  carried?: boolean;
+};
+
+/** The quiet line under a chart's title. null = say nothing (a file
+ *  answer with nothing to report, or a statement that could not be read). */
+export function queryFiltersLine(q: QueryFilters | null | undefined): string | null {
+  if (!q || !q.parsed) return null;
+  if (q.text) return q.writer_note ? `${q.text} \u00b7 GD360 added a filter that was not in your question: ${q.writer_note}` : q.text;
+  if (q.carried) return null;
+  return "Filters applied by this query: none \u2014 every row is included";
+}
+
 export type WarehouseTurnFields = {
   pushdown_sql?: string | null;
   pushdown_provider?: string | null;
@@ -1198,6 +1242,7 @@ export type WarehouseTurnFields = {
   builder_suggestion?: QueryBuilderSpec | null;
   builder_columns?: BuilderColumns | null;
   exact_total_rows?: number | null;
+  query_filters?: QueryFilters | null;
 };
 
 // The two optional, mutually exclusive ways to finish a warehouse question
@@ -1353,6 +1398,11 @@ export const folderApi = {
 // exactly what that does and doesn't allow.
 export type WorkspaceRole = "owner" | "member" | "viewer";
 
+// 2026-10-07 (identity-colour round): the appearance document's types live
+// with the code that resolves it (src/dashboard/theme/appearance.ts). The
+// import sits here, not at the top, so the lines above keep their numbers.
+import type { BrandKit, ColorRegistry, DashboardAppearance } from "../dashboard/theme/appearance";
+
 export type WorkspaceSummary = {
   id: string;
   name: string;
@@ -1362,7 +1412,12 @@ export type WorkspaceSummary = {
   datasource_count: number;
   invite_token: string;
   created_at: string;
+  // 2026-10-07 (identity-colour round): the workspace brand kit (null =
+  // none) - see workspaceApi.getBrandKit.
+  brand_kit?: BrandKit | null;
 };
+
+export type WorkspaceBrandKit = { workspace_id: string; workspace_name: string; brand_kit: BrandKit | null; can_edit: boolean };
 
 export type WorkspaceMember = {
   user_id: string;
@@ -1396,6 +1451,11 @@ export const workspaceApi = {
   // is never a valid target (see backend update_member_role).
   updateMemberRole: (id: string, userId: string, role: "member" | "viewer") =>
     api.patch<WorkspaceMember>(`/workspaces/${id}/members/${userId}/role`, { role }).then((r) => r.data),
+  // 2026-10-07 (identity-colour round): the workspace brand kit - the look
+  // every dashboard of the workspace starts from. Any member reads it;
+  // only the owner writes it (null clears it).
+  getBrandKit: (id: string) => api.get<WorkspaceBrandKit>(`/workspaces/${id}/brand-kit`).then((r) => r.data),
+  setBrandKit: (id: string, kit: BrandKit | null) => api.put<WorkspaceBrandKit>(`/workspaces/${id}/brand-kit`, { brand_kit: kit }).then((r) => r.data),
   previewInvite: (token: string) => api.get<InvitePreview>(`/invites/${token}`).then((r) => r.data),
   joinInvite: (token: string) => api.post<WorkspaceSummary>(`/invites/${token}/join`).then((r) => r.data),
 };
@@ -1556,6 +1616,16 @@ export type BlockSpecMeasure = {
   expr?: string | null;
 };
 export type BlockSpecFilter = { column: string; op: string; value?: any };
+// 2026-10-07 (chart-types round): two grammar extensions, each present
+// only when used (backend services/query_builder.py):
+//   date_parts  dimensions derived from a date column - the weekday or the
+//               month-of-year of each row, as an integer (weekday 1 =
+//               Monday .. 7 = Sunday, month 1..12, quarter 1..4, day 1..31,
+//               hour 0..23). What a "month x weekday" heatmap groups by.
+//   bins        a histogram of one numeric column; the bin edges are
+//               computed in the warehouse (see BlockResult.bins).
+export type BlockSpecDatePart = { column: string; part: "weekday" | "month" | "quarter" | "day" | "hour"; alias?: string };
+export type BlockSpecBins = { column: string; count?: number; min?: number | null; max?: number | null; integer?: boolean };
 export type BlockSpec = {
   table: string;
   time?: { column: string; grain: "day" | "week" | "month" | "quarter" | "year" } | null;
@@ -1566,7 +1636,56 @@ export type BlockSpec = {
   limit?: number;
   compare_prior_period?: boolean;
   sparkline?: boolean;
+  date_parts?: BlockSpecDatePart[];
+  bins?: BlockSpecBins | null;
 };
+
+// ---- Forecast and anomalies (2026-10-07) - backend services/forecast.py.
+// A block with config.forecast = {horizon, interval, anomalies} gets
+// `forecast` and `anomalies` in its run result, computed on the server
+// from the block's aggregated series (never raw rows). ----
+export type ForecastOptions = { horizon: number; interval: "80" | "95" | "both"; anomalies?: boolean };
+export type ForecastPoint = { period: string; value: number; lo80?: number; hi80?: number; lo95?: number; hi95?: number };
+export type ForecastBacktest = {
+  mape: number | null; smape: number | null; mase: number | null; mae: number | null; folds: number; horizon: number;
+  baseline?: { method: string; method_key: string; mape: number | null; smape: number | null; mae: number | null } | null;
+};
+export type ForecastSeries = {
+  key: string;
+  measure: string;
+  status: "ok" | "refused";
+  reason: string | null;
+  points: ForecastPoint[];
+  method: string | null;
+  method_key?: string | null;
+  season_length: number | null;
+  backtest: ForecastBacktest | null;
+  notes: string[];
+  fitted_through?: string;
+  excluded?: string[];
+  horizon?: number;
+};
+export type PartialPeriods = {
+  first: { period: string; from?: string; days: number; of: number } | null;
+  last: { period: string; through?: string; days: number; of: number } | null;
+};
+export type BlockForecast = {
+  status: "ok" | "refused";
+  reason: string | null;
+  horizon: number;
+  interval: "80" | "95" | "both";
+  grain: string;
+  points: ForecastPoint[];
+  method: string | null;
+  season_length: number | null;
+  backtest: ForecastBacktest | null;
+  notes: string[];
+  series: ForecastSeries[];
+  partial?: PartialPeriods;
+  anomalies?: BlockAnomaly[];
+};
+export type BlockAnomaly = { period: string; value: number; expected: number; lo: number; hi: number; direction: "up" | "down"; series?: string; measure?: string };
+export type HistogramBins = { column: string; start: number; width: number; count: number; end: number; integer: boolean; underflow: boolean; overflow: boolean; stats?: Record<string, number | null> | null };
 
 // A rail control's definition (Dashboard.parameters[]). `control` is one of
 // backend _PARAM_CONTROLS; `name` is what a SQL cell references ({{name}}).
@@ -1628,6 +1747,15 @@ export type BlockResult = {
   source_block_id?: string | null;
   parameters?: string[];
   missing_parameters?: string[];
+  // 2026-10-07 (chart-types round) - see backend dashboard_engine's
+  // docstring: derived date dimensions, a histogram's edges, the buckets
+  // the data only partly covers, and the forecast / anomalies of a block
+  // with config.forecast. None of these holds SQL.
+  date_parts?: Record<string, string> | null;
+  bins?: HistogramBins | null;
+  partial?: PartialPeriods | null;
+  forecast?: BlockForecast | null;
+  anomalies?: BlockAnomaly[] | null;
 };
 
 export type RunPageRequest = {
@@ -1662,6 +1790,10 @@ export type RunPageResponse = {
   // first and last date of the dashboard's date column and of every
   // date_range control's column. {} on a partial run (block_ids).
   date_bounds?: Record<string, { min: string; max: string }>;
+  // 2026-10-07 (identity-colour round): the dashboard's colour registry
+  // after this run ({column: {value: palette slot}}) - new values the run
+  // showed are already in it. Absent on an older backend.
+  colors?: ColorRegistry | null;
 };
 
 // One block's grid placement in PATCH /pages/{page_id}/layout.
@@ -1717,6 +1849,13 @@ export type WarehouseDashboardFields = {
   saved_views: DashboardSavedView[];
   default_period: DashboardPeriod | string | null;
   date_column: string | null;
+  // 2026-10-07 (identity-colour round): how the dashboard looks, resolved
+  // by the backend (services/appearance.effective_appearance) - palette,
+  // colour by value / single colour, pins, the colour registry, density,
+  // radius, font, currency, locale, the published link's default theme and
+  // footer note. The owner's and the public payload carry the same one.
+  // Absent on an older backend (the product defaults apply).
+  appearance?: DashboardAppearance | null;
 };
 
 // 2026-09-25 (Round 5, template gallery): what GET /dashboard-builder/
@@ -1836,6 +1975,17 @@ export type DashboardBranding = {
 // - see dashboardBuilderApi.addShareEmail/removeShareEmail below.
 export type DashboardShareEmail = { id: string; email: string };
 
+// PATCH /dashboard-builder/{id}/appearance - see backend schemas.UpdateAppearanceRequest.
+export type AppearancePatch = Partial<Pick<DashboardAppearance, "palette" | "color_mode" | "single_color" | "theme_default" | "density" | "radius" | "font" | "currency" | "locale" | "footer_note" | "value_colors">> & {
+  reset?: "workspace" | "colors";
+};
+export type AppearanceResult = {
+  appearance: DashboardAppearance;
+  workspace_brand_kit: BrandKit | null;
+  brand_workspace_id: string | null;
+  brand_workspace_name: string | null;
+};
+
 export type DashboardBuilderDetail = DashboardBranding & {
   id: string;
   name: string;
@@ -1899,6 +2049,12 @@ export type DashboardBuilderDetail = DashboardBranding & {
   // id, "page:<id>" or "dashboard").
   tables: Record<string, { name: string; type?: string | null }[]>;
   comment_counts: Record<string, { open: number; total: number }>;
+  // 2026-10-07 (identity-colour round): the workspace brand kit this
+  // dashboard follows (or would follow after "Reset to workspace brand")
+  // and whose it is. `appearance` itself is in WarehouseDashboardFields.
+  workspace_brand_kit?: BrandKit | null;
+  brand_workspace_id?: string | null;
+  brand_workspace_name?: string | null;
 } & WarehouseDashboardFields;
 
 // 2026-09-28 (senior-UX round): the lightweight shape behind
@@ -1950,7 +2106,13 @@ export type ManualAgg = "sum" | "avg" | "count" | "min" | "max";
 // The style panel's chart-type choices - verbatim from backend
 // _RESTYLE_CHART_TYPES, the subset of chart_builder.build_figure's types
 // that always work from a plain two-column (dimension, measure) result.
-export type RestyleChartType = "bar" | "line" | "area" | "pie" | "horizontal_bar" | "scatter";
+// 2026-10-07 (chart-types round): every native chart form may be asked for
+// (the backend checks the block's rows can be drawn as it; "auto" is the
+// recommender's own pick).
+export type RestyleChartType =
+  | "bar" | "line" | "area" | "pie" | "horizontal_bar" | "scatter"
+  | "stacked_bar" | "stacked_bar_100" | "stacked_area" | "stacked_area_100" | "combo" | "donut" | "treemap" | "map" | "heatmap"
+  | "pivot" | "bubble" | "funnel" | "waterfall" | "histogram" | "bullet" | "grouped_bar" | "auto";
 
 // 2026-09-24 (Phase 2b): what makes a chart/table/kpi block able to
 // respond to a cross-filter at all - stored on the block's own config
@@ -2204,7 +2366,11 @@ export const dashboardBuilderApi = {
     type: DashboardBlockType,
     title?: string,
     position?: { x: number; y: number },
-    config?: Record<string, any>
+    config?: Record<string, any>,
+    // 2026-10-07 (chart-types round): "forecast" - a time-series chart
+    // with its forecast already on (rows per period over the dashboard's
+    // date column), ready to be edited.
+    template?: "forecast"
   ) =>
     api
       .post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks`, {
@@ -2214,6 +2380,7 @@ export const dashboardBuilderApi = {
         x: position?.x,
         y: position?.y,
         config: config || undefined,
+        template: template || undefined,
       })
       .then((r) => r.data),
 
@@ -2299,6 +2466,16 @@ export const dashboardBuilderApi = {
       // "gauge" - see ManualRecipe above.
       target_value?: number;
       max_value?: number;
+      // 2026-10-07 (chart-types round): what the new chart forms need on
+      // top of "one measure by one column" - a second dimension, more
+      // measures, a time bucket on group_by_column, a histogram's bins,
+      // the forecast (with time_grain). `table`: warehouse sources.
+      table?: string;
+      group_by_column_2?: string | null;
+      extra_measures?: { agg: ManualAgg; column: string | null }[];
+      time_grain?: "day" | "week" | "month" | "quarter" | "year" | null;
+      bins?: { column: string; count?: number; min?: number | null; max?: number | null } | null;
+      forecast?: boolean;
     }
   ) =>
     api
@@ -2337,11 +2514,11 @@ export const dashboardBuilderApi = {
   // matched_rows could never be anything but a number.
   previewFiltered: (dashboardId: string, pageId: string, filters: FilterCriterion[], blockFilters?: Record<string, FilterCriterion[]>) =>
     api
-      .post<{ blocks: FilteredBlock[]; matched_rows: number | null; date_bounds?: Record<string, { min: string; max: string }> }>(
+      .post<{ blocks: FilteredBlock[]; matched_rows: number | null; date_bounds?: Record<string, { min: string; max: string }>; colors?: ColorRegistry | null }>(
         `/dashboard-builder/${dashboardId}/pages/${pageId}/preview-filtered`,
         { filters, block_filters: blockFilters || {} }
       )
-      .then((r) => ({ blocks: r.data.blocks, matchedRows: r.data.matched_rows, dateBounds: r.data.date_bounds || null })),
+      .then((r) => ({ blocks: r.data.blocks, matchedRows: r.data.matched_rows, dateBounds: r.data.date_bounds || null, colors: r.data.colors || null })),
 
   // Switches an existing chart block to a different chart type - no AI
   // call, rebuilt deterministically from the tidy data already stored on
@@ -2400,6 +2577,15 @@ export const dashboardBuilderApi = {
       background_color?: string;
     }
   ) => api.patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/branding`, payload).then((r) => r.data),
+
+  // 2026-10-07 (identity-colour round): the dashboard's appearance. Only
+  // the keys sent are changed. `value_colors` replaces the pinned colours;
+  // `reset: "workspace"` follows the workspace brand kit again, `reset:
+  // "colors"` forgets the pins and the colour registry. Answers with the
+  // resolved appearance (not the whole dashboard): the Appearance sheet
+  // saves on every change and applies it optimistically.
+  updateAppearance: (dashboardId: string, payload: AppearancePatch, signal?: AbortSignal) =>
+    api.patch<AppearanceResult>(`/dashboard-builder/${dashboardId}/appearance`, payload, { signal }).then((r) => r.data),
 
   // file must already be validated client-side (png/jpeg/webp, under the
   // backend's size cap) - the backend re-validates both regardless, this
@@ -2504,8 +2690,27 @@ export const dashboardBuilderApi = {
     api.post<UpgradeBlocksResult>(`/dashboard-builder/${dashboardId}/upgrade-blocks`).then((r) => r.data),
   // The same spec rendered as another chart type / block shape - no model
   // call, no new query. Edit access; undo-able.
+  // chart_type "auto" is "swap to best": the recommender's pick for the
+  // block's current result. A form the block's data cannot be drawn as is
+  // a 400 whose `detail` says what it needs.
   swapBlock: (dashboardId: string, blockId: string, payload: { chart_type?: string; type?: DashboardBlockType }) =>
     api.post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}/swap`, payload).then((r) => r.data),
+  // 2026-10-07 (chart-types round): the "Forecast..." sheet. Stores
+  // config.forecast = {horizon, interval, anomalies} (or removes it); the
+  // next run of the block carries `forecast` and `anomalies`. A block
+  // with no time axis is a 400 with the reason.
+  setBlockForecast: (dashboardId: string, blockId: string, payload: { enabled: boolean; horizon?: number | null; interval?: "80" | "95" | "both"; anomalies?: boolean }) =>
+    api.patch<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/blocks/${blockId}/forecast`, payload).then((r) => r.data),
+  // The same forecaster for a series the page already holds (a chat
+  // answer that is a time series). Nothing is queried.
+  // `values` = one series; `series` = several over the same periods (with
+  // `series_by` the values of one breakdown column of `measure`, without
+  // it one measure each).
+  forecastSeries: (payload: {
+    periods: string[]; values?: (number | null)[]; series?: { key: string; values: (number | null)[] }[]; series_by?: boolean; measure?: string;
+    grain: string; horizon?: number | null; interval?: "80" | "95" | "both"; anomalies?: boolean; additive?: boolean; rate?: boolean;
+  }) =>
+    api.post<BlockForecast>(`/dashboard-builder/forecast/series`, payload).then((r) => r.data),
 
   // ---- 2026-10-07 (dashboard edit mode): the calls the editable dashboard
   // (src/dashboard/edit/) makes on top of the block endpoints above. ----
@@ -2560,6 +2765,10 @@ export type ProposalBlock = {
   // "invalid" blocks are shown with their real reason and never created.
   status: "ok" | "invalid";
   error: string | null;
+  // 2026-10-07 (chart-types round): why this chart form was chosen
+  // ("Country column -> map"), and the forecast options when asked for.
+  chart_reason?: string | null;
+  forecast?: ForecastOptions | null;
   // Compiled at-rest SQL for an ok warehouse block ("Show SQL" before commit).
   sql: string | null;
   columns: { name: string; type?: string | null }[];
@@ -2786,12 +2995,12 @@ export const publicDashboardApi = {
     viewerToken?: string
   ) =>
     publicApi
-      .post<{ blocks: FilteredBlock[]; matched_rows: number | null }>(
+      .post<{ blocks: FilteredBlock[]; matched_rows: number | null; colors?: ColorRegistry | null }>(
         `/public/dashboards/${slug}/pages/${pageId}/preview-filtered`,
         { filters, block_filters: blockFilters || {} },
         { headers: viewerToken ? { "X-Dashboard-Access-Token": viewerToken } : undefined }
       )
-      .then((r) => ({ blocks: r.data.blocks, matchedRows: r.data.matched_rows })),
+      .then((r) => ({ blocks: r.data.blocks, matchedRows: r.data.matched_rows, colors: r.data.colors || null })),
 
   // Companion to previewFiltered above: what a filter block's Values tab
   // (ColumnFilterSpecEditor) shows on the public view, since it can't call
@@ -2863,12 +3072,12 @@ export const publicDashboardApi = {
     viewerToken?: string
   ) =>
     publicApi
-      .post<{ blocks: FilteredBlock[]; matched_rows: number | null }>(
+      .post<{ blocks: FilteredBlock[]; matched_rows: number | null; colors?: ColorRegistry | null }>(
         `/public/domains/${encodeURIComponent(hostname)}/pages/${pageId}/preview-filtered`,
         { filters, block_filters: blockFilters || {} },
         { headers: viewerToken ? { "X-Dashboard-Access-Token": viewerToken } : undefined }
       )
-      .then((r) => ({ blocks: r.data.blocks, matchedRows: r.data.matched_rows })),
+      .then((r) => ({ blocks: r.data.blocks, matchedRows: r.data.matched_rows, colors: r.data.colors || null })),
 };
 
 function publicRunBody(req: RunPageRequest) {
