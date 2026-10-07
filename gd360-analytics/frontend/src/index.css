@@ -41,7 +41,8 @@
 }
 
 :root[data-theme="light"] {
-  --color-base: 250 250 248;
+  /* 2026-10-07: #f6f6f3, the brief's page ground (was 250 250 248). */
+  --color-base: 246 246 243;
   --color-surface: 255 255 255;
   --color-surface2: 244 244 241;
   --color-border: 227 227 222;
@@ -53,6 +54,131 @@
   --glow-2: rgba(15, 92, 70, 0.03);
   --card-alpha: 1;
   color-scheme: light;
+}
+
+/* ============================================================
+   Design-system tokens (2026-10-06, dashboard redesign - System.dc.html +
+   DESIGN_BRIEF.md). Everything the kit under src/ui/ reads that the eight
+   original --color-* triplets above did not already cover. Same RGB-triplet
+   convention so tailwind.config.js can expose each as a `<alpha-value>`
+   aware utility (bg-subtle, text-secondary, border-tint-border, ...), and
+   the same dark-is-the-bare-:root / light-is-[data-theme="light"] split as
+   every other token in this file. The eight originals are untouched - the
+   kit builds on them (surface, border, primary, accent, text, muted) and
+   only ADDS the missing steps:
+     subtle          table heads, gridlines, chip fills   (#f1f1ed light)
+     border-strong   hover borders, radius specimens      (#d4d4ce light)
+     secondary       supporting copy                      (#4f4f4b light)
+     faint           disabled text, out-of-month days     (#a8a8a4 light)
+     tint            active chips, good banners           (#e8f3ee light)
+     tint-border     border of the above                  (#c3dfd3 light)
+     brand-ink       text/icon on tint (primary in light, accent in dark -
+                     the dark primary #147a5c fails 4.5:1 on #121214 so it
+                     can never be body ink there)
+     good/warning/danger  status fill + ink + border pairs
+     seq-1..6        one-hue sequential ramp, light -> dark in light mode,
+                     dark -> light in dark mode (so "more" still reads as
+                     "more contrast against the page" either way)
+   Dark values were picked so each pair keeps >= 4.5:1 ink-on-fill. */
+:root {
+  --color-subtle: 26 26 29;
+  --color-border-strong: 58 58 63;
+  --color-secondary: 190 190 186;
+  --color-faint: 104 104 102;
+  --color-tint: 18 37 33;
+  --color-tint-border: 24 66 54;
+  --color-brand-ink: 110 201 170;
+  --color-good: 110 201 170;
+  --color-good-fill: 18 37 33;
+  --color-good-border: 24 66 54;
+  --color-warning: 240 170 70;
+  --color-warning-fill: 44 32 14;
+  --color-warning-border: 92 62 20;
+  --color-danger: 248 113 113;
+  --color-danger-fill: 48 20 18;
+  --color-danger-border: 110 40 36;
+  --color-seq-1: 18 37 33;
+  --color-seq-2: 20 66 52;
+  --color-seq-3: 31 110 85;
+  --color-seq-4: 79 154 124;
+  --color-seq-5: 143 196 173;
+  --color-seq-6: 195 223 211;
+  /* Chart series, assigned in order, never cycled (DESIGN_BRIEF.md). The
+     palette is the same in both themes - System.dc.html: "Chart series
+     palette stays the same in dark mode". Source of truth for the hexes is
+     src/lib/chartStyle.ts SIGNATURE_COLORS (re-exported by src/ui/tokens.ts). */
+  --color-series-1: 57 135 229;
+  --color-series-2: 217 89 38;
+  --color-series-3: 25 158 112;
+  --color-series-4: 201 133 0;
+  --color-series-5: 213 81 129;
+  --color-series-6: 0 131 0;
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-pop: 0 8px 24px -8px rgb(0 0 0 / 0.6), 0 1px 2px rgb(0 0 0 / 0.4);
+}
+:root[data-theme="light"] {
+  --color-subtle: 241 241 237;
+  --color-border-strong: 212 212 206;
+  --color-secondary: 79 79 75;
+  --color-faint: 168 168 164;
+  --color-tint: 232 243 238;
+  --color-tint-border: 195 223 211;
+  --color-brand-ink: 15 92 70;
+  --color-good: 15 92 70;
+  --color-good-fill: 232 243 238;
+  --color-good-border: 195 223 211;
+  --color-warning: 180 83 9;
+  --color-warning-fill: 253 241 227;
+  --color-warning-border: 243 220 189;
+  --color-danger: 180 35 24;
+  --color-danger-fill: 253 236 234;
+  --color-danger-border: 246 201 196;
+  --color-seq-1: 232 243 238;
+  --color-seq-2: 195 223 211;
+  --color-seq-3: 143 196 173;
+  --color-seq-4: 79 154 124;
+  --color-seq-5: 31 111 85;
+  --color-seq-6: 15 74 56;
+  --color-series-1: 57 135 229;
+  --color-series-2: 217 89 38;
+  --color-series-3: 25 158 112;
+  --color-series-4: 201 133 0;
+  --color-series-5: 213 81 129;
+  --color-series-6: 0 131 0;
+  --shadow-card: 0 1px 2px rgb(22 22 21 / 0.04);
+  --shadow-pop: 0 8px 24px -8px rgb(22 22 21 / 0.18), 0 1px 2px rgb(22 22 21 / 0.06);
+}
+/* Theme-independent scale tokens: radius, spacing (8-pt grid, 4 only inside
+   components), the type scale and the caps tracking. Exposed in
+   tailwind.config.js too (rounded-ctl/rounded-card, text-caption/-ui/-body/
+   -section/-title/-kpi) - the variables are here so hand-written CSS and
+   inline styles can read the same numbers. */
+:root {
+  --radius-sm: 6px;
+  --radius-ctl: 8px;
+  --radius-card: 12px;
+  --radius-pill: 999px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --text-caption: 12px;
+  --text-ui: 13.5px;
+  --text-body: 14px;
+  --text-section: 16px;
+  --text-title: 20px;
+  --text-kpi: 28px;
+  --tracking-caps: 0.04em;
+  --leading: 1.45;
+  --control-h: 36px;
+  --control-h-lg: 40px;
+  --chip-h: 32px;
+  --rail-w: 56px;
+  --topbar-h: 56px;
+  --filter-rail-w: 260px;
+  --sheet-w: 420px;
 }
 
 html, body, #root {
@@ -626,7 +752,7 @@ input[type="radio"] {
    "mechanism" system diagram (a source cluster -> a pulsing engine hub
    -> verified output, joined by an animated traveling dot) - see
    Landing.tsx's own top comment for the full reasoning. Everything here
-   is built on the same --color-*/--dash-accent-* tokens the rest of the
+   is built on the same --color-* and --dash-accent-* tokens the rest of the
    app already uses, so it follows the light/dark toggle exactly like
    every other page - unlike the dark-only design-exploration mockup
    this was built from, nothing here is a hardcoded dark palette.
@@ -746,3 +872,144 @@ input[type="radio"] {
   }
 }
 @keyframes landing-arrow-dot-v { 0% { top: 4%; opacity: 0; } 18% { opacity: 1; } 82% { opacity: 1; } 100% { top: 96%; opacity: 0; } }
+
+/* ============================================================
+   UI kit (src/ui/*) - the few things Tailwind utilities can't express on
+   their own. Everything else in the kit is plain utility classes over the
+   tokens above. 2026-10-06, dashboard redesign.
+   ============================================================ */
+
+/* Shared focus ring: 2 px accent, offset 1 px, only for keyboard focus. Every
+   kit control carries `.ui-focus`. */
+.ui-focus:focus { outline: none; }
+.ui-focus:focus-visible {
+  outline: 2px solid rgb(var(--color-accent));
+  outline-offset: 1px;
+}
+.ui-focus-inset:focus-visible {
+  outline: 2px solid rgb(var(--color-accent));
+  outline-offset: -2px;
+}
+
+/* RangeSlider: two native <input type="range"> stacked on one track. The
+   inputs themselves are pointer-transparent (so the lower one never shadows
+   the upper one's thumb); only their thumbs take the pointer. Keyboard
+   arrows/Home/End keep working natively on whichever thumb has focus. */
+.ui-range-input {
+  -webkit-appearance: none;
+  appearance: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  width: 100%;
+  height: 16px;
+  margin: 0;
+  background: transparent;
+  pointer-events: none;
+  outline: none;
+}
+.ui-range-input::-webkit-slider-runnable-track { background: transparent; height: 16px; }
+.ui-range-input::-moz-range-track { background: transparent; height: 16px; }
+.ui-range-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  pointer-events: auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgb(var(--color-surface));
+  border: 2px solid rgb(var(--color-primary));
+  box-sizing: border-box;
+  cursor: grab;
+  transition: box-shadow 0.12s ease;
+}
+.ui-range-input::-moz-range-thumb {
+  pointer-events: auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgb(var(--color-surface));
+  border: 2px solid rgb(var(--color-primary));
+  box-sizing: border-box;
+  cursor: grab;
+}
+.ui-range-input:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgb(var(--color-accent) / 0.35); }
+.ui-range-input:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px rgb(var(--color-accent) / 0.35); }
+.ui-range-input:disabled::-webkit-slider-thumb { cursor: not-allowed; border-color: rgb(var(--color-faint)); }
+.ui-range-input:disabled::-moz-range-thumb { cursor: not-allowed; border-color: rgb(var(--color-faint)); }
+
+/* ChartCard loading state: a slow, low-contrast sweep over placeholder
+   blocks - never a spinner in the middle of a chart. */
+@keyframes ui-shimmer { from { background-position: -200% 0; } to { background-position: 200% 0; } }
+.ui-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgb(var(--color-subtle)) 0%,
+    rgb(var(--color-border) / 0.7) 50%,
+    rgb(var(--color-subtle)) 100%
+  );
+  background-size: 200% 100%;
+  animation: ui-shimmer 1.6s ease-in-out infinite;
+  border-radius: 6px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-shimmer { animation: none; }
+}
+
+/* Button loading spinner: a 14 px ring in currentColor. */
+@keyframes ui-spin { to { transform: rotate(360deg); } }
+.ui-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: ui-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+/* Native <select> with the kit's own chevron (the glyph is a fixed mid-gray
+   that reads on both themes' surfaces, same reasoning as .dash-select). */
+.ui-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a8a86' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 14px;
+}
+
+/* Sheet: slide-in from the right. */
+@keyframes ui-sheet-in { from { transform: translateX(24px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@keyframes ui-fade-in { from { opacity: 0; } to { opacity: 1; } }
+.ui-sheet-panel { animation: ui-sheet-in 0.18s ease-out; }
+.ui-sheet-backdrop { animation: ui-fade-in 0.18s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .ui-sheet-panel, .ui-sheet-backdrop { animation: none; }
+}
+
+/* Hide the native number spinner on NumberInput - the kit draws its own
+   stepper only when asked to. */
+.ui-number::-webkit-outer-spin-button,
+.ui-number::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.ui-number { -moz-appearance: textfield; appearance: textfield; }
+
+/* 2026-10-07 (Option A dashboard view, src/dashboard/): "Export -> Print /
+   Save as PDF" prints the dashboard body only - no app chrome, no filter
+   rail, no toolbars; blocks flow one after another and never split
+   across a page. Tailwind's own `print:` variant covers the small bits
+   (print:hidden on the actions row and the rail). */
+@media print {
+  @page { margin: 12mm; }
+  body { background: #ffffff !important; }
+  [data-dashboard-shell] ~ *, .dash-shell > header, .dash-shell > nav, nav[aria-label="Primary"],
+  aside[aria-label="Filters"], [data-dashboard-actions], [data-refilter-shimmer] { display: none !important; }
+  .dash-shell { min-height: 0 !important; }
+  [data-dashboard-shell] { display: block !important; }
+  [data-dashboard-shell] main { padding: 0 !important; }
+  [data-block-grid] { display: block !important; }
+  [data-block-grid] > div, [data-kpi-strip] > * { break-inside: avoid; page-break-inside: avoid; margin-bottom: 12px; }
+  [data-kpi-strip] { display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+  .ui-shimmer { animation: none !important; display: none !important; }
+}
