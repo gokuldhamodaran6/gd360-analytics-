@@ -5,6 +5,14 @@ import { useAuth } from "../api/AuthContext";
 import { datasourceApi, DataSourceSummary, WorkspaceDetail, WorkspaceSummary, workspaceApi } from "../api/client";
 import DataSourceForm, { connectionKindMeta, dataSourceCategory, DATA_SOURCE_CATEGORIES } from "./DataSourceForm";
 import { ChipCloseIcon, SourceDot } from "./ChatPanel";
+// 2026-10-06 (design-system kit): the rail's nav glyphs now come from the
+// shared stroke icon set in src/ui/Icons.tsx (same 24-unit, 1.8-stroke
+// drawings as before - just one copy for the whole app) and the rail's
+// chrome is restyled to the System.dc.html spec: a 56 px icon rail with the
+// 30 px "G" mark, muted stroke icons, the active one in brand ink on the
+// brand tint. Navigation, routes, the workspace switcher and the mobile
+// drawer behave exactly as they did.
+import { BarChartIcon, ClockIcon, DatabaseIcon, FlaskIcon, GridIcon, NetworkIcon, ShieldCheckIcon, SidebarIcon } from "../ui";
 
 // 2026-09-23: the persistent left nav rail from the workspace-structure
 // revamp, modeled on the reference screenshots Gokul shared (a "Data
@@ -25,42 +33,17 @@ import { ChipCloseIcon, SourceDot } from "./ChatPanel";
 // Workspace.tsx, Profile.tsx and the admin pages keep their current
 // top-bar-only layout until a later round.
 
-function ProjectsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="3" width="7" height="7" rx="1.5" />
-      <rect x="14" y="3" width="7" height="7" rx="1.5" />
-      <rect x="3" y="14" width="7" height="7" rx="1.5" />
-      <rect x="14" y="14" width="7" height="7" rx="1.5" />
-    </svg>
-  );
-}
+const ProjectsIcon = () => <GridIcon size={18} />;
 
 // 2026-09-23 (shared dashboards v1): a second top-level nav entry next to
 // Projects, for the new /dashboards list page.
-function DashboardsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 3v18h18" />
-      <rect x="7" y="12" width="3" height="6" rx="0.5" />
-      <rect x="13" y="8" width="3" height="10" rx="0.5" />
-      <rect x="18" y="5" width="3" height="13" rx="0.5" />
-    </svg>
-  );
-}
+const DashboardsIcon = () => <BarChartIcon size={18} />;
 
 // 2026-09-28 (scheduled auto-refresh + background jobs round): the Jobs
 // page's own nav entry, between Dashboards and Data Sources - a scheduled
 // refresh is "a dashboard doing something automatically", which reads
 // closer to Dashboards than to browsing/connecting data.
-function JobsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7v5l3.5 2" />
-    </svg>
-  );
-}
+const JobsIcon = () => <ClockIcon size={18} />;
 
 // 2026-09-30 (Governance/Jobs redesign + Pipelines/Catalog removal round,
 // Gokul's own report): PipelinesIcon and CatalogIcon used to live here,
@@ -76,15 +59,7 @@ function JobsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
 // 2026-09-23 (sidebar redesign round): a third top-level nav entry, for the
 // new /data page - every connected source, browsable by category, replaces
 // this sidebar's old always-expanded flat list.
-function DataSourcesIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <ellipse cx="12" cy="5" rx="8" ry="3" />
-      <path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
-      <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" />
-    </svg>
-  );
-}
+const DataSourcesIcon = () => <DatabaseIcon size={18} />;
 
 function SearchIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
@@ -114,18 +89,7 @@ function SearchIcon({ className = "w-4 h-4" }: { className?: string }) {
 // sparkle/circuit-node glyph - "something computed/inferred" - kept
 // distinct from every icon above it (a flask, a shield) rather than
 // reusing a generic chart/brain cliché.
-function MLModelsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="2.5" />
-      <circle cx="4.5" cy="6" r="1.6" />
-      <circle cx="19.5" cy="6" r="1.6" />
-      <circle cx="4.5" cy="18" r="1.6" />
-      <circle cx="19.5" cy="18" r="1.6" />
-      <path d="M9.9 10.3L6 7.3M14.1 10.3L18 7.3M9.9 13.7L6 16.7M14.1 13.7L18 16.7" />
-    </svg>
-  );
-}
+const MLModelsIcon = () => <NetworkIcon size={18} />;
 
 // Phase 4 (2026-09-28, Experimentation / A/B testing): the /experiments
 // page's own nav entry - one of the "Replacing the Data Team" roadmap
@@ -133,26 +97,12 @@ function MLModelsIcon({ className = "w-[18px] h-[18px]" }: { className?: string 
 // above it (DashboardsIcon's bar chart, DataSourcesIcon's database
 // cylinder, MLModelsIcon's sparkle nodes) - "testing/experimenting" reads
 // clearly as its own thing rather than a variant of any of those.
-function ExperimentsIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M9 3h6M10 3v6.5L4.8 18a1.6 1.6 0 0 0 1.4 2.4h11.6a1.6 1.6 0 0 0 1.4-2.4L14 9.5V3" />
-      <path d="M7.5 15h9" />
-    </svg>
-  );
-}
+const ExperimentsIcon = () => <FlaskIcon size={18} />;
 
 // Phase 5, Batch A (2026-09-28, "Data governance & quality" roadmap): the
 // /governance page - access review + audit log, owner-only (see this
 // file's own SidebarNav for the visibility gate).
-function GovernanceIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 3l7 3v5c0 4.5-3 8.2-7 9.5-4-1.3-7-5-7-9.5V6l7-3z" />
-      <path d="M9.5 12l1.8 1.8L15 10" />
-    </svg>
-  );
-}
+const GovernanceIcon = () => <ShieldCheckIcon size={18} />;
 
 // 2026-09-23, round two of Gokul's own explicit design feedback: this
 // popup's "Your data" tab used to just be a tiny muted "FILES" label over a
@@ -429,23 +379,25 @@ function WorkspaceSwitcher({
   const activeName = active?.name || "Personal Workspace";
 
   return (
-    <div className={`relative pt-4 pb-2 shrink-0 ${collapsed ? "px-2" : "px-3"}`}>
+    <div className={`relative pt-3 pb-2 shrink-0 ${collapsed ? "px-2" : "px-3"}`}>
       <button
         ref={btnRef}
         type="button"
         title={collapsed ? `${activeName}${active?.role === "viewer" ? " · View only" : ""} - switch workspace` : "Switch workspace"}
+        aria-haspopup="menu"
+        aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
-        className={`flex items-center rounded-lg hover:bg-surface2 transition ${
+        className={`ui-focus flex items-center rounded-ctl hover:bg-subtle transition-colors ${
           collapsed ? "w-10 h-10 mx-auto justify-center" : "w-full gap-2.5 px-1.5 py-1.5"
         }`}
       >
-        <span className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-white font-bold text-sm shrink-0">
+        <span className="w-[30px] h-[30px] rounded-ctl bg-primary flex items-center justify-center text-white font-bold text-body shrink-0">
           G
         </span>
         {!collapsed && (
           <>
             <span className="min-w-0 flex-1 text-left">
-              <span className="block text-sm font-bold gradient-text truncate">GD360 Analytics</span>
+              <span className="block text-ui font-semibold text-text truncate">GD360 Analytics</span>
               <span className="block text-[11px] text-muted truncate">
                 {activeName}
                 {active?.role === "viewer" && " · View only"}
@@ -464,12 +416,12 @@ function WorkspaceSwitcher({
           // narrow rail itself - fly out to the right of the rail instead,
           // with its own comfortable min-width, same as a Notion/Linear-
           // style icon rail's flyout menus.
-          className={`absolute card bg-surface shadow-2xl border border-border py-1.5 z-40 ${
+          className={`absolute rounded-card bg-surface shadow-pop border border-border py-1.5 z-40 ${
             collapsed ? "left-full top-0 ml-2 w-64" : "left-3 right-3 top-full mt-1"
           }`}
           role="menu"
         >
-          <div className="px-3.5 pt-1 pb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
+          <div className="px-3.5 pt-1 pb-1.5 text-caption font-medium uppercase tracking-caps text-muted">
             Your workspaces
           </div>
           <div className="max-h-56 overflow-y-auto">
@@ -478,16 +430,16 @@ function WorkspaceSwitcher({
                 key={ws.id}
                 type="button"
                 onClick={() => { onSwitch(ws.id); setOpen(false); }}
-                className="w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-left hover:bg-surface2 transition"
+                className="ui-focus-inset w-full flex items-center gap-2.5 px-3.5 py-2 text-ui text-left hover:bg-subtle transition-colors"
               >
-                <span className="w-6 h-6 rounded-md bg-primary flex items-center justify-center text-white font-bold text-[11px] shrink-0">
+                <span className="w-6 h-6 rounded-[6px] bg-primary flex items-center justify-center text-white font-bold text-[11px] shrink-0">
                   {ws.is_personal ? "G" : ws.name.charAt(0).toUpperCase()}
                 </span>
                 <span className="flex-1 truncate">
                   {ws.name}
                   {ws.role === "viewer" && <span className="text-muted"> · View only</span>}
                 </span>
-                {ws.id === activeWorkspaceId && <CheckIcon className="w-3.5 h-3.5 text-primary shrink-0" />}
+                {ws.id === activeWorkspaceId && <CheckIcon className="w-3.5 h-3.5 text-brand-ink shrink-0" />}
               </button>
             ))}
           </div>
@@ -495,7 +447,7 @@ function WorkspaceSwitcher({
           <button
             type="button"
             onClick={() => { setOpen(false); onOpenCreate(); }}
-            className="w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-left hover:bg-surface2 transition"
+            className="ui-focus-inset w-full flex items-center gap-2.5 px-3.5 py-2 text-ui text-left hover:bg-subtle transition-colors"
           >
             <PlusIcon className="w-3.5 h-3.5 text-muted" /> Create workspace
           </button>
@@ -504,8 +456,8 @@ function WorkspaceSwitcher({
             disabled={!!active?.is_personal}
             title={active?.is_personal ? "Personal Workspace is just for you - create or switch to a team workspace to invite people" : "Invite teammates"}
             onClick={() => { setOpen(false); onOpenInvite(); }}
-            className={`w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-left transition ${
-              active?.is_personal ? "text-muted cursor-not-allowed" : "hover:bg-surface2"
+            className={`ui-focus-inset w-full flex items-center gap-2.5 px-3.5 py-2 text-ui text-left transition-colors ${
+              active?.is_personal ? "text-faint cursor-not-allowed" : "hover:bg-subtle"
             }`}
           >
             <UserPlusIcon className="w-3.5 h-3.5 text-muted" /> Invite teammates
@@ -1107,10 +1059,13 @@ function SidebarNav({
   // today's icon+label row exactly as it was; collapsed centers just the
   // icon in the narrow rail and adds a native title attribute so hovering
   // still shows the label (cheap, accessible, no new dependency).
+  // 2026-10-06 (design-system kit): System.dc.html's rail - muted stroke
+  // icons, the active one in brand ink on the brand tint (no more solid
+  // brand fill with white icon), 40 px square hit targets when collapsed.
   const linkClass = (active: boolean) =>
-    `flex items-center gap-2.5 rounded-lg text-sm font-medium transition ${
-      collapsed ? "justify-center px-2 py-2.5" : "px-3 py-2"
-    } ${active ? "bg-primary text-white" : "text-text hover:bg-surface2"}`;
+    `ui-focus flex items-center gap-2.5 rounded-ctl text-ui font-medium transition-colors ${
+      collapsed ? "justify-center w-10 h-10 mx-auto" : "px-2.5 h-9"
+    } ${active ? "bg-tint text-brand-ink" : "text-muted hover:bg-subtle hover:text-text"}`;
 
   return (
     <>
@@ -1123,7 +1078,7 @@ function SidebarNav({
         collapsed={collapsed}
       />
 
-      <div className={`mt-1 space-y-0.5 ${collapsed ? "px-2" : "px-3"}`}>
+      <nav aria-label="Primary" className={`mt-1 space-y-0.5 ${collapsed ? "px-2" : "px-3"}`}>
         <Link to="/" onClick={onNavigate} title={collapsed ? "Projects" : undefined} className={linkClass(onProjects)}>
           <ProjectsIcon />
           {!collapsed && "Projects"}
@@ -1204,7 +1159,7 @@ function SidebarNav({
             {!collapsed && "Governance"}
           </Link>
         )}
-      </div>
+      </nav>
 
       {/* 2026-09-23, round three (Gokul's own explicit ask): the sidebar's
           own "+ Connect data" shortcut is gone - adding data now happens in
@@ -1230,11 +1185,11 @@ function SidebarNav({
             onClick={onToggleCollapse}
             title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            className={`w-full flex items-center gap-2.5 rounded-lg text-sm font-medium text-muted hover:text-text hover:bg-surface2 transition ${
-              collapsed ? "justify-center px-2 py-2.5" : "px-3 py-2"
+            className={`ui-focus flex items-center gap-2.5 rounded-ctl text-ui font-medium text-muted hover:text-text hover:bg-subtle transition-colors ${
+              collapsed ? "justify-center w-10 h-10 mx-auto" : "w-full px-2.5 h-9"
             }`}
           >
-            {collapsed ? <ChevronRightIcon className="w-4 h-4" /> : <ChevronLeftIcon className="w-4 h-4" />}
+            <SidebarIcon size={16} />
             {!collapsed && "Collapse"}
           </button>
         </div>
@@ -1323,7 +1278,7 @@ export default function AppSidebar({
         type="button"
         onClick={() => setMobileOpen(true)}
         aria-label="Open menu"
-        className="lg:hidden fixed top-3 left-3 z-30 w-10 h-10 rounded-xl bg-surface/90 backdrop-blur-sm border border-border shadow-lg flex items-center justify-center text-text hover:bg-surface2 transition"
+        className="ui-focus lg:hidden fixed top-2.5 left-3 z-30 w-9 h-9 rounded-ctl bg-surface border border-border shadow-card flex items-center justify-center text-secondary hover:bg-subtle hover:text-text transition-colors"
       >
         <MenuIcon />
       </button>
@@ -1351,7 +1306,7 @@ export default function AppSidebar({
               type="button"
               onClick={() => setMobileOpen(false)}
               aria-label="Close menu"
-              className="p-1.5 rounded-lg text-muted hover:text-text hover:bg-surface2 transition"
+              className="ui-focus p-1.5 rounded-ctl text-muted hover:text-text hover:bg-subtle transition-colors"
             >
               <CloseIcon />
             </button>
@@ -1375,15 +1330,16 @@ export default function AppSidebar({
       </div>
 
       {/* Desktop: fixed rail, static in the flow at `lg` and up. Width now
-          toggles between the full 240px rail and a 64px icon-only strip
+          toggles between the full 240px rail and a 56px icon-only strip
           (2026-09-28, collapsible icon rail - see the `collapsed` state
-          above) - `transition-[width]` animates the change instead of a
+          above; 64 -> 56 px on 2026-10-06 to match the design system's
+          rail) - `transition-[width]` animates the change instead of a
           jump-cut. Still `shrink-0`, so every page's own sibling
           `flex-1 min-w-0` content column reflows automatically with no
           changes needed anywhere else. */}
       <div
         className={`hidden lg:flex shrink-0 h-screen sticky top-0 border-r border-border bg-surface flex-col transition-[width] duration-200 ${
-          collapsed ? "w-16" : "w-60"
+          collapsed ? "w-14" : "w-60"
         }`}
       >
         <SidebarNav
