@@ -5,6 +5,7 @@ import { datasourceApi, DashboardBlock, DashboardBlockType, ColumnFilterSpec, Co
 import { DashboardFilterState } from "../lib/useDashboardFilters";
 import { applyChartStyle, defaultChartStyle, ChartStyle } from "../lib/chartStyle";
 import { useExclusiveOpen } from "../lib/useExclusiveOpen";
+import { NUMBER_FORMATS, formatValue, type ValueFormat } from "../dashboard/format";
 
 // 2026-09-24 (Dashboard Builder Phase 1): the shared block-rendering layer
 // for a pages+blocks dashboard - used by BOTH the owner's editor view
@@ -335,11 +336,24 @@ export function KpiTile({
 }) {
   const raw = config?.value;
   const isNumber = typeof raw === "number" && Number.isFinite(raw);
+  // 2026-10-07 (real end-to-end run): a stored-number (file) KPI goes
+  // through the same formatter a warehouse KPI does. It used to print
+  // every digit - "20,807,244.72" does not fit a tile and was cut to
+  // "20,807,…" - and ignored the block's number format, so a rate read
+  // "0.37". Now: a million or more is shortened (20.8M, the full number in
+  // the tooltip) and config.format "percent"/"currency"/"compact" applies.
+  const valueFormat: ValueFormat = {
+    format: NUMBER_FORMATS.includes(config?.format) ? config.format : "number",
+    decimals: typeof config?.decimals === "number" ? config.decimals : null,
+    inferred: Boolean(config?.format_inferred),
+    currency: typeof config?.currency === "string" && config.currency ? config.currency : "USD",
+  };
   const display = isNumber
-    ? raw.toLocaleString(undefined, { maximumFractionDigits: 2 })
+    ? formatValue(raw, valueFormat, "auto")
     : raw === null || raw === undefined || raw === ""
     ? "—"
     : String(raw);
+  const fullValue = isNumber ? formatValue(raw, valueFormat, "full") : undefined;
   const label = title || config?.label || "Value";
   const idx = accentIndex(label);
   const Icon = KPI_ICONS[idx];
@@ -360,7 +374,7 @@ export function KpiTile({
         </span>
       </div>
       <div className="flex flex-col gap-1.5">
-        <div className="dash-kpi-value text-3xl font-bold truncate">{display}</div>
+        <div className="dash-kpi-value text-3xl font-bold truncate" title={fullValue && fullValue !== display ? fullValue : undefined}>{display}</div>
         {isNumber && <KpiDelta current={raw} compareValue={compareValue} />}
       </div>
 
@@ -552,9 +566,14 @@ export function BlockChart({
   onBlockFilterChange,
   bare = false,
   onExportApi,
+  minHeight,
 }: {
   title: string | null;
   config: any;
+  // 2026-10-07 (dashboard edit mode): the height the card's body really
+  // has (the dashboard grid measures it), so the plot is drawn to fit
+  // instead of to its own suggested height.
+  minHeight?: number;
   // 2026-10-07 (Option A dashboard view): `bare` draws the plot without
   // ChartCanvas's own card/export menu (the kit ChartCard supplies them);
   // `onExportApi` is ChartCanvas's export hook, passed straight through.
@@ -619,7 +638,7 @@ export function BlockChart({
         <div className="shrink-0 text-[11px] text-muted italic px-2 pt-1 pb-0.5">No unusual points detected.</div>
       )}
       <div className="flex-1 min-h-0">
-        <ChartCanvas chartSpec={styledSpec} title={title || undefined} dashPremium onMinHeight={onMinHeight} bare={bare} onExportApi={onExportApi} />
+        <ChartCanvas chartSpec={styledSpec} title={title || undefined} dashPremium onMinHeight={onMinHeight} bare={bare} onExportApi={onExportApi} minHeight={minHeight} />
       </div>
     </div>
   );
@@ -737,7 +756,9 @@ export function GaugeBlock({
     targetTick = [tx0, ty0, tx1, ty1];
   }
 
-  const display = value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  // 2026-10-07: a caller that knows the number's format (the warehouse
+  // dashboard: src/dashboard/format.ts) passes the text ready-made.
+  const display = typeof config?.display === "string" ? config.display : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
   return (
     <div className={bare ? "h-full flex flex-col gap-1 overflow-hidden relative" : "dash-card h-full p-5 flex flex-col gap-1 overflow-hidden relative"}>
@@ -766,7 +787,7 @@ export function GaugeBlock({
       </div>
       {target !== null && (
         <div className="text-[11px] text-muted text-center -mt-2">
-          Target {target.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+          Target {typeof config?.target_display === "string" ? config.target_display : target.toLocaleString(undefined, { maximumFractionDigits: 2 })}
         </div>
       )}
       {editable && onAccentColorChange && (
@@ -914,7 +935,7 @@ export function SparklineBlock({
   const max = series.length ? Math.max(...series, 0) : 1;
   const min = series.length ? Math.min(...series, 0) : 0;
   const range = max - min || 1;
-  const display = typeof value === "number" ? value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—";
+  const display = typeof config?.display === "string" ? config.display : typeof value === "number" ? value.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—";
   const up = deltaPct !== null && deltaPct >= 0;
 
   return (
@@ -938,7 +959,7 @@ export function SparklineBlock({
               background: `rgb(var(--dash-accent-${up ? 2 : 5}) / 0.12)`,
             }}
           >
-            {up ? "▲" : "▼"} {Math.abs(deltaPct).toFixed(1)}%
+            {up ? "▲" : "▼"} {typeof config?.delta_label === "string" ? config.delta_label : `${Math.abs(deltaPct).toFixed(1)}%`}
           </span>
         )}
       </div>
@@ -1027,7 +1048,7 @@ export function AvatarListBlock({
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-medium truncate">{it.name}</span>
                   <span className="text-xs font-semibold tabular-nums shrink-0">
-                    {val.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    {typeof (it as any).display === "string" ? (it as any).display : val.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                   </span>
                 </div>
                 <div className="mt-1 h-1.5 rounded-full bg-surface2 overflow-hidden">
@@ -1109,6 +1130,23 @@ export function describeFilterSpec(spec: ColumnFilterSpec | null | undefined): s
   return "All";
 }
 
+// 2026-10-07 (real end-to-end run): every block's filter button asks for
+// the data source's column list / dtypes with the same limit=1 preview
+// call. On a file dashboard that was one identical request PER BLOCK on
+// every load (4 for a 3-chart page, 13 for a 12-block one). They now share
+// one request per data source; the answer is reused for a few seconds,
+// then asked for again so a re-import is picked up.
+const HEADER_REUSE_MS = 15000;
+const headerRequests = new Map<string, { at: number; promise: ReturnType<typeof datasourceApi.preview> }>();
+function previewHeaderOnce(datasourceId: string): ReturnType<typeof datasourceApi.preview> {
+  const hit = headerRequests.get(datasourceId);
+  if (hit && Date.now() - hit.at < HEADER_REUSE_MS) return hit.promise;
+  const promise = datasourceApi.preview(datasourceId, null, 1, 0);
+  headerRequests.set(datasourceId, { at: Date.now(), promise });
+  promise.catch(() => { if (headerRequests.get(datasourceId)?.promise === promise) headerRequests.delete(datasourceId); });
+  return promise;
+}
+
 function useColumnDtype(datasourceId: string | null, column: string | null, knownDtype?: string): string {
   const [dtype, setDtype] = useState(knownDtype || "");
   useEffect(() => {
@@ -1122,8 +1160,7 @@ function useColumnDtype(datasourceId: string | null, column: string | null, know
     // the same endpoint DashboardCanvas.tsx already calls once for its own
     // column picker (datasourceApi.preview), reused here for callers (like
     // Preview mode) that don't already have that dtype in hand.
-    datasourceApi
-      .preview(datasourceId, null, 1, 0)
+    previewHeaderOnce(datasourceId)
       .then((p) => {
         if (!cancelled) setDtype(p.dtypes[column] || "");
       })
@@ -1472,8 +1509,7 @@ function useDataSourceColumns(datasourceId: string | null): { name: string; dtyp
       return;
     }
     let cancelled = false;
-    datasourceApi
-      .preview(datasourceId, null, 1, 0)
+    previewHeaderOnce(datasourceId)
       .then((p) => {
         if (!cancelled) setColumns(p.columns.map((name) => ({ name, dtype: p.dtypes[name] || "" })));
       })

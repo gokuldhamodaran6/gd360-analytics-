@@ -85,7 +85,10 @@ export type UseItAs =
 // ID; anything else high-distinct is plain Text. Nothing here is ever
 // derived from the example rows.
 export function useItAs(name: string, type: string | null | undefined, stat: ProfileColumnStat | undefined): UseItAs {
-  const n = name.toLowerCase();
+  // Name hints are matched on snake_case; an uploaded file's headers are
+  // usually words with spaces ("Arrival Year", "Booking Date"), which
+  // matched nothing and made a year a "Measure".
+  const n = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
   const group = typeGroup(type);
   const distinct = stat?.distinct ?? null;
   if (group === "bool") return "Flag";
@@ -146,6 +149,14 @@ export function formatScalar(v: number | string | boolean | null | undefined): s
   // part when it is midnight, so a DATE column reads as a date.
   const m = /^(\d{4}-\d{2}-\d{2})T00:00:00(?:\.0+)?$/.exec(v);
   return m ? m[1] : v;
+}
+
+// A top value is a label, not a quantity. The warehouse profile sends it
+// as text ("2016"); a file's profile sends the cell's own type, so a year
+// arrived as the number 2016 and was printed "2,016" (2026-10-07, real
+// end-to-end run). A whole number is shown as it is in both.
+export function topValueLabel(v: number | string | boolean | null | undefined): string {
+  return typeof v === "number" && Number.isInteger(v) ? String(v) : formatScalar(v);
 }
 
 function parseDate(v: number | string | null | undefined): Date | null {
@@ -273,7 +284,7 @@ export function ColumnStatCells({
                 className={`rounded-md px-2 py-0.5 whitespace-nowrap ${i === 0 ? "bg-primary/10 text-primary" : "bg-surface2 text-text"}`}
                 data-testid="wh-top-value"
               >
-                {formatScalar(tv.value)}{tv.pct != null ? ` ${tv.pct < 1 ? "<1" : Math.round(tv.pct)}%` : ""}
+                {topValueLabel(tv.value)}{tv.pct != null ? ` ${tv.pct < 1 ? "<1" : Math.round(tv.pct)}%` : ""}
               </span>
             ))}
             {stat.distinct != null && stat.distinct > topValues.length && (
@@ -411,7 +422,15 @@ export default function WarehouseDataView({
   const [onlyGaps, setOnlyGaps] = useState(false);
   const [showAllColumns, setShowAllColumns] = useState(false);
 
-  const resolutionPending = originalTablesCount > 1 && !activeTable;
+  // 2026-10-07 (real end-to-end run): `> 0`, not `> 1`. Workspace lists a
+  // database/warehouse source's tables in `originalTables` whenever its
+  // schema has named tables - INCLUDING a dataset with exactly ONE table
+  // (hasMultipleTables is true for {"hotel_data": [...]}), and resolves
+  // `activeTable` null -> "hotel_data" one render later. With `> 1` that
+  // one-table case slipped through: the profile and the sample were both
+  // requested twice (once with no table, once with the name), four
+  // full-table queries where this page promises two.
+  const resolutionPending = originalTablesCount > 0 && !activeTable;
 
   // The full-table profile: once per table open (plus an explicit Retry),
   // never on any in-page interaction. The backend's own TTL cache keeps a

@@ -796,7 +796,8 @@ export default function DataTable({
     setProfile(null);
     if (activeVersionId) return; // saved/AI-built table - nothing to profile
     if (datasourceKind === undefined) return; // don't know this source's shape yet - wait for it, don't guess
-    if (originalTablesCount > 1 && !activeTable) return; // multi-table resolution genuinely still pending
+    // 2026-10-07: `> 0` - a database with exactly one named table is also listed in originalTables (see WarehouseDataView's resolutionPending).
+    if (originalTablesCount > 0 && !activeTable) return; // table resolution genuinely still pending
     if (warehouseMode) return; // WarehouseDataView fetches the profile itself (same guards) - never twice from here
     if (fileMode) return; // FileDataView fetches the (per-version) file profile itself - see fileMode above
     let cancelled = false;

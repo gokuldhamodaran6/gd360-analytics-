@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Plot, { Plotly } from "../lib/plotly";
 import { useTheme } from "../api/ThemeContext";
+import { figureNotes, kitPlotlyFigure, readKitTokens } from "../dashboard/plotlyKit";
 import { suggestedChartMinHeight } from "../lib/chartStyle";
 import { useExclusiveOpen } from "../lib/useExclusiveOpen";
 
@@ -61,7 +62,7 @@ export type ChartPointClick = { x: any; y: any; label: any; traceName: string | 
 export type ChartExportApi = { download: (format: "png" | "jpeg" | "svg" | "webp") => Promise<void> };
 
 export default function ChartCanvas({
-  chartSpec,
+  chartSpec: rawSpec,
   title,
   dashPremium,
   onMinHeight,
@@ -69,9 +70,17 @@ export default function ChartCanvas({
   onPointClick,
   onExportApi,
   minHeight,
+  kit = false,
 }: {
   chartSpec: any;
   title?: string;
+  // 2026-10-07 (round 9): a chart inside a DASHBOARD. The figure is
+  // restyled through the kit's tokens by the one function that does that
+  // (dashboard/plotlyKit.kitPlotlyFigure - transparent surface, kit font,
+  // ink text, recessive grid, the fixed series palette, one colour for one
+  // series, no title, no modebar) and this component adds nothing of its
+  // own on top. Re-read when the theme changes.
+  kit?: boolean;
   // 2026-10-07 (Option A dashboard view): `bare` renders ONLY the plot -
   // no card chrome, no padding, no "..." export menu - for a caller that
   // already supplies all three (src/ui/ChartCard). `onPointClick` fires
@@ -120,6 +129,10 @@ export default function ChartCanvas({
   const [menuOpen, setMenuOpen, menuSlotId] = useExclusiveOpen();
   const { theme } = useTheme();
   const cardClass = dashPremium ? "dash-card" : "card";
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const chartSpec = useMemo(() => (kit && rawSpec ? kitPlotlyFigure(rawSpec, readKitTokens()) : rawSpec), [rawSpec, kit, theme]);
+  // Sentences the figure carried inside its plot: printed under it (kit only).
+  const notes = useMemo(() => (kit && rawSpec ? figureNotes(rawSpec) : []), [rawSpec, kit]);
 
   // 2026-10-07 (Option A dashboard view): see onExportApi above. Bound once
   // per mount; download() reads graphDivRef at call time so it always
@@ -192,7 +205,9 @@ export default function ChartCanvas({
   // inline at the Plot below, so the exact same number both sizes the
   // chart's own minHeight AND (via the effect below) is handed up to
   // BlockCard's one-time auto-grow - the two can never quietly disagree.
-  const minHeightPx = typeof minHeight === "number" ? minHeight : suggestedChartMinHeight(chartSpec);
+  // Each note takes up to two lines under the plot; the plot gives them up.
+  const notesPx = notes.length * 36;
+  const minHeightPx = Math.max(96, (typeof minHeight === "number" ? minHeight : suggestedChartMinHeight(chartSpec)) - notesPx);
   useEffect(() => {
     onMinHeight?.(minHeightPx);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -251,7 +266,7 @@ export default function ChartCanvas({
   // of whatever lib/chartStyle.ts already built, rather than relying on a
   // named Plotly theme (that is what produced the generic look this
   // replaces: default indigo bars, "trace 0" legend, a flat white panel).
-  const themedLayout = {
+  const themedLayout = kit ? chartSpec.layout : {
     ...chartSpec.layout,
     template: undefined,
     paper_bgcolor: "rgba(0,0,0,0)",
@@ -278,7 +293,7 @@ export default function ChartCanvas({
           style={{ width: "100%", height: "100%", minHeight: minHeightPx }}
           useResizeHandler
           config={
-            dashPremium || bare
+            dashPremium || bare || kit
               ? { displaylogo: false, responsive: true, displayModeBar: false }
               : { displaylogo: false, responsive: true }
           }
@@ -306,6 +321,16 @@ export default function ChartCanvas({
   );
 
   if (bare) {
+    if (notes.length) {
+      return (
+        <div className={`flex h-full w-full min-h-0 flex-col ${onPointClick ? "[&_.points_path]:cursor-pointer [&_.slice_path]:cursor-pointer" : ""}`}>
+          <div className="min-h-0 flex-1">{plot}</div>
+          {notes.map((n, i) => (
+            <p key={i} data-chart-note="" title={n} className="m-0 line-clamp-2 shrink-0 px-1 pt-1 text-caption leading-[1.35] text-muted">{n}</p>
+          ))}
+        </div>
+      );
+    }
     return <div className={`h-full w-full min-h-0 ${onPointClick ? "[&_.points_path]:cursor-pointer [&_.slice_path]:cursor-pointer" : ""}`}>{plot}</div>;
   }
 

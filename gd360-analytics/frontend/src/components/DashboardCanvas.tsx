@@ -49,6 +49,12 @@ import {
 } from "./DashboardBlocks";
 import { DashboardFilterState } from "../lib/useDashboardFilters";
 
+// 2026-10-07 (dashboard edit mode): DashboardBuilderView no longer renders
+// this component - editing happens inside the dashboard itself
+// (src/dashboard/edit/). What still comes from this file are the three
+// file-source panels the new editor hosts in a kit Sheet, unchanged:
+// AskAiPanel, ManualBuildPanel and StylePanel (exported below).
+//
 // 2026-09-24 (Dashboard Builder Phase 2 + Phase 2b): the real canvas editor -
 // drag, resize, add, remove blocks, and fill each one in either by asking
 // GD360's AI or by building it manually from a column + aggregation.
@@ -369,9 +375,9 @@ const AGG_OPTIONS: { value: ManualAgg; label: string }[] = [
   { value: "max", label: "Max" },
 ];
 
-type ColumnInfo = { name: string; dtype: string };
+export type ColumnInfo = { name: string; dtype: string };
 
-function AskAiPanel({
+export function AskAiPanel({
   dashboardId,
   block,
   onDone,
@@ -433,7 +439,7 @@ function AskAiPanel({
   );
 }
 
-function ManualBuildPanel({
+export function ManualBuildPanel({
   dashboardId,
   block,
   columns,
@@ -899,7 +905,7 @@ function DisplayTogglesRow({
   );
 }
 
-function StylePanel({
+export function StylePanel({
   dashboardId,
   block,
   onDone,
