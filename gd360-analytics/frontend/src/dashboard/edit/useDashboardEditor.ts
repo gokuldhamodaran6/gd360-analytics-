@@ -29,6 +29,9 @@ export type SaveState = "idle" | "saving" | "saved" | "error";
 export type EditorSheet =
   | { kind: "ai"; blockId: string }
   | { kind: "query"; blockId: string }
+  // 2026-10-07 (chart-types round): the chart gallery and the forecast sheet.
+  | { kind: "chart"; blockId: string }
+  | { kind: "forecast"; blockId: string }
   | { kind: "filters" }
   | null;
 
@@ -56,7 +59,8 @@ export type DashboardEditor = {
   kpis: DashboardBlock[];
   moveKpi: (blockId: string, toIndex: number) => void;
   // ---- blocks ----
-  addBlock: (type: DashboardBlockType) => Promise<void>;
+  // `template`: "forecast" - a time-series chart with its forecast on.
+  addBlock: (type: DashboardBlockType, template?: "forecast") => Promise<void>;
   adding: boolean;
   renameBlock: (block: DashboardBlock, title: string) => Promise<void>;
   duplicateBlock: (block: DashboardBlock) => Promise<void>;
@@ -70,7 +74,13 @@ export type DashboardEditor = {
   // Build / change with AI and save a query: these reject with the
   // backend's own `detail` so the sheet can show it verbatim.
   askAi: (block: DashboardBlock, prompt: string) => Promise<void>;
-  saveSpec: (block: DashboardBlock, spec: BlockSpec) => Promise<void>;
+  // `chartType`: the form picked in the sheet's chart gallery.
+  saveSpec: (block: DashboardBlock, spec: BlockSpec, chartType?: string | null) => Promise<void>;
+  // The chart gallery's pick: a swap on a warehouse block, a restyle from
+  // the block's own rows on a file block ("auto" = the recommended form).
+  setChartType: (block: DashboardBlock, chartType: string) => Promise<void>;
+  // The "Forecast..." sheet.
+  setForecast: (block: DashboardBlock, payload: { enabled: boolean; horizon?: number | null; interval?: "80" | "95" | "both"; anomalies?: boolean }) => Promise<void>;
   // A panel that already made its own request (the file-source build /
   // style panels, the filters editor) hands the result over here.
   applyDash: (d: DashboardBuilderDetail, opts?: { blockId?: string; rerunPage?: boolean }) => void;
@@ -362,7 +372,7 @@ export function useDashboardEditor({
   const newBlocksOf = (before: Set<string>, d: DashboardBuilderDetail, inPage: string): DashboardBlock[] =>
     (d.pages.find((x) => x.id === inPage)?.blocks || []).filter((b) => !before.has(b.id));
 
-  const addBlock = useCallback(async (type: DashboardBlockType) => {
+  const addBlock = useCallback(async (type: DashboardBlockType, template?: "forecast") => {
     const p = pageRef.current;
     if (!p || adding) return;
     setAdding(true);
@@ -370,7 +380,7 @@ export function useDashboardEditor({
     const config =
       type === "sql" ? { sql: "", name: uniqueCellName(orderCells(p.blocks)) } : type === "text" || type === "heading" ? { text: "" } : undefined;
     try {
-      const d = await mutate(() => dashboardBuilderApi.createBlock(dashRef.current.id, p.id, type, undefined, undefined, config), "Couldn't add the block.");
+      const d = await mutate(() => dashboardBuilderApi.createBlock(dashRef.current.id, p.id, type, undefined, undefined, config, template), "Couldn't add the block.");
       const created = newBlocksOf(before, d, p.id)[0];
       if (!created) return;
       setFocusBlockId(created.id);
@@ -460,12 +470,38 @@ export function useDashboardEditor({
     refreshBlock(block.id);
   }, [setDash, refreshBlock]);
 
-  const saveSpec = useCallback(async (block: DashboardBlock, spec: BlockSpec) => {
+  const saveSpec = useCallback(async (block: DashboardBlock, spec: BlockSpec, chartType?: string | null) => {
+    // A form picked in the gallery decides the block's type with it (a
+    // donut is its own block type; every other form is a chart).
+    // `chartType` null = the block's own form cannot draw this query: no
+    // chart_type is sent and the server's recommender picks one.
+    const picked = chartType || null;
+    const blockType = picked ? (picked === "donut" ? "donut" : "chart") : spec.bins ? "chart" : chartType === null && block.type === "donut" ? "chart" : block.type;
+    const own = blockType === "chart" && typeof block.config?.chart_type === "string" && block.config.chart_type !== "histogram" ? block.config.chart_type : undefined;
     const d = await dashboardBuilderApi.setBlockSpec(dashRef.current.id, block.id, {
       spec,
-      block_type: block.type,
-      chart_type: block.type === "chart" && typeof block.config?.chart_type === "string" ? block.config.chart_type : undefined,
+      block_type: blockType,
+      chart_type: picked && picked !== "donut" ? picked : spec.bins ? "histogram" : chartType === null ? undefined : own,
     });
+    setDash(d);
+    setSavedOnce(true);
+    refreshBlock(block.id);
+  }, [setDash, refreshBlock]);
+
+  const warehouseRef = useRef(warehouse);
+  warehouseRef.current = warehouse;
+  const setChartType = useCallback(async (block: DashboardBlock, chartType: string) => {
+    const id = dashRef.current.id;
+    const d = warehouseRef.current || block.config?.spec || block.config?.source_block_id
+      ? await dashboardBuilderApi.swapBlock(id, block.id, chartType === "donut" ? { type: "donut" } : chartType === "auto" ? { chart_type: "auto" } : { type: "chart", chart_type: chartType })
+      : await dashboardBuilderApi.restyleBlock(id, block.id, chartType as any);
+    setDash(d);
+    setSavedOnce(true);
+    refreshBlock(block.id);
+  }, [setDash, refreshBlock]);
+
+  const setForecast = useCallback(async (block: DashboardBlock, payload: { enabled: boolean; horizon?: number | null; interval?: "80" | "95" | "both"; anomalies?: boolean }) => {
+    const d = await dashboardBuilderApi.setBlockForecast(dashRef.current.id, block.id, payload);
     setDash(d);
     setSavedOnce(true);
     refreshBlock(block.id);
@@ -485,7 +521,7 @@ export function useDashboardEditor({
     kpis, moveKpi,
     addBlock, adding, renameBlock, duplicateBlock, updateConfig, swapBlock,
     requestRemove, removing, confirmRemove, cancelRemove,
-    askAi, saveSpec, applyDash, refreshBlock,
+    askAi, saveSpec, setChartType, setForecast, applyDash, refreshBlock,
     sheet, openSheet, closeSheet,
     focusBlockId, clearFocusBlock,
   };

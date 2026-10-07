@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { DashboardBlockType } from "../../api/client";
-import { Button, FilterIcon, PlusIcon, Popover, cn } from "../../ui";
+import { Button, FilterIcon, PaletteIcon, PlusIcon, Popover, cn } from "../../ui";
 import { MenuCaption } from "../menu";
 import { BlockTypeIcon } from "./EmptyBlock";
 import type { DashboardEditor } from "./useDashboardEditor";
@@ -16,7 +16,8 @@ export const CONTEXT_ROW_CLASS = "mb-4 flex min-h-[52px] flex-wrap items-center 
 
 export const EDIT_HINT = "Drag a block by its title to move it · drag the corner to resize · changes save automatically";
 
-type PaletteItem = { type: DashboardBlockType; label: string; hint: string };
+// `template`: a block that arrives already built (backend create_block).
+type PaletteItem = { type: DashboardBlockType; label: string; hint: string; template?: "forecast" };
 type PaletteGroup = { label: string; items: PaletteItem[] };
 
 export function paletteGroups(warehouse: boolean): PaletteGroup[] {
@@ -25,7 +26,10 @@ export function paletteGroups(warehouse: boolean): PaletteGroup[] {
     {
       label: "Charts",
       items: [
-        { type: "chart", label: "Chart", hint: "Bars, lines, areas, pie" },
+        { type: "chart", label: "Chart", hint: "Bars, lines, maps, heatmaps…" },
+        // 2026-10-07 (chart-types round): a trend with its projection -
+        // rows per period over the dashboard's date column, forecast on.
+        { type: "chart", label: "Forecast", hint: "A trend and where it is heading", template: "forecast" },
         { type: "donut", label: "Donut", hint: "Share of a whole" },
         { type: "avatar_list", label: "Top list", hint: "A ranked leaderboard" },
       ],
@@ -65,11 +69,12 @@ export function AddBlockPalette({ editor, align = "start" }: { editor: Dashboard
               <MenuCaption>{g.label}</MenuCaption>
               {g.items.map((it) => (
                 <button
-                  key={it.type}
+                  key={`${it.type}-${it.template || ""}`}
                   type="button"
                   role="menuitem"
-                  data-add-type={it.type}
-                  onClick={() => { close(); editor.addBlock(it.type); }}
+                  data-add-type={it.template ? undefined : it.type}
+                  data-add-template={it.template}
+                  onClick={() => { close(); editor.addBlock(it.type, it.template); }}
                   className="ui-focus-inset flex w-full items-center gap-3 px-3 py-1.5 text-left hover:bg-subtle"
                 >
                   <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[6px] border border-border bg-surface text-secondary">
@@ -95,7 +100,7 @@ export function AddBlockPalette({ editor, align = "start" }: { editor: Dashboard
   );
 }
 
-export function EditToolbar({ editor, trailing, compact = false, className }: { editor: DashboardEditor; trailing?: ReactNode; compact?: boolean; className?: string }) {
+export function EditToolbar({ editor, trailing, compact = false, className, onAppearance }: { editor: DashboardEditor; trailing?: ReactNode; compact?: boolean; className?: string; onAppearance?: () => void }) {
   return (
     <div
       role="toolbar"
@@ -107,6 +112,13 @@ export function EditToolbar({ editor, trailing, compact = false, className }: { 
       <Button variant="secondary" icon={<FilterIcon size={15} />} onClick={() => editor.openSheet({ kind: "filters" })} data-edit-filters="">
         Filters
       </Button>
+      {/* 2026-10-07 (identity-colour round): colours, brand, layout and
+          type, numbers and the public link's look - one sheet. */}
+      {onAppearance && (
+        <Button variant="secondary" icon={<PaletteIcon size={15} />} onClick={onAppearance} data-edit-appearance="">
+          Appearance
+        </Button>
+      )}
       {!compact && (
         <span className="hidden min-w-0 flex-1 truncate pl-1 text-caption text-muted lg:block" title={EDIT_HINT} data-edit-hint="">
           {EDIT_HINT}

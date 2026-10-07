@@ -51,8 +51,11 @@ export function viewLayout(blocks: DashboardBlock[], heights?: Record<string, nu
   return compact(items);
 }
 
-export function blockHeightPx(h: number): number {
-  return h * ROW_UNIT_PX + (h - 1) * GRID_GAP_PX;
+// `metrics`: the grid's row height and gap for the dashboard's density
+// (theme/appearance GRID_METRICS, read through useGridMetrics by the view
+// AND the editor - the two must use the same numbers).
+export function blockHeightPx(h: number, metrics: { rowUnit: number; gap: number } = { rowUnit: ROW_UNIT_PX, gap: GRID_GAP_PX }): number {
+  return h * metrics.rowUnit + (h - 1) * metrics.gap;
 }
 
 // The bottom edge of the page's KPI blocks (0 when it has none).

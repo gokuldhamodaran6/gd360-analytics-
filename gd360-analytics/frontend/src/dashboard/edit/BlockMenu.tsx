@@ -1,12 +1,15 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { dashboardBuilderApi, type DashboardBlock, type RestyleChartType } from "../../api/client";
 import {
-  ArrowDownIcon, ArrowLeftIcon, ArrowRightIcon, ArrowUpIcon, CodeIcon, CopyIcon, EditIcon, IconButton, MinusIcon, MoreIcon, PlusIcon, Popover, SparkleIcon, Switch, TrashIcon, cn,
+  ArrowDownIcon, ArrowLeftIcon, ArrowRightIcon, ArrowUpIcon, BarChartIcon, ChartIcon, CodeIcon, CopyIcon, EditIcon, IconButton, MinusIcon, MoreIcon, PlusIcon, Popover, SparkleIcon, Switch, TrashIcon, cn,
 } from "../../ui";
 import { isDataBlock, isEmptyBlock } from "../blockData";
 import { adaptFileBlock, fileChartType, plotlyFallbackReason } from "../fileData";
 import { blockFormat } from "../format";
-import { MenuCaption, MenuDivider, MenuRow, SWAP_OPTIONS } from "../menu";
+import { MenuCaption, MenuDivider, MenuRow, SwapChips } from "../menu";
+import { blockTimeGrain } from "./ChartSheets";
+import { useChartTheme } from "../theme/ChartThemeContext";
+import { PALETTES, parseHex } from "../theme/palettes";
 import { canMove, canResize, minSizeOf, type MoveDir, type SizeDir } from "./layout";
 import type { DashboardEditor } from "./useDashboardEditor";
 
@@ -111,6 +114,80 @@ export type BlockMenuProps = {
   className?: string;
 };
 
+// 2026-10-07 (identity-colour round): "Colour" - this block's own answer to
+// the dashboard's colour mode. Follow dashboard (no override stored), By
+// value, or Single with a colour of its own; saved on the block's config
+// (color_mode / single_color) and read by the chart planner.
+function ColourControl({ editor, block, busy, setBusy }: { editor: DashboardEditor; block: DashboardBlock; busy: boolean; setBusy: (b: boolean) => void }) {
+  const theme = useChartTheme();
+  const cfg = block.config || {};
+  const own: "follow" | "by_value" | "single" = cfg.color_mode === "by_value" || cfg.color_mode === "single" ? cfg.color_mode : "follow";
+  const stored = parseHex(cfg.single_color);
+  const [draft, setDraft] = useState<string | null>(null);
+  const save = async (patch: Record<string, any>) => {
+    setBusy(true);
+    try { await editor.updateConfig(block, patch); } finally { setBusy(false); }
+  };
+  // A colour picker reports every step of a drag: the last one is saved,
+  // once it has rested.
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const pick = (hex: string) => {
+    setDraft(hex);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => { timer.current = null; void save({ color_mode: "single", single_color: hex }); }, 450);
+  };
+  const options: { value: "follow" | "by_value" | "single"; label: string }[] = [
+    { value: "follow", label: "Follow dashboard" },
+    { value: "by_value", label: "By value" },
+    { value: "single", label: "Single" },
+  ];
+  return (
+    <>
+      <MenuDivider />
+      <MenuCaption>Colour</MenuCaption>
+      <div className="flex flex-wrap gap-1 px-3 pb-1.5" role="group" aria-label="Colour" data-block-colour="">
+        {options.map((o) => (
+          <Chip
+            key={o.value}
+            pressed={own === o.value}
+            disabled={busy}
+            onClick={() => {
+              if (own === o.value) return;
+              void save(o.value === "follow" ? { color_mode: undefined, single_color: undefined } : o.value === "single" ? { color_mode: "single", single_color: stored || undefined } : { color_mode: "by_value", single_color: undefined });
+            }}
+          >
+            {o.label}
+          </Chip>
+        ))}
+      </div>
+      {own === "single" && (
+        <div className="flex items-center gap-2 px-3 pb-2" data-block-single-colour="">
+          <input
+            type="color"
+            aria-label="This block's colour"
+            disabled={busy}
+            value={draft || stored || parseHex(theme.primary) || PALETTES[0].light[0]}
+            onChange={(e) => pick(e.target.value.toLowerCase())}
+            className="ui-focus h-7 w-9 shrink-0 cursor-pointer rounded-[6px] border border-border bg-transparent p-0"
+          />
+          <input
+            aria-label="This block's colour, hex code"
+            disabled={busy}
+            maxLength={7}
+            placeholder="Palette colour"
+            defaultValue={draft || stored || ""}
+            key={draft || stored || "none"}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
+            onBlur={(e) => { const text = e.target.value.trim(); const hex = parseHex(text); if (hex && hex !== stored) void save({ color_mode: "single", single_color: hex }); else if (!text && stored) void save({ color_mode: "single", single_color: undefined }); }}
+            className="ui-focus h-7 w-[92px] rounded-[6px] border border-border bg-surface px-1.5 font-mono text-[12.5px] text-text placeholder:font-sans placeholder:text-faint"
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
 export function BlockMenu({ editor, block, variant, onRename, stacked = false, onOpenChange, className }: BlockMenuProps) {
   const [busy, setBusy] = useState(false);
   const empty = isEmptyBlock(block) || editor.run.emptyBlockIds.includes(block.id);
@@ -125,6 +202,7 @@ export function BlockMenu({ editor, block, variant, onRename, stacked = false, o
   const min = minSizeOf(block.type);
   const kpiIndex = variant === "kpi" ? editor.kpis.findIndex((b) => b.id === block.id) : -1;
   const shownFormat = blockFormat(block, editor.run.results[block.id]);
+  const forecastGrain = built ? blockTimeGrain(editor, block) : null;
 
   const move = (dir: MoveDir) => editor.moveBlock(block.id, dir);
   const size = (dir: SizeDir) => editor.resizeBlock(block.id, dir);
@@ -151,6 +229,14 @@ export function BlockMenu({ editor, block, variant, onRename, stacked = false, o
           )}
           {canEditQuery(editor, block) && (
             <MenuRow icon={<CodeIcon size={14} />} onClick={() => { close(); editor.openSheet({ kind: "query", blockId: block.id }); }}>Edit query…</MenuRow>
+          )}
+          {/* 2026-10-07 (chart-types round): the chart gallery, and the
+              forecast of a block over time (offered only for one). */}
+          {variant === "grid" && built && (block.type === "chart" || block.type === "donut") && (
+            <MenuRow icon={<BarChartIcon size={14} />} onClick={() => { close(); editor.openSheet({ kind: "chart", blockId: block.id }); }}>Chart type…</MenuRow>
+          )}
+          {built && (block.type === "chart" || block.type === "kpi") && forecastGrain && (
+            <MenuRow icon={<ChartIcon size={14} />} trailing={cfg.forecast ? "On" : undefined} onClick={() => { close(); editor.openSheet({ kind: "forecast", blockId: block.id }); }}>Forecast…</MenuRow>
           )}
 
           {variant === "kpi" && data && (
@@ -194,20 +280,9 @@ export function BlockMenu({ editor, block, variant, onRename, stacked = false, o
             <>
               <MenuDivider />
               <MenuCaption>Swap to</MenuCaption>
-              <div className="flex flex-wrap gap-1 px-3 pb-1.5">
-                {SWAP_OPTIONS.filter((o) => !(o.payload.type === block.type && (o.payload.chart_type || null) === (cfg.chart_type || null))).map((o) => (
-                  <button
-                    key={o.label}
-                    type="button"
-                    role="menuitem"
-                    disabled={busy}
-                    className="ui-focus rounded-full border border-border bg-surface px-2 py-[2px] text-caption text-secondary hover:border-border-strong hover:bg-subtle hover:text-text disabled:opacity-60"
-                    onClick={async () => { setBusy(true); try { await editor.swapBlock(block, o.payload); } finally { setBusy(false); close(); } }}
-                  >
-                    {o.label}
-                  </button>
-                ))}
-              </div>
+              {/* Only the forms this block's data can be drawn as; the
+                  rest say what they need (menu.tsx swapChoices). */}
+              <SwapChips block={block} result={editor.run.results[block.id]} busy={busy} onSwap={async (payload) => { setBusy(true); try { await editor.swapBlock(block, payload); } finally { setBusy(false); close(); } }} />
             </>
           )}
 
@@ -239,6 +314,10 @@ export function BlockMenu({ editor, block, variant, onRename, stacked = false, o
                 ))}
               </div>
             </>
+          )}
+
+          {variant === "grid" && built && (block.type === "chart" || block.type === "donut") && (
+            <ColourControl editor={editor} block={block} busy={busy} setBusy={setBusy} />
           )}
 
           {variant === "grid" && !stacked && item && (

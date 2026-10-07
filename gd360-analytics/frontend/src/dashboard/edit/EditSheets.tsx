@@ -9,6 +9,7 @@ import { ParametersEditor } from "../ParametersEditor";
 import type { RunSource } from "../useDashboardRun";
 import { dashboardBuilderApi } from "../../api/client";
 import { AskAiSheet, blockDisplayName, columnsForBlock, type EditorColumn } from "./AskAiSheet";
+import { ChartTypeSheet, ForecastSheet } from "./ChartSheets";
 import { SpecBuilder } from "./SpecBuilder";
 import type { DashboardEditor } from "./useDashboardEditor";
 
@@ -20,6 +21,8 @@ import type { DashboardEditor } from "./useDashboardEditor";
 //                        file block -> the existing ManualBuildPanel
 //   (round 9: there is no "Style..." sheet any more - a file chart's
 //    chart type is in its block menu, see BlockMenu.FILE_CHART_TYPES)
+//   "Chart type..."      the chart gallery (ChartSheets.tsx)
+//   "Forecast..."        the forecast controls of a block over time
 //   "Filters"            the existing ParametersEditor (the rail's definition)
 // plus the kit confirm for "Remove".
 
@@ -91,8 +94,9 @@ function QuerySheet({ editor, block, source }: { editor: DashboardEditor; block:
       columnsOf={columnsOf}
       provider={editor.provider}
       onCancel={close}
-      onSave={async (spec) => {
-        await editor.saveSpec(block, spec);
+      result={run.results[block.id]?.status === "ok" ? run.results[block.id] : null}
+      onSave={async (spec, chartType) => {
+        await editor.saveSpec(block, spec, chartType);
         close();
       }}
     />
@@ -109,6 +113,8 @@ export function EditSheets({ editor, source }: { editor: DashboardEditor; source
         <AskAiSheet editor={editor} block={block} onClose={editor.closeSheet} onEditQuery={() => editor.openSheet({ kind: "query", blockId: block.id })} />
       )}
       {sheet?.kind === "query" && block && <QuerySheet editor={editor} block={block} source={source} />}
+      {sheet?.kind === "chart" && block && <ChartTypeSheet editor={editor} block={block} />}
+      {sheet?.kind === "forecast" && block && <ForecastSheet editor={editor} block={block} />}
       {sheet?.kind === "filters" && (
         <Sheet open onClose={editor.closeSheet} title="Filters" subtitle="The controls in the rail, the date column and the default period." size="lg" id="edit-filters">
           <ParametersEditor

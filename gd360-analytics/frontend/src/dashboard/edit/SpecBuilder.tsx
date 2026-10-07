@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { BlockSpec, BlockSpecFilter, BlockSpecMeasure, DashboardBlock } from "../../api/client";
+import type { BlockResult, BlockSpec, BlockSpecDatePart, BlockSpecFilter, BlockSpecMeasure, DashboardBlock } from "../../api/client";
 import { Button, CloseIcon, Field, IconButton, Input, NumberInput, PlusIcon, Select, Sheet, Switch, WarningIcon, cn } from "../../ui";
 import { describeSpec, PERIOD_LABEL, PERIODS } from "../runState";
+import { chartTypeLabel, fits, fitsBeforeRun, recommend, shapeFromResult, shapeFromSpec } from "../charts/recommend";
 import { columnKind, type EditorColumn } from "./AskAiSheet";
+import { ChartGallery } from "./ChartGallery";
 
 // 2026-10-07 (dashboard edit mode): "Edit query..." for a warehouse block -
 // a form over the block's BlockSpec, exactly the grammar
@@ -16,6 +18,18 @@ import { columnKind, type EditorColumn } from "./AskAiSheet";
 //   order_by   {by, dir}                     a measure alias, a group-by column, or "period"
 //   limit      1..5000
 //   compare_prior_period / sparkline         KPI tiles
+//   date_parts {column, part}                weekday month quarter day hour
+//                                            (2026-10-07, chart-types round:
+//                                            "bookings by weekday", a month x
+//                                            weekday heatmap)
+//   bins       {column, count}               a histogram: the warehouse
+//                                            counts rows per bin of a number
+//                                            column (no group-by, no time)
+// Under the form, for a chart block, the CHART GALLERY (ChartGallery.tsx):
+// every form as a tile judged against the DRAFT's shape - thumbnails from
+// the block's saved rows while the shape is still the saved one, "needs a
+// country column" on the forms it cannot be. A picked form is saved with
+// the query.
 // Saving posts the spec to POST /blocks/{id}/spec; the backend dry-runs it
 // in the warehouse first, and a 400's message (the warehouse's own) is
 // shown beside the form with the sheet left open.
@@ -57,16 +71,33 @@ const OTHER_OPS: Record<string, OpKind> = { in_or_null: "list", equals_ci: "sing
 
 const MAX_MEASURES = 4;
 const MAX_GROUP_BY = 2;
+const MAX_DATE_PARTS = 2;
+// query_builder.MAX_GROUP_BY: group-by columns and date parts together.
+const MAX_DIMS = 3;
+type DatePart = BlockSpecDatePart["part"];
+const DATE_PART_LABEL: { value: DatePart; label: string }[] = [
+  { value: "weekday", label: "Weekday" },
+  { value: "month", label: "Month of year" },
+  { value: "quarter", label: "Quarter" },
+  { value: "day", label: "Day of month" },
+  { value: "hour", label: "Hour of day" },
+];
+const BIN_COUNT_DEFAULT = 20, BIN_COUNT_MIN = 2, BIN_COUNT_MAX = 60;
 const MAX_LIMIT = 5000;
 const DEFAULT_LIMIT = 1000;
 const ALIAS_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 
 type MeasureDraft = { key: string; agg: Agg; column: string; expr: string; custom: boolean; alias: string; aliasTouched: boolean };
 type FilterDraft = { key: string; column: string; op: string; value: string; value2: string };
+type DatePartDraft = { column: string; part: DatePart };
 type Draft = {
   table: string;
   measures: MeasureDraft[];
   groupBy: string[];
+  dateParts: DatePartDraft[];
+  binsOn: boolean;
+  binsColumn: string;
+  binsCount: number | null;
   timeOn: boolean;
   timeColumn: string;
   grain: Grain;
@@ -112,6 +143,10 @@ export function specToDraft(spec: BlockSpec | null | undefined, tables: string[]
     table,
     measures,
     groupBy: [...(spec?.group_by || [])],
+    dateParts: (spec?.date_parts || []).map((p) => ({ column: p.column, part: p.part })),
+    binsOn: Boolean(spec?.bins?.column),
+    binsColumn: spec?.bins?.column || "",
+    binsCount: typeof spec?.bins?.count === "number" ? spec.bins.count : BIN_COUNT_DEFAULT,
     timeOn: Boolean(spec?.time),
     timeColumn: spec?.time?.column || "",
     grain: spec?.time?.grain || "month",
@@ -148,8 +183,17 @@ export function draftToSpec(draft: Draft, columns: EditorColumn[], blockType: st
     if (m.custom) return { alias, agg: m.agg, column: null, expr: m.expr.trim() };
     return { alias, agg: m.agg, column: m.column || null, expr: null };
   });
-  const groupBy = kpi ? [] : draft.groupBy.filter(Boolean);
-  const time = !kpi && draft.timeOn && draft.timeColumn ? { column: draft.timeColumn, grain: draft.grain } : null;
+  const binned = !kpi && draft.binsOn && Boolean(draft.binsColumn);
+  const groupBy = kpi || binned ? [] : draft.groupBy.filter(Boolean);
+  const time = !kpi && !binned && draft.timeOn && draft.timeColumn ? { column: draft.timeColumn, grain: draft.grain } : null;
+  // A part's name is the part ("weekday"); two parts of the same kind take
+  // their column's name with it.
+  const partDrafts = kpi || binned ? [] : draft.dateParts.filter((p) => p.column);
+  const dateParts: BlockSpecDatePart[] = partDrafts.map((p) => ({
+    column: p.column,
+    part: p.part,
+    alias: partDrafts.filter((q) => q.part === p.part).length > 1 ? `${p.column}_${p.part}`.replace(/[^A-Za-z0-9_]+/g, "_") : p.part,
+  }));
   const filters: BlockSpecFilter[] = draft.filters
     .filter((f) => f.column)
     .map((f) => {
@@ -161,8 +205,8 @@ export function draftToSpec(draft: Draft, columns: EditorColumn[], blockType: st
       const text = /^(contains|not_contains|starts_with|ends_with|equals_ci|not_equals_ci)$/.test(f.op);
       return { column: f.column, op: f.op, value: text ? f.value : coerce(f.value, k) };
     });
-  const sortable = new Set<string>([...groupBy, ...measures.map((m) => m.alias), ...(time ? ["period"] : [])]);
-  const order_by = kpi
+  const sortable = new Set<string>([...groupBy, ...dateParts.map((p) => p.alias as string), ...measures.map((m) => m.alias), ...(time ? ["period"] : [])]);
+  const order_by = kpi || binned
     ? []
     : [...(draft.sortBy && sortable.has(draft.sortBy) ? [{ by: draft.sortBy, dir: draft.sortDir }] : []), ...draft.extraOrder.filter((o) => sortable.has(o.by) && o.by !== draft.sortBy)].slice(0, 3);
   return {
@@ -175,6 +219,10 @@ export function draftToSpec(draft: Draft, columns: EditorColumn[], blockType: st
     limit: Math.max(1, Math.min(MAX_LIMIT, Math.round(draft.limit ?? DEFAULT_LIMIT))),
     compare_prior_period: draft.comparePrior,
     sparkline: draft.sparkline,
+    // Both keys only when used: a spec without them stays byte-for-byte
+    // what it was before they existed.
+    ...(dateParts.length ? { date_parts: dateParts } : {}),
+    ...(binned ? { bins: { column: draft.binsColumn, count: Math.max(BIN_COUNT_MIN, Math.min(BIN_COUNT_MAX, Math.round(draft.binsCount ?? BIN_COUNT_DEFAULT))) } } : {}),
   };
 }
 
@@ -199,10 +247,14 @@ export function draftProblem(draft: Draft, blockType: string): string | null {
     if (kind === "pair" && (f.value.trim() === "" || f.value2.trim() === "")) return `The filter on ${f.column} needs two values.`;
   }
   const kpi = blockType === "kpi" || blockType === "gauge";
+  if (!kpi && draft.binsOn) return draft.binsColumn ? null : "Pick the number column to bin, or switch the histogram off.";
   if (draft.timeOn && !kpi && !draft.timeColumn) return "Pick the date column to bucket by, or switch time off.";
-  const shaped = draft.groupBy.some(Boolean) || (draft.timeOn && Boolean(draft.timeColumn));
+  const parts = draft.dateParts.filter((p) => p.column);
+  if (!kpi && draft.groupBy.filter(Boolean).length + parts.length > MAX_DIMS) return `Group by at most ${MAX_DIMS} columns and date parts together.`;
+  if (!kpi && new Set(parts.map((p) => `${p.column}:${p.part}`)).size < parts.length) return "The same date part is listed twice.";
+  const shaped = draft.groupBy.some(Boolean) || (draft.timeOn && Boolean(draft.timeColumn)) || parts.length > 0;
   if (!kpi && !shaped && (blockType === "chart" || blockType === "donut" || blockType === "avatar_list" || blockType === "sparkline")) {
-    return "A chart needs a group-by column or a time bucket.";
+    return "A chart needs a group-by column, a time bucket or a histogram column.";
   }
   return null;
 }
@@ -217,12 +269,17 @@ function SectionLabel({ children, hint }: { children: React.ReactNode; hint?: Re
 }
 
 export function SpecBuilder({
-  block, tables, columnsOf, onSave, onCancel, provider, initialError, title,
+  block, tables, columnsOf, onSave, onCancel, provider, initialError, title, result = null,
 }: {
   block: DashboardBlock;
   tables: string[];
   columnsOf: (table: string) => EditorColumn[];
-  onSave: (spec: BlockSpec) => Promise<void>;
+  // `chartType`: a form picked in the gallery; null = the saved form no
+  // longer fits the query, the server picks; undefined = keep it.
+  onSave: (spec: BlockSpec, chartType?: string | null) => Promise<void>;
+  // The block's last run (the gallery's thumbnails are drawn from it while
+  // the draft still has the saved query's shape).
+  result?: BlockResult | null;
   onCancel: () => void;
   provider?: string | null;
   initialError?: string | null;
@@ -232,10 +289,13 @@ export function SpecBuilder({
   const [draft, setDraft] = useState<Draft>(() => specToDraft(block.config?.spec, tables, block.type));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(initialError ?? null);
+  // The form picked in the gallery (null = none picked: the block keeps its own).
+  const [picked, setPicked] = useState<string | null>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     setDraft(specToDraft(block.config?.spec, tables, block.type));
     setError(initialError ?? null);
+    setPicked(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [block.id]);
 
@@ -245,7 +305,23 @@ export function SpecBuilder({
   const dates = columns.filter((c) => c.kind === "date");
   const spec = useMemo(() => draftToSpec(draft, columns, block.type), [draft, columns, block.type]);
   const problem = draftProblem(draft, block.type);
-  const sortable = [...(spec.time ? [{ value: "period", label: "Period" }] : []), ...(spec.group_by || []).map((g) => ({ value: g, label: g })), ...spec.measures.map((m) => ({ value: m.alias, label: m.alias }))];
+  const sortable = [...(spec.time ? [{ value: "period", label: "Period" }] : []), ...(spec.group_by || []).map((g) => ({ value: g, label: g })), ...(spec.date_parts || []).map((p) => ({ value: p.alias as string, label: p.alias as string })), ...spec.measures.map((m) => ({ value: m.alias, label: m.alias }))];
+  const binned = Boolean(spec.bins);
+
+  // ---- the chart gallery, judged against the DRAFT ----
+  const charted = block.type === "chart" || block.type === "donut";
+  const target = typeof block.config?.target === "number";
+  const gallery = useMemo(() => {
+    if (!charted) return null;
+    const sameShape = Boolean(result && result.status === "ok" && result.rows?.length && shapeKey(spec) === shapeKey(block.config?.spec));
+    const shape = sameShape ? shapeFromResult(result, spec, { target }) : shapeFromSpec(spec, columns, { target });
+    return { shape, ran: sameShape, result: sameShape ? result : null };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [charted, spec, columns, result, target, block.config?.spec]);
+  const savedForm = block.type === "donut" ? "donut" : typeof block.config?.chart_type === "string" ? block.config.chart_type : null;
+  const form = binned ? "histogram" : picked ?? savedForm;
+  const formFit = gallery && form ? (gallery.ran ? fits(gallery.shape, form) : fitsBeforeRun(gallery.shape, form)) : null;
+  const fallback = gallery && formFit && !formFit.ok ? recommend(gallery.shape) : null;
 
   const patch = (p: Partial<Draft>) => { setDraft((d) => ({ ...d, ...p })); setError(null); };
   const patchMeasure = (key: string, p: Partial<MeasureDraft>) =>
@@ -281,7 +357,10 @@ export function SpecBuilder({
     setBusy(true);
     setError(null);
     try {
-      await onSave(spec);
+      // A picked form that fits is saved with the query; a form (picked or
+      // the block's own) the new query cannot be drawn as is left to the
+      // server's recommender - the note under the gallery says which.
+      await onSave(spec, binned ? "histogram" : formFit && !formFit.ok ? null : picked ?? undefined);
     } catch (e: any) {
       const detail = e?.response?.data?.detail;
       setError(typeof detail === "string" && detail.trim() ? detail : "This query couldn't be saved.");
@@ -381,7 +460,33 @@ export function SpecBuilder({
         )}
       </section>
 
-      {!kpi && (
+      {!kpi && charted && (
+        <section className="flex flex-col gap-2" data-spec-bins="">
+          <SectionLabel>Histogram</SectionLabel>
+          <Switch
+            checked={draft.binsOn}
+            disabled={busy || numeric.length === 0}
+            onChange={(binsOn) => patch({ binsOn, binsColumn: binsOn ? draft.binsColumn || numeric[0]?.name || "" : draft.binsColumn })}
+            label={<span className="text-ui text-text">Count rows per range of a number column</span>}
+          />
+          {draft.binsOn && (
+            <>
+              <div className="grid grid-cols-[minmax(0,1fr)_130px] gap-2">
+                <Select aria-label="Histogram column" data-spec-bins-column="" value={draft.binsColumn} disabled={busy} onChange={(e) => patch({ binsColumn: e.target.value })}>
+                  <option value="">Pick a number column…</option>
+                  {numeric.map((c) => (
+                    <option key={c.name} value={c.name}>{c.name}</option>
+                  ))}
+                </Select>
+                <NumberInput aria-label="Number of bins" data-spec-bins-count="" value={draft.binsCount} min={BIN_COUNT_MIN} max={BIN_COUNT_MAX} disabled={busy} unit="bins" onChange={(binsCount) => patch({ binsCount })} />
+              </div>
+              <div className="text-caption text-muted">The ranges are computed{provider ? ` in ${provider}` : " in the warehouse"}, on round edges close to this count. A histogram has no group-by and no time bucket.</div>
+            </>
+          )}
+        </section>
+      )}
+
+      {!kpi && !binned && (
         <section className="flex flex-col gap-2" data-spec-group="">
           <SectionLabel hint="up to 2 columns">Group by</SectionLabel>
           {Array.from({ length: Math.max(MAX_GROUP_BY, draft.groupBy.length) }, (_, i) => {
@@ -401,10 +506,34 @@ export function SpecBuilder({
               </Select>
             );
           })}
+          {dates.length > 0 && Array.from({ length: Math.min(MAX_DATE_PARTS, Math.max(1, draft.dateParts.length + 1)) }, (_, i) => {
+            const value = draft.dateParts[i];
+            return (
+              <div key={`part-${i}`} className="grid grid-cols-[minmax(0,1fr)_150px] gap-2" data-spec-date-part="">
+                <Select aria-label={`Date part column ${i + 1}`} value={value?.column || ""} disabled={busy} onChange={(e) => {
+                  const next = [...draft.dateParts];
+                  if (e.target.value) next[i] = { column: e.target.value, part: value?.part || (i === 0 ? "weekday" : "month") };
+                  else next.splice(i, 1);
+                  patch({ dateParts: next });
+                }}>
+                  <option value="">{i === 0 ? "No part of a date" : "No second date part"}</option>
+                  {dates.map((c) => (
+                    <option key={c.name} value={c.name}>{c.name}</option>
+                  ))}
+                </Select>
+                <Select aria-label={`Date part ${i + 1}`} value={value?.part || (i === 0 ? "weekday" : "month")} disabled={busy || !value} onChange={(e) => patch({ dateParts: draft.dateParts.map((p, j) => (j === i ? { ...p, part: e.target.value as DatePart } : p)) })}>
+                  {DATE_PART_LABEL.map((p) => (
+                    <option key={p.value} value={p.value}>{p.label}</option>
+                  ))}
+                </Select>
+              </div>
+            );
+          })}
+          {dates.length > 0 && <div className="text-caption text-muted">A part of a date groups every year together: all Mondays, all Januaries.</div>}
         </section>
       )}
 
-      {!kpi && (
+      {!kpi && !binned && (
         <section className="flex flex-col gap-2" data-spec-time="">
           <SectionLabel>Time</SectionLabel>
           <Switch
@@ -501,7 +630,7 @@ export function SpecBuilder({
         </div>
       </section>
 
-      {!kpi && (
+      {!kpi && !binned && (
         <section className="flex flex-col gap-2" data-spec-sort="">
           <SectionLabel>Sort and limit</SectionLabel>
           <div className="grid grid-cols-[minmax(0,1fr)_130px_110px] gap-2">
@@ -517,6 +646,18 @@ export function SpecBuilder({
             </Select>
             <NumberInput aria-label="Row limit" value={draft.limit} min={1} max={MAX_LIMIT} disabled={busy} unit="rows" onChange={(limit) => patch({ limit })} />
           </div>
+        </section>
+      )}
+
+      {gallery && !problem && (
+        <section className="flex flex-col gap-2" data-spec-chart="">
+          <SectionLabel hint={gallery.ran ? "drawn from this block's rows" : "previews after saving"}>Chart</SectionLabel>
+          <ChartGallery block={block} shape={gallery.shape} ran={gallery.ran} result={gallery.result} current={form} busy={busy || binned} dense onPick={(type) => { setPicked(type); setError(null); }} />
+          {fallback && form && (
+            <div className="text-caption text-secondary" data-spec-chart-fallback="">
+              {chartTypeLabel(form)} cannot draw this query (it {formFit && !formFit.ok ? formFit.why : ""}); saving draws it as {chartTypeLabel(fallback.chart_type).toLowerCase()}.
+            </div>
+          )}
         </section>
       )}
 
@@ -542,6 +683,19 @@ export function SpecBuilder({
     </form>
     </Sheet>
   );
+}
+
+// What decides which forms a query can be drawn as: its table and the
+// columns it groups, buckets, bins and measures (filters, order and limit
+// change the rows, not the shape).
+function shapeKey(spec: BlockSpec | null | undefined): string {
+  if (!spec) return "";
+  return JSON.stringify([
+    spec.table, spec.group_by || [], spec.time?.column || null,
+    (spec.date_parts || []).map((p) => [p.column, p.part]),
+    spec.bins?.column || null,
+    (spec.measures || []).map((m) => [m.alias, m.agg, m.column || null, m.expr || null]),
+  ]);
 }
 
 function uniqueAlias(base: string, measures: MeasureDraft[]): string {

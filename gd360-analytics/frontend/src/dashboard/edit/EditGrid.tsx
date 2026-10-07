@@ -3,7 +3,8 @@ import "react-grid-layout/css/styles.css";
 import { ReactGridLayout } from "react-grid-layout/legacy";
 import type { DashboardBlock } from "../../api/client";
 import { cn } from "../../ui";
-import { blockHeightPx, GRID_COLS, GRID_GAP_PX, type GridItem, MAX_ROWS_PER_BLOCK, minSizeOf, ROW_UNIT_PX } from "./layout";
+import { useGridMetrics } from "../theme/ChartThemeContext";
+import { blockHeightPx, GRID_COLS, type GridItem, MAX_ROWS_PER_BLOCK, minSizeOf } from "./layout";
 
 // 2026-10-07 (dashboard edit mode): the block grid while editing -
 // react-grid-layout with EXACTLY the view's geometry (12 columns, 48 px
@@ -67,6 +68,8 @@ export function EditGrid({ blocks, layout, onLayoutCommit, renderBlock, classNam
     [layout, byId]
   );
   const heights = useMemo(() => new Map(layout.map((it) => [it.i, it.h])), [layout]);
+  // The same row height and gap the view's CSS grid uses (density).
+  const metrics = useGridMetrics();
   // While a block is dragged or resized the grid suppresses text selection
   // and the cards' hover chrome.
   const [busy, setBusy] = useState(false);
@@ -88,8 +91,8 @@ export function EditGrid({ blocks, layout, onLayoutCommit, renderBlock, classNam
         width={width}
         layout={rglLayout}
         cols={GRID_COLS}
-        rowHeight={ROW_UNIT_PX}
-        margin={[GRID_GAP_PX, GRID_GAP_PX]}
+        rowHeight={metrics.rowUnit}
+        margin={[metrics.gap, metrics.gap]}
         containerPadding={[0, 0]}
         compactType="vertical"
         allowOverlap={false}
@@ -109,7 +112,7 @@ export function EditGrid({ blocks, layout, onLayoutCommit, renderBlock, classNam
       >
         {blocks.filter((b) => heights.has(b.id)).map((b) => (
           <div key={b.id} className="gd-grid-item" data-grid-block={b.id}>
-            {renderBlock(b, blockHeightPx(heights.get(b.id) || b.h))}
+            {renderBlock(b, blockHeightPx(heights.get(b.id) || b.h, metrics))}
           </div>
         ))}
       </ReactGridLayout>
