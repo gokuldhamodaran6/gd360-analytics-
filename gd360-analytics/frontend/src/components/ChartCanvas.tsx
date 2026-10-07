@@ -52,14 +52,38 @@ const THEME_CHROME = {
   },
 } as const;
 
+// 2026-10-07 (Option A dashboard view, src/dashboard/): the point a viewer
+// clicked on a chart - what cross-filtering turns into a page filter. `x`
+// is the category/period (or the slice label for a pie), `traceName` the
+// series it belongs to.
+export type ChartPointClick = { x: any; y: any; label: any; traceName: string | null; traceIndex: number; pointIndex: number };
+
+export type ChartExportApi = { download: (format: "png" | "jpeg" | "svg" | "webp") => Promise<void> };
+
 export default function ChartCanvas({
   chartSpec,
   title,
   dashPremium,
   onMinHeight,
+  bare = false,
+  onPointClick,
+  onExportApi,
+  minHeight,
 }: {
   chartSpec: any;
   title?: string;
+  // 2026-10-07 (Option A dashboard view): `bare` renders ONLY the plot -
+  // no card chrome, no padding, no "..." export menu - for a caller that
+  // already supplies all three (src/ui/ChartCard). `onPointClick` fires
+  // for a click on a bar/point/slice (cross-filtering). `onExportApi`
+  // hands the caller a download(format) function bound to the live graph
+  // (null on unmount) so a toolbar outside this component can export the
+  // chart without importing Plotly itself. `minHeight` overrides the
+  // computed minimum (a dashboard card decides its own height).
+  bare?: boolean;
+  onPointClick?: (point: ChartPointClick) => void;
+  onExportApi?: (api: ChartExportApi | null) => void;
+  minHeight?: number;
   // 2026-09-25 (naming fix + premium light theme foundation round): when
   // true, renders on the new `.dash-card` treatment (index.css) instead of
   // the plain `.card` every other chart in the app still uses - passed
@@ -97,7 +121,24 @@ export default function ChartCanvas({
   const { theme } = useTheme();
   const cardClass = dashPremium ? "dash-card" : "card";
 
+  // 2026-10-07 (Option A dashboard view): see onExportApi above. Bound once
+  // per mount; download() reads graphDivRef at call time so it always
+  // exports the current figure.
+  useEffect(() => {
+    if (!onExportApi) return;
+    onExportApi({
+      download: async (format) => {
+        if (!graphDivRef.current) return;
+        const safeName = (title || "chart").replace(/[^a-zA-Z0-9-_]+/g, "_").slice(0, 60) || "chart";
+        await (Plotly as any).downloadImage(graphDivRef.current, { format, filename: safeName, width: 1200, height: 800 });
+      },
+    });
+    return () => onExportApi(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onExportApi, title]);
+
   if (!chartSpec) {
+    if (bare) return <div className="flex h-full min-h-[120px] items-center justify-center text-caption text-muted">No chart yet</div>;
     return (
       <div className={`${cardClass} h-full flex flex-col items-center justify-center text-center p-10 gap-3`}>
         <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-primary/20 to-accent/20 flex items-center justify-center text-2xl">
@@ -151,7 +192,7 @@ export default function ChartCanvas({
   // inline at the Plot below, so the exact same number both sizes the
   // chart's own minHeight AND (via the effect below) is handed up to
   // BlockCard's one-time auto-grow - the two can never quietly disagree.
-  const minHeightPx = suggestedChartMinHeight(chartSpec);
+  const minHeightPx = typeof minHeight === "number" ? minHeight : suggestedChartMinHeight(chartSpec);
   useEffect(() => {
     onMinHeight?.(minHeightPx);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -230,6 +271,44 @@ export default function ChartCanvas({
     },
   };
 
+  const plot = (
+        <Plot
+          data={chartSpec.data}
+          layout={{ ...themedLayout, autosize: true, title: bare ? { text: "" } : resolvedTitle }}
+          style={{ width: "100%", height: "100%", minHeight: minHeightPx }}
+          useResizeHandler
+          config={
+            dashPremium || bare
+              ? { displaylogo: false, responsive: true, displayModeBar: false }
+              : { displaylogo: false, responsive: true }
+          }
+          onInitialized={(_figure: any, graphDiv: any) => {
+            graphDivRef.current = graphDiv;
+          }}
+          onUpdate={(_figure: any, graphDiv: any) => {
+            graphDivRef.current = graphDiv;
+          }}
+          onClick={
+            onPointClick
+              ? (e: any) => {
+                  const p = e?.points?.[0];
+                  if (!p) return;
+                  const trace = p.data || {};
+                  const horizontal = trace.orientation === "h";
+                  const isPie = trace.type === "pie";
+                  const x = isPie ? p.label : horizontal ? p.y : p.x;
+                  const y = isPie ? p.value : horizontal ? p.x : p.y;
+                  onPointClick({ x, y, label: isPie ? p.label : x, traceName: trace.name ?? null, traceIndex: p.curveNumber ?? 0, pointIndex: p.pointNumber ?? 0 });
+                }
+              : undefined
+          }
+        />
+  );
+
+  if (bare) {
+    return <div className={`h-full w-full min-h-0 ${onPointClick ? "[&_.points_path]:cursor-pointer [&_.slice_path]:cursor-pointer" : ""}`}>{plot}</div>;
+  }
+
   return (
     <div className={`${cardClass} p-4 h-full flex flex-col overflow-hidden transition-shadow hover:shadow-glow`}>
       {/* 2026-10-06 (round 3 visual restyle, "ChartD" mockup): the plain
@@ -276,38 +355,7 @@ export default function ChartCanvas({
         )}
       </div>
       <div className="flex-1 min-h-0 rounded-xl overflow-hidden">
-        <Plot
-          data={chartSpec.data}
-          layout={{ ...themedLayout, autosize: true, title: resolvedTitle }}
-          // A many-entry legend needs real vertical room to grow downward
-          // from the title without ever reaching the x-axis labels below it
-          // - see chartStyle.ts's suggestedChartMinHeight. A plain chart
-          // with no legend (or a short one) still gets the same 380px floor
-          // this always used, so nothing changes for the common case.
-          style={{ width: "100%", height: "100%", minHeight: minHeightPx }}
-          useResizeHandler
-          // 2026-09-25c (elite pass): a dashPremium chart already has its
-          // own "..." export menu (see the header above) - Plotly's own
-          // built-in modebar (camera/zoom/pan/box-select) was still
-          // rendering on top of it on hover, a second, redundant, distinctly
-          // un-premium toolbar fighting for the same corner of the card
-          // (this is the literal "map inside which is very bad" clutter a
-          // side-by-side against Vision UI/Horizon UI called out). It's
-          // switched off only for dashPremium - the live Workspace/chat
-          // chart still gets Plotly's native toolbar, since that surface
-          // has no export menu of its own to replace it with.
-          config={
-            dashPremium
-              ? { displaylogo: false, responsive: true, displayModeBar: false }
-              : { displaylogo: false, responsive: true }
-          }
-          onInitialized={(_figure: any, graphDiv: any) => {
-            graphDivRef.current = graphDiv;
-          }}
-          onUpdate={(_figure: any, graphDiv: any) => {
-            graphDivRef.current = graphDiv;
-          }}
-        />
+        {plot}
       </div>
     </div>
   );
