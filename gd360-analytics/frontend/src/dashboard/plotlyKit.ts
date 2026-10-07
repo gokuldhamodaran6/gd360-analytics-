@@ -24,6 +24,18 @@
 // Analysis overlays (meta.role: forecast_line, forecast_band, trend_line,
 // trend_band, anomaly_markers) keep their dash / fill and take the colour
 // of the series they describe, or the warning tone for flagged points.
+//
+// 2026-10-07 (identity-colour round): the series colours here are the
+// ChartTheme's - themedKitTokens() lays the dashboard's palette (its
+// primary, its slots in order, its one-hue ramp for a heatmap) over the
+// kit's ink / grid / surface tokens, so a Plotly figure sits in the same
+// palette as the native charts around it. This file names no colour of
+// its own: the fallback set is the default palette's, read from the theme.
+
+import { DEFAULT_APPEARANCE } from "./theme/appearance";
+import { resolvePalette, type ChartTheme } from "./theme/chartTheme";
+import { parseHex } from "./theme/palettes";
+import { LIGHT, STATUS } from "../ui/tokens";
 
 export type KitTokens = {
   font: string;
@@ -36,21 +48,31 @@ export type KitTokens = {
   primary: string;
   warning: string;
   series: string[];
+  // A one-hue ramp, lowest value first (heatmaps); absent = a wash of `primary`.
+  ramp?: string[];
 };
 
 // What the kit's tokens resolve to when there is no stylesheet to read
 // (tests, server rendering) - the light theme's values.
+function rgb(hex: string): string {
+  const h = parseHex(hex);
+  if (!h) return hex;
+  const n = parseInt(h.slice(1), 16);
+  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+}
+const DEFAULT_PALETTE = resolvePalette(DEFAULT_APPEARANCE.palette, "light");
+
 export const FALLBACK_TOKENS: KitTokens = {
   font: 'Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
-  text: "rgb(22, 22, 21)",
-  muted: "rgb(111, 111, 106)",
-  faint: "rgb(168, 168, 164)",
-  grid: "rgb(241, 241, 237)",
-  border: "rgb(227, 227, 222)",
-  surface: "rgb(255, 255, 255)",
-  primary: "rgb(15, 92, 70)",
-  warning: "rgb(180, 83, 9)",
-  series: ["rgb(57, 135, 229)", "rgb(217, 89, 38)", "rgb(25, 158, 112)", "rgb(201, 133, 0)", "rgb(213, 81, 129)", "rgb(0, 131, 0)"],
+  text: rgb(LIGHT.text),
+  muted: rgb(LIGHT.muted),
+  faint: rgb(LIGHT.faint),
+  grid: rgb(LIGHT.subtle),
+  border: rgb(LIGHT.border),
+  surface: rgb(LIGHT.surface),
+  primary: rgb(DEFAULT_PALETTE.primary),
+  warning: rgb(STATUS.warning.ink),
+  series: DEFAULT_PALETTE.slots.slice(0, 6).map(rgb),
 };
 
 function triplet(style: CSSStyleDeclaration, name: string, fallback: string): string {
@@ -84,6 +106,14 @@ export function readKitTokens(root?: Element | null): KitTokens {
     warning: triplet(style, "--color-warning", FALLBACK_TOKENS.warning),
     series: [1, 2, 3, 4, 5, 6].map((i) => triplet(style, `--color-series-${i}`, FALLBACK_TOKENS.series[i - 1])),
   };
+}
+
+/** The kit's tokens with the dashboard's chart colours laid over them: its
+ *  primary, its palette in slot order, its one-hue ramp. The token theme
+ *  (no dashboard appearance) leaves `base` as read from the stylesheet. */
+export function themedKitTokens(base: KitTokens, theme: ChartTheme | null | undefined): KitTokens {
+  if (!theme || theme.tokens) return base;
+  return { ...base, primary: theme.primary, series: [...theme.slots], faint: base.faint, ramp: [...theme.sequential()] };
 }
 
 export function withAlpha(color: string, alpha: number): string {
@@ -172,7 +202,7 @@ export function kitPlotlyFigure(figure: any, tokens: KitTokens = FALLBACK_TOKENS
     }
     if (NO_RECOLOR.has(type)) continue;
     if (SCALE_TYPES.has(type)) {
-      t.colorscale = [[0, withAlpha(tokens.primary, 0.06)], [1, tokens.primary]];
+      t.colorscale = tokens.ramp?.length ? tokens.ramp.map((c, i, all) => [all.length > 1 ? i / (all.length - 1) : 0, c]) : [[0, withAlpha(tokens.primary, 0.06)], [1, tokens.primary]];
       if (t.colorbar || t.showscale !== false) t.colorbar = { ...(t.colorbar || {}), outlinewidth: 0, thickness: 10, tickfont: { family: tokens.font, color: tokens.muted, size: 11 } };
       continue;
     }

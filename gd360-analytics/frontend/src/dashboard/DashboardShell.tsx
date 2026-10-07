@@ -20,6 +20,9 @@ import type { CanvasOwnerActions } from "./canvas/cells";
 import type { DashboardViewMode } from "./canvas/useViewMode";
 import { CommentsSheet } from "./comments/CommentThread";
 import type { CommentsApi } from "./comments/useComments";
+import { completeAppearance, type DashboardAppearance } from "./theme/appearance";
+import { ChartThemeProvider, useDashboardScope } from "./theme/ChartThemeContext";
+import type { ChartTheme } from "./theme/chartTheme";
 
 // 2026-10-07 (Option A dashboard view, Main.dc.html): the page a dashboard
 // is VIEWED through - the owner's view/preview mode and the published
@@ -34,8 +37,18 @@ import type { CommentsApi } from "./comments/useComments";
 // context row turns into the edit toolbar (Add block · Filters · hint ·
 // page tabs), and the KPI strip and block grid take the editor - same
 // chrome, same rail, same live numbers, same geometry as the view.
+//
+// 2026-10-07 (identity-colour round): the shell is where a dashboard's
+// APPEARANCE takes hold, for the owner and the published link alike. It
+// wraps everything in a ChartThemeProvider built from dashboard.appearance
+// and the run's colour registry (so every chart, table dot, rail chip and
+// canvas cell reads the same colours and number settings), applies the
+// corner radius and font to its root, hands the density's grid metrics to
+// the grid and the editor, and prints the footer note under the page.
 
 export type DashboardShellProps = {
+  // `appearance` (WarehouseDashboardFields) is the dashboard's resolved
+  // look; absent = the product defaults.
   dashboard: WarehouseDashboardFields & { name: string; datasource_name?: string | null };
   page: DashboardBuilderPage | undefined;
   run: DashboardRun;
@@ -80,6 +93,11 @@ export type DashboardShellProps = {
     onDone: () => void;
     onRename: (name: string) => Promise<void>;
   } | null;
+  // Editing only: pins (or with null unpins) a value's colour. A legend
+  // key, a donut key and a rail chip's dot become buttons for it.
+  onPinColor?: ChartTheme["pin"];
+  // The edit toolbar's "Appearance" button.
+  onOpenAppearance?: () => void;
 };
 
 // The dashboard name while editing: click it (or press Enter on it) to
@@ -269,10 +287,20 @@ export function LegacyBlocksBanner({ count, onUpgrade }: { count: number; onUpgr
   );
 }
 
-export function DashboardShell({
+export function DashboardShell(props: DashboardShellProps) {
+  const appearance = useMemo(() => completeAppearance(props.dashboard.appearance), [props.dashboard.appearance]);
+  return (
+    <ChartThemeProvider appearance={appearance} registry={props.run.colors} onPin={props.editing ? props.onPinColor : undefined}>
+      <ShellBody {...props} appearance={appearance} />
+    </ChartThemeProvider>
+  );
+}
+
+function ShellBody({
   dashboard, page, run, source, mode, parameters, owner, fetchSql, onEditDashboard, headerExtra, onUpgradeBlocks, beforeContent, afterContent, hideRail = false, className, style,
-  view = "dashboard", onViewChange, canvasOwner = null, comments = null, contextRow, subtitleExtra, editing = null,
-}: DashboardShellProps) {
+  view = "dashboard", onViewChange, canvasOwner = null, comments = null, contextRow, subtitleExtra, editing = null, appearance, onOpenAppearance,
+}: DashboardShellProps & { appearance: DashboardAppearance }) {
+  const scope = useDashboardScope(appearance);
   const canvas = view === "canvas";
   const narrow = useIsNarrow();
   // Layout editing belongs to the Dashboard rendering; the canvas keeps
@@ -427,7 +455,7 @@ export function DashboardShell({
   );
 
   return (
-    <div className={cn("flex min-h-0 flex-1 flex-col", className)} style={style} data-dashboard-shell="" data-editing={editing ? "" : undefined}>
+    <div className={cn("flex min-h-0 flex-1 flex-col", className)} style={{ ...scope.style, ...style }} data-dashboard-shell="" data-editing={editing ? "" : undefined} {...scope.attrs}>
       {/* Two rows, the same in view and edit so nothing below moves when
           the page switches: (1) the name with what it is built on, and the
           page's own actions (Publish, Edit dashboard / More, Publish,
@@ -498,7 +526,7 @@ export function DashboardShell({
           while editing, the back link + freshness + page tabs otherwise -
           one fixed height either way. */}
       {editor ? (
-        <EditToolbar editor={editor} trailing={contextRow?.tabs} compact={narrow} className="mx-4 sm:mx-6" />
+        <EditToolbar editor={editor} trailing={contextRow?.tabs} compact={narrow} className="mx-4 sm:mx-6" onAppearance={onOpenAppearance} />
       ) : (
         contextRow && (
           <div className={cn(CONTEXT_ROW_CLASS, "justify-between px-4 sm:px-6 print:hidden")} data-context-row="">
@@ -544,6 +572,11 @@ export function DashboardShell({
             <div className="py-10 text-center text-ui text-muted">This dashboard has no pages yet.</div>
           )}
           {afterContent}
+          {appearance.footer_note && (
+            <footer data-dashboard-footer-note="" className="mt-8 border-t border-border pt-3 text-caption text-muted">
+              {appearance.footer_note}
+            </footer>
+          )}
         </main>
       </div>
       {comments?.enabled && (

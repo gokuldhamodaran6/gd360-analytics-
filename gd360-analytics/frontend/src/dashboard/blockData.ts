@@ -81,8 +81,11 @@ export function firstDimension(r: BlockResult): string | null {
 // column the rail can filter on).
 export function crossFilterColumn(r: BlockResult | undefined, block: DashboardBlock): string | null {
   if (!r || !resultOk(r)) return null;
+  // 2026-10-07 (chart-types round): a histogram's bins and a date part
+  // ("weekday") are derived values, not a column a page filter can take.
+  if (r.bins) return null;
   const dims = r.dimensions || [];
-  if (dims.length) return dims[0];
+  if (dims.length) return r.date_parts && dims[0] in r.date_parts ? null : dims[0];
   const spec = block.config?.spec;
   if (spec?.group_by?.length) return spec.group_by[0];
   return null;
@@ -332,4 +335,22 @@ export function downloadText(filename: string, text: string, mime = "text/csv;ch
 
 export function safeFilename(name: string | null | undefined, fallback = "block"): string {
   return (name || fallback).replace(/[^a-zA-Z0-9-_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 60) || fallback;
+}
+
+/** What a click on this block's chart lands on - the noun of "click a
+ *  ... to filter" (a country on a map, a cell of a heatmap, a slice). */
+export function markNoun(blockType: string, chartType: string | null | undefined): string {
+  if (blockType === "donut") return "slice";
+  if (blockType === "table" || blockType === "avatar_list") return "row";
+  switch (chartType) {
+    case "map": return "country";
+    case "heatmap": return "cell";
+    case "pivot": return "row";
+    case "scatter": case "bubble": return "point";
+    case "treemap": return "tile";
+    case "funnel": return "stage";
+    case "pie": return "slice";
+    case "line": case "area": case "step_line": case "stacked_area": case "stacked_area_100": return "point";
+    default: return "bar";
+  }
 }

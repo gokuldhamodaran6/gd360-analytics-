@@ -1,5 +1,6 @@
 import type { BlockResult, BlockResultColumn, BlockSpec, BlockSpecMeasure, DashboardBlock, FilteredBlock } from "../api/client";
 import { parseDateParts, type Grain } from "./charts/geometry";
+import { fits, normalizeChartTypeKey, shapeFromResult } from "./charts/recommend";
 import { MAX_SERIES } from "./format";
 
 // 2026-10-07 (round 9): the ONE adapter between a FILE dashboard's block
@@ -36,7 +37,14 @@ import { MAX_SERIES } from "./format";
 
 export const FILE_NATIVE_CHART_TYPES = new Set([
   "bar", "column", "horizontal_bar", "line", "area", "grouped_bar", "stacked_bar", "stacked_area", "step_line", "pie", "donut", "faceted_bar",
+  // 2026-10-07 (chart-types round): the forms the native renderer gained.
+  // Each is drawn from the block's rows WHEN their shape allows it
+  // (charts/recommend.ts fits - a heatmap needs two dimensions, a scatter
+  // two measures, a map a country column ...); a block whose rows cannot
+  // be drawn as its type keeps its stored Plotly figure.
+  "stacked_bar_100", "stacked_area_100", "combo", "treemap", "map", "heatmap", "pivot", "scatter", "bubble", "funnel", "waterfall", "bullet", "histogram",
 ]);
+const SHAPE_CHECKED_TYPES = new Set(["stacked_bar_100", "stacked_area_100", "combo", "treemap", "map", "heatmap", "pivot", "scatter", "bubble", "funnel", "waterfall", "bullet", "histogram"]);
 
 export type FileAdapted =
   | {
@@ -166,6 +174,8 @@ type Shape = {
   measures: BlockSpecMeasure[];
   // result column -> the name it is shown (and keyed) under
   rename: Record<string, string>;
+  // The recipe's own row limit ("top 10"), when it has one.
+  limit?: number | null;
 };
 
 /** Which columns of a recipe block's table are what - the recipe says. */
@@ -199,7 +209,8 @@ function recipeShape(recipe: any, table: Table): Shape | null {
   }
   const grain = normGrain(recipe.time_grain);
   const timeCol = grain && allDates(table.rows, groups[0]) ? groups[0] : null;
-  return { time: timeCol, grain: timeCol ? grain : null, dimensions: timeCol ? groups.slice(1) : groups, measures, rename };
+  const limit = typeof recipe.limit === "number" && recipe.limit > 0 ? recipe.limit : null;
+  return { time: timeCol, grain: timeCol ? grain : null, dimensions: timeCol ? groups.slice(1) : groups, measures, rename, limit };
 }
 
 /** The same for a result nobody described (an AI answer): numbers are
@@ -341,7 +352,41 @@ function tableResult(block: DashboardBlock, cfg: any, table: Table, shape: Shape
   const renamed = renameRows(table, shape.rename);
   const spec = buildSpec(shape, opts.sourceName);
   const columns: BlockResultColumn[] = renamed.columns.map((c) => ({ name: c.name, type: c.dtype }));
-  return { kind: "result", result: baseResult(columns, renamed.rows, shape, spec), block: viewBlock(block, cfg, spec, patch), truncated: Boolean(cfg?.truncated) };
+  // row_limit: "top N" as the recipe defines it (charts/model.ts reads it
+  // to decide whether a long category list is coloured by value).
+  const withLimit = shape.limit ? { ...patch, row_limit: shape.limit } : patch;
+  const result = baseResult(columns, renamed.rows, shape, spec);
+  // 2026-10-07 (chart-types round): what the backend adds to a file time
+  // series when the block is read (_decorate_file_time_series) - the same
+  // keys a warehouse run's result carries.
+  if (cfg?.partial && typeof cfg.partial === "object") result.partial = cfg.partial;
+  if (cfg?.forecast_result && typeof cfg.forecast_result === "object") {
+    // The server names a series by the STORED measure column ("Hotel" for
+    // a count of Hotel); the chart draws it under its display name
+    // (shape.rename: "Count of Hotel"). Same series, the chart's name.
+    const named = (m: unknown) => (typeof m === "string" && shape.rename[m] ? shape.rename[m] : m);
+    const fr = cfg.forecast_result;
+    const anomalies: any[] = Array.isArray(cfg.anomalies) ? cfg.anomalies : fr.anomalies || [];
+    result.forecast = {
+      ...fr,
+      series: (fr.series || []).map((sr: any) => ({ ...sr, measure: named(sr.measure), key: sr.key === sr.measure ? named(sr.key) : sr.key })),
+    };
+    result.anomalies = anomalies.map((a) => ({ ...a, measure: named(a.measure), series: a.series === a.measure ? named(a.series) : a.series }));
+  }
+  return { kind: "result", result, block: viewBlock(block, cfg, spec, withLimit), truncated: Boolean(cfg?.truncated) };
+}
+
+/** A stored histogram (backend _run_histogram_recipe): one row per bin,
+ *  with the edges - the same result a warehouse histogram returns. */
+function histogramResult(block: DashboardBlock, cfg: any, opts: FileAdaptOptions): FileAdapted | null {
+  const bins = cfg?.bins;
+  const rows: Record<string, any>[] = Array.isArray(cfg?.result_rows) ? cfg.result_rows.filter((r: any) => r && typeof r === "object") : [];
+  if (!bins || typeof bins !== "object" || typeof bins.column !== "string" || !rows.length) return null;
+  const shape: Shape = { time: null, grain: null, dimensions: [bins.column], measures: [{ alias: "count", agg: "count", column: null }], rename: {} };
+  const spec = buildSpec(shape, opts.sourceName, { bins: { column: bins.column, count: bins.count } });
+  const result = baseResult([{ name: bins.column, type: "number" }, { name: "bin_end", type: "number" }, { name: "count", type: "number" }], rows, shape, spec);
+  result.bins = bins;
+  return { kind: "result", result, block: viewBlock(block, cfg, spec, { chart_type: "histogram" }), truncated: false };
 }
 
 /** A single stored number (a KPI, a gauge) as a one-row result. */
@@ -409,6 +454,11 @@ export function adaptFileBlock(block: DashboardBlock, override?: FilteredBlock, 
     const figure = cfg.chart_spec ?? own.chart_spec ?? null;
     const reason = plotlyFallbackReason(block, cfg);
     const chartType = fileChartType(block, cfg);
+    if (!reason && chartType === "histogram") {
+      const hist = histogramResult(block, cfg, opts);
+      if (hist) return hist;
+      return figure ? { kind: "plotly", figure, reason: "a histogram saved without its bins" } : { kind: "empty" };
+    }
     if (!reason) {
       const table = storedTable(cfg)!;
       let shape = recipeShape(recipe, table) ?? inferredShape(table, chartType);
@@ -427,7 +477,18 @@ export function adaptFileBlock(block: DashboardBlock, override?: FilteredBlock, 
         }
       }
       const hasAxis = shape && (shape.time || shape.dimensions.length > 0);
-      if (shape && hasAxis && shape.measures.length) return tableResult(block, cfg, shaped, shape, opts, { chart_type: chartType, shared_axis: sharedAxis || undefined });
+      // A funnel of measures and a bullet are drawn from a one-row result.
+      const oneRow = shape && !hasAxis && (chartType === "funnel" || chartType === "bullet");
+      if (shape && (hasAxis || oneRow) && shape.measures.length) {
+        const adapted = tableResult(block, cfg, shaped, shape, opts, { chart_type: chartType, shared_axis: sharedAxis || undefined });
+        // The new forms are drawn natively only from rows of their shape.
+        const key = normalizeChartTypeKey(chartType);
+        if (adapted.kind === "result" && key && SHAPE_CHECKED_TYPES.has(key)) {
+          const fit = fits(shapeFromResult(adapted.result, adapted.block.config?.spec, { target: typeof adapted.block.config?.target === "number" }), key);
+          if (!fit.ok) return figure ? { kind: "plotly", figure, reason: `a ${String(chartType).replace(/_/g, " ")} ${fit.why}` } : adapted;
+        }
+        return adapted;
+      }
       return figure ? { kind: "plotly", figure, reason: "its result has no category and measure to draw" } : { kind: "empty" };
     }
     // A recipe chart recomputed under a filter that left no rows: nothing

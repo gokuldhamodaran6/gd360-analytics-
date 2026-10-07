@@ -7,6 +7,7 @@ import {
   buildPageFilters, buildParameterValues, type CrossFilter, EMPTY_RANGE, emptyRunState, type ParamValue, parseRunState, type RunState,
   sameFilters, serializeRunState, stateFromSavedView, URL_KEYS,
 } from "./runState";
+import type { ColorRegistry } from "./theme/appearance";
 
 // 2026-10-07 (Option A dashboard view): the engine hook behind
 // DashboardShell / FilterRailPanel / KpiStrip / BlockGrid. One hook per
@@ -30,7 +31,7 @@ export type RunSource = {
   kind: "warehouse" | "file";
   run?: (pageId: string, req: RunPageRequest, signal: AbortSignal) => Promise<RunPageResponse>;
   options?: (paramId: string, opts: { search?: string; limit?: number }, signal: AbortSignal) => Promise<ParameterOptions>;
-  preview?: (pageId: string, filters: FilterCriterion[], blockFilters: Record<string, FilterCriterion[]>) => Promise<{ blocks: FilteredBlock[]; matchedRows: number | null; dateBounds?: Record<string, { min: string; max: string }> | null }>;
+  preview?: (pageId: string, filters: FilterCriterion[], blockFilters: Record<string, FilterCriterion[]>) => Promise<{ blocks: FilteredBlock[]; matchedRows: number | null; dateBounds?: Record<string, { min: string; max: string }> | null; colors?: ColorRegistry | null }>;
   // File sources: a column's distinct values for the rail (owner: the live
   // datasource; public: the page's own materialised rows).
   distinctValues?: (column: string, search?: string) => Promise<{ values: ColumnDistinctValue[]; dtype?: string }>;
@@ -110,6 +111,11 @@ export type DashboardRun = {
   // MIN/MAX query in the warehouse; pandas for a file). The date pickers
   // open on `max` and disable days outside the bounds. {} until known.
   dateBounds: Record<string, DateBounds>;
+  // 2026-10-07 (identity-colour round): the dashboard's colour registry as
+  // of the latest response ({column: {value: palette slot}}) - newer than
+  // the one the page payload carried; null until a response brought one
+  // (and on an older backend). The chart theme reads it.
+  colors: ColorRegistry | null;
   setParamValue: (paramId: string, value: ParamValue) => void;
   setFilterBlockValue: (blockId: string, spec: ColumnFilterSpec | null) => void;
   setCrossFilter: (cf: CrossFilter | null, column?: string) => void;
@@ -180,6 +186,13 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
   const [order, setOrder] = useState<string[]>([]);
   const [parametersUsed, setParametersUsed] = useState<Record<string, any>>({});
   const [dateBounds, setDateBounds] = useState<Record<string, DateBounds>>({});
+  const [colors, setColors] = useState<ColorRegistry | null>(null);
+  // The same registry keeps its identity, so nothing repaints or re-plans
+  // when a run brings back what the page already had.
+  const applyColors = useCallback((next: ColorRegistry | null | undefined) => {
+    if (!next || typeof next !== "object" || !next.assignments) return;
+    setColors((prev) => (prev && JSON.stringify(prev) === JSON.stringify(next) ? prev : { assignments: next.assignments, overflow: Array.isArray(next.overflow) ? next.overflow : [], registry_full: Boolean(next.registry_full) }));
+  }, []);
   // A response without bounds (a partial run, an older backend) keeps the
   // ones already known.
   const applyBounds = useCallback((raw: unknown) => {
@@ -233,9 +246,10 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
         }
         source
           .preview(p.id, pageFilters, activeBlockFilters)
-          .then(({ blocks, matchedRows: mr, dateBounds: bounds }) => {
+          .then(({ blocks, matchedRows: mr, dateBounds: bounds, colors: registry }) => {
             if (seq !== seqRef.current) return;
             applyBounds(bounds);
+            applyColors(registry);
             const hasAny = pageFilters.length > 0 || Object.keys(activeBlockFilters).length > 0;
             const next: Record<string, FilteredBlock> = {};
             if (hasAny) for (const b of blocks) next[b.id] = b;
@@ -267,6 +281,8 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
         .run(p.id, req, controller.signal)
         .then((res) => {
           if (seq !== seqRef.current) return;
+          // Before the results: the charts they draw are coloured in the same paint.
+          applyColors(res.colors);
           setResults((prev) => (opts.blockIds ? { ...prev, ...res.blocks } : res.blocks));
           setMatchedRows(res.matched_rows);
           setTotalRows(res.total_rows);
@@ -299,7 +315,7 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
         })
         .finally(finish);
     },
-    [parameters, filterBlocks, source, applyBounds]
+    [parameters, filterBlocks, source, applyBounds, applyColors]
   );
 
   const schedule = useCallback(() => {
@@ -515,6 +531,7 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
     order,
     parametersUsed,
     dateBounds,
+    colors,
     setParamValue,
     setFilterBlockValue,
     setCrossFilter,

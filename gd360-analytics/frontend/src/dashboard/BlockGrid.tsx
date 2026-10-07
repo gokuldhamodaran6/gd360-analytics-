@@ -5,14 +5,16 @@ import { BlockFilterButton, useIsNarrow } from "../components/DashboardBlocks";
 import {
   BarChartIcon, Button, ChartCard, CommentIcon, ConfirmDialog, CopyIcon, DownloadIcon, EditIcon, GripIcon, HashIcon, IconButton, MoreIcon, Popover, RefreshIcon, Sheet, SqlIcon, TableIcon, TrashIcon, cn,
 } from "../ui";
-import { downloadText, isDataBlock, isEmptyBlock, isLegacyBlock, resultOk, rowsToCsv, safeFilename } from "./blockData";
-import { BlockRenderer } from "./BlockRenderer";
+import { crossFilterColumn, downloadText, isDataBlock, isEmptyBlock, isLegacyBlock, markNoun, resultOk, rowsToCsv, safeFilename } from "./blockData";
+import { effectiveChartType } from "./charts/recommend";
+import { BlockRenderer, hasTableView } from "./BlockRenderer";
 import { BlockMenu } from "./edit/BlockMenu";
 import { EditGrid } from "./edit/EditGrid";
 import { BLOCK_NOUN, EmptyBlockBody, EmptyBlockPlaceholder } from "./edit/EmptyBlock";
-import { blockHeightPx, GRID_GAP_PX, isGridBlock, ROW_UNIT_PX, viewLayout } from "./edit/layout";
+import { blockHeightPx, isGridBlock, viewLayout } from "./edit/layout";
+import { useGridMetrics } from "./theme/ChartThemeContext";
 import type { DashboardEditor } from "./edit/useDashboardEditor";
-import { MenuRow, SWAP_OPTIONS } from "./menu";
+import { MenuRow, SwapChips } from "./menu";
 import { fileBlockSpec } from "./fileData";
 import { describeSpecShort } from "./format";
 import { type CrossFilter, describeSpec, type ParamValue } from "./runState";
@@ -223,14 +225,20 @@ export function BlockCard({
   const [renaming, setRenaming] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  // 2026-10-07 (chart-types round): "View as table" - every chart has its
+  // table twin, one click away for anyone who can see the card (this
+  // viewer's own choice; nothing is stored).
+  const [asTable, setAsTable] = useState(false);
 
   const layoutOnly = block.type === "text" || block.type === "heading" || block.type === "divider" || block.type === "input";
   const empty = isBlockEmpty(block, run);
   const legacy = mode === "warehouse" && isLegacyBlock(block) && !empty;
   const dragClass = editor && !stacked ? "block-drag-handle" : undefined;
   const spec = block.config?.spec;
-  const crossColumn = resultOk(result) ? result.dimensions?.[0] || null : null;
+  const crossColumn = resultOk(result) ? crossFilterColumn(result, block) : null;
   const selected: CrossFilter | null = crossColumn ? run.state.crossFilters[crossColumn] || null : null;
+  // The form on screen (a chart GD360 chose is confirmed against the rows).
+  const noun = markNoun(block.type, resultOk(result) ? effectiveChartType(block.config, result, block.type).chartType : block.config?.chart_type);
   const filtered = run.activeFilterCount > 0 || (run.state.blockFilters[block.id]?.length || 0) > 0;
   const canCrossFilter = Boolean(crossColumn) && !layoutOnly && mode === "warehouse";
   // A file block described the way a warehouse block's spec describes it
@@ -245,7 +253,7 @@ export function BlockCard({
     if (selected) {
       return (
         <span data-crossfilter-subtitle="" className="inline-flex flex-wrap items-center gap-x-1.5">
-          <span>Click a bar to filter the page</span>
+          <span>Click a {noun} to filter the page</span>
           <span aria-hidden="true">·</span>
           <span className="font-medium text-brand-ink">{selected.value === null ? "(Blanks)" : String(selected.value)} selected</span>
           <span aria-hidden="true">·</span>
@@ -261,14 +269,14 @@ export function BlockCard({
     // (...) from Hotel_data by ...") is the second line of the tooltip.
     const exact = mode === "warehouse" && spec && block.type !== "sql" ? describeSpec(spec) : "";
     const base = mode === "warehouse" ? (block.type === "sql" ? "SQL cell" : spec ? describeSpecShort(spec, resultOk(result) ? result.period : null) : legacy ? "Built before warehouse-native dashboards" : "") : fileSpec ? describeSpecShort(fileSpec) : "";
-    const parts = [base, canCrossFilter ? "click a bar to filter" : "", filtered ? "filtered" : ""].filter(Boolean);
+    const parts = [base, canCrossFilter ? `click a ${noun} to filter` : "", filtered ? "filtered" : ""].filter(Boolean);
     if (!parts.length) return undefined;
     // One line, always (a long description must never push the chart down
     // or make two cards in a row start their plots at different heights);
     // the full text is the tooltip.
     const text = parts.join(" · ");
     return <span data-block-subtitle="" className="block truncate" title={exact && exact !== base ? `${text}\n${exact}` : text}>{text}</span>;
-  }, [layoutOnly, selected, mode, block, spec, legacy, canCrossFilter, filtered, run, crossColumn, result, fileSpec]);
+  }, [layoutOnly, selected, mode, block, spec, legacy, canCrossFilter, filtered, run, crossColumn, result, fileSpec, noun]);
 
   const openSql = async () => {
     setSqlOpen(true);
@@ -361,6 +369,17 @@ export function BlockCard({
           />
         </span>
       )}
+      {hasTableView(block.type) && !empty && !legacy && block.config?.chart_type !== "pivot" && (mode === "file" || resultOk(result)) && (
+        <IconButton
+          size="sm"
+          aria-label={asTable ? "View as chart" : "View as table"}
+          title={asTable ? "View as chart" : "View as table"}
+          aria-pressed={asTable}
+          data-view-as-table-toggle=""
+          icon={asTable ? <BarChartIcon size={15} /> : <TableIcon size={15} />}
+          onClick={() => setAsTable((v) => !v)}
+        />
+      )}
       {/* Never on a published link: the statement names tables and columns. */}
       {mode === "warehouse" && !legacy && !empty && !source.hideSql && (
         <IconButton size="sm" aria-label="Show SQL" title="Show SQL" icon={<SqlIcon size={15} />} onClick={openSql} />
@@ -412,21 +431,10 @@ export function BlockCard({
                 <div className="my-1 border-t border-subtle" />
                 {owner.onEdit && <MenuRow icon={<EditIcon size={14} />} onClick={() => { close(); owner.onEdit!(block); }}>Edit dashboard</MenuRow>}
                 {owner.onSwap && (spec || block.config?.source_block_id) && (
-                  <div className="px-3 pb-1 pt-2">
-                    <div className="mb-1 text-caption font-medium uppercase tracking-caps text-muted">Swap to</div>
-                    <div className="flex flex-wrap gap-1">
-                      {SWAP_OPTIONS.filter((o) => !(o.payload.type === block.type && (o.payload.chart_type || null) === (block.config?.chart_type || null))).map((o) => (
-                        <button
-                          key={o.label}
-                          type="button"
-                          disabled={busy}
-                          className="ui-focus rounded-full border border-border bg-surface px-2 py-[2px] text-caption text-secondary hover:border-border-strong hover:bg-subtle hover:text-text disabled:opacity-60"
-                          onClick={async () => { setBusy(true); try { await owner.onSwap!(block, o.payload); } finally { setBusy(false); close(); } }}
-                        >
-                          {o.label}
-                        </button>
-                      ))}
-                    </div>
+                  <div className="pt-2">
+                    <div className="mb-1 px-3 text-caption font-medium uppercase tracking-caps text-muted">Swap to</div>
+                    {/* Only the forms this block's data can be drawn as; the rest say what they need. */}
+                    <SwapChips block={block} result={result} busy={busy} onSwap={async (payload) => { setBusy(true); try { await owner.onSwap!(block, payload); } finally { setBusy(false); close(); } }} />
                   </div>
                 )}
                 {owner.onRemove && (
@@ -533,7 +541,7 @@ export function BlockCard({
         loading={firstLoad}
         error={blockError}
         onRetry={blockError ? () => run.rerunBlock(block.id) : undefined}
-        flush={!showEmptyState && (block.type === "table" || block.type === "sql")}
+        flush={!showEmptyState && (block.type === "table" || block.type === "sql" || (asTable && hasTableView(block.type)))}
         className={cn("h-full", selected && "ring-1 ring-tint-border", editor && "gd-edit-card")}
         headerClassName={dragClass}
         bodyClassName="flex flex-col"
@@ -559,6 +567,7 @@ export function BlockCard({
               sourceName={source.name}
               bodyHeight={bodyHeight}
               growToContent={stacked}
+              viewAsTable={asTable}
             />
           )}
           {run.loading && run.ready && !firstLoad && (
@@ -620,6 +629,9 @@ function EmptyGrid({ editor, owner, hasKpis }: { editor: DashboardEditor | null;
 
 export function BlockGrid({ page, run, source, mode, parameters, owner, fetchSql, onExportApi, className, editor = null }: BlockGridProps) {
   const narrow = useIsNarrow();
+  // Row height and gap for the dashboard's density - the editor's grid
+  // (EditGrid) reads the same two numbers.
+  const metrics = useGridMetrics();
   const all = useMemo(() => page.blocks.filter(isGridBlock), [page.blocks]);
   // A block that was never built: full size with its "Describe..." state
   // in the editor, a slim placeholder for the owner, nothing for a viewer.
@@ -651,7 +663,7 @@ export function BlockGrid({ page, run, source, mode, parameters, owner, fetchSql
   if (narrow) {
     const ordered = [...layout].sort((a, b) => a.y - b.y || a.x - b.x).map((it) => byId.get(it.i)).filter((b): b is DashboardBlock => Boolean(b));
     return (
-      <div className={cn("flex flex-col gap-4", className)} data-block-stack="">
+      <div className={cn("flex flex-col", className)} style={{ gap: metrics.gap }} data-block-stack="">
         {editor && (
           <div className="text-caption text-muted" data-stack-note="">
             Blocks are stacked on this screen. Dragging and resizing need a wider one — everything else works here.
@@ -659,7 +671,7 @@ export function BlockGrid({ page, run, source, mode, parameters, owner, fetchSql
         )}
         {ordered.map((block) => {
           const slim = !editor && emptyIds.has(block.id);
-          const h = slim ? ROW_UNIT_PX : STACK_HEIGHT[block.type] ?? 240;
+          const h = slim ? metrics.rowUnit : STACK_HEIGHT[block.type] ?? 240;
           return (
             <div key={block.id} style={{ minHeight: h }}>
               {card(block, h, true)}
@@ -678,14 +690,14 @@ export function BlockGrid({ page, run, source, mode, parameters, owner, fetchSql
     <div
       data-block-grid=""
       className={cn("grid", className)}
-      style={{ gridTemplateColumns: "repeat(12, minmax(0, 1fr))", gridAutoRows: `${ROW_UNIT_PX}px`, gap: `${GRID_GAP_PX}px` }}
+      style={{ gridTemplateColumns: "repeat(12, minmax(0, 1fr))", gridAutoRows: `${metrics.rowUnit}px`, gap: `${metrics.gap}px` }}
     >
       {layout.map((it) => {
         const block = byId.get(it.i);
         if (!block) return null;
         return (
           <div key={block.id} className="min-w-0" style={{ gridColumn: `${it.x + 1} / span ${it.w}`, gridRow: `${it.y + 1} / span ${it.h}` }}>
-            {card(block, blockHeightPx(it.h), false)}
+            {card(block, blockHeightPx(it.h, metrics), false)}
           </div>
         );
       })}

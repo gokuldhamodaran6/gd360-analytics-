@@ -1,19 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { BlockResult, DashboardBlock, DashboardParameter, FilteredBlock } from "../api/client";
 import ChartCanvas, { type ChartExportApi } from "../components/ChartCanvas";
-import { AvatarListBlock, DividerBlock, GaugeBlock, HeadingBlock, SparklineBlock, TextBlock } from "../components/DashboardBlocks";
+import { AvatarListBlock, DividerBlock, HeadingBlock, SparklineBlock, TextBlock } from "../components/DashboardBlocks";
 import { KpiTile, TableFooter, TableFrame, type DataTableColumn } from "../ui";
 import {
-  ALL_ROWS_WORDING, avatarListItems, buildChartSpec, crossFilterColumn, donutItems, firstMeasure, gaugeConfig, kpiDisplay, PRIOR_PERIOD_WORDING, sparklineConfig,
+  ALL_ROWS_WORDING, avatarListItems, buildChartSpec, crossFilterColumn, donutItems, firstDimension, firstMeasure, gaugeConfig, kpiDisplay, PRIOR_PERIOD_WORDING, sparklineConfig,
 } from "./blockData";
 import { adaptFileBlock } from "./fileData";
+import { GaugeChart, gaugeColors } from "./charts/BulletChart";
 import { CartesianChart } from "./charts/CartesianChart";
 import { DonutChart } from "./charts/DonutChart";
 import { normalizeGrain, parseDateParts, periodLabel } from "./charts/geometry";
-import { planChart } from "./charts/model";
+import { kpiForecastLine, planChart } from "./charts/model";
+import { effectiveChartType } from "./charts/recommend";
+import { SpecialChart } from "./charts/SpecialChart";
 import { ParameterField } from "./FilterRailPanel";
 import { blockFormat, columnFormat, formatValue, humanize, measureFormats, PLAIN_FORMAT, type ValueFormat } from "./format";
 import { type CrossFilter, formatCell, type ParamValue } from "./runState";
+import { ColorSwatch, useChartTheme } from "./theme/ChartThemeContext";
+import { blockSingleColor, DEFAULT_CHART_THEME, type ChartTheme } from "./theme/chartTheme";
 import type { RunSource } from "./useDashboardRun";
 
 // 2026-10-07 (Option A dashboard view): routes one block to its renderer.
@@ -36,6 +41,22 @@ import type { RunSource } from "./useDashboardRun";
 // every column name is humanised for display, and a chart whose measures
 // do not belong on one axis becomes small multiples - or, past four
 // panels, the table it should have been.
+//
+// 2026-10-07 (chart-types round): a chart block's form is its
+// config.chart_type - bars, lines, areas, 100% stacks, combo panels and
+// histograms through the cartesian renderer; a map, a heatmap, a pivot
+// table, a scatter / bubble, a treemap, a funnel, a waterfall, a bullet
+// through charts/SpecialChart. A form GD360 chose before the block had run
+// (config.chart_auto) is confirmed against the first result's values by
+// the same rule the server applies (charts/recommend.ts). `viewAsTable`
+// swaps any chart for the table of the same result - every chart has one.
+// The gauge is drawn natively in the theme's colours.
+//
+// 2026-10-07 (identity-colour round): every colour a block draws comes
+// from useChartTheme() - handed to planChart for a chart, to the donut for
+// its slices, to the KPI tile for its sparkline. A table shows a small dot
+// beside each dimension value that has a colour of its own, so a row can
+// be matched to its bar by more than its name.
 
 export const TABLE_PAGE_SIZE = 50;
 
@@ -65,7 +86,15 @@ export type BlockRendererProps = {
   // 2026-10-07 (dashboard edit mode): the page is being edited - a text or
   // heading block is typed into in place and saved when focus leaves it.
   editing?: { onSaveText: (text: string) => void | Promise<void> };
+  // 2026-10-07 (chart-types round): draw the result as its table instead
+  // of its chart (the card's "View as table" toggle).
+  viewAsTable?: boolean;
 };
+
+// The block types "View as table" applies to.
+export function hasTableView(type: string): boolean {
+  return type === "chart" || type === "donut";
+}
 
 // A text / heading block while the dashboard is being edited: the same
 // frame and type as the read-only block, with the words editable in place.
@@ -126,8 +155,9 @@ function EditableText({ block, kind, onSave }: { block: DashboardBlock; kind: "t
 // figures with one number of decimals per column, each measure in its own
 // format ("56.6%" beside "48,590" beside "92.04"). A numeric DIMENSION (a
 // year, a bucket) is a label, not a quantity: no thousands separator.
-export function resultTableColumns(result: BlockResult, block: Pick<DashboardBlock, "config" | "title">): DataTableColumn<Record<string, any>>[] {
+export function resultTableColumns(result: BlockResult, block: Pick<DashboardBlock, "config" | "title">, theme: ChartTheme = DEFAULT_CHART_THEME): DataTableColumn<Record<string, any>>[] {
   const formats = measureFormats(block, result);
+  const dotted = theme.colorMode === "by_value";
   const rows = result.rows || [];
   const dims = new Set(result.dimensions || []);
   return (result.columns || []).map((c) => {
@@ -150,6 +180,15 @@ export function resultTableColumns(result: BlockResult, block: Pick<DashboardBlo
           if (parts) return periodLabel(parts, grain);
         }
         if (typeof v === "number" && dims.has(c.name)) return Number.isInteger(v) ? String(v) : formatCell(v);
+        if (dotted && dims.has(c.name) && theme.hasColor(c.name, v)) {
+          const text = formatCell(v);
+          return (
+            <span className="inline-flex max-w-full items-center gap-1.5" data-value-dot={c.name}>
+              <ColorSwatch column={c.name} value={v} label={text} color={theme.colorFor(c.name, v)} shape="dot" size={8} inert />
+              <span className="min-w-0 truncate">{text}</span>
+            </span>
+          );
+        }
         return formatCell(v);
       },
     };
@@ -158,8 +197,10 @@ export function resultTableColumns(result: BlockResult, block: Pick<DashboardBlo
 
 function ResultTable({ result, selected, column, onCrossFilter, block, capped = false }: { result: BlockResult; selected?: CrossFilter | null; column: string | null; onCrossFilter?: (cf: CrossFilter) => void; block: DashboardBlock; capped?: boolean }) {
   const [shown, setShown] = useState(TABLE_PAGE_SIZE);
+  const theme = useChartTheme();
   useEffect(() => setShown(TABLE_PAGE_SIZE), [result]);
-  const columns = useMemo(() => resultTableColumns(result, block), [result, block]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const columns = useMemo(() => resultTableColumns(result, block, theme), [result, block, theme.key]);
   const rows = result.rows || [];
   const visible = rows.slice(0, shown);
   // 2026-10-07 (real end-to-end run): the footer counts the rows this table
@@ -247,8 +288,22 @@ export function BlockRenderer(props: BlockRendererProps) {
 // `filtered`: a file block showing its filtered copy (its KPI delta is
 // then "vs all rows").
 function ResultBody(props: BlockRendererProps & { result: BlockResult; capped?: boolean; filtered?: boolean }) {
-  const { block, mode, result, override, selected, onCrossFilter, onExportApi, bodyHeight, growToContent = false, capped = false } = props;
-  const type = override?.type ?? block.type;
+  const { mode, result, override, selected, onCrossFilter, onExportApi, bodyHeight, growToContent = false, capped = false, viewAsTable = false } = props;
+  const theme = useChartTheme();
+  // A form GD360 chose from column names is confirmed against the values
+  // (see the note at the top of this file); every other block is as stored.
+  const stored = props.block;
+  const storedType = override?.type ?? stored.type;
+  const eff = useMemo(() => effectiveChartType(stored.config, result, storedType), [stored.config, result, storedType]);
+  const block = useMemo(
+    () => (eff.blockType === storedType && eff.chartType === (storedType === "donut" ? "donut" : stored.config?.chart_type ?? null) ? stored : { ...stored, type: eff.blockType as DashboardBlock["type"], config: { ...stored.config, chart_type: eff.chartType } }),
+    [stored, eff, storedType]
+  );
+  const type = eff.blockType !== storedType ? (eff.blockType as DashboardBlock["type"]) : storedType;
+  // A donut with the block's own "Single" colour: steps of that one hue.
+  const mono = block.config?.color_mode === "single" ? blockSingleColor(theme, block.config) : null;
+  // The token theme's sparkline keeps its class colour (the brand primary).
+  const sparkColor = theme.tokens ? undefined : theme.primary;
   if (result.status !== "ok") {
     return (
       <div role="alert" className="flex h-full min-h-[96px] items-center justify-center rounded-ctl border border-danger-border bg-danger-fill px-4 py-3 text-center text-ui text-danger">
@@ -270,16 +325,40 @@ function ResultBody(props: BlockRendererProps & { result: BlockResult; capped?: 
         delta={kpi.delta ?? undefined}
         reserveDeltaRow
         sparkline={kpi.sparkline}
+        sparklineColor={sparkColor}
+        caption={kpiForecastLine(result, block) ? <span data-kpi-forecast="">{kpiForecastLine(result, block)}</span> : undefined}
         className="h-full border-0 shadow-none"
       />
     );
   }
-  if (type === "table" || type === "sql") {
-    return <ResultTable result={result} selected={selected} column={column} onCrossFilter={onCrossFilter} block={block} capped={capped} />;
+  if (type === "table" || type === "sql" || (viewAsTable && hasTableView(type))) {
+    return (
+      <div className="h-full min-h-0" data-view-as-table={viewAsTable && hasTableView(type) ? "" : undefined}>
+        <ResultTable result={result} selected={selected} column={column} onCrossFilter={onCrossFilter} block={block} capped={capped} />
+      </div>
+    );
   }
   if (type === "chart") {
-    const plan = planChart(result, block);
+    const plan = planChart(result, block, theme);
     const base = bodyHeight ? Math.max(120, bodyHeight - 8) : 160;
+    if (plan.kind === "special") {
+      // The map and the scatter want a little more height where the card
+      // sizes to its content (a stacked, narrow page).
+      const tall = plan.type === "map" || plan.type === "treemap" || plan.type === "heatmap";
+      return (
+        <SpecialChart
+          type={plan.type}
+          result={result}
+          block={block}
+          crossColumn={column}
+          selectedValue={selected?.value}
+          hasSelection={Boolean(selected)}
+          onPick={column && onCrossFilter ? (value) => pick(value) : undefined}
+          onExportApi={plan.type === "pivot" ? undefined : onExportApi}
+          minHeight={growToContent && tall ? Math.max(base, 300) : base}
+        />
+      );
+    }
     if (plan.kind === "empty") return <div className="flex h-full min-h-[96px] items-center justify-center text-caption text-muted">No rows to chart.</div>;
     if (plan.kind === "table") {
       // More measures than a chart can hold honestly: the table it is.
@@ -299,6 +378,8 @@ function ResultBody(props: BlockRendererProps & { result: BlockResult; capped?: 
           items={donutItems(result)}
           format={blockFormat(block, result)}
           scope={block.id}
+          column={firstDimension(result)}
+          mono={mono}
           pie={plan.pie}
           minHeight={base}
           onItemClick={column && onCrossFilter ? (label) => pick(label === "(Blanks)" ? null : label) : undefined}
@@ -343,6 +424,8 @@ function ResultBody(props: BlockRendererProps & { result: BlockResult; capped?: 
         items={donutItems(result)}
         format={blockFormat(block, result)}
         scope={block.id}
+        column={firstDimension(result)}
+        mono={mono}
         onItemClick={column && onCrossFilter ? (label) => pick(label === "(Blanks)" ? null : label) : undefined}
         selectedLabel={selected ? String(selected.value ?? "(Blanks)") : null}
       />
@@ -370,7 +453,23 @@ function ResultBody(props: BlockRendererProps & { result: BlockResult; capped?: 
     }
     return <SparklineBlock title={block.title} config={sparklineConfig(result, block)} bare />;
   }
-  if (type === "gauge") return <GaugeBlock title={block.title} config={gaugeConfig(result, block)} bare />;
+  if (type === "gauge") {
+    const g = gaugeConfig(result, block);
+    const hasTarget = typeof block.config?.target === "number" || typeof block.config?.target_value === "number";
+    return (
+      <GaugeChart
+        title={block.title}
+        value={g.value}
+        min={g.min}
+        max={g.max}
+        target={hasTarget ? g.target : null}
+        display={g.display}
+        targetDisplay={g.target_display}
+        label={humanize(g.label) || "Value"}
+        {...gaugeColors(theme, block.config)}
+      />
+    );
+  }
   if (type === "avatar_list") {
     const items = avatarListItems(result);
     const format = columnFormat(blockFormat(block, result), items.map((it) => it.value));

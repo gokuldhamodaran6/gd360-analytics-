@@ -15,6 +15,17 @@ import type { BlockResult, BlockSpec, BlockSpecMeasure, DashboardBlock } from ".
 // "percent" means the stored value is a 0-1 fraction: 0.3704 -> "37%",
 // with decimals 1 -> "37.0%". When config.format is absent the client
 // infers, per measure and only ever to "percent" (see inferFormat).
+//
+// 2026-10-07 (identity-colour round): the dashboard's NUMBER SETTINGS -
+// appearance.currency (ISO 4217) and appearance.locale (BCP-47, or "auto"
+// = the viewer's browser) - apply to every number written here. They are
+// set by the ChartThemeProvider that wraps a dashboard (setNumberSettings)
+// and read by formatValue; formatValueWith takes them explicitly (the
+// Appearance sheet's live sample). With an explicit locale the digits,
+// the separators, the currency symbol's side and the compact unit are the
+// locale's own (Intl): USD/en-US "$42.7M", EUR/de-DE "42,7 Mio. €",
+// EUR/fr-FR "42,7 M €", INR/en-IN "₹4.3Cr". With "auto" nothing changes
+// from before: the browser's digits, the symbol in front, K / M / B.
 
 export type NumberFormat = "number" | "percent" | "currency" | "compact";
 
@@ -29,7 +40,8 @@ export type ValueFormat = {
 
 export const NUMBER_FORMATS: NumberFormat[] = ["number", "percent", "currency", "compact"];
 
-export const PLAIN_FORMAT: ValueFormat = { format: "number", decimals: null, inferred: false, currency: "USD" };
+// currency "": the dashboard's own (number settings); a code: that one.
+export const PLAIN_FORMAT: ValueFormat = { format: "number", decimals: null, inferred: false, currency: "" };
 
 // How much room the number has:
 //   "auto"    a KPI tile / gauge: the full number below a million, then 42.7M
@@ -38,6 +50,44 @@ export const PLAIN_FORMAT: ValueFormat = { format: "number", decimals: null, inf
 export type FormatStyle = "auto" | "full" | "compact";
 
 const MINUS = "−";
+
+export type NumberSettings = {
+  // undefined = "auto": the viewer's own locale.
+  locale: string | undefined;
+  currency: string;
+};
+export const DEFAULT_NUMBER_SETTINGS: NumberSettings = { locale: undefined, currency: "USD" };
+let SETTINGS: NumberSettings = DEFAULT_NUMBER_SETTINGS;
+
+/** The settings every formatValue() call on the page uses from now on. */
+export function setNumberSettings(next: NumberSettings | null | undefined): void {
+  SETTINGS = next && typeof next === "object" ? next : DEFAULT_NUMBER_SETTINGS;
+}
+export function getNumberSettings(): NumberSettings {
+  return SETTINGS;
+}
+/** Back to the defaults - but only if `mine` is still what is in force
+ *  (a dashboard that unmounts after the next one mounted must not undo it). */
+export function releaseNumberSettings(mine: NumberSettings): void {
+  if (SETTINGS === mine) SETTINGS = DEFAULT_NUMBER_SETTINGS;
+}
+
+const intlCache = new Map<string, Intl.NumberFormat>();
+function intl(locale: string | undefined, options: Intl.NumberFormatOptions): Intl.NumberFormat {
+  const key = `${locale || ""}|${JSON.stringify(options)}`;
+  let f = intlCache.get(key);
+  if (!f) {
+    try {
+      f = new Intl.NumberFormat(locale, options);
+    } catch {
+      // An unknown locale or currency: the viewer's own formatting.
+      f = new Intl.NumberFormat(undefined, { minimumFractionDigits: options.minimumFractionDigits, maximumFractionDigits: options.maximumFractionDigits });
+    }
+    if (intlCache.size > 300) intlCache.clear();
+    intlCache.set(key, f);
+  }
+  return f;
+}
 
 function toFiniteNumber(v: unknown): number | null {
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
@@ -48,15 +98,34 @@ function toFiniteNumber(v: unknown): number | null {
   return null;
 }
 
-function plain(abs: number, decimals: number | null, maxDefault: number): string {
-  if (decimals !== null) return abs.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
-  return abs.toLocaleString(undefined, { maximumFractionDigits: abs >= 1000 ? 0 : maxDefault });
+function digits(abs: number, decimals: number | null, maxDefault: number): { minimumFractionDigits: number; maximumFractionDigits: number } {
+  if (decimals !== null) return { minimumFractionDigits: decimals, maximumFractionDigits: decimals };
+  return { minimumFractionDigits: 0, maximumFractionDigits: abs >= 1000 ? 0 : maxDefault };
+}
+
+function plain(abs: number, decimals: number | null, maxDefault: number, locale?: string): string {
+  if (decimals !== null) return abs.toLocaleString(locale, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  return abs.toLocaleString(locale, { maximumFractionDigits: abs >= 1000 ? 0 : maxDefault });
 }
 
 const UNITS: [number, string][] = [[1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "K"]];
 
+// Indian English shortens thousand to "T" in newer browser locale data and
+// "K" in older: the same dashboard would read "6.5T" for one viewer and
+// "6.5K" for the next, and "T" is a trillion to most readers. Thousands are
+// "K" for every viewer; lakh ("L") and crore ("Cr") stay the locale's own.
+function compactUnits(text: string, locale: string): string {
+  return /-IN$/i.test(locale) ? text.replace(/(\d)(\s?)T(?![A-Za-z])/, "$1$2K") : text;
+}
+
 // 25,278,862 -> "25.3M"; 6,500 -> "6.5K"; 999,960 -> "1M" (never "1,000K").
-function compact(abs: number, decimals: number | null, minUnit = 1e3): string {
+function compact(abs: number, decimals: number | null, minUnit = 1e3, locale?: string): string {
+  if (locale) {
+    // The locale's own compact unit ("42,7 Mio.", "4.3Cr"); below the
+    // smallest unit asked for, every digit.
+    if (abs < minUnit) return plain(abs, decimals, abs >= 100 ? 1 : 2, locale);
+    return compactUnits(intl(locale, { notation: "compact", compactDisplay: "short", minimumFractionDigits: decimals ?? 0, maximumFractionDigits: decimals ?? 1 }).format(abs), locale);
+  }
   const digits = decimals ?? 1;
   for (let i = 0; i < UNITS.length; i++) {
     const [size, suffix] = UNITS[i];
@@ -68,6 +137,16 @@ function compact(abs: number, decimals: number | null, minUnit = 1e3): string {
     return `${scaled.toLocaleString(undefined, { minimumFractionDigits: decimals ?? 0, maximumFractionDigits: digits })}${suffix}`;
   }
   return plain(abs, decimals, abs >= 100 ? 1 : 2);
+}
+
+// A currency amount in an explicit locale: the symbol where that locale
+// puts it, its separators, its compact unit.
+function localCurrency(abs: number, code: string, decimals: number | null, locale: string, mode: "plain" | "compact", minUnit = 1e3): string {
+  const currency = /^[A-Za-z]{3}$/.test(code || "") ? code.toUpperCase() : "USD";
+  if (mode === "compact" && abs >= minUnit) {
+    return compactUnits(intl(locale, { style: "currency", currency, currencyDisplay: "narrowSymbol", notation: "compact", compactDisplay: "short", minimumFractionDigits: decimals ?? 0, maximumFractionDigits: decimals ?? 1 }).format(abs), locale);
+  }
+  return intl(locale, { style: "currency", currency, currencyDisplay: "narrowSymbol", ...digits(abs, decimals, mode === "compact" ? (abs >= 100 ? 1 : 2) : 2) }).format(abs);
 }
 
 const symbolCache = new Map<string, string>();
@@ -88,30 +167,44 @@ export function currencySymbol(code: string): string {
 
 /** A warehouse value as text. Non-numbers pass through ("—" for nothing). */
 export function formatValue(v: unknown, fmt: ValueFormat = PLAIN_FORMAT, style: FormatStyle = "auto"): string {
+  return formatValueWith(SETTINGS, v, fmt, style);
+}
+
+/** formatValue under explicit number settings (the Appearance sheet's
+ *  sample; anything drawn outside the dashboard it describes). */
+export function formatValueWith(settings: NumberSettings, v: unknown, fmt: ValueFormat = PLAIN_FORMAT, style: FormatStyle = "auto"): string {
   if (v === null || v === undefined || v === "") return "—";
   const n = typeof v === "number" ? (Number.isFinite(v) ? v : null) : null;
   if (n === null) return typeof v === "object" ? JSON.stringify(v) : String(v);
   const sign = n < 0 ? MINUS : "";
   const abs = Math.abs(n);
   const d = fmt.decimals;
+  const locale = settings.locale;
   switch (fmt.format) {
     case "percent": {
       const p = abs * 100;
-      const body = d !== null ? p.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }) : p.toLocaleString(undefined, { maximumFractionDigits: p >= 1000 ? 0 : 1 });
+      const body = d !== null ? p.toLocaleString(locale, { minimumFractionDigits: d, maximumFractionDigits: d }) : p.toLocaleString(locale, { maximumFractionDigits: p >= 1000 ? 0 : 1 });
       return `${sign}${body}%`;
     }
     case "currency": {
-      const sym = currencySymbol(fmt.currency);
+      // The block's own currency when its owner set one, else the dashboard's.
+      const code = fmt.currency || settings.currency;
+      if (locale) {
+        if (style === "compact") return `${sign}${localCurrency(abs, code, d, locale, "compact")}`;
+        if (style === "auto" && abs >= 1e6) return `${sign}${localCurrency(abs, code, d, locale, "compact", 1e6)}`;
+        return `${sign}${localCurrency(abs, code, d, locale, "plain")}`;
+      }
+      const sym = currencySymbol(code);
       if (style === "compact") return `${sign}${sym}${compact(abs, d)}`;
       if (style === "auto" && abs >= 1e6) return `${sign}${sym}${compact(abs, d, 1e6)}`;
       return `${sign}${sym}${plain(abs, d, 2)}`;
     }
     case "compact":
-      return style === "full" ? `${sign}${plain(abs, d, 2)}` : `${sign}${compact(abs, d)}`;
+      return style === "full" ? `${sign}${plain(abs, d, 2, locale)}` : `${sign}${compact(abs, d, 1e3, locale)}`;
     default: {
-      if (style === "compact") return `${sign}${compact(abs, d)}`;
-      if (style === "auto" && abs >= 1e6) return `${sign}${compact(abs, d, 1e6)}`;
-      return `${sign}${plain(abs, d, 2)}`;
+      if (style === "compact") return `${sign}${compact(abs, d, 1e3, locale)}`;
+      if (style === "auto" && abs >= 1e6) return `${sign}${compact(abs, d, 1e6, locale)}`;
+      return `${sign}${plain(abs, d, 2, locale)}`;
     }
   }
 }
@@ -126,10 +219,10 @@ export function formatDelta(delta: DeltaInput, fmt: ValueFormat = PLAIN_FORMAT):
   if (fmt.format === "percent") {
     if (abs === null) return "";
     const pts = Number((abs * 100).toFixed(1));
-    return `${signOf(pts)}${Math.abs(pts).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} pts`;
+    return `${signOf(pts)}${Math.abs(pts).toLocaleString(SETTINGS.locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} pts`;
   }
   if (typeof delta.pct === "number" && Number.isFinite(delta.pct)) {
-    return `${signOf(delta.pct)}${Math.abs(delta.pct).toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
+    return `${signOf(delta.pct)}${Math.abs(delta.pct).toLocaleString(SETTINGS.locale, { maximumFractionDigits: 1 })}%`;
   }
   if (abs === null) return "";
   return `${signOf(abs)}${formatValue(Math.abs(abs), fmt, "compact")}`;
@@ -193,7 +286,8 @@ export function measureFormats(block: Pick<DashboardBlock, "config" | "title"> |
   const cfg = block?.config || {};
   const spec: BlockSpec | null = (cfg.spec && typeof cfg.spec === "object" ? cfg.spec : null) || result?.spec || null;
   const aliases = measureAliases(result, spec);
-  const currency = typeof cfg.currency === "string" && /^[A-Za-z]{3}$/.test(cfg.currency) ? cfg.currency.toUpperCase() : "USD";
+  // "" = the dashboard's currency (appearance.currency), resolved when the number is written.
+  const currency = typeof cfg.currency === "string" && /^[A-Za-z]{3}$/.test(cfg.currency) ? cfg.currency.toUpperCase() : "";
   const chosen = validFormat(cfg.format);
   const decimals = validDecimals(cfg.decimals);
   const out: Record<string, ValueFormat> = {};
@@ -303,6 +397,8 @@ export function describeSpecShort(spec: BlockSpec | null | undefined, grain?: st
   const dims: string[] = [];
   if (spec.time) dims.push(String(grain || spec.time.grain || "period"));
   for (const g of spec.group_by || []) dims.push(humanizeLower(g));
+  for (const p of spec.date_parts || []) dims.push(humanizeLower(p.alias || p.part));
+  if (spec.bins?.column) dims.push(`${humanizeLower(spec.bins.column)} range`);
   let text = measures.join(", ");
   if (dims.length) text += ` by ${dims.join(", ")}`;
   return spec.table ? `${text} · ${spec.table}` : text;

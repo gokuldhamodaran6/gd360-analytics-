@@ -3,11 +3,13 @@ import type { BlockResult, DashboardBlock } from "../api/client";
 import { useIsNarrow } from "../components/DashboardBlocks";
 import { GripIcon, KpiTile, PlusIcon, Skeleton, cn } from "../ui";
 import { ALL_ROWS_WORDING, isDataBlock, isEmptyBlock, kpiDisplay, type KpiDeltaWording, PRIOR_PERIOD_WORDING, resultOk } from "./blockData";
+import { kpiForecastLine } from "./charts/model";
 import { BlockMenu } from "./edit/BlockMenu";
 import { EmptyBlockBody, EmptyBlockPlaceholder } from "./edit/EmptyBlock";
 import type { DashboardEditor } from "./edit/useDashboardEditor";
 import { adaptFileBlock } from "./fileData";
 import { humanize } from "./format";
+import { useChartTheme, useGridMetrics } from "./theme/ChartThemeContext";
 import type { DashboardRun } from "./useDashboardRun";
 
 // 2026-10-07 (Option A dashboard view): the KPI strip across the top of
@@ -171,6 +173,8 @@ export type KpiStripProps = {
 // adapted one - the tile does not know which.
 function KpiBlockTile({ block: b, result: r, run, labelNode, wording = PRIOR_PERIOD_WORDING }: { block: DashboardBlock; result: BlockResult | undefined; run: DashboardRun; labelNode?: ReactNode; wording?: KpiDeltaWording }) {
   const label = b.title || humanize(b.config?.label || r?.measures?.[0]) || "Value";
+  // A KPI's sparkline is the palette's primary - never an identity colour.
+  const theme = useChartTheme();
   if (!r || !resultOk(r)) {
     return (
       <KpiTile
@@ -188,6 +192,9 @@ function KpiBlockTile({ block: b, result: r, run, labelNode, wording = PRIOR_PER
   // place.
   const kpi = kpiDisplay(r, b, wording);
   const spark = kpi.sparkline;
+  // 2026-10-07 (chart-types round): a tile with a forecast says where the
+  // number is heading - "Next month ≈ 4,120 (3,700-4,560)".
+  const forecastLine = kpiForecastLine(r, b);
   return (
     <>
       <KpiTile
@@ -198,6 +205,8 @@ function KpiBlockTile({ block: b, result: r, run, labelNode, wording = PRIOR_PER
         reserveDeltaRow
         sparkline={spark.length > 1 ? spark : undefined}
         sparklineLabel={spark.length > 1 ? `${label} trend` : undefined}
+        sparklineColor={theme.tokens ? undefined : theme.primary}
+        caption={forecastLine ? <span data-kpi-forecast="" title={forecastLine}>{forecastLine}</span> : undefined}
         className={cn("h-full", run.loading && "opacity-80")}
       />
       {run.loading && <div aria-hidden="true" className="ui-shimmer pointer-events-none absolute inset-0 rounded-card opacity-30" />}
@@ -217,13 +226,15 @@ function FileKpiTile({ block, run, labelNode, sourceName }: { block: DashboardBl
 
 export function KpiStrip({ blocks, run, mode, className, editor = null, onEdit, canEdit = false, sourceName = null }: KpiStripProps) {
   const narrow = useIsNarrow();
+  const metrics = useGridMetrics();
   const all = editor ? editor.kpis : kpiBlocksOf(blocks);
   const kpis = editor || canEdit ? all : all.filter((b) => !isKpiEmpty(b, run));
   if (kpis.length === 0) return null;
   // Up to five across; two across on a phone (four tiles side by side
   // there were unreadable slivers that pushed the page sideways).
   const cols = Math.min(kpis.length, narrow ? 2 : 5);
-  const gridStyle = { gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` };
+  // The strip's gap is the grid's (density), so tiles and blocks line up.
+  const gridStyle = { gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, gap: `${metrics.gap}px` };
 
   if (!editor) {
     return (

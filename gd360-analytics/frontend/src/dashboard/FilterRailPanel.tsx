@@ -6,6 +6,7 @@ import {
   type CheckboxListOption,
 } from "../ui";
 import { encodeValueToken, isMultiControl, isParamValueSet, type ParamValue, valueLabel } from "./runState";
+import { ColorSwatch, useChartTheme } from "./theme/ChartThemeContext";
 import type { DashboardRun, DateBounds, RunSource } from "./useDashboardRun";
 import { useParameterOptions } from "./useParameterOptions";
 
@@ -17,16 +18,31 @@ import { useParameterOptions } from "./useParameterOptions";
 // is the honest "Showing N of M rows · Reset" line plus "Filters apply to
 // every chart · Pin to URL". A file-source dashboard adds its page's own
 // filter blocks as sections (today's behaviour under the new skin).
+//
+// 2026-10-07 (identity-colour round): when colour is "by value", a value
+// that has a colour on the charts carries the same small dot here - on its
+// chip, its checkbox row, its segment - so the rail doubles as the
+// dashboard's legend. While the owner edits, a chip's dot is a button that
+// opens the colour pin popover.
 
 const SEGMENTED_MAX = 4;
 
 function ParameterControl({ param, value, onChange, source }: { param: DashboardParameter; value: ParamValue | undefined; onChange: (v: ParamValue) => void; source: RunSource }) {
   const needsOptions = param.control !== "range" && param.control !== "date_range";
   const opts = useParameterOptions(source, param, needsOptions, param.control === "search" ? 50 : 200);
+  const theme = useChartTheme();
+  const dotted = theme.colorMode === "by_value";
+  // The dot of a value that has a colour on the charts (undefined otherwise).
+  const dot = (raw: unknown, inert = true) =>
+    dotted && theme.hasColor(param.column, raw)
+      ? <ColorSwatch column={param.column} value={raw} label={valueLabel(raw as string | null)} color={theme.colorFor(param.column, raw)} shape="dot" size={8} inert={inert} />
+      : undefined;
   const options = useMemo<CheckboxListOption[]>(
-    () => opts.values.map((v) => ({ value: encodeValueToken(v.value), label: valueLabel(v.value), count: typeof v.count === "number" ? v.count : undefined })),
-    [opts.values]
+    () => opts.values.map((v) => ({ value: encodeValueToken(v.value), label: valueLabel(v.value), count: typeof v.count === "number" ? v.count : undefined, swatch: dot(v.value) })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [opts.values, theme.key, param.column]
   );
+  const rawOf = (token: string) => opts.values.find((v) => encodeValueToken(v.value) === token)?.value;
   const selected = isMultiControl(param.control) && Array.isArray(value) ? (value as string[]) : [];
 
   if (param.control === "chips") {
@@ -43,6 +59,10 @@ function ParameterControl({ param, value, onChange, source }: { param: Dashboard
               active={active}
               caret={false}
               aria-pressed={active}
+              // Viewing: the dot is part of the chip. Editing: it is its own
+              // button beside it (the colour pin popover).
+              icon={theme.pin ? undefined : o.swatch}
+              leading={theme.pin ? dot(rawOf(o.value), false) : undefined}
               value={o.label}
               onClick={() => onChange(active ? selected.filter((v) => v !== o.value) : [...selected, o.value])}
             >
@@ -108,7 +128,7 @@ function ParameterControl({ param, value, onChange, source }: { param: Dashboard
         ariaLabel={param.label}
         value={current}
         onChange={(v) => onChange(v === "__all__" ? null : v)}
-        options={[{ value: "__all__", label: "All" }, ...options.map((o) => ({ value: o.value, label: o.label as string }))]}
+        options={[{ value: "__all__", label: "All" }, ...options.map((o) => ({ value: o.value, label: o.label as string, icon: o.swatch }))]}
       />
     );
   }
@@ -211,8 +231,13 @@ function FilterBlockSection({ block, run, source, onRemove }: { block: Dashboard
   const column: string | null = block.config?.column || null;
   const value = run.state.filterBlockValues[block.id] ?? null;
   const [open, setOpen] = useState(false);
+  const theme = useChartTheme();
   if (!column) return null;
   const active = isSpecActive(value);
+  const valueSwatch = theme.colorMode === "by_value" && theme.column(column).known
+    ? (raw: string | number | boolean | null) =>
+        theme.hasColor(column, raw) ? <ColorSwatch column={column} value={raw} label={raw === null ? "(Blanks)" : String(raw)} color={theme.colorFor(column, raw)} shape="dot" size={8} inert /> : null
+    : undefined;
   return (
     <FilterRailSection
       label={block.title || column}
@@ -233,6 +258,7 @@ function FilterBlockSection({ block, run, source, onRemove }: { block: Dashboard
             column={column}
             spec={value}
             onChange={(spec) => run.setFilterBlockValue(block.id, spec)}
+            valueSwatch={valueSwatch}
             fetchDistinctValues={source.distinctValues ? (c) => source.distinctValues!(c) : () => Promise.resolve({ values: [] })}
           />
         </div>

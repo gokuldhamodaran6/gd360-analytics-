@@ -286,7 +286,10 @@ export function describeSpec(spec: BlockSpec | null | undefined): string {
   }
   let text = `${parts.join(", ")} from ${spec.table}`;
   const dims = [...(spec.group_by || [])];
+  // 2026-10-07 (chart-types round): the two shapes the grammar gained.
+  for (const p of spec.date_parts || []) dims.push(`${p.part} of ${p.column}`);
   if (spec.time) dims.unshift(`${spec.time.column} by ${spec.time.grain}`);
+  if (spec.bins?.column) text += ` per range of ${spec.bins.column} (about ${spec.bins.count ?? 20} bins)`;
   if (dims.length) text += ` by ${dims.join(", ")}`;
   if (spec.filters && spec.filters.length) {
     text += " where " + spec.filters.map((f) => `${f.column} ${String(f.op).replace(/_/g, " ")}${f.value === null || f.value === undefined ? "" : ` ${Array.isArray(f.value) ? f.value.join(", ") : f.value}`}`).join(" and ");
