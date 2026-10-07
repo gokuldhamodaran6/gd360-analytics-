@@ -54,9 +54,12 @@ from ..services.connectors import (
 from ..services.data_loader import (
     load_dataframe, load_version_dataframe, ensure_legacy_migrated, warm_cache, default_table_for_preview,
     dataframe_to_csv_bytes, is_warehouse_query, warehouse_no_file_message,
+    drop_cached_original, file_import_settings_for, purpose_label,
 )
+from ..services import file_import
 from ..services.profiling import (
     build_profile_query, parse_profile_row, build_top_values_query, parse_top_values, TOP_VALUES_MAX_DISTINCT,
+    profile_dataframe,
 )
 from ..services.pushdown_budget import log_pushdown, todays_pushdown_bytes
 from ..services.dtype_utils import normalize_dtypes_dict, coerce_dates_for_json
@@ -637,27 +640,77 @@ async def upload_file(
     # handed to warm_cache below so the very first time each one is
     # actually used is instant rather than a fresh parse.
     connector = FileConnector(contents, ext)
+    # 2026-10-06 (pro local-file Data tab): the import pipeline
+    # (services/file_import.py) runs once per sheet right here - detected
+    # header row, type inference, the type fixes it proposes - so the Data
+    # tab's "Uploaded -> Sheet -> Header row -> Types inferred · N fixes"
+    # strip describes something that genuinely happened, and the frame
+    # every later preview/chat reads is the fixed one. The chosen settings
+    # and the per-sheet summary live inside connection_info
+    # ("import_by_sheet", plus the latest run under "import_settings" /
+    # "import_summary") - never a new column. Any failure in that pipeline
+    # falls back to the plain FileConnector read this endpoint always did,
+    # so an unusual file still uploads exactly as before.
+    import_by_sheet: dict = {}
     try:
         sheet_names = connector.list_sheet_names()
+        inspection = None
+        try:
+            inspection = file_import.inspect_file(contents, file.filename)
+        except Exception as e:
+            print(f"[datasources] file inspection skipped for {file.filename!r}: {e}")
+        detected_header = {
+            s["name"]: s.get("detected_header_row") or 1 for s in ((inspection or {}).get("sheets") or [])
+        }
+
+        def _import_sheet(sheet_name: str | None):
+            """(frame, settings, summary) via the pipeline, or (plain frame,
+            None, None) when it fails for this sheet."""
+            try:
+                header_row = detected_header.get(sheet_name) if sheet_name else (
+                    (inspection or {}).get("detected_header_row") or 1
+                )
+                frame, chosen, summary = file_import.run_import(
+                    contents, file.filename, {"sheet": sheet_name, "header_row": header_row or 1}
+                )
+                return frame, chosen, summary
+            except Exception as e:
+                print(f"[datasources] import pipeline failed for sheet {sheet_name!r}, plain read instead: {e}")
+                return connector.load_dataframe(sheet_name=sheet_name if sheet_name else 0), None, None
+
         if not sheet_names or len(sheet_names) <= 1:
-            df = connector.load_dataframe(sheet_name=(sheet_names[0] if sheet_names else 0))
+            only_sheet = sheet_names[0] if sheet_names else None
+            df, chosen, summary = _import_sheet(only_sheet)
             schema = {"columns": [{"name": c, "type": str(df[c].dtype)} for c in df.columns]}
             sheet_frames = None
+            if chosen:
+                import_by_sheet[""] = {"settings": chosen, "summary": summary}
         else:
             sheet_frames = {}
             schema = {}
             for sheet in sheet_names[:50]:
-                sdf = connector.load_dataframe(sheet_name=sheet)
+                sdf, chosen, summary = _import_sheet(sheet)
                 sheet_frames[sheet] = sdf
                 schema[sheet] = [{"name": c, "type": str(sdf[c].dtype)} for c in sdf.columns]
+                if chosen:
+                    import_by_sheet[sheet] = {"settings": chosen, "summary": summary}
     except Exception as e:
         raise HTTPException(400, f"Could not read file: {e}")
+
+    connection_info: dict = {"original_filename": file.filename}
+    if inspection:
+        connection_info["import_inspection"] = inspection
+    if import_by_sheet:
+        connection_info["import_by_sheet"] = import_by_sheet
+        first_key = "" if "" in import_by_sheet else next(iter(import_by_sheet))
+        connection_info["import_settings"] = import_by_sheet[first_key]["settings"]
+        connection_info["import_summary"] = import_by_sheet[first_key]["summary"]
 
     ds = models.DataSource(
         owner_id=user.id,
         name=name,
         kind=kind,
-        connection_info={"original_filename": file.filename},
+        connection_info=connection_info,
         file_data=contents,
         read_only=True,
         schema_cache=schema,
@@ -773,7 +826,57 @@ def list_versions(datasource_id: str, db: Session = Depends(get_db), user: model
         .all()
     )
     conv_by_version = _conversation_id_by_version(db, user, [v.id for v in versions])
+    _backfill_file_row_counts(db, versions)
     return [_version_out(v, conv_by_version.get(v.id)) for v in versions]
+
+
+# How many file-backed versions one versions-list call will load just to
+# count their rows (see _backfill_file_row_counts) - each one is a cached
+# CSV parse, bounded so a datasource with a long history never makes the
+# tab strip wait on dozens of parses at once; the rest fill in on later
+# calls.
+_ROW_COUNT_BACKFILL_PER_CALL = 5
+
+
+def _file_version_row_count(v: models.DatasetVersion) -> int | None:
+    """Exact row count of a file-backed version without loading it: the
+    stored column when set (every version the cleaning-suggestions apply
+    endpoint saves, or one already backfilled), else the last cleaning-log
+    step's rows_after (what chat's _save_cleaning_result records)."""
+    if v.row_count is not None:
+        return int(v.row_count)
+    log = v.cleaning_log or []
+    if log and isinstance(log[-1], dict):
+        rows_after = log[-1].get("rows_after")
+        if isinstance(rows_after, int) and not isinstance(rows_after, bool):
+            return rows_after
+    return None
+
+
+def _backfill_file_row_counts(db: Session, versions: list) -> None:
+    """2026-10-06 (pro local-file Data tab): the versions rail renders
+    "v2 Dates fixed (119,390 rows)", so every file-backed version carries
+    row_count. Computed ONCE for a version that has no cheap count (an
+    older version with no cleaning log) by loading its CSV (cached) and
+    stored in the existing row_count column - never recomputed on later
+    calls, never a new column."""
+    done = 0
+    for v in versions:
+        if is_warehouse_query(v) or _file_version_row_count(v) is not None:
+            continue
+        if done >= _ROW_COUNT_BACKFILL_PER_CALL:
+            break
+        try:
+            v.row_count = int(len(load_version_dataframe(v)))
+            done += 1
+        except Exception as e:
+            print(f"[datasources] could not count rows of version {v.id} (non-fatal): {e}")
+    if done:
+        try:
+            db.commit()
+        except Exception as e:
+            print(f"[datasources] could not store backfilled row counts (non-fatal): {e}")
+            db.rollback()
 
 
 def _version_out(v: models.DatasetVersion, conversation_id: str | None = None) -> dict:
@@ -781,7 +884,9 @@ def _version_out(v: models.DatasetVersion, conversation_id: str | None = None) -
     2026-10-06 saved-query fields ride along so the Data tab can render a
     warehouse table (definition, alias, source table, exact row count,
     result columns) without ever loading it; a file-backed version reports
-    source_kind "file" and nulls."""
+    source_kind "file" and nulls - except row_count (2026-10-06, pro
+    local-file Data tab), which is its exact row count (see
+    _file_version_row_count) so the versions rail can show it."""
     warehouse = is_warehouse_query(v)
     return {
         "id": v.id,
@@ -795,8 +900,14 @@ def _version_out(v: models.DatasetVersion, conversation_id: str | None = None) -
         "query_sql": v.query_sql if warehouse else None,
         "sql_alias": v.sql_alias if warehouse else None,
         "source_table": v.source_table if warehouse else None,
-        "row_count": v.row_count if warehouse else None,
+        "row_count": v.row_count if warehouse else _file_version_row_count(v),
         "columns_json": v.columns_json if warehouse else None,
+        # 2026-10-06 (pro local-file Data tab): the version's cleaning log
+        # (the inherited steps plus its own, exactly as preview_datasource
+        # returns it) - the versions rail reads the LAST entry for its
+        # "reservation_status_date -> date" subtitle without a preview call
+        # per version. Empty for a warehouse saved query.
+        "cleaning_log": list(v.cleaning_log or []) if not warehouse else [],
     }
 
 
@@ -1519,6 +1630,350 @@ from ..services.profile_cache import (  # noqa: E402
 
 _PROFILE_SUPPORTED_KINDS = ("bigquery", "snowflake", "postgres", "mysql", "sqlserver", "supabase")
 
+# ---------------------------------------------------------------------------
+# 2026-10-06 (pro local-file Data tab): the import pipeline, cleaning
+# suggestions and pandas profile for an uploaded CSV / Excel file. See
+# services/file_import.py for every computation; this section only wires
+# it to the datasource row. Nothing here ever changes DataSource.file_data
+# - settings and summaries live inside connection_info, every cleaning
+# step is a new DatasetVersion.
+# ---------------------------------------------------------------------------
+_FILE_KINDS = ("csv", "excel")
+
+
+def _require_file_kind(ds: models.DataSource) -> None:
+    if ds.kind not in _FILE_KINDS:
+        raise HTTPException(400, "Import settings and cleaning suggestions only apply to an uploaded CSV or Excel file.")
+    if not ds.file_data:
+        raise HTTPException(400, "The data for this file is missing - please remove this data source and upload the file again.")
+
+
+def _file_sheet_key(ds: models.DataSource, table: str | None) -> tuple[str | None, str]:
+    """(sheet name to load, connection_info key) for one sheet of a file -
+    the key is "" for a CSV / single-sheet workbook (the one implicit
+    table), the real sheet name for a multi-sheet workbook, exactly the
+    way data_loader._load_original resolves it."""
+    sheet = table or default_table_for_preview(ds)
+    if ds.kind != "excel":
+        sheet = None
+    return sheet, (sheet or "")
+
+
+def _file_inspection(db: Session, ds: models.DataSource) -> dict:
+    """inspect_file's result, computed once per datasource and kept inside
+    connection_info["import_inspection"] - the bytes never change, so the
+    answer never does either. Computed lazily here for an upload that
+    predates this layer."""
+    info = ds.connection_info or {}
+    cached = info.get("import_inspection")
+    if isinstance(cached, dict) and cached.get("sheets") is not None:
+        return cached
+    inspection = file_import.inspect_file(ds.file_data, info.get("original_filename"))
+    ds.connection_info = {**info, "import_inspection": inspection}
+    try:
+        db.commit()
+    except Exception as e:
+        print(f"[datasources] could not store file inspection for {ds.id} (non-fatal): {e}")
+        db.rollback()
+    return inspection
+
+
+def _uploader_fields(ds: models.DataSource) -> dict:
+    owner = getattr(ds, "owner", None)
+    name = (getattr(owner, "full_name", None) or getattr(owner, "email", None) or "").strip()
+    initials = "".join(part[0] for part in name.replace("@", " ").split()[:2]).upper() if name else ""
+    return {"uploaded_at": ds.created_at, "uploaded_by": name or None, "uploaded_by_initials": initials or None}
+
+
+def _import_state(db: Session, ds: models.DataSource, table: str | None) -> dict:
+    """What GET /import and POST /import both return."""
+    sheet, key = _file_sheet_key(ds, table)
+    inspection = _file_inspection(db, ds)
+    stored_settings, stored_summary = file_import_settings_for(ds, sheet)
+    sheet_entry = next((s for s in inspection.get("sheets") or [] if s.get("name") == sheet), None) if sheet else (
+        (inspection.get("sheets") or [None])[0]
+    )
+    settings = file_import.normalize_settings({**(stored_settings or {}), "sheet": sheet})
+    return {
+        "kind": ds.kind,
+        "filename": (ds.connection_info or {}).get("original_filename"),
+        "size_bytes": inspection.get("size_bytes") or len(ds.file_data or b""),
+        "sheets": [
+            {"name": s.get("name"), "rows": s.get("rows"), "cols": s.get("cols")}
+            for s in (inspection.get("sheets") or [])
+        ],
+        "sheet": sheet,
+        "sheet_key": key,
+        "detected": {
+            "header_row": (sheet_entry or {}).get("detected_header_row") or inspection.get("detected_header_row") or 1,
+            "delimiter": inspection.get("detected_delimiter"),
+            "encoding": inspection.get("detected_encoding"),
+            "date_format": inspection.get("detected_date_format"),
+        },
+        "settings": settings,
+        "summary": stored_summary,
+        "imported": stored_summary is not None,
+        **_uploader_fields(ds),
+    }
+
+
+@router.get("/{datasource_id}/import")
+def get_file_import(
+    datasource_id: str,
+    table: str | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """The file's inspection (sheets, size, detected header row /
+    delimiter / encoding / date format), the import settings currently in
+    force for `table` (a sheet name; the first/only sheet when omitted)
+    and the summary of the last import run (null for an upload that has
+    only ever been read with defaults - the Data tab then offers "Run
+    import"). 400 for any non-file kind."""
+    ds = _get_accessible_datasource(db, user, datasource_id)
+    _require_file_kind(ds)
+    try:
+        return _import_state(db, ds, table)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Could not inspect this file: {e}")
+
+
+@router.post("/{datasource_id}/import")
+def rerun_file_import(
+    datasource_id: str,
+    payload: dict | None = Body(None),
+    table: str | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Re-runs the import for one sheet with the given settings (body:
+    {sheet, header_row, delimiter, decimal, thousands, date_format,
+    trim_whitespace, skip_empty_rows} - any subset; the rest keep their
+    current value): the frame is reloaded from the stored bytes with
+    those settings, type fixes are inferred and applied, schema_cache for
+    that sheet is refreshed, this process's cached frame and profile for
+    it are dropped, and the settings + summary are stored inside
+    connection_info. Editable tier. Returns the same shape as GET."""
+    ds = _get_editable_datasource(db, user, datasource_id)
+    _require_file_kind(ds)
+    body = payload if isinstance(payload, dict) else {}
+    sheet, key = _file_sheet_key(ds, body.get("sheet") or table)
+    stored_settings, _ = file_import_settings_for(ds, sheet)
+    merged = {**(stored_settings or {}), **{k: v for k, v in body.items() if k in file_import.DEFAULT_SETTINGS}, "sheet": sheet}
+    filename = (ds.connection_info or {}).get("original_filename")
+    try:
+        df, chosen, summary = file_import.run_import(ds.file_data, filename, merged)
+    except Exception as e:
+        raise HTTPException(400, f"Could not read the file with those settings: {e}")
+
+    columns = [{"name": c, "type": str(df[c].dtype)} for c in df.columns]
+    schema = dict(ds.schema_cache or {})
+    if sheet and list(schema.keys()) != ["columns"]:
+        schema[sheet] = columns
+    else:
+        schema = {"columns": columns}
+    ds.schema_cache = schema
+
+    info = dict(ds.connection_info or {})
+    by_sheet = dict(info.get("import_by_sheet") or {})
+    by_sheet[key] = {"settings": chosen, "summary": summary}
+    info["import_by_sheet"] = by_sheet
+    info["import_settings"] = chosen
+    info["import_summary"] = summary
+    ds.connection_info = info
+    audit.log_audit_event(
+        db, actor=user, action="datasource_reimported", workspace_id=ds.workspace_id,
+        target_type="datasource", target_id=ds.id,
+        metadata={"sheet": sheet, "fixed_count": summary.get("fixed_count"), "rows": summary.get("rows")},
+    )
+    db.commit()
+    db.refresh(ds)
+
+    # The parsed frame AND the profile for this sheet are now stale in this
+    # process - replace the frame with the one just built, forget the
+    # profile so the next /profile recomputes over it.
+    drop_cached_original(ds.id, sheet)
+    warm_cache(ds.id, df, table=sheet)
+    _profile_cache.pop((ds.id, sheet), None)
+    _profile_cache.pop((ds.id, default_table_for_preview(ds)), None)
+    return _import_state(db, ds, sheet)
+
+
+def _file_frame(db: Session, ds: models.DataSource, user: models.User, table: str | None, version: models.DatasetVersion | None) -> pd.DataFrame:
+    """The whole frame (never a sample) of one sheet or saved version of a
+    file source, through the same role filter preview_datasource applies."""
+    try:
+        if version is not None:
+            df = load_version_dataframe(version, ds)
+        else:
+            sheet, _ = _file_sheet_key(ds, table)
+            df = load_dataframe(ds, table=sheet, version="original", db=db)
+        return data_access_rules.filter_dataframe_for_role(db, df, ds, user)
+    except Exception as e:
+        raise HTTPException(400, f"Could not load data: {e}")
+
+
+def _file_date_format(ds: models.DataSource, table: str | None) -> str | None:
+    sheet, _ = _file_sheet_key(ds, table)
+    settings, _ = file_import_settings_for(ds, sheet)
+    fmt = (settings or {}).get("date_format")
+    return None if not fmt or fmt == "auto" else fmt
+
+
+@router.get("/{datasource_id}/cleaning-suggestions")
+def get_cleaning_suggestions(
+    datasource_id: str,
+    table: str | None = None,
+    version_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Up to 8 cleaning suggestions computed with pandas over the FULL
+    file (one sheet, or a saved version): type conversions, fill-empty for
+    a near-complete numeric column, case/whitespace variants of one
+    categorical value (spelling variants are beyond this version and the
+    reason says so), exact duplicate rows, whitespace to trim - each with
+    its exact affected_rows. See file_import.suggest_cleaning."""
+    ds = _get_accessible_datasource(db, user, datasource_id)
+    _require_file_kind(ds)
+    ensure_legacy_migrated(db, ds)
+    version = _get_owned_version(db, ds, version_id) if version_id else None
+    df = _file_frame(db, ds, user, table, version)
+    started_at = time.perf_counter()
+    try:
+        suggestions = file_import.suggest_cleaning(df, date_format=_file_date_format(ds, table))
+    except Exception as e:
+        raise HTTPException(400, f"Could not compute cleaning suggestions: {e}")
+    return {
+        "suggestions": suggestions,
+        "total_rows": int(len(df)),
+        "version_id": version.id if version else None,
+        "computed_in": "gd360",
+        "duration_ms": int((time.perf_counter() - started_at) * 1000),
+    }
+
+
+@router.post("/{datasource_id}/cleaning-suggestions/apply")
+def apply_cleaning_suggestions(
+    datasource_id: str,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Applies the selected suggestions ({ids: [...], table?, version_id?})
+    in the given order on the current frame and saves the result as a NEW
+    DatasetVersion (file kind, parent = the version it was built from,
+    cleaning_log = the parent's log + one entry per step in the same
+    shape chat's _save_cleaning_result writes, exact row_count). The
+    original bytes and every earlier version are never modified. Editable
+    tier; refused for a role whose row/column rules filter this data (a
+    version saved from a filtered frame would be silently partial)."""
+    ds = _get_editable_datasource(db, user, datasource_id)
+    _require_file_kind(ds)
+    ensure_legacy_migrated(db, ds)
+    body = payload if isinstance(payload, dict) else {}
+    ids = [str(i) for i in (body.get("ids") or []) if i]
+    if not ids:
+        raise HTTPException(400, "Pick at least one suggestion to apply.")
+    if data_access_rules.has_active_restrictions(db, ds, user):
+        raise HTTPException(403, "Your access to this data source is limited by row/column rules, so a cleaned version cannot be saved from it.")
+    table = body.get("table")
+    version_id = body.get("version_id")
+    version = _get_owned_version(db, ds, version_id) if version_id else None
+    if version is not None and is_warehouse_query(version):
+        raise HTTPException(400, warehouse_no_file_message(version, ds))
+    df = _file_frame(db, ds, user, table, version)
+    date_format = _file_date_format(ds, table)
+    started_at = time.perf_counter()
+    try:
+        suggestions = file_import.suggest_cleaning(df, date_format=date_format)
+        known = {s["id"] for s in suggestions}
+        missing = [i for i in ids if i not in known]
+        if missing:
+            raise HTTPException(400, f"These suggestions no longer apply to the current data: {', '.join(missing)}. Refresh the suggestions and try again.")
+        cleaned, log_entries = file_import.apply_cleaning(df, suggestions, ids, date_format=date_format)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Could not apply those cleaning steps: {e}")
+    if not log_entries:
+        raise HTTPException(400, "None of the selected suggestions could be applied.")
+
+    from sqlalchemy import func as sa_func
+
+    max_position = (
+        db.query(sa_func.max(models.DatasetVersion.position))
+        .filter(models.DatasetVersion.datasource_id == ds.id)
+        .scalar()
+        or 0
+    )
+    prior_log = list(version.cleaning_log or []) if version is not None else []
+    new_version = models.DatasetVersion(
+        datasource_id=ds.id,
+        name=purpose_label(file_import.version_label_for(log_entries), fallback="Cleaned"),
+        parent_version_id=version.id if version is not None else None,
+        parent_version_ids=[version.id] if version is not None else None,
+        data=dataframe_to_csv_bytes(cleaned),
+        cleaning_log=prior_log + log_entries,
+        position=max_position + 1,
+        duration_ms=int((time.perf_counter() - started_at) * 1000),
+        method_summary="Cleaned with suggested steps",
+        row_count=int(len(cleaned)),
+    )
+    db.add(new_version)
+    db.flush()
+    audit.log_audit_event(
+        db, actor=user, action="datasource_cleaning_applied", workspace_id=ds.workspace_id,
+        target_type="dataset_version", target_id=new_version.id,
+        metadata={"steps": [e.get("kind") for e in log_entries], "rows_after": int(len(cleaned))},
+    )
+    db.commit()
+    db.refresh(new_version)
+    out = _version_out(new_version)
+    out["applied"] = log_entries
+    return out
+
+
+def _file_profile(
+    db: Session, ds: models.DataSource, user: models.User, table: str | None, version: models.DatasetVersion | None,
+) -> dict:
+    """profile_datasource for a CSV/Excel source - pandas over the whole
+    frame (see file_import.profile_dataframe), cached under the same
+    (datasource, table) / (datasource, "version:<id>") keys and TTL as a
+    warehouse profile. `computed_in: "gd360"`, no bytes/cost keys."""
+    if version is not None and is_warehouse_query(version):
+        return {"supported": False, "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False}
+    if version is not None:
+        cache_key = (ds.id, f"version:{version.id}")
+    else:
+        cache_key = (ds.id, table or default_table_for_preview(ds))
+    cached = _profile_cache_get(cache_key)
+    if cached is not None:
+        return {**cached, "cached": True}
+    started_at = time.perf_counter()
+    df = _file_frame(db, ds, user, table, version)
+    try:
+        result = profile_dataframe(df)
+    except Exception as e:
+        print(f"[datasources] file profile failed for {ds.id}/{table}: {e}")
+        return {
+            "supported": True, "error": True,
+            "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False,
+        }
+    if version is not None and version.row_count is None:
+        try:
+            version.row_count = int(len(df))
+            db.commit()
+        except Exception as e:
+            print(f"[datasources] could not store row_count on version {version.id} (non-fatal): {e}")
+            db.rollback()
+    result["duration_ms"] = int((time.perf_counter() - started_at) * 1000)
+    result["cached_at"] = time.time()
+    _profile_cache_put(cache_key, result)
+    return {**result, "cached": False}
+
 
 @router.get("/{datasource_id}/profile")
 def profile_datasource(
@@ -1568,6 +2023,18 @@ def profile_datasource(
     # version is `supported: false` (the frontend keeps using the preview's
     # column_stats for those, exactly as today).
     active_version = _get_owned_version(db, ds, version_id) if version_id else None
+
+    # 2026-10-06 (pro local-file Data tab): a CSV/Excel upload is COMPLETE
+    # data already inside GD360, so its profile is real too - computed
+    # with pandas over the whole frame (original sheet or any saved
+    # version), cached under the same keys as a warehouse profile, with
+    # `computed_in: "gd360"` and no bytes/cost fields (there is no
+    # warehouse). Checked before the file-backed-version rule below so a
+    # file source's own saved versions profile as well; every other kind
+    # takes exactly the path it always did.
+    if ds.kind in _FILE_KINDS:
+        return _file_profile(db, ds, user, table, active_version)
+
     if active_version is not None and not is_warehouse_query(active_version):
         return {"supported": False, "exact_total_rows": None, "columns": {}, "profiled_columns": [], "cached": False}
 
