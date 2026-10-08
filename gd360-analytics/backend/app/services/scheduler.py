@@ -372,6 +372,15 @@ def _tick() -> None:
             except Exception as e:  # sync_datasource records its own failures
                 logger.warning("[scheduler] sync failed for datasource %s: %s", ds.id, e)
                 db.rollback()
+
+        # 2026-10-08 (round 12): automations - after the syncs above, so a
+        # "when new data lands" automation sees this tick's fresh data.
+        from .automations import tick as automations_tick
+        try:
+            automations_tick(db, datetime.utcnow())
+        except Exception as e:  # noqa: BLE001 - never stops the loop
+            logger.warning("[scheduler] automations tick failed: %s", e)
+            db.rollback()
     finally:
         db.close()
 
