@@ -213,7 +213,7 @@ export function Tile({ label, value, sub, testId, valueSize = "lg" }: {
     <div className="bg-surface border border-border rounded-xl px-4 py-3.5 flex flex-col gap-1 min-w-0" data-testid={testId}>
       <div className="text-[11px] uppercase tracking-wide text-muted">{label}</div>
       <div
-        className={`font-semibold tabular-nums text-text truncate ${valueSize === "lg" ? "text-2xl" : "text-base pt-1"}`}
+        className={`font-semibold tabular-nums text-text truncate ${valueSize === "lg" ? "text-2xl" : "text-[16px] pt-1"}`}
         data-testid={`${testId}-value`}
       >
         {value}

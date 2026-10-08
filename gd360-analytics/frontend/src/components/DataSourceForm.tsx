@@ -313,7 +313,28 @@ export function connectionKindMeta(kind: string) {
   // clearly different connectors at a glance - streaming is PUSH (someone
   // else posts events in), this is PULL (GD360 reaches out and fetches).
   if (kind === "api") return { label: "API / Webhook", color: "#8b5cf6", Logo: ApiIcon };
+  // 2026-10-08 (round 11): synced app sources - a neutral sync glyph, not
+  // the apps' own logos, each in its own colour so they read apart.
+  if (kind in SYNCED_APP_META) return { ...SYNCED_APP_META[kind], Logo: SyncedAppIcon };
   return { label: "CSV file", color: "#64748b", Logo: FileSpreadsheetIcon };
+}
+
+const SYNCED_APP_META: Record<string, { label: string; color: string }> = {
+  shopify: { label: "Shopify", color: "#5e8e3e" },
+  ga4: { label: "Google Analytics 4", color: "#e37400" },
+  meta_ads: { label: "Meta Ads", color: "#1877f2" },
+  google_ads: { label: "Google Ads", color: "#1a73e8" },
+};
+
+export function SyncedAppIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20 11a8 8 0 0 0-14.3-4.9L4 8" />
+      <path d="M4 4v4h4" />
+      <path d="M4 13a8 8 0 0 0 14.3 4.9L20 16" />
+      <path d="M20 20v-4h-4" />
+    </svg>
+  );
 }
 
 // 2026-09-23 (sidebar redesign round): the category a connected source is
@@ -323,10 +344,11 @@ export function connectionKindMeta(kind: string) {
 // itself already offers (Database / Warehouse / Upload+Connect), so
 // "which category is this in" always matches "which tab would I have
 // picked it from" - never a separate taxonomy to keep in sync by hand.
-export type DataSourceCategory = "Databases" | "Warehouses" | "Files";
-export const DATA_SOURCE_CATEGORIES: DataSourceCategory[] = ["Files", "Databases", "Warehouses"];
+export type DataSourceCategory = "Databases" | "Warehouses" | "Files" | "Apps";
+export const DATA_SOURCE_CATEGORIES: DataSourceCategory[] = ["Files", "Databases", "Warehouses", "Apps"];
 
 export function dataSourceCategory(kind: string): DataSourceCategory {
+  if (kind in SYNCED_APP_META) return "Apps";
   if (DB_KINDS.some((d) => d.value === kind)) return "Databases";
   if (WAREHOUSE_KINDS.some((w) => w.value === kind)) return "Warehouses";
   // Everything else - csv/excel uploads, and the live Google Sheets/Excel

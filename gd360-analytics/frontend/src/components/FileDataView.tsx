@@ -362,7 +362,7 @@ export default function FileDataView({
           <FileGlyph kind={datasourceKind} />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 min-w-0">
-              <div className="text-base font-semibold text-text truncate" data-testid="fdv-filename">{fileName}</div>
+              <div className="text-[16px] font-semibold text-text truncate" data-testid="fdv-filename">{fileName}</div>
               <span className="text-[11px] uppercase tracking-wide text-muted border border-border rounded-md px-1.5 py-0.5">{kindLabel}</span>
             </div>
             <div className="text-xs text-muted truncate" data-testid="fdv-meta">{metaLine || (importLoading ? "inspecting the file…" : "")}</div>

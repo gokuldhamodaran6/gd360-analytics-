@@ -229,7 +229,7 @@ export default function TrainModelWizard({
       <div className="card w-full max-w-lg my-8 sm:my-0 flex flex-col max-h-[88vh]">
         <div className="p-4 border-b border-border flex items-center justify-between gap-3 shrink-0">
           <div className="min-w-0">
-            <div className="font-bold text-base">Train a new model</div>
+            <div className="font-bold text-[16px]">Train a new model</div>
             {!result && <div className="text-xs text-muted mt-0.5">{STEP_LABELS[step]}</div>}
           </div>
           <div className="flex items-center gap-3 shrink-0">

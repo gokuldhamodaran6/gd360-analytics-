@@ -193,11 +193,13 @@ export default function CommandPalette() {
   }, [open, activeWorkspaceId]);
 
   const openConversation = (c: ConversationSummary) => {
+    // 2026-10-08 (round 11): a multi-source Project opens its own page
+    if (c.kind === "project") return navigate(`/p/${c.id}`);
     if (!c.datasource_id) return;
     navigate(`/workspace/${c.datasource_id}?conversation=${c.id}`);
   };
   const openDashboard = (d: DashboardSummary) => {
-    navigate(d.layout_version === 2 ? `/dashboard-builder/${d.id}` : `/dashboards/${d.id}`);
+    navigate(d.layout_version === 3 ? `/project-dashboards/${d.id}` : d.layout_version === 2 ? `/dashboard-builder/${d.id}` : `/dashboards/${d.id}`);
   };
   const openDatasource = (ds: DataSourceSummary) => {
     navigate(`/workspace/${ds.id}`);

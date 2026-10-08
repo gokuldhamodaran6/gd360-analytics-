@@ -155,7 +155,19 @@ function FileGlyph({ className = "w-4 h-4" }: { className?: string }) {
   );
 }
 
-function categoryGlyph(cat: "Files" | "Databases" | "Warehouses") {
+function AppsGlyph({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 11a8 8 0 0 0-14.3-4.9L4 8" />
+      <path d="M4 4v4h4" />
+      <path d="M4 13a8 8 0 0 0 14.3 4.9L20 16" />
+      <path d="M20 20v-4h-4" />
+    </svg>
+  );
+}
+
+function categoryGlyph(cat: "Files" | "Databases" | "Warehouses" | "Apps") {
+  if (cat === "Apps") return AppsGlyph;
   if (cat === "Databases") return DatabaseGlyph;
   if (cat === "Warehouses") return WarehouseGlyph;
   return FileGlyph;
@@ -742,7 +754,7 @@ export function ConnectDataPopup({
   const [tab, setTab] = useState<"existing" | "new">("existing");
   const [sources, setSources] = useState<DataSourceSummary[] | null>(null);
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState<"all" | "Files" | "Databases" | "Warehouses">("all");
+  const [category, setCategory] = useState<"all" | "Files" | "Databases" | "Warehouses" | "Apps">("all");
   const [page, setPage] = useState(1);
   // Every source picked so far this popup session, in click order - the
   // first one becomes the URL's :datasourceId, the rest ride along as
@@ -837,7 +849,7 @@ export function ConnectDataPopup({
     >
       <div className="card w-full max-w-lg my-8 sm:my-0 flex flex-col max-h-[85vh]">
         <div className="p-4 border-b border-border flex items-center justify-between gap-3 shrink-0">
-          <div className="font-bold text-base">Connect data</div>
+          <div className="font-bold text-[16px]">Connect data</div>
           <button type="button" className="text-muted hover:text-text transition shrink-0" onClick={onClose} aria-label="Close">
             <CloseIcon className="w-5 h-5" />
           </button>
@@ -901,13 +913,14 @@ export function ConnectDataPopup({
                   a plain list with no way to narrow it down. Each slot has
                   its own generous padding so the four never crowd each
                   other or the words inside them. */}
-              <div className="grid grid-cols-4 gap-1.5 p-1.5 mb-4 rounded-xl bg-surface2 border border-border">
+              <div className="grid grid-cols-5 gap-1.5 p-1.5 mb-4 rounded-xl bg-surface2 border border-border">
                 {(
                   [
                     { key: "all" as const, label: "All", Icon: AllGlyph },
                     { key: "Files" as const, label: "Files", Icon: categoryGlyph("Files") },
                     { key: "Databases" as const, label: "Databases", Icon: categoryGlyph("Databases") },
                     { key: "Warehouses" as const, label: "Warehouses", Icon: categoryGlyph("Warehouses") },
+                    { key: "Apps" as const, label: "Apps", Icon: categoryGlyph("Apps") },
                   ]
                 ).map((t) => (
                   <button
@@ -1042,6 +1055,14 @@ function MenuIcon({ className = "w-5 h-5" }: { className?: string }) {
 // keeping two copies of this markup in sync by hand. `onNavigate` is fired
 // after every Link click - a no-op on desktop, closes the drawer on
 // mobile.
+function HomeIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-4.5v-6h-5v6H5a1 1 0 0 1-1-1z" />
+    </svg>
+  );
+}
+
 function SidebarNav({
   workspaces,
   activeWorkspaceId,
@@ -1070,7 +1091,11 @@ function SidebarNav({
   collapsed?: boolean;
   onToggleCollapse?: () => void;
 }) {
-  const onProjects = pathname === "/";
+  // 2026-10-08 (round 11): "/" is now Home (one question box); the full
+  // Projects library moved to /projects, and a multi-source project (/p/:id)
+  // counts as being in Projects.
+  const onHome = pathname === "/";
+  const onProjects = pathname.startsWith("/projects") || pathname.startsWith("/p/") || pathname.startsWith("/workspace/");
 
   // Shared class builder for the six nav links below: expanded keeps
   // today's icon+label row exactly as it was; collapsed centers just the
@@ -1097,7 +1122,11 @@ function SidebarNav({
       />
 
       <nav aria-label="Primary" className={`mt-1 space-y-0.5 ${collapsed ? "px-2" : "px-3"}`}>
-        <Link to="/" onClick={onNavigate} title={collapsed ? "Projects" : undefined} className={linkClass(onProjects)}>
+        <Link to="/" onClick={onNavigate} title={collapsed ? "Home" : undefined} className={linkClass(onHome)}>
+          <HomeIcon />
+          {!collapsed && "Home"}
+        </Link>
+        <Link to="/projects" onClick={onNavigate} title={collapsed ? "Projects" : undefined} className={linkClass(onProjects)}>
           <ProjectsIcon />
           {!collapsed && "Projects"}
         </Link>
@@ -1112,7 +1141,7 @@ function SidebarNav({
             // is still, conceptually, "being in Dashboards" - now that it
             // also renders this sidebar, it should highlight the same nav
             // item rather than leaving nothing active while editing one.
-            pathname.startsWith("/dashboards") || pathname.startsWith("/dashboard-builder")
+            pathname.startsWith("/dashboards") || pathname.startsWith("/dashboard-builder") || pathname.startsWith("/project-dashboards")
           )}
         >
           <DashboardsIcon />
@@ -1121,31 +1150,31 @@ function SidebarNav({
         <Link
           to="/jobs"
           onClick={onNavigate}
-          title={collapsed ? "Jobs" : undefined}
-          className={linkClass(pathname.startsWith("/jobs"))}
+          title={collapsed ? "Automations" : undefined}
+          className={linkClass(pathname.startsWith("/jobs") || pathname.startsWith("/automations"))}
         >
           <JobsIcon />
-          {!collapsed && "Jobs"}
+          {!collapsed && "Automations"}
         </Link>
         <Link
           to="/data"
           onClick={onNavigate}
-          title={collapsed ? "Data Sources" : undefined}
+          title={collapsed ? "Data" : undefined}
           className={linkClass(pathname.startsWith("/data"))}
         >
           <DataSourcesIcon />
-          {!collapsed && "Data Sources"}
+          {!collapsed && "Data"}
         </Link>
         {/* 2026-09-28 (ML Models round): the real ML feature, right after
             Data Sources - see MLModelsIcon's own comment for why. */}
         <Link
           to="/ml-models"
           onClick={onNavigate}
-          title={collapsed ? "ML Models" : undefined}
-          className={linkClass(pathname.startsWith("/ml-models"))}
+          title={collapsed ? "ML Studio" : undefined}
+          className={linkClass(pathname.startsWith("/ml-models") || pathname.startsWith("/ml-studio"))}
         >
           <MLModelsIcon />
-          {!collapsed && "ML Models"}
+          {!collapsed && "ML Studio"}
         </Link>
         {/* Phase 4 (2026-09-28, Experimentation / A/B testing): see
             ExperimentsIcon's own comment above for why. */}
@@ -1170,11 +1199,11 @@ function SidebarNav({
           <Link
             to="/governance"
             onClick={onNavigate}
-            title={collapsed ? "Governance" : undefined}
+            title={collapsed ? "Trust Center" : undefined}
             className={linkClass(pathname.startsWith("/governance"))}
           >
             <GovernanceIcon />
-            {!collapsed && "Governance"}
+            {!collapsed && "Trust Center"}
           </Link>
         )}
       </nav>
