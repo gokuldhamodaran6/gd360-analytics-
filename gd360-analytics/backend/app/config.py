@@ -396,6 +396,27 @@ class Settings(BaseSettings):
     PROJECT_STEP_MAX_PARALLEL: int = 4
     PROJECT_DUCKDB_MEMORY_LIMIT: str = "256MB"
 
+    # --- 2026-10-08 (round 12): Automations (services/automations.py).
+    # Email: set RESEND_API_KEY (resend.com - simplest) OR the SMTP_* group
+    # (any provider: Google Workspace, SendGrid, Postmark, SES ...). EMAIL_FROM
+    # must be an address on a domain verified with that provider, e.g.
+    # "GD360 <alerts@gd360analytics.com>". Until one is set, automations
+    # still run and post to Slack/Teams; email deliveries are marked
+    # "email isn't set up yet" on the run instead of failing silently.
+    RESEND_API_KEY: str = ""
+    EMAIL_FROM: str = ""
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_USE_SSL: bool = False  # True for port 465; otherwise STARTTLS is used
+    # Links inside emails and Slack posts ("Open dashboard"). Defaults to
+    # FRONTEND_ORIGIN when empty.
+    APP_PUBLIC_URL: str = ""
+    # Abuse guard: emails one account's automations may send per 24 hours.
+    AUTOMATION_DAILY_EMAIL_CAP: int = 300
+    AUTOMATION_MAX_PER_TICK: int = 5
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -9,7 +9,7 @@ from .database import init_db
 from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, dashboard_comments, admin, conversations, goku,
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
-    data_access_rules, ml_models, metric_definitions, transforms, pipelines, projects, apps,
+    data_access_rules, ml_models, metric_definitions, transforms, pipelines, projects, apps, automations,
 )
 from .services.scheduler import start_scheduler
 
@@ -170,6 +170,8 @@ app.include_router(pipelines.router)
 # the synced app sources they can draw on (Shopify, GA4, Meta Ads, Google Ads).
 app.include_router(projects.router)
 app.include_router(apps.router)
+# 2026-10-08 (round 12): Automations - WHEN -> DO -> TELL (services/automations.py).
+app.include_router(automations.router)
 # 2026-09-30 (Gokul's own bug report - Governance/Jobs redesign + Pipelines/
 # Catalog removal round): the standalone /catalog router is gone - Gokul's
 # own words were that it duplicated the Projects filter and Data Sources
@@ -210,6 +212,8 @@ def on_startup():
     # A project question whose background thread died with the previous
     # process can never finish: mark it, so its page says so.
     projects.recover_interrupted_runs()
+    from .services.automations import recover_interrupted as recover_automation_runs
+    recover_automation_runs()
 
 
 @app.get("/health")

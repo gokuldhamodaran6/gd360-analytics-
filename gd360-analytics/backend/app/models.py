@@ -2278,3 +2278,69 @@ class ProjectRun(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
+
+
+class Automation(Base):
+    """2026-10-08 (round 12): work that runs by itself, read as one sentence:
+    WHEN (trigger) -> DO (steps, in order) -> TELL (email / Slack / Teams).
+
+    trigger (JSON), one of:
+      {"type": "schedule", "every": "hour"|"day"|"week"|"month", "time": "06:00",
+       "minute": 0, "days": [0..6] (Mon=0), "day_of_month": 1}
+      {"type": "new_data", "datasource_id": "..."} - runs when a synced app,
+        API source or file gets new data (live databases are always current)
+      {"type": "threshold", "target": {"kind": "project_run", "run_id": "..."}
+                                    | {"kind": "dashboard", "dashboard_id": "..."},
+       "kpi": "total" | "component:<name>" ..., "op": "below"|"above"|"drops_by"|"rises_by",
+       "value": 2.0, "check": {schedule fields}} - checked on its own schedule;
+        fires when the condition BECOMES true (not on every check while it stays true)
+    timezone: IANA name the schedule is read in.
+    steps (JSON list) - see services/automations.STEP_TYPES.
+    tell (JSON): {"email": [...], "slack": {"url_enc": "...", "label": "#revenue"} | null,
+                  "teams": {...} | null, "mode": "always"|"on_change"|"on_failure"}
+    Webhook URLs are stored encrypted (security.encrypt_secret).
+    """
+    __tablename__ = "automations"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True, index=True)
+    name = Column(String, nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
+    trigger = Column(JSON, nullable=False, default=dict)
+    timezone = Column(String, nullable=False, default="UTC")
+    steps = Column(JSON, nullable=False, default=list)
+    stop_on_quality_fail = Column(Boolean, default=True, nullable=False)
+    tell = Column(JSON, nullable=False, default=dict)
+    next_run_at = Column(DateTime, nullable=True, index=True)
+    last_run_at = Column(DateTime, nullable=True)
+    last_status = Column(String, nullable=True)
+    last_digest = Column(String, nullable=True)          # what was last sent, for "only if something changed"
+    last_seen_data_at = Column(DateTime, nullable=True)  # new-data trigger: the data version already handled
+    last_condition = Column(Boolean, nullable=True)      # threshold trigger: was it true at the last check
+    last_checked_at = Column(DateTime, nullable=True)
+    last_value = Column(String, nullable=True)           # threshold trigger: the value seen at the last check
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AutomationRun(Base):
+    """One run of an Automation: what each step did, the message built from
+    it, and what happened to each delivery. Created (status "running")
+    before any work starts, like JobRun/PipelineRun, so a crash still
+    leaves an honest record."""
+    __tablename__ = "automation_runs"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    automation_id = Column(String, ForeignKey("automations.id", ondelete="SET NULL"), nullable=True, index=True)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    automation_name = Column(String, nullable=False)
+    reason = Column(String, nullable=False)  # schedule | manual | test | new_data | threshold
+    status = Column(String, nullable=False, default="running")  # running | success | failed
+    step_results = Column(JSON, nullable=False, default=list)
+    message = Column(JSON, nullable=True)       # {subject, headline, lines, kpis, link}
+    deliveries = Column(JSON, nullable=False, default=list)  # [{channel, to, status, detail}]
+    notified = Column(Boolean, default=False, nullable=False)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    finished_at = Column(DateTime, nullable=True)
