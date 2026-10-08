@@ -43,6 +43,28 @@ function hasSessionToken(): boolean {
   }
 }
 
+// 2026-10-08 (round 11): several copies of this hook mount together on one
+// screen (the page, its sidebar, the command palette), and each fetched the
+// list on its own - 18 identical GET /workspaces in one short session. They
+// now share one request for a few seconds; a new token or a created
+// workspace starts a fresh one.
+const SHARE_MS = 5000;
+let shared: { token: string; at: number; p: Promise<WorkspaceSummary[]> } | null = null;
+
+function loadWorkspaces(): Promise<WorkspaceSummary[]> {
+  let token = "";
+  try { token = localStorage.getItem("gd360_token") || ""; } catch { /* no storage */ }
+  const now = Date.now();
+  if (shared && shared.token === token && now - shared.at < SHARE_MS) return shared.p;
+  const p = workspaceApi.list().catch(() => [] as WorkspaceSummary[]);
+  shared = { token, at: now, p };
+  return p;
+}
+
+export function forgetWorkspaceList() {
+  shared = null;
+}
+
 export function useWorkspaceNav() {
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>("");
@@ -60,7 +82,7 @@ export function useWorkspaceNav() {
     }
     (async () => {
       setLoadingWorkspaces(true);
-      const list = await workspaceApi.list().catch(() => []);
+      const list = await loadWorkspaces();
       setWorkspaces(list);
       let active = "";
       try {
@@ -105,6 +127,7 @@ export function useWorkspaceNav() {
   };
 
   const handleWorkspaceCreated = (ws: WorkspaceSummary, onSwitched?: (id: string) => void) => {
+    forgetWorkspaceList();
     setWorkspaces((ws_) => [ws, ...ws_]);
     switchWorkspace(ws.id, onSwitched);
   };
