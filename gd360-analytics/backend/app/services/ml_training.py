@@ -874,6 +874,8 @@ def predict_one(ml_model_row: models.MLModel, input_values: dict) -> tuple[Any, 
     that function's own docstring). The fitted pipeline is loaded once
     here and reused for both the prediction and the explanation, rather
     than loading the same joblib artifact twice."""
+    if not ml_model_row.model_artifact:
+        raise ValueError("This model makes a forecast for future periods, not a prediction per row - see its forecast.")
     pipeline = joblib.load(io.BytesIO(ml_model_row.model_artifact))
     feature_columns = ml_model_row.feature_columns or []
     row = {col: _coerce_form_value(input_values.get(col)) for col in feature_columns}
@@ -909,6 +911,10 @@ def score_dataframe(ml_model_row: models.MLModel, df: pd.DataFrame) -> pd.DataFr
     all-NaN (via reindex) so the pipeline's own imputer fills it in exactly
     like a missing value anywhere else, rather than this raising over a
     table that happens not to carry every original feature column."""
+    if getattr(ml_model_row, "problem_type", None):
+        # 2026-10-08 (round 13): ML Studio models score with their own reasons
+        from .ml_studio import score_frame
+        return score_frame(ml_model_row, df)
     pipeline = joblib.load(io.BytesIO(ml_model_row.model_artifact))
     feature_columns = ml_model_row.feature_columns or []
     X = df.reindex(columns=feature_columns)
