@@ -271,6 +271,15 @@ _NEW_COLUMNS = [
     ("dashboards", "project_spec", "JSON"),
     ("dashboards", "project_snapshot", "JSON"),
     ("dashboards", "snapshot_at", "TIMESTAMP"),
+    # 2026-10-08 (round 13): ML Studio (services/ml_studio.py).
+    ("ml_models", "problem_type", "TEXT"),
+    ("ml_models", "goal", "TEXT"),
+    ("ml_models", "table_name", "TEXT"),
+    ("ml_models", "plan", "JSON"),
+    ("ml_models", "progress", "JSON"),
+    ("ml_models", "results", "JSON"),
+    ("ml_models", "started_at", "TIMESTAMP"),
+    ("ml_models", "stop_requested", "BOOLEAN"),
 ]
 
 

@@ -2221,6 +2221,9 @@ class MLModelOut(BaseModel):
     # decide whether to show the delete button at all (creator-only).
     owner_id: str
     can_delete: bool
+    # 2026-10-08 (round 13): set for models started in ML Studio.
+    problem_type: Optional[str] = None
+    goal: Optional[str] = None
 
 
 class PredictRequest(BaseModel):

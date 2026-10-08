@@ -417,6 +417,22 @@ class Settings(BaseSettings):
     AUTOMATION_DAILY_EMAIL_CAP: int = 300
     AUTOMATION_MAX_PER_TICK: int = 5
 
+    # --- 2026-10-08 (round 13): ML Studio (services/ml_studio.py).
+    # Rows one training run loads into this server's memory. A table with
+    # more rows trains on the first ML_MAX_TRAIN_ROWS and the run says so
+    # plainly - never a silent sample. Raise it on a bigger instance.
+    ML_MAX_TRAIN_ROWS: int = 50_000
+    # Hyper-parameter trials across all algorithms, and the time budget for
+    # the train-and-tune stage (it stops early at whichever comes first).
+    ML_TRIALS: int = 24
+    ML_TUNE_SECONDS: int = 240
+    # Trainings running at the same time on this server (others wait).
+    ML_MAX_CONCURRENT: int = 1
+    # Memory the server may use, in MB. 0 = read it from the container
+    # (cgroup). Training checks how much is free before it starts and uses
+    # fewer rows - saying so - rather than run the server out of memory.
+    ML_MEMORY_LIMIT_MB: int = 0
+
 
 @lru_cache
 def get_settings() -> Settings:

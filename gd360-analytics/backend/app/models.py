@@ -1819,6 +1819,21 @@ class MLModel(Base):
     # 1 for a model's own initial training run. See this model's own
     # docstring above.
     version_number = Column(Integer, nullable=False, default=1)
+    # 2026-10-08 (round 13, ML Studio): a model started from a goal in
+    # words. problem_type is the gallery choice (yes_no, number, drivers,
+    # segments, anomalies, forecast_one, forecast_many); plan is the
+    # checked plan it trained from; progress the live stages, leaderboard
+    # and trial curve; results what it found (test scores, drivers,
+    # segments, anomalies or forecast). NULL for models from the older
+    # wizard, which keep working exactly as before.
+    problem_type = Column(String, nullable=True)
+    goal = Column(Text, nullable=True)
+    table_name = Column(String, nullable=True)
+    plan = Column(JSON, nullable=True)
+    progress = Column(JSON, nullable=True)
+    results = Column(JSON, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    stop_requested = Column(Boolean, nullable=True)
 
     datasource = relationship("DataSource")
     predictions = relationship("MLPrediction", cascade="all, delete-orphan")

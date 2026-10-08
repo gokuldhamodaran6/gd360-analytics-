@@ -9,7 +9,7 @@ from .database import init_db
 from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, dashboard_comments, admin, conversations, goku,
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
-    data_access_rules, ml_models, metric_definitions, transforms, pipelines, projects, apps, automations,
+    data_access_rules, ml_models, metric_definitions, transforms, pipelines, projects, apps, automations, ml_studio,
 )
 from .services.scheduler import start_scheduler
 
@@ -172,6 +172,8 @@ app.include_router(projects.router)
 app.include_router(apps.router)
 # 2026-10-08 (round 12): Automations - WHEN -> DO -> TELL (services/automations.py).
 app.include_router(automations.router)
+# 2026-10-08 (round 13): ML Studio - a model from a goal in words (services/ml_studio.py).
+app.include_router(ml_studio.router)
 # 2026-09-30 (Gokul's own bug report - Governance/Jobs redesign + Pipelines/
 # Catalog removal round): the standalone /catalog router is gone - Gokul's
 # own words were that it duplicated the Projects filter and Data Sources
@@ -214,6 +216,8 @@ def on_startup():
     projects.recover_interrupted_runs()
     from .services.automations import recover_interrupted as recover_automation_runs
     recover_automation_runs()
+    from .services.ml_studio import recover_interrupted as recover_ml_jobs
+    recover_ml_jobs()
 
 
 @app.get("/health")
