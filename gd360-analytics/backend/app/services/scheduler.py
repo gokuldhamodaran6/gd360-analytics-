@@ -361,6 +361,17 @@ def _tick() -> None:
                 # loop above - run_pipeline already records everything it
                 # can into the PipelineRun row itself.
                 logger.warning("[scheduler] tick failed for pipeline %s: %s", pipeline.id, e)
+
+        # 2026-10-08 (round 11): synced app sources (Shopify, GA4, Meta Ads,
+        # Google Ads) that are due a new copy of their records. At most a
+        # few per tick, so one slow app never holds up the rest of the tick.
+        from .synced_sources import due_sources, sync_datasource
+        for ds in due_sources(db, now)[:3]:
+            try:
+                sync_datasource(db, ds)
+            except Exception as e:  # sync_datasource records its own failures
+                logger.warning("[scheduler] sync failed for datasource %s: %s", ds.id, e)
+                db.rollback()
     finally:
         db.close()
 

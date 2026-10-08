@@ -307,6 +307,19 @@ def load_dataframe(
 def _load_original(
     ds: models.DataSource, table: str | None = None, row_limit: int | None = None, db: Session | None = None,
 ) -> pd.DataFrame:
+    if ds.kind in ("shopify", "ga4", "meta_ads", "google_ads"):
+        # 2026-10-08 (round 11): a synced app source - its tables are the
+        # Parquet copies services/synced_sources.py keeps (one per table).
+        from . import synced_sources
+        from ..database import SessionLocal
+        own = db is None
+        session = SessionLocal() if own else db
+        try:
+            df = synced_sources.load_table(session, ds.id, table)
+        finally:
+            if own:
+                session.close()
+        return df.head(row_limit) if row_limit else df
     if ds.kind in ("csv", "excel", "api"):
         if not ds.file_data:
             raise ValueError(
