@@ -55,3 +55,24 @@ export function ms(n?: number | null): string {
 }
 
 export const MODE_LABEL: Record<string, string> = { live: "LIVE", synced: "SYNCED", file: "FILE", combine: "COMBINE" };
+
+// 2026-10-08 (round 12): "Next time, run plans like this straight away" - a
+// per-browser preference. On (the default): a question plans and runs in one
+// go. Off: GD360 stops at the plan and waits for "Run plan".
+const AUTO_RUN_KEY = "gd360_auto_run_plans";
+
+export function autoRunPreference(): boolean {
+  try {
+    return localStorage.getItem(AUTO_RUN_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+export function setAutoRunPreference(on: boolean): void {
+  try {
+    localStorage.setItem(AUTO_RUN_KEY, on ? "1" : "0");
+  } catch {
+    /* per-browser convenience only */
+  }
+}

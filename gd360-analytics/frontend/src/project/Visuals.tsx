@@ -98,11 +98,23 @@ export function DivergingBars({ visual }: { visual: Extract<Visual, { type: "div
   );
 }
 
+export function SourceTags({ names }: { names?: string[] | null }) {
+  if (!names || !names.length) return null;
+  return (
+    <span className="inline-flex gap-1.5 flex-wrap justify-end shrink-0">
+      {names.slice(0, 3).map((n) => (
+        <span key={n} className="inline-flex items-center h-[22px] px-2 rounded-md bg-subtle text-[11px] text-secondary whitespace-nowrap">{n}</span>
+      ))}
+      {names.length > 3 && <span className="text-[11px] text-muted self-center">+{names.length - 3}</span>}
+    </span>
+  );
+}
+
 export function KpiRow({ items }: { items: DashKpi[] }) {
   return (
     <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))" }}>
       {items.map((k) => (
-        <div key={k.key} className="rounded-card border border-border bg-surface px-4 py-3.5 flex flex-col gap-1">
+        <div key={k.key} className="rounded-card border border-border bg-surface px-[18px] py-4 flex flex-col gap-1">
           <span className="text-ui text-muted">{k.label}</span>
           <span className="font-mono text-kpi leading-tight tracking-tight text-text">{k.display}</span>
           {k.delta && (
@@ -112,6 +124,11 @@ export function KpiRow({ items }: { items: DashKpi[] }) {
             </span>
           )}
           {!k.delta && k.note && <span className="text-caption text-muted">{k.note}</span>}
+          {(k.sources || []).length > 0 && (
+            <span className="mt-1.5">
+              <SourceTags names={k.sources} />
+            </span>
+          )}
         </div>
       ))}
     </div>
@@ -123,8 +140,11 @@ export function VisualCard({ visual, id, chartType }: { visual: Visual; id: stri
     return <KpiRow items={visual.items.map((k) => ({ key: k.fact_id, label: k.label, display: k.display }))} />;
   }
   return (
-    <section className="rounded-card border border-border bg-surface p-4 sm:p-5 flex flex-col gap-3 min-w-0">
-      <h3 className="m-0 text-section font-semibold text-text">{visual.title}</h3>
+    <section className="rounded-card border border-border bg-surface p-4 sm:p-5 flex flex-col gap-3 min-w-0 [&>div.card]:border-0 [&>div.card]:bg-transparent [&>div.card]:p-0 [&>div.card]:shadow-none [&>div.card]:rounded-none [&>div.card:hover]:shadow-none">
+      <div className="flex items-start justify-between gap-3">
+        <h3 className="m-0 text-section font-semibold text-text leading-snug">{visual.title}</h3>
+        <SourceTags names={visual.sources} />
+      </div>
       {visual.type === "waterfall" && <WaterfallChart visual={visual} />}
       {visual.type === "diverging" && <DivergingBars visual={visual} />}
       {visual.type === "chart" && (

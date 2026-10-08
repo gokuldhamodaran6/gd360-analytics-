@@ -1,10 +1,10 @@
 // 2026-10-08 (round 11): the four tabs of a project question - Plan,
 // Sources (each query, live), Results (the answer drawn) and Evidence (every
 // result table with the exact query that produced it).
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { DashKpi, EvidenceTable, ProjectRun, RunStep } from "../api/projects";
 import { KpiRow, VisualCard } from "./Visuals";
-import { bytes, ms, MODE_LABEL } from "./format";
+import { autoRunPreference, bytes, ms, MODE_LABEL, setAutoRunPreference } from "./format";
 
 const MODE_CLASS: Record<string, string> = {
   live: "bg-tint text-brand-ink",
@@ -30,9 +30,74 @@ export function StatusPill({ status }: { status: RunStep["status"] }) {
   return <span className={`font-mono text-[11px] px-2 py-1 rounded-full whitespace-nowrap ${cls}`}>{label}</span>;
 }
 
-function SqlBlock({ sql, open: initial = false }: { sql: string; open?: boolean }) {
+// Readable layout for a one-line query: each main clause on its own line.
+// Display only - Copy always copies the exact query that ran.
+export function layoutSql(sql: string): string {
+  const t = sql.trim();
+  if (t.includes("\n")) return t;
+  const KEYS = ["GROUP BY", "ORDER BY", "LEFT JOIN", "RIGHT JOIN", "INNER JOIN", "FULL JOIN", "UNION ALL", "FROM", "WHERE", "HAVING", "LIMIT", "JOIN", "UNION"];
+  let out = "";
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (quote) {
+      out += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    if (ch === "(") depth++;
+    if (ch === ")") depth = Math.max(0, depth - 1);
+    if (depth === 0 && ch === " ") {
+      const rest = t.slice(i + 1).toUpperCase();
+      const key = KEYS.find((k) => rest.startsWith(k + " "));
+      if (key) {
+        out += "\n";
+        continue;
+      }
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function SqlBlock({ sql, open: initial = false, preview = false }: { sql: string; open?: boolean; preview?: boolean }) {
   const [open, setOpen] = useState(initial);
   const [copied, setCopied] = useState(false);
+  const shown = layoutSql(sql);
+  const lines = shown.split("\n");
+  const short = preview && !open && lines.length > 4;
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(sql);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
+  if (preview) {
+    return (
+      <div className="rounded-ctl border border-border bg-base group">
+        <pre className="m-0 px-3 pt-2.5 pb-2 font-mono text-[11.5px] leading-[1.7] text-secondary whitespace-pre-wrap break-words max-h-64 overflow-auto">
+          {short ? lines.slice(0, 4).join("\n") + " …" : shown}
+        </pre>
+        <div className="flex gap-3 px-3 pb-2">
+          {lines.length > 4 && (
+            <button type="button" onClick={() => setOpen((v) => !v)} className="text-caption text-muted hover:text-text">
+              {open ? "Show less" : "Show the whole query"}
+            </button>
+          )}
+          <button type="button" className="text-caption text-muted hover:text-text" onClick={copy}>{copied ? "Copied" : "Copy"}</button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="rounded-ctl border border-border bg-base">
       <div className="flex items-center justify-between px-3 py-1.5">
@@ -40,38 +105,46 @@ function SqlBlock({ sql, open: initial = false }: { sql: string; open?: boolean 
           {open ? "Hide query" : "Show query"}
         </button>
         {open && (
-          <button
-            type="button"
-            className="text-caption text-muted hover:text-text"
-            onClick={async () => {
-              try {
-                await navigator.clipboard.writeText(sql);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1500);
-              } catch {
-                /* clipboard unavailable */
-              }
-            }}
-          >
+          <button type="button" className="text-caption text-muted hover:text-text" onClick={copy}>
             {copied ? "Copied" : "Copy"}
           </button>
         )}
       </div>
       {open && (
-        <pre className="m-0 px-3 pb-3 font-mono text-[11.5px] leading-relaxed text-secondary whitespace-pre-wrap break-words max-h-64 overflow-auto">{sql}</pre>
+        <pre className="m-0 px-3 pb-3 font-mono text-[11.5px] leading-relaxed text-secondary whitespace-pre-wrap break-words max-h-64 overflow-auto">{shown}</pre>
       )}
     </div>
+  );
+}
+
+function SourceChip({ name, mode }: { name: string; mode?: string | null }) {
+  const dot = mode === "live" ? "bg-good" : mode === "synced" ? "bg-[rgb(var(--color-series-1))]" : mode === "combine" ? "bg-warning" : "bg-border-strong";
+  return (
+    <span className="inline-flex items-center gap-1.5 h-[26px] px-2 rounded-md bg-subtle text-caption text-text">
+      <span className={`w-1.5 h-1.5 rounded-full ${dot}`} aria-hidden="true" />
+      {name}
+    </span>
   );
 }
 
 // ---- Plan -------------------------------------------------------------------
 
 export function PlanTab({
-  run, canEdit, onRun, onReplan, busy,
-}: { run: ProjectRun; canEdit: boolean; onRun: () => void; onReplan: (note: string) => void; busy: boolean }) {
+  run, canEdit, onRun, onReplan, busy, seed,
+}: {
+  run: ProjectRun; canEdit: boolean; onRun: () => void; onReplan: (note: string) => void; busy: boolean;
+  seed?: { text: string; n: number } | null;
+}) {
   const plan = run.plan;
   const [editing, setEditing] = useState(false);
   const [note, setNote] = useState("");
+  const [autoRun, setAutoRun] = useState(autoRunPreference);
+  useEffect(() => {
+    if (seed) {
+      setEditing(true);
+      setNote(seed.text);
+    }
+  }, [seed]);
   if (!plan || !Array.isArray(plan.steps)) {
     return <Empty text={run.status === "planning" ? "Reading your sources and writing a plan…" : "No plan for this question."} spinner={run.status === "planning"} />;
   }
@@ -86,12 +159,12 @@ export function PlanTab({
             Plan · {plan.steps.length} step{plan.steps.length === 1 ? "" : "s"} across {sourceCount} source{sourceCount === 1 ? "" : "s"}
           </h2>
           <span className="font-mono text-caption text-muted">
-            {plan.steps.length + combine.length} queries · read-only · your access rules apply
+            ≈ {plan.steps.length + combine.length} queries · read-only · your access rules apply
           </span>
         </div>
         {canEdit && run.status === "planned" && (
           <div className="flex gap-2">
-            <button type="button" className="btn-secondary text-sm" onClick={() => setEditing((v) => !v)} disabled={busy}>Change plan</button>
+            <button type="button" className="btn-secondary text-sm" onClick={() => setEditing((v) => !v)} disabled={busy}>Edit plan</button>
             <button type="button" className="btn-primary text-sm" onClick={onRun} disabled={busy}>Run plan →</button>
           </div>
         )}
@@ -114,6 +187,7 @@ export function PlanTab({
             value={note}
             onChange={(e) => setNote(e.target.value)}
             placeholder='e.g. "Compare with the same week last year" or "Leave out refunded orders"'
+            autoFocus
             className="h-10 rounded-ctl border border-border bg-base px-3 text-ui text-text"
           />
           <div className="flex gap-2">
@@ -139,7 +213,7 @@ export function PlanTab({
           const live = steps.find((x) => x.id === s.id);
           return (
             <li key={s.id} className="grid grid-cols-[40px_1fr] gap-3.5 px-4 py-4 border-t first:border-t-0 border-border bg-surface">
-              <span className="w-8 h-8 rounded-[9px] border border-tint-border text-brand-ink grid place-items-center font-mono text-caption">
+              <span className="w-8 h-8 rounded-[9px] border border-tint-border bg-tint/40 text-brand-ink grid place-items-center font-mono text-caption">
                 {String(i + 1).padStart(2, "0")}
               </span>
               <div className="flex flex-col gap-2 min-w-0">
@@ -150,13 +224,10 @@ export function PlanTab({
                 {s.purpose && <span className="text-ui text-muted leading-relaxed">{s.purpose}</span>}
                 <div className="flex gap-1.5 flex-wrap items-center">
                   {s.kind === "step" ? (
-                    <span className="inline-flex items-center gap-1.5 h-6 px-2 rounded-md bg-subtle text-caption text-secondary">
-                      {(s as any).source_name}
-                    </span>
+                    <SourceChip name={(s as any).source_name} mode={(s as any).mode} />
                   ) : (
-                    <span className="inline-flex items-center gap-1.5 h-6 px-2 rounded-md bg-subtle text-caption text-secondary">Joins earlier results</span>
+                    <SourceChip name="Joins earlier results" mode="combine" />
                   )}
-                  <ModeBadge mode={s.kind === "step" ? (s as any).mode : "combine"} />
                 </div>
                 <SqlBlock sql={live?.sql || s.sql} />
               </div>
@@ -164,6 +235,20 @@ export function PlanTab({
           );
         })}
       </ol>
+      {canEdit && (
+        <label className="flex items-center gap-2.5 text-ui text-secondary cursor-pointer select-none">
+          <input
+            type="checkbox"
+            className="w-4 h-4 accent-[rgb(var(--color-primary))]"
+            checked={autoRun}
+            onChange={(e) => {
+              setAutoRun(e.target.checked);
+              setAutoRunPreference(e.target.checked);
+            }}
+          />
+          Next time, run plans like this straight away and show me the answer
+        </label>
+      )}
       {plan.issues && plan.issues.length > 0 && (
         <div className="rounded-card border border-warning-border bg-warning-fill p-3 text-ui text-warning">
           Some planned queries were left out because they did not fit your sources: {plan.issues.slice(0, 3).join(" ")}
@@ -196,31 +281,37 @@ export function SourcesTab({ run }: { run: ProjectRun }) {
           <div key={s.id} className={`rounded-card border bg-surface p-4 flex flex-col gap-3 min-w-0 ${s.status === "running" ? "border-[rgb(var(--color-series-1)/0.5)]" : s.status === "failed" ? "border-danger-border" : "border-border"}`}>
             <div className="flex justify-between items-start gap-2">
               <span className="flex flex-col gap-1 min-w-0">
-                <span className="text-body font-semibold text-text truncate">{s.kind === "combine" ? "Combined" : s.source_name}</span>
-                <span className="flex items-center gap-1.5 flex-wrap">
-                  <ModeBadge mode={s.mode} />
-                  {s.freshness && s.mode !== "live" && <span className="font-mono text-[10px] text-muted uppercase">{s.freshness}</span>}
+                <span className="text-section font-semibold text-text truncate">{s.kind === "combine" ? "Combined" : s.source_name}</span>
+                <span className="font-mono text-[10.5px] text-muted uppercase tracking-[0.06em]">
+                  {sourceLine(s)}
                 </span>
               </span>
               <StatusPill status={s.status} />
             </div>
-            <span className="text-ui text-secondary leading-snug">{s.title}{s.purpose ? ` — ${s.purpose}` : ""}</span>
-            <SqlBlock sql={s.sql} />
+            <span className="text-body text-secondary leading-snug">{s.purpose || s.title}</span>
+            <SqlBlock sql={s.sql} preview />
             {s.error && <span className="text-ui text-danger leading-snug">{s.error}</span>}
             {s.note && <span className="text-caption text-warning">{s.note}</span>}
             <div className="flex justify-between gap-2 font-mono text-caption text-muted flex-wrap">
               <span>
-                {s.rows_returned != null ? `${s.rows_returned.toLocaleString()} rows` : s.rows_read ? `${s.rows_read.toLocaleString()} rows read` : "—"}
-                {s.bytes_scanned ? ` · ${bytes(s.bytes_scanned)} scanned` : ""}
+                {s.bytes_scanned ? `${bytes(s.bytes_scanned)} scanned → ` : s.rows_read ? `${s.rows_read.toLocaleString()} rows read → ` : ""}
+                {s.rows_returned != null ? `${s.rows_returned.toLocaleString()} rows` : s.status === "pending" ? "—" : s.status === "running" ? "running" : "—"}
                 {s.truncated ? " · first 5,000" : ""}
               </span>
-              <span>{s.repaired ? "fixed once · " : ""}{ms(s.duration_ms)}</span>
+              <span>{s.repaired ? "fixed once · " : ""}{s.status === "pending" ? "queued" : ms(s.duration_ms)}</span>
             </div>
           </div>
         ))}
       </div>
     </div>
   );
+}
+
+function sourceLine(s: RunStep): string {
+  if (s.kind === "combine") return "In memory · joins the results";
+  if (s.mode === "live") return `Live · ${(s.source_kind || s.dialect || "database").replace(/_/g, " ")}`;
+  if (s.mode === "synced") return s.freshness || "Synced";
+  return `${MODE_LABEL[s.mode || ""] || "File"}${s.freshness ? ` · ${s.freshness}` : ""}`;
 }
 
 // ---- Results ----------------------------------------------------------------
@@ -241,56 +332,77 @@ export function ResultsTab({ run }: { run: ProjectRun }) {
   const ans = res.answer;
   const facts = new Map((res.facts || []).map((f) => [f.id, f]));
   const kpis = ((res as any).kpis || []) as DashKpi[];
+  const visuals = res.visuals || [];
+  const lead = visuals.filter((v) => v.type === "waterfall");
+  const rest = visuals.filter((v) => v.type !== "waterfall");
+  const overall = (res.summary as any)?.direction as string | undefined;
+  const changeWord = overall === "up" ? "rise" : overall === "down" ? "drop" : "change";
+  let causeNo = 0;
   return (
     <div className="flex flex-col gap-5">
-      <div className="rounded-card border border-tint-border bg-tint/40 p-5">
-        <div className="text-caption uppercase tracking-caps text-brand-ink">Answer</div>
-        <div className="text-section font-semibold text-text mt-1.5 leading-snug">{ans.headline}</div>
-        {ans.answer && ans.answer !== ans.headline && <p className="text-body text-secondary mt-2 mb-0 leading-relaxed">{ans.answer}</p>}
-      </div>
-      {kpis.length > 0 && <KpiRow items={kpis} />}
-      {(res.visuals || []).map((v, i) => (
-        <VisualCard key={i} visual={v} id={`${run.id}:${i}`} />
+      {lead.map((v, i) => (
+        <VisualCard key={`w${i}`} visual={v} id={`${run.id}:w${i}`} />
       ))}
+      {!lead.length && kpis.length > 0 && <KpiRow items={kpis} />}
       {ans.causes.length > 0 && (
-        <div className="grid gap-3.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))" }}>
+        <div className="grid gap-3.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))" }}>
           {ans.causes.map((c, i) => {
-            const main = c.fact_ids.map((id) => facts.get(id)).find(Boolean);
-            const down = c.direction === "down";
+            const offset = overall && c.direction && c.direction !== overall;
+            const label = offset ? "Offset" : `Cause ${++causeNo}`;
+            const amount = c.amount || c.fact_ids.map((id) => facts.get(id)).find((f) => f && f.kind !== "percent")?.display;
+            const tone = c.direction === "down" ? "text-danger" : c.direction === "up" ? "text-good" : "text-text";
             return (
-              <div key={i} className="rounded-card border border-border bg-surface p-4 flex flex-col gap-2.5">
+              <article key={i} className="rounded-card border border-border bg-surface p-5 flex flex-col gap-3 min-w-0">
                 <div className="flex justify-between items-center gap-2">
-                  <span className={`font-mono text-caption ${down ? "text-danger" : c.direction === "up" ? "text-good" : "text-muted"}`}>
-                    {c.direction === "up" ? "OFFSET" : `CAUSE ${ans.causes.filter((x) => x.direction !== "up").indexOf(c) + 1 || i + 1}`}
-                  </span>
-                  <span className={`font-mono text-[10px] px-1.5 py-0.5 rounded ${c.confidence === "high" ? "bg-good-fill text-good" : c.confidence === "medium" ? "bg-warning-fill text-warning" : "bg-subtle text-muted"}`}>
-                    {c.confidence.toUpperCase()} CONFIDENCE
+                  <span className={`font-mono text-caption uppercase tracking-[0.06em] ${offset ? "text-good" : "text-danger"}`}>{label}</span>
+                  <span
+                    className={`font-mono text-[10.5px] px-1.5 py-0.5 rounded uppercase ${
+                      c.confidence === "high" ? "bg-good-fill text-good" : c.confidence === "medium" ? "bg-warning-fill text-warning" : "bg-subtle text-muted"
+                    }`}
+                  >
+                    {c.confidence} confidence
                   </span>
                 </div>
-                <span className="text-body font-semibold text-text leading-snug">{c.title}</span>
-                {main && <span className={`font-mono text-[22px] ${down ? "text-danger" : c.direction === "up" ? "text-good" : "text-text"}`}>{main.display}</span>}
-                <span className="text-ui text-muted leading-relaxed">{c.detail}</span>
-              </div>
+                <h3 className="m-0 text-section font-semibold text-text leading-snug">{c.title}</h3>
+                {amount && (
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span className={`font-mono text-[26px] leading-none tracking-tight ${tone}`}>{amount}</span>
+                    {c.share && <span className="text-ui text-muted">{offset ? `made up ${c.share}` : `${c.share} of the ${changeWord}`}</span>}
+                  </div>
+                )}
+                {c.detail && <p className="m-0 text-ui text-secondary leading-relaxed">{c.detail}</p>}
+                {(c.sources || []).length > 0 && (
+                  <div className="flex gap-1.5 flex-wrap mt-auto pt-1">
+                    {c.sources!.map((n) => (
+                      <span key={n} className="inline-flex items-center h-[22px] px-2 rounded-md bg-subtle text-caption text-secondary">{n}</span>
+                    ))}
+                  </div>
+                )}
+              </article>
             );
           })}
         </div>
       )}
       {ans.ruled_out.length > 0 && (
-        <div className="rounded-card border border-border bg-surface p-4 flex flex-col gap-3">
+        <section className="rounded-card border border-border bg-surface p-5 flex flex-col gap-3.5">
           <h3 className="m-0 text-section font-semibold text-text">Checked and ruled out</h3>
-          <div className="grid gap-2.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))" }}>
+          <div className="grid gap-2.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 230px), 1fr))" }}>
             {ans.ruled_out.map((r, i) => (
-              <div key={i} className="flex gap-2.5 items-start p-2.5 rounded-ctl bg-base">
-                <span className="mt-0.5 w-4 h-4 rounded-full border border-border-strong grid place-items-center text-[10px] text-muted">–</span>
-                <span className="flex flex-col gap-0.5">
+              <div key={i} className="flex gap-2.5 items-start px-3.5 py-3 rounded-ctl bg-base">
+                <span className="mt-0.5 shrink-0 w-4 h-4 rounded-full border border-border-strong grid place-items-center text-[10px] text-muted" aria-hidden="true">–</span>
+                <span className="flex flex-col gap-0.5 min-w-0">
                   <span className="text-ui font-semibold text-text">{r.title}</span>
                   <span className="text-caption text-muted leading-snug">{r.detail}</span>
                 </span>
               </div>
             ))}
           </div>
-        </div>
+        </section>
       )}
+      {lead.length > 0 && kpis.length > 0 && <KpiRow items={kpis} />}
+      {rest.map((v, i) => (
+        <VisualCard key={`v${i}`} visual={v} id={`${run.id}:${i}`} />
+      ))}
       {(res.warnings || []).length > 0 && (
         <div className="rounded-card border border-warning-border bg-warning-fill p-3.5 text-ui text-warning flex flex-col gap-1">
           {res.warnings!.map((w, i) => <span key={i}>{w}</span>)}
