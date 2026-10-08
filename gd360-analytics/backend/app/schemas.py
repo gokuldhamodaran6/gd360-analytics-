@@ -243,6 +243,12 @@ class DataSourceOut(BaseModel):
     # in - the chat workspace and the prompt builder read that workspace's
     # brand kit (palette, number settings) for the charts they draw.
     workspace_id: Optional[str] = None
+    # 2026-10-08 (round 11): synced app sources (Shopify, GA4, Meta Ads,
+    # Google Ads) - when their records were last copied, when they are due
+    # again and, when the last sync failed, why. None for every other kind.
+    last_synced_at: Optional[datetime] = None
+    next_sync_at: Optional[datetime] = None
+    sync_error: Optional[str] = None
 
     class Config:
         from_attributes = True

@@ -378,6 +378,24 @@ class Settings(BaseSettings):
     # dashboard by calling this backend.
     RENDER_FRONTEND_SERVICE_ID: str = ""
 
+    # --- 2026-10-08 (round 11): synced app sources (services/synced_sources.py).
+    # The API versions each app is called with. Apps retire old versions on a
+    # schedule (Shopify quarterly, Google Ads monthly since 2026, Meta about
+    # twice a year), so each is a setting: when one is retired, set the newer
+    # version in Render's environment - no code change, no redeploy of code.
+    SHOPIFY_API_VERSION: str = "2026-07"
+    META_GRAPH_VERSION: str = "v26.0"
+    GOOGLE_ADS_API_VERSION: str = "v24"
+    # Google Ads requires a developer token issued to the company that calls
+    # the API (Google Ads > Tools > API Center). Set it here once for every
+    # customer, or each customer can paste their own when connecting.
+    GOOGLE_ADS_DEVELOPER_TOKEN: str = ""
+
+    # --- 2026-10-08 (round 11): multi-source Projects (services/project_engine).
+    PROJECT_MAX_CONCURRENT_RUNS: int = 3
+    PROJECT_STEP_MAX_PARALLEL: int = 4
+    PROJECT_DUCKDB_MEMORY_LIMIT: str = "256MB"
+
 
 @lru_cache
 def get_settings() -> Settings:

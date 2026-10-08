@@ -207,6 +207,13 @@ class DataSource(Base):
     # <name> <time> ago" rather than just a bare timestamp.
     governance_last_reviewed_at = Column(DateTime, nullable=True)
     governance_last_reviewed_by_id = Column(String, ForeignKey("users.id"), nullable=True)
+    # 2026-10-08 (round 11): synced app sources (shopify, ga4, meta_ads,
+    # google_ads - services/synced_sources.py) copy their records into
+    # SyncedTable rows on a schedule; these say when that last happened,
+    # when it is due again and, if the last sync failed, why.
+    last_synced_at = Column(DateTime, nullable=True)
+    next_sync_at = Column(DateTime, nullable=True)
+    sync_error = Column(Text, nullable=True)
 
     # foreign_keys is explicit here (not needed by any relationship above
     # this one in the file) because governance_last_reviewed_by_id, added
@@ -430,6 +437,15 @@ class Conversation(Base):
     # and also where a Project lands again if its folder is ever deleted).
     # 2026-09-23 (folders round).
     folder_id = Column(String, ForeignKey("folders.id"), nullable=True)
+    # 2026-10-08 (round 11): NULL = the original one-source analysis chat
+    # (pages/Workspace.tsx); "project" = a multi-source Project answered by
+    # services/project_engine across every id in source_ids. For a project,
+    # datasource_id is its FIRST source, so every existing access rule that
+    # keys off datasource_id keeps working; workspace_id is the workspace
+    # it was asked in.
+    kind = Column(String, nullable=True)
+    source_ids = Column(JSON, nullable=True)
+    workspace_id = Column(String, nullable=True)
 
     owner = relationship("User", back_populates="conversations")
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
@@ -829,6 +845,14 @@ class Dashboard(Base):
     # product defaults). brand_primary_color / brand_accent_color /
     # background_* / logo above are unchanged and still honoured.
     appearance = Column(JSON, nullable=True)
+    # 2026-10-08 (round 11): layout_version 3 = a dashboard built from a
+    # multi-source Project answer (services/project_engine/dashboards.py).
+    # project_spec keeps the plan it re-runs and the tiles it shows;
+    # project_snapshot the latest computed result, refreshed on demand or
+    # by an automation.
+    project_spec = Column(JSON, nullable=True)
+    project_snapshot = Column(JSON, nullable=True)
+    snapshot_at = Column(DateTime, nullable=True)
 
     owner = relationship("User", back_populates="dashboards")
     charts = relationship("SavedChart", back_populates="dashboard", cascade="all, delete-orphan")
@@ -2206,3 +2230,51 @@ class PipelineRun(Base):
         if self.finished_at is None:
             return None
         return (self.finished_at - self.started_at).total_seconds()
+
+
+class SyncedTable(Base):
+    """2026-10-08 (round 11): one table of a synced app source (Shopify
+    orders, GA4 daily traffic, Meta Ads campaign insights, Google Ads
+    campaign stats...). services/synced_sources.py fetches the records
+    from the app's API on a schedule, normalises them into a standard
+    layout and stores the whole table here as Parquet bytes; the project
+    engine and the Data tab query it with DuckDB exactly like an uploaded
+    file. One row per (datasource, table) - a sync replaces it."""
+    __tablename__ = "synced_tables"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    datasource_id = Column(String, ForeignKey("datasources.id", ondelete="CASCADE"), nullable=False, index=True)
+    table_name = Column(String, nullable=False)
+    parquet_data = Column(LargeBinary, nullable=False)
+    row_count = Column(Integer, nullable=False, default=0)
+    columns = Column(JSON, nullable=False, default=list)  # [{name, type}]
+    synced_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    __table_args__ = (UniqueConstraint("datasource_id", "table_name", name="uq_synced_table"),)
+
+
+class ProjectRun(Base):
+    """2026-10-08 (round 11): one question asked inside a multi-source
+    Project (a Conversation with kind="project") and everything GD360 did
+    to answer it - the plan, each step's query and result, the analysis and
+    the written answer - so the Plan / Sources / Results / Evidence tabs
+    can show it live while it runs and exactly as it was afterwards.
+
+    status: planning -> planned -> running -> done | failed | stopped,
+    or needs_input when the question cannot be answered from the sources
+    in the project (the answer says what is missing)."""
+    __tablename__ = "project_runs"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    conversation_id = Column(String, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    question = Column(Text, nullable=False)
+    status = Column(String, nullable=False, default="planning")
+    plan = Column(JSON, nullable=True)
+    steps = Column(JSON, nullable=True)        # live per-step status/results
+    result = Column(JSON, nullable=True)       # analysis facts, visuals, answer
+    error_message = Column(Text, nullable=True)
+    note = Column(Text, nullable=True)         # the person's correction to the plan, if any
+    auto_run = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)

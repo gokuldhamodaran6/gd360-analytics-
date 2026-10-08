@@ -257,6 +257,20 @@ _NEW_COLUMNS = [
     # parameters' precedent (works on both Postgres and SQLite).
     ("dashboards", "appearance", "JSON"),
     ("workspaces", "brand_kit", "JSON"),
+    # 2026-10-08 (round 11, multi-source Projects): a Conversation can now
+    # be a "project" spanning several data sources (services/project_engine).
+    # NULL kind = the original one-source chat analysis, unchanged.
+    ("conversations", "kind", "TEXT"),
+    ("conversations", "source_ids", "JSON"),
+    ("conversations", "workspace_id", "TEXT"),
+    # A synced app source (Shopify, GA4, Meta Ads, Google Ads) records when
+    # it last pulled data and when it is due again (services/synced_sources).
+    ("datasources", "last_synced_at", "TIMESTAMP"),
+    ("datasources", "next_sync_at", "TIMESTAMP"),
+    ("datasources", "sync_error", "TEXT"),
+    ("dashboards", "project_spec", "JSON"),
+    ("dashboards", "project_snapshot", "JSON"),
+    ("dashboards", "snapshot_at", "TIMESTAMP"),
 ]
 
 
