@@ -45,7 +45,17 @@ export function brandingStyleVars(b: (DashboardBranding & { appearance?: { brand
   const brand = b.appearance?.brand;
   const primary = hexToRgbTriple(brand ? brand.primary : b.brand_primary_color);
   const accent = hexToRgbTriple(brand ? brand.accent : b.brand_accent_color);
-  if (primary) style["--color-primary"] = primary;
+  if (primary) {
+    style["--color-primary"] = primary;
+    // 2026-10-08: ink on a brand-coloured button - dark on a light brand
+    // colour, white on a dark one (relative luminance, WCAG formula).
+    const [r, g, b2] = primary.split(" ").map((x) => {
+      const c = Number(x) / 255;
+      return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b2;
+    style["--color-on-primary"] = lum > 0.35 ? "4 20 13" : "255 255 255";
+  }
   if (accent) {
     style["--color-accent"] = accent;
     style["--dash-accent-0"] = accent;
