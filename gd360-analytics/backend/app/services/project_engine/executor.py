@@ -1,0 +1,512 @@
+"""
+Runs a project question end to end, in a background thread, writing its
+progress to the ProjectRun row as it goes so the page can show it live.
+
+  plan_run(run_id)     - build the catalog, ask the planner, store the plan;
+                         then run it straight away when auto_run is on.
+  execute_run(run_id)  - run every step (in parallel), the combine steps,
+                         the analysis and the composer; store the answer.
+
+Each background job opens its own database session. Steps run in a thread
+pool; a step never touches the session (warehouse_exec.run_sql is
+session-free, DuckDB steps get plain DataFrames), and every write to the
+run row happens on the job's own thread.
+
+Guards on every step: read-only SQL (sqlcheck + the connector's own
+check), the source's cost caps, the person's daily scan budget, and their
+row/column rules (DuckDB sources: the loaded table is filtered first; a
+live warehouse with rules for this person is not queried - the same policy
+the one-source chat uses).
+"""
+from __future__ import annotations
+
+import threading
+import time
+from types import SimpleNamespace
+import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+
+import duckdb
+import pandas as pd
+import sqlglot
+from sqlglot import exp
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
+
+from ... import models
+from ...config import get_settings
+from ...database import SessionLocal
+from .. import ai_engine, data_access_rules, data_loader, synced_sources, warehouse_exec
+from ..pushdown_budget import log_pushdown
+from . import composer, planner
+from .analysis import AnalysisError, run_analysis, table_payload
+from .catalog import Catalog, CatalogSource, build_catalog
+from .sqlcheck import ROW_CAP, ensure_row_cap
+
+settings = get_settings()
+
+_RUN_SLOTS = threading.BoundedSemaphore(max(1, settings.PROJECT_MAX_CONCURRENT_RUNS))
+_STOP_REQUESTED: set[str] = set()
+FILE_ROW_CAP = 300_000
+PREVIEW_ROWS = 50
+
+
+# ---- public entry points -----------------------------------------------------
+
+def start_planning(run_id: str) -> None:
+    threading.Thread(target=_guarded, args=(plan_run, run_id), daemon=True, name=f"plan-{run_id[:8]}").start()
+
+
+def start_execution(run_id: str) -> None:
+    threading.Thread(target=_guarded, args=(execute_run, run_id), daemon=True, name=f"run-{run_id[:8]}").start()
+
+
+def request_stop(run_id: str) -> None:
+    _STOP_REQUESTED.add(run_id)
+
+
+def _guarded(fn, run_id: str) -> None:
+    db = SessionLocal()
+    try:
+        fn(db, run_id)
+    except Exception as e:  # noqa: BLE001 - a background job must always leave a final status
+        traceback.print_exc()
+        try:
+            db.rollback()
+            run = db.get(models.ProjectRun, run_id)
+            if run and run.status in ("planning", "planned", "running"):
+                run.status = "failed"
+                run.error_message = f"Something went wrong while answering: {str(e)[:300]}"
+                run.finished_at = datetime.utcnow()
+                db.commit()
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+    finally:
+        db.close()
+        _STOP_REQUESTED.discard(run_id)
+
+
+# ---- planning ----------------------------------------------------------------
+
+def _history(db: Session, run: models.ProjectRun) -> list[dict]:
+    prev = (
+        db.query(models.ProjectRun)
+        .filter(models.ProjectRun.conversation_id == run.conversation_id, models.ProjectRun.id != run.id,
+                models.ProjectRun.created_at <= run.created_at)
+        .order_by(models.ProjectRun.created_at.asc())
+        .all()
+    )
+    out = []
+    for p in prev[-4:]:
+        ans = (p.result or {}).get("answer") or {}
+        out.append({"question": p.question, "headline": ans.get("headline")})
+    return out
+
+
+def initial_steps(plan: dict) -> list[dict]:
+    out = []
+    for st in plan.get("steps") or []:
+        out.append({
+            "id": st["id"], "kind": "step", "title": st["title"], "purpose": st.get("purpose"),
+            "source_id": st["source_id"], "source_name": st.get("source_name"), "source_kind": st.get("source_kind"),
+            "mode": st.get("mode"), "dialect": st.get("dialect"), "sql": st["sql"], "status": "pending",
+            "rows_returned": None, "bytes_scanned": None, "rows_read": None, "duration_ms": None, "error": None,
+            "repaired": False, "truncated": False, "columns": None, "preview": None,
+        })
+    for cb in plan.get("combine") or []:
+        out.append({
+            "id": cb["id"], "kind": "combine", "title": cb["title"], "purpose": cb.get("purpose"), "source_id": None,
+            "source_name": "Combined", "source_kind": "duckdb", "mode": "combine", "dialect": "duckdb", "sql": cb["sql"],
+            "status": "pending", "rows_returned": None, "duration_ms": None, "error": None, "repaired": False,
+            "truncated": False, "columns": None, "preview": None,
+        })
+    return out
+
+
+def plan_run(db: Session, run_id: str) -> None:
+    run = db.get(models.ProjectRun, run_id)
+    if not run:
+        return
+    conv = db.get(models.Conversation, run.conversation_id)
+    user = db.get(models.User, run.owner_id)
+    catalog = build_catalog(db, user, list(conv.source_ids or []))
+    previous = None
+    if run.note:
+        # a re-plan: the plan this run replaces is kept on the run itself
+        previous = (run.plan or {}).get("replaced_plan") or run.plan
+    try:
+        plan = planner.make_plan(run.question, catalog, _history(db, run), note=run.note, previous=previous)
+    except planner.PlanningError as e:
+        run.status = "failed"
+        run.error_message = str(e)
+        run.finished_at = datetime.utcnow()
+        db.commit()
+        return
+    plan["catalog"] = [
+        {"id": s.id, "name": s.name, "kind": s.kind, "label": s.label, "mode": s.mode, "freshness": s.freshness,
+         "restricted": s.restricted, "tables": len(s.tables)}
+        for s in catalog.sources
+    ]
+    run.plan = plan
+    run.steps = initial_steps(plan)
+    if not plan.get("can_answer", True):
+        run.status = "needs_input"
+        run.result = {"answer": {
+            "headline": "These sources can't answer that yet.",
+            "answer": plan.get("missing") or "The data needed for this question is not in the project's sources.",
+            "causes": [], "ruled_out": [], "next_questions": [],
+        }}
+        run.finished_at = datetime.utcnow()
+        _assistant_message(db, run, run.result["answer"])
+        db.commit()
+        return
+    run.status = "planned"
+    if conv and (not conv.title or conv.title in ("New analysis", "New project")) and plan.get("title"):
+        conv.title = plan["title"][:80]
+    db.commit()
+    if run.auto_run:
+        execute_run(db, run_id)
+
+
+# ---- loading data for DuckDB sources -----------------------------------------
+
+def _referenced_tables(sql: str, dialect: str) -> list[str]:
+    try:
+        tree = sqlglot.parse_one(sql, read=dialect)
+    except Exception:  # noqa: BLE001
+        return []
+    ctes = {c.alias_or_name.lower() for c in tree.find_all(exp.CTE)}
+    names = []
+    for t in tree.find_all(exp.Table):
+        if t.name and t.name.lower() not in ctes and not isinstance(t.this, exp.Func):
+            names.append(t.name)
+    return list(dict.fromkeys(names))
+
+
+def _load_inputs(db: Session, ds: models.DataSource, src: CatalogSource, sql: str, user: models.User) -> tuple[dict, int, str | None]:
+    """{table name: DataFrame} for every table a DuckDB step reads, with the
+    person's row/column rules applied. (frames, rows read, limit note)."""
+    frames: dict[str, pd.DataFrame] = {}
+    rows = 0
+    note = None
+    for name in _referenced_tables(sql, "duckdb"):
+        t = src.table(name)
+        if t is None:
+            continue
+        if src.mode == "synced":
+            df = synced_sources.load_table(db, ds.id, t.source_key)
+        else:
+            df = data_loader.load_dataframe(ds, table=t.source_key, db=db)
+            if ds.kind == "mongodb" and len(df) >= settings.MAX_ROWS_LOADED_PER_QUERY:
+                note = f"Read the first {len(df):,} documents of {t.name}."
+        if len(df) > FILE_ROW_CAP:
+            df = df.head(FILE_ROW_CAP)
+            note = f"Read the first {FILE_ROW_CAP:,} rows of {t.name}."
+        try:
+            df = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"Your access rules on {ds.name} could not be applied, so it was not read: {e}") from e
+        frames[t.name] = df
+        rows += len(df)
+    return frames, rows, note
+
+
+def _duckdb() -> duckdb.DuckDBPyConnection:
+    con = duckdb.connect(database=":memory:")
+    try:
+        con.execute(f"SET memory_limit='{settings.PROJECT_DUCKDB_MEMORY_LIMIT}'")
+        con.execute("SET threads=2")
+        con.execute("SET enable_external_access=false")
+    except Exception:  # noqa: BLE001
+        pass
+    return con
+
+
+def _run_duckdb(sql: str, frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    con = _duckdb()
+    try:
+        for name, df in frames.items():
+            con.register(name, df)
+        return con.execute(ensure_row_cap(sql, "duckdb")).df()
+    finally:
+        con.close()
+
+
+# ---- running a step ----------------------------------------------------------
+
+def _detached(ds: models.DataSource) -> SimpleNamespace:
+    """The few fields a worker thread needs from a data source, copied out
+    of the ORM object. Worker threads must never touch the session: an
+    attribute of an expired ORM object reloads itself through it, and a
+    session is not safe to use from several threads at once."""
+    return SimpleNamespace(
+        id=ds.id, name=ds.name, kind=ds.kind, connection_info=dict(ds.connection_info or {}),
+        encrypted_secret=ds.encrypted_secret, schema_cache=ds.schema_cache,
+    )
+
+
+def _run_one(step: dict, ds: models.DataSource, src: CatalogSource, frames: dict | None) -> dict:
+    """Runs one step (thread-safe, no session). Returns a result dict;
+    repairs the query once when the engine rejects it."""
+    started = time.perf_counter()
+    sql = step["sql"]
+    repaired = False
+    last_error = None
+    for attempt in range(2):
+        try:
+            if src.mode == "live":
+                df, scanned = warehouse_exec.run_sql(ds, ensure_row_cap(sql, src.dialect))
+            else:
+                df, scanned = _run_duckdb(sql, frames or {}), None
+            truncated = len(df) > ROW_CAP
+            if truncated:
+                df = df.head(ROW_CAP)
+            return {"ok": True, "df": df, "sql": sql, "bytes_scanned": scanned, "repaired": repaired,
+                    "truncated": truncated, "duration_ms": int((time.perf_counter() - started) * 1000),
+                    "raw_error": None}
+        except Exception as e:  # noqa: BLE001
+            last_error = e
+            status = warehouse_exec.classify_error(e)
+            if attempt == 0 and status != "rejected_too_expensive":
+                fixed = planner.repair_sql(step | {"sql": sql}, src, warehouse_exec.clean_warehouse_error(e))
+                if fixed and fixed.strip() != sql.strip():
+                    sql, repaired = fixed, True
+                    continue
+            break
+    return {"ok": False, "sql": sql, "repaired": repaired, "error": warehouse_exec.clean_warehouse_error(last_error),
+            "status": warehouse_exec.classify_error(last_error) if last_error else "error",
+            "duration_ms": int((time.perf_counter() - started) * 1000), "raw_error": str(last_error)[:2000]}
+
+
+def _set_step(run: models.ProjectRun, step_id: str, **fields) -> None:
+    steps = list(run.steps or [])
+    for i, s in enumerate(steps):
+        if s.get("id") == step_id:
+            steps[i] = {**s, **fields}
+    run.steps = steps
+    flag_modified(run, "steps")
+
+
+def _stopped(db: Session, run: models.ProjectRun) -> bool:
+    if run.id in _STOP_REQUESTED:
+        return True
+    db.refresh(run)
+    return run.status == "stopped"
+
+
+def execute_run(db: Session, run_id: str) -> None:
+    run = db.get(models.ProjectRun, run_id)
+    if not run or run.status not in ("planned",):
+        return
+    acquired = _RUN_SLOTS.acquire(timeout=120)
+    if not acquired:
+        run.status = "failed"
+        run.error_message = "GD360 is busy answering other questions right now. Please try again in a minute."
+        run.finished_at = datetime.utcnow()
+        db.commit()
+        return
+    try:
+        _execute(db, run)
+    finally:
+        _RUN_SLOTS.release()
+
+
+def run_plan(db: Session, plan: dict, user: models.User, catalog: Catalog, set_step, should_stop) -> tuple[dict, list[dict]]:
+    """Runs every step and combine step of `plan`. `set_step(step_id,
+    **fields)` records progress (the caller decides where - a ProjectRun
+    row, or nothing); `should_stop()` is polled between steps. Returns
+    ({step id: DataFrame}, evidence tables)."""
+    tables: dict[str, pd.DataFrame] = {}
+    evidence: list[dict] = []
+    jobs = []
+    for st in plan.get("steps") or []:
+        src = catalog.source(st["source_id"])
+        ds = db.get(models.DataSource, st["source_id"])
+        if src is None or ds is None:
+            set_step(st["id"], status="failed", error="This source is no longer available to you.")
+            continue
+        if src.mode == "live" and src.restricted:
+            set_step(st["id"], status="failed",
+                     error="You have row or column rules on this source, so GD360 does not query it directly for you.")
+            continue
+        if src.mode == "live" and warehouse_exec.daily_budget_exhausted(db, ds, user.id):
+            set_step(st["id"], status="failed", error="Your daily warehouse scan budget is used up; it resets at midnight UTC.")
+            continue
+        frames, rows_read, note = None, None, None
+        if src.mode != "live":
+            try:
+                frames, rows_read, note = _load_inputs(db, ds, src, st["sql"], user)
+            except Exception as e:  # noqa: BLE001
+                set_step(st["id"], status="failed", error=str(e)[:400])
+                continue
+        set_step(st["id"], status="running", rows_read=rows_read, note=note, freshness=src.freshness)
+        jobs.append((st, _detached(ds), src, frames))
+
+    if jobs:
+        with ThreadPoolExecutor(max_workers=max(1, settings.PROJECT_STEP_MAX_PARALLEL)) as pool:
+            futures = {pool.submit(_run_one, st, ds, src, frames): (st, ds, src) for st, ds, src, frames in jobs}
+            for fut in as_completed(futures):
+                st, ds, src = futures[fut]
+                try:
+                    res = fut.result()
+                except Exception as e:  # noqa: BLE001
+                    res = {"ok": False, "sql": st["sql"], "error": str(e)[:400], "status": "error", "raw_error": str(e)}
+                if src.mode == "live":
+                    try:
+                        log_pushdown(db, user.id, ds.id, ds.kind, res.get("sql") or st["sql"], res.get("bytes_scanned"),
+                                     "ok" if res["ok"] else res.get("status", "error"),
+                                     None if res["ok"] else res.get("raw_error"))
+                    except Exception:  # noqa: BLE001
+                        db.rollback()
+                if res["ok"]:
+                    df = res["df"]
+                    tables[st["id"]] = df
+                    payload = table_payload(df, limit=PREVIEW_ROWS)
+                    set_step(st["id"], status="done", sql=res["sql"], rows_returned=int(len(df)),
+                             bytes_scanned=res.get("bytes_scanned"), duration_ms=res.get("duration_ms"),
+                             repaired=res.get("repaired", False), truncated=res.get("truncated", False),
+                             columns=payload["columns"], preview=payload["rows"])
+                    evidence.append({"id": st["id"], "title": st["title"], "source": src.name,
+                                     **table_payload(df, limit=200)})
+                else:
+                    set_step(st["id"], status="failed", sql=res.get("sql"), error=res.get("error"),
+                             duration_ms=res.get("duration_ms"), repaired=res.get("repaired", False))
+                if should_stop():
+                    for f in futures:
+                        f.cancel()
+                    break
+    if should_stop():
+        return tables, evidence
+
+    for cb in plan.get("combine") or []:
+        set_step(cb["id"], status="running")
+        started = time.perf_counter()
+        sql = cb["sql"]
+        repaired = False
+        df, err = None, None
+        for attempt in range(2):
+            try:
+                df = _run_duckdb(sql, dict(tables))
+                break
+            except Exception as e:  # noqa: BLE001
+                err = str(e).split("\n")[0][:400]
+                missing = [t for t in _referenced_tables(sql, "duckdb") if t not in tables]
+                if missing:
+                    break
+                if attempt == 0:
+                    fixed = planner.repair_combine_sql(
+                        cb | {"sql": sql}, {k: [str(c) for c in v.columns] for k, v in tables.items()}, err)
+                    if fixed and fixed != sql:
+                        sql, repaired = fixed, True
+                        continue
+        if df is not None:
+            tables[cb["id"]] = df
+            payload = table_payload(df, limit=PREVIEW_ROWS)
+            set_step(cb["id"], status="done", sql=sql, rows_returned=int(len(df)), repaired=repaired,
+                     duration_ms=int((time.perf_counter() - started) * 1000), columns=payload["columns"], preview=payload["rows"])
+            evidence.append({"id": cb["id"], "title": cb["title"], "source": "Combined", **table_payload(df, limit=200)})
+        else:
+            missing = [t for t in _referenced_tables(cb["sql"], "duckdb") if t not in tables]
+            reason = f"It needs {', '.join(missing)}, which did not run." if missing else err
+            set_step(cb["id"], status="failed", sql=sql, error=reason, repaired=repaired)
+    return tables, evidence
+
+
+def analyse(plan: dict, tables: dict, steps: list[dict]) -> tuple[dict, list[str]]:
+    """The planned analysis, or - when it cannot be computed - the last
+    result shown as it is, with the reason as a warning."""
+    spec = plan.get("analysis") or {}
+    warnings: list[str] = []
+    try:
+        analysis = run_analysis(spec, tables)
+    except (AnalysisError, KeyError, ValueError, TypeError) as e:
+        warnings.append(f"The planned analysis could not be completed ({e}); showing the results as they are.")
+        last = (plan.get("combine") or plan.get("steps") or [{}])[-1].get("id")
+        fallback_table = last if last in tables else next(iter(tables))
+        analysis = run_analysis({"type": "lookup", "table": fallback_table}, tables)
+    warnings += analysis.get("warnings") or []
+    failed_steps = [s for s in steps or [] if s.get("status") == "failed"]
+    if failed_steps:
+        warnings.append(
+            f"{len(failed_steps)} step{'s' if len(failed_steps) > 1 else ''} could not run, so the answer leaves "
+            + ("it" if len(failed_steps) == 1 else "them") + " out: " + "; ".join(s["title"] for s in failed_steps[:3]) + "."
+        )
+    return analysis, warnings
+
+
+def _execute(db: Session, run: models.ProjectRun) -> None:
+    run.status = "running"
+    run.started_at = datetime.utcnow()
+    db.commit()
+    plan = run.plan or {}
+    user = db.get(models.User, run.owner_id)
+    conv = db.get(models.Conversation, run.conversation_id)
+    catalog: Catalog = build_catalog(db, user, list(conv.source_ids or []))
+
+    def set_step(step_id, **fields):
+        _set_step(run, step_id, **fields)
+        db.commit()
+
+    tables, evidence = run_plan(db, plan, user, catalog, set_step, lambda: _stopped(db, run))
+    if _stopped(db, run):
+        _finish_stopped(db, run)
+        return
+    if not tables:
+        run.status = "failed"
+        failed = [s for s in run.steps or [] if s.get("status") == "failed"]
+        run.error_message = (
+            "None of the queries could run. " + (failed[0].get("error") or "") if failed else "Nothing could run."
+        )[:600]
+        run.finished_at = datetime.utcnow()
+        db.commit()
+        return
+
+    analysis, warnings = analyse(plan, tables, run.steps)
+    if _stopped(db, run):
+        _finish_stopped(db, run)
+        return
+    answer = composer.compose(run.question, plan, analysis, evidence)
+
+    run.result = {
+        "answer": answer,
+        "analysis_type": analysis.get("type"),
+        "facts": analysis.get("facts"),
+        "summary": analysis.get("summary"),
+        "visuals": analysis.get("visuals"),
+        "kpis": _kpis_for(analysis),
+        "warnings": warnings,
+        "evidence": [{k: v for k, v in e.items()} for e in evidence],
+        "sources_used": sorted({s.get("source_name") for s in run.steps or [] if s.get("status") == "done" and s.get("kind") == "step"}),
+        "queries": sum(1 for s in run.steps or [] if s.get("status") in ("done", "failed")),
+    }
+    run.status = "done"
+    run.finished_at = datetime.utcnow()
+    _assistant_message(db, run, answer)
+    db.commit()
+
+
+def _kpis_for(analysis: dict) -> list[dict]:
+    from .dashboards import _kpis
+    try:
+        return _kpis(analysis.get("type"), analysis.get("summary") or {}, analysis.get("facts") or [])
+    except Exception:  # noqa: BLE001 - headline numbers are a convenience, never a failure
+        return []
+
+
+def _finish_stopped(db: Session, run: models.ProjectRun) -> None:
+    run.status = "stopped"
+    run.finished_at = datetime.utcnow()
+    steps = [
+        {**s, "status": "skipped"} if s.get("status") in ("pending", "running") else s for s in (run.steps or [])
+    ]
+    run.steps = steps
+    flag_modified(run, "steps")
+    db.commit()
+
+
+def _assistant_message(db: Session, run: models.ProjectRun, answer: dict) -> None:
+    text = answer.get("headline") or ""
+    if answer.get("answer") and answer.get("answer") != text:
+        text = f"{text}\n\n{answer['answer']}".strip()
+    db.add(models.Message(conversation_id=run.conversation_id, role="assistant", content=text or "Done."))
