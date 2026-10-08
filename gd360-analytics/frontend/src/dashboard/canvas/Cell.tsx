@@ -200,7 +200,7 @@ export const Cell = forwardRef<HTMLElement, CellProps>(function Cell(props, ref)
             {comments.enabled && (
               <button type="button" className="ui-focus inline-flex h-7 items-center gap-1 rounded-ctl px-2 text-caption font-medium text-secondary hover:bg-subtle hover:text-text" onClick={startComment} data-comment-button="" aria-label={`Comment${count.total ? ` (${count.total})` : ""}`}>
                 <CommentIcon size={13} /> Comment
-                {count.total > 0 && <span className={cn("ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-semibold tabular-nums", count.open > 0 ? "bg-primary text-white" : "bg-subtle text-muted")} data-comment-count="">{count.total}</span>}
+                {count.total > 0 && <span className={cn("ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[10px] font-semibold tabular-nums", count.open > 0 ? "bg-primary text-on-primary" : "bg-subtle text-muted")} data-comment-count="">{count.total}</span>}
               </button>
             )}
             <Popover
