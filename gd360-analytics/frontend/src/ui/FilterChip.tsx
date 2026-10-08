@@ -59,7 +59,7 @@ export const FilterChip = forwardRef<HTMLButtonElement, FilterChipProps>(functio
         {value !== undefined && value !== null && value !== "" && <span className="truncate max-w-[220px]">{value}</span>}
         {children}
         {typeof count === "number" && count > 0 && (
-          <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-white tabular-nums">
+          <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-on-primary tabular-nums">
             +{count}
           </span>
         )}

@@ -25,7 +25,7 @@ const PROVIDER_FILE = /file|csv|excel|xlsx|upload|sheet/i;
 export function Badge({ variant = "neutral", children, icon, className, title }: BadgeProps) {
   if (variant === "new") {
     return (
-      <span title={title} className={cn("inline-flex items-center rounded-[4px] bg-primary px-[5px] py-[1px] text-[10px] font-semibold uppercase tracking-caps text-white", className)}>
+      <span title={title} className={cn("inline-flex items-center rounded-[4px] bg-primary px-[5px] py-[1px] text-[10px] font-semibold uppercase tracking-caps text-on-primary", className)}>
         {children ?? "New"}
       </span>
     );

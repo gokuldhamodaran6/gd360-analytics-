@@ -30,7 +30,7 @@ export function Avatar({ name, size = "sm", tone = "brand", className, title }: 
       className={cn(
         "inline-flex shrink-0 select-none items-center justify-center rounded-full font-semibold",
         SIZE[size],
-        tone === "brand" ? "bg-primary text-white" : "bg-tint text-brand-ink border border-tint-border",
+        tone === "brand" ? "bg-primary text-on-primary" : "bg-tint text-brand-ink border border-tint-border",
         className
       )}
     >

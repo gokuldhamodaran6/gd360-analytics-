@@ -29,7 +29,7 @@ export type ButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "childre
 
 const VARIANT: Record<ButtonVariant, string> = {
   primary:
-    "bg-primary text-white border-primary hover:bg-primary/90 hover:border-primary/90 disabled:bg-tint-border disabled:border-tint-border disabled:text-white",
+    "bg-primary text-on-primary border-primary hover:bg-primary/90 hover:border-primary/90 disabled:bg-tint-border disabled:border-tint-border disabled:text-on-primary",
   secondary:
     "bg-surface text-text border-border hover:bg-subtle hover:border-border-strong disabled:text-faint disabled:hover:bg-surface disabled:hover:border-border",
   ghost:

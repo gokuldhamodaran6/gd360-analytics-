@@ -29,7 +29,7 @@ export const BRAND = {
   tint: "#e8f3ee",
   tintBorder: "#c3dfd3",
   // Dark-mode counterparts (System.dc.html "Dark mode").
-  primaryDark: "#147a5c",
+  primaryDark: "#43e5a0",
   accentDark: "#6ec9aa",
 } as const;
 

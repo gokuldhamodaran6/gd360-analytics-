@@ -385,7 +385,7 @@ function MonthGrid({
                 // disabled day looked exactly like an enabled one.)
                 disabled ? "cursor-not-allowed text-faint opacity-40" : outside ? "text-faint" : "text-text",
                 within && !start && !end && "bg-tint text-brand-ink",
-                (start || end) && "bg-primary font-semibold text-white",
+                (start || end) && "bg-primary font-semibold text-on-primary",
                 start && !end && "rounded-l-[6px]",
                 end && !start && "rounded-r-[6px]",
                 start && end && "rounded-[6px]",
