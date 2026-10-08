@@ -41,7 +41,8 @@ def _kpis(analysis_type: str, summary: dict, facts: list[dict]) -> list[dict]:
         if cur:
             out.append({"key": "total", "label": summary.get("metric") or "Value", "display": cur["display"],
                         "delta": pct["display"] if pct else None, "delta_dir": summary.get("direction"),
-                        "note": f"vs {summary.get('previous_label')}"})
+                        "note": f"vs {summary.get('previous_label')}", "sources": cur.get("sources") or [],
+                        "value": cur.get("value"), "kind": cur.get("kind"), "delta_pct": pct.get("value") if pct else None})
         for c in summary.get("components") or []:
             fid = c.get("fact_ids") or []
             f0 = by_id.get(fid[0]) if fid else None
@@ -51,7 +52,8 @@ def _kpis(analysis_type: str, summary: dict, facts: list[dict]) -> list[dict]:
                 out.append({"key": f"component:{c['name']}", "label": c["name"], "display": f0["display"],
                             "delta": fp["display"] if fp else None,
                             "delta_dir": None if d is None else ("down" if d < 0 else "up" if d > 0 else "flat"),
-                            "note": f"vs {summary.get('previous_label')}"})
+                            "note": f"vs {summary.get('previous_label')}", "sources": f0.get("sources") or [],
+                            "value": f0.get("value"), "kind": f0.get("kind"), "delta_pct": d})
     elif analysis_type == "trend":
         for s in summary.get("series") or []:
             ids = s.get("fact_ids") or []
@@ -59,13 +61,17 @@ def _kpis(analysis_type: str, summary: dict, facts: list[dict]) -> list[dict]:
             pct = by_id.get(ids[3]) if len(ids) > 3 else None
             if last:
                 out.append({"key": f"series:{s['name']}", "label": s["name"], "display": last["display"],
+                            "sources": last.get("sources") or [], "value": last.get("value"), "kind": last.get("kind"),
+                            "delta_pct": s.get("pct"),
                             "delta": pct["display"] if pct and pct.get("kind") == "percent" else None,
                             "delta_dir": None if s.get("pct") is None else ("down" if s["pct"] < 0 else "up"),
                             "note": "latest vs first period"})
     elif analysis_type in ("breakdown", "comparison"):
         ids = summary.get("fact_ids") or []
         if ids and by_id.get(ids[0]):
-            out.append({"key": "total", "label": by_id[ids[0]]["label"], "display": by_id[ids[0]]["display"]})
+            out.append({"key": "total", "label": by_id[ids[0]]["label"], "display": by_id[ids[0]]["display"],
+                        "sources": by_id[ids[0]].get("sources") or [], "value": by_id[ids[0]].get("value"),
+                        "kind": by_id[ids[0]].get("kind")})
         segs = summary.get("segments") or []
         if segs:
             f = by_id.get(segs[0]["fact_ids"][0])
@@ -74,7 +80,8 @@ def _kpis(analysis_type: str, summary: dict, facts: list[dict]) -> list[dict]:
                             "note": by_id.get(segs[0]["fact_ids"][1], {}).get("display", "") + " of total" if len(segs[0]["fact_ids"]) > 1 else ""})
     else:
         for f in (facts or [])[:4]:
-            out.append({"key": f"fact:{f['label']}", "label": f["label"], "display": f["display"]})
+            out.append({"key": f"fact:{f['label']}", "label": f["label"], "display": f["display"], "sources": f.get("sources") or [],
+                        "value": f.get("value"), "kind": f.get("kind")})
     return out[:6]
 
 
@@ -152,13 +159,14 @@ def dashboard_from_run(db: Session, conv: models.Conversation, run: models.Proje
     return dash
 
 
-def refresh(db: Session, dash: models.Dashboard, user: models.User) -> models.Dashboard:
-    """Re-runs the dashboard's plan in every source and stores the new
-    snapshot. Synchronous; raises DashboardBuildError when nothing ran."""
+def rerun_snapshot(db: Session, plan: dict, user: models.User, source_ids: list[str]) -> dict:
+    """Runs a saved, checked plan again in every source - no language model -
+    and returns a fresh snapshot (KPIs, charts, context, steps). Used by a
+    dashboard refresh and by automations. Raises DashboardBuildError when
+    none of the queries could run."""
     from . import executor  # local: executor imports this module's siblings
-    spec = dash.project_spec or {}
-    plan = spec.get("plan") or {}
-    catalog = build_catalog(db, user, spec.get("source_ids") or [])
+    plan = {k: v for k, v in (plan or {}).items() if k != "replaced_plan"}
+    catalog = build_catalog(db, user, source_ids or [])
     steps = {s["id"]: dict(s) for s in executor.initial_steps(plan)}
 
     def set_step(step_id, **fields):
@@ -168,9 +176,17 @@ def refresh(db: Session, dash: models.Dashboard, user: models.User) -> models.Da
     tables, evidence = executor.run_plan(db, plan, user, catalog, set_step, lambda: False)
     if not tables:
         failed = [s for s in steps.values() if s.get("status") == "failed"]
-        raise DashboardBuildError("None of the dashboard's queries could run. " + (failed[0].get("error") or "" if failed else ""))
+        raise DashboardBuildError("None of the queries could run. " + ((failed[0].get("error") or "") if failed else ""))
     analysis, warnings = executor.analyse(plan, tables, list(steps.values()))
-    snapshot = build_snapshot(plan, analysis, evidence, list(steps.values()), warnings)
+    return build_snapshot(plan, analysis, evidence, list(steps.values()), warnings)
+
+
+def refresh(db: Session, dash: models.Dashboard, user: models.User) -> models.Dashboard:
+    """Re-runs the dashboard's plan in every source and stores the new
+    snapshot. Synchronous; raises DashboardBuildError when nothing ran."""
+    spec = dash.project_spec or {}
+    plan = spec.get("plan") or {}
+    snapshot = rerun_snapshot(db, plan, user, spec.get("source_ids") or [])
     dash.project_snapshot = snapshot
     dash.snapshot_at = datetime.utcnow()
     # keep the tiles, add any new visual the refresh produced
@@ -191,6 +207,13 @@ def refresh(db: Session, dash: models.Dashboard, user: models.User) -> models.Da
 
 
 def headline_for(snapshot: dict) -> str | None:
+    kpis = snapshot.get("kpis") or []
+    if kpis and kpis[0].get("display"):
+        k = kpis[0]
+        line = f"{k.get('label')}: {k['display']}"
+        if k.get("delta"):
+            line += " (" + f"{k['delta']} {k.get('note') or ''}".strip() + ")"
+        return line + "."
     s = snapshot.get("summary") or {}
     if snapshot.get("analysis_type") == "explain_change" and "delta" in s:
         return f"{s.get('metric')}: {fmt(s.get('current'))} in {s.get('current_label')} vs {fmt(s.get('previous'))} in {s.get('previous_label')}."

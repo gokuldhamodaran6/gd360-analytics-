@@ -143,7 +143,7 @@ class _Facts:
         self.kind = kind
         self.currency = currency
 
-    def add(self, label: str, value, kind: str | None = None, signed: bool = False) -> dict:
+    def add(self, label: str, value, kind: str | None = None, signed: bool = False, table: str | None = None) -> dict:
         k = kind or self.kind
         f = {
             "id": f"f{len(self.items) + 1}",
@@ -152,6 +152,8 @@ class _Facts:
             "kind": k,
             "display": fmt(value, k, self.currency, signed=signed),
         }
+        if table:
+            f["table"] = table  # which step's result it came from (sources on the answer)
         self.items.append(f)
         return f
 
@@ -176,10 +178,10 @@ def _explain_change(spec: dict, tables: dict, facts: _Facts) -> dict:
     delta = cur - prev
     pct = pct_change(cur, prev)
 
-    f_cur = facts.add(f"{metric}, {cur_label}", cur)
-    f_prev = facts.add(f"{metric}, {prev_label}", prev)
-    f_delta = facts.add(f"Change in {metric}", delta, signed=True)
-    f_pct = facts.add(f"Change in {metric} (%)", pct, kind="percent", signed=True) if pct is not None else None
+    f_cur = facts.add(f"{metric}, {cur_label}", cur, table=tname)
+    f_prev = facts.add(f"{metric}, {prev_label}", prev, table=tname)
+    f_delta = facts.add(f"Change in {metric}", delta, signed=True, table=tname)
+    f_pct = facts.add(f"Change in {metric} (%)", pct, kind="percent", signed=True, table=tname) if pct is not None else None
 
     summary = {
         "metric": metric, "current": cur, "previous": prev, "delta": delta, "pct": pct,
@@ -209,11 +211,12 @@ def _explain_change(spec: dict, tables: dict, facts: _Facts) -> dict:
         ckind = c.get("format") or ("ratio" if max(abs(ccur), abs(cprev)) < 1 else "number")
         if ckind == "currency" and not facts.currency:
             ckind = "number"
-        fc = facts.add(f"{c.get('name')}, {cur_label}", ccur, kind=ckind)
-        fp = facts.add(f"{c.get('name')}, {prev_label}", cprev, kind=ckind)
+        ct = c.get("table")
+        fc = facts.add(f"{c.get('name')}, {cur_label}", ccur, kind=ckind, table=ct)
+        fp = facts.add(f"{c.get('name')}, {prev_label}", cprev, kind=ckind, table=ct)
         cpct = pct_change(ccur, cprev)
-        fx = facts.add(f"Change in {c.get('name')} (%)", cpct, kind="percent", signed=True) if cpct is not None else None
-        comps.append({"name": c.get("name"), "current": ccur, "previous": cprev, "pct": cpct,
+        fx = facts.add(f"Change in {c.get('name')} (%)", cpct, kind="percent", signed=True, table=ct) if cpct is not None else None
+        comps.append({"name": c.get("name"), "table": ct, "current": ccur, "previous": cprev, "pct": cpct,
                       "fact_ids": [f["id"] for f in (fc, fp, fx) if f]})
 
     mode = (spec.get("components_mode") or "multiply").lower()
@@ -244,14 +247,20 @@ def _explain_change(spec: dict, tables: dict, facts: _Facts) -> dict:
     if effects:
         items = [{"label": prev_label, "value": prev, "kind": "total"}]
         for c, eff in effects:
-            fe = facts.add(f"Effect of {c['name']} on {metric}", eff, signed=True)
+            fe = facts.add(f"Effect of {c['name']} on {metric}", eff, signed=True, table=c.get("table"))
             c["effect"] = eff
             c["effect_fact_id"] = fe["id"]
             c["share"] = (eff / delta * 100) if delta else None
+            if c["share"] is not None:
+                fs = facts.add(f"Effect of {c['name']} on {metric}: share of the change", abs(c["share"]),
+                               kind="percent", table=c.get("table"))
+                c["fact_ids"].append(fs["id"])
+            c["fact_ids"].append(fe["id"])
             items.append({"label": c["name"], "value": eff, "kind": "up" if eff >= 0 else "down"})
         items.append({"label": cur_label, "value": cur, "kind": "total"})
         visuals.append({"type": "waterfall", "title": f"Where the {fmt(delta, facts.kind, facts.currency)} change came from",
-                        "items": items, "format": facts.kind, "currency": facts.currency})
+                        "items": items, "format": facts.kind, "currency": facts.currency,
+                        "tables": [tname] + [c.get("table") for c, _ in effects if c.get("table")]})
     summary["components"] = comps
 
     # -- drivers: which segments of a dimension explain the change
@@ -283,10 +292,11 @@ def _explain_change(spec: dict, tables: dict, facts: _Facts) -> dict:
         for seg, row in ranked.head(MAX_DRIVER_SEGMENTS).iterrows():
             ch = float(row["change"])
             share = (ch / basis * 100) if basis else None
-            fch = facts.add(f"{d.get('label') or dim} = {seg}: change", ch, kind=dkind, signed=True)
-            fsh = facts.add(f"{d.get('label') or dim} = {seg}: share of the change", share, kind="percent") if share is not None else None
-            fcur = facts.add(f"{d.get('label') or dim} = {seg}, {cur_label}", float(row["current"]), kind=dkind)
-            fprv = facts.add(f"{d.get('label') or dim} = {seg}, {prev_label}", float(row["previous"]), kind=dkind)
+            dt = d.get("table")
+            fch = facts.add(f"{d.get('label') or dim} = {seg}: change", ch, kind=dkind, signed=True, table=dt)
+            fsh = facts.add(f"{d.get('label') or dim} = {seg}: share of the change", share, kind="percent", table=dt) if share is not None else None
+            fcur = facts.add(f"{d.get('label') or dim} = {seg}, {cur_label}", float(row["current"]), kind=dkind, table=dt)
+            fprv = facts.add(f"{d.get('label') or dim} = {seg}, {prev_label}", float(row["previous"]), kind=dkind, table=dt)
             segs.append({
                 "segment": str(seg), "current": float(row["current"]), "previous": float(row["previous"]),
                 "change": ch, "share": share, "pct": pct_change(float(row["current"]), float(row["previous"])),
@@ -302,7 +312,7 @@ def _explain_change(spec: dict, tables: dict, facts: _Facts) -> dict:
         visuals.append({
             "type": "diverging", "title": f"{metric} change by {str(d.get('label') or dim).lower()}",
             "items": [{"label": s["segment"], "value": s["change"], "share": s["share"]} for s in segs],
-            "format": dkind, "currency": facts.currency,
+            "format": dkind, "currency": facts.currency, "tables": [d.get("table")],
         })
     summary["drivers"] = drivers
 
@@ -311,7 +321,8 @@ def _explain_change(spec: dict, tables: dict, facts: _Facts) -> dict:
     sdf = tables.get(series.get("table"))
     if sdf is not None and len(sdf):
         visuals.insert(0, {"type": "chart", "title": series.get("title") or f"{metric} over time",
-                           "chart_type": series.get("chart_type") or "line", **table_payload(sdf)})
+                           "chart_type": series.get("chart_type") or "line", "tables": [series.get("table")],
+                           **table_payload(sdf)})
     return {"summary": summary, "visuals": visuals, "warnings": warnings}
 
 
@@ -442,6 +453,11 @@ def run_analysis(spec: dict, tables: dict[str, pd.DataFrame]) -> dict:
         out = _breakdown(spec, tables, facts)
     else:
         out = _lookup(spec, tables, facts)
+    if atype != "explain_change" and (spec or {}).get("table"):
+        for f in facts.items:
+            f.setdefault("table", spec["table"])
+        for v in out.get("visuals") or []:
+            v.setdefault("tables", [spec["table"]])
     out["facts"] = facts.items
     out["type"] = atype
     return out

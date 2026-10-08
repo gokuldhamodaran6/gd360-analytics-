@@ -20,6 +20,7 @@ the one-source chat uses).
 """
 from __future__ import annotations
 
+import re
 import threading
 import time
 from types import SimpleNamespace
@@ -426,6 +427,7 @@ def analyse(plan: dict, tables: dict, steps: list[dict]) -> tuple[dict, list[str
         fallback_table = last if last in tables else next(iter(tables))
         analysis = run_analysis({"type": "lookup", "table": fallback_table}, tables)
     warnings += analysis.get("warnings") or []
+    label_sources(analysis, plan, steps or [])
     failed_steps = [s for s in steps or [] if s.get("status") == "failed"]
     if failed_steps:
         warnings.append(
@@ -433,6 +435,75 @@ def analyse(plan: dict, tables: dict, steps: list[dict]) -> tuple[dict, list[str
             + ("it" if len(failed_steps) == 1 else "them") + " out: " + "; ".join(s["title"] for s in failed_steps[:3]) + "."
         )
     return analysis, warnings
+
+
+_LEAD = re.compile(r"^(Effect of .+ on .+|.+: change|Change in .+)$")
+
+
+def _table_sources(plan: dict, steps: list[dict]) -> dict[str, list[str]]:
+    """Step or combine id -> the source names behind it (a combine step is
+    every step its SQL reads)."""
+    out: dict[str, list[str]] = {}
+    for s in steps:
+        if s.get("kind") != "combine" and s.get("source_name"):
+            out[s["id"]] = [s["source_name"]]
+    for c in plan.get("combine") or []:
+        sql = c.get("sql") or ""
+        names: list[str] = []
+        for sid, srcs in list(out.items()):
+            if re.search(rf"\b{re.escape(sid)}\b", sql):
+                names += [n for n in srcs if n not in names]
+        out[c.get("id")] = names
+    return out
+
+
+def label_sources(analysis: dict, plan: dict, steps: list[dict]) -> None:
+    """Every fact and chart names the source(s) its numbers came from."""
+    by_table = _table_sources(plan, steps)
+
+    def names(tables) -> list[str]:
+        out: list[str] = []
+        for t in tables or []:
+            for n in by_table.get(t or "", []):
+                if n not in out:
+                    out.append(n)
+        return out
+
+    for f in analysis.get("facts") or []:
+        f["sources"] = names([f.get("table")])
+    for v in analysis.get("visuals") or []:
+        v["sources"] = names(v.get("tables"))
+
+
+def enrich_causes(answer: dict, analysis: dict, plan: dict, steps: list[dict]) -> None:
+    """Each cause gets the number it moved (its lead fact), what share of
+    the whole change that is, and the sources that number came from - all
+    read off computed facts, never written by the model."""
+    facts = {f["id"]: f for f in analysis.get("facts") or []}
+    by_table = _table_sources(plan, steps)
+    for cause in answer.get("causes") or []:
+        ids = [i for i in cause.get("fact_ids") or [] if i in facts]
+        def rank(f: dict) -> int:
+            lab = f["label"]
+            return 0 if lab.startswith("Effect of ") else 1 if lab.endswith(": change") else 2 if lab.startswith("Change in ") else 9
+        leads = sorted((facts[i] for i in ids if facts[i]["kind"] != "percent" and _LEAD.match(facts[i]["label"])), key=rank)
+        lead = leads[0] if leads else None
+        if lead is None:
+            lead = next((facts[i] for i in ids if facts[i]["kind"] != "percent"), None)
+        share = None
+        if lead is not None:
+            base = lead["label"][: -len(": change")] if lead["label"].endswith(": change") else lead["label"]
+            want = f"{base}: share of the change"
+            share = next((f for f in facts.values() if f["label"] == want), None)
+        srcs: list[str] = []
+        for i in ids:
+            for n in facts[i].get("sources") or by_table.get(facts[i].get("table") or "", []):
+                if n not in srcs:
+                    srcs.append(n)
+        cause["amount"] = lead["display"] if lead else None
+        cause["amount_value"] = lead["value"] if lead else None
+        cause["share"] = share["display"] if share else None
+        cause["sources"] = srcs
 
 
 def _execute(db: Session, run: models.ProjectRun) -> None:
@@ -467,6 +538,7 @@ def _execute(db: Session, run: models.ProjectRun) -> None:
         _finish_stopped(db, run)
         return
     answer = composer.compose(run.question, plan, analysis, evidence)
+    enrich_causes(answer, analysis, plan, run.steps or [])
 
     run.result = {
         "answer": answer,
