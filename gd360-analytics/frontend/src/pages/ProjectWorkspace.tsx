@@ -7,9 +7,9 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { ChartThemeProvider } from "../dashboard/theme/ChartThemeContext";
-import { projectsApi, Project, ProjectRun, ProjectSource } from "../api/projects";
+import { projectsApi, Project, ProjectRun } from "../api/projects";
 import { EvidenceTab, PlanTab, ResultsTab, SourcesTab } from "../project/RunPanels";
-import { timeAgo } from "../project/format";
+import { autoRunPreference, timeAgo } from "../project/format";
 
 type TabId = "plan" | "sources" | "results" | "evidence";
 const ACTIVE = new Set(["planning", "running"]);
@@ -40,7 +40,30 @@ export default function ProjectWorkspace() {
   const [error, setError] = useState("");
   const [notFound, setNotFound] = useState(false);
   const [dashBusy, setDashBusy] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  // "Change" on an assumption opens the Plan tab's change box with it filled in
+  const [replanSeed, setReplanSeed] = useState<{ text: string; n: number } | null>(null);
   const threadEnd = useRef<HTMLDivElement>(null);
+  const threadPane = useRef<HTMLDivElement>(null);
+  const shareRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!shareOpen) return;
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent) {
+        if (e.key === "Escape") setShareOpen(false);
+        return;
+      }
+      if (shareRef.current && !shareRef.current.contains(e.target as Node)) setShareOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [shareOpen]);
 
   const loadProject = useCallback(async () => {
     try {
@@ -118,8 +141,11 @@ export default function ProjectWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
+  // keep the newest reply in view inside the conversation pane (never by
+  // scrolling the whole page, so the header and tabs stay put)
   useEffect(() => {
-    threadEnd.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    const pane = threadPane.current;
+    if (pane && pane.scrollHeight > pane.clientHeight) pane.scrollTo({ top: pane.scrollHeight, behavior: "smooth" });
   }, [ordered.length]);
 
   const select = (id: string) => {
@@ -127,7 +153,7 @@ export default function ProjectWorkspace() {
     setTab(null);
   };
 
-  const ask = async (text: string, autoRun = true) => {
+  const ask = async (text: string, autoRun = autoRunPreference()) => {
     const q = text.trim();
     if (q.length < 2 || busy || activeRun) return;
     setBusy(true);
@@ -214,38 +240,72 @@ export default function ProjectWorkspace() {
           onWorkspaceSwitch={switchWorkspace}
           onWorkspaceCreated={handleWorkspaceCreated}
         />
-        <div className="flex-1 min-w-0 flex flex-col">
-          <header className="flex items-center justify-between gap-4 pl-14 pr-4 sm:pr-6 lg:pl-6 py-3 border-b border-border bg-surface flex-wrap">
+        <div className="flex-1 min-w-0 flex flex-col lg:h-screen">
+          <header className="flex items-center justify-between gap-4 pl-14 pr-4 sm:pr-6 lg:pl-6 py-3 border-b border-border bg-base flex-wrap">
             <div className="flex flex-col gap-0.5 min-w-0">
-              <span className="font-mono text-[11px] text-muted uppercase">
-                <Link to="/projects" className="hover:text-text">Projects</Link> / {activeRun ? (activeRun.status === "planning" ? "Planning" : "Running") : "Project"}
+              <span className="font-mono text-[11px] text-muted uppercase tracking-[0.06em]">
+                <Link to="/projects" className="hover:text-text">Projects</Link> / {crumb(activeRun, current)}
               </span>
-              <span className="text-section font-semibold text-text truncate">{project?.title || "…"}</span>
+              <h1 className="m-0 text-section font-semibold text-text truncate">{project?.title || "…"}</h1>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              <SourceStrip sources={project?.sources || []} />
-              {project?.dashboards?.length ? (
-                <Link to={`/project-dashboards/${project.dashboards[project.dashboards.length - 1].id}`} className="btn-secondary text-sm">
-                  Open dashboard
-                </Link>
-              ) : null}
               {activeRun ? (
                 <button type="button" className="btn-secondary text-sm" onClick={() => stop(activeRun.id)}>Stop</button>
               ) : (
-                <button
-                  type="button"
-                  className="btn-primary text-sm"
-                  onClick={makeDashboard}
-                  disabled={!current || current.status !== "done" || dashBusy || !project?.can_edit}
-                  title={current?.status === "done" ? "A live dashboard of this answer, across every source it used" : "Available once an answer is ready"}
-                >
-                  {dashBusy ? "Building…" : "Make dashboard"}
-                </button>
+                <>
+                  <div className="relative" ref={shareRef}>
+                    <button type="button" className="btn-secondary text-sm" aria-expanded={shareOpen} onClick={() => setShareOpen((v) => !v)}>
+                      Share
+                    </button>
+                    {shareOpen && (
+                      <div role="dialog" aria-label="Share this project" className="absolute right-0 top-[calc(100%+6px)] z-30 w-[300px] max-w-[calc(100vw-32px)] rounded-card border border-border bg-surface shadow-pop p-4 flex flex-col gap-3">
+                        <p className="m-0 text-ui text-secondary leading-snug">
+                          Anyone in your workspace who can see {project?.sources?.[0]?.name || "this project's first source"} can open this project and its answers.
+                        </p>
+                        <button
+                          type="button"
+                          className="btn-primary text-sm self-start"
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(window.location.href);
+                              setCopied(true);
+                              setTimeout(() => setCopied(false), 1600);
+                            } catch {
+                              setCopied(false);
+                            }
+                          }}
+                        >
+                          {copied ? "Link copied" : "Copy link"}
+                        </button>
+                        <span className="text-caption text-muted break-all select-all">{typeof window !== "undefined" ? window.location.href : ""}</span>
+                      </div>
+                    )}
+                  </div>
+                  {project?.can_edit && current?.status === "done" && (
+                    <Link to={`/automations/new?project=${projectId}&run=${current.id}`} className="btn-secondary text-sm">
+                      Set an alert
+                    </Link>
+                  )}
+                  {project?.dashboards?.length ? (
+                    <Link to={`/project-dashboards/${project.dashboards[project.dashboards.length - 1].id}`} className="btn-secondary text-sm">
+                      Open dashboard
+                    </Link>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="btn-primary text-sm"
+                    onClick={makeDashboard}
+                    disabled={!current || current.status !== "done" || dashBusy || !project?.can_edit}
+                    title={current?.status === "done" ? "A live dashboard of this answer, across every source it used" : "Available once an answer is ready"}
+                  >
+                    {dashBusy ? "Building…" : "Make dashboard"}
+                  </button>
+                </>
               )}
             </div>
           </header>
           {activeRun && (
-            <div className="h-[3px] bg-border overflow-hidden" aria-hidden="true">
+            <div className="h-[2px] bg-border overflow-hidden" aria-hidden="true">
               <div
                 className="h-full bg-[rgb(var(--color-accent))] transition-all duration-500"
                 style={{ width: `${progressPct(activeRun)}%` }}
@@ -253,9 +313,9 @@ export default function ProjectWorkspace() {
             </div>
           )}
 
-          <div className="flex-1 flex flex-wrap min-h-0">
-            <section aria-label="Conversation" className="flex-[1_1_360px] max-w-full lg:max-w-[460px] border-r border-border bg-base flex flex-col min-h-[60vh]">
-              <div className="flex-1 overflow-auto px-5 py-6 flex flex-col gap-6">
+          <div className="flex-1 flex flex-wrap lg:flex-nowrap min-h-0">
+            <section aria-label="Conversation" className="flex-[1_1_360px] max-w-full lg:max-w-[440px] lg:h-full border-r border-border bg-base flex flex-col min-h-[60vh] lg:min-h-0">
+              <div ref={threadPane} className="flex-1 overflow-auto px-5 py-6 flex flex-col gap-6">
                 {!project && <div className="text-ui text-muted">Loading…</div>}
                 {ordered.map((r) => (
                   <ThreadItem
@@ -266,6 +326,11 @@ export default function ProjectWorkspace() {
                     onRun={() => runPlan(r.id)}
                     onAsk={(q) => ask(q)}
                     onRetry={() => ask(r.question)}
+                    onChangeAssumption={(a) => {
+                      select(r.id);
+                      setTab("plan");
+                      setReplanSeed({ text: `Instead of "${a}": `, n: Date.now() });
+                    }}
                     canEdit={!!project?.can_edit}
                     busy={busy || !!activeRun}
                   />
@@ -298,8 +363,8 @@ export default function ProjectWorkspace() {
               )}
             </section>
 
-            <section aria-label="Work" className="flex-[999_1_560px] min-w-0 flex flex-col">
-              <div role="tablist" className="flex gap-6 px-5 sm:px-7 border-b border-border overflow-x-auto">
+            <section aria-label="Work" className="flex-[999_1_560px] min-w-0 flex flex-col lg:h-full lg:overflow-auto">
+              <div role="tablist" className="sticky top-0 z-10 shrink-0 bg-base flex gap-6 px-5 sm:px-7 border-b border-border overflow-x-auto">
                 {(["plan", "sources", "results", "evidence"] as TabId[]).map((t) => (
                   <button
                     key={t}
@@ -313,10 +378,10 @@ export default function ProjectWorkspace() {
                   </button>
                 ))}
               </div>
-              <div className="p-5 sm:p-7 max-w-[1100px] w-full">
+              <div className="shrink-0 p-5 sm:p-7 max-w-[1100px] w-full">
                 {!current && project && <div className="text-ui text-muted">Ask a question to start.</div>}
                 {current && currentTab === "plan" && (
-                  <PlanTab run={current} canEdit={!!project?.can_edit} busy={busy} onRun={() => runPlan(current.id)} onReplan={(n) => replan(current.id, n)} />
+                  <PlanTab run={current} canEdit={!!project?.can_edit} busy={busy} seed={replanSeed} onRun={() => runPlan(current.id)} onReplan={(n) => replan(current.id, n)} />
                 )}
                 {current && currentTab === "sources" && <SourcesTab run={current} />}
                 {current && currentTab === "results" && <ResultsTab run={current} />}
@@ -338,27 +403,22 @@ function progressPct(run: ProjectRun): number {
   return Math.min(95, 20 + (done / steps.length) * 75);
 }
 
-function SourceStrip({ sources }: { sources: ProjectSource[] }) {
-  if (!sources.length) return null;
-  const shown = sources.slice(0, 4);
-  return (
-    <div className="hidden md:flex items-center gap-1.5 mr-1" aria-label="Sources in this project">
-      {shown.map((s) => (
-        <span key={s.id} className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full border border-border bg-base text-caption text-secondary" title={`${s.label} · ${s.freshness}`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${s.mode === "live" ? "bg-good" : s.mode === "synced" ? "bg-[rgb(var(--color-series-1))]" : "bg-border-strong"}`} />
-          {s.name}
-        </span>
-      ))}
-      {sources.length > shown.length && <span className="text-caption text-muted">+{sources.length - shown.length}</span>}
-    </div>
-  );
+function crumb(active: ProjectRun | null, current: ProjectRun | null): string {
+  if (active) return active.status === "planning" ? "Planning" : "Running";
+  if (!current) return "New";
+  if (current.status === "done") return current.duration_seconds ? `Done in ${Math.max(1, Math.round(current.duration_seconds))} s` : "Done";
+  if (current.status === "planned") return "Plan ready";
+  if (current.status === "needs_input") return "Needs a source";
+  if (current.status === "failed") return "Could not finish";
+  if (current.status === "stopped") return "Stopped";
+  return "Project";
 }
 
 function ThreadItem({
-  run, selected, onSelect, onRun, onAsk, onRetry, canEdit, busy,
+  run, selected, onSelect, onRun, onAsk, onRetry, onChangeAssumption, canEdit, busy,
 }: {
   run: ProjectRun; selected: boolean; onSelect: () => void; onRun: () => void; onAsk: (q: string) => void; onRetry: () => void;
-  canEdit: boolean; busy: boolean;
+  onChangeAssumption: (a: string) => void; canEdit: boolean; busy: boolean;
 }) {
   const steps = run.steps || [];
   const ans = run.result?.answer;
@@ -396,9 +456,23 @@ function ThreadItem({
               Here is the plan — {run.plan.steps.length} queries across {new Set(run.plan.steps.map((s) => s.source_id)).size} sources.
             </p>
             {(run.plan.assumptions || []).length > 0 && (
-              <div className="rounded-ctl border border-border bg-base p-3 flex flex-col gap-1.5">
-                <span className="text-caption uppercase tracking-caps text-muted">I assumed</span>
-                {run.plan.assumptions.map((a, i) => <span key={i} className="text-ui text-secondary">{a}</span>)}
+              <div className="rounded-card border border-border bg-base p-3.5 flex flex-col gap-2.5">
+                <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">I assumed</span>
+                {run.plan.assumptions.map((a, i) => (
+                  <div key={i} className="flex items-center justify-between gap-3">
+                    <span className="text-ui text-text leading-snug">{a}</span>
+                    {canEdit && (
+                      <button
+                        type="button"
+                        className="shrink-0 h-7 px-2.5 rounded-ctl border border-border-strong text-caption text-text hover:bg-subtle"
+                        onClick={(e) => { e.stopPropagation(); onChangeAssumption(a); }}
+                        disabled={busy}
+                      >
+                        Change
+                      </button>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
             {canEdit && (
@@ -438,9 +512,12 @@ function ThreadItem({
             <p className="m-0 text-body text-text leading-relaxed">{ans.headline}</p>
             {ans.answer && ans.answer !== ans.headline && <p className="m-0 text-ui text-secondary leading-relaxed">{ans.answer}</p>}
             {ans.causes.length > 0 && (
-              <ol className="m-0 pl-5 flex flex-col gap-1.5 text-ui text-secondary">
+              <ol className="m-0 pl-5 flex flex-col gap-2 text-ui text-secondary leading-relaxed">
                 {ans.causes.slice(0, 3).map((c, i) => (
-                  <li key={i}><span className="text-text font-medium">{c.title}</span>{c.detail ? ` — ${c.detail}` : ""}</li>
+                  <li key={i}>
+                    <span className="text-text font-semibold">{c.title}</span>{c.detail ? ` — ${c.detail}` : ""}
+                    {c.amount && <span className="text-muted font-mono"> ≈ {c.amount}</span>}
+                  </li>
                 ))}
               </ol>
             )}

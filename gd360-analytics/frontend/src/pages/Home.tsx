@@ -10,7 +10,7 @@ import TopNav from "../components/TopNav";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { conversationApi, ConversationSummary } from "../api/client";
 import { projectsApi, ProjectSource } from "../api/projects";
-import { timeAgo, MODE_LABEL } from "../project/format";
+import { timeAgo, MODE_LABEL, autoRunPreference } from "../project/format";
 import { useAuth } from "../api/AuthContext";
 
 const STARTERS = [
@@ -84,6 +84,7 @@ export default function Home() {
         question: q,
         source_ids: picked === null ? undefined : picked,
         workspace_id: activeWorkspaceId || undefined,
+        auto_run: autoRunPreference(),
       });
       navigate(`/p/${out.project_id}?run=${out.run_id}`);
     } catch (e: any) {
@@ -198,7 +199,7 @@ export default function Home() {
                     aria-label="Ask"
                     onClick={() => ask()}
                     disabled={busy || question.trim().length < 2}
-                    className="ui-focus w-11 h-11 rounded-[13px] bg-primary text-white grid place-items-center disabled:opacity-40"
+                    className="ui-focus w-11 h-11 rounded-[13px] bg-primary text-on-primary grid place-items-center disabled:opacity-40"
                   >
                     {busy ? (
                       <span className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />

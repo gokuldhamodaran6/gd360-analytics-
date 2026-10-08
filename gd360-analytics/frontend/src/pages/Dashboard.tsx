@@ -206,7 +206,7 @@ function Pager({ page, totalPages, onChange }: { page: number; totalPages: numbe
 
   const btn = (active: boolean) =>
     `min-w-[2rem] h-8 px-2 text-sm rounded-lg border transition ${
-      active ? "bg-primary text-white border-primary font-semibold" : "border-border text-muted hover:text-text hover:bg-surface2"
+      active ? "bg-primary text-on-primary border-primary font-semibold" : "border-border text-muted hover:text-text hover:bg-surface2"
     }`;
 
   return (
@@ -994,7 +994,7 @@ export default function Dashboard() {
                   type="button"
                   onClick={() => setFolderFilter("all")}
                   className={`text-xs font-medium px-3 py-1.5 rounded-full border transition ${
-                    folderFilter === "all" ? "bg-primary text-white border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
+                    folderFilter === "all" ? "bg-primary text-on-primary border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
                   }`}
                 >
                   All
@@ -1003,7 +1003,7 @@ export default function Dashboard() {
                   type="button"
                   onClick={() => setFolderFilter("files")}
                   className={`inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
-                    folderFilter === "files" ? "bg-primary text-white border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
+                    folderFilter === "files" ? "bg-primary text-on-primary border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
                   }`}
                   title="Only Projects not filed into any folder"
                 >
@@ -1015,7 +1015,7 @@ export default function Dashboard() {
                   onClick={() => setFolderFilter("folders")}
                   className={`inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
                     folderFilter === "folders" || !!activeFolder
-                      ? "bg-primary text-white border-primary"
+                      ? "bg-primary text-on-primary border-primary"
                       : "border-border text-muted hover:text-text hover:bg-surface2"
                   }`}
                   title="Browse every folder"

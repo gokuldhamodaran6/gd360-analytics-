@@ -11,7 +11,7 @@ import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { ChartThemeProvider } from "../dashboard/theme/ChartThemeContext";
 import { dashboardApi } from "../api/client";
 import { DashTile, ProjectDashboard as PD, projectsApi } from "../api/projects";
-import { KpiRow, VisualCard } from "../project/Visuals";
+import { KpiRow, SourceTags, VisualCard } from "../project/Visuals";
 import { ModeBadge } from "../project/RunPanels";
 import { timeAgo } from "../project/format";
 
@@ -131,7 +131,7 @@ export default function ProjectDashboard() {
                         className="text-[28px] font-semibold tracking-tight bg-transparent border-b border-border-strong text-text outline-none"
                       />
                     ) : (
-                      <h1 className="m-0 text-[28px] sm:text-[30px] font-semibold tracking-tight text-text">{dash.name}</h1>
+                      <h1 className="m-0 text-[28px] sm:text-[32px] font-bold tracking-tight text-text">{dash.name}</h1>
                     )}
                     <div className="flex gap-3.5 flex-wrap text-caption text-muted">
                       {dash.sources.map((s) => (
@@ -152,10 +152,18 @@ export default function ProjectDashboard() {
                     ) : (
                       <>
                         {dash.can_edit && <button type="button" className="btn-secondary text-sm" onClick={startEdit}>Edit</button>}
+                        <button type="button" className="btn-secondary text-sm" onClick={refresh} disabled={refreshing}>
+                          {refreshing ? "Refreshing…" : "Refresh"}
+                        </button>
+                        {dash.can_edit && (
+                          <Link to={`/automations/new?dashboard=${dash.id}`} className="btn-secondary text-sm">
+                            Deliver on a schedule…
+                          </Link>
+                        )}
                         {dash.can_edit && activeWorkspaceId && (
                           <button
                             type="button"
-                            className="btn-secondary text-sm"
+                            className={shared ? "btn-secondary text-sm" : "btn-primary text-sm"}
                             onClick={async () => {
                               try {
                                 await dashboardApi.setWorkspace(dash.id, shared ? null : activeWorkspaceId);
@@ -165,12 +173,9 @@ export default function ProjectDashboard() {
                               }
                             }}
                           >
-                            {shared ? "Shared with workspace ✓" : "Share with workspace"}
+                            {shared ? "Shared with workspace ✓" : "Share"}
                           </button>
                         )}
-                        <button type="button" className="btn-primary text-sm" onClick={refresh} disabled={refreshing}>
-                          {refreshing ? "Refreshing…" : "Refresh"}
-                        </button>
                       </>
                     )}
                   </div>
@@ -210,10 +215,10 @@ export default function ProjectDashboard() {
                       const c = ctxMap.get(String(t.ref));
                       if (c) {
                         body = (
-                          <section className="rounded-card border border-border bg-surface p-4 sm:p-5 flex flex-col gap-2 min-w-0">
-                            <div className="flex items-baseline justify-between gap-2 flex-wrap">
-                              <h3 className="m-0 text-section font-semibold text-text">{t.title}</h3>
-                              <span className="text-caption text-muted">{c.source}</span>
+                          <section className="rounded-card border border-border bg-surface p-4 sm:p-5 flex flex-col gap-2 min-w-0 [&>div.card]:border-0 [&>div.card]:bg-transparent [&>div.card]:p-0 [&>div.card]:shadow-none [&>div.card]:rounded-none [&>div.card:hover]:shadow-none">
+                            <div className="flex items-start justify-between gap-3">
+                              <h3 className="m-0 text-section font-semibold text-text leading-snug">{t.title}</h3>
+                              <SourceTags names={c.source ? [c.source] : []} />
                             </div>
                             <WorkspaceChart columns={c.columns as any} rows={c.rows as any} chartType={t.chart_type || null} title={t.title} id={`${dash.id}:${t.id}`} variant="full" minHeight={240} />
                           </section>

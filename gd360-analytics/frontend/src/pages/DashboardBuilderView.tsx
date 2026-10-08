@@ -612,14 +612,14 @@ function PublishPanel({ dash, onChange, triggerClassName }: { dash: DashboardBui
               <div className="flex items-center rounded-lg border border-border overflow-hidden text-xs mb-3">
                 <button
                   type="button"
-                  className={`flex-1 px-2.5 py-1.5 transition ${mode === "public" ? "bg-primary text-white" : "text-muted hover:text-text hover:bg-surface2"}`}
+                  className={`flex-1 px-2.5 py-1.5 transition ${mode === "public" ? "bg-primary text-on-primary" : "text-muted hover:text-text hover:bg-surface2"}`}
                   onClick={() => setMode("public")}
                 >
                   Public
                 </button>
                 <button
                   type="button"
-                  className={`flex-1 px-2.5 py-1.5 transition ${mode === "private" ? "bg-primary text-white" : "text-muted hover:text-text hover:bg-surface2"}`}
+                  className={`flex-1 px-2.5 py-1.5 transition ${mode === "private" ? "bg-primary text-on-primary" : "text-muted hover:text-text hover:bg-surface2"}`}
                   onClick={() => setMode("private")}
                 >
                   Private
@@ -800,7 +800,7 @@ function PageTabsBar({
             type="button"
             className={`text-xs font-medium px-3 py-1.5 rounded-full border transition ${
               activePageId === p.id
-                ? "bg-primary text-white border-primary"
+                ? "bg-primary text-on-primary border-primary"
                 : "border-border text-muted hover:text-text hover:bg-surface2"
             }`}
             onClick={() => setActivePageId(p.id)}
@@ -820,7 +820,7 @@ function PageTabsBar({
           <div
             key={p.id}
             className={`relative flex items-center gap-1 pl-3 pr-1.5 py-1 rounded-full border text-xs font-medium transition ${
-              isActive ? "bg-primary text-white border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
+              isActive ? "bg-primary text-on-primary border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
             }`}
           >
             {p.background_color && (

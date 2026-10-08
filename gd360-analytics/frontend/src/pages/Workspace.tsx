@@ -2477,19 +2477,19 @@ export default function Workspace() {
                 three destinations - purely the classNames changed. */}
             <div className="flex items-center gap-0.5 bg-surface2 border border-border rounded-lg p-0.5">
               <button
-                className={`text-sm px-4 py-1.5 rounded-md font-medium transition ${centerTab === "data" ? "bg-primary text-white" : "text-muted hover:text-text"}`}
+                className={`text-sm px-4 py-1.5 rounded-md font-medium transition ${centerTab === "data" ? "bg-primary text-on-primary" : "text-muted hover:text-text"}`}
                 onClick={() => setCenterTab("data")}
               >
                 Data
               </button>
               <button
-                className={`text-sm px-4 py-1.5 rounded-md font-medium transition ${centerTab === "chart" ? "bg-primary text-white" : "text-muted hover:text-text"}`}
+                className={`text-sm px-4 py-1.5 rounded-md font-medium transition ${centerTab === "chart" ? "bg-primary text-on-primary" : "text-muted hover:text-text"}`}
                 onClick={() => setCenterTab("chart")}
               >
                 Chart
               </button>
               <button
-                className={`text-sm px-4 py-1.5 rounded-md font-medium transition ${centerTab === "flow" ? "bg-primary text-white" : "text-muted hover:text-text"}`}
+                className={`text-sm px-4 py-1.5 rounded-md font-medium transition ${centerTab === "flow" ? "bg-primary text-on-primary" : "text-muted hover:text-text"}`}
                 onClick={() => setCenterTab("flow")}
               >
                 Flow
@@ -2719,7 +2719,7 @@ export default function Workspace() {
                       <div
                         key={c.id}
                         className={`flex items-center gap-1 rounded-lg pl-3 pr-1.5 py-1.5 text-xs font-medium shrink-0 transition ${
-                          activeChartId === c.id ? "bg-primary text-white" : "btn-secondary"
+                          activeChartId === c.id ? "bg-primary text-on-primary" : "btn-secondary"
                         }`}
                       >
                         {renamingChartId === c.id ? (

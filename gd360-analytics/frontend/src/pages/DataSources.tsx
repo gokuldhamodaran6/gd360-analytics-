@@ -317,7 +317,7 @@ function DescriptionEditor({
       <div className="flex items-center gap-2 mt-1.5">
         <button
           type="button"
-          className="text-[11px] font-medium px-2.5 py-1 rounded-md bg-primary text-white hover:opacity-90 transition disabled:opacity-50"
+          className="text-[11px] font-medium px-2.5 py-1 rounded-md bg-primary text-on-primary hover:opacity-90 transition disabled:opacity-50"
           disabled={saving}
           onClick={save}
         >
@@ -461,7 +461,7 @@ function Pager({ page, totalPages, onChange }: { page: number; totalPages: numbe
 
   const btn = (active: boolean) =>
     `min-w-[2rem] h-8 px-2 text-sm rounded-lg border transition ${
-      active ? "bg-primary text-white border-primary font-semibold" : "border-border text-muted hover:text-text hover:bg-surface2"
+      active ? "bg-primary text-on-primary border-primary font-semibold" : "border-border text-muted hover:text-text hover:bg-surface2"
     }`;
 
   return (
@@ -733,7 +733,7 @@ export default function DataSources() {
                         onClick={() => setCategory(t.key)}
                         aria-pressed={category === t.key}
                         className={`flex flex-col items-center justify-center gap-1 px-1 py-2.5 rounded-lg text-xs font-medium transition ${
-                          category === t.key ? "bg-primary text-white shadow-sm" : "text-muted hover:text-text"
+                          category === t.key ? "bg-primary text-on-primary shadow-sm" : "text-muted hover:text-text"
                         }`}
                       >
                         <t.Icon className="w-4 h-4 shrink-0" />

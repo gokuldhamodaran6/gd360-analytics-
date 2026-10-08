@@ -525,7 +525,7 @@ export default function Jobs() {
               onClick={() => setTab("schedules")}
               aria-pressed={tab === "schedules"}
               className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-medium transition ${
-                tab === "schedules" ? "bg-primary text-white shadow-sm" : "text-muted hover:text-text"
+                tab === "schedules" ? "bg-primary text-on-primary shadow-sm" : "text-muted hover:text-text"
               }`}
             >
               <ClockIcon className="w-4 h-4" /> Scheduled refreshes
@@ -535,7 +535,7 @@ export default function Jobs() {
               onClick={() => setTab("chains")}
               aria-pressed={tab === "chains"}
               className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-medium transition ${
-                tab === "chains" ? "bg-primary text-white shadow-sm" : "text-muted hover:text-text"
+                tab === "chains" ? "bg-primary text-on-primary shadow-sm" : "text-muted hover:text-text"
               }`}
             >
               <ChainIcon className="w-4 h-4" /> Chains

@@ -444,7 +444,7 @@ function PublicDashboardBody({
                   role="tab"
                   aria-selected={i === activePageIndex}
                   className={`dash-pagepill text-xs font-medium px-3.5 py-1.5 border transition ${
-                    i === activePageIndex ? "bg-primary text-white border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
+                    i === activePageIndex ? "bg-primary text-on-primary border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
                   }`}
                   onClick={() => setActivePageIndex(i)}
                 >
