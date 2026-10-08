@@ -1171,22 +1171,13 @@ function SidebarNav({
           to="/ml-models"
           onClick={onNavigate}
           title={collapsed ? "ML Studio" : undefined}
-          className={linkClass(pathname.startsWith("/ml-models") || pathname.startsWith("/ml-studio"))}
+          className={linkClass(pathname.startsWith("/ml-models") || pathname.startsWith("/ml-studio") || pathname.startsWith("/experiments"))}
         >
           <MLModelsIcon />
           {!collapsed && "ML Studio"}
         </Link>
-        {/* Phase 4 (2026-09-28, Experimentation / A/B testing): see
-            ExperimentsIcon's own comment above for why. */}
-        <Link
-          to="/experiments"
-          onClick={onNavigate}
-          title={collapsed ? "Experiments" : undefined}
-          className={linkClass(pathname.startsWith("/experiments"))}
-        >
-          <ExperimentsIcon />
-          {!collapsed && "Experiments"}
-        </Link>
+        {/* 2026-10-08 (round 13): Experiments now lives inside ML Studio
+            (its page links there), per the v2 navigation. */}
         {/* Phase 5, Batch A (2026-09-28, data governance & quality): the
             audit log/access-review page is owner-only (the backend 403s a
             non-owner - see routers/governance.py), and `workspaces` here
