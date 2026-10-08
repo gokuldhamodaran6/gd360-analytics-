@@ -188,6 +188,15 @@ def _audited_results(m) -> object:
     return out
 
 
+def _project_sources_label(c, names: dict) -> str | None:
+    found = [names[i] for i in (c.source_ids or []) if i in names]
+    if not found:
+        return None
+    if len(found) <= 3:
+        return " · ".join(found)
+    return " · ".join(found[:2]) + f" · +{len(found) - 2}"
+
+
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 
@@ -219,6 +228,10 @@ def list_conversations(
 
     datasource_names: dict[str, str] = {}
     ds_ids = {c.datasource_id for c in conversations if c.datasource_id}
+    # 2026-10-08 (round 11): a multi-source project names all its sources
+    for c in conversations:
+        if c.kind == "project":
+            ds_ids.update(c.source_ids or [])
     if ds_ids:
         rows = db.query(models.DataSource).filter(models.DataSource.id.in_(ds_ids)).all()
         datasource_names = {row.id: row.name for row in rows}
@@ -254,7 +267,12 @@ def list_conversations(
             "id": c.id,
             "title": c.title or "Untitled analysis",
             "datasource_id": c.datasource_id,
-            "datasource_name": datasource_names.get(c.datasource_id) if c.datasource_id else None,
+            "datasource_name": (
+                _project_sources_label(c, datasource_names) if c.kind == "project"
+                else (datasource_names.get(c.datasource_id) if c.datasource_id else None)
+            ),
+            "kind": c.kind or "analysis",
+            "source_ids": c.source_ids if c.kind == "project" else ([c.datasource_id] if c.datasource_id else []),
             "message_count": len(messages),
             "last_message": last.content,
             "last_chart_type": last_chart_type,
@@ -386,6 +404,10 @@ def delete_conversation(
     conv = db.query(models.Conversation).filter(models.Conversation.id == conversation_id).first()
     if not conv or not workspace_access.can_delete_conversation(db, conv, user):
         raise HTTPException(404, "Conversation not found.")
+    # a multi-source project's questions (round 11) go with it
+    db.query(models.ProjectRun).filter(models.ProjectRun.conversation_id == conv.id).delete(synchronize_session=False)
+    db.query(models.Dashboard).filter(models.Dashboard.source_conversation_id == conv.id).update(
+        {models.Dashboard.source_conversation_id: None}, synchronize_session=False)
     db.delete(conv)
     db.commit()
     return {"id": conversation_id, "deleted": True}
