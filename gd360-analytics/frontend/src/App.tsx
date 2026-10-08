@@ -13,6 +13,9 @@ import DashboardBuilderView from "./pages/DashboardBuilderView";
 import PublicDashboardView from "./pages/PublicDashboardView";
 import DataSources from "./pages/DataSources";
 import MLModels from "./pages/MLModels";
+import MLStudio from "./pages/MLStudio";
+import MLStudioNew from "./pages/MLStudioNew";
+import MLStudioProject from "./pages/MLStudioProject";
 import MLModelDetail from "./pages/MLModelDetail";
 import Jobs from "./pages/Jobs";
 import Automations from "./pages/Automations";
@@ -143,7 +146,12 @@ export default function App() {
           was removed the same day, once it turned out to duplicate a
           capability chat's own cross-datasource picker already provided
           for free, while confusingly sitting right next to this one.) */}
-      <Route path="/ml-models" element={<Protected><MLModels /></Protected>} />
+      {/* 2026-10-08 (round 13): ML Studio - goal -> plan -> training ->
+          results. The older gallery + wizard stays at /ml-models/classic. */}
+      <Route path="/ml-models" element={<Protected><MLStudio /></Protected>} />
+      <Route path="/ml-models/classic" element={<Protected><MLModels /></Protected>} />
+      <Route path="/ml-studio/new" element={<Protected><MLStudioNew /></Protected>} />
+      <Route path="/ml-studio/:id" element={<Protected><MLStudioProject /></Protected>} />
       <Route path="/ml-models/:id" element={<Protected><MLModelDetail /></Protected>} />
       {/* 2026-09-28 (scheduled auto-refresh + background jobs round): the
           Jobs page - see AppSidebar.tsx's own nav entry for this, placed
