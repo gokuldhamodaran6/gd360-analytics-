@@ -26,6 +26,7 @@ export default {
         tint: "rgb(var(--color-tint) / <alpha-value>)",
         "tint-border": "rgb(var(--color-tint-border) / <alpha-value>)",
         "brand-ink": "rgb(var(--color-brand-ink) / <alpha-value>)",
+        "on-primary": "rgb(var(--color-on-primary) / <alpha-value>)",
         good: "rgb(var(--color-good) / <alpha-value>)",
         "good-fill": "rgb(var(--color-good-fill) / <alpha-value>)",
         "good-border": "rgb(var(--color-good-border) / <alpha-value>)",

@@ -11,12 +11,11 @@
     <script>
       (function () {
         try {
-          var stored = localStorage.getItem("gd360_theme");
-          var theme = stored === "light" || stored === "dark" ? stored : null;
-          if (!theme) {
-            var prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
-            theme = prefersLight ? "light" : "dark";
-          }
+          // 2026-10-08: Obsidian (dark) is the default look. A choice saved
+          // before then was mostly the old system-following default, so it
+          // is asked again once (gd360_theme_v2 marks a choice made since).
+          var stored = localStorage.getItem("gd360_theme_v2") ? localStorage.getItem("gd360_theme") : null;
+          var theme = stored === "light" || stored === "dark" ? stored : "dark";
           document.documentElement.setAttribute("data-theme", theme);
           if (theme === "dark") document.documentElement.classList.add("dark");
         } catch (err) {
