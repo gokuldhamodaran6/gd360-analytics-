@@ -50,7 +50,7 @@ export const BY_VALUE_MAX_BARS = 12;
 
 // Today's --color-primary (index.css): the single-series colour of the
 // GD360 palette. Light and dark are the token's own two values.
-const PINE: Record<Mode, string> = { light: "#0f5c46", dark: "#147a5c" };
+const PINE: Record<Mode, string> = { light: "#0f5c46", dark: "#43e5a0" };
 // Blank / null: a quiet neutral, lighter than "Other" on the light surface
 // and darker on the dark one, so the two never read as the same bucket.
 const BLANK: Record<Mode, string> = { light: "#bdbcb6", dark: "#55554f" };
