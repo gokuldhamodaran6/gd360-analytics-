@@ -394,7 +394,7 @@ function ShellBody({
             <span className="relative inline-flex">
               <IconButton variant="secondary" aria-label="Show filters" title="Show filters" icon={<FilterIcon size={15} />} onClick={() => setRailOpen(true)} data-open-rail="" />
               {run.activeFilterCount > 0 && (
-                <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-[16px] min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-white tabular-nums">{run.activeFilterCount}</span>
+                <span className="pointer-events-none absolute -right-1 -top-1 inline-flex h-[16px] min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-on-primary tabular-nums">{run.activeFilterCount}</span>
               )}
             </span>
           )}

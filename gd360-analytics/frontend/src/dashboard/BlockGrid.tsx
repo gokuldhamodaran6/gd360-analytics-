@@ -396,7 +396,7 @@ export function BlockCard({
           <span className="relative inline-flex">
             <IconButton size="sm" aria-label="More options" title="More options" icon={<MoreIcon size={15} />} data-popover-trigger="" {...api.props} />
             {comments && comments.open > 0 && (
-              <span className="pointer-events-none absolute -right-0.5 -top-0.5 inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-primary px-1 text-[9.5px] font-semibold text-white tabular-nums">
+              <span className="pointer-events-none absolute -right-0.5 -top-0.5 inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-primary px-1 text-[9.5px] font-semibold text-on-primary tabular-nums">
                 {comments.open}
               </span>
             )}
