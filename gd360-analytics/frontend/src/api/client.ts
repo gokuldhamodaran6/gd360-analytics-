@@ -633,6 +633,11 @@ export type DataSourceSummary = {
   // refreshed X ago" / "never refreshed" text on its card (see
   // pages/DataSources.tsx) - never a fabricated value.
   api_last_refreshed_at?: string | null;
+  // 2026-10-08 (round 11): synced app sources only (shopify, ga4, meta_ads,
+  // google_ads) - see api/projects.ts appsApi.
+  last_synced_at?: string | null;
+  next_sync_at?: string | null;
+  sync_error?: string | null;
   // 2026-09-30 (data catalog v1): a short, optional, human-written blurb of
   // what this data source is - see backend models.DataSource.description's
   // own comment. Never computed or inferred, unlike schema_cache above.
@@ -1035,6 +1040,10 @@ export type ConversationSummary = {
   is_own: boolean;
   can_edit: boolean;
   can_delete: boolean;
+  // 2026-10-08 (round 11): "project" = a multi-source Project (opens
+  // /p/:id), "analysis" = the one-source analysis chat (/workspace/:id).
+  kind?: "project" | "analysis";
+  source_ids?: string[];
 };
 
 export type ConversationMessage = {
