@@ -141,6 +141,8 @@ def _model_out(db: Session, ml_model: models.MLModel, user: models.User) -> sche
         version_number=ml_model.version_number,
         owner_id=ml_model.owner_id,
         can_delete=ml_model.owner_id == user.id,
+        problem_type=ml_model.problem_type,
+        goal=ml_model.goal,
     )
 
 
@@ -346,7 +348,7 @@ def score_table_with_ml_model(
         raise HTTPException(404, "This model's data source no longer exists.")
 
     try:
-        df = load_dataframe(ds, table=payload.table, version="original", db=db)
+        df = load_dataframe(ds, table=payload.table or ml_model.table_name, version="original", db=db)
         df = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
     except Exception as e:
         raise HTTPException(400, f"Could not load this data source's data: {e}")

@@ -2724,6 +2724,18 @@ def delete_datasource(datasource_id: str, db: Session = Depends(get_db), user: m
     # has nothing useful to say once the data it was about is gone, so it
     # is deleted outright here instead of detached.
     db.query(models.GokuMessage).filter(models.GokuMessage.datasource_id == datasource_id).delete()
+    # 2026-10-08 (round 13): everything else that only exists for this data
+    # source goes with it - ML models (with their versions and predictions),
+    # saved views, metric definitions, transforms, synced tables and query
+    # logs. Before this, deleting a source that had an ML model failed with
+    # a database error.
+    model_ids = [r[0] for r in db.query(models.MLModel.id).filter(models.MLModel.datasource_id == datasource_id).all()]
+    if model_ids:
+        db.query(models.MLPrediction).filter(models.MLPrediction.ml_model_id.in_(model_ids)).delete(synchronize_session=False)
+        db.query(models.MLModelVersion).filter(models.MLModelVersion.ml_model_id.in_(model_ids)).delete(synchronize_session=False)
+        db.query(models.MLModel).filter(models.MLModel.id.in_(model_ids)).delete(synchronize_session=False)
+    for dep in (models.SavedView, models.MetricDefinition, models.DataTransform, models.SyncedTable, models.PushdownQueryLog):
+        db.query(dep).filter(dep.datasource_id == datasource_id).delete(synchronize_session=False)
     audit.log_audit_event(
         db, actor=user, action="datasource_deleted", workspace_id=ds.workspace_id,
         target_type="datasource", target_id=ds.id,
