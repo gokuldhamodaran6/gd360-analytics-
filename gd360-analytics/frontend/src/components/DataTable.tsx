@@ -1471,7 +1471,7 @@ export default function DataTable({
         <div
           key={v.id}
           className={`flex items-center gap-1 rounded-full pl-3 pr-1.5 py-1.5 text-xs font-medium shrink-0 transition ${
-            activeVersionId === v.id ? "bg-primary text-white" : "btn-secondary"
+            activeVersionId === v.id ? "bg-primary text-on-primary" : "btn-secondary"
           }`}
         >
           {renamingId === v.id ? (
@@ -1724,7 +1724,7 @@ export default function DataTable({
 
           <button
             className={`text-xs px-2.5 py-1.5 rounded-lg font-medium transition flex items-center gap-1.5 ${
-              showTotals ? "bg-primary text-white" : "btn-secondary"
+              showTotals ? "bg-primary text-on-primary" : "btn-secondary"
             }`}
             onClick={() => setShowTotals((v) => !v)}
             title="Show a totals row with a per-column sum/average/count"
@@ -1735,7 +1735,7 @@ export default function DataTable({
           <div className="flex items-center gap-0.5 bg-surface2 border border-border rounded-lg p-0.5">
             <button
               className={`text-xs px-2.5 py-1 rounded-md font-medium transition ${
-                density === "comfortable" ? "bg-primary text-white" : "text-muted hover:text-text"
+                density === "comfortable" ? "bg-primary text-on-primary" : "text-muted hover:text-text"
               }`}
               onClick={() => setDensity("comfortable")}
               title="Comfortable row spacing"
@@ -1744,7 +1744,7 @@ export default function DataTable({
             </button>
             <button
               className={`text-xs px-2.5 py-1 rounded-md font-medium transition ${
-                density === "compact" ? "bg-primary text-white" : "text-muted hover:text-text"
+                density === "compact" ? "bg-primary text-on-primary" : "text-muted hover:text-text"
               }`}
               onClick={() => setDensity("compact")}
               title="Compact row spacing"
@@ -1776,7 +1776,7 @@ export default function DataTable({
                     onKeyDown={(e) => { if (e.key === "Enter") saveCurrentView(); }}
                   />
                   <button
-                    className="text-[11px] px-2.5 py-1 rounded-md bg-primary text-white font-medium disabled:opacity-50"
+                    className="text-[11px] px-2.5 py-1 rounded-md bg-primary text-on-primary font-medium disabled:opacity-50"
                     disabled={!newViewName.trim() || savingView}
                     onClick={saveCurrentView}
                   >
@@ -1823,7 +1823,7 @@ export default function DataTable({
               <button
                 key={size}
                 className={`text-xs px-2.5 py-1 rounded-lg transition ${
-                  pageSize === size ? "bg-primary text-white" : "btn-secondary"
+                  pageSize === size ? "bg-primary text-on-primary" : "btn-secondary"
                 }`}
                 onClick={() => changePageSize(size)}
               >
@@ -1848,7 +1848,7 @@ export default function DataTable({
           onKeyDown={(e) => { if (e.key === "Enter") runNlFilter(); }}
         />
         <button
-          className="text-xs px-3 py-1.5 rounded-lg bg-primary text-white font-medium disabled:opacity-50 shrink-0"
+          className="text-xs px-3 py-1.5 rounded-lg bg-primary text-on-primary font-medium disabled:opacity-50 shrink-0"
           disabled={!nlFilterPrompt.trim() || nlFilterBusy}
           onClick={runNlFilter}
         >
@@ -2052,7 +2052,7 @@ export default function DataTable({
                             <div className="flex gap-1 mb-1.5">
                               <button
                                 className={`text-[11px] px-2 py-1 rounded-md flex-1 transition ${
-                                  filterTab === "values" ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"
+                                  filterTab === "values" ? "bg-primary text-on-primary" : "bg-surface2 text-muted hover:text-text"
                                 }`}
                                 onClick={() => setFilterTab("values")}
                               >
@@ -2060,7 +2060,7 @@ export default function DataTable({
                               </button>
                               <button
                                 className={`text-[11px] px-2 py-1 rounded-md flex-1 transition ${
-                                  filterTab === "condition" ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"
+                                  filterTab === "condition" ? "bg-primary text-on-primary" : "bg-surface2 text-muted hover:text-text"
                                 }`}
                                 onClick={() => setFilterTab("condition")}
                               >
@@ -2216,7 +2216,7 @@ export default function DataTable({
                                       <button
                                         key={v}
                                         className={`text-[11px] px-2.5 py-1 rounded-md flex-1 ${
-                                          conditionDraft.value === v ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"
+                                          conditionDraft.value === v ? "bg-primary text-on-primary" : "bg-surface2 text-muted hover:text-text"
                                         }`}
                                         onClick={() => setConditionDraft({ type: "boolean", value: v })}
                                       >
@@ -2236,7 +2236,7 @@ export default function DataTable({
                               )}
                               <button className="text-[11px] text-muted" onClick={() => setOpenFilterCol(null)}>Cancel</button>
                               <button
-                                className="text-[11px] px-2.5 py-1 rounded-md bg-primary text-white font-medium"
+                                className="text-[11px] px-2.5 py-1 rounded-md bg-primary text-on-primary font-medium"
                                 onClick={() => applyFilter(col)}
                               >
                                 Apply
@@ -2266,7 +2266,7 @@ export default function DataTable({
                                   <div className="flex items-center justify-end gap-2">
                                     <button className="text-[11px] text-muted" onClick={() => setInsertComposer(null)}>Cancel</button>
                                     <button
-                                      className="text-[11px] px-2.5 py-1 rounded-md bg-primary text-white font-medium disabled:opacity-50"
+                                      className="text-[11px] px-2.5 py-1 rounded-md bg-primary text-on-primary font-medium disabled:opacity-50"
                                       disabled={!insertDraft.trim()}
                                       onClick={submitInsertComposer}
                                     >
@@ -2321,7 +2321,7 @@ export default function DataTable({
                                   <button
                                     key={m}
                                     className={`text-[10px] px-1.5 py-1 rounded-md transition ${
-                                      getNumberFormat(col).mode === m ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"
+                                      getNumberFormat(col).mode === m ? "bg-primary text-on-primary" : "bg-surface2 text-muted hover:text-text"
                                     }`}
                                     onClick={() => setNumberFormatPatch(col, { mode: m })}
                                   >
@@ -2359,7 +2359,7 @@ export default function DataTable({
                                     <button
                                       key={style}
                                       className={`text-[10px] px-1.5 py-1 rounded-md flex-1 transition ${
-                                        getNumberFormat(col).dateStyle === style ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"
+                                        getNumberFormat(col).dateStyle === style ? "bg-primary text-on-primary" : "bg-surface2 text-muted hover:text-text"
                                       }`}
                                       onClick={() => setNumberFormatPatch(col, { dateStyle: style })}
                                     >
@@ -2389,7 +2389,7 @@ export default function DataTable({
                                   <button
                                     key={mode}
                                     className={`text-[11px] px-2 py-1 rounded-md flex-1 transition ${
-                                      getColumnFormat(col).mode === mode ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"
+                                      getColumnFormat(col).mode === mode ? "bg-primary text-on-primary" : "bg-surface2 text-muted hover:text-text"
                                     }`}
                                     onClick={() => setColumnFormatMode(col, mode)}
                                   >
@@ -2775,7 +2775,7 @@ export default function DataTable({
               <button
                 key={p}
                 className={`text-xs w-7 h-7 rounded-lg transition ${
-                  p === currentPage ? "bg-primary text-white" : "btn-secondary"
+                  p === currentPage ? "bg-primary text-on-primary" : "btn-secondary"
                 }`}
                 disabled={loading}
                 onClick={() => goToPage(p, totalPages)}

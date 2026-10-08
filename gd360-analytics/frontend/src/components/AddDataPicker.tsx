@@ -227,7 +227,7 @@ export default function AddDataPicker({
                         </span>
                         <span className="text-sm font-medium truncate flex-1">{ds.name}</span>
                         {selectedCount > 0 && (
-                          <span className="shrink-0 w-5 h-5 rounded-full bg-primary text-white text-[10px] font-bold flex items-center justify-center">
+                          <span className="shrink-0 w-5 h-5 rounded-full bg-primary text-on-primary text-[10px] font-bold flex items-center justify-center">
                             {selectedCount}
                           </span>
                         )}

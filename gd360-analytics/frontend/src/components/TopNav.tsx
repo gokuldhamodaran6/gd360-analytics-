@@ -160,7 +160,7 @@ export default function TopNav({
   const wordmark =
     !breadcrumb?.length && !hideLogo ? (
       <Link to="/" className="ui-focus flex shrink-0 items-center gap-2.5 rounded">
-        <span className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-ctl bg-primary text-body font-bold text-white">G</span>
+        <span className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-ctl bg-primary text-body font-bold text-on-primary">G</span>
         <span className="text-section font-semibold text-text">GD360 Analytics</span>
       </Link>
     ) : null;

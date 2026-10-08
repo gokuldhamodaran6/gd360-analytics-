@@ -87,7 +87,7 @@ export default function StepFlow({
                 onClick={() => onStepChange(s.key)}
                 className={`text-xs px-3 py-1.5 rounded-full font-medium transition whitespace-nowrap ${
                   s.key === activeStep
-                    ? "bg-primary text-white"
+                    ? "bg-primary text-on-primary"
                     : i < currentIndex
                     ? "bg-accent/20 text-accent"
                     : "bg-surface2 text-muted border border-border"

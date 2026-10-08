@@ -292,7 +292,7 @@ export default function StoredDataSection({
                 type="button"
                 onClick={() => setKindFilter(key)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-                  kindFilter === key ? "bg-primary text-white" : "btn-secondary"
+                  kindFilter === key ? "bg-primary text-on-primary" : "btn-secondary"
                 }`}
               >
                 {label}

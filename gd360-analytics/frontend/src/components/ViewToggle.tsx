@@ -57,7 +57,7 @@ function ListIcon({ className = "w-4 h-4" }: { className?: string }) {
 
 export default function ViewToggle({ mode, onChange }: { mode: ViewMode; onChange: (m: ViewMode) => void }) {
   const btn = (active: boolean) =>
-    `p-1.5 rounded-md transition ${active ? "bg-primary text-white" : "text-muted hover:text-text hover:bg-surface2"}`;
+    `p-1.5 rounded-md transition ${active ? "bg-primary text-on-primary" : "text-muted hover:text-text hover:bg-surface2"}`;
   return (
     <div className="inline-flex items-center gap-0.5 rounded-lg border border-border p-0.5 shrink-0" role="group" aria-label="Layout">
       <button type="button" title="Grid view" className={btn(mode === "grid")} onClick={() => onChange("grid")}>

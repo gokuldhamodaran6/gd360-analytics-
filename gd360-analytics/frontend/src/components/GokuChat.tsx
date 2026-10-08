@@ -261,7 +261,7 @@ export default function GokuChat({
               <div key={m.id || i} className={`max-w-[92%] ${m.role === "user" ? "ml-auto" : ""}`}>
                 <div
                   className={`rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap ${
-                    m.role === "user" ? "bg-primary text-white rounded-br-sm" : "bg-surface2 border border-border rounded-bl-sm"
+                    m.role === "user" ? "bg-primary text-on-primary rounded-br-sm" : "bg-surface2 border border-border rounded-bl-sm"
                   }`}
                 >
                   {m.content}

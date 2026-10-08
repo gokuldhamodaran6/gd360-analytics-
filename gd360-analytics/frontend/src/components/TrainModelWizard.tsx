@@ -291,7 +291,7 @@ export default function TrainModelWizard({
                             </span>
                             <span className="text-sm truncate flex-1">{ds.name}</span>
                             {picked && (
-                              <span className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 bg-primary text-white">
+                              <span className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 bg-primary text-on-primary">
                                 <CheckIcon className="w-3 h-3" />
                               </span>
                             )}

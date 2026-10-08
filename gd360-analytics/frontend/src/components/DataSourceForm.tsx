@@ -863,7 +863,7 @@ export default function DataSourceForm({
             onClick={() => setMode(m.key)}
             aria-pressed={mode === m.key}
             className={`flex flex-col items-center justify-center gap-1 px-1 py-2.5 rounded-lg text-xs font-medium transition ${
-              mode === m.key ? "bg-primary text-white shadow-sm" : "text-muted hover:text-text"
+              mode === m.key ? "bg-primary text-on-primary shadow-sm" : "text-muted hover:text-text"
             }`}
           >
             <m.Icon className="w-4 h-4 shrink-0" />

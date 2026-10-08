@@ -679,7 +679,7 @@ export function ManualBuildPanel({
             key={t}
             type="button"
             className={`text-xs px-2 py-1.5 rounded-lg border transition ${
-              blockType === t ? "bg-primary text-white border-primary" : "border-border text-muted hover:text-text"
+              blockType === t ? "bg-primary text-on-primary border-primary" : "border-border text-muted hover:text-text"
             }`}
             onClick={() => setBlockType(t)}
           >

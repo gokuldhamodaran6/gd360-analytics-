@@ -1203,7 +1203,7 @@ export default function ChatPanel({
               <button
                 type="button"
                 title="Explain preparation and show the result in one smooth answer"
-                className={`px-2 py-1 transition ${analysisMode !== "guided" ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"}`}
+                className={`px-2 py-1 transition ${analysisMode !== "guided" ? "bg-primary text-on-primary" : "bg-surface2 text-muted hover:text-text"}`}
                 onClick={() => onAnalysisModeChange("auto")}
               >
                 One-click
@@ -1211,7 +1211,7 @@ export default function ChatPanel({
               <button
                 type="button"
                 title="Pause after each table is prepared so you can confirm before the analysis runs"
-                className={`px-2 py-1 transition border-l border-border ${analysisMode === "guided" ? "bg-primary text-white" : "bg-surface2 text-muted hover:text-text"}`}
+                className={`px-2 py-1 transition border-l border-border ${analysisMode === "guided" ? "bg-primary text-on-primary" : "bg-surface2 text-muted hover:text-text"}`}
                 onClick={() => onAnalysisModeChange("guided")}
               >
                 Step-by-step
@@ -1255,7 +1255,7 @@ export default function ChatPanel({
           <div key={i} className={`max-w-[90%] ${t.role === "user" ? "ml-auto" : ""}`}>
             <div
               className={`rounded-2xl px-4 py-2.5 text-sm ${
-                t.role === "user" ? "bg-primary text-white rounded-br-sm" : "bg-surface2 border border-border rounded-bl-sm"
+                t.role === "user" ? "bg-primary text-on-primary rounded-br-sm" : "bg-surface2 border border-border rounded-bl-sm"
               } ${t.needsClarification ? "border-accent/60" : ""}`}
             >
               {t.action === "transform" && (
@@ -1468,7 +1468,7 @@ export default function ChatPanel({
                 ) : (
                   <button
                     type="button"
-                    className="text-xs px-3 py-1.5 rounded-lg bg-primary text-white font-semibold hover:opacity-90 transition disabled:opacity-60"
+                    className="text-xs px-3 py-1.5 rounded-lg bg-primary text-on-primary font-semibold hover:opacity-90 transition disabled:opacity-60"
                     disabled={busy}
                     onClick={() => onContinueAnalysis?.(i)}
                   >

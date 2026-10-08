@@ -77,7 +77,7 @@ function LineageChip({ children, generated, testId }: { children: ReactNode; gen
 function Step({ n, children }: { n: number; children: ReactNode }) {
   return (
     <div className="flex items-start gap-2.5">
-      <span className="shrink-0 h-5 w-5 rounded-full bg-primary text-white text-[11px] font-semibold flex items-center justify-center">{n}</span>
+      <span className="shrink-0 h-5 w-5 rounded-full bg-primary text-on-primary text-[11px] font-semibold flex items-center justify-center">{n}</span>
       <div>{children}</div>
     </div>
   );
@@ -371,7 +371,7 @@ export default function GeneratedTableView({
               <div className="px-4 py-2.5 border-b border-border font-semibold text-[14px] text-text">How this table was made</div>
               <div className="p-4 flex flex-col gap-3 text-[13px]">
                 {prompt && (
-                  <div className="self-end max-w-[95%] bg-primary text-white rounded-2xl rounded-br-sm px-3 py-2 text-[13px]" data-testid="gen-prompt">
+                  <div className="self-end max-w-[95%] bg-primary text-on-primary rounded-2xl rounded-br-sm px-3 py-2 text-[13px]" data-testid="gen-prompt">
                     {prompt}
                   </div>
                 )}

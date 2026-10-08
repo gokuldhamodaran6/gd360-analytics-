@@ -320,7 +320,7 @@ export default function ChartStylePanel({
               key={t.id}
               disabled={disabled}
               className={`text-xs px-2 py-1.5 rounded-lg transition ${
-                activeType === t.id ? "bg-primary text-white" : "btn-secondary"
+                activeType === t.id ? "bg-primary text-on-primary" : "btn-secondary"
               }`}
               onClick={() => pickType(t.id)}
             >
@@ -361,7 +361,7 @@ export default function ChartStylePanel({
                         key={`${group.category}-${t.id}`}
                         disabled={disabled}
                         className={`text-xs px-2 py-1.5 rounded-lg transition ${
-                          activeType === t.id ? "bg-primary text-white" : "btn-secondary"
+                          activeType === t.id ? "bg-primary text-on-primary" : "btn-secondary"
                         }`}
                         onClick={() => pickType(t.id)}
                         title={t.label}
@@ -682,7 +682,7 @@ export default function ChartStylePanel({
                   key={o.value}
                   disabled={disabled}
                   className={`text-xs px-2.5 py-1 rounded-lg transition ${
-                    style.fontSize === o.value ? "bg-primary text-white" : "btn-secondary"
+                    style.fontSize === o.value ? "bg-primary text-on-primary" : "btn-secondary"
                   }`}
                   onClick={() => onStyleChange({ fontSize: o.value })}
                 >

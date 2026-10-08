@@ -210,9 +210,11 @@ export default function CommandPalette() {
       { id: "qa-new-project", section: "Quick actions", label: "New Project", subtitle: "Start a fresh analysis", icon: <PlusIcon />, run: () => navigate("/project/new") },
       { id: "qa-new-dashboard", section: "Quick actions", label: "New Dashboard", subtitle: "Build a dashboard", icon: <PlusIcon />, run: () => navigate("/dashboards") },
       { id: "qa-connect-data", section: "Quick actions", label: "Connect data", subtitle: "Add a new data source", icon: <PlusIcon />, run: () => navigate("/data") },
-      { id: "qa-go-projects", section: "Quick actions", label: "Go to Projects", icon: <ProjectsIcon />, run: () => navigate("/") },
+      { id: "qa-go-projects", section: "Quick actions", label: "Go to Projects", icon: <ProjectsIcon />, run: () => navigate("/projects") },
       { id: "qa-go-dashboards", section: "Quick actions", label: "Go to Dashboards", icon: <DashboardsIcon />, run: () => navigate("/dashboards") },
       { id: "qa-go-data", section: "Quick actions", label: "Go to Data Sources", icon: <DataSourcesIcon />, run: () => navigate("/data") },
+      { id: "qa-new-automation", section: "Quick actions", label: "New automation", subtitle: "Run something on a schedule, on new data or when a number crosses a line", icon: <PlusIcon />, run: () => navigate("/automations/new") },
+      { id: "qa-go-automations", section: "Quick actions", label: "Go to Automations", icon: <DashboardsIcon />, run: () => navigate("/automations") },
       { id: "qa-theme", section: "Quick actions", label: "Toggle light / dark theme", icon: <ThemeIcon />, run: () => toggleTheme() },
       { id: "qa-settings", section: "Quick actions", label: "Account Settings", icon: <SettingsIcon />, run: () => navigate("/profile") },
     ];

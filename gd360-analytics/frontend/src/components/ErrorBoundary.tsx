@@ -43,7 +43,7 @@ export default class ErrorBoundary extends React.Component<Props, State> {
           <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
             <button
               type="button"
-              className="ui-focus h-9 rounded-ctl bg-primary px-3.5 text-ui font-medium text-white hover:opacity-90"
+              className="ui-focus h-9 rounded-ctl bg-primary px-3.5 text-ui font-medium text-on-primary hover:opacity-90"
               onClick={() => this.setState({ error: null })}
             >
               Try again

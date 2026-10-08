@@ -228,7 +228,7 @@ export function WarehouseTrace({
     <ol className="warehouse-trace mt-1.5 space-y-1.5 text-[11px] text-text/80 list-none m-0 p-0">
       {steps.map((s, i) => (
         <li key={i} className="flex items-start gap-2">
-          <span className="shrink-0 h-4 w-4 rounded-full bg-primary text-white text-[9px] font-bold flex items-center justify-center mt-px">
+          <span className="shrink-0 h-4 w-4 rounded-full bg-primary text-on-primary text-[9px] font-bold flex items-center justify-center mt-px">
             {i + 1}
           </span>
           <span>{s}</span>

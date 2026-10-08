@@ -277,7 +277,7 @@ function Pager({ page, totalPages, onChange }: { page: number; totalPages: numbe
 
   const btn = (active: boolean) =>
     `min-w-[2rem] h-8 px-2 text-sm rounded-lg border transition ${
-      active ? "bg-primary text-white border-primary font-semibold" : "border-border text-muted hover:text-text hover:bg-surface2"
+      active ? "bg-primary text-on-primary border-primary font-semibold" : "border-border text-muted hover:text-text hover:bg-surface2"
     }`;
 
   return (
@@ -407,7 +407,7 @@ function WorkspaceSwitcher({
           collapsed ? "w-10 h-10 mx-auto justify-center" : "w-full gap-2.5 px-1.5 py-1.5"
         }`}
       >
-        <span className="w-[30px] h-[30px] rounded-ctl bg-primary flex items-center justify-center text-white font-bold text-body shrink-0">
+        <span className="w-[30px] h-[30px] rounded-ctl bg-primary flex items-center justify-center text-on-primary font-bold text-body shrink-0">
           G
         </span>
         {!collapsed && (
@@ -448,7 +448,7 @@ function WorkspaceSwitcher({
                 onClick={() => { onSwitch(ws.id); setOpen(false); }}
                 className="ui-focus-inset w-full flex items-center gap-2.5 px-3.5 py-2 text-ui text-left hover:bg-subtle transition-colors"
               >
-                <span className="w-6 h-6 rounded-[6px] bg-primary flex items-center justify-center text-white font-bold text-[11px] shrink-0">
+                <span className="w-6 h-6 rounded-[6px] bg-primary flex items-center justify-center text-on-primary font-bold text-[11px] shrink-0">
                   {ws.is_personal ? "G" : ws.name.charAt(0).toUpperCase()}
                 </span>
                 <span className="flex-1 truncate">
@@ -929,7 +929,7 @@ export function ConnectDataPopup({
                     onClick={() => setCategory(t.key)}
                     aria-pressed={category === t.key}
                     className={`flex flex-col items-center justify-center gap-1 px-1 py-2.5 rounded-lg text-[11px] font-medium leading-tight transition ${
-                      category === t.key ? "bg-primary text-white shadow-sm" : "text-muted hover:text-text"
+                      category === t.key ? "bg-primary text-on-primary shadow-sm" : "text-muted hover:text-text"
                     }`}
                   >
                     <t.Icon className="w-4 h-4 shrink-0" />
@@ -982,7 +982,7 @@ export function ConnectDataPopup({
                             <span className="text-sm truncate flex-1 text-text/90 group-hover:text-text">{ds.name}</span>
                             <span
                               className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 border transition ${
-                                picked ? "bg-primary border-primary text-white" : "border-border text-transparent"
+                                picked ? "bg-primary border-primary text-on-primary" : "border-border text-transparent"
                               }`}
                               aria-hidden
                             >
@@ -1148,7 +1148,7 @@ function SidebarNav({
           {!collapsed && "Dashboards"}
         </Link>
         <Link
-          to="/jobs"
+          to="/automations"
           onClick={onNavigate}
           title={collapsed ? "Automations" : undefined}
           className={linkClass(pathname.startsWith("/jobs") || pathname.startsWith("/automations"))}

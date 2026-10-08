@@ -77,7 +77,7 @@ function Step({ label, done, testId }: { label: ReactNode; done: boolean; testId
     <div className="flex items-center gap-2 min-w-0" data-testid={testId} data-done={done ? "true" : "false"}>
       <span
         className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
-          done ? "bg-primary text-white" : "border border-border text-muted"
+          done ? "bg-primary text-on-primary" : "border border-border text-muted"
         }`}
       >
         {done ? <CheckGlyph /> : <span className="w-1.5 h-1.5 rounded-full bg-current" />}
@@ -431,7 +431,7 @@ export default function FileDataView({
                 <button
                   key={s.name}
                   className={`text-xs px-3 py-1.5 rounded-full font-medium transition shrink-0 ${
-                    active ? "bg-primary text-white" : "btn-secondary"
+                    active ? "bg-primary text-on-primary" : "btn-secondary"
                   }`}
                   onClick={() => switchSheet(s.name)}
                   data-testid="fdv-sheet-tab"
