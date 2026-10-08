@@ -199,7 +199,7 @@ export default function DashboardView() {
               <h1 className="text-2xl font-bold flex items-center gap-2 flex-wrap">
                 {dash.name}
                 {dash.can_edit && (
-                  <button type="button" className="opacity-50 hover:opacity-100 transition text-base" title="Rename this chart board" onClick={startRename}>
+                  <button type="button" className="opacity-50 hover:opacity-100 transition text-[16px]" title="Rename this chart board" onClick={startRename}>
                     &#9998;
                   </button>
                 )}

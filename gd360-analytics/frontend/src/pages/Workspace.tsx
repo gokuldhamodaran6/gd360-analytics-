@@ -2198,7 +2198,7 @@ export default function Workspace() {
             {renamingConversation ? (
               <input
                 autoFocus
-                className="input py-1 text-base font-bold max-w-sm"
+                className="input py-1 text-[16px] font-bold max-w-sm"
                 value={conversationTitleDraft}
                 onChange={(e) => setConversationTitleDraft(e.target.value)}
                 onKeyDown={(e) => {
@@ -2211,7 +2211,7 @@ export default function Workspace() {
             ) : (
               <span className="flex items-center gap-1.5 min-w-0">
                 <span
-                  className={`text-base font-bold truncate ${conversationTitle ? "text-text" : "text-muted italic"}`}
+                  className={`text-[16px] font-bold truncate ${conversationTitle ? "text-text" : "text-muted italic"}`}
                   title={conversationTitle || "Untitled - ask your first question to name this Project automatically"}
                 >
                   {conversationTitle || "Untitled"}
@@ -2794,7 +2794,7 @@ export default function Workspace() {
                 {hasChart && (chartStyle.title || chartTitle || activeChartPrompt) && (
                   <div className="shrink-0 px-0.5 flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
                     <div className="min-w-0 flex-1">
-                      <div className="text-base font-bold text-text leading-tight truncate">
+                      <div className="text-[16px] font-bold text-text leading-tight truncate">
                         {chartStyle.title || chartTitle || "Untitled chart"}
                       </div>
                       {activeChartPrompt && (

@@ -4,8 +4,10 @@ import { datasourceApi, DataSourceSummary } from "../api/client";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
 import DataSourceForm, {
-  connectionKindMeta, dataSourceCategory, DATA_SOURCE_CATEGORIES, DataSourceCategory,
+  connectionKindMeta, dataSourceCategory, DATA_SOURCE_CATEGORIES, DataSourceCategory, SyncedAppIcon,
 } from "../components/DataSourceForm";
+import { AppGrid, SyncControl } from "../components/ConnectApps";
+import { SYNCED_KINDS } from "../api/projects";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import ViewToggle, { useViewMode } from "../components/ViewToggle";
 
@@ -137,6 +139,7 @@ function ChevronRightIcon({ className = "w-4 h-4" }: { className?: string }) {
 function categoryGlyph(cat: DataSourceCategory) {
   if (cat === "Databases") return DatabaseGlyph;
   if (cat === "Warehouses") return WarehouseGlyph;
+  if (cat === "Apps") return SyncedAppIcon;
   return FileGlyph;
 }
 
@@ -355,6 +358,7 @@ function SourceCard({
   const meta = connectionKindMeta(ds.kind);
   const live = isLiveStreaming(ds);
   const isApi = ds.kind === "api";
+  const isSynced = SYNCED_KINDS.includes(ds.kind);
   // Both variants below used to be a single <button>; an api-kind card now
   // needs its own nested, independently-clickable Refresh button, and a
   // <button> can never nest another interactive control validly - so both
@@ -391,7 +395,8 @@ function SourceCard({
         >
           {meta.label}
         </span>
-        {!isApi && <span className="text-xs text-muted shrink-0">{timeAgo(ds.created_at)}</span>}
+        {isSynced && <SyncControl ds={ds} />}
+        {!isApi && !isSynced && <span className="text-xs text-muted shrink-0">{timeAgo(ds.created_at)}</span>}
       </div>
     );
   }
@@ -423,7 +428,9 @@ function SourceCard({
       </span>
       {ds.description && <span className="text-xs text-muted line-clamp-2">{ds.description}</span>}
       <DescriptionEditor ds={ds} onSaved={onRefreshed} />
-      {isApi ? (
+      {isSynced ? (
+        <span className="mt-auto"><SyncControl ds={ds} /></span>
+      ) : isApi ? (
         <span className="mt-auto"><ApiRefreshControl ds={ds} onRefreshed={onRefreshed} /></span>
       ) : (
         <span className="text-[11px] text-muted mt-auto">{timeAgo(ds.created_at)}</span>
@@ -627,7 +634,7 @@ export default function DataSources() {
             <div className="card p-5 sm:p-6 border-primary/30">
               <div className="flex items-start justify-between gap-3 mb-4">
                 <div>
-                  <h2 className="text-base font-bold">Connect a new data source</h2>
+                  <h2 className="text-[16px] font-bold">Connect a new data source</h2>
                   <p className="text-xs text-muted mt-0.5">
                     Pick a database or warehouse, or upload a file - it shows up under Existing data the moment it's ready.
                   </p>
@@ -645,6 +652,14 @@ export default function DataSources() {
                 )}
               </div>
               <DataSourceForm onCreated={handleCreated} onConnected={handleConnected} />
+              <AppGrid
+                workspaceId={activeWorkspaceId}
+                onConnected={() => {
+                  handleConnected();
+                  setCategory("Apps");
+                  setView("existing");
+                }}
+              />
             </div>
           )}
 
@@ -659,7 +674,7 @@ export default function DataSources() {
           {view === "existing" && (
             <div className="card p-5 sm:p-6">
               <div className="mb-4">
-                <h2 className="text-base font-bold">Your data sources</h2>
+                <h2 className="text-[16px] font-bold">Your data sources</h2>
                 <p className="text-xs text-muted mt-0.5">Everything connected to this workspace, filtered by category.</p>
               </div>
 
@@ -667,7 +682,7 @@ export default function DataSources() {
 
               {sources !== null && !hasAny && (
                 <div className="py-8 text-center">
-                  <div className="text-base font-semibold mb-1.5">No data sources yet</div>
+                  <div className="text-[16px] font-semibold mb-1.5">No data sources yet</div>
                   <p className="text-sm text-muted max-w-sm mx-auto leading-relaxed mb-5">
                     {isViewerHere
                       ? "Nothing's been shared into this workspace yet. Ask the workspace owner to add a data source."
@@ -710,7 +725,7 @@ export default function DataSources() {
 
                   {/* Category picker - same segmented style as DataSourceForm's
                       own Database/Warehouse/Connect/Upload file tabs. */}
-                  <div className="grid grid-cols-4 gap-1 p-1 mb-5 rounded-xl bg-surface2 border border-border">
+                  <div className="grid grid-cols-5 gap-1 p-1 mb-5 rounded-xl bg-surface2 border border-border">
                     {CATEGORY_TABS.map((t) => (
                       <button
                         type="button"

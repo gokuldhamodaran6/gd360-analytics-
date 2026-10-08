@@ -1,0 +1,497 @@
+// 2026-10-08 (round 11): a multi-source Project. Left: the conversation -
+// every question and GD360's reply, live while it plans and runs. Right:
+// the selected question's Plan, Sources (each query as it runs), Results
+// (the answer drawn) and Evidence (every table and the query behind it).
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import AppSidebar from "../components/AppSidebar";
+import { useWorkspaceNav } from "../lib/useWorkspaceNav";
+import { ChartThemeProvider } from "../dashboard/theme/ChartThemeContext";
+import { projectsApi, Project, ProjectRun, ProjectSource } from "../api/projects";
+import { EvidenceTab, PlanTab, ResultsTab, SourcesTab } from "../project/RunPanels";
+import { timeAgo } from "../project/format";
+
+type TabId = "plan" | "sources" | "results" | "evidence";
+const ACTIVE = new Set(["planning", "running"]);
+
+function errorText(e: any, fallback: string): string {
+  const d = e?.response?.data?.detail;
+  return typeof d === "string" && d.trim() ? d : fallback;
+}
+
+function defaultTab(run: ProjectRun | null): TabId {
+  if (!run) return "plan";
+  if (run.status === "done" || run.status === "needs_input") return "results";
+  if (run.status === "running" || run.status === "failed" || run.status === "stopped") return "sources";
+  return "plan";
+}
+
+export default function ProjectWorkspace() {
+  const { projectId = "" } = useParams();
+  const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
+  const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
+  const [project, setProject] = useState<Project | null>(null);
+  const [runs, setRuns] = useState<Record<string, ProjectRun>>({});
+  const [selected, setSelected] = useState<string | null>(params.get("run"));
+  const [tab, setTab] = useState<TabId | null>(null);
+  const [followUp, setFollowUp] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notFound, setNotFound] = useState(false);
+  const [dashBusy, setDashBusy] = useState(false);
+  const threadEnd = useRef<HTMLDivElement>(null);
+
+  const loadProject = useCallback(async () => {
+    try {
+      const p = await projectsApi.get(projectId);
+      setProject(p);
+      return p;
+    } catch (e: any) {
+      if (e?.response?.status === 404) setNotFound(true);
+      else setError(errorText(e, "Couldn't load this project."));
+      return null;
+    }
+  }, [projectId]);
+
+  const loadRun = useCallback(async (id: string) => {
+    try {
+      const r = await projectsApi.run(id);
+      setRuns((prev) => ({ ...prev, [id]: r }));
+      return r;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // first load: the project, then every question in it
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const p = await loadProject();
+      if (!p || !alive) return;
+      await Promise.all(p.runs.map((r) => loadRun(r.id)));
+      if (!selected && p.runs.length) setSelected(p.runs[p.runs.length - 1].id);
+    })();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  const ordered = useMemo(() => {
+    const ids = project?.runs.map((r) => r.id) || [];
+    for (const id of Object.keys(runs)) if (!ids.includes(id) && runs[id].status !== "replaced") ids.push(id);
+    return ids
+      .map((id) => runs[id])
+      .filter(Boolean)
+      .filter((r) => r.status !== "replaced")
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }, [project, runs]);
+
+  const activeRun = ordered.find((r) => ACTIVE.has(r.status)) || null;
+  const current = (selected && runs[selected]) || ordered[ordered.length - 1] || null;
+  const currentTab: TabId = tab || defaultTab(current);
+
+  // live polling while anything is planning or running
+  useEffect(() => {
+    const live = ordered.filter((r) => ACTIVE.has(r.status) || (r.status === "planned" && r.auto_run));
+    if (!live.length) return;
+    const t = setInterval(async () => {
+      for (const r of live) {
+        const next = await loadRun(r.id);
+        if (next && next.status !== r.status) {
+          if (selected === r.id) setTab(null); // follow the run to its natural tab
+          if (!ACTIVE.has(next.status)) loadProject();
+        }
+      }
+    }, 900);
+    return () => clearInterval(t);
+  }, [ordered, loadRun, loadProject, selected]);
+
+  useEffect(() => {
+    if (selected) {
+      const next = new URLSearchParams(params);
+      next.set("run", selected);
+      setParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected]);
+
+  useEffect(() => {
+    threadEnd.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+  }, [ordered.length]);
+
+  const select = (id: string) => {
+    setSelected(id);
+    setTab(null);
+  };
+
+  const ask = async (text: string, autoRun = true) => {
+    const q = text.trim();
+    if (q.length < 2 || busy || activeRun) return;
+    setBusy(true);
+    setError("");
+    try {
+      const out = await projectsApi.ask(projectId, q, autoRun);
+      setFollowUp("");
+      const r = await loadRun(out.run_id);
+      await loadProject();
+      if (r) select(r.id);
+    } catch (e: any) {
+      setError(errorText(e, "Couldn't ask that. Please try again."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runPlan = async (id: string) => {
+    setBusy(true);
+    try {
+      await projectsApi.execute(id);
+      setRuns((prev) => ({ ...prev, [id]: { ...prev[id], status: "running" } }));
+      setTab("sources");
+    } catch (e: any) {
+      setError(errorText(e, "Couldn't start the plan."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const replan = async (id: string, note: string) => {
+    setBusy(true);
+    try {
+      const out = await projectsApi.replan(id, note);
+      const r = await loadRun(out.run_id);
+      setRuns((prev) => ({ ...prev, [id]: { ...prev[id], status: "replaced" } }));
+      if (r) select(r.id);
+      setTab("plan");
+    } catch (e: any) {
+      setError(errorText(e, "Couldn't change the plan."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stop = async (id: string) => {
+    try {
+      await projectsApi.stop(id);
+      await loadRun(id);
+    } catch {
+      /* the next poll shows the real state */
+    }
+  };
+
+  const makeDashboard = async () => {
+    if (!current || current.status !== "done") return;
+    setDashBusy(true);
+    try {
+      const out = await projectsApi.makeDashboard(projectId, current.id);
+      navigate(`/project-dashboards/${out.dashboard_id}`);
+    } catch (e: any) {
+      setError(errorText(e, "Couldn't build the dashboard."));
+      setDashBusy(false);
+    }
+  };
+
+  if (notFound) {
+    return (
+      <div className="min-h-screen grid place-items-center bg-base px-6">
+        <div className="text-center">
+          <div className="text-section font-semibold text-text">This project doesn't exist or isn't shared with you.</div>
+          <Link to="/" className="btn-primary text-sm mt-4 inline-flex">Go home</Link>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <ChartThemeProvider localScope={`project:${projectId}`}>
+      <div className="dash-shell flex min-h-screen">
+        <AppSidebar
+          workspaces={workspaces}
+          activeWorkspaceId={activeWorkspaceId}
+          onWorkspaceSwitch={switchWorkspace}
+          onWorkspaceCreated={handleWorkspaceCreated}
+        />
+        <div className="flex-1 min-w-0 flex flex-col">
+          <header className="flex items-center justify-between gap-4 pl-14 pr-4 sm:pr-6 lg:pl-6 py-3 border-b border-border bg-surface flex-wrap">
+            <div className="flex flex-col gap-0.5 min-w-0">
+              <span className="font-mono text-[11px] text-muted uppercase">
+                <Link to="/projects" className="hover:text-text">Projects</Link> / {activeRun ? (activeRun.status === "planning" ? "Planning" : "Running") : "Project"}
+              </span>
+              <span className="text-section font-semibold text-text truncate">{project?.title || "…"}</span>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <SourceStrip sources={project?.sources || []} />
+              {project?.dashboards?.length ? (
+                <Link to={`/project-dashboards/${project.dashboards[project.dashboards.length - 1].id}`} className="btn-secondary text-sm">
+                  Open dashboard
+                </Link>
+              ) : null}
+              {activeRun ? (
+                <button type="button" className="btn-secondary text-sm" onClick={() => stop(activeRun.id)}>Stop</button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-primary text-sm"
+                  onClick={makeDashboard}
+                  disabled={!current || current.status !== "done" || dashBusy || !project?.can_edit}
+                  title={current?.status === "done" ? "A live dashboard of this answer, across every source it used" : "Available once an answer is ready"}
+                >
+                  {dashBusy ? "Building…" : "Make dashboard"}
+                </button>
+              )}
+            </div>
+          </header>
+          {activeRun && (
+            <div className="h-[3px] bg-border overflow-hidden" aria-hidden="true">
+              <div
+                className="h-full bg-[rgb(var(--color-accent))] transition-all duration-500"
+                style={{ width: `${progressPct(activeRun)}%` }}
+              />
+            </div>
+          )}
+
+          <div className="flex-1 flex flex-wrap min-h-0">
+            <section aria-label="Conversation" className="flex-[1_1_360px] max-w-full lg:max-w-[460px] border-r border-border bg-base flex flex-col min-h-[60vh]">
+              <div className="flex-1 overflow-auto px-5 py-6 flex flex-col gap-6">
+                {!project && <div className="text-ui text-muted">Loading…</div>}
+                {ordered.map((r) => (
+                  <ThreadItem
+                    key={r.id}
+                    run={r}
+                    selected={current?.id === r.id}
+                    onSelect={() => select(r.id)}
+                    onRun={() => runPlan(r.id)}
+                    onAsk={(q) => ask(q)}
+                    onRetry={() => ask(r.question)}
+                    canEdit={!!project?.can_edit}
+                    busy={busy || !!activeRun}
+                  />
+                ))}
+                <div ref={threadEnd} />
+              </div>
+              {project?.can_edit && (
+                <form
+                  className="p-3.5 border-t border-border"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    ask(followUp);
+                  }}
+                >
+                  {error && <div role="alert" className="text-ui text-danger mb-2">{error}</div>}
+                  <label className="flex items-center gap-2.5 bg-surface border border-border rounded-card px-3 py-2.5">
+                    <span className="sr-only">Ask a follow-up</span>
+                    <input
+                      value={followUp}
+                      onChange={(e) => setFollowUp(e.target.value)}
+                      placeholder={activeRun ? "GD360 is working on the last question…" : "Ask a follow-up…"}
+                      disabled={busy || !!activeRun}
+                      className="flex-1 bg-transparent border-0 outline-none text-body text-text placeholder:text-faint"
+                    />
+                    <button type="submit" disabled={busy || !!activeRun || followUp.trim().length < 2} className="text-caption font-mono text-muted disabled:opacity-40" aria-label="Send">
+                      ↵
+                    </button>
+                  </label>
+                </form>
+              )}
+            </section>
+
+            <section aria-label="Work" className="flex-[999_1_560px] min-w-0 flex flex-col">
+              <div role="tablist" className="flex gap-6 px-5 sm:px-7 border-b border-border overflow-x-auto">
+                {(["plan", "sources", "results", "evidence"] as TabId[]).map((t) => (
+                  <button
+                    key={t}
+                    role="tab"
+                    type="button"
+                    aria-selected={currentTab === t}
+                    onClick={() => setTab(t)}
+                    className={`h-11 text-body border-b-2 -mb-px whitespace-nowrap ${currentTab === t ? "text-text border-[rgb(var(--color-accent))]" : "text-muted border-transparent hover:text-text"}`}
+                  >
+                    {t === "plan" ? "Plan" : t === "sources" ? (current?.status === "running" ? "Sources · live" : "Sources") : t === "results" ? "Results" : `Evidence${current?.result?.queries ? ` · ${current.result.queries} queries` : ""}`}
+                  </button>
+                ))}
+              </div>
+              <div className="p-5 sm:p-7 max-w-[1100px] w-full">
+                {!current && project && <div className="text-ui text-muted">Ask a question to start.</div>}
+                {current && currentTab === "plan" && (
+                  <PlanTab run={current} canEdit={!!project?.can_edit} busy={busy} onRun={() => runPlan(current.id)} onReplan={(n) => replan(current.id, n)} />
+                )}
+                {current && currentTab === "sources" && <SourcesTab run={current} />}
+                {current && currentTab === "results" && <ResultsTab run={current} />}
+                {current && currentTab === "evidence" && <EvidenceTab run={current} />}
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </ChartThemeProvider>
+  );
+}
+
+function progressPct(run: ProjectRun): number {
+  if (run.status === "planning") return 12;
+  const steps = run.steps || [];
+  if (!steps.length) return 20;
+  const done = steps.filter((s) => s.status === "done" || s.status === "failed").length;
+  return Math.min(95, 20 + (done / steps.length) * 75);
+}
+
+function SourceStrip({ sources }: { sources: ProjectSource[] }) {
+  if (!sources.length) return null;
+  const shown = sources.slice(0, 4);
+  return (
+    <div className="hidden md:flex items-center gap-1.5 mr-1" aria-label="Sources in this project">
+      {shown.map((s) => (
+        <span key={s.id} className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full border border-border bg-base text-caption text-secondary" title={`${s.label} · ${s.freshness}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${s.mode === "live" ? "bg-good" : s.mode === "synced" ? "bg-[rgb(var(--color-series-1))]" : "bg-border-strong"}`} />
+          {s.name}
+        </span>
+      ))}
+      {sources.length > shown.length && <span className="text-caption text-muted">+{sources.length - shown.length}</span>}
+    </div>
+  );
+}
+
+function ThreadItem({
+  run, selected, onSelect, onRun, onAsk, onRetry, canEdit, busy,
+}: {
+  run: ProjectRun; selected: boolean; onSelect: () => void; onRun: () => void; onAsk: (q: string) => void; onRetry: () => void;
+  canEdit: boolean; busy: boolean;
+}) {
+  const steps = run.steps || [];
+  const ans = run.result?.answer;
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="self-end max-w-[85%] bg-surface2 rounded-[16px_16px_4px_16px] px-4 py-3 text-body text-text">{run.question}</div>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={onSelect}
+        onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onSelect()}
+        className={`rounded-card p-3.5 -mx-1 flex flex-col gap-3 cursor-pointer border ${selected ? "border-tint-border bg-surface" : "border-transparent hover:bg-surface/60"}`}
+      >
+        <div className="flex items-center gap-2">
+          <span className="w-[22px] h-[22px] rounded-[7px] bg-tint grid place-items-center text-brand-ink text-[11px]" aria-hidden="true">✦</span>
+          <span className="text-ui font-semibold text-text">GD360</span>
+          <span className="text-caption text-muted">
+            {run.status === "planning" && "· planning"}
+            {run.status === "running" && `· working${run.duration_seconds ? ` · ${Math.round(run.duration_seconds)} s` : ""}`}
+            {run.status === "done" && `· ${timeAgo(run.finished_at)}${run.duration_seconds ? ` · done in ${Math.round(run.duration_seconds)} s` : ""}`}
+          </span>
+        </div>
+
+        {run.status === "planning" && (
+          <div className="flex items-center gap-2.5 text-ui text-muted">
+            <span className="w-4 h-4 rounded-full border-2 border-border border-t-[rgb(var(--color-accent))] animate-spin" />
+            Reading your sources and planning the queries…
+          </div>
+        )}
+
+        {run.status === "planned" && run.plan && Array.isArray(run.plan.steps) && (
+          <>
+            <p className="m-0 text-body text-secondary leading-relaxed">
+              {run.plan.understanding?.method ? `${run.plan.understanding.method}. ` : ""}
+              Here is the plan — {run.plan.steps.length} queries across {new Set(run.plan.steps.map((s) => s.source_id)).size} sources.
+            </p>
+            {(run.plan.assumptions || []).length > 0 && (
+              <div className="rounded-ctl border border-border bg-base p-3 flex flex-col gap-1.5">
+                <span className="text-caption uppercase tracking-caps text-muted">I assumed</span>
+                {run.plan.assumptions.map((a, i) => <span key={i} className="text-ui text-secondary">{a}</span>)}
+              </div>
+            )}
+            {canEdit && (
+              <div className="flex gap-2">
+                <button type="button" className="btn-primary text-sm" onClick={(e) => { e.stopPropagation(); onRun(); }} disabled={busy}>Run plan</button>
+                <span className="text-caption text-muted self-center">or change it in the Plan tab</span>
+              </div>
+            )}
+          </>
+        )}
+
+        {(run.status === "running" || (run.status === "stopped" && steps.length > 0)) && (
+          <div className="flex flex-col gap-2">
+            {steps.map((s) => (
+              <div key={s.id} className="grid grid-cols-[18px_1fr] gap-2.5 items-start">
+                <span
+                  className={`mt-[3px] w-3.5 h-3.5 rounded-full border-2 ${
+                    s.status === "done" ? "border-good bg-good" : s.status === "running" ? "border-[rgb(var(--color-series-1))] animate-pulse" : s.status === "failed" ? "border-danger bg-danger" : "border-border-strong"
+                  }`}
+                />
+                <span className="flex flex-col">
+                  <span className={`text-ui ${s.status === "pending" || s.status === "skipped" ? "text-muted" : "text-text"}`}>{s.title}</span>
+                  <span className="text-caption text-muted">
+                    {s.kind === "combine" ? "Combining results" : s.source_name}
+                    {s.status === "done" && s.duration_ms != null ? ` · ${(s.duration_ms / 1000).toFixed(1)} s` : ""}
+                    {s.status === "failed" ? " · could not run" : ""}
+                  </span>
+                </span>
+              </div>
+            ))}
+            {run.status === "stopped" && <span className="text-ui text-muted">Stopped.</span>}
+          </div>
+        )}
+
+        {run.status === "done" && ans && (
+          <>
+            <p className="m-0 text-body text-text leading-relaxed">{ans.headline}</p>
+            {ans.answer && ans.answer !== ans.headline && <p className="m-0 text-ui text-secondary leading-relaxed">{ans.answer}</p>}
+            {ans.causes.length > 0 && (
+              <ol className="m-0 pl-5 flex flex-col gap-1.5 text-ui text-secondary">
+                {ans.causes.slice(0, 3).map((c, i) => (
+                  <li key={i}><span className="text-text font-medium">{c.title}</span>{c.detail ? ` — ${c.detail}` : ""}</li>
+                ))}
+              </ol>
+            )}
+            <div className="flex gap-1.5 flex-wrap">
+              {(run.result?.sources_used || []).map((s) => (
+                <span key={s} className="inline-flex items-center h-[22px] px-2 rounded-md bg-subtle text-caption text-secondary">{s}</span>
+              ))}
+            </div>
+            {ans.next_questions.length > 0 && canEdit && (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-caption uppercase tracking-caps text-muted">Ask next</span>
+                {ans.next_questions.map((q) => (
+                  <button
+                    key={q}
+                    type="button"
+                    disabled={busy}
+                    onClick={(e) => { e.stopPropagation(); onAsk(q); }}
+                    className="text-left px-3 py-2 rounded-ctl border border-border bg-base text-ui text-secondary hover:text-text disabled:opacity-50"
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {run.status === "needs_input" && ans && (
+          <div className="rounded-ctl border border-warning-border bg-warning-fill p-3 text-ui text-text">
+            <div className="font-medium">{ans.headline}</div>
+            <div className="text-secondary mt-1">{ans.answer}</div>
+          </div>
+        )}
+
+        {run.status === "failed" && (
+          <div className="flex flex-col gap-2">
+            <div className="rounded-ctl border border-danger-border bg-danger-fill p-3 text-ui text-text">{run.error || "Something went wrong."}</div>
+            {canEdit && (
+              <button type="button" className="btn-secondary text-sm self-start" disabled={busy} onClick={(e) => { e.stopPropagation(); onRetry(); }}>
+                Ask again
+              </button>
+            )}
+          </div>
+        )}
+        {run.status === "stopped" && canEdit && (
+          <button type="button" className="btn-secondary text-sm self-start" disabled={busy} onClick={(e) => { e.stopPropagation(); onRetry(); }}>
+            Ask again
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+

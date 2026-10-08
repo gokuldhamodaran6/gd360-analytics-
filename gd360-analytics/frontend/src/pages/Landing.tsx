@@ -502,7 +502,7 @@ export default function Landing() {
           <span className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-white font-bold text-sm shrink-0">
             G
           </span>
-          <span className="text-base sm:text-lg font-extrabold gradient-text">GD360 Analytics</span>
+          <span className="text-[16px] sm:text-lg font-extrabold gradient-text">GD360 Analytics</span>
         </Link>
         <div className="flex items-center gap-2 sm:gap-3">
           <ThemeToggle />
@@ -574,17 +574,17 @@ export default function Landing() {
               <span aria-hidden className="absolute left-0 right-0 bottom-1 sm:bottom-2 h-[0.32em] bg-primary/[0.22] -z-0 rounded-sm" />
             </span>
           </h1>
-          <p className="text-muted text-base sm:text-lg mt-6 max-w-2xl mx-auto leading-relaxed">
+          <p className="text-muted text-[16px] sm:text-lg mt-6 max-w-2xl mx-auto leading-relaxed">
             A solo founder gets an analyst on call. An analytics team gets the repeatable work off its plate.
             GD360 connects to your database or warehouse, writes the governed SQL, builds the dashboard, and checks
             its own math — live. No SQL. No Python. No code. Just less busywork, and more time for the calls only
             a person should make.
           </p>
           <div className="flex items-center justify-center gap-3 mt-8 flex-wrap">
-            <Link to="/register" className="btn-primary text-base px-6 py-3" style={{ borderRadius: "999px" }}>
+            <Link to="/register" className="btn-primary text-[16px] px-6 py-3" style={{ borderRadius: "999px" }}>
               Create free account &rarr;
             </Link>
-            <Link to="/login" className="btn-secondary text-base px-6 py-3" style={{ borderRadius: "999px" }}>
+            <Link to="/login" className="btn-secondary text-[16px] px-6 py-3" style={{ borderRadius: "999px" }}>
               Log in
             </Link>
           </div>
@@ -972,7 +972,7 @@ export default function Landing() {
           <h2 className="text-xl sm:text-2xl font-bold mb-2">Your data has answers. Go ask it.</h2>
           <p className="text-muted mb-6">Free, unlimited plan. No credit card required.</p>
           <div className="flex items-center justify-center gap-3 flex-wrap">
-            <Link to="/register" className="btn-primary text-base px-6 py-3" style={{ borderRadius: "999px" }}>
+            <Link to="/register" className="btn-primary text-[16px] px-6 py-3" style={{ borderRadius: "999px" }}>
               Create free account &rarr;
             </Link>
             <Link to="/login" className="text-primary text-sm font-medium hover:underline self-center">

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { InvitePreview, workspaceApi } from "../api/client";
 import ThemeToggle from "../components/ThemeToggle";
-import { ACTIVE_WORKSPACE_KEY } from "../lib/useWorkspaceNav";
+import { ACTIVE_WORKSPACE_KEY, forgetWorkspaceList } from "../lib/useWorkspaceNav";
 
 function UsersIcon({ className = "w-5 h-5" }: { className?: string }) {
   return (
@@ -46,6 +46,7 @@ export default function InviteJoin() {
   }, [token]);
 
   const enterWorkspace = (workspaceId: string) => {
+    forgetWorkspaceList();
     try {
       localStorage.setItem(ACTIVE_WORKSPACE_KEY, workspaceId);
     } catch {

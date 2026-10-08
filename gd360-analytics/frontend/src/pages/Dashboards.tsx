@@ -229,7 +229,10 @@ function useDashboardMeta(dashboards: DashboardSummary[] | null): Record<string,
 function DashboardCard({ d, onDeleted, meta }: { d: DashboardSummary; onDeleted: (id: string) => void; meta?: DashboardMeta }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [busy, setBusy] = useState(false);
-  const isDashboard = d.layout_version === 2;
+  // 2026-10-08 (round 11): layout_version 3 = built from a multi-source
+  // Project answer (pages/ProjectDashboard.tsx) - a real dashboard too.
+  const isProjectDash = d.layout_version === 3;
+  const isDashboard = d.layout_version === 2 || isProjectDash;
   const refreshed = meta?.last_refreshed ? relativeTime(meta.last_refreshed) : null;
 
   const doDelete = async () => {
@@ -247,7 +250,7 @@ function DashboardCard({ d, onDeleted, meta }: { d: DashboardSummary; onDeleted:
     <div className="dash-card p-4 flex flex-col gap-2.5">
       <div className="flex items-start justify-between gap-2">
         <Link
-          to={isDashboard ? `/dashboard-builder/${d.id}` : `/dashboards/${d.id}`}
+          to={isProjectDash ? `/project-dashboards/${d.id}` : isDashboard ? `/dashboard-builder/${d.id}` : `/dashboards/${d.id}`}
           className="flex items-center gap-2.5 min-w-0 group"
         >
           <span
@@ -415,8 +418,8 @@ export default function Dashboards() {
   // "Saved Charts" section, and a flat chart board (1, the default) never
   // gets the word "Dashboard" anywhere near it. See this file's own
   // module docstring above for the full reasoning.
-  const trueDashboards = (dashboards || []).filter((d) => d.layout_version === 2);
-  const chartBoards = (dashboards || []).filter((d) => d.layout_version !== 2);
+  const trueDashboards = (dashboards || []).filter((d) => d.layout_version === 2 || d.layout_version === 3);
+  const chartBoards = (dashboards || []).filter((d) => d.layout_version !== 2 && d.layout_version !== 3);
   const meta = useDashboardMeta(dashboards);
 
   return (
