@@ -15,6 +15,8 @@ import DataSources from "./pages/DataSources";
 import MLModels from "./pages/MLModels";
 import MLModelDetail from "./pages/MLModelDetail";
 import Jobs from "./pages/Jobs";
+import Automations from "./pages/Automations";
+import AutomationEdit from "./pages/AutomationEdit";
 import Experiments from "./pages/Experiments";
 import Governance from "./pages/Governance";
 import NewProject from "./pages/NewProject";
@@ -156,6 +158,11 @@ export default function App() {
           since that one genuinely duplicated the Projects filter and Data
           Sources page. */}
       <Route path="/jobs" element={<Protected><Jobs /></Protected>} />
+      {/* 2026-10-08 (round 12): Automations - WHEN -> DO -> TELL. /jobs keeps
+          the older dashboard schedules and pipelines reachable. */}
+      <Route path="/automations" element={<Protected><Automations /></Protected>} />
+      <Route path="/automations/new" element={<Protected><AutomationEdit /></Protected>} />
+      <Route path="/automations/:automationId" element={<Protected><AutomationEdit /></Protected>} />
       {/* Phase 4 (2026-09-28, Experimentation / A/B testing): see
           AppSidebar.tsx's own nav entry for this, placed exactly like the
           sidebar. */}

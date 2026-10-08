@@ -17,16 +17,20 @@
   recognize as GD360's own the way you'd recognize a wax seal.
 */
 :root {
-  --color-base: 10 10 11;
-  --color-surface: 18 18 20;
-  --color-surface2: 26 26 29;
-  --color-border: 42 42 46;
-  --color-primary: 20 122 92;
-  --color-accent: 110 201 170;
-  --color-text: 237 237 233;
-  --color-muted: 150 150 148;
-  --glow-1: rgba(20, 122, 92, 0.1);
-  --glow-2: rgba(20, 122, 92, 0.05);
+  /* 2026-10-08 (round 12): the dark theme is "Obsidian" - the look Gokul
+     chose for v2 (V2-*.dc.html mockups): near-black ground, quiet
+     blue-green greys, and one mint signal colour with dark ink on it. */
+  --color-base: 7 9 10;
+  --color-surface: 14 18 19;
+  --color-surface2: 20 26 27;
+  --color-border: 31 39 41;
+  --color-primary: 67 229 160;
+  --color-on-primary: 4 20 13;
+  --color-accent: 67 229 160;
+  --color-text: 232 238 236;
+  --color-muted: 111 124 120;
+  --glow-1: rgba(67, 229, 160, 0.035);
+  --glow-2: rgba(122, 167, 255, 0.025);
   --card-alpha: 1;
   /* Tells the browser this page's own UI (including the native parts of
      an <input>/<textarea> it renders, like the text caret and - on some
@@ -47,6 +51,7 @@
   --color-surface2: 244 244 241;
   --color-border: 227 227 222;
   --color-primary: 15 92 70;
+  --color-on-primary: 255 255 255;
   --color-accent: 45 130 103;
   --color-text: 22 22 21;
   --color-muted: 111 111 106;
@@ -81,28 +86,28 @@
                      "more contrast against the page" either way)
    Dark values were picked so each pair keeps >= 4.5:1 ink-on-fill. */
 :root {
-  --color-subtle: 26 26 29;
-  --color-border-strong: 58 58 63;
-  --color-secondary: 190 190 186;
-  --color-faint: 104 104 102;
-  --color-tint: 18 37 33;
-  --color-tint-border: 24 66 54;
-  --color-brand-ink: 110 201 170;
-  --color-good: 110 201 170;
-  --color-good-fill: 18 37 33;
-  --color-good-border: 24 66 54;
-  --color-warning: 240 170 70;
-  --color-warning-fill: 44 32 14;
-  --color-warning-border: 92 62 20;
-  --color-danger: 248 113 113;
-  --color-danger-fill: 48 20 18;
-  --color-danger-border: 110 40 36;
-  --color-seq-1: 18 37 33;
-  --color-seq-2: 20 66 52;
-  --color-seq-3: 31 110 85;
-  --color-seq-4: 79 154 124;
-  --color-seq-5: 143 196 173;
-  --color-seq-6: 195 223 211;
+  --color-subtle: 17 23 24;
+  --color-border-strong: 42 52 54;
+  --color-secondary: 163 176 172;
+  --color-faint: 75 90 87;
+  --color-tint: 19 35 32;
+  --color-tint-border: 36 65 58;
+  --color-brand-ink: 67 229 160;
+  --color-good: 67 229 160;
+  --color-good-fill: 19 35 32;
+  --color-good-border: 36 65 58;
+  --color-warning: 242 184 75;
+  --color-warning-fill: 42 32 14;
+  --color-warning-border: 92 66 22;
+  --color-danger: 255 122 107;
+  --color-danger-fill: 46 21 19;
+  --color-danger-border: 104 44 38;
+  --color-seq-1: 19 35 32;
+  --color-seq-2: 24 70 56;
+  --color-seq-3: 34 120 90;
+  --color-seq-4: 52 175 125;
+  --color-seq-5: 67 229 160;
+  --color-seq-6: 170 245 210;
   /* Chart series, assigned in order, never cycled (DESIGN_BRIEF.md). The
      palette is the same in both themes - System.dc.html: "Chart series
      palette stays the same in dark mode". Source of truth for the hexes is
@@ -118,8 +123,8 @@
      (System.dc.html: the Subtle fill in light, Border in dark - the same
      pair as src/ui/tokens.ts GRIDLINE); the baseline / crosshair / donut
      leader is one step stronger. Solid hairlines, never dashed. */
-  --chart-grid: 42 42 46;
-  --chart-axis: 58 58 63;
+  --chart-grid: 24 31 33;
+  --chart-axis: 42 52 54;
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
   --shadow-pop: 0 8px 24px -8px rgb(0 0 0 / 0.6), 0 1px 2px rgb(0 0 0 / 0.4);
 }
@@ -216,7 +221,7 @@ body {
 
 .btn-primary {
   background: rgb(var(--color-primary));
-  color: #fff;
+  color: rgb(var(--color-on-primary));
   font-weight: 600;
   border-radius: 9px;
   padding: 0.6rem 1.1rem;
@@ -1138,4 +1143,29 @@ input[type="radio"] {
 .palette-thumb [data-donut-legend],
 .palette-thumb [data-donut-label] {
   display: none;
+}
+
+/* 2026-10-08 (round 12): Automations read as a sentence - WHEN (violet),
+   DO (mint), TELL (blue) - in both themes. Ink / fill / border triplets. */
+:root {
+  --auto-when: 201 167 255;
+  --auto-when-fill: 26 23 48;
+  --auto-when-border: 58 47 100;
+  --auto-do: 67 229 160;
+  --auto-do-fill: 19 35 32;
+  --auto-do-border: 36 65 58;
+  --auto-tell: 122 167 255;
+  --auto-tell-fill: 20 28 43;
+  --auto-tell-border: 38 55 90;
+}
+:root[data-theme="light"] {
+  --auto-when: 109 64 201;
+  --auto-when-fill: 243 238 253;
+  --auto-when-border: 221 208 247;
+  --auto-do: 15 122 84;
+  --auto-do-fill: 232 243 238;
+  --auto-do-border: 195 223 211;
+  --auto-tell: 37 99 199;
+  --auto-tell-fill: 234 241 252;
+  --auto-tell-border: 198 216 245;
 }
