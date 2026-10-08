@@ -31,7 +31,7 @@ export function StepRail({ step, className }: { step: BuilderStep; className?: s
                 className={cn(
                   "inline-flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-semibold",
                   state === "done" && "border border-tint-border bg-tint text-brand-ink",
-                  state === "current" && "bg-primary text-white",
+                  state === "current" && "bg-primary text-on-primary",
                   state === "todo" && "border border-border-strong text-muted"
                 )}
               >

@@ -175,10 +175,10 @@ export function Composer({
       <div className="flex flex-1 flex-col gap-4 px-[18px] py-4">
         {proposal ? (
           <>
-            <div data-goal-bubble="" className="max-w-[88%] self-end rounded-[12px_12px_4px_12px] bg-primary px-3.5 py-3 text-body text-white">{goal.trim()}</div>
+            <div data-goal-bubble="" className="max-w-[88%] self-end rounded-[12px_12px_4px_12px] bg-primary px-3.5 py-3 text-body text-on-primary">{goal.trim()}</div>
             <div data-proposal-card="" className="flex flex-col gap-3 rounded-card border border-border bg-base p-3.5">
               <div className="flex items-center gap-2">
-                <span className="inline-flex h-5 w-5 items-center justify-center rounded-[6px] bg-primary text-[11px] font-bold text-white">G</span>
+                <span className="inline-flex h-5 w-5 items-center justify-center rounded-[6px] bg-primary text-[11px] font-bold text-on-primary">G</span>
                 <span className="text-[12.5px] font-semibold text-text">GD360</span>
                 <span className="text-caption text-faint">· proposal in {(proposal.generated_in_ms / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} s{proposal.revision > 1 ? ` · revision ${proposal.revision}` : ""}</span>
               </div>
