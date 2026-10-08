@@ -25,6 +25,9 @@ import HelpSnowflake from "./pages/HelpSnowflake";
 import ConnectResourcePicker from "./pages/ConnectResourcePicker";
 import PrivacyPolicy from "./pages/PrivacyPolicy";
 import InviteJoin from "./pages/InviteJoin";
+import HomePage from "./pages/Home";
+import ProjectWorkspace from "./pages/ProjectWorkspace";
+import ProjectDashboard from "./pages/ProjectDashboard";
 import CommandPalette from "./components/CommandPalette";
 import ErrorBoundary from "./components/ErrorBoundary";
 
@@ -47,7 +50,9 @@ function Protected({ children }: { children: JSX.Element }) {
 function Home() {
   const { user, loading } = useAuth();
   if (loading) return null;
-  return user ? <Dashboard /> : <Landing />;
+  // 2026-10-08 (round 11): signed in, "/" is the one-question Home; the
+  // full Projects library (folders, bulk actions) moved to /projects.
+  return user ? <HomePage /> : <Landing />;
 }
 
 // 2026-09-24 (Dashboard Builder Phase 4, white-label custom domains): this
@@ -104,6 +109,10 @@ export default function App() {
           /workspace - kept as its own top-level path instead so there's no
           risk of "new" ever being parsed as a real :datasourceId. */}
       <Route path="/project/new" element={<Protected><NewProject /></Protected>} />
+      {/* 2026-10-08 (round 11): multi-source Projects and their dashboards. */}
+      <Route path="/projects" element={<Protected><Dashboard /></Protected>} />
+      <Route path="/p/:projectId" element={<Protected><ProjectWorkspace /></Protected>} />
+      <Route path="/project-dashboards/:dashboardId" element={<Protected><ProjectDashboard /></Protected>} />
       <Route path="/workspace/:datasourceId" element={<Protected><Workspace /></Protected>} />
       <Route path="/dashboards" element={<Protected><Dashboards /></Protected>} />
       {/* 2026-10-07 (dashboard from a prompt): describe -> propose -> refine
