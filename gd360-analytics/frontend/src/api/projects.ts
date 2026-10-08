@@ -45,11 +45,14 @@ export type RunStep = {
 
 export type Fact = { id: string; label: string; value: number | null; kind: string; display: string };
 
-export type Visual =
-  | { type: "waterfall"; title: string; items: { label: string; value: number; kind: "total" | "up" | "down" }[]; format: string; currency?: string | null }
-  | { type: "diverging"; title: string; items: { label: string; value: number; share: number | null }[]; format: string; currency?: string | null }
-  | { type: "chart"; title: string; chart_type?: string | null; columns: ResultColumn[]; rows: Record<string, unknown>[]; truncated?: boolean }
-  | { type: "kpis"; items: { label: string; display: string; fact_id: string }[] };
+type VisualBase = { sources?: string[] };
+export type Visual = VisualBase &
+  (
+    | { type: "waterfall"; title: string; items: { label: string; value: number; kind: "total" | "up" | "down" }[]; format: string; currency?: string | null }
+    | { type: "diverging"; title: string; items: { label: string; value: number; share: number | null }[]; format: string; currency?: string | null }
+    | { type: "chart"; title: string; chart_type?: string | null; columns: ResultColumn[]; rows: Record<string, unknown>[]; truncated?: boolean }
+    | { type: "kpis"; items: { label: string; display: string; fact_id: string }[] }
+  );
 
 export type Cause = {
   title: string;
@@ -57,6 +60,11 @@ export type Cause = {
   fact_ids: string[];
   confidence: "high" | "medium" | "low";
   direction: "up" | "down" | null;
+  // read off the computed facts by the backend (executor.enrich_causes)
+  amount?: string | null;
+  amount_value?: number | null;
+  share?: string | null;
+  sources?: string[];
 };
 
 export type Answer = {
@@ -157,7 +165,7 @@ export type DashTile = {
   chart_type?: string | null;
 };
 
-export type DashKpi = { key: string; label: string; display: string; delta?: string | null; delta_dir?: string | null; note?: string };
+export type DashKpi = { key: string; label: string; display: string; delta?: string | null; delta_dir?: string | null; note?: string; sources?: string[] };
 
 export type ProjectDashboard = {
   id: string;

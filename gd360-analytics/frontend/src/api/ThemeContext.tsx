@@ -17,15 +17,20 @@ const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 const STORAGE_KEY = "gd360_theme";
 
+// 2026-10-08 (round 12): Obsidian (dark) is GD360's default look. A theme
+// saved before this round was usually just the old "follow the system"
+// default written back, so it is only honoured once the person has chosen
+// again since (VERSION_KEY marks that).
+const VERSION_KEY = "gd360_theme_v2";
+
 function getInitialTheme(): Theme {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "light" || stored === "dark") return stored;
+    if (localStorage.getItem(VERSION_KEY)) {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored === "light" || stored === "dark") return stored;
+    }
   } catch {
-    // localStorage unavailable - fall through to system preference.
-  }
-  if (typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) {
-    return "light";
+    // localStorage unavailable - use the default.
   }
   return "dark";
 }
@@ -47,6 +52,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, stored);
+      localStorage.setItem(VERSION_KEY, "1");
     } catch {
       // Non-fatal - theme just will not persist across visits.
     }
