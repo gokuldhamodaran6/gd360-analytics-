@@ -414,10 +414,15 @@ def run_plan(db: Session, plan: dict, user: models.User, catalog: Catalog, set_s
     return tables, evidence
 
 
-def analyse(plan: dict, tables: dict, steps: list[dict]) -> tuple[dict, list[str]]:
+def analyse(plan: dict, tables: dict, steps: list[dict], question: str = "") -> tuple[dict, list[str]]:
     """The planned analysis, or - when it cannot be computed - the last
-    result shown as it is, with the reason as a warning."""
-    spec = plan.get("analysis") or {}
+    result shown as it is, with the reason as a warning. Then (round 14)
+    the presentation: a chart for every other part of the question, and a
+    note wherever the data covers the calendar unevenly."""
+    from . import present
+    spec = dict(plan.get("analysis") or {})
+    if question and spec.get("type") in ("breakdown", "comparison") and not spec.get("rank"):
+        spec["rank"] = present.question_rank(question)
     warnings: list[str] = []
     try:
         analysis = run_analysis(spec, tables)
@@ -427,6 +432,21 @@ def analyse(plan: dict, tables: dict, steps: list[dict]) -> tuple[dict, list[str
         fallback_table = last if last in tables else next(iter(tables))
         analysis = run_analysis({"type": "lookup", "table": fallback_table}, tables)
     warnings += analysis.get("warnings") or []
+    currency = spec.get("currency") if spec.get("format") == "currency" else (spec.get("currency") or "USD")
+    try:
+        used = {t for v in analysis.get("visuals") or [] for t in (v.get("tables") or [])}
+        used |= {spec.get("table")} | {(spec.get("total") or {}).get("table")}
+        used |= {d.get("table") for d in spec.get("drivers") or []} | {c.get("table") for c in spec.get("components") or []}
+        used |= {(spec.get("series") or {}).get("table")}
+        focus_dim = spec.get("dimension_column")
+        extra = present.supporting_visuals(plan, tables, {u for u in used if u}, currency, focus_dim,
+                                           limit=4 if spec.get("type") != "explain_change" else 2)
+        analysis["visuals"] = (analysis.get("visuals") or []) + extra
+        cov = present.coverage(tables)
+        analysis["coverage"] = cov
+        warnings += [n for n in cov.get("notes") or [] if n not in warnings]
+    except Exception as e:  # noqa: BLE001 - presentation never fails an answer
+        print(f"[project_engine] presentation step skipped: {e}")
     label_sources(analysis, plan, steps or [])
     failed_steps = [s for s in steps or [] if s.get("status") == "failed"]
     if failed_steps:
@@ -475,33 +495,70 @@ def label_sources(analysis: dict, plan: dict, steps: list[dict]) -> None:
         v["sources"] = names(v.get("tables"))
 
 
-def enrich_causes(answer: dict, analysis: dict, plan: dict, steps: list[dict]) -> None:
+def enrich_causes(answer: dict, analysis: dict, plan: dict, steps: list[dict], idx: list | None = None,
+                  currency: str | None = None) -> None:
     """Each cause gets the number it moved (its lead fact), what share of
     the whole change that is, and the sources that number came from - all
-    read off computed facts, never written by the model."""
+    read off computed facts, never written by the model.
+
+    Round 14: the big number on a cause card is one the cause itself talks
+    about. A fact the writer cited but whose number is not in the cause
+    (the total revenue on a "peak pricing" cause) is not used; when the
+    cause names a number from the result tables instead, that number is
+    shown, written the way its column means it."""
+    from . import present
+    from .numbers import extract_numbers
     facts = {f["id"]: f for f in analysis.get("facts") or []}
     by_table = _table_sources(plan, steps)
+
+    def written(f: dict, nums: list[float]) -> bool:
+        v = f.get("value")
+        if v is None:
+            return False
+        for n in nums:
+            if abs(abs(n) - abs(v)) <= max(0.051, abs(v) * 0.006):
+                return True
+            for scale in (1e3, 1e6, 1e9):
+                if abs(v) >= scale and abs(abs(n) - abs(v)) <= scale * 0.0051:
+                    return True
+        return False
+
     for cause in answer.get("causes") or []:
+        text = f"{cause.get('title') or ''} {cause.get('detail') or ''}"
+        nums = [v for _t, v, pct in extract_numbers(text) if not pct and not (1900 <= abs(v) <= 2100 and float(v).is_integer())]
         ids = [i for i in cause.get("fact_ids") or [] if i in facts]
+
         def rank(f: dict) -> int:
             lab = f["label"]
             return 0 if lab.startswith("Effect of ") else 1 if lab.endswith(": change") else 2 if lab.startswith("Change in ") else 9
         leads = sorted((facts[i] for i in ids if facts[i]["kind"] != "percent" and _LEAD.match(facts[i]["label"])), key=rank)
         lead = leads[0] if leads else None
         if lead is None:
-            lead = next((facts[i] for i in ids if facts[i]["kind"] != "percent"), None)
+            lead = next((facts[i] for i in ids if facts[i]["kind"] != "percent" and written(facts[i], nums)), None)
+        if lead is None and nums:
+            lead = next((f for f in facts.values() if f["kind"] != "percent" and written(f, nums[:1])), None)
         share = None
         if lead is not None:
             base = lead["label"][: -len(": change")] if lead["label"].endswith(": change") else lead["label"]
             want = f"{base}: share of the change"
             share = next((f for f in facts.values() if f["label"] == want), None)
+        amount, amount_value = (lead["display"], lead["value"]) if lead else (None, None)
+        if lead is None and nums and idx:
+            for n in nums:
+                hit = present.match_index(n, idx)
+                # money, or a count big enough to headline; a bare 4.14 says nothing on its own
+                if hit and (hit[1] == "currency" or (hit[1] == "integer" and abs(hit[0]) >= 100)):
+                    amount, amount_value = present.nice(hit[0], hit[1], currency), hit[0]
+                    break
         srcs: list[str] = []
         for i in ids:
             for n in facts[i].get("sources") or by_table.get(facts[i].get("table") or "", []):
                 if n not in srcs:
                     srcs.append(n)
-        cause["amount"] = lead["display"] if lead else None
-        cause["amount_value"] = lead["value"] if lead else None
+        if not srcs and amount and not lead:
+            srcs = sorted({n for v in by_table.values() for n in v})[:2]
+        cause["amount"] = amount
+        cause["amount_value"] = amount_value
         cause["share"] = share["display"] if share else None
         cause["sources"] = srcs
 
@@ -533,12 +590,22 @@ def _execute(db: Session, run: models.ProjectRun) -> None:
         db.commit()
         return
 
-    analysis, warnings = analyse(plan, tables, run.steps)
+    analysis, warnings = analyse(plan, tables, run.steps, run.question)
+    rk = (analysis.get("summary") or {}).get("rank")
+    if rk and isinstance(plan.get("analysis"), dict) and not plan["analysis"].get("rank"):
+        plan = {**plan, "analysis": {**plan["analysis"], "rank": rk}}
+        run.plan = plan
+        flag_modified(run, "plan")
     if _stopped(db, run):
         _finish_stopped(db, run)
         return
     answer = composer.compose(run.question, plan, analysis, evidence)
-    enrich_causes(answer, analysis, plan, run.steps or [])
+    from . import present
+    spec = plan.get("analysis") or {}
+    currency = spec.get("currency") or "USD"
+    idx = present.number_index(analysis.get("facts") or [], [*evidence, *[v for v in analysis.get("visuals") or [] if v.get("rows")]], currency)
+    answer = present.polish_answer(answer, idx, currency) | {"written_by": answer.get("written_by")}
+    enrich_causes(answer, analysis, plan, run.steps or [], idx, currency)
 
     run.result = {
         "answer": answer,

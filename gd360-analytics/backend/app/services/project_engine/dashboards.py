@@ -68,16 +68,37 @@ def _kpis(analysis_type: str, summary: dict, facts: list[dict]) -> list[dict]:
                             "note": "latest vs first period"})
     elif analysis_type in ("breakdown", "comparison"):
         ids = summary.get("fact_ids") or []
-        if ids and by_id.get(ids[0]):
-            out.append({"key": "total", "label": by_id[ids[0]]["label"], "display": by_id[ids[0]]["display"],
-                        "sources": by_id[ids[0]].get("sources") or [], "value": by_id[ids[0]].get("value"),
-                        "kind": by_id[ids[0]].get("kind")})
+        tid = summary.get("total_fact_id") if "total_fact_id" in summary else (ids[0] if ids else None)
+        if tid and by_id.get(tid):
+            t = by_id[tid]
+            out.append({"key": "total", "label": t["label"], "display": t["display"], "sources": t.get("sources") or [],
+                        "value": t.get("value"), "kind": t.get("kind")})
+
+        def seg_kpi(key: str, word: str, seg: dict | None) -> None:
+            if not seg or not seg.get("fact_ids"):
+                return
+            f = by_id.get(seg["fact_ids"][0])
+            if not f:
+                return
+            share = by_id.get(seg["fact_ids"][1]) if len(seg["fact_ids"]) > 1 else None
+            note = f"{share['display']} of total" if share else ""
+            if seg.get("per_year"):
+                note = f"per year of data · {seg.get('years')} years"
+            out.append({"key": key, "label": f"{word}: {seg['segment']}", "display": f["display"], "note": note,
+                        "sources": f.get("sources") or [], "value": f.get("value"), "kind": f.get("kind"),
+                        "delta_dir": "down" if key == "lowest" else None})
+
         segs = summary.get("segments") or []
-        if segs:
-            f = by_id.get(segs[0]["fact_ids"][0])
-            if f:
-                out.append({"key": "top", "label": f"Top: {segs[0]['segment']}", "display": f["display"],
-                            "note": by_id.get(segs[0]["fact_ids"][1], {}).get("display", "") + " of total" if len(segs[0]["fact_ids"]) > 1 else ""})
+        highest = summary.get("highest") or (segs[0] if segs else None)
+        lowest = summary.get("lowest")
+        if summary.get("rank") == "lowest":
+            seg_kpi("lowest", "Lowest", lowest)
+            if highest and (not lowest or highest.get("segment") != lowest.get("segment")):
+                seg_kpi("top", "Highest", highest)
+        else:
+            seg_kpi("top", "Top", highest)
+            if lowest and highest and lowest.get("segment") != highest.get("segment") and (summary.get("segment_count") or 0) > 2:
+                seg_kpi("lowest", "Lowest", lowest)
     else:
         for f in (facts or [])[:4]:
             out.append({"key": f"fact:{f['label']}", "label": f["label"], "display": f["display"], "sources": f.get("sources") or [],

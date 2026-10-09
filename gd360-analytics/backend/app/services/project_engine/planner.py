@@ -70,6 +70,18 @@ Comparisons between two periods (explain_change):
   them, and include ad spend or budget tables as "context" when they may explain
   traffic changes.
 
+Questions with several parts ("which hotel performs best, in which year and month,
+and why"): give each part its own step (by hotel; by year and month; by the likely
+drivers such as channel, segment, price or cancellations). The analysis covers the
+first part; GD360 draws every other step as a supporting chart.
+
+Months or weekdays compared across several years: return the year column too (or
+add years_covered = COUNT(DISTINCT year) per month), because the first and last
+year of data are often partial. Say in "assumptions" when they are.
+For "lowest / worst / weakest" questions set analysis.rank to "lowest".
+Do not add helper sort columns (month_num, sort_order) to the analysis table -
+GD360 orders months and weekdays itself.
+
 Today's date is {{today}}.
 
 Answer with JSON only, in exactly this shape:
@@ -97,7 +109,7 @@ Answer with JSON only, in exactly this shape:
     "series": {{"table": "s2", "title": "Revenue per day"}},
     "context": ["s4"],
     "table": "s1", "time_column": "month", "value_columns": ["revenue"],
-    "dimension_column": "channel", "value_column": "revenue",
+    "dimension_column": "channel", "value_column": "revenue", "rank": "highest | lowest",
     "chart_type": "line | bar | horizontal_bar | area | table"
   }}
 }}

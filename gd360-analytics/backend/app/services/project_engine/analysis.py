@@ -20,6 +20,7 @@ in it has a `period` column whose values are exactly 'current' and
 from __future__ import annotations
 
 import math
+import re
 
 import pandas as pd
 
@@ -350,7 +351,8 @@ def _trend(spec: dict, tables: dict, facts: _Facts) -> dict:
     except Exception:  # noqa: BLE001
         work["_t"] = work[tcol]
     work = work.sort_values("_t")
-    metric = spec.get("metric_name") or vcols[0]
+    from . import present
+    metric = spec.get("metric_name") or present.humanize(vcols[0])
     series_out = []
     for v in vcols:
         s = pd.to_numeric(work[v], errors="coerce")
@@ -359,7 +361,7 @@ def _trend(spec: dict, tables: dict, facts: _Facts) -> dict:
         if s.empty:
             continue
         first, last = float(s.iloc[0]), float(s.iloc[-1])
-        name = metric if len(vcols) == 1 else v
+        name = metric if len(vcols) == 1 else present.humanize(v)
         tl = lambda i: str(valid[tcol].iloc[i])[:10]  # noqa: E731
         f1 = facts.add(f"{name}, {tl(0)}", first)
         f2 = facts.add(f"{name}, {tl(-1)}", last)
@@ -375,17 +377,19 @@ def _trend(spec: dict, tables: dict, facts: _Facts) -> dict:
             j = int(diffs.abs().values.argmax()) + 1
             fj = facts.add(f"Biggest move in {name}: {tl(j - 1)} to {tl(j)}", float(diffs.iloc[j - 1]), signed=True)
             jump = {"from": tl(j - 1), "to": tl(j), "change": float(diffs.iloc[j - 1]), "fact_id": fj["id"]}
-        total = facts.add(f"Total {name} over the period", float(s.sum())) if spec.get("summable", True) else None
+        summable = spec.get("summable", True) and present._additive(v) and spec.get("format") not in ("percent", "ratio")
+        total = facts.add(f"{present.metric_total_label(name)} over the period", float(s.sum())) if summable else None
         series_out.append({"name": name, "first": first, "last": last, "pct": pc, "jump": jump,
                            "fact_ids": [f["id"] for f in (f1, f2, ch, fp, fmax, fmin, total) if f]})
     visuals = [{"type": "chart", "title": spec.get("title") or f"{metric} over time",
-                "chart_type": spec.get("chart_type") or "line", **table_payload(df)}]
+                "chart_type": spec.get("chart_type") or "line", **present.annotate(table_payload(df), facts.currency)}]
     return {"summary": {"metric": metric, "series": series_out}, "visuals": visuals, "warnings": []}
 
 
 # ---- breakdown ---------------------------------------------------------------
 
 def _breakdown(spec: dict, tables: dict, facts: _Facts) -> dict:
+    from . import present
     df = tables.get(spec.get("table"))
     if df is None or not len(df):
         raise AnalysisError("The breakdown table is empty.")
@@ -393,26 +397,64 @@ def _breakdown(spec: dict, tables: dict, facts: _Facts) -> dict:
     val = _col(df, spec.get("value_column"))
     if not dim or not val:
         raise AnalysisError("The breakdown needs a dimension column and a value column.")
+    spec = {**spec, "dimension_column": dim, "value_column": val}
+    additive = present._additive(val) and spec.get("format") not in ("percent", "ratio")
     work = df[[dim, val]].copy()
     work[val] = pd.to_numeric(work[val], errors="coerce")
-    work = work.dropna(subset=[val]).groupby(dim, as_index=False)[val].sum().sort_values(val, ascending=False)
-    metric = spec.get("metric_name") or val
-    total = float(work[val].sum())
-    ft = facts.add(f"Total {metric}", total)
+    work = work.dropna(subset=[val]).groupby(dim, as_index=False, dropna=False)[val].agg("sum" if additive else "mean")
+    work = work.sort_values(val, ascending=False).reset_index(drop=True)
+    metric = spec.get("metric_name") or present.humanize(val)
+    dim_label = present.humanize(dim).lower()
+    rank = spec.get("rank") if spec.get("rank") in ("highest", "lowest") else "highest"
+    total = float(work[val].sum()) if additive else None
+    ft = facts.add(present.metric_total_label(metric), total) if additive else None
+    n = len(work)
+    picked = list(range(min(10, n)))
+    for i in range(max(0, n - 3), n):  # the lowest are facts too: "which month is weakest" needs them
+        if i not in picked:
+            picked.append(i)
     segs = []
-    for _, row in work.head(10).iterrows():
+    for i in picked:
+        row = work.iloc[i]
         v = float(row[val])
-        share = v / total * 100 if total else None
+        share = v / total * 100 if additive and total else None
         fv = facts.add(f"{metric} for {row[dim]}", v)
-        fs = facts.add(f"{row[dim]}: share of total {metric}", share, kind="percent") if share is not None else None
-        segs.append({"segment": str(row[dim]), "value": v, "share": share, "fact_ids": [f["id"] for f in (fv, fs) if f]})
-    top3 = float(work[val].head(3).sum() / total * 100) if total else None
-    f3 = facts.add(f"Top 3 share of total {metric}", top3, kind="percent") if top3 is not None else None
-    fn = facts.add(f"Number of {dim} values", int(len(work)), kind="integer")
-    visuals = [{"type": "chart", "title": spec.get("title") or f"{metric} by {dim}",
-                "chart_type": spec.get("chart_type") or ("horizontal_bar" if len(work) > 6 else "bar"),
-                **table_payload(df)}]
-    return {"summary": {"metric": metric, "total": total, "segments": segs, "segment_count": int(len(work)),
+        fs = facts.add(f"{row[dim]}: share of {present.metric_lower(metric)}", share, kind="percent") if share is not None else None
+        segs.append({"segment": str(row[dim]), "value": v, "share": share, "rank": i + 1,
+                     "fact_ids": [f["id"] for f in (fv, fs) if f]})
+    # Uneven calendar coverage, when the table says how many years each row covers.
+    cov = next((c for c in df.columns if re.search(r"(^|_)(years?_covered|n_years|num_years|year_count|years_in_data|years)$", str(c), re.I)
+                and c not in (dim, val)), None)
+    per_year = None
+    if cov is not None and additive:
+        yrs = df.groupby(dim)[cov].max()
+        rows = []
+        for _, row in work.iterrows():
+            y = _num(yrs.get(row[dim]))
+            if y and y > 0:
+                rows.append((str(row[dim]), float(row[val]) / y, int(y)))
+        if rows and len({r[2] for r in rows}) > 1:
+            rows.sort(key=lambda r: -r[1])
+            per_year = []
+            for name, v, y in rows:
+                fp = facts.add(f"{metric} per year of data for {name} ({y} years)", v)
+                per_year.append({"segment": name, "value": v, "years": y, "fact_ids": [fp["id"]]})
+    f3 = None
+    if additive and total and n > 4:
+        f3 = facts.add(f"Top 3 share of {present.metric_lower(metric)}", float(work[val].head(3).sum() / total * 100), kind="percent")
+    fn = facts.add(f"Number of {dim_label} values", int(n), kind="integer")
+    highest = segs[0] if segs else None
+    lowest = next((s for s in segs if s["rank"] == n), None)
+    if per_year:
+        highest = {**per_year[0], "per_year": True}
+        lowest = {**per_year[-1], "per_year": True}
+    visuals = present.focus_visuals(spec, df, spec.get("title"), facts.currency)
+    if not visuals:
+        visuals = [{"type": "chart", "title": spec.get("title") or f"{metric} by {dim_label}",
+                    "chart_type": spec.get("chart_type") or ("horizontal_bar" if n > 6 else "bar"), **table_payload(df)}]
+    return {"summary": {"metric": metric, "total": total, "segments": segs, "segment_count": int(n), "rank": rank,
+                        "additive": additive, "dimension": dim_label, "highest": highest, "lowest": lowest,
+                        "per_year": per_year, "total_fact_id": ft["id"] if ft else None,
                         "fact_ids": [x["id"] for x in (ft, f3, fn) if x]},
             "visuals": visuals, "warnings": []}
 
@@ -428,7 +470,8 @@ def _lookup(spec: dict, tables: dict, facts: _Facts) -> dict:
         for c in df.columns:
             v = _num(df.iloc[0][c])
             if v is not None and not isinstance(df.iloc[0][c], bool):
-                f = facts.add(str(c).replace("_", " "), v)
+                from .present import column_kind, humanize
+                f = facts.add(humanize(c), v, kind=column_kind(c, [v], facts.kind) if facts.kind == "number" else None)
                 kpis.append({"label": f["label"], "display": f["display"], "fact_id": f["id"]})
     visuals = []
     if kpis:

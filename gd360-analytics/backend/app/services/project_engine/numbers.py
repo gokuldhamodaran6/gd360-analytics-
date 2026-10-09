@@ -25,7 +25,8 @@ def abbreviate(v: float, decimals: int = 1) -> str:
     if a >= 1e9:
         return f"{sign}{a / 1e9:.{decimals}f}B"
     if a >= 1e6:
-        return f"{sign}{a / 1e6:.{decimals}f}M"
+        # $1.32M, $25.9M: three significant figures, as a finance team writes them
+        return f"{sign}{a / 1e6:.{decimals + 1 if a < 1e7 else decimals}f}M"
     if a >= 1e4:
         return f"{sign}{a / 1e3:.{decimals}f}k"
     if a >= 100:

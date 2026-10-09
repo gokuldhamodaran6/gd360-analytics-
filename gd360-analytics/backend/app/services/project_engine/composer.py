@@ -11,6 +11,7 @@ deterministic answer below is used instead. A wrong number is never shown.
 from __future__ import annotations
 
 import json
+import re
 
 from .. import ai_engine
 from .numbers import allowed_values, fmt, unsupported_numbers
@@ -30,6 +31,17 @@ Rules:
   or a context table that did not change).
 - Confidence: "high" when one segment or part explains most of the change and the data
   is direct; "medium" when it explains part of it or the link is indirect; "low" otherwise.
+- Answer EVERY part of the question. "Which hotel, which year, which month and why"
+  needs the hotel, the year, the month and the reasons - each from the facts or tables.
+- Compare like with like: when groups differ in size, or cover different amounts of
+  time, compare rates, averages or per-year figures - not raw counts or totals. If
+  COVERAGE says the data covers years or months unevenly, say so in one short clause
+  and prefer per-year figures where they are given.
+- Write numbers the way a finance team would: money with its currency symbol and at
+  most two decimals ($1.08M, $776.7k, $67.00), counts with thousands separators
+  (4,122), rates with one decimal (41.7%). Never copy a long decimal from a table.
+- A cause's fact_ids are only the facts whose numbers that cause states.
+- When the question asks for the lowest / worst / weakest, lead with the lowest.
 - Never mention SQL, tables, steps, facts or ids in the text.
 - Short sentences. No hedging filler.
 
@@ -69,9 +81,12 @@ def _draft(question: str, plan: dict, analysis: dict, tables: list[dict], proble
         f"ANALYSIS SUMMARY\n{json.dumps(analysis.get('summary') or {}, default=str)[:5000]}\n\n"
         f"RESULT TABLES\n{_tables_text(tables)}"
     )
+    notes = (analysis.get("coverage") or {}).get("notes") or []
+    if notes:
+        user += "\n\nCOVERAGE\n" + "\n".join(f"- {n}" for n in notes)
     if problems:
-        user += "\n\nYour previous draft used numbers that are not in the facts or tables: " + ", ".join(problems) + \
-                ". Rewrite it using only the facts' display values."
+        user += "\n\nYour previous draft had problems: " + "; ".join(problems) + \
+                ". Rewrite it using only the facts' display values and the ranking the facts show."
     messages = [{"role": "system", "content": WRITER_SYSTEM}, {"role": "user", "content": user}]
     return ai_engine._plan_with_retry(messages, max_tokens=4000)
 
@@ -96,6 +111,37 @@ def _clean(d: dict, facts_by_id: dict) -> dict:
         "headline": str(d.get("headline") or "")[:300], "answer": str(d.get("answer") or "")[:1500],
         "causes": causes, "ruled_out": ruled, "next_questions": nxt,
     }
+
+
+_LOW_WORDS = re.compile(r"\b(lowest|weakest|worst|least|smallest|poorest|slowest|fewest|bottom|low[- ]performing|underperform\w*)\b", re.I)
+_HIGH_WORDS = re.compile(r"\b(highest|best|strongest|largest|biggest|top|leading|most|peak|top[- ]performing|leads)\b", re.I)
+
+
+def claim_problems(draft: dict, analysis: dict) -> list[str]:
+    """The headline's "X is the lowest / highest" must be what the data
+    ranks lowest / highest. A breakdown knows its ranking; a headline that
+    names another segment as the extreme is sent back."""
+    s = analysis.get("summary") or {}
+    if analysis.get("type") not in ("breakdown", "comparison") or not s.get("segments"):
+        return []
+    names = [x["segment"] for x in s["segments"]] + [x["segment"] for x in s.get("per_year") or []]
+    names = sorted({n for n in names if n and len(n) > 1}, key=len, reverse=True)
+    out = []
+    for sentence in re.split(r"(?<=[.;!?])\s+", draft.get("headline") or ""):
+        mentioned = [n for n in names if re.search(rf"\b{re.escape(n)}\b", sentence, re.I)]
+        if not mentioned:
+            continue
+        first = mentioned[0] if len(mentioned) == 1 else min(mentioned, key=lambda n: sentence.lower().find(n.lower()))
+        dim = s.get("dimension") or "value"
+        lo, hi = s.get("lowest") or {}, s.get("highest") or {}
+        ok_lo = {lo.get("segment")} | {x["segment"] for x in (s.get("segments") or []) if x.get("rank") == s.get("segment_count")}
+        ok_hi = {hi.get("segment")} | {s["segments"][0]["segment"]}
+        if _LOW_WORDS.search(sentence) and first not in ok_lo and lo.get("segment"):
+            out.append(f"the headline calls {first} the lowest {dim}, but the data's lowest is {lo['segment']}")
+        elif _HIGH_WORDS.search(sentence) and not _LOW_WORDS.search(sentence) and first not in ok_hi and hi.get("segment"):
+            if re.search(rf"\b{re.escape(first)}\b[^.]*\b(highest|best|top|leads|largest|biggest|most)\b", sentence, re.I):
+                out.append(f"the headline calls {first} the highest {dim}, but the data's highest is {hi['segment']}")
+    return out
 
 
 def _all_text(a: dict) -> str:
@@ -139,10 +185,25 @@ def fallback_answer(question: str, analysis: dict) -> dict:
         headline = f"{se['name']} went from {facts[ids[0]]['display']} to {facts[ids[1]]['display']}."
         answer = headline + (f" Highest: {facts[ids[4]]['label'].split('(')[-1].rstrip(')')} at {facts[ids[4]]['display']}." if len(ids) > 4 else "")
     elif atype in ("breakdown", "comparison") and s.get("segments"):
-        top = s["segments"][0]
-        share = facts.get(top["fact_ids"][1], {}).get("display") if len(top["fact_ids"]) > 1 else None
-        headline = f"{top['segment']} leads with {facts[top['fact_ids'][0]]['display']}" + (f" ({share} of the total)." if share else ".")
-        answer = headline
+        def said(seg: dict) -> tuple[str, str | None]:
+            ids = seg.get("fact_ids") or []
+            share = facts.get(ids[1], {}).get("display") if len(ids) > 1 else None
+            return facts[ids[0]]["display"], share
+        top = s.get("highest") or s["segments"][0]
+        low = s.get("lowest")
+        per = " per year of data" if top.get("per_year") else ""
+        if s.get("rank") == "lowest" and low:
+            v, share = said(low)
+            headline = f"{low['segment']} is the lowest at {v}{per}" + (f" ({share} of the total)." if share else ".")
+            tv, _ = said(top)
+            answer = headline + f" The highest is {top['segment']} at {tv}{per}."
+        else:
+            v, share = said(top)
+            headline = f"{top['segment']} leads with {v}{per}" + (f" ({share} of the total)." if share else ".")
+            answer = headline
+            if low and low.get("segment") != top.get("segment"):
+                lv, _ = said(low)
+                answer += f" The lowest is {low['segment']} at {lv}{per}."
     else:
         kpis = [f for f in analysis.get("facts") or []][:3]
         headline = "; ".join(f"{k['label']}: {k['display']}" for k in kpis) or "Here is the result."
@@ -166,11 +227,12 @@ def compose(question: str, plan: dict, analysis: dict, tables: list[dict]) -> di
             problems = ["(empty headline)"]
             continue
         bad = unsupported_numbers(_all_text(draft), allowed)
-        if not bad:
+        wrong = claim_problems(draft, analysis)
+        if not bad and not wrong:
             draft["written_by"] = "model"
             return draft
-        print(f"[project_engine] answer used unsupported numbers {bad}; retrying once")
-        problems = bad
+        print(f"[project_engine] answer used unsupported numbers {bad} / wrong claims {wrong}; retrying once")
+        problems = bad + wrong
     return fallback_answer(question, analysis)
 
 
