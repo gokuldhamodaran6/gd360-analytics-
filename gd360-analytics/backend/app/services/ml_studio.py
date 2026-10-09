@@ -285,9 +285,12 @@ def _heuristic(goal: str, tables: list[dict], problem_type: str | None) -> dict:
 
 
 def understand(db: Session, user: models.User, goal: str, problem_type: str | None = None,
-               source_id: str | None = None) -> dict:
+               source_id: str | None = None, table: str | None = None) -> dict:
     goal = (goal or "").strip()
     tables = source_tables(db, user, [source_id] if source_id else None)
+    if table:
+        # round 14: "learn from this table" - the person chose the data
+        tables = [t for t in tables if t["table"] == table] or tables
     if not tables:
         raise StudioError("Connect a data source first - there is nothing to learn from yet.")
     spec = None
