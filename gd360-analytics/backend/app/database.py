@@ -284,6 +284,11 @@ _NEW_COLUMNS = [
     # tables (create_all() creates them); conversations is an existing table,
     # so the project's Space needs the normal ALTER-TABLE treatment.
     ("conversations", "space_id", "TEXT"),
+    # 2026-10-10 (Mission Control): suspension + CRM fields on demo requests.
+    ("users", "disabled_at", "TIMESTAMP"),
+    ("demo_requests", "owner_email", "TEXT"),
+    ("demo_requests", "notes", "TEXT"),
+    ("demo_requests", "deal_id", "TEXT"),
 ]
 
 

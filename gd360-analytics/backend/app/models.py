@@ -43,6 +43,9 @@ class User(Base):
     # INSERT that omits it) is unambiguously "never changed" rather than
     # NULL, which would otherwise need special-casing everywhere it's read.
     token_version = Column(Integer, default=0, nullable=False, server_default="0")
+    # 2026-10-10 (Mission Control): set when an admin suspends the account.
+    # deps.get_current_user and /auth/login refuse a suspended user.
+    disabled_at = Column(DateTime, nullable=True)
 
     # foreign_keys is explicit here for the same reason DataSource.owner's
     # own relationship below states it - DataSource.governance_last_
@@ -2424,5 +2427,263 @@ class DemoRequest(Base):
     company = Column(String, nullable=True)
     team_size = Column(String, nullable=True)
     question = Column(Text, nullable=True)
-    status = Column(String, default="new", nullable=False)  # new | contacted | closed
+    status = Column(String, default="new", nullable=False)  # new | contacted | qualified | closed
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # 2026-10-10 (Mission Control CRM): who owns the lead, notes, and the deal it became.
+    owner_email = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
+    deal_id = Column(String, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-10: Mission Control (the internal admin portal). Every table below
+# is new, so create_all() creates them; nothing here touches customer data.
+# ---------------------------------------------------------------------------
+
+class StaffMember(Base):
+    """A member of the GD360 team with a role in Mission Control. Emails in
+    settings.ADMIN_EMAILS are always Owners, even without a row here. A row
+    can exist before its user signs up (status "invited"); access starts the
+    moment someone signs in with that email."""
+    __tablename__ = "staff_members"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    email = Column(String, nullable=False, unique=True, index=True)
+    role = Column(String, nullable=False, default="auditor")
+    status = Column(String, nullable=False, default="active")  # active | disabled
+    invited_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_seen_at = Column(DateTime, nullable=True)
+
+
+class AdminAuditEvent(Base):
+    """Append-only log of every action taken in Mission Control. Each row
+    carries the hash of the previous one (row_hash = sha256(prev_hash + body))
+    so a deleted or edited row breaks the chain and shows up."""
+    __tablename__ = "admin_audit_events"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    staff_email = Column(String, nullable=False, index=True)
+    action = Column(String, nullable=False)
+    target_type = Column(String, nullable=True)
+    target_id = Column(String, nullable=True)
+    summary = Column(Text, nullable=True)
+    reason = Column(Text, nullable=True)
+    before = Column(JSON, nullable=True)
+    after = Column(JSON, nullable=True)
+    ip = Column(String, nullable=True)
+    prev_hash = Column(String, nullable=True)
+    row_hash = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class AccessRequest(Base):
+    """Just-in-time elevation: a staff member asks for one extra permission
+    for a limited time; an Owner or Admin approves or denies it."""
+    __tablename__ = "admin_access_requests"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    staff_email = Column(String, nullable=False, index=True)
+    permission = Column(String, nullable=False)
+    reason = Column(Text, nullable=True)
+    minutes = Column(Integer, nullable=False, default=60)
+    status = Column(String, nullable=False, default="pending")  # pending | approved | denied | expired
+    decided_by = Column(String, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class AdminSetting(Base):
+    """Small key/value store for Mission Control: the plan matrix, goals,
+    AI caps, kill switches. Values are JSON."""
+    __tablename__ = "admin_settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(JSON, nullable=True)
+    updated_by = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class CrmDeal(Base):
+    __tablename__ = "crm_deals"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    name = Column(String, nullable=False)
+    company = Column(String, nullable=True)
+    domain = Column(String, nullable=True, index=True)
+    contact_name = Column(String, nullable=True)
+    contact_email = Column(String, nullable=True)
+    stage = Column(String, nullable=False, default="new")  # new | qualified | demo | proposal | won | lost
+    amount = Column(Float, nullable=True)                  # annual contract value, USD
+    seats = Column(Integer, nullable=True)
+    owner_email = Column(String, nullable=True)
+    close_date = Column(DateTime, nullable=True)
+    next_step = Column(Text, nullable=True)
+    source = Column(String, nullable=True)                 # demo_request | signup | referral | manual
+    demo_request_id = Column(String, nullable=True)
+    lost_reason = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class CrmActivity(Base):
+    __tablename__ = "crm_activities"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    deal_id = Column(String, nullable=True, index=True)
+    demo_request_id = Column(String, nullable=True, index=True)
+    kind = Column(String, nullable=False, default="note")  # note | call | email | meeting | stage
+    body = Column(Text, nullable=True)
+    staff_email = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SupportTicket(Base):
+    __tablename__ = "support_tickets"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    number = Column(Integer, nullable=False, unique=True, index=True)
+    subject = Column(String, nullable=False)
+    requester_email = Column(String, nullable=True, index=True)
+    requester_user_id = Column(String, nullable=True)
+    channel = Column(String, nullable=False, default="email")  # email | in_app | phone | auto
+    priority = Column(String, nullable=False, default="P3")    # P1..P4
+    status = Column(String, nullable=False, default="open")    # open | pending | solved | closed
+    assignee_email = Column(String, nullable=True)
+    tags = Column(JSON, nullable=True)
+    related_type = Column(String, nullable=True)               # datasource | automation | pipeline | ml_model
+    related_id = Column(String, nullable=True)
+    first_response_due_at = Column(DateTime, nullable=True)
+    resolution_due_at = Column(DateTime, nullable=True)
+    first_responded_at = Column(DateTime, nullable=True)
+    solved_at = Column(DateTime, nullable=True)
+    csat = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SupportMessage(Base):
+    __tablename__ = "support_messages"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    ticket_id = Column(String, nullable=False, index=True)
+    author_kind = Column(String, nullable=False, default="customer")  # customer | staff | internal | system
+    author_email = Column(String, nullable=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class EntitlementOverride(Base):
+    __tablename__ = "entitlement_overrides"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    workspace_id = Column(String, nullable=False, index=True)
+    key = Column(String, nullable=False)
+    value = Column(String, nullable=False)
+    reason = Column(Text, nullable=True)
+    status = Column(String, nullable=False, default="pending")  # pending | active | revoked
+    requested_by = Column(String, nullable=True)
+    approved_by = Column(String, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Segment(Base):
+    __tablename__ = "segments"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    name = Column(String, nullable=False)
+    rules = Column(JSON, nullable=False)
+    created_by = Column(String, nullable=True)
+    last_count = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class FeatureFlag(Base):
+    __tablename__ = "feature_flags"
+
+    key = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    enabled = Column(Boolean, nullable=False, default=False)
+    rollout_pct = Column(Integer, nullable=False, default=0)
+    staff_only = Column(Boolean, nullable=False, default=False)
+    segment_id = Column(String, nullable=True)
+    owner_email = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Announcement(Base):
+    __tablename__ = "announcements"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    kind = Column(String, nullable=False, default="banner")  # banner | modal
+    title = Column(String, nullable=False)
+    body = Column(Text, nullable=True)
+    cta_label = Column(String, nullable=True)
+    cta_url = Column(String, nullable=True)
+    segment_id = Column(String, nullable=True)                # None = everyone
+    status = Column(String, nullable=False, default="draft")   # draft | live | ended
+    starts_at = Column(DateTime, nullable=True)
+    ends_at = Column(DateTime, nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class AnnouncementReceipt(Base):
+    __tablename__ = "announcement_receipts"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    announcement_id = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    seen_at = Column(DateTime, nullable=True)
+    clicked_at = Column(DateTime, nullable=True)
+    dismissed_at = Column(DateTime, nullable=True)
+
+
+class PrivacyRequest(Base):
+    __tablename__ = "privacy_requests"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    email = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=True)
+    kind = Column(String, nullable=False, default="export")  # export | delete | correct
+    status = Column(String, nullable=False, default="received")  # received | in_review | completed | rejected
+    notes = Column(Text, nullable=True)
+    handled_by = Column(String, nullable=True)
+    received_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    due_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+
+class Incident(Base):
+    __tablename__ = "incidents"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    title = Column(String, nullable=False)
+    severity = Column(String, nullable=False, default="SEV-3")
+    status = Column(String, nullable=False, default="open")  # open | resolved
+    owner_email = Column(String, nullable=True)
+    updates = Column(JSON, nullable=True)
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    resolved_at = Column(DateTime, nullable=True)
+
+
+class AICall(Base):
+    """One model call, metered: who, which feature, which model, tokens,
+    estimated cost and speed. Written by services/ai_meter.py."""
+    __tablename__ = "ai_calls"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    user_id = Column(String, nullable=True, index=True)
+    feature = Column(String, nullable=True)
+    provider = Column(String, nullable=True)
+    model = Column(String, nullable=True)
+    input_tokens = Column(Integer, nullable=True)
+    output_tokens = Column(Integer, nullable=True)
+    cost_usd = Column(Float, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    status = Column(String, nullable=False, default="ok")  # ok | error
+    error = Column(String, nullable=True)

@@ -39,9 +39,11 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(subject: str) -> str:
+def create_access_token(subject: str, token_version: int = 0) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload = {"sub": subject, "exp": expire}
+    # "tv" = the user's token_version at sign-in. Bumping users.token_version
+    # (Mission Control: "Sign out everywhere") makes every older token invalid.
+    payload = {"sub": subject, "exp": expire, "tv": int(token_version or 0)}
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
@@ -49,6 +51,14 @@ def decode_access_token(token: str) -> Optional[str]:
     try:
         payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
         return payload.get("sub")
+    except JWTError:
+        return None
+
+
+def decode_access_token_full(token: str) -> Optional[dict]:
+    """The whole verified payload (sub, exp, tv), or None."""
+    try:
+        return jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
     except JWTError:
         return None
 

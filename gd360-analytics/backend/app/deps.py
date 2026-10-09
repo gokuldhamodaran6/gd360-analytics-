@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .database import get_db
-from .security import decode_access_token
+from .security import decode_access_token, decode_access_token_full  # noqa: F401
 from . import models
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
@@ -22,20 +22,30 @@ def get_current_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    user_id = decode_access_token(token)
+    payload = decode_access_token_full(token)
+    user_id = payload.get("sub") if payload else None
     if user_id is None:
         raise credentials_exception
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if user is None:
         raise credentials_exception
+    # 2026-10-10 (Mission Control): "Sign out everywhere" bumps token_version;
+    # a token issued before that no longer works. Tokens issued before this
+    # change carry no "tv" and count as version 0.
+    if int(payload.get("tv", 0) or 0) != int(user.token_version or 0):
+        raise credentials_exception
+    if getattr(user, "disabled_at", None):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account is suspended. Contact support.")
     return user
 
 
 def get_current_admin(
     current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> models.User:
-    settings = get_settings()
-    admin_emails = {e.strip().lower() for e in settings.ADMIN_EMAILS.split(",") if e.strip()}
-    if current_user.email.lower() not in admin_emails:
+    """Anyone with Mission Control access: an ADMIN_EMAILS owner or an
+    active staff member. Finer permissions: services/admin_access.require()."""
+    from .services.admin_access import staff_role  # local import avoids a cycle
+    if not staff_role(db, current_user.email):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access only.")
     return current_user

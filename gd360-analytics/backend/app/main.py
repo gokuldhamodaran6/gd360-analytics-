@@ -10,7 +10,7 @@ from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, dashboard_comments, admin, conversations, goku,
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
     data_access_rules, ml_models, metric_definitions, transforms, pipelines, projects, apps, automations, ml_studio,
-    spaces, site,
+    spaces, site, admin_v2, admin_ops, admin_biz, inapp,
 )
 from .services.scheduler import start_scheduler
 
@@ -123,6 +123,35 @@ async def public_cors_reflection(request: Request, call_next):
     return response
 
 
+# 2026-10-10 (Mission Control): every request carries who is asking and which
+# feature it belongs to, so model calls can be metered (services/ai_meter.py),
+# and a feature an admin has paused answers 503 instead of running.
+@app.middleware("http")
+async def ai_context_and_kill_switches(request: Request, call_next):
+    from .services import ai_meter
+    from .security import decode_access_token
+    path = request.url.path
+    paused = ai_meter.killed_feature(path, request.method)
+    if paused:
+        from fastapi.responses import JSONResponse
+        resp = JSONResponse(status_code=503, content={"detail": f"{paused} is paused for a few minutes while we fix something. Please try again shortly."})
+        origin = request.headers.get("origin")
+        if origin and origin in _cors_origins:  # this middleware sits outside CORSMiddleware
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Vary"] = "Origin"
+        return resp
+    user_id = None
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        user_id = decode_access_token(auth_header[7:].strip())
+    token = ai_meter.set_context(user_id, ai_meter.feature_for_path(path))
+    try:
+        return await call_next(request)
+    finally:
+        ai_meter.reset_context(token)
+
+
 app.include_router(auth.router)
 app.include_router(datasources.router)
 app.include_router(chat.router)
@@ -179,6 +208,11 @@ app.include_router(ml_studio.router)
 app.include_router(spaces.router)
 # 2026-10-09: the public website (Enterprise demo requests)
 app.include_router(site.router)
+# 2026-10-10: Mission Control (admin portal v2) and the in-app announcements/flags it publishes.
+app.include_router(admin_v2.router)
+app.include_router(admin_ops.router)
+app.include_router(admin_biz.router)
+app.include_router(inapp.router)
 # 2026-09-30 (Gokul's own bug report - Governance/Jobs redesign + Pipelines/
 # Catalog removal round): the standalone /catalog router is gone - Gokul's
 # own words were that it duplicated the Projects filter and Data Sources
