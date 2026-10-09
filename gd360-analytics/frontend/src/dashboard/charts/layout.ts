@@ -393,7 +393,10 @@ function layoutVertical(model: ChartModel, W: number, H: number, measure: Measur
         const vals = p.series[0].values;
         const write = labelText(p.format, vals);
         const fits = (style: "full" | "compact") => vals.every((v) => v === null || measure(write(v, style), LABEL_SIZE, 500) <= band - 4);
-        const style = fits("full") ? "full" : fits("compact") ? "compact" : null;
+        // round 14: big numbers read faster compact above a bar ($1.5M, not
+        // $1,542,044) - the exact value is in the tooltip and the table.
+        const big = vals.some((v) => v !== null && Math.abs(v) >= 1e5);
+        const style = big ? (fits("compact") ? "compact" : null) : fits("full") ? "full" : fits("compact") ? "compact" : null;
         scene.labelStyle = style;
         if (style) {
           vals.forEach((v, c) => {
@@ -591,7 +594,8 @@ function layoutHorizontal(model: ChartModel, W: number, H: number, measure: Meas
     if (p.series.length === 1 && !model.stacked && vals.every((v) => v === null || v >= 0) && shown <= 40) {
       const widest = (st: "full" | "compact") => Math.max(0, ...vals.map((v) => (v === null ? 0 : measure(write(v, st), LABEL_SIZE, 500))));
       const full = widest("full"), small = widest("compact");
-      if (full + 8 <= colW * 0.3) { style = "full"; width = full; }
+      const big = vals.some((v) => v !== null && Math.abs(v) >= 1e5);
+      if (!big && full + 8 <= colW * 0.3) { style = "full"; width = full; }
       else if (small + 8 <= colW * (count > 1 ? 0.65 : 0.5)) { style = "compact"; width = small; }
     }
     return { vals, write, style, width };
