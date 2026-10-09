@@ -36,6 +36,12 @@ export type ResultColumn = {
   name: string;
   dtype: ColumnDType;
   role: ColumnRole;
+  // 2026-10-09 (round 14): a project answer's columns say how they read -
+  // "Total revenue", currency in USD - so the chart's axis and tooltip
+  // write $1.08M, not 1084751.27.
+  label?: string;
+  format?: "currency" | "percent" | "ratio" | "integer" | "number";
+  currency?: string;
 };
 
 export type Aggregation = "sum" | "avg" | "count" | "min" | "max";

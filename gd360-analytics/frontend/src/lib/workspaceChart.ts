@@ -501,6 +501,24 @@ export function resolveWorkspaceChart(input: WorkspaceChartInput): ResolvedWorks
   const given = input.theme || DEFAULT_CHART_THEME;
   const theme: ChartTheme = namedColumns ? given : { ...given, observe: () => undefined, column: () => ({ known: false, overflow: false }) };
   const adapted = modelToBlock(model, id, title);
+  // Round 14: a measure whose column says what it is (a project answer's
+  // currency or percent columns) is written that way on the axis and in
+  // the tooltip.
+  if (adapted && adapted.result.measures?.length) {
+    const hint = (sourceColumns || []).find((c) => c.name === adapted.result.measures![0]);
+    const fmt = hint?.format === "currency" ? "currency" : hint?.format === "percent" || hint?.format === "ratio" ? "percent" : null;
+    if (fmt && new Set(adapted.result.measures.map((m) => (sourceColumns || []).find((c) => c.name === m)?.format)).size === 1) {
+      adapted.block.config = { ...adapted.block.config, format: fmt, ...(fmt === "currency" && hint?.currency ? { currency: hint.currency } : {}) };
+      if (hint?.format === "percent") {
+        // percent columns from SQL are already in points (41.7 = 41.7%)
+        adapted.result.rows = adapted.result.rows.map((r) => {
+          const out: Record<string, any> = { ...r };
+          for (const m of adapted.result.measures || []) if (typeof out[m] === "number") out[m] = out[m] / 100;
+          return out;
+        });
+      }
+    }
+  }
   if (!adapted) return { ...EMPTY, ...audited, path: "plotly", plotly: { figure, mode: "kit", reason: "the chart has no native form" } };
   const horizontal = model.horizontal;
   const hints = model.transposed
