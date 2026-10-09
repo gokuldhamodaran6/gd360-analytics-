@@ -1,17 +1,38 @@
 // 2026-10-08 (round 13): one ML Studio project - live while it trains
 // (stages, leaderboard against the baseline, best score by trial, leak
 // check, the resources this run uses) and its results when done.
+// 2026-10-09 (round 15): every kind's results (headline, KPI tiles and
+// sections, drawn by ml/ResultSections), the tables a model was joined from,
+// and no "Score every row" for kinds whose result is a report.
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
 import TopNav from "../components/TopNav";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
-import { BoardRow, mlStudioApi, Progress, StudioProject } from "../api/mlStudio";
+import { BoardRow, errorText, FAMILY_COLOR, FAMILY_OF, LEGACY_RESULTS, mlStudioApi, NOT_SCORABLE, Progress, StudioProject, TYPE_LABEL } from "../api/mlStudio";
 import { timeAgo } from "../project/format";
+import ResultSections, { Headline, joinsSentence } from "../ml/ResultSections";
 
-function errorText(e: any, fallback: string): string {
-  const d = e?.response?.data?.detail;
-  return typeof d === "string" && d.trim() ? d : fallback;
+/** The leaderboard's metric family while training (before results exist). */
+function kindOf(problemType: string | null | undefined): string {
+  switch (problemType) {
+    case "yes_no":
+    case "drivers":
+    case "time_to_event":
+      return "binary";
+    case "which_category":
+      return "multiclass";
+    case "number":
+      return "number";
+    case "segments":
+    case "anomalies":
+      return problemType;
+    case "forecast_one":
+    case "forecast_many":
+      return "forecast";
+    default:
+      return problemType || "binary";
+  }
 }
 
 function dur(s?: number | null): string {
@@ -28,6 +49,10 @@ const METRIC: Record<string, [string, string]> = {
   segments: ["Silhouette", ""],
   anomalies: ["Flagged share", ""],
   forecast: ["MASE (lower is better)", ""],
+  // round 15
+  what_if: ["R² on the latest periods", "Mean abs. % error"],
+  recommendations: ["Found in top 5", ""],
+  text_tag: ["Accuracy", "Macro F1"],
 };
 
 export default function MLStudioProject() {
@@ -70,9 +95,15 @@ export default function MLStudioProject() {
   }
 
   const prog: Progress | null = (p?.progress as Progress) || null;
-  const res = p?.results;
-  const kind: string = res?.kind || (p?.problem_type === "segments" ? "segments" : p?.problem_type === "anomalies" ? "anomalies" : p?.problem_type?.startsWith("forecast") ? "forecast" : "binary");
   const training = p?.status === "training";
+  const res = p?.results;
+  const kind: string = res?.kind || kindOf(p?.problem_type);
+  const ptype = p?.problem_type || "";
+  const legacy = !ptype || LEGACY_RESULTS.has(ptype);
+  const joinsUsed = (res?.joins && res.joins.length ? res.joins : prog?.joins) || [];
+  const joinLine = joinsSentence(joinsUsed, training ? "Learning from" : "Learned from");
+  const scorable = !!ptype && !NOT_SCORABLE.has(ptype) && kind !== "forecast";
+  const canTry = ["yes_no", "number", "drivers", "which_category"].includes(ptype) || (!ptype && (kind === "binary" || kind === "multiclass" || kind === "number"));
   const rows = prog?.resources?.rows_used;
 
   const score = async () => {
@@ -108,12 +139,24 @@ export default function MLStudioProject() {
                         ? `${p.name} — didn't finish`
                         : p.name}
                   </h1>
+                  {ptype && (
+                    <span className="inline-flex items-center gap-2 text-caption text-secondary">
+                      <span className="inline-block w-2 h-2 rounded-[3px]" style={{ background: FAMILY_COLOR[FAMILY_OF[ptype] || "Predict"] }} aria-hidden="true" />
+                      {TYPE_LABEL[ptype] || ptype}
+                    </span>
+                  )}
                   <span className="text-ui text-muted">
                     {p.source}
                     {p.table ? ` · ${p.table}` : ""}
                     {p.status === "ready" && p.trained_at ? ` · trained ${timeAgo(p.trained_at)} in ${dur(p.elapsed)}` : ""}
                     {training && prog?.message ? ` · ${prog.message}` : ""}
                   </span>
+                  {joinLine && (
+                    <span className="inline-flex items-start gap-2 text-ui text-secondary">
+                      <span className="mt-[7px] inline-block w-1.5 h-1.5 rounded-full shrink-0" style={{ background: "rgb(var(--auto-do))" }} aria-hidden="true" />
+                      {joinLine}
+                    </span>
+                  )}
                 </div>
                 <div className="flex gap-2 flex-wrap">
                   {training ? (
@@ -128,10 +171,10 @@ export default function MLStudioProject() {
                   ) : (
                     <>
                       {p.can_edit && <button type="button" className="btn-secondary text-sm" onClick={() => mlStudioApi.retrain(id).then(load).catch((e) => setError(errorText(e, "Couldn't start it.")))}>Train again</button>}
-                      {p.status === "ready" && (kind === "binary" || kind === "multiclass" || kind === "number") && (
+                      {p.status === "ready" && canTry && (
                         <Link to={`/ml-models/${id}`} className="btn-secondary text-sm">Try a prediction</Link>
                       )}
-                      {p.status === "ready" && kind !== "forecast" && (
+                      {p.status === "ready" && scorable && (
                         <button type="button" className="btn-primary text-sm" onClick={score} disabled={scoring === "…"}>
                           {scoring === "…" ? "Scoring…" : "Score every row"}
                         </button>
@@ -144,11 +187,11 @@ export default function MLStudioProject() {
               {scoring && scoring !== "…" && <div role="status" className="rounded-card border border-tint-border bg-tint/40 px-4 py-3 text-ui text-text">{scoring}</div>}
               {p.status === "failed" && <div role="alert" className="rounded-card border border-danger-border bg-danger-fill px-4 py-3 text-ui text-text">{p.error}</div>}
 
-              {prog && <StageRow stages={prog.stages} />}
+              {prog && <StageRow stages={prog.stages} failed={p.status === "failed"} />}
 
               <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px] items-start">
                 <div className="flex flex-col gap-5 min-w-0">
-                  {p.status === "ready" && res && <Results kind={kind} res={res} />}
+                  {p.status === "ready" && res && (legacy ? <Results kind={kind} res={res} /> : <GenericResults res={res} />)}
                   {prog && prog.leaderboard.length > 0 && <Leaderboard prog={prog} kind={kind} done={!training} />}
                 </div>
                 <aside className="flex flex-col gap-4">
@@ -187,7 +230,9 @@ export default function MLStudioProject() {
   );
 }
 
-function StageRow({ stages }: { stages: Progress["stages"] }) {
+function StageRow({ stages: raw, failed = false }: { stages: Progress["stages"]; failed?: boolean }) {
+  // round 15: a run that stopped shows the step it stopped at as stopped, not running
+  const stages = failed ? raw.map((s) => (s.status === "running" ? { ...s, status: "failed" as typeof s.status } : s)) : raw;
   return (
     <ol className="m-0 p-0 list-none grid gap-2.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }} aria-label="Stages">
       {stages.map((s, i) => (
@@ -197,6 +242,8 @@ function StageRow({ stages }: { stages: Progress["stages"] }) {
           style={
             s.status === "running"
               ? { borderColor: "rgb(var(--auto-tell-border))", background: "rgb(var(--auto-tell-fill))" }
+              : (s.status as string) === "failed"
+              ? { borderColor: "rgb(var(--color-danger-border))", background: "rgb(var(--color-surface))" }
               : { borderColor: "rgb(var(--color-border))", background: "rgb(var(--color-surface))" }
           }
         >
@@ -206,9 +253,10 @@ function StageRow({ stages }: { stages: Progress["stages"] }) {
             </span>
             {s.status === "done" && <span style={{ color: "rgb(var(--auto-do))" }}>✓</span>}
             {s.status === "running" && <span style={{ color: "rgb(var(--auto-tell))" }}>● running</span>}
+            {(s.status as string) === "failed" && <span className="text-danger">✕ stopped here</span>}
           </span>
           <span className={`text-ui font-semibold ${s.status === "pending" ? "text-muted" : "text-text"}`}>{s.title}</span>
-          <span className="text-caption text-muted leading-snug">{s.note || (s.status === "pending" ? "waiting" : "")}</span>
+          <span className="text-caption text-muted leading-snug">{s.note || (s.status === "pending" ? (failed ? "not run" : "waiting") : "")}</span>
         </li>
       ))}
     </ol>
@@ -221,6 +269,8 @@ function fmt(kind: string, v: number | null | undefined, second = false): string
   if (kind === "multiclass") return `${(v * 100).toFixed(1)}%`;
   if (kind === "number") return second ? (Math.abs(v) >= 100 ? Math.round(v).toLocaleString() : v.toFixed(2)) : v.toFixed(3);
   if (kind === "anomalies") return `${(v * 100).toFixed(1)}%`;
+  if (kind === "recommendations" || kind === "text_tag") return `${(v * 100).toFixed(1)}%`;
+  if (kind === "what_if") return second ? `${(v * 100).toFixed(1)}%` : v.toFixed(3);
   return v.toFixed(3);
 }
 
@@ -384,12 +434,31 @@ function ThisRun({ prog, elapsed }: { prog: Progress; elapsed: number | null }) 
 
 // ---------------------------------------------------------------- results ----
 
-function Results({ kind, res }: { kind: string; res: any }) {
+function Warnings({ list }: { list?: string[] | null }) {
   return (
-    <section className="flex flex-col gap-4" aria-label="Results">
-      {(res.warnings || []).map((w: string) => (
+    <>
+      {(list || []).map((w: string) => (
         <div key={w} className="rounded-card border border-warning-border bg-warning-fill px-4 py-3 text-ui text-text">{w}</div>
       ))}
+    </>
+  );
+}
+
+/** round 15: every kind other than the round-13 ones - headline, KPI tiles, sections. */
+function GenericResults({ res }: { res: any }) {
+  return (
+    <section className="flex flex-col gap-4 min-w-0" aria-label="Results">
+      <Warnings list={res.warnings} />
+      <ResultSections headline={res.headline} kpis={res.kpis} sections={res.sections} />
+    </section>
+  );
+}
+
+function Results({ kind, res }: { kind: string; res: any }) {
+  return (
+    <section className="flex flex-col gap-4 min-w-0" aria-label="Results">
+      <Warnings list={res.warnings} />
+      {res.headline && <Headline text={res.headline} />}
       {(kind === "binary" || kind === "multiclass" || kind === "number") && <SupervisedResult res={res} kind={kind} />}
       {kind === "segments" && <Segments res={res} />}
       {kind === "anomalies" && <Anomalies res={res} />}

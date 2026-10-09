@@ -3,21 +3,21 @@
 // for attention. Asking creates a multi-source Project and opens it
 // (pages/ProjectWorkspace.tsx), where the plan, the live run and the answer
 // appear. The full Projects library (folders, bulk actions) is /projects.
+// 2026-10-09 (round 15): the scope chip asks one Space, chosen sources or
+// everything (spaces/ScopePicker.tsx, HomePicker.dc.html). ?space=<id>
+// preselects a Space (the Data page's "Ask this Space"); the last scope is
+// remembered per workspace in this browser.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
 import TopNav from "../components/TopNav";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { conversationApi, ConversationSummary } from "../api/client";
 import { projectsApi, ProjectSource } from "../api/projects";
-import { timeAgo, MODE_LABEL, autoRunPreference } from "../project/format";
+import { timeAgo, autoRunPreference } from "../project/format";
 import { useAuth } from "../api/AuthContext";
-
-const STARTERS = [
-  "Why did revenue change this month?",
-  "Which channels bring the most revenue?",
-  "Show revenue per week for the last quarter",
-];
+import { Space, spacesApi } from "../api/spaces";
+import ScopePicker, { Scope, loadScope, saveScope, scopeSummary, startersFor } from "../spaces/ScopePicker";
 
 type Tab = "recent" | "pinned" | "shared";
 
@@ -31,37 +31,53 @@ export default function Home() {
   const { user } = useAuth();
   const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
   const [question, setQuestion] = useState("");
+  const [searchParams] = useSearchParams();
+  const spaceParam = searchParams.get("space");
   const [sources, setSources] = useState<ProjectSource[] | null>(null);
-  const [picked, setPicked] = useState<string[] | null>(null); // null = all
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [spaces, setSpaces] = useState<Space[] | null>(null);
+  const [scope, setScopeState] = useState<Scope>({ kind: "all" });
   const [projects, setProjects] = useState<ConversationSummary[] | null>(null);
   const [tab, setTab] = useState<Tab>("recent");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const boxRef = useRef<HTMLTextAreaElement>(null);
-  const pickerRef = useRef<HTMLDivElement>(null);
+
+  const setScope = (next: Scope) => {
+    setScopeState(next);
+    if (activeWorkspaceId) saveScope(activeWorkspaceId, next);
+  };
 
   useEffect(() => {
     if (!activeWorkspaceId) return;
     setSources(null);
-    setPicked(null);
+    setSpaces(null);
     projectsApi.sources(activeWorkspaceId).then(setSources).catch(() => setSources([]));
+    spacesApi.list(activeWorkspaceId).then(setSpaces).catch(() => setSpaces([]));
     conversationApi.list(activeWorkspaceId).then(setProjects).catch(() => setProjects([]));
   }, [activeWorkspaceId]);
 
+  // The starting scope: ?space=<id> wins, else the last one used here.
   useEffect(() => {
-    if (!pickerOpen) return;
-    const close = (e: MouseEvent) => {
-      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) setPickerOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [pickerOpen]);
+    if (!activeWorkspaceId) return;
+    if (spaceParam) setScope({ kind: "space", spaceId: spaceParam });
+    else setScopeState(loadScope(activeWorkspaceId) || { kind: "all" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeWorkspaceId, spaceParam]);
 
-  const chosen = useMemo(() => {
-    if (!sources) return [];
-    return picked === null ? sources : sources.filter((s) => picked.includes(s.id));
-  }, [sources, picked]);
+  // Drop a remembered Space or sources that are gone (or not in this workspace).
+  useEffect(() => {
+    if (!sources || !spaces) return;
+    if (scope.kind === "space" && !spaces.some((s) => s.id === scope.spaceId)) setScopeState({ kind: "all" });
+    if (scope.kind === "sources") {
+      const known = new Set(sources.map((s) => s.id));
+      const ids = scope.ids.filter((id) => known.has(id));
+      if (ids.length !== scope.ids.length) setScopeState(ids.length ? { kind: "sources", ids } : { kind: "all" });
+    }
+  }, [sources, spaces, scope]);
+
+  const chosenSpace = scope.kind === "space" ? (spaces || []).find((s) => s.id === scope.spaceId) || null : null;
+  const summary = scopeSummary(scope, sources, spaces);
+  const starters = useMemo(() => startersFor(chosenSpace), [chosenSpace]);
 
   const listed = useMemo(() => {
     const all = projects || [];
@@ -73,16 +89,19 @@ export default function Home() {
   const ask = async (text?: string) => {
     const q = (text ?? question).trim();
     if (q.length < 2 || busy) return;
-    if (!chosen.length) {
-      setError("Pick at least one source to ask about.");
+    if (!summary.count) {
+      setError(chosenSpace ? `${chosenSpace.name} has no sources you can use yet.` : "Pick at least one source to ask about.");
       return;
     }
     setBusy(true);
     setError("");
     try {
+      // A Space sends space_id, picked sources send source_ids - never both.
+      const all = (sources || []).length;
       const out = await projectsApi.create({
         question: q,
-        source_ids: picked === null ? undefined : picked,
+        space_id: scope.kind === "space" && chosenSpace ? chosenSpace.id : undefined,
+        source_ids: scope.kind === "sources" && scope.ids.length < all ? scope.ids : undefined,
         workspace_id: activeWorkspaceId || undefined,
         auto_run: autoRunPreference(),
       });
@@ -91,13 +110,6 @@ export default function Home() {
       setError(errorText(e, "Couldn't start that question. Please try again."));
       setBusy(false);
     }
-  };
-
-  const toggle = (id: string) => {
-    const all = (sources || []).map((s) => s.id);
-    const cur = picked === null ? all : picked;
-    const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
-    setPicked(next.length === all.length ? null : next);
   };
 
   const firstName = (user?.full_name || "").split(" ")[0];
@@ -119,7 +131,7 @@ export default function Home() {
               {firstName ? `What do you want to know, ${firstName}?` : "What do you want to know?"}
             </h1>
             <p className="m-0 text-body text-muted max-w-[56ch]">
-              Ask about anything in your business. GD360 finds the right data across all your sources, queries each one where it lives, and shows its work.
+              Ask one Space, a few sources, or everything you have connected. GD360 queries each source where it lives and shows its work.
             </p>
 
             {noSources ? (
@@ -152,48 +164,7 @@ export default function Home() {
                   disabled={busy}
                 />
                 <div className="mt-2 flex items-center justify-between gap-3 flex-wrap">
-                  <div className="relative" ref={pickerRef}>
-                    <button
-                      type="button"
-                      onClick={() => setPickerOpen((v) => !v)}
-                      className="ui-focus inline-flex items-center gap-2 h-8 px-3 rounded-full border border-tint-border bg-base text-ui text-secondary hover:text-text"
-                      aria-expanded={pickerOpen}
-                    >
-                      <span className="w-[7px] h-[7px] rounded-full bg-good" />
-                      {sources === null
-                        ? "Loading sources…"
-                        : picked === null
-                          ? `All sources · ${sources.length} connected`
-                          : `${chosen.length} of ${sources.length} sources`}
-                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
-                    </button>
-                    {pickerOpen && sources && (
-                      <div className="absolute z-30 mt-2 w-[min(360px,80vw)] rounded-card border border-border bg-surface shadow-pop p-2">
-                        <div className="flex items-center justify-between px-2 py-1.5">
-                          <span className="text-caption uppercase tracking-caps text-muted">Ask across</span>
-                          <button type="button" className="text-caption text-brand-ink hover:underline" onClick={() => setPicked(null)}>
-                            Select all
-                          </button>
-                        </div>
-                        <div className="max-h-72 overflow-auto">
-                          {sources.map((s) => {
-                            const on = picked === null || picked.includes(s.id);
-                            return (
-                              <label key={s.id} className="flex items-center gap-3 px-2 py-2 rounded-ctl hover:bg-subtle cursor-pointer">
-                                <input type="checkbox" checked={on} onChange={() => toggle(s.id)} className="w-4 h-4 accent-[rgb(var(--color-primary))]" />
-                                <span className="flex-1 min-w-0">
-                                  <span className="block text-ui text-text truncate">{s.name}</span>
-                                  <span className="block text-caption text-muted">{s.label} · {s.freshness}</span>
-                                </span>
-                                <span className="font-mono text-[10px] text-muted">{MODE_LABEL[s.mode]}</span>
-                              </label>
-                            );
-                          })}
-                        </div>
-                        <Link to="/data" className="block px-2 py-2 text-ui text-brand-ink hover:underline">+ Connect another source</Link>
-                      </div>
-                    )}
-                  </div>
+                  <ScopePicker scope={scope} onChange={setScope} sources={sources} spaces={spaces} />
                   <button
                     type="button"
                     aria-label="Ask"
@@ -213,7 +184,7 @@ export default function Home() {
             {error && <div role="alert" className="text-ui text-danger">{error}</div>}
             {!noSources && (
               <div className="flex gap-2 flex-wrap justify-center">
-                {STARTERS.map((s) => (
+                {starters.map((s) => (
                   <button
                     key={s}
                     type="button"
