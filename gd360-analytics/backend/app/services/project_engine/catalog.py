@@ -5,7 +5,10 @@ Three ways a source is reached (the "mode"):
   live    - a warehouse or database (BigQuery, Snowflake, Postgres, MySQL,
             SQL Server, Supabase). Queried where it lives, in its own SQL
             dialect, through services/warehouse_exec. Always current.
-  synced  - an app with an API (Shopify, GA4, Meta Ads, Google Ads). Its
+  synced  - an app with an API (Shopify, GA4, Meta Ads, Google Ads, and
+            since round 15 Instagram, Facebook Pages, LinkedIn Pages,
+            YouTube, Search Console, WooCommerce, Stripe, HubSpot and
+            Klaviyo). Its
             records are copied on a schedule into SyncedTable rows
             (services/synced_sources) and queried with DuckDB.
   file    - an upload, a spreadsheet, a REST API snapshot, a stream or a
@@ -36,7 +39,8 @@ LIVE_DIALECTS = {
     "mysql": "mysql",
     "sqlserver": "tsql",
 }
-SYNCED_KINDS = ("shopify", "ga4", "meta_ads", "google_ads")
+# 2026-10-09 (round 15): one list of synced app kinds, kept by synced_sources.
+from ..synced_sources import SYNCED_KINDS  # noqa: E402
 LOADED_KINDS = ("csv", "excel", "api", "google_sheets", "microsoft_excel", "streaming", "mongodb")
 
 KIND_LABELS = {
@@ -45,6 +49,10 @@ KIND_LABELS = {
     "google_sheets": "Google Sheets", "microsoft_excel": "Excel Online", "streaming": "Event stream",
     "mongodb": "MongoDB", "shopify": "Shopify", "ga4": "Google Analytics 4", "meta_ads": "Meta Ads",
     "google_ads": "Google Ads",
+    # 2026-10-09 (round 15): the new synced apps
+    "instagram": "Instagram", "facebook_pages": "Facebook Pages", "linkedin_pages": "LinkedIn Pages",
+    "youtube": "YouTube", "search_console": "Google Search Console", "woocommerce": "WooCommerce",
+    "stripe": "Stripe", "hubspot": "HubSpot", "klaviyo": "Klaviyo",
 }
 
 MAX_TABLES_PER_SOURCE = 40
@@ -234,27 +242,42 @@ class Catalog:
         return sorted(keys)[:30]
 
     def prompt_text(self, max_chars: int = 24000) -> str:
-        """The catalog as the planner reads it."""
-        lines: list[str] = []
+        """The catalog as the planner reads it. 2026-10-09 (round 15): with
+        many sources connected the text used to be cut at the end, so the
+        last sources silently disappeared from the plan. Every source now
+        gets a fair share of the budget: its header always, then as many
+        tables as fit, with long column lists shortened."""
+        n = max(1, len(self.sources))
+        share = max(600, max_chars // n)
+        blocks: list[str] = []
         for s in self.sources:
-            lines.append(
+            lines = [
                 f'SOURCE id="{s.id}" name="{s.name}" type={s.label} mode={s.mode} '
                 f"sql_dialect={s.dialect} freshness={s.freshness!r}"
-            )
+            ]
             if s.note:
                 lines.append(f"  note: {s.note}")
+            used = len(lines[0])
+            shown = 0
             for t in s.tables:
-                cols = ", ".join(f"{c['name']} ({c['type'] or '?'})" for c in t.columns)
-                lines.append(f"  TABLE {t.name}: {cols}")
+                cols = t.columns
+                text = ", ".join(f"{c['name']} ({c['type'] or '?'})" for c in cols[:60])
+                if len(cols) > 60:
+                    text += f", ... {len(cols) - 60} more columns"
+                line = f"  TABLE {t.name}: {text}"
+                if used + len(line) > share and shown:
+                    lines.append(f"  ... {len(s.tables) - shown} more tables in this source")
+                    break
+                lines.append(line)
+                used += len(line)
+                shown += 1
             if not s.tables:
                 lines.append("  (no tables available)")
+            blocks.append("\n".join(lines))
         keys = self.shared_keys()
         if keys:
-            lines.append("COLUMNS SHARED BY MORE THAN ONE SOURCE (likely join keys): " + ", ".join(keys))
-        text = "\n".join(lines)
-        if len(text) > max_chars:
-            text = text[:max_chars] + "\n  ... (catalog truncated)"
-        return text
+            blocks.append("COLUMNS SHARED BY MORE THAN ONE SOURCE (likely join keys): " + ", ".join(keys))
+        return "\n".join(blocks)
 
 
 def build_catalog(db: Session, user: models.User, source_ids: list[str]) -> Catalog:
