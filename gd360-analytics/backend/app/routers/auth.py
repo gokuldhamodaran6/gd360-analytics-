@@ -102,7 +102,7 @@ def register(payload: schemas.UserCreate, request: Request, db: Session = Depend
     )
     db.commit()
 
-    token = security.create_access_token(subject=user.id)
+    token = security.create_access_token(subject=user.id, token_version=user.token_version or 0)
     return schemas.Token(access_token=token, user=schemas.UserOut.model_validate(user))
 
 
@@ -112,6 +112,9 @@ def login(payload: schemas.UserLogin, request: Request, db: Session = Depends(ge
     _check_rate_limit(f"login:ip:{ip}", limit=20)
 
     user = db.query(models.User).filter(models.User.email == payload.email).first()
+
+    if user and getattr(user, "disabled_at", None):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account is suspended. Contact support.")
 
     if user and user.locked_until and user.locked_until > datetime.utcnow():
         minutes_left = max(1, int((user.locked_until - datetime.utcnow()).total_seconds() // 60) + 1)
@@ -135,7 +138,7 @@ def login(payload: schemas.UserLogin, request: Request, db: Session = Depends(ge
     db.commit()
     db.refresh(user)
 
-    token = security.create_access_token(subject=user.id)
+    token = security.create_access_token(subject=user.id, token_version=user.token_version or 0)
     return schemas.Token(access_token=token, user=schemas.UserOut.model_validate(user))
 
 
