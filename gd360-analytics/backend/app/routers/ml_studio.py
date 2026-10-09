@@ -30,6 +30,7 @@ class UnderstandBody(BaseModel):
     goal: str = Field(default="", max_length=600)
     problem_type: str | None = None
     source_id: str | None = None
+    table: str | None = Field(default=None, max_length=300)
 
 
 class PlanBody(BaseModel):
@@ -63,7 +64,7 @@ def understand(body: UnderstandBody, db: Session = Depends(get_db), user: models
     if body.problem_type and body.problem_type not in svc.READY:
         raise HTTPException(400, "That kind of project isn't available yet.")
     try:
-        return svc.understand(db, user, body.goal, body.problem_type, body.source_id)
+        return svc.understand(db, user, body.goal, body.problem_type, body.source_id, body.table)
     except svc.StudioError as e:
         _bad(e)
 
