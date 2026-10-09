@@ -107,7 +107,7 @@ export default function Login() {
           <p className="text-sm text-muted text-center">
             New here?{" "}
             <Link to="/register" state={{ from }} className="text-primary hover:underline">
-              Create a free account
+              Create an account
             </Link>
           </p>
           <p className="text-xs text-muted text-center">

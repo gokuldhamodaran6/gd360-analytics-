@@ -42,6 +42,23 @@ export default function Home() {
   const [error, setError] = useState("");
   const boxRef = useRef<HTMLTextAreaElement>(null);
 
+  // 2026-10-09: the first question picked on the public "Get started" page
+  // waits here after sign-up.
+  // (kept until the question box shows - a new account first sees
+  // "Connect your first source")
+  useEffect(() => {
+    if (!activeWorkspaceId || !sources || sources.length === 0) return;
+    try {
+      const q = sessionStorage.getItem("gd360_first_question");
+      if (q) {
+        setQuestion(q);
+        sessionStorage.removeItem("gd360_first_question");
+      }
+    } catch {
+      /* storage may be blocked */
+    }
+  }, [activeWorkspaceId, sources]);
+
   const setScope = (next: Scope) => {
     setScopeState(next);
     if (activeWorkspaceId) saveScope(activeWorkspaceId, next);

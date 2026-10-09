@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Plot from "../lib/plotly";
 import TopNav from "../components/TopNav";
+import DemoRequests from "../components/DemoRequests";
 import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { useTheme } from "../api/ThemeContext";
@@ -1210,6 +1211,8 @@ export default function AdminDashboard() {
                 </div>
               )}
             </div>
+
+            <DemoRequests />
 
             {/* Users table - deliberately table-fixed with percentage
                 column widths (rather than letting content dictate width)
