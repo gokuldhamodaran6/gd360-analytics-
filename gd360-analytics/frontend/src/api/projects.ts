@@ -155,6 +155,10 @@ export type Project = {
   can_edit: boolean;
   runs: ProjectRun[];
   dashboards: { id: string; name: string }[];
+  // 2026-10-09 (round 15): the Space a project was asked in, if any.
+  space_id?: string | null;
+  space_name?: string | null;
+  space_color?: string | null;
 };
 
 export type DashTile = {
@@ -193,8 +197,10 @@ export type ProjectDashboard = {
 export const projectsApi = {
   sources: (workspaceId?: string) =>
     api.get<ProjectSource[]>("/projects/sources", { params: { workspace_id: workspaceId || undefined } }).then((r) => r.data),
-  create: (payload: { question: string; source_ids?: string[]; workspace_id?: string; auto_run?: boolean }) =>
-    api.post<{ project_id: string; run_id: string }>("/projects", payload).then((r) => r.data),
+  // 2026-10-09 (round 15): space_id asks one Space (its sources you can use);
+  // send space_id or source_ids, never both.
+  create: (payload: { question: string; source_ids?: string[]; space_id?: string; workspace_id?: string; auto_run?: boolean }) =>
+    api.post<{ project_id: string; run_id: string; space_id?: string | null }>("/projects", payload).then((r) => r.data),
   get: (id: string) => api.get<Project>(`/projects/${id}`).then((r) => r.data),
   update: (id: string, payload: { title?: string; source_ids?: string[] }) =>
     api.patch<{ id: string; title: string; source_ids: string[] }>(`/projects/${id}`, payload).then((r) => r.data),
