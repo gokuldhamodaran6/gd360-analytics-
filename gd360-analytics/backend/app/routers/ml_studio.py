@@ -31,6 +31,15 @@ class UnderstandBody(BaseModel):
     problem_type: str | None = None
     source_id: str | None = None
     table: str | None = Field(default=None, max_length=300)
+    # 2026-10-09 (round 15): learn inside a Space / from joined tables
+    space_id: str | None = None
+    joins: list[dict] | None = None
+
+
+class JoinSuggestBody(BaseModel):
+    source_id: str
+    table: str | None = Field(default=None, max_length=300)
+    space_id: str | None = None
 
 
 class PlanBody(BaseModel):
@@ -48,8 +57,11 @@ def _bad(e: Exception):
 
 
 @router.get("/types")
-def types(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    tables = svc.source_tables(db, user)
+def types(space_id: str | None = None, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    try:
+        tables = svc.scoped_tables(db, user, space_id)
+    except svc.StudioError as e:
+        _bad(e)
     s = get_settings()
     return {
         "types": svc.PROBLEMS,
@@ -64,9 +76,31 @@ def understand(body: UnderstandBody, db: Session = Depends(get_db), user: models
     if body.problem_type and body.problem_type not in svc.READY:
         raise HTTPException(400, "That kind of project isn't available yet.")
     try:
-        return svc.understand(db, user, body.goal, body.problem_type, body.source_id, body.table)
+        return svc.understand(db, user, body.goal, body.problem_type, body.source_id, body.table, body.space_id, body.joins)
     except svc.StudioError as e:
         _bad(e)
+
+
+@router.post("/join/suggest")
+def join_suggest(body: JoinSuggestBody, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """2026-10-09 (round 15): tables that share a key with this one."""
+    try:
+        return svc.suggest_joins(db, user, body.source_id, body.table, body.space_id)
+    except svc.StudioError as e:
+        _bad(e)
+    except Exception as e:  # noqa: BLE001 - a source that can't be read says so
+        raise HTTPException(400, f"Couldn't read that table: {str(e)[:300]}")
+
+
+@router.post("/join/preview")
+def join_preview(body: PlanBody, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """2026-10-09 (round 15): the joined rows, match rates and how each join was built."""
+    try:
+        return svc.join_preview(db, user, dict(body.spec))
+    except svc.StudioError as e:
+        _bad(e)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"Couldn't build the join: {str(e)[:300]}")
 
 
 @router.post("/plan")
@@ -87,6 +121,8 @@ def start(body: StartBody, db: Session = Depends(get_db), user: models.User = De
         m = svc.start(db, user, spec, body.name or (body.goal or "ML project")[:80], body.goal)
     except svc.StudioError as e:
         _bad(e)
+    except Exception as e:  # noqa: BLE001 - 2026-10-09 (round 15): a source that can't be read says so
+        raise HTTPException(400, f"Couldn't read that table: {str(e)[:300]}")
     return {"id": m.id}
 
 

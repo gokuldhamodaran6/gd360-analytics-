@@ -167,7 +167,7 @@ def options(db: Session = Depends(get_db), user: models.User = Depends(get_curre
         rules = db.query(models.DataQualityRule).filter(models.DataQualityRule.datasource_id == ds.id).count()
         sources.append({
             "id": ds.id, "name": ds.name, "kind": ds.kind, "label": KIND_LABELS.get(ds.kind, ds.kind),
-            "mode": source_mode(ds.kind), "can_sync": ds.kind in ("shopify", "ga4", "meta_ads", "google_ads", "api"),
+            "mode": source_mode(ds.kind), "can_sync": ds.kind in svc.SYNCED_KINDS + ("api",),  # 2026-10-09 (round 15): every synced app
             "new_data": ds.kind in svc.NEW_DATA_KINDS, "quality_rules": rules,
         })
     models_ = (

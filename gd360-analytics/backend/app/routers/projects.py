@@ -20,6 +20,7 @@ progress (plan -> each step -> the answer).
 """
 from __future__ import annotations
 
+import re
 import time
 from collections import defaultdict, deque
 from datetime import datetime
@@ -41,7 +42,7 @@ from ..services.project_engine.catalog import (
 settings = get_settings()
 router = APIRouter(prefix="/projects", tags=["projects"])
 
-MAX_SOURCES = 12
+MAX_SOURCES = 60  # 2026-10-09 (round 15): every connected source is planned over (catalog shares its budget fairly)
 _calls: dict[str, deque] = defaultdict(deque)
 
 
@@ -60,6 +61,8 @@ class CreateProjectRequest(BaseModel):
     source_ids: list[str] | None = None
     workspace_id: str | None = None
     auto_run: bool = True
+    # 2026-10-09 (round 15): ask within a Space - its sources this person can use.
+    space_id: str | None = None
 
 
 class AskRequest(BaseModel):
@@ -91,6 +94,58 @@ def _source_summary(db: Session, ds: models.DataSource, user: models.User) -> di
         "mode": source_mode(ds.kind), "freshness": freshness_text(ds), "tables": n_tables,
         "workspace_id": ds.workspace_id, "sync_error": ds.sync_error,
     }
+
+
+_WORD = re.compile(r"[a-z0-9]+")
+_STOP = {"the", "a", "an", "of", "in", "on", "for", "to", "and", "or", "by", "is", "are", "our", "my", "we", "what",
+         "why", "how", "which", "show", "me", "this", "that", "last", "month", "week", "year", "lower", "higher", "data"}
+
+
+_SYN = {
+    "revenue": {"sales", "amount", "order", "net", "gmv", "income", "price", "total"},
+    "sales": {"revenue", "amount", "order", "net"},
+    "customer": {"client", "user", "buyer", "account"},
+    "churn": {"customer", "cancel", "subscription", "plan"},
+    "traffic": {"session", "user", "pageview", "visit"},
+    "stock": {"inventory", "hand", "sku"},
+    "marketing": {"campaign", "spend", "click", "impression", "reach"},
+}
+# core stores first when nothing in the question decides it
+_CORE_KINDS = {"postgres", "mysql", "bigquery", "snowflake", "redshift", "sqlserver", "databricks", "csv", "excel", "file"}
+
+
+def _words(text: str) -> set[str]:
+    out = set()
+    for w in _WORD.findall((text or "").lower()):
+        if w in _STOP or len(w) < 3:
+            continue
+        out.add(w)
+        if w.endswith("s") and len(w) > 3:
+            out.add(w[:-1])
+    return out
+
+
+def _pick_for_question(sources: list, question: str) -> list[str]:
+    """2026-10-09 (round 15): with more sources than fit in one plan, keep the
+    ones whose names, tables and columns match the question instead of simply
+    the newest, so an older core database is never silently left out."""
+    if len(sources) <= MAX_SOURCES:
+        return [ds.id for ds in sources]
+    q = _words(question)
+    for w in list(q):
+        q |= _SYN.get(w, set())
+    scored = []
+    for pos, ds in enumerate(sources):
+        cache = ds.schema_cache if isinstance(ds.schema_cache, dict) else {}
+        names, cols = _words(ds.name or ""), set()
+        for t, info in cache.items():
+            names |= _words(str(t))
+            for c in (info.get("columns") if isinstance(info, dict) else info) or []:
+                cols |= _words(str(c.get("name") if isinstance(c, dict) else c))
+        score = 3 * len(q & names) + len(q & cols)
+        scored.append((-score, 0 if ds.kind in _CORE_KINDS else 1, pos, ds.id))
+    scored.sort()
+    return [row[-1] for row in scored[:MAX_SOURCES]]
 
 
 def _usable_ids(db: Session, user: models.User, ids: list[str]) -> list[str]:
@@ -184,10 +239,24 @@ def list_sources(workspace_id: str | None = None, db: Session = Depends(get_db),
 @router.post("", status_code=201)
 def create_project(payload: CreateProjectRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     _rate_limit(user.id)
-    if payload.source_ids:
+    # 2026-10-09 (round 15): a Space scopes the project to the Space's sources
+    # this person can use (a Space never grants access to data).
+    space = None
+    if payload.space_id:
+        from ..services import spaces as spaces_service
+        space = spaces_service.get_space(db, user, payload.space_id)
+        if not space:
+            raise HTTPException(404, "Space not found.")
+        in_space = spaces_service.space_source_ids(db, user, space.id)
+        if payload.source_ids:
+            in_space = [i for i in _usable_ids(db, user, payload.source_ids) if i in set(in_space)]
+        ids = in_space[:MAX_SOURCES]
+        if not ids:
+            raise HTTPException(400, "This Space has no sources you can use")
+    elif payload.source_ids:
         ids = _usable_ids(db, user, payload.source_ids)
     else:
-        ids = [ds.id for ds in accessible_sources(db, user, payload.workspace_id)][:MAX_SOURCES]
+        ids = _pick_for_question(accessible_sources(db, user, payload.workspace_id), payload.question)
     if not ids:
         raise HTTPException(400, "Connect a data source first - there is nothing to ask about yet.")
     # editing tier on at least the first source: a workspace viewer can read but not create work
@@ -200,12 +269,13 @@ def create_project(payload: CreateProjectRequest, db: Session = Depends(get_db),
     conv = models.Conversation(
         owner_id=user.id, datasource_id=ids[0], kind="project", source_ids=ids,
         workspace_id=payload.workspace_id or first.workspace_id, title=payload.question.strip()[:80],
+        space_id=space.id if space else None,
     )
     db.add(conv)
     db.commit()
     run = _new_run(db, conv, user, payload.question, payload.auto_run)
     executor.start_planning(run.id)
-    return {"project_id": conv.id, "run_id": run.id}
+    return {"project_id": conv.id, "run_id": run.id, "space_id": conv.space_id}
 
 
 @router.get("/runs/{run_id}")
@@ -271,7 +341,19 @@ def get_project(project_id: str, db: Session = Depends(get_db), user: models.Use
         "can_edit": workspace_access.can_edit_conversation(db, conv, user),
         "runs": [_run_out(r, full=False) for r in runs if r.status != "replaced"],
         "dashboards": [{"id": d.id, "name": d.name} for d in dashboards],
+        **_space_ref(db, conv, user),
     }
+
+
+def _space_ref(db: Session, conv: models.Conversation, user: models.User) -> dict:
+    """2026-10-09 (round 15): the Space a project was asked in, when the
+    viewer can still see that Space (else only its id)."""
+    if not getattr(conv, "space_id", None):
+        return {"space_id": None, "space_name": None, "space_color": None}
+    from ..services import spaces as spaces_service
+    space = spaces_service.get_space(db, user, conv.space_id)
+    return {"space_id": conv.space_id, "space_name": space.name if space else None,
+            "space_color": space.color if space else None}
 
 
 @router.patch("/{project_id}")
@@ -287,7 +369,7 @@ def update_project(project_id: str, payload: UpdateProjectRequest, db: Session =
         conv.source_ids = ids
         conv.datasource_id = ids[0]
     db.commit()
-    return {"id": conv.id, "title": conv.title, "source_ids": conv.source_ids}
+    return {"id": conv.id, "title": conv.title, "source_ids": conv.source_ids, **_space_ref(db, conv, user)}
 
 
 @router.post("/{project_id}/ask", status_code=201)
