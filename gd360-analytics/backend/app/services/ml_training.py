@@ -877,6 +877,10 @@ def predict_one(ml_model_row: models.MLModel, input_values: dict) -> tuple[Any, 
     if not ml_model_row.model_artifact:
         raise ValueError("This model makes a forecast for future periods, not a prediction per row - see its forecast.")
     pipeline = joblib.load(io.BytesIO(ml_model_row.model_artifact))
+    if isinstance(pipeline, dict):
+        # 2026-10-09 (round 15): ML Studio kinds such as recommendations, uplift
+        # or text tagging keep several parts together - they score whole tables.
+        raise ValueError("This kind of model works on a whole table - use “Score a table” instead of a single prediction.")
     feature_columns = ml_model_row.feature_columns or []
     row = {col: _coerce_form_value(input_values.get(col)) for col in feature_columns}
     X = pd.DataFrame([row], columns=feature_columns)

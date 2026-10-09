@@ -319,7 +319,33 @@ def shopify_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
 
 # ---- Google Analytics 4 ------------------------------------------------------
 
-def _ga4_token(creds: dict) -> str:
+# 2026-10-09 (round 15): Google tokens are shared by GA4, Search Console and
+# YouTube. A source connected with "Sign in with Google" carries a
+# refresh_token (exchanged here for an access token); one connected with a
+# service account carries service_account_json.
+
+def _google_oauth_token(creds: dict, app: str = "Google") -> str:
+    client_id = creds.get("client_id") or settings.GOOGLE_OAUTH_CLIENT_ID
+    client_secret = creds.get("client_secret") or settings.GOOGLE_OAUTH_CLIENT_SECRET
+    refresh = str(creds.get("refresh_token") or "").strip()
+    if not refresh:
+        raise SyncError(f"{app} needs you to sign in with Google again (no refresh token was saved).")
+    if not (client_id and client_secret):
+        raise SyncError(f"{app} sign-in is not set up on this GD360 server (Google OAuth client ID and secret "
+                        "are missing). Ask your admin, or connect with a service account key instead.")
+    r = _post("https://oauth2.googleapis.com/token", data={
+        "client_id": client_id, "client_secret": client_secret, "refresh_token": refresh, "grant_type": "refresh_token"})
+    if r.status_code in (400, 401):
+        raise SyncError(f"Google no longer accepts the saved sign-in for {app} (it was revoked or expired). "
+                        "Reconnect the app with Sign in with Google.")
+    _raise_for(r, "Google")
+    token = (r.json() or {}).get("access_token")
+    if not token:
+        raise SyncError("Google did not return an access token. Reconnect the app with Sign in with Google.")
+    return token
+
+
+def _google_service_account_token(creds: dict, scopes: list[str]) -> str:
     raw = creds.get("service_account_json")
     try:
         info = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
@@ -330,12 +356,19 @@ def _ga4_token(creds: dict) -> str:
     try:
         from google.auth.transport.requests import Request
         from google.oauth2 import service_account
-        cred = service_account.Credentials.from_service_account_info(
-            info, scopes=["https://www.googleapis.com/auth/analytics.readonly"])
+        cred = service_account.Credentials.from_service_account_info(info, scopes=scopes)
         cred.refresh(Request())
         return cred.token
     except Exception as e:  # noqa: BLE001
         raise SyncError(f"Google rejected the service account key: {str(e)[:200]}") from e
+
+
+def _ga4_token(creds: dict) -> str:
+    # 2026-10-09 (round 15): a GA4 source connected with Sign in with Google
+    # uses its refresh token; otherwise the service account key as before.
+    if str(creds.get("refresh_token") or "").strip():
+        return _google_oauth_token(creds, "Google Analytics")
+    return _google_service_account_token(creds, ["https://www.googleapis.com/auth/analytics.readonly"])
 
 
 def _ga4_property(creds: dict) -> str:
@@ -594,12 +627,33 @@ APPS = {
     "shopify": {"label": "Shopify", "test": shopify_test, "fetch": shopify_fetch,
                 "fields": ["shop", "access_token"]},
     "ga4": {"label": "Google Analytics 4", "test": ga4_test, "fetch": ga4_fetch,
-            "fields": ["property_id", "service_account_json"]},
+            "fields": ["property_id", "service_account_json", "refresh_token", "client_id", "client_secret"]},
     "meta_ads": {"label": "Meta Ads", "test": meta_test, "fetch": meta_fetch,
                  "fields": ["ad_account_id", "access_token"]},
     "google_ads": {"label": "Google Ads", "test": google_ads_test, "fetch": google_ads_fetch,
                    "fields": ["customer_id", "developer_token", "refresh_token", "login_customer_id", "client_id", "client_secret"]},
 }
+
+
+# 2026-10-09 (round 15): the apps added in round 15 (Instagram, Facebook
+# Pages, LinkedIn Pages, YouTube, Search Console, WooCommerce, Stripe,
+# HubSpot, Klaviyo) live in services/app_connectors.py and register here.
+# SYNCED_KINDS stays a module attribute (other modules read it) and is
+# rebuilt from APPS whenever connectors register.
+
+def register_connectors(module) -> None:
+    global SYNCED_KINDS
+    apps = getattr(module, "APPS", None)
+    if not apps:
+        return  # still importing: it registers itself when it finishes
+    APPS.update(apps)
+    DEFAULT_INTERVAL.update(getattr(module, "DEFAULT_INTERVAL", {}) or {})
+    SYNCED_KINDS = tuple(APPS)
+
+
+from . import app_connectors as _ac  # noqa: E402  (needs the helpers above)
+
+register_connectors(_ac)
 
 
 def credentials(ds: models.DataSource) -> dict:

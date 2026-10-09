@@ -307,7 +307,9 @@ def load_dataframe(
 def _load_original(
     ds: models.DataSource, table: str | None = None, row_limit: int | None = None, db: Session | None = None,
 ) -> pd.DataFrame:
-    if ds.kind in ("shopify", "ga4", "meta_ads", "google_ads"):
+    # 2026-10-09 (round 15): every synced app kind, including the round-15 connectors.
+    from .synced_sources import SYNCED_KINDS
+    if ds.kind in SYNCED_KINDS:
         # 2026-10-08 (round 11): a synced app source - its tables are the
         # Parquet copies services/synced_sources.py keeps (one per table).
         from . import synced_sources

@@ -46,6 +46,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from .. import models
 from ..config import get_settings
 from ..database import SessionLocal
+from .synced_sources import SYNCED_KINDS
 
 logger = logging.getLogger("gd360.automations")
 
@@ -60,7 +61,9 @@ OPS = ("below", "above", "drops_by", "rises_by")
 MAX_STEPS = 8
 MAX_RECIPIENTS = 10
 MAX_PER_OWNER = 50
-NEW_DATA_KINDS = ("shopify", "ga4", "meta_ads", "google_ads", "api", "streaming")
+# 2026-10-09 (round 15): every synced app (synced_sources.SYNCED_KINDS, which
+# now includes the round-15 connectors) plus REST APIs and event streams.
+NEW_DATA_KINDS = SYNCED_KINDS + ("api", "streaming")
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
 
@@ -493,7 +496,7 @@ def validate(db: Session, user: models.User, body: dict, existing: models.Automa
             ds = db.get(models.DataSource, s.get("datasource_id") or "")
             if not _ds_visible(db, ds, user):
                 raise AutomationError(f"Step {i + 1}: pick a data source you can see.")
-            if t == "sync_source" and ds.kind not in ("shopify", "ga4", "meta_ads", "google_ads", "api"):
+            if t == "sync_source" and ds.kind not in SYNCED_KINDS + ("api",):
                 raise AutomationError(f"Step {i + 1}: {ds.name} is read live, so it has nothing to sync.")
             steps.append({"type": t, "datasource_id": ds.id})
         elif t == "rescore_model":
@@ -1194,7 +1197,7 @@ def _fail_run(db: Session, run_id: str, msg: str) -> None:
 def data_version(ds: models.DataSource | None) -> datetime | None:
     if not ds:
         return None
-    if ds.kind in ("shopify", "ga4", "meta_ads", "google_ads"):
+    if ds.kind in SYNCED_KINDS:
         return ds.last_synced_at
     if ds.kind == "api":
         return ds.api_last_refreshed_at
