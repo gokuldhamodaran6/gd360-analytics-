@@ -4,7 +4,7 @@
 // chart component the one-source analysis uses).
 import WorkspaceChart from "../components/WorkspaceChart";
 import type { DashKpi, Visual } from "../api/projects";
-import { formatValue } from "./format";
+import { formatCell, formatValue } from "./format";
 
 export function WaterfallChart({ visual }: { visual: Extract<Visual, { type: "waterfall" }> }) {
   const totals = visual.items.filter((i) => i.kind === "total").map((i) => Math.abs(i.value));
@@ -147,7 +147,8 @@ export function VisualCard({ visual, id, chartType }: { visual: Visual; id: stri
       </div>
       {visual.type === "waterfall" && <WaterfallChart visual={visual} />}
       {visual.type === "diverging" && <DivergingBars visual={visual} />}
-      {visual.type === "chart" && (
+      {visual.type === "chart" && (visual.display === "table" || (chartType || visual.chart_type) === "table") && <DataTable visual={visual} />}
+      {visual.type === "chart" && !(visual.display === "table" || (chartType || visual.chart_type) === "table") && (
         <WorkspaceChart
           columns={visual.columns as any}
           rows={visual.rows as any}
@@ -159,6 +160,46 @@ export function VisualCard({ visual, id, chartType }: { visual: Visual; id: stri
           minHeight={260}
         />
       )}
+      {visual.type === "chart" && visual.note && <p className="m-0 text-caption text-muted">{visual.note}</p>}
     </section>
+  );
+}
+
+/** A result as a table a finance team would accept: named columns, money
+ *  and rates written as such, numbers right-aligned in tabular figures. */
+export function DataTable({ visual }: { visual: Extract<Visual, { type: "chart" }> }) {
+  const cols = visual.columns || [];
+  const rows = (visual.rows || []) as Record<string, unknown>[];
+  const numeric = (c: (typeof cols)[number]) => c.dtype === "number" || Boolean(c.format);
+  return (
+    <div className="overflow-x-auto -mx-1">
+      <table className="w-full border-collapse text-ui tabular-nums">
+        <thead>
+          <tr>
+            {cols.map((c) => (
+              <th
+                key={c.name}
+                scope="col"
+                className={`px-3 py-2 text-caption font-medium text-muted border-b border-border whitespace-nowrap ${numeric(c) ? "text-right" : "text-left"}`}
+              >
+                {c.label || c.name}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className="border-b border-border last:border-0 hover:bg-subtle/60">
+              {cols.map((c, j) => (
+                <td key={c.name} className={`px-3 py-2.5 whitespace-nowrap ${numeric(c) ? "text-right font-mono text-[13px] text-text" : j === 0 ? "text-text font-medium" : "text-secondary"}`}>
+                  {numeric(c) ? formatCell(r[c.name], c.format, c.currency) : r[c.name] == null || r[c.name] === "" ? "—" : String(r[c.name])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {visual.truncated && <p className="m-0 mt-2 px-1 text-caption text-muted">The first {rows.length.toLocaleString("en-US")} rows are shown; every row is in the Evidence tab.</p>}
+    </div>
   );
 }

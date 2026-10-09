@@ -5,7 +5,7 @@ const SYMBOLS: Record<string, string> = { USD: "$", EUR: "€", GBP: "£", INR: 
 
 function abbreviate(a: number): string {
   if (a >= 1e9) return `${(a / 1e9).toFixed(1)}B`;
-  if (a >= 1e6) return `${(a / 1e6).toFixed(1)}M`;
+  if (a >= 1e6) return `${(a / 1e6).toFixed(a < 1e7 ? 2 : 1)}M`;
   if (a >= 1e4) return `${(a / 1e3).toFixed(1)}k`;
   if (a >= 100) return Math.round(a).toLocaleString("en-US");
   if (a >= 1) return a.toLocaleString("en-US", { maximumFractionDigits: 2 });
@@ -75,4 +75,23 @@ export function setAutoRunPreference(on: boolean): void {
   } catch {
     /* per-browser convenience only */
   }
+}
+
+/** A table cell: whole money above $1,000 without cents ($14,394,410),
+ *  smaller money with them ($105.75), counts with separators, rates with
+ *  one decimal - every digit lined up in its column. */
+export function formatCell(v: unknown, kind?: string | null, currency?: string | null): string {
+  if (v === null || v === undefined || v === "") return "—";
+  if (typeof v !== "number" || !Number.isFinite(v)) return String(v);
+  const a = Math.abs(v);
+  const sign = v < 0 ? "−" : "";
+  if (kind === "currency") {
+    const sym = SYMBOLS[(currency || "USD").toUpperCase()] ?? "";
+    const body = a >= 1000 ? Math.round(a).toLocaleString("en-US") : a.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return `${sign}${sym}${body}`;
+  }
+  if (kind === "percent") return `${sign}${a.toFixed(1)}%`;
+  if (kind === "ratio") return `${sign}${(a * 100).toFixed(1)}%`;
+  if (kind === "integer" || Number.isInteger(v)) return `${sign}${Math.round(a).toLocaleString("en-US")}`;
+  return `${sign}${a.toLocaleString("en-US", { maximumFractionDigits: a >= 1000 ? 0 : 2 })}`;
 }

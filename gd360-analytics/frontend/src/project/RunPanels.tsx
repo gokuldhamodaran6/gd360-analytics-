@@ -354,7 +354,7 @@ export function ResultsTab({ run }: { run: ProjectRun }) {
             return (
               <article key={i} className="rounded-card border border-border bg-surface p-5 flex flex-col gap-3 min-w-0">
                 <div className="flex justify-between items-center gap-2">
-                  <span className={`font-mono text-caption uppercase tracking-[0.06em] ${offset ? "text-good" : "text-danger"}`}>{label}</span>
+                  <span className={`font-mono text-caption uppercase tracking-[0.06em] ${offset ? "text-warning" : c.direction === "down" ? "text-danger" : c.direction === "up" ? "text-good" : "text-muted"}`}>{label}</span>
                   <span
                     className={`font-mono text-[10.5px] px-1.5 py-0.5 rounded uppercase ${
                       c.confidence === "high" ? "bg-good-fill text-good" : c.confidence === "medium" ? "bg-warning-fill text-warning" : "bg-subtle text-muted"
