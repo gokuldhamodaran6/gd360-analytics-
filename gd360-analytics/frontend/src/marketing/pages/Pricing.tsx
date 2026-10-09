@@ -5,7 +5,7 @@
 import { FormEvent, Fragment, useState } from "react";
 import { api } from "../../api/client";
 import { errorText } from "../shared";
-import { A, useMarketingPage } from "../shared";
+import { A, SoonDialog, useMarketingPage } from "../shared";
 import "../marketing.css";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -17,13 +17,13 @@ function vals(state: any, setState: (patch: any) => void): any {
     const T = [
       { id: "plus", name: "Plus", m: 10, for: "For individuals who want answers every day.", lead: "INCLUDES", min: 1, chats: 200, src: 5,
         limits: [{ k: "AI chats / month", v: "200", pct: 20 }, { k: "Data sources", v: "5", pct: 20 }, { k: "Users", v: "1", pct: 6 }],
-        items: ["Every database, files and Google Sheets", "5 dashboards with daily refresh", "ML Studio — 5 trainings a month", "2 automations", "Answers with proof, password-protected links"], cta: "Get started", href: "/start" },
+        items: ["Every database, files and Google Sheets", "5 dashboards with daily refresh", "ML Studio — 5 trainings a month", "2 automations", "Answers with proof, password-protected links"], cta: "Coming soon", href: "/start" },
       { id: "team", name: "Team", m: 25, popular: true, for: "For teams that run on many tools and work together.", lead: "EVERYTHING IN PLUS, AND", min: 3, chats: 500, src: 25,
         limits: [{ k: "AI chats / user / month", v: "500", pct: 50 }, { k: "Data sources", v: "25", pct: 60 }, { k: "Users", v: "3 or more", pct: 40 }],
-        items: ["Snowflake, BigQuery and synced apps — ads, store, CRM, social", "Spaces for every team", "ML Studio — all 21 kinds, 50 trainings", "20 automations, hourly refresh", "Row and column access rules"], cta: "Get started", href: "/start" },
+        items: ["Snowflake, BigQuery and synced apps — ads, store, CRM, social", "Spaces for every team", "ML Studio — all 21 kinds, 50 trainings", "20 automations, hourly refresh", "Row and column access rules"], cta: "Coming soon", href: "/start" },
       { id: "business", name: "Business", m: 49, for: "For companies with several teams and higher volumes.", lead: "EVERYTHING IN TEAM, AND", min: 10, chats: 2000, src: 0,
         limits: [{ k: "AI chats / user / month", v: "2,000", pct: 85 }, { k: "Data sources", v: "Unlimited", pct: 100 }, { k: "Users", v: "10 or more", pct: 70 }],
-        items: ["Unlimited dashboards, Spaces and automations", "Higher daily warehouse budget", "Custom domain for shared dashboards", "Refresh every 15 minutes", "Priority support"], cta: "Get started", href: "/start" },
+        items: ["Unlimited dashboards, Spaces and automations", "Higher daily warehouse budget", "Custom domain for shared dashboards", "Refresh every 15 minutes", "Priority support"], cta: "Coming soon", href: "/start" },
       { id: "enterprise", name: "Enterprise", m: null, for: "For company-wide roll-outs with security review.", lead: "EVERYTHING IN BUSINESS, AND", min: 0,
         limits: [{ k: "AI chats", v: "Custom", pct: 100 }, { k: "Data sources", v: "Unlimited", pct: 100 }, { k: "Users", v: "Unlimited", pct: 100 }],
         items: ["Volume pricing and custom limits", "Security review and governance support", "Guided onboarding for every team", "Named contact and custom terms"], cta: "Book a demo", href: "#enterprise" }
@@ -157,8 +157,19 @@ export default function MarketingPricing() {
       setDemoError(errorText(err, "Couldn't send that - please try again in a moment."));
     }
   };
+  // Paid plans open soon: any link into checkout opens the coming-soon dialog.
+  const [soon, setSoon] = useState("");
+  const onSoonClick = (e: any) => {
+    const a = (e.target as HTMLElement).closest("a");
+    const href = a?.getAttribute("href") || "";
+    if (!href.startsWith("/start?plan=")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const id = new URLSearchParams(href.split("?")[1]).get("plan") || "";
+    setSoon(({ plus: "Plus", team: "Team", business: "Business" } as Record<string, string>)[id] || "Paid plans");
+  };
   return (
-    <div className="mkt-pricing" style={{ fontFamily: "Geist, 'Helvetica Neue', system-ui, sans-serif", color: "#E8EEEC", background: "#07090A", minHeight: "100vh", overflowX: "clip" }}>
+    <div className="mkt-pricing" onClickCapture={onSoonClick} style={{ fontFamily: "Geist, 'Helvetica Neue', system-ui, sans-serif", color: "#E8EEEC", background: "#07090A", minHeight: "100vh", overflowX: "clip" }}>
       {" "}
       <header className="mk-site-head" style={{ position: "relative", zIndex: "5", borderBottom: "1px solid #141A1B", background: "rgba(7,9,10,.82)" }}>
         {" "}
@@ -335,6 +346,19 @@ export default function MarketingPricing() {
           {" "}
         </div>
         {" "}
+      </section>
+      {" "}
+      <section style={{ padding: "0 24px 8px" }}>
+        <div style={{ maxWidth: "1280px", margin: "0 auto" }}>
+          <div className="gd-ea">
+            <div className="gd-ea-copy">
+              <span className="gd-ea-eyebrow"><span className="gd-ea-dot"></span>{"EARLY ACCESS · OPEN NOW"}</span>
+              <h2 className="gd-ea-title gd-ea-title-sm">{"Use all of GD360 today — at no cost."}</h2>
+              <p className="gd-ea-text">{"Paid plans open soon. Until then every workspace gets the full product, and keeps everything it builds when plans go live."}</p>
+            </div>
+            <A href="/start" className="gd-ea-go">{"Start early access →"}</A>
+          </div>
+        </div>
       </section>
       {" "}
       <section style={{ padding: "32px 24px 88px" }}>
@@ -673,7 +697,7 @@ export default function MarketingPricing() {
             </div>
             {" "}
             <A href={V.calcHref} style={{ textAlign: "center", background: "#43E5A0", color: "#04140D", borderRadius: "999px", padding: "15px", fontWeight: "700", fontSize: "16px" }}>
-              {"Continue with this plan"}
+              {"Coming soon"}
             </A>
             {" "}
           </div>
@@ -1086,6 +1110,15 @@ export default function MarketingPricing() {
         {" "}
       </div>
       {" "}
+      <SoonDialog
+        open={!!soon}
+        onClose={() => setSoon("")}
+        eyebrow="PAID PLANS · COMING SOON"
+        title={soon + " opens soon."}
+        primary={<A href="/start" className="gd-soon-go">{"Start early access →"}</A>}
+      >
+        {"Card payments and paid plans switch on shortly. Until then, early access gives you every GD360 feature at no cost — and your workspace keeps everything you build when plans go live."}
+      </SoonDialog>
     </div>
   );
 }

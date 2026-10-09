@@ -227,12 +227,12 @@ export default function MarketingHome() {
         {" "}
         <div style={{ position: "relative", maxWidth: "1100px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "28px", alignItems: "center" }}>
           {" "}
-          <A href="#see" className="mk-w mk-d1" style={{ display: "inline-flex", alignItems: "center", gap: "10px", border: "1px solid #24413A", background: "rgba(19,35,32,.8)", color: "#BDF3DA", fontSize: "13.5px", padding: "7px 16px 7px 7px", borderRadius: "999px" }}>
+          <A href="/start" className="mk-w mk-d1" style={{ display: "inline-flex", alignItems: "center", gap: "10px", border: "1px solid #24413A", background: "rgba(19,35,32,.8)", color: "#BDF3DA", fontSize: "13.5px", padding: "7px 16px 7px 7px", borderRadius: "999px" }}>
             {" "}
             <span className="mk-mono" style={{ background: "#43E5A0", color: "#04140D", fontSize: "11px", fontWeight: "600", padding: "3px 10px", borderRadius: "999px" }}>
-              {"NEW"}
+              {"EARLY ACCESS"}
             </span>
-            {" Spaces, ML Studio and a 71-source catalog "}
+            {" The full product, at no cost while we launch "}
             <span aria-hidden="true">
               {"→"}
             </span>
@@ -265,7 +265,7 @@ export default function MarketingHome() {
           <div className="mk-m-cta mk-w mk-d6" style={{ display: "flex", gap: "12px", flexWrap: "wrap", justifyContent: "center" }}>
             {" "}
             <A href="/start" style={{ background: "#43E5A0", color: "#04140D", fontWeight: "700", fontSize: "16.5px", padding: "17px 30px", borderRadius: "999px", boxShadow: "0 18px 50px -18px rgba(67,229,160,.7)" }}>
-              {"Get started"}
+              {"Get early access"}
             </A>
             {" "}
             <A href="#see" style={{ border: "1px solid #2A3436", color: "#E8EEEC", fontWeight: "500", fontSize: "16.5px", padding: "17px 28px", borderRadius: "999px", background: "rgba(14,18,19,.7)", display: "inline-flex", alignItems: "center", gap: "10px" }}>
@@ -1381,105 +1381,32 @@ export default function MarketingHome() {
         {" "}
       </section>
       {" "}
-      <section style={{ padding: "104px 24px" }}>
-        {" "}
-        <div style={{ maxWidth: "1280px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "36px" }}>
-          {" "}
-          <div style={{ display: "flex", justifyContent: "space-between", gap: "24px", flexWrap: "wrap", alignItems: "flex-end" }}>
-            {" "}
-            <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-              <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>
-                {"PRICING"}
-              </span>
-              <h2 style={{ margin: "0", fontWeight: "800", fontSize: "clamp(34px, 4.4vw, 58px)", lineHeight: "1", letterSpacing: "-0.045em" }}>
-                {"From $10 a user. Built to scale."}
-              </h2>
+      <section id="early-access" style={{ padding: "104px 24px" }}>
+        <div style={{ maxWidth: "1280px", margin: "0 auto" }}>
+          <div className="gd-ea gd-ea-xl">
+            <div className="gd-ea-copy">
+              <span className="gd-ea-eyebrow"><span className="gd-ea-dot"></span>{"EARLY ACCESS · OPEN NOW"}</span>
+              <h2 className="gd-ea-title">{"Every feature. "}<span className="mk-sheen">{"No cost while we launch."}</span></h2>
+              <p className="gd-ea-text">{"GD360 is in early access. Create a workspace and use the whole product — 71 connectors, Spaces, ML Studio, dashboards and automations. Everything you build stays yours when plans go live."}</p>
+              <div className="gd-ea-points">
+                <span>{"✓ No card needed"}</span>
+                <span>{"✓ The full product"}</span>
+                <span>{"✓ Keep all your work"}</span>
+              </div>
+              <div><A href="/start" className="gd-ea-go">{"Get early access →"}</A></div>
             </div>
-            {" "}
-            <A href="/pricing" style={{ fontWeight: "600", fontSize: "16px" }}>
-              {"Compare every plan →"}
-            </A>
-            {" "}
-          </div>
-          {" "}
-          <div className="mk-m-rail" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: "14px" }}>
-            {" "}
-            <A href="/pricing" className="mk-lift" style={{ border: "1px solid #1F2729", background: "#0B0F10", borderRadius: "22px", padding: "26px", display: "flex", flexDirection: "column", gap: "10px", color: "#E8EEEC" }}>
-              <span style={{ fontWeight: "700", fontSize: "18px" }}>
-                {"Plus"}
-              </span>
-              <span>
-                <span style={{ fontWeight: "800", fontSize: "42px", letterSpacing: "-0.045em" }}>
-                  {"$10"}
-                </span>
-                <span style={{ color: "#7F8C88", fontSize: "14px" }}>
-                  {" / user / month"}
-                </span>
-              </span>
-              <span style={{ color: "#A3B0AC", fontSize: "14.5px", lineHeight: "1.55" }}>
-                {"For individuals who want answers every day."}
-              </span>
-            </A>
-            {" "}
-            <div className="mk-shine">
-              <A href="/pricing" style={{ position: "relative", height: "100%", boxSizing: "border-box", borderRadius: "25px", background: "#0E1A16", padding: "26px", display: "flex", flexDirection: "column", gap: "10px", color: "#E8EEEC" }}>
-                <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontWeight: "700", fontSize: "18px" }}>
-                    {"Team"}
-                  </span>
-                  <span className="mk-mono" style={{ fontSize: "10.5px", fontWeight: "600", background: "#43E5A0", color: "#04140D", padding: "4px 9px", borderRadius: "999px" }}>
-                    {"MOST POPULAR"}
-                  </span>
-                </span>
-                <span>
-                  <span style={{ fontWeight: "800", fontSize: "42px", letterSpacing: "-0.045em" }}>
-                    {"$25"}
-                  </span>
-                  <span style={{ color: "#7F8C88", fontSize: "14px" }}>
-                    {" / user / month"}
-                  </span>
-                </span>
-                <span style={{ color: "#A3B0AC", fontSize: "14.5px", lineHeight: "1.55" }}>
-                  {"Warehouses, synced apps, Spaces, ML and automations."}
-                </span>
-              </A>
+            <div className="gd-ea-side">
+              <span className="gd-soon-chip gd-soon-chip-lg"><span className="gd-ea-dot gd-ea-dot-amber"></span>{"PRICING · COMING SOON"}</span>
+              <p className="gd-ea-side-text">{"Per-user plans for individuals, teams and whole companies are on their way. Early-access workspaces hear first."}</p>
+              <ul className="gd-ea-list">
+                <li><span>{"Plus"}</span><em>{"For individuals"}</em></li>
+                <li><span>{"Team"}</span><em>{"For teams on many tools"}</em></li>
+                <li><span>{"Business"}</span><em>{"For several teams"}</em></li>
+                <li><span>{"Enterprise"}</span><em>{"Company-wide roll-outs"}</em></li>
+              </ul>
             </div>
-            {" "}
-            <A href="/pricing" className="mk-lift" style={{ border: "1px solid #1F2729", background: "#0B0F10", borderRadius: "22px", padding: "26px", display: "flex", flexDirection: "column", gap: "10px", color: "#E8EEEC" }}>
-              <span style={{ fontWeight: "700", fontSize: "18px" }}>
-                {"Business"}
-              </span>
-              <span>
-                <span style={{ fontWeight: "800", fontSize: "42px", letterSpacing: "-0.045em" }}>
-                  {"$49"}
-                </span>
-                <span style={{ color: "#7F8C88", fontSize: "14px" }}>
-                  {" / user / month"}
-                </span>
-              </span>
-              <span style={{ color: "#A3B0AC", fontSize: "14.5px", lineHeight: "1.55" }}>
-                {"Unlimited sources and dashboards for many teams."}
-              </span>
-            </A>
-            {" "}
-            <A href="/pricing" className="mk-lift" style={{ border: "1px solid #1F2729", background: "#0B0F10", borderRadius: "22px", padding: "26px", display: "flex", flexDirection: "column", gap: "10px", color: "#E8EEEC" }}>
-              <span style={{ fontWeight: "700", fontSize: "18px" }}>
-                {"Enterprise"}
-              </span>
-              <span>
-                <span style={{ fontWeight: "800", fontSize: "42px", letterSpacing: "-0.045em" }}>
-                  {"Custom"}
-                </span>
-              </span>
-              <span style={{ color: "#A3B0AC", fontSize: "14.5px", lineHeight: "1.55" }}>
-                {"Company-wide roll-out, security review and onboarding."}
-              </span>
-            </A>
-            {" "}
           </div>
-          {" "}
         </div>
-        {" "}
       </section>
       {" "}
       <section style={{ position: "relative", padding: "128px 24px 140px", textAlign: "center", borderTop: "1px solid #141A1B", overflow: "hidden" }}>
@@ -1515,11 +1442,11 @@ export default function MarketingHome() {
           <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", justifyContent: "center" }}>
             {" "}
             <A href="/start" style={{ background: "#43E5A0", color: "#04140D", fontWeight: "700", fontSize: "17px", padding: "18px 32px", borderRadius: "999px", boxShadow: "0 18px 50px -18px rgba(67,229,160,.7)" }}>
-              {"Get started"}
+              {"Get early access"}
             </A>
             {" "}
-            <A href="/pricing" style={{ border: "1px solid #2A3436", color: "#E8EEEC", fontWeight: "500", fontSize: "17px", padding: "18px 30px", borderRadius: "999px" }}>
-              {"See pricing"}
+            <A href="#see" style={{ border: "1px solid #2A3436", color: "#E8EEEC", fontWeight: "500", fontSize: "17px", padding: "18px 30px", borderRadius: "999px" }}>
+              {"See it work"}
             </A>
             {" "}
           </div>
@@ -1636,12 +1563,12 @@ export default function MarketingHome() {
         {" "}
         <div style={{ position: "fixed", left: "0", right: "0", bottom: "0", zIndex: "40", padding: "10px 16px calc(10px + env(safe-area-inset-bottom, 0px))", background: "rgba(7,9,10,.9)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", borderTop: "1px solid #1F2729", display: "flex", alignItems: "center", gap: "10px" }}>
           {" "}
-          <A href="/pricing" style={{ flex: "1", height: "50px", border: "1px solid #2A3436", borderRadius: "999px", display: "grid", placeItems: "center", color: "#E8EEEC", fontWeight: "600", fontSize: "15px" }}>
-            {"See pricing"}
+          <A href="#see" style={{ flex: "1", height: "50px", border: "1px solid #2A3436", borderRadius: "999px", display: "grid", placeItems: "center", color: "#E8EEEC", fontWeight: "600", fontSize: "15px" }}>
+            {"See it work"}
           </A>
           {" "}
           <A href="/start" style={{ flex: "1.5", height: "50px", borderRadius: "999px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "700", fontSize: "15.5px", boxShadow: "0 12px 34px -14px rgba(67,229,160,.8)" }}>
-            {"Get started"}
+            {"Get early access"}
           </A>
           {" "}
         </div>

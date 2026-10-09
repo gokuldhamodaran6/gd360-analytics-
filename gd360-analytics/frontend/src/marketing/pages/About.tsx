@@ -327,67 +327,7 @@ export default function MarketingAbout() {
         {" "}
       </section>
       {" "}
-      <section style={{ padding: "112px 24px", background: "#0B0F10", borderTop: "1px solid #141A1B", borderBottom: "1px solid #141A1B" }}>
-        {" "}
-        <div style={{ maxWidth: "1280px", margin: "0 auto", display: "flex", flexWrap: "wrap", gap: "64px" }}>
-          {" "}
-          <div style={{ flex: "1 1 340px", display: "flex", flexDirection: "column", gap: "16px" }}>
-            {" "}
-            <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>
-              {"WHAT WE’VE SHIPPED"}
-            </span>
-            {" "}
-            <h2 style={{ margin: "0", fontWeight: "800", fontSize: "clamp(34px, 4.6vw, 60px)", lineHeight: "1", letterSpacing: "-0.045em" }}>
-              {"We ship every week."}
-            </h2>
-            {" "}
-            <p style={{ margin: "0", color: "#A3B0AC", fontSize: "16.5px", lineHeight: "1.65" }}>
-              {"A focused team moving fast — with every release tested end to end before it reaches you."}
-            </p>
-            {" "}
-          </div>
-          {" "}
-          <div style={{ flex: "1 1 640px", position: "relative", paddingLeft: "36px" }}>
-            {" "}
-            <div style={{ position: "absolute", left: "7px", top: "8px", bottom: "8px", width: "2px", background: "#1F2729" }}></div>
-            {" "}
-            <div className="mk-spine" style={{ position: "absolute", left: "7px", top: "8px", bottom: "8px", width: "2px", background: "#43E5A0", boxShadow: "0 0 12px rgba(67,229,160,.6)" }}></div>
-            {" "}
-            <div style={{ display: "flex", flexDirection: "column", gap: "28px" }}>
-              {" "}
-              {(V.log || []).map((l: any, i1: number) => (
-                <Fragment key={i1}>
-                  {" "}
-                  <div style={{ position: "relative", display: "flex", flexDirection: "column", gap: "6px" }}>
-                    {" "}
-                    <span className="mk-node" style={{ position: "absolute", left: "-35px", top: "4px", width: "14px", height: "14px", borderRadius: "14px", border: "2px solid #0B0F10", animationDelay: l.delay }}></span>
-                    {" "}
-                    <span className="mk-mono" style={{ fontSize: "12px", color: "#43E5A0" }}>
-                      {l.when}
-                    </span>
-                    {" "}
-                    <span style={{ fontWeight: "800", fontSize: "19px", letterSpacing: "-0.01em" }}>
-                      {l.t}
-                    </span>
-                    {" "}
-                    <span style={{ color: "#A3B0AC", fontSize: "15px", lineHeight: "1.6" }}>
-                      {l.x}
-                    </span>
-                    {" "}
-                  </div>
-                  {" "}
-                </Fragment>
-              ))}
-              {" "}
-            </div>
-            {" "}
-          </div>
-          {" "}
-        </div>
-        {" "}
-      </section>
-      {" "}
-      <section style={{ padding: "120px 24px" }}>
+      <section style={{ padding: "0 24px 120px" }}>
         {" "}
         <div style={{ maxWidth: "1280px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "40px" }}>
           {" "}
@@ -396,7 +336,7 @@ export default function MarketingAbout() {
               {"THE TEAM"}
             </span>
             <h2 style={{ margin: "0", fontWeight: "800", fontSize: "clamp(34px, 4.6vw, 60px)", lineHeight: "1", letterSpacing: "-0.045em" }}>
-              {"Small team. High standard."}
+              {"Founder-led. Held to one standard."}
             </h2>
           </div>
           {" "}
@@ -503,7 +443,7 @@ export default function MarketingAbout() {
                 {"The investor brief and a product walkthrough."}
               </span>
               <A href={SITE.investorsEmail ? "mailto:" + SITE.investorsEmail : "/pricing#enterprise"} style={{ fontWeight: "600" }}>
-                {(SITE.investorsEmail || "Request the investor brief") + " →"}
+                {"Request the investor brief →"}
               </A>
             </div>
             {" "}
@@ -515,7 +455,7 @@ export default function MarketingAbout() {
                 {"Integrations, partnerships and media."}
               </span>
               <A href={SITE.helloEmail ? "mailto:" + SITE.helloEmail : "/pricing#enterprise"} style={{ fontWeight: "600" }}>
-                {(SITE.helloEmail || "Get in touch") + " →"}
+                {"Get in touch →"}
               </A>
             </div>
             {" "}

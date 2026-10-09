@@ -7,7 +7,7 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../api/AuthContext";
 import { errorText } from "../shared";
 import { SITE } from "../site";
-import { A, useMarketingPage } from "../shared";
+import { A, SoonDialog, useMarketingPage } from "../shared";
 import "../marketing.css";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -18,6 +18,7 @@ function vals(state: any, setState: (patch: any) => void): any {
     const annual = !!s.annual;
     const money = (n) => "$" + (Number.isInteger(n) ? n.toLocaleString("en-US") : n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
     const P = [
+      { id: "early", name: "Early access", m: 0, min: 1, max: 1, blurb: "Every feature · no card · while we launch" },
       { id: "plus", name: "Plus", m: 10, min: 1, max: 1, blurb: "One person · 200 chats · 5 sources" },
       { id: "team", name: "Team", m: 25, min: 3, max: 500, blurb: "Warehouses, apps, Spaces, ML, automations" },
       { id: "business", name: "Business", m: 49, min: 10, max: 500, blurb: "Unlimited sources and dashboards" }
@@ -51,7 +52,7 @@ function vals(state: any, setState: (patch: any) => void): any {
       aBg: annual ? "#43E5A0" : "transparent", aInk: annual ? "#04140D" : "#A3B0AC",
       plans: P.map((p) => {
         const on = p.id === pick.id;
-        return { name: p.name, blurb: p.blurb, price: money(unit(p)), on: on ? "true" : "false",
+        return { id: p.id, soon: p.m > 0, name: p.name, blurb: p.blurb, price: money(unit(p)), on: on ? "true" : "false",
           pick: () => setState({ plan: p.id, users: Math.min(p.max, Math.max(p.min, (state && state.users) || 1)) }),
           border: on ? "#43E5A0" : "#1F2729", bg: on ? "#0F1A16" : "#0B0F10", dot: on ? "#43E5A0" : "#2A3436", fill: on ? "#43E5A0" : "transparent" };
       }),
@@ -97,11 +98,10 @@ export default function MarketingStart() {
   // a workspace invite (or any deep link) that sent a new person here
   const returnTo = (location.state as { from?: string } | null)?.from || "";
   const [params] = useSearchParams();
-  const planParam = params.get("plan");
   const [state, setS] = useState<any>({
-    step: user ? 2 : 1,
+    step: 1,
     annual: params.get("billing") === "annual",
-    plan: planParam === "plus" || planParam === "team" || planParam === "business" ? planParam : "team",
+    plan: "early",
     users: Math.max(1, Math.min(500, Number(params.get("users")) || 5)),
     source: "", q: 0, asked: false,
   });
@@ -111,6 +111,12 @@ export default function MarketingStart() {
   const [captcha, setCaptcha] = useState({ id: "", question: "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [soonPlan, setSoonPlan] = useState("");
+  // already signed in: nothing to set up here, go to the app
+  useEffect(() => {
+    if (user && !busy) navigate(returnTo || "/", { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
   const field = (k: string) => (e: any) => setForm((f) => ({ ...f, [k]: k === "captcha" ? e.target.value.replace(/[^0-9-]/g, "") : e.target.value }));
   const loadCaptcha = () =>
     getCaptcha()
@@ -139,7 +145,7 @@ export default function MarketingStart() {
         navigate(returnTo, { replace: true });
         return;
       }
-      setState({ step: 2 });
+      navigate("/", { replace: true });
     } catch (ex: any) {
       setErr(errorText(ex, "Couldn't create your workspace."));
       setForm((f) => ({ ...f, captcha: "" }));
@@ -153,6 +159,15 @@ export default function MarketingStart() {
     V.dueLabel = state.annual ? "Your plan, per year" : "Your plan, per month";
     V.dueNote = "Nothing is charged today. We confirm your plan with you before billing starts.";
   }
+  const isEarly = state.plan === "early";
+  V.isEarly = isEarly;
+  V.summaryLine = isEarly ? "Early access · every feature" : V.planName + " · " + V.users + " " + V.userWord;
+  if (isEarly) {
+    V.unitLabel = "$0";
+    V.dueLabel = "Due today";
+    V.dueNote = "The full product, no card. Paid plans open soon — we’ll tell you well before anything changes.";
+  }
+  V.plans = (V.plans || []).map((p: any) => (p.soon ? { ...p, pick: () => setSoonPlan(p.name) } : p));
   const APP_KINDS: Record<string, string> = { shopify: "shopify", gads: "google_ads", ga4: "ga4", hubspot: "hubspot", stripe: "stripe", instagram: "instagram" };
   const openGD360 = () => {
     try {
@@ -238,37 +253,22 @@ export default function MarketingStart() {
               {" "}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "10px" }}>
                 <span className="mk-mono" style={{ fontSize: "11.5px", letterSpacing: "0.12em", color: "#43E5A0" }}>
-                  {"STEP "}{V.stepNum}{" OF 3"}
+                  {"EARLY ACCESS"}
                 </span>
                 <span style={{ fontSize: "13.5px", color: "#A3B0AC" }}>
-                  {V.stepName}
+                  {"Create your account"}
                 </span>
               </div>
               {" "}
               <div style={{ height: "4px", background: "#1A2224", borderRadius: "4px", overflow: "hidden" }}>
-                <div style={{ height: "4px", width: `${V.stepPct}%`, background: "#43E5A0", borderRadius: "4px", transition: "width .4s ease" }}></div>
+                <div style={{ height: "4px", width: "100%", background: "#43E5A0", borderRadius: "4px", transition: "width .4s ease" }}></div>
               </div>
               {" "}
             </div>
             {" "}
           </div>
           {" "}
-          <ol className="mk-d-only" aria-label="Steps" style={{ listStyle: "none", margin: "0", padding: "0", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-            {" "}
-            {(V.steps || []).map((s: any, i1: number) => (
-              <Fragment key={i1}>
-                {" "}
-                <li style={{ display: "flex", alignItems: "center", gap: "8px", border: `1px solid ${s.border}`, background: s.bg, color: s.ink, borderRadius: "999px", padding: "7px 14px 7px 7px", fontSize: "14px", fontWeight: "600" }}>
-                  <span className="mk-mono" style={{ width: "24px", height: "24px", borderRadius: "24px", display: "grid", placeItems: "center", fontSize: "11.5px", background: s.dotBg, color: s.dotInk }}>
-                    {s.mark}
-                  </span>
-                  {s.label}
-                </li>
-                {" "}
-              </Fragment>
-            ))}
-            {" "}
-          </ol>
+          <span className="mk-d-only gd-ea-pill"><span className="gd-ea-dot"></span>{"Early access · every feature, no card"}</span>
           {" "}
           <span style={{ fontSize: "14px", color: "#A3B0AC" }}>
             {"Already have an account? "}
@@ -287,11 +287,11 @@ export default function MarketingStart() {
               <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                 {" "}
                 <h1 style={{ margin: "0", fontWeight: "900", fontSize: "clamp(34px, 4vw, 54px)", lineHeight: "1", letterSpacing: "-0.05em" }}>
-                  {"Choose your plan."}
+                  {"Start with early access."}
                 </h1>
                 {" "}
                 <p style={{ margin: "0", color: "#A3B0AC", fontSize: "16.5px", lineHeight: "1.6" }}>
-                  {"Per-user pricing. Change plans whenever you like. Rolling out across the company? "}
+                  {"The whole product, at no cost, while we launch. Paid plans open soon. Rolling out across the company? "}
                   <A href="/pricing">
                     {"See Enterprise"}
                   </A>
@@ -317,11 +317,12 @@ export default function MarketingStart() {
                 {(V.plans || []).map((p: any, i1: number) => (
                   <Fragment key={i1}>
                     {" "}
-                    <button type="button" role="radio" aria-checked={p.on} onClick={p.pick} style={{ textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "#E8EEEC", border: `1px solid ${p.border}`, background: p.bg, borderRadius: "18px", padding: "18px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                    <button type="button" role="radio" aria-checked={p.on} onClick={p.pick} className={p.soon ? "gd-plan-soon" : ""} style={{ textAlign: "left", cursor: "pointer", fontFamily: "inherit", color: "#E8EEEC", border: `1px solid ${p.border}`, background: p.bg, borderRadius: "18px", padding: "18px", display: "flex", flexDirection: "column", gap: "8px" }}>
                       {" "}
                       <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" }}>
-                        <span style={{ fontWeight: "800", fontSize: "18px" }}>
+                        <span style={{ fontWeight: "800", fontSize: "18px", display: "inline-flex", alignItems: "center", gap: "8px" }}>
                           {p.name}
+                          {p.soon && <span className="gd-soon-chip">{"SOON"}</span>}
                         </span>
                         <span aria-hidden="true" style={{ width: "18px", height: "18px", borderRadius: "18px", border: `2px solid ${p.dot}`, display: "grid", placeItems: "center" }}>
                           <span style={{ width: "8px", height: "8px", borderRadius: "8px", background: p.fill }}></span>
@@ -333,7 +334,7 @@ export default function MarketingStart() {
                           {p.price}
                         </span>
                         <span style={{ color: "#7F8C88", fontSize: "13px" }}>
-                          {" / user / mo"}
+                          {p.soon ? " / user / mo" : " during early access"}
                         </span>
                       </span>
                       {" "}
@@ -422,13 +423,15 @@ export default function MarketingStart() {
                   {" "}
                   <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", fontSize: "15px" }}>
                     <span>
-                      {V.planName}{" · "}{V.users}{" "}{V.userWord}
+                      {V.summaryLine}
                     </span>
                     <span className="mk-mono">
                       {V.unitLabel}
                     </span>
                   </div>
                   {" "}
+                  {!V.isEarly && (
+                  <>
                   <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                     {" "}
                     <button type="button" aria-label="One user fewer" onClick={V.less} style={{ width: "44px", height: "44px", borderRadius: "12px", border: "1px solid #2A3436", background: "#0E1213", color: "#E8EEEC", fontSize: "20px", cursor: "pointer", fontFamily: "inherit" }}>
@@ -449,6 +452,8 @@ export default function MarketingStart() {
                     {" "}
                   </div>
                   {" "}
+                  </>
+                  )}
                   <div style={{ borderTop: "1px solid #1F2729", paddingTop: "14px", display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "10px" }}>
                     <span style={{ color: "#A3B0AC" }}>
                       {V.dueLabel}
@@ -496,7 +501,7 @@ export default function MarketingStart() {
                 <div style={{ flex: "1", minWidth: "0", display: "flex", flexDirection: "column", gap: "1px" }}>
                   {" "}
                   <span className="mk-mono" style={{ fontSize: "11px", color: "#7F8C88", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {V.planName}{" · "}{V.users}{" "}{V.userWord}
+                    {V.summaryLine}
                   </span>
                   {" "}
                   <span style={{ fontWeight: "900", fontSize: "22px", letterSpacing: "-0.03em", color: "#43E5A0" }}>
@@ -718,6 +723,15 @@ export default function MarketingStart() {
         {" "}
       </main>
       {" "}
+      <SoonDialog
+        open={!!soonPlan}
+        onClose={() => setSoonPlan("")}
+        eyebrow="PAID PLANS · COMING SOON"
+        title={soonPlan + " opens soon."}
+        primary={<button type="button" autoFocus className="gd-soon-go" onClick={() => setSoonPlan("")}>{"Continue with early access →"}</button>}
+      >
+        {"Card payments and paid plans switch on shortly. Until then, early access gives you every GD360 feature at no cost — and your workspace keeps everything you build when plans go live."}
+      </SoonDialog>
     </div>
   );
 }
