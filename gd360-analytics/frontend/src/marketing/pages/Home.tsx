@@ -232,7 +232,7 @@ export default function MarketingHome() {
             <span className="mk-mono" style={{ background: "#43E5A0", color: "#04140D", fontSize: "11px", fontWeight: "600", padding: "3px 10px", borderRadius: "999px" }}>
               {"EARLY ACCESS"}
             </span>
-            {" The full product, at no cost while we launch "}
+            {" Every feature, free while we launch "}
             <span aria-hidden="true">
               {"→"}
             </span>
@@ -1386,23 +1386,22 @@ export default function MarketingHome() {
           <div className="gd-ea gd-ea-xl">
             <div className="gd-ea-copy">
               <span className="gd-ea-eyebrow"><span className="gd-ea-dot"></span>{"EARLY ACCESS · OPEN NOW"}</span>
-              <h2 className="gd-ea-title">{"Every feature. "}<span className="mk-sheen">{"No cost while we launch."}</span></h2>
-              <p className="gd-ea-text">{"GD360 is in early access. Create a workspace and use the whole product — 71 connectors, Spaces, ML Studio, dashboards and automations. Everything you build stays yours when plans go live."}</p>
+              <h2 className="gd-ea-title">{"Everything. "}<span className="mk-sheen">{"Free, for now."}</span></h2>
+              <p className="gd-ea-text">{"The whole product — 71 connectors, Spaces, ML Studio, dashboards, automations. Your work stays yours."}</p>
               <div className="gd-ea-points">
-                <span>{"✓ No card needed"}</span>
+                <span>{"✓ No card"}</span>
                 <span>{"✓ The full product"}</span>
-                <span>{"✓ Keep all your work"}</span>
+                <span>{"✓ Keep your work"}</span>
               </div>
               <div><A href="/start" className="gd-ea-go">{"Get early access →"}</A></div>
             </div>
             <div className="gd-ea-side">
-              <span className="gd-soon-chip gd-soon-chip-lg"><span className="gd-ea-dot gd-ea-dot-amber"></span>{"PRICING · COMING SOON"}</span>
-              <p className="gd-ea-side-text">{"Per-user plans for individuals, teams and whole companies are on their way. Early-access workspaces hear first."}</p>
+              <span className="gd-soon-chip gd-soon-chip-lg"><span className="gd-ea-dot gd-ea-dot-amber"></span>{"PRICING · TO BE ANNOUNCED"}</span>
+              <p className="gd-ea-side-text">{"Plans land soon. Early users hear first."}</p>
               <ul className="gd-ea-list">
-                <li><span>{"Plus"}</span><em>{"For individuals"}</em></li>
-                <li><span>{"Team"}</span><em>{"For teams on many tools"}</em></li>
-                <li><span>{"Business"}</span><em>{"For several teams"}</em></li>
-                <li><span>{"Enterprise"}</span><em>{"Company-wide roll-outs"}</em></li>
+                <li><span>{"Today"}</span><em>{"Everything, free"}</em></li>
+                <li><span>{"Before launch"}</span><em>{"You hear first"}</em></li>
+                <li><span>{"At launch"}</span><em>{"Your work stays"}</em></li>
               </ul>
             </div>
           </div>

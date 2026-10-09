@@ -5,7 +5,7 @@
 import { FormEvent, Fragment, useState } from "react";
 import { api } from "../../api/client";
 import { errorText } from "../shared";
-import { A, SoonDialog, useMarketingPage } from "../shared";
+import { A, useMarketingPage } from "../shared";
 import "../marketing.css";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -15,18 +15,18 @@ function vals(state: any, setState: (patch: any) => void): any {
     const annual = !!s.annual;
     const money = (n) => "$" + (Number.isInteger(n) ? n.toLocaleString("en-US") : n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
     const T = [
-      { id: "plus", name: "Plus", m: 10, for: "For individuals who want answers every day.", lead: "INCLUDES", min: 1, chats: 200, src: 5,
+      { id: "plus", name: "Plus", m: null, for: "For individuals who want answers every day.", lead: "INCLUDES", min: 1, chats: 200, src: 5,
         limits: [{ k: "AI chats / month", v: "200", pct: 20 }, { k: "Data sources", v: "5", pct: 20 }, { k: "Users", v: "1", pct: 6 }],
         items: ["Every database, files and Google Sheets", "5 dashboards with daily refresh", "ML Studio — 5 trainings a month", "2 automations", "Answers with proof, password-protected links"], cta: "Coming soon", href: "/start" },
-      { id: "team", name: "Team", m: 25, popular: true, for: "For teams that run on many tools and work together.", lead: "EVERYTHING IN PLUS, AND", min: 3, chats: 500, src: 25,
+      { id: "team", name: "Team", m: null, popular: true, for: "For teams that run on many tools and work together.", lead: "EVERYTHING IN PLUS, AND", min: 3, chats: 500, src: 25,
         limits: [{ k: "AI chats / user / month", v: "500", pct: 50 }, { k: "Data sources", v: "25", pct: 60 }, { k: "Users", v: "3 or more", pct: 40 }],
         items: ["Snowflake, BigQuery and synced apps — ads, store, CRM, social", "Spaces for every team", "ML Studio — all 21 kinds, 50 trainings", "20 automations, hourly refresh", "Row and column access rules"], cta: "Coming soon", href: "/start" },
-      { id: "business", name: "Business", m: 49, for: "For companies with several teams and higher volumes.", lead: "EVERYTHING IN TEAM, AND", min: 10, chats: 2000, src: 0,
+      { id: "business", name: "Business", m: null, for: "For companies with several teams and higher volumes.", lead: "EVERYTHING IN TEAM, AND", min: 10, chats: 2000, src: 0,
         limits: [{ k: "AI chats / user / month", v: "2,000", pct: 85 }, { k: "Data sources", v: "Unlimited", pct: 100 }, { k: "Users", v: "10 or more", pct: 70 }],
         items: ["Unlimited dashboards, Spaces and automations", "Higher daily warehouse budget", "Custom domain for shared dashboards", "Refresh every 15 minutes", "Priority support"], cta: "Coming soon", href: "/start" },
       { id: "enterprise", name: "Enterprise", m: null, for: "For company-wide roll-outs with security review.", lead: "EVERYTHING IN BUSINESS, AND", min: 0,
         limits: [{ k: "AI chats", v: "Custom", pct: 100 }, { k: "Data sources", v: "Unlimited", pct: 100 }, { k: "Users", v: "Unlimited", pct: 100 }],
-        items: ["Volume pricing and custom limits", "Security review and governance support", "Guided onboarding for every team", "Named contact and custom terms"], cta: "Book a demo", href: "#enterprise" }
+        items: ["Custom limits and terms", "Security review and governance support", "Guided onboarding for every team", "Named contact and custom terms"], cta: "Book a demo", href: "#enterprise" }
     ];
     const unit = (t) => annual ? Math.round((t.m * 10 / 12) * 100) / 100 : t.m;
     const plans = T.map((t) => {
@@ -72,7 +72,7 @@ function vals(state: any, setState: (patch: any) => void): any {
       sourcesTotal: pick.src ? pick.src + " data sources" : "Unlimited data sources",
       groups: [
         { g: "USAGE", rows: [
-          row("Price per user / month", [annual ? "$8.33" : "$10", annual ? "$20.83" : "$25", annual ? "$40.83" : "$49", "Custom"]),
+          row("Price per user / month", ["TBA", "TBA", "TBA", "TBA"]),
           row("Users", ["1", "3 or more", "10 or more", "Unlimited"]),
           row("AI chats per month", ["200", "500 per user", "2,000 per user", "Custom"]),
           row("Data sources", ["5", "25", "Unlimited", "Unlimited"]),
@@ -103,14 +103,13 @@ function vals(state: any, setState: (patch: any) => void): any {
           row("Security review and guided onboarding", [N, N, N, Y])
         ]}
       ],
-      entItems: ["A live demo on your own sources", "Volume pricing and custom limits", "Security review, governance and access design", "Guided roll-out for every team", "A named contact and custom terms"],
+      entItems: ["A live demo on your own sources", "Custom limits and terms", "Security review, governance and access design", "Guided roll-out for every team", "A named contact and custom terms"],
       faq: [
-        { q: "How does per-user pricing work?", a: "You pay for each person who asks questions or builds in GD360. On Team and above, people who only open shared dashboards never count as users." },
-        { q: "What counts as an AI chat?", a: "Each question you ask GD360 is one chat, including follow-ups. Opening, refreshing or sharing a dashboard never counts." },
-        { q: "What happens when we reach a limit?", a: "Nothing breaks. We let you know at 80% and at 100%; add 500 chats or 5 sources, or move up a plan. Limits reset on the 1st of each month." },
-        { q: "How does annual billing work?", a: "Pay for ten months, get twelve — a 17% saving. Users added during the year are billed for the months that remain." },
-        { q: "Can we change plans later?", a: "Any time. Upgrades apply immediately; downgrades apply at the end of the billing period." },
-        { q: "Who should book a demo?", a: "Enterprise teams rolling GD360 out across the company. Everyone else can get started in minutes on Plus, Team or Business." }
+        { q: "Is early access really free?", a: "Yes. Every feature, no card." },
+        { q: "When is pricing announced?", a: "Soon. Early-access users hear first." },
+        { q: "What happens to my work at launch?", a: "Nothing moves. Sources, dashboards and models stay." },
+        { q: "Any usage limits?", a: "Fair use only. We'll reach out before anything changes." },
+        { q: "Who should book a demo?", a: "Teams rolling GD360 out company-wide." }
       ]
     };
 
@@ -157,19 +156,8 @@ export default function MarketingPricing() {
       setDemoError(errorText(err, "Couldn't send that - please try again in a moment."));
     }
   };
-  // Paid plans open soon: any link into checkout opens the coming-soon dialog.
-  const [soon, setSoon] = useState("");
-  const onSoonClick = (e: any) => {
-    const a = (e.target as HTMLElement).closest("a");
-    const href = a?.getAttribute("href") || "";
-    if (!href.startsWith("/start?plan=")) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const id = new URLSearchParams(href.split("?")[1]).get("plan") || "";
-    setSoon(({ plus: "Plus", team: "Team", business: "Business" } as Record<string, string>)[id] || "Paid plans");
-  };
   return (
-    <div className="mkt-pricing" onClickCapture={onSoonClick} style={{ fontFamily: "Geist, 'Helvetica Neue', system-ui, sans-serif", color: "#E8EEEC", background: "#07090A", minHeight: "100vh", overflowX: "clip" }}>
+    <div className="mkt-pricing" style={{ fontFamily: "Geist, 'Helvetica Neue', system-ui, sans-serif", color: "#E8EEEC", background: "#07090A", minHeight: "100vh", overflowX: "clip" }}>
       {" "}
       <header className="mk-site-head" style={{ position: "relative", zIndex: "5", borderBottom: "1px solid #141A1B", background: "rgba(7,9,10,.82)" }}>
         {" "}
@@ -301,579 +289,61 @@ export default function MarketingPricing() {
         </>
       )}
       {" "}
-      <section className="mk-m-hero" style={{ position: "relative", padding: "88px 24px 40px", textAlign: "center" }}>
-        {" "}
-        <div className="mk-gridbg" style={{ position: "absolute", inset: "0", pointerEvents: "none" }}></div>
-        {" "}
-        <div className="mk-aur" style={{ left: "50%", top: "-160px", marginLeft: "-420px", width: "840px", height: "560px", background: "rgba(67,229,160,.15)" }}></div>
-        {" "}
-        <div style={{ position: "relative", maxWidth: "940px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "24px", alignItems: "center" }}>
-          {" "}
-          <span className="mk-mono mk-w mk-d1" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>
-            {"PRICING"}
-          </span>
-          {" "}
-          <h1 className="mk-m-h1" style={{ margin: "0", fontWeight: "900", fontSize: "clamp(44px, 7vw, 100px)", lineHeight: "0.94", letterSpacing: "-0.055em", textWrap: "balance" }}>
-            <span className="mk-w mk-d2">
-              {"Simple per-user pricing."}
-            </span>
-            {" "}
-            <span className="mk-w mk-d3">
-              <span className="mk-sheen">
-                {"Serious capability."}
-              </span>
-            </span>
+      <section className="mk-m-hero" style={{ position: "relative", padding: "104px 24px 64px", textAlign: "center", overflow: "hidden" }}>
+        <div className="gd-tba-glow" aria-hidden="true"></div>
+        <div style={{ position: "relative", maxWidth: "980px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "26px", alignItems: "center" }}>
+          <span className="gd-soon-chip gd-soon-chip-lg mk-w mk-d1" style={{ alignSelf: "center" }}><span className="gd-ea-dot gd-ea-dot-amber"></span>{"PRICING · TO BE ANNOUNCED"}</span>
+          <h1 className="mk-m-h1" style={{ margin: "0", fontWeight: "900", fontSize: "clamp(48px, 8vw, 120px)", lineHeight: "0.92", letterSpacing: "-0.055em", textWrap: "balance" }}>
+            <span className="mk-w mk-d2">{"Pricing soon."}</span>
+            <br />
+            <span className="mk-w mk-d3"><span className="mk-sheen">{"Access now."}</span></span>
           </h1>
-          {" "}
-          <p className="mk-w mk-d4" style={{ margin: "0", fontSize: "clamp(17px, 1.7vw, 20px)", lineHeight: "1.6", color: "#A3B0AC", maxWidth: "660px" }}>
-            {"Every plan includes answers with proof, read-only connections and encrypted credentials. Pay monthly, or yearly and save 17%. Change plans whenever you like."}
+          <p className="mk-w mk-d4" style={{ margin: "0", fontSize: "clamp(17px, 1.8vw, 21px)", lineHeight: "1.55", color: "#A3B0AC", maxWidth: "560px" }}>
+            {"Plans are on the way. Until then, every feature is free."}
           </p>
-          {" "}
-          <div className="mk-w mk-d4" role="group" aria-label="Billing period" style={{ display: "inline-flex", gap: "4px", padding: "5px", border: "1px solid #1F2729", background: "#0E1213", borderRadius: "999px" }}>
-            {" "}
-            <button type="button" aria-pressed={V.isMonthly} onClick={V.setMonthly} style={{ border: "0", cursor: "pointer", fontFamily: "inherit", fontSize: "15px", fontWeight: "600", padding: "11px 24px", borderRadius: "999px", minHeight: "44px", background: V.mBg, color: V.mInk }}>
-              {"Monthly"}
-            </button>
-            {" "}
-            <button type="button" aria-pressed={V.isAnnual} onClick={V.setAnnual} style={{ border: "0", cursor: "pointer", fontFamily: "inherit", fontSize: "15px", fontWeight: "600", padding: "11px 24px", borderRadius: "999px", minHeight: "44px", background: V.aBg, color: V.aInk }}>
-              {"Annual "}
-              <span className="mk-mono" style={{ fontSize: "11.5px", marginLeft: "6px" }}>
-                {"save 17%"}
-              </span>
-            </button>
-            {" "}
-          </div>
-          {" "}
-        </div>
-        {" "}
-      </section>
-      {" "}
-      <section style={{ padding: "0 24px 8px" }}>
-        <div style={{ maxWidth: "1280px", margin: "0 auto" }}>
-          <div className="gd-ea">
-            <div className="gd-ea-copy">
-              <span className="gd-ea-eyebrow"><span className="gd-ea-dot"></span>{"EARLY ACCESS · OPEN NOW"}</span>
-              <h2 className="gd-ea-title gd-ea-title-sm">{"Use all of GD360 today — at no cost."}</h2>
-              <p className="gd-ea-text">{"Paid plans open soon. Until then every workspace gets the full product, and keeps everything it builds when plans go live."}</p>
-            </div>
+          <div className="mk-m-cta mk-w mk-d5" style={{ display: "flex", gap: "12px", flexWrap: "wrap", justifyContent: "center" }}>
             <A href="/start" className="gd-ea-go">{"Start early access →"}</A>
+            <A href="#enterprise" className="gd-ghost">{"Enterprise? Talk to us"}</A>
           </div>
         </div>
-      </section>
-      {" "}
-      <section style={{ padding: "32px 24px 88px" }}>
-        {" "}
-        <div className="mk-d-only" style={{ maxWidth: "1280px", margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(262px, 1fr))", gap: "16px", alignItems: "stretch" }}>
-          {" "}
-          {(V.plans || []).map((p: any, i1: number) => (
-            <Fragment key={i1}>
-              {" "}
-              <div className={`${p.wrap ? "mk-" + p.wrap : ""}`} style={{ height: "100%" }}>
-                {" "}
-                <div style={{ position: "relative", height: "100%", boxSizing: "border-box", border: `1px solid ${p.border}`, background: p.bg, borderRadius: "25px", padding: "28px", display: "flex", flexDirection: "column", gap: "18px" }}>
-                  {" "}
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", minHeight: "26px" }}>
-                    {" "}
-                    <span style={{ fontWeight: "800", fontSize: "21px", letterSpacing: "-0.02em" }}>
-                      {p.name}
-                    </span>
-                    {" "}
-                    {p.popular && (
-                      <>
-                        <span className="mk-mono" style={{ fontSize: "10.5px", fontWeight: "600", background: "#43E5A0", color: "#04140D", padding: "4px 10px", borderRadius: "999px" }}>
-                          {"MOST POPULAR"}
-                        </span>
-                      </>
-                    )}
-                    {" "}
-                  </div>
-                  {" "}
-                  <p style={{ margin: "0", color: "#A3B0AC", fontSize: "14.5px", lineHeight: "1.55", minHeight: "45px" }}>
-                    {p.for}
-                  </p>
-                  {" "}
-                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                    {" "}
-                    <div style={{ display: "flex", alignItems: "baseline", gap: "6px", flexWrap: "wrap" }}>
-                      <span style={{ fontWeight: "900", fontSize: "50px", letterSpacing: "-0.05em" }}>
-                        {p.price}
-                      </span>
-                      <span style={{ color: "#7F8C88", fontSize: "14px" }}>
-                        {p.per}
-                      </span>
-                    </div>
-                    {" "}
-                    <span className="mk-mono" style={{ fontSize: "11.5px", color: "#7F8C88", minHeight: "32px", lineHeight: "1.45" }}>
-                      {p.note}
-                    </span>
-                    {" "}
-                  </div>
-                  {" "}
-                  <A href={p.href} style={{ textAlign: "center", borderRadius: "999px", padding: "14px", fontWeight: "700", fontSize: "15.5px", background: p.ctaBg, color: p.ctaInk, border: `1px solid ${p.ctaBorder}` }}>
-                    {p.cta}
-                  </A>
-                  {" "}
-                  <div style={{ display: "flex", flexDirection: "column", gap: "11px", border: "1px solid #1A2224", background: "#080B0C", borderRadius: "16px", padding: "15px" }}>
-                    {" "}
-                    {(p.limits || []).map((l: any, i2: number) => (
-                      <Fragment key={i2}>
-                        {" "}
-                        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                          {" "}
-                          <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", fontSize: "13px" }}>
-                            <span style={{ color: "#A3B0AC" }}>
-                              {l.k}
-                            </span>
-                            <span className="mk-mono" style={{ color: "#E8EEEC", fontWeight: "600" }}>
-                              {l.v}
-                            </span>
-                          </div>
-                          {" "}
-                          <div style={{ height: "4px", background: "#1A2224", borderRadius: "4px", overflow: "hidden" }}>
-                            <div className="mk-meter" style={{ height: "4px", width: `${l.pct}%`, background: "#43E5A0", borderRadius: "4px" }}></div>
-                          </div>
-                          {" "}
-                        </div>
-                        {" "}
-                      </Fragment>
-                    ))}
-                    {" "}
-                  </div>
-                  {" "}
-                  <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                    {" "}
-                    <span className="mk-mono" style={{ fontSize: "11px", letterSpacing: "0.1em", color: "#7F8C88" }}>
-                      {p.lead}
-                    </span>
-                    {" "}
-                    {(p.items || []).map((it: any, i2: number) => (
-                      <Fragment key={i2}>
-                        {" "}
-                        <div style={{ display: "flex", gap: "10px", alignItems: "flex-start", fontSize: "14.5px", lineHeight: "1.45", color: "#D5DEDB" }}>
-                          <span aria-hidden="true" style={{ color: "#43E5A0", fontWeight: "800" }}>
-                            {"✓"}
-                          </span>
-                          <span>
-                            {it}
-                          </span>
-                        </div>
-                        {" "}
-                      </Fragment>
-                    ))}
-                    {" "}
-                  </div>
-                  {" "}
-                </div>
-                {" "}
-              </div>
-              {" "}
-            </Fragment>
-          ))}
-          {" "}
-        </div>
-        {" "}
-        <div className="mk-m-only">
-          {" "}
-          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-            {" "}
-            <div role="tablist" aria-label="Plans" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "4px", padding: "4px", border: "1px solid #1F2729", background: "#0E1213", borderRadius: "14px" }}>
-              {" "}
-              {(V.mTabs || []).map((t: any, i1: number) => (
-                <Fragment key={i1}>
-                  <button type="button" role="tab" aria-selected={t.on} onClick={t.pick} style={{ height: "42px", border: "0", borderRadius: "10px", fontFamily: "inherit", fontSize: "13.5px", fontWeight: "700", cursor: "pointer", background: t.bg, color: t.ink }}>
-                    {t.name}
-                  </button>
-                </Fragment>
-              ))}
-              {" "}
-            </div>
-            {" "}
-            {(V.mPlans || []).map((p: any, i1: number) => (
-              <Fragment key={i1}>
-                {" "}
-                <div className={`${p.wrap ? "mk-" + p.wrap : ""}`} style={{ height: "100%" }}>
-                  {" "}
-                  <div style={{ position: "relative", height: "100%", boxSizing: "border-box", border: `1px solid ${p.border}`, background: p.bg, borderRadius: "25px", padding: "28px", display: "flex", flexDirection: "column", gap: "18px" }}>
-                    {" "}
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px", minHeight: "26px" }}>
-                      {" "}
-                      <span style={{ fontWeight: "800", fontSize: "21px", letterSpacing: "-0.02em" }}>
-                        {p.name}
-                      </span>
-                      {" "}
-                      {p.popular && (
-                        <>
-                          <span className="mk-mono" style={{ fontSize: "10.5px", fontWeight: "600", background: "#43E5A0", color: "#04140D", padding: "4px 10px", borderRadius: "999px" }}>
-                            {"MOST POPULAR"}
-                          </span>
-                        </>
-                      )}
-                      {" "}
-                    </div>
-                    {" "}
-                    <p style={{ margin: "0", color: "#A3B0AC", fontSize: "14.5px", lineHeight: "1.55", minHeight: "45px" }}>
-                      {p.for}
-                    </p>
-                    {" "}
-                    <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                      {" "}
-                      <div style={{ display: "flex", alignItems: "baseline", gap: "6px", flexWrap: "wrap" }}>
-                        <span style={{ fontWeight: "900", fontSize: "50px", letterSpacing: "-0.05em" }}>
-                          {p.price}
-                        </span>
-                        <span style={{ color: "#7F8C88", fontSize: "14px" }}>
-                          {p.per}
-                        </span>
-                      </div>
-                      {" "}
-                      <span className="mk-mono" style={{ fontSize: "11.5px", color: "#7F8C88", minHeight: "32px", lineHeight: "1.45" }}>
-                        {p.note}
-                      </span>
-                      {" "}
-                    </div>
-                    {" "}
-                    <A href={p.href} style={{ textAlign: "center", borderRadius: "999px", padding: "14px", fontWeight: "700", fontSize: "15.5px", background: p.ctaBg, color: p.ctaInk, border: `1px solid ${p.ctaBorder}` }}>
-                      {p.cta}
-                    </A>
-                    {" "}
-                    <div style={{ display: "flex", flexDirection: "column", gap: "11px", border: "1px solid #1A2224", background: "#080B0C", borderRadius: "16px", padding: "15px" }}>
-                      {" "}
-                      {(p.limits || []).map((l: any, i2: number) => (
-                        <Fragment key={i2}>
-                          {" "}
-                          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                            {" "}
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", fontSize: "13px" }}>
-                              <span style={{ color: "#A3B0AC" }}>
-                                {l.k}
-                              </span>
-                              <span className="mk-mono" style={{ color: "#E8EEEC", fontWeight: "600" }}>
-                                {l.v}
-                              </span>
-                            </div>
-                            {" "}
-                            <div style={{ height: "4px", background: "#1A2224", borderRadius: "4px", overflow: "hidden" }}>
-                              <div className="mk-meter" style={{ height: "4px", width: `${l.pct}%`, background: "#43E5A0", borderRadius: "4px" }}></div>
-                            </div>
-                            {" "}
-                          </div>
-                          {" "}
-                        </Fragment>
-                      ))}
-                      {" "}
-                    </div>
-                    {" "}
-                    <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                      {" "}
-                      <span className="mk-mono" style={{ fontSize: "11px", letterSpacing: "0.1em", color: "#7F8C88" }}>
-                        {p.lead}
-                      </span>
-                      {" "}
-                      {(p.items || []).map((it: any, i2: number) => (
-                        <Fragment key={i2}>
-                          {" "}
-                          <div style={{ display: "flex", gap: "10px", alignItems: "flex-start", fontSize: "14.5px", lineHeight: "1.45", color: "#D5DEDB" }}>
-                            <span aria-hidden="true" style={{ color: "#43E5A0", fontWeight: "800" }}>
-                              {"✓"}
-                            </span>
-                            <span>
-                              {it}
-                            </span>
-                          </div>
-                          {" "}
-                        </Fragment>
-                      ))}
-                      {" "}
-                    </div>
-                    {" "}
-                  </div>
-                  {" "}
-                </div>
-                {" "}
-              </Fragment>
-            ))}
-            {" "}
-          </div>
-          {" "}
-        </div>
-        {" "}
       </section>
       {" "}
       <section style={{ padding: "0 24px 96px" }}>
-        {" "}
-        <div style={{ maxWidth: "1280px", margin: "0 auto", border: "1px solid #24413A", borderRadius: "28px", background: "radial-gradient(ellipse at 0% 0%, rgba(67,229,160,.12), rgba(7,9,10,0) 50%), #0B0F10", padding: "clamp(24px, 4vw, 52px)", display: "flex", flexWrap: "wrap", gap: "44px", alignItems: "center" }}>
-          {" "}
-          <div style={{ flex: "1 1 440px", display: "flex", flexDirection: "column", gap: "20px" }}>
-            {" "}
-            <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>
-              {"ESTIMATE YOUR BILL"}
-            </span>
-            {" "}
-            <h2 style={{ margin: "0", fontWeight: "800", fontSize: "clamp(30px, 3.8vw, 50px)", lineHeight: "1.02", letterSpacing: "-0.045em" }}>
-              {"What will your team pay?"}
-            </h2>
-            {" "}
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              {" "}
-              <span style={{ fontSize: "14px", color: "#A3B0AC" }} id="calc-plan">
-                {"Plan"}
-              </span>
-              {" "}
-              <div role="group" aria-labelledby="calc-plan" style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                {" "}
-                {(V.calcPlans || []).map((c: any, i1: number) => (
-                  <Fragment key={i1}>
-                    {" "}
-                    <button type="button" aria-pressed={c.on} onClick={c.pick} style={{ cursor: "pointer", fontFamily: "inherit", fontSize: "15px", fontWeight: "600", padding: "12px 18px", borderRadius: "12px", minHeight: "46px", border: `1px solid ${c.border}`, background: c.bg, color: c.ink }}>
-                      {c.name}{" · "}{c.unit}
-                    </button>
-                    {" "}
-                  </Fragment>
-                ))}
-                {" "}
+        <div style={{ maxWidth: "1280px", margin: "0 auto" }}>
+          <div className="gd-ea gd-ea-xl" style={{ flexDirection: "column", flexWrap: "nowrap", alignItems: "stretch" }}>
+            <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "flex-end", gap: "24px" }}>
+              <div className="gd-ea-copy" style={{ flex: "1 1 460px" }}>
+                <span className="gd-ea-eyebrow"><span className="gd-ea-dot"></span>{"EARLY ACCESS · INCLUDED TODAY"}</span>
+                <h2 className="gd-ea-title">{"Everything. "}<span className="mk-sheen">{"Free."}</span></h2>
+                <p className="gd-ea-text">{"No card. No trial clock. Nothing locked."}</p>
               </div>
-              {" "}
             </div>
-            {" "}
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              {" "}
-              <span style={{ fontSize: "14px", color: "#A3B0AC" }}>
-                {"Users"}
-              </span>
-              {" "}
-              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                {" "}
-                <button type="button" aria-label="One user fewer" onClick={V.less} style={{ width: "50px", height: "50px", borderRadius: "14px", border: "1px solid #2A3436", background: "#0E1213", color: "#E8EEEC", fontSize: "22px", cursor: "pointer", fontFamily: "inherit" }}>
-                  {"−"}
-                </button>
-                {" "}
-                <span className="mk-mono" style={{ minWidth: "70px", textAlign: "center", fontSize: "32px", fontWeight: "600" }}>
-                  {V.users}
-                </span>
-                {" "}
-                <button type="button" aria-label="One user more" onClick={V.more} style={{ width: "50px", height: "50px", borderRadius: "14px", border: "1px solid #2A3436", background: "#0E1213", color: "#E8EEEC", fontSize: "22px", cursor: "pointer", fontFamily: "inherit" }}>
-                  {"+"}
-                </button>
-                {" "}
-                <span className="mk-mono" style={{ fontSize: "12px", color: "#7F8C88" }}>
-                  {V.minNote}
-                </span>
-                {" "}
-              </div>
-              {" "}
+            <div className="gd-feat">
+              <div className="gd-feat-item"><span className="gd-feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z" /></svg></span><span className="gd-feat-t">{"Ask anything"}</span><span className="gd-feat-d">{"Plain-English questions. Proven answers."}</span></div>
+              <div className="gd-feat-item"><span className="gd-feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0zM12 17v5" /></svg></span><span className="gd-feat-t">{"71 connectors"}</span><span className="gd-feat-d">{"Warehouses, databases, files and apps."}</span></div>
+              <div className="gd-feat-item"><span className="gd-feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 3h8v8H3zM13 3h8v5h-8zM13 10h8v11h-8zM3 13h8v8H3z" /></svg></span><span className="gd-feat-t">{"Dashboards"}</span><span className="gd-feat-d">{"Build, share, refresh."}</span></div>
+              <div className="gd-feat-item"><span className="gd-feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></svg></span><span className="gd-feat-t">{"Spaces"}</span><span className="gd-feat-d">{"A home for every team."}</span></div>
+              <div className="gd-feat-item"><span className="gd-feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z" /></svg></span><span className="gd-feat-t">{"ML Studio"}</span><span className="gd-feat-d">{"21 model types from one sentence."}</span></div>
+              <div className="gd-feat-item"><span className="gd-feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9z" /></svg></span><span className="gd-feat-t">{"Automations"}</span><span className="gd-feat-d">{"Alerts and reports on schedule."}</span></div>
+              <div className="gd-feat-item"><span className="gd-feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 11l3 3 8-8M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9" /></svg></span><span className="gd-feat-t">{"Data quality"}</span><span className="gd-feat-d">{"Checks, rules and access control."}</span></div>
+              <div className="gd-feat-item"><span className="gd-feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4" /></svg></span><span className="gd-feat-t">{"Secure by default"}</span><span className="gd-feat-d">{"Read-only. Encrypted. Audited."}</span></div>
             </div>
-            {" "}
           </div>
-          {" "}
-          <div style={{ flex: "1 1 400px", border: "1px solid #1F2729", background: "#07090A", borderRadius: "22px", padding: "30px", display: "flex", flexDirection: "column", gap: "14px" }}>
-            {" "}
-            <span style={{ color: "#A3B0AC", fontSize: "15px" }}>
-              {V.calcLabel}
-            </span>
-            {" "}
-            <div style={{ display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap" }}>
-              <span style={{ fontWeight: "900", fontSize: "68px", letterSpacing: "-0.05em", color: "#43E5A0" }}>
-                {V.total}
-              </span>
-              <span style={{ color: "#7F8C88", fontSize: "16px" }}>
-                {"/ month"}
-              </span>
-            </div>
-            {" "}
-            <span className="mk-mono" style={{ fontSize: "12.5px", color: "#A3B0AC" }}>
-              {V.totalNote}
-            </span>
-            {" "}
-            <div style={{ borderTop: "1px solid #1F2729", paddingTop: "14px", display: "flex", flexDirection: "column", gap: "8px", fontSize: "14.5px", color: "#D5DEDB" }}>
-              {" "}
-              <span>
-                {"✓ "}{V.chatsTotal}
-              </span>
-              {" "}
-              <span>
-                {"✓ "}{V.sourcesTotal}
-              </span>
-              {" "}
-            </div>
-            {" "}
-            <A href={V.calcHref} style={{ textAlign: "center", background: "#43E5A0", color: "#04140D", borderRadius: "999px", padding: "15px", fontWeight: "700", fontSize: "16px" }}>
-              {"Coming soon"}
-            </A>
-            {" "}
-          </div>
-          {" "}
         </div>
-        {" "}
       </section>
       {" "}
-      <section style={{ padding: "0 24px 96px" }}>
-        {" "}
+      <section style={{ padding: "0 24px 104px" }}>
         <div style={{ maxWidth: "1280px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "28px" }}>
-          {" "}
-          <div style={{ display: "flex", justifyContent: "space-between", gap: "20px", flexWrap: "wrap", alignItems: "flex-end" }}>
-            {" "}
-            <h2 style={{ margin: "0", fontWeight: "800", fontSize: "clamp(30px, 4vw, 54px)", lineHeight: "1", letterSpacing: "-0.045em" }}>
-              {"Every limit, in one table."}
-            </h2>
-            {" "}
-            <span style={{ color: "#A3B0AC", fontSize: "15px" }}>
-              {"No hidden caps. Usage resets on the 1st of each month."}
-            </span>
-            {" "}
+          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+            <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>{"WHAT'S NEXT"}</span>
+            <h2 style={{ margin: "0", fontWeight: "800", fontSize: "clamp(32px, 4.4vw, 58px)", lineHeight: "1", letterSpacing: "-0.045em" }}>{"No surprises."}</h2>
           </div>
-          {" "}
-          <div className="mk-d-only" style={{ overflowX: "auto", border: "1px solid #1F2729", borderRadius: "22px", background: "#0B0F10" }}>
-            {" "}
-            <table style={{ width: "100%", minWidth: "900px", borderCollapse: "collapse", fontSize: "14.5px" }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: "left", padding: "20px 24px", borderBottom: "1px solid #1F2729", width: "32%", fontWeight: "600", color: "#A3B0AC" }}>
-                    {"Feature"}
-                  </th>
-                  <th style={{ textAlign: "center", padding: "20px 10px", borderBottom: "1px solid #1F2729", fontWeight: "800" }}>
-                    {"Plus"}
-                  </th>
-                  <th style={{ textAlign: "center", padding: "20px 10px", borderBottom: "1px solid #1F2729", fontWeight: "800", color: "#43E5A0", background: "#0F1A16" }}>
-                    {"Team"}
-                  </th>
-                  <th style={{ textAlign: "center", padding: "20px 10px", borderBottom: "1px solid #1F2729", fontWeight: "800" }}>
-                    {"Business"}
-                  </th>
-                  <th style={{ textAlign: "center", padding: "20px 10px", borderBottom: "1px solid #1F2729", fontWeight: "800" }}>
-                    {"Enterprise"}
-                  </th>
-                </tr>
-              </thead>
-              {(V.groups || []).map((g: any, i1: number) => (
-                <Fragment key={i1}>
-                  <tbody>
-                    <tr>
-                      <td colSpan={5} className="mk-mono" style={{ padding: "22px 24px 10px", fontSize: "11.5px", letterSpacing: "0.12em", color: "#43E5A0" }}>
-                        {g.g}
-                      </td>
-                    </tr>
-                    {(g.rows || []).map((r: any, i2: number) => (
-                      <Fragment key={i2}>
-                        <tr>
-                          <td style={{ padding: "13px 24px", borderTop: "1px solid #141A1B", color: "#E8EEEC" }}>
-                            {r.f}
-                          </td>
-                          {(r.v || []).map((c: any, i3: number) => (
-                            <Fragment key={i3}>
-                              <td style={{ padding: "13px 10px", borderTop: "1px solid #141A1B", textAlign: "center", color: c.c, background: c.bg }}>
-                                {c.t}
-                              </td>
-                            </Fragment>
-                          ))}
-                        </tr>
-                      </Fragment>
-                    ))}
-                  </tbody>
-                </Fragment>
-              ))}
-            </table>
-            {" "}
-          </div>
-          {" "}
-          <div className="mk-m-only">
-            {" "}
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-              {" "}
-              <div role="tablist" aria-label="Plans" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: "4px", padding: "4px", border: "1px solid #1F2729", background: "#0E1213", borderRadius: "14px" }}>
-                {" "}
-                {(V.mTabs || []).map((t: any, i1: number) => (
-                  <Fragment key={i1}>
-                    <button type="button" role="tab" aria-selected={t.on} onClick={t.pick} style={{ height: "42px", border: "0", borderRadius: "10px", fontFamily: "inherit", fontSize: "13.5px", fontWeight: "700", cursor: "pointer", background: t.bg, color: t.ink }}>
-                      {t.name}
-                    </button>
-                  </Fragment>
-                ))}
-                {" "}
-              </div>
-              {" "}
-              {(V.mGroups || []).map((g: any, i1: number) => (
-                <Fragment key={i1}>
-                  {" "}
-                  <div style={{ marginTop: "16px", display: "flex", flexDirection: "column", gap: "8px" }}>
-                    {" "}
-                    <span className="mk-mono" style={{ fontSize: "11.5px", letterSpacing: "0.12em", color: "#43E5A0" }}>
-                      {g.g}
-                    </span>
-                    {" "}
-                    <div style={{ border: "1px solid #1F2729", borderRadius: "16px", background: "#0B0F10", overflow: "hidden" }}>
-                      {" "}
-                      {(g.rows || []).map((r: any, i2: number) => (
-                        <Fragment key={i2}>
-                          {" "}
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "16px", padding: "12px 14px", borderBottom: "1px solid #141A1B", fontSize: "14px" }}>
-                            <span style={{ color: "#D5DEDB", lineHeight: "1.4" }}>
-                              {r.f}
-                            </span>
-                            <span style={{ flex: "none", maxWidth: "45%", textAlign: "right", fontWeight: "600", color: r.c }}>
-                              {r.t}
-                            </span>
-                          </div>
-                          {" "}
-                        </Fragment>
-                      ))}
-                      {" "}
-                    </div>
-                    {" "}
-                  </div>
-                  {" "}
-                </Fragment>
-              ))}
-              {" "}
-            </div>
-            {" "}
-          </div>
-          {" "}
+            <ol className="gd-steps">
+              <li><span className="gd-step-n">{"01 · TODAY"}</span><span className="gd-step-t">{"Use everything"}</span><span className="gd-step-d">{"The full product, free."}</span></li>
+              <li><span className="gd-step-n">{"02 · BEFORE LAUNCH"}</span><span className="gd-step-t">{"Hear first"}</span><span className="gd-step-d">{"Early users get plans first, with notice."}</span></li>
+              <li><span className="gd-step-n">{"03 · AT LAUNCH"}</span><span className="gd-step-t">{"Keep it all"}</span><span className="gd-step-d">{"Pick a plan. Your work stays put."}</span></li>
+            </ol>
         </div>
-        {" "}
-      </section>
-      {" "}
-      <section style={{ padding: "0 24px 96px" }}>
-        {" "}
-        <div className="mk-m-rail" style={{ maxWidth: "1280px", margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(270px, 1fr))", gap: "14px" }}>
-          {" "}
-          <div className="mk-lift" style={{ border: "1px solid #1F2729", background: "#0B0F10", borderRadius: "22px", padding: "26px", display: "flex", flexDirection: "column", gap: "8px" }}>
-            <span className="mk-mono" style={{ fontSize: "11.5px", letterSpacing: "0.12em", color: "#43E5A0" }}>
-              {"ADD-ON"}
-            </span>
-            <span style={{ fontWeight: "800", fontSize: "20px" }}>
-              {"+500 AI chats"}
-            </span>
-            <span style={{ color: "#A3B0AC", fontSize: "14.5px", lineHeight: "1.55" }}>
-              {"$10 a month, shared across the workspace — for busy months without changing plan."}
-            </span>
-          </div>
-          {" "}
-          <div className="mk-lift" style={{ border: "1px solid #1F2729", background: "#0B0F10", borderRadius: "22px", padding: "26px", display: "flex", flexDirection: "column", gap: "8px" }}>
-            <span className="mk-mono" style={{ fontSize: "11.5px", letterSpacing: "0.12em", color: "#43E5A0" }}>
-              {"ADD-ON"}
-            </span>
-            <span style={{ fontWeight: "800", fontSize: "20px" }}>
-              {"+5 data sources"}
-            </span>
-            <span style={{ color: "#A3B0AC", fontSize: "14.5px", lineHeight: "1.55" }}>
-              {"$15 a month on Plus and Team — for the one tool more than your plan holds."}
-            </span>
-          </div>
-          {" "}
-          <div className="mk-lift" style={{ border: "1px solid #1F2729", background: "#0B0F10", borderRadius: "22px", padding: "26px", display: "flex", flexDirection: "column", gap: "8px" }}>
-            <span className="mk-mono" style={{ fontSize: "11.5px", letterSpacing: "0.12em", color: "#43E5A0" }}>
-              {"INCLUDED"}
-            </span>
-            <span style={{ fontWeight: "800", fontSize: "20px" }}>
-              {"Dashboard viewers"}
-            </span>
-            <span style={{ color: "#A3B0AC", fontSize: "14.5px", lineHeight: "1.55" }}>
-              {"On Team and above, people who only open shared dashboards never count as users."}
-            </span>
-          </div>
-          {" "}
-        </div>
-        {" "}
       </section>
       {" "}
       <section id="enterprise" style={{ padding: "0 24px 104px" }}>
@@ -1000,10 +470,10 @@ export default function MarketingPricing() {
           {" "}
           <div style={{ flex: "1 1 320px", display: "flex", flexDirection: "column", gap: "16px" }}>
             <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>
-              {"BILLING QUESTIONS"}
+              {"QUESTIONS"}
             </span>
             <h2 style={{ margin: "0", fontWeight: "800", fontSize: "clamp(32px, 4vw, 52px)", lineHeight: "1", letterSpacing: "-0.045em" }}>
-              {"Plain answers."}
+              {"Short answers."}
             </h2>
           </div>
           {" "}
@@ -1093,32 +563,23 @@ export default function MarketingPricing() {
           <div style={{ flex: "1", minWidth: "0", display: "flex", flexDirection: "column", gap: "2px" }}>
             {" "}
             <span style={{ fontWeight: "800", fontSize: "16px", letterSpacing: "-0.01em" }}>
-              {V.mBar.name}{" · "}{V.mBar.price}
+              {"Early access"}
             </span>
             {" "}
             <span className="mk-mono" style={{ fontSize: "11px", color: "#7F8C88", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-              {V.mBar.note}
+              {"Every feature · free while we launch"}
             </span>
             {" "}
           </div>
           {" "}
-          <A href={V.mBar.href} style={{ flex: "none", height: "50px", padding: "0 22px", borderRadius: "999px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "700", fontSize: "15.5px", boxShadow: "0 12px 34px -14px rgba(67,229,160,.8)" }}>
-            {V.mBar.cta}
+          <A href="/start" style={{ flex: "none", height: "50px", padding: "0 22px", borderRadius: "999px", background: "#43E5A0", color: "#04140D", display: "grid", placeItems: "center", fontWeight: "700", fontSize: "15.5px", boxShadow: "0 12px 34px -14px rgba(67,229,160,.8)" }}>
+            {"Get started"}
           </A>
           {" "}
         </div>
         {" "}
       </div>
       {" "}
-      <SoonDialog
-        open={!!soon}
-        onClose={() => setSoon("")}
-        eyebrow="PAID PLANS · COMING SOON"
-        title={soon + " opens soon."}
-        primary={<A href="/start" className="gd-soon-go">{"Start early access →"}</A>}
-      >
-        {"Card payments and paid plans switch on shortly. Until then, early access gives you every GD360 feature at no cost — and your workspace keeps everything you build when plans go live."}
-      </SoonDialog>
     </div>
   );
 }
