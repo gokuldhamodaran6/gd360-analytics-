@@ -446,6 +446,10 @@ class Conversation(Base):
     kind = Column(String, nullable=True)
     source_ids = Column(JSON, nullable=True)
     workspace_id = Column(String, nullable=True)
+    # 2026-10-09 (round 15): the Space (models.Space) a project was asked in,
+    # if any. Its source_ids are the Space's sources the person could use at
+    # the time; the Space itself never grants access to data.
+    space_id = Column(String, nullable=True, index=True)
 
     owner = relationship("User", back_populates="conversations")
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
@@ -2359,3 +2363,51 @@ class AutomationRun(Base):
     error_message = Column(Text, nullable=True)
     started_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     finished_at = Column(DateTime, nullable=True)
+
+
+class Space(Base):
+    """2026-10-09 (round 15): a named, coloured group of data sources for one
+    team or subject - "Marketing & Brand", "Sales", "Finance", "HR & People".
+    People pick a Space when they ask a question, start ML Studio or open the
+    Space's overview, instead of choosing sources one by one.
+
+    A Space only groups sources; it never grants access to data. Whoever can
+    see a Space still sees only the sources they could already access
+    (services/spaces.py filters every list), so an HR Space shared with the
+    whole workspace shows nothing to someone without access to the HR data.
+
+    access: "private" (only its owner), "workspace" (every member of
+    workspace_id) or "members" (its owner plus the user ids in member_ids).
+    source_ids: data source ids, in the order they were added."""
+    __tablename__ = "spaces"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True, index=True)
+    name = Column(String, nullable=False)
+    color = Column(String, nullable=False, default="#C9A7FF")
+    description = Column(Text, nullable=True)
+    icon = Column(String, nullable=True)
+    access = Column(String, nullable=False, default="private")
+    member_ids = Column(JSON, nullable=False, default=list)
+    source_ids = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class AppAuthPending(Base):
+    """2026-10-09 (round 15): the hand-off between an app's "Sign in with ..."
+    page and the connect form (services/app_oauth.py). The OAuth callback
+    stores the tokens here, encrypted, and sends the browser back to the
+    connect sheet with this row's id; POST /apps (or /apps/discover) then
+    turns it into the source's credentials. Only the user who signed in can
+    use it, and only for 30 minutes; connecting deletes it."""
+    __tablename__ = "app_auth_pending"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider = Column(String, nullable=False)      # meta | google | linkedin | hubspot
+    kind = Column(String, nullable=False)          # the app being connected, e.g. instagram
+    encrypted_tokens = Column(Text, nullable=False)
+    state_note = Column(JSON, nullable=True)       # non-secret details: scopes granted, expiry, account name
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

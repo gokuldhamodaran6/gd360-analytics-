@@ -391,6 +391,21 @@ class Settings(BaseSettings):
     # customer, or each customer can paste their own when connecting.
     GOOGLE_ADS_DEVELOPER_TOKEN: str = ""
 
+    # --- 2026-10-09 (round 15): "Sign in with ..." for apps (services/app_oauth.py).
+    # Each provider's sign-in button works once its app id and secret are set.
+    # The redirect URL to register with each provider is
+    # {BACKEND_BASE_URL}/apps/oauth/<meta|google|linkedin|hubspot>/callback.
+    # Google reuses GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET above.
+    META_APP_ID: str = ""            # Meta for Developers > your app > App settings > Basic
+    META_APP_SECRET: str = ""        # same page; used for Instagram, Facebook Pages and Meta Ads
+    LINKEDIN_CLIENT_ID: str = ""     # LinkedIn Developers > your app > Auth (needs Community Management API)
+    LINKEDIN_CLIENT_SECRET: str = ""
+    HUBSPOT_CLIENT_ID: str = ""      # HubSpot developer account > your public app > Auth
+    HUBSPOT_CLIENT_SECRET: str = ""
+    # API versions the new connectors call; set a newer one when the app retires this one.
+    LINKEDIN_API_VERSION: str = "202509"    # LinkedIn-Version header (YYYYMM)
+    KLAVIYO_REVISION: str = "2025-07-15"    # Klaviyo "revision" header
+
     # --- 2026-10-08 (round 11): multi-source Projects (services/project_engine).
     PROJECT_MAX_CONCURRENT_RUNS: int = 3
     PROJECT_STEP_MAX_PARALLEL: int = 4

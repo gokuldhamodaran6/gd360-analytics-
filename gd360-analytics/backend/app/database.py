@@ -280,6 +280,10 @@ _NEW_COLUMNS = [
     ("ml_models", "results", "JSON"),
     ("ml_models", "started_at", "TIMESTAMP"),
     ("ml_models", "stop_requested", "BOOLEAN"),
+    # 2026-10-09 (round 15): Spaces. spaces and app_auth_pending are brand NEW
+    # tables (create_all() creates them); conversations is an existing table,
+    # so the project's Space needs the normal ALTER-TABLE treatment.
+    ("conversations", "space_id", "TEXT"),
 ]
 
 

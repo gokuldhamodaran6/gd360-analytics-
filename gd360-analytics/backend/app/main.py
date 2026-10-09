@@ -10,6 +10,7 @@ from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, dashboard_comments, admin, conversations, goku,
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
     data_access_rules, ml_models, metric_definitions, transforms, pipelines, projects, apps, automations, ml_studio,
+    spaces,
 )
 from .services.scheduler import start_scheduler
 
@@ -174,6 +175,8 @@ app.include_router(apps.router)
 app.include_router(automations.router)
 # 2026-10-08 (round 13): ML Studio - a model from a goal in words (services/ml_studio.py).
 app.include_router(ml_studio.router)
+# 2026-10-09 (round 15): Spaces - named groups of sources (services/spaces.py).
+app.include_router(spaces.router)
 # 2026-09-30 (Gokul's own bug report - Governance/Jobs redesign + Pipelines/
 # Catalog removal round): the standalone /catalog router is gone - Gokul's
 # own words were that it duplicated the Projects filter and Data Sources
