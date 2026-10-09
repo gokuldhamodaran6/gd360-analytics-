@@ -14,6 +14,7 @@ import { ChipCloseIcon, SourceDot } from "./ChatPanel";
 // drawer behave exactly as they did.
 import { BarChartIcon, ClockIcon, DatabaseIcon, FlaskIcon, GridIcon, NetworkIcon, PaletteIcon, ShieldCheckIcon, SidebarIcon } from "../ui";
 import { BrandKitSheet } from "../dashboard/theme/BrandKitSheet";
+import { Space, spacesApi } from "../api/spaces";
 
 // 2026-09-23: the persistent left nav rail from the workspace-structure
 // revamp, modeled on the reference screenshots Gokul shared (a "Data
@@ -1074,6 +1075,7 @@ function SidebarNav({
   onNavigate,
   collapsed = false,
   onToggleCollapse,
+  spaces = null,
 }: {
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string;
@@ -1090,6 +1092,9 @@ function SidebarNav({
   // rail's call site is the only one that passes real values for these.
   collapsed?: boolean;
   onToggleCollapse?: () => void;
+  // 2026-10-09 (round 15): the workspace's Spaces, listed under the nav
+  // (null while loading - the section stays hidden until they arrive).
+  spaces?: Space[] | null;
 }) {
   // 2026-10-08 (round 11): "/" is now Home (one question box); the full
   // Projects library moved to /projects, and a multi-source project (/p/:id)
@@ -1199,6 +1204,47 @@ function SidebarNav({
         )}
       </nav>
 
+      {/* 2026-10-09 (round 15): Spaces - up to six, each a colour dot and its
+          name, linking to its page (/spaces/:id); "All spaces" opens the
+          Spaces tab of the Data page. Collapsed rail: just the dots, with
+          the name as a tooltip. */}
+      {spaces && (spaces.length > 0 || !collapsed) && (
+        <nav aria-label="Spaces" className={`mt-5 ${collapsed ? "px-2 space-y-0.5" : "px-3 space-y-0.5"}`}>
+          {!collapsed && (
+            <div className="px-2.5 pb-1 font-mono text-[10.5px] uppercase tracking-caps text-faint">Spaces</div>
+          )}
+          {collapsed && <div className="mx-auto mb-1 w-6 border-t border-border" aria-hidden="true" />}
+          {spaces.slice(0, 6).map((sp) => {
+            const active = pathname === `/spaces/${sp.id}`;
+            return (
+              <Link
+                key={sp.id}
+                to={`/spaces/${sp.id}`}
+                onClick={onNavigate}
+                title={collapsed ? sp.name : undefined}
+                aria-label={collapsed ? sp.name : undefined}
+                aria-current={active ? "page" : undefined}
+                className={`ui-focus flex items-center gap-2.5 rounded-ctl text-ui transition-colors ${
+                  collapsed ? "justify-center w-10 h-9 mx-auto" : "px-2.5 h-8"
+                } ${active ? "bg-subtle text-text font-medium" : "text-muted hover:bg-subtle hover:text-text"}`}
+              >
+                <span className="w-2 h-2 rounded-[3px] shrink-0" style={{ background: sp.color }} aria-hidden="true" />
+                {!collapsed && <span className="truncate">{sp.name}</span>}
+              </Link>
+            );
+          })}
+          {!collapsed && (
+            <Link
+              to="/data?tab=spaces"
+              onClick={onNavigate}
+              className="ui-focus flex items-center gap-2.5 px-2.5 h-8 rounded-ctl text-caption text-muted hover:bg-subtle hover:text-text transition-colors"
+            >
+              {spaces.length === 0 ? "+ Group sources into a Space" : spaces.length > 6 ? `All spaces (${spaces.length})` : "All spaces"}
+            </Link>
+          )}
+        </nav>
+      )}
+
       {/* 2026-09-23, round three (Gokul's own explicit ask): the sidebar's
           own "+ Connect data" shortcut is gone - adding data now happens in
           exactly one place, the Data Sources page (/data), instead of two
@@ -1294,6 +1340,30 @@ export default function AppSidebar({
 
   useEffect(() => setMobileOpen(false), [location.pathname]);
 
+  // 2026-10-09 (round 15): the Spaces listed under the nav. Loaded per
+  // workspace, and again whenever the route lands on /data or /spaces
+  // (where Spaces are made, renamed or removed) - one cheap GET. A page can
+  // also ask for a refresh with window.dispatchEvent(new Event("gd360:spaces-changed")).
+  const [spaces, setSpaces] = useState<Space[] | null>(null);
+  const [spacesTick, setSpacesTick] = useState(0);
+  const spacesRoute = location.pathname.startsWith("/data") || location.pathname.startsWith("/spaces") ? location.pathname : "";
+  useEffect(() => {
+    const bump = () => setSpacesTick((n) => n + 1);
+    window.addEventListener("gd360:spaces-changed", bump);
+    return () => window.removeEventListener("gd360:spaces-changed", bump);
+  }, []);
+  useEffect(() => {
+    if (!activeWorkspaceId) return;
+    let live = true;
+    spacesApi
+      .list(activeWorkspaceId)
+      .then((list) => live && setSpaces(list))
+      .catch(() => live && setSpaces((prev) => prev ?? []));
+    return () => {
+      live = false;
+    };
+  }, [activeWorkspaceId, spacesRoute, spacesTick]);
+
   useEffect(() => {
     if (!mobileOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -1368,6 +1438,7 @@ export default function AppSidebar({
               setShowBrandKit(true);
             }}
             onNavigate={() => setMobileOpen(false)}
+            spaces={spaces}
           />
         </div>
       </div>
@@ -1396,6 +1467,7 @@ export default function AppSidebar({
           onNavigate={() => {}}
           collapsed={collapsed}
           onToggleCollapse={toggleCollapsed}
+          spaces={spaces}
         />
       </div>
 

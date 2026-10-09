@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, connectionsApi, datasourceApi, OAuthProvider } from "../api/client";
 
@@ -324,6 +324,17 @@ const SYNCED_APP_META: Record<string, { label: string; color: string }> = {
   ga4: { label: "Google Analytics 4", color: "#e37400" },
   meta_ads: { label: "Meta Ads", color: "#1877f2" },
   google_ads: { label: "Google Ads", color: "#1a73e8" },
+  // 2026-10-09 (round 15): the apps added this round, so they are labelled
+  // and grouped under Apps rather than falling through to "CSV file".
+  instagram: { label: "Instagram", color: "#c1356f" },
+  facebook_pages: { label: "Facebook Pages", color: "#1668e3" },
+  linkedin_pages: { label: "LinkedIn Pages", color: "#0a63bc" },
+  youtube: { label: "YouTube", color: "#e5242b" },
+  search_console: { label: "Search Console", color: "#2b7de9" },
+  woocommerce: { label: "WooCommerce", color: "#7f54b3" },
+  stripe: { label: "Stripe", color: "#635bff" },
+  hubspot: { label: "HubSpot", color: "#ff5c35" },
+  klaviyo: { label: "Klaviyo", color: "#8a8f98" },
 };
 
 export function SyncedAppIcon({ className = "w-4 h-4" }: { className?: string }) {
@@ -481,14 +492,26 @@ function WebhookCredentialsPanel({ url, secret }: { url: string; secret: string 
 // more. `onConnected` (optional) fires immediately on a successful
 // connect/upload, before that confirmation, so the parent can quietly
 // refresh its own lists in the background without navigating away yet.
+// 2026-10-09 (round 15): `start` opens the form on a given mode - and, with
+// a kind, straight into that database/warehouse form, or straight into the
+// Google Sheets sign-in - so a catalog tile lands exactly where it should.
+// `hideModeTabs` hides the Database/Warehouse/... strip for that case. Both
+// are optional; without them the form behaves exactly as before.
+export type DataSourceFormMode = "db" | "warehouse" | "connect" | "file" | "streaming" | "api";
+export type DataSourceFormStart = { mode: DataSourceFormMode; kind?: string };
+
 export default function DataSourceForm({
   onCreated,
   onConnected,
+  start,
+  hideModeTabs = false,
 }: {
   onCreated: (ds: { id: string; name: string; kind: string; created_at: string }) => void;
   onConnected?: (ds: CreatedDataSource) => void;
+  start?: DataSourceFormStart;
+  hideModeTabs?: boolean;
 }) {
-  const [mode, setMode] = useState<"db" | "warehouse" | "connect" | "file" | "streaming" | "api">("db");
+  const [mode, setMode] = useState<DataSourceFormMode>(start?.mode ?? "db");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // Which OAuth tile ("Connect" mode) is mid-redirect, if any - only ever
@@ -817,6 +840,19 @@ export default function DataSourceForm({
     }
   };
 
+  // 2026-10-09 (round 15): apply `start` once, on mount.
+  const startedRef = useRef(false);
+  useEffect(() => {
+    if (!start || startedRef.current) return;
+    startedRef.current = true;
+    setMode(start.mode);
+    if (!start.kind) return;
+    if (start.mode === "db" && DB_KINDS.some((d) => d.value === start.kind)) openDbForm(start.kind);
+    else if (start.mode === "warehouse" && WAREHOUSE_KINDS.some((w) => w.value === start.kind)) openWarehouseForm(start.kind);
+    else if (start.mode === "connect" && CONNECT_KINDS.some((c) => c.value === start.kind)) openOAuthConnect(start.kind as OAuthProvider);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const closeConnectedPanel = () => setConnectedDs(null);
 
   const proceedToWorkspace = () => {
@@ -838,6 +874,7 @@ export default function DataSourceForm({
           slots, the active one lifted onto its own pill - instead of three
           independently-sized buttons that used to wrap unevenly and never
           lined up with each other. */}
+      {!hideModeTabs && (
       <div className="grid grid-cols-3 sm:grid-cols-6 gap-1 p-1 mb-6 rounded-xl bg-surface2 border border-border">
         {(
           [
@@ -871,6 +908,7 @@ export default function DataSourceForm({
           </button>
         ))}
       </div>
+      )}
 
       {error && !warehouseModalKind && !dbModalKind && (
         <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-4">{error}</div>
