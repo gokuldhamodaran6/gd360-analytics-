@@ -38,6 +38,9 @@ export default function MLStudioNew() {
   const [busy, setBusy] = useState<"" | "understand" | "plan" | "start">("");
   const [error, setError] = useState("");
   const [adjust, setAdjust] = useState(false);
+  // round 14: "learn from" - a table the person chose (from ML Studio's home,
+  // a data source, or this picker); empty = GD360 chooses from everything.
+  const [learnFrom, setLearnFrom] = useState(params.get("source") ? `${params.get("source")}::${params.get("table") || ""}` : "");
   const asked = useRef(false);
 
   useEffect(() => {
@@ -64,11 +67,12 @@ export default function MLStudioNew() {
     }
   };
 
-  const understand = async (problemType?: string) => {
+  const understand = async (problemType?: string, from: string = learnFrom) => {
     setBusy("understand");
     setError("");
     try {
-      const s = await mlStudioApi.understand(goal, problemType || null, null);
+      const [sid, tbl] = from ? from.split("::") : [null, null];
+      const s = await mlStudioApi.understand(goal, problemType || null, sid || null, tbl || null);
       setSpec(s);
       await makePlan(s);
     } catch (e: any) {
@@ -78,9 +82,9 @@ export default function MLStudioNew() {
   };
 
   useEffect(() => {
-    if (!asked.current && goal.trim().length > 6) {
+    if (!asked.current && (goal.trim().length > 6 || (params.get("type") && params.get("source")))) {
       asked.current = true;
-      understand();
+      understand(params.get("type") || undefined);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -137,6 +141,27 @@ export default function MLStudioNew() {
                   placeholder="Which customers are likely to stop buying in the next 30 days?"
                   className="w-full resize-none bg-transparent border-0 outline-none text-[19px] leading-snug text-text placeholder:text-faint"
                 />
+                <div className="flex items-center gap-2.5 flex-wrap border-t border-border pt-3">
+                  <label htmlFor="ml-from" className="text-ui text-secondary">Learn from</label>
+                  <select
+                    id="ml-from"
+                    value={learnFrom}
+                    disabled={!!busy}
+                    onChange={(e) => {
+                      setLearnFrom(e.target.value);
+                      if (goal.trim().length > 3 || spec) understand(spec?.problem_type, e.target.value);
+                    }}
+                    className="h-9 max-w-full min-w-0 flex-1 sm:flex-none sm:min-w-[320px] rounded-ctl border border-border bg-base px-2.5 text-ui text-text"
+                  >
+                    <option value="">Let GD360 choose from all your data</option>
+                    {tables.map((t) => (
+                      <option key={`${t.source_id}::${t.table}`} value={`${t.source_id}::${t.table}`}>
+                        {t.source} · {t.table}
+                      </option>
+                    ))}
+                  </select>
+                  <Link to="/data" className="text-ui text-muted underline hover:text-text">Upload a file</Link>
+                </div>
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                   <span className="text-ui text-muted">Describe it in your own words — GD360 picks the method.</span>
                   {spec && plan && busy === "" ? (
