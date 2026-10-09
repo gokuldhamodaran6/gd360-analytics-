@@ -25,7 +25,8 @@ import AutomationEdit from "./pages/AutomationEdit";
 import Experiments from "./pages/Experiments";
 import Governance from "./pages/Governance";
 import NewProject from "./pages/NewProject";
-import AdminDashboard from "./pages/AdminDashboard";
+import AdminApp from "./admin/AdminApp";
+import InAppMessages from "./components/InAppMessages";
 import Profile from "./pages/Profile";
 import HelpBigQuery from "./pages/HelpBigQuery";
 import HelpSnowflake from "./pages/HelpSnowflake";
@@ -106,6 +107,8 @@ export default function App() {
           needs to know it exists. Opened by Cmd+K/Ctrl+K anywhere, or by
           the search button every authenticated page's TopNav now shows. */}
       <CommandPalette />
+      {/* 2026-10-10: Mission Control announcements + the Help button (signed-in app pages only). */}
+      <InAppMessages />
       <ErrorBoundary resetKey={boundaryKey}>
       <Routes>
       <Route path="/login" element={<Login />} />
@@ -191,7 +194,8 @@ export default function App() {
           403s a non-owner, and Governance.tsx shows a plain message for
           that instead of a raw error. */}
       <Route path="/governance" element={<Protected><Governance /></Protected>} />
-      <Route path="/admin" element={<Protected><AdminDashboard /></Protected>} />
+      {/* 2026-10-10: Mission Control — the internal admin portal (src/admin). */}
+      <Route path="/admin/*" element={<Protected><AdminApp /></Protected>} />
       <Route path="/profile" element={<Protected><Profile /></Protected>} />
       {/* Public and standalone (no <Protected> wrapper): opened in a new
           browser tab from the BigQuery connect popout, so it needs to work
