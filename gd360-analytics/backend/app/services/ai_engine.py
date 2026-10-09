@@ -1639,6 +1639,26 @@ def _extract_json(text: str) -> dict:
 
 
 def _call_llm(messages: list[dict], max_tokens: int = 3000, model_override: str | None = None) -> str:
+    """2026-10-10 (Mission Control): every model call is metered - see
+    services/ai_meter.py. The call itself is _call_llm_unmetered below,
+    unchanged; metering failures never affect it."""
+    import time as _time
+    from . import ai_meter
+    ai_meter.check_budget()
+    provider = settings.AI_PROVIDER
+    model = ai_meter.model_name(provider, model_override)
+    ai_meter.begin()
+    started = _time.time()
+    try:
+        out = _call_llm_unmetered(messages, max_tokens=max_tokens, model_override=model_override)
+    except Exception as exc:
+        ai_meter.finish(provider, model, started, "error", str(exc))
+        raise
+    ai_meter.finish(provider, model, started, "ok", None)
+    return out
+
+
+def _call_llm_unmetered(messages: list[dict], max_tokens: int = 3000, model_override: str | None = None) -> str:
     provider = settings.AI_PROVIDER
 
     # Kept low and the SAME across every provider so the same question,
@@ -1690,7 +1710,9 @@ def _call_llm(messages: list[dict], max_tokens: int = 3000, model_override: str 
             timeout=60,
         )
         _raise_with_body(resp, "Groq")
-        _choice = resp.json()["choices"][0]
+        _resp_body = resp.json()
+        _meter_usage(_resp_body)
+        _choice = _resp_body["choices"][0]
         _check_not_truncated(_choice, "Groq")
         content = _choice["message"]["content"]
         if not content or not content.strip():
@@ -1726,7 +1748,9 @@ def _call_llm(messages: list[dict], max_tokens: int = 3000, model_override: str 
             timeout=60,
         )
         _raise_with_body(resp, "Gemini")
-        _choice = resp.json()["choices"][0]
+        _resp_body = resp.json()
+        _meter_usage(_resp_body)
+        _choice = _resp_body["choices"][0]
         _check_not_truncated(_choice, "Gemini")
         content = _choice["message"]["content"]
         if not content or not content.strip():
@@ -1749,7 +1773,9 @@ def _call_llm(messages: list[dict], max_tokens: int = 3000, model_override: str 
             timeout=60,
         )
         _raise_with_body(resp, "OpenAI")
-        _choice = resp.json()["choices"][0]
+        _resp_body = resp.json()
+        _meter_usage(_resp_body)
+        _choice = _resp_body["choices"][0]
         _check_not_truncated(_choice, "OpenAI")
         return _choice["message"]["content"]
 
@@ -1773,10 +1799,19 @@ def _call_llm(messages: list[dict], max_tokens: int = 3000, model_override: str 
         )
         _raise_with_body(resp, "Anthropic")
         _body = resp.json()
+        _meter_usage(_body)
         _check_not_truncated({"finish_reason": _body.get("stop_reason")}, "Anthropic")
         return _body["content"][0]["text"]
 
     raise RuntimeError(f"Unknown AI_PROVIDER: {provider}")
+
+
+def _meter_usage(body) -> None:
+    try:
+        from . import ai_meter
+        ai_meter.note_usage((body or {}).get("usage"))
+    except Exception:
+        pass
 
 
 def _raise_with_body(resp: requests.Response, provider_label: str) -> None:
