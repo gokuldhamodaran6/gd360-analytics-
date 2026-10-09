@@ -112,8 +112,8 @@ export type StudioProject = {
 export const mlStudioApi = {
   types: () =>
     api.get<{ types: ProblemType[]; tables: StudioTable[]; limits: { max_rows: number; trials: number; tune_seconds: number; workers: number } }>("/ml-studio/types").then((r) => r.data),
-  understand: (goal: string, problem_type?: string | null, source_id?: string | null) =>
-    api.post<Spec>("/ml-studio/understand", { goal, problem_type: problem_type || null, source_id: source_id || null }).then((r) => r.data),
+  understand: (goal: string, problem_type?: string | null, source_id?: string | null, table?: string | null) =>
+    api.post<Spec>("/ml-studio/understand", { goal, problem_type: problem_type || null, source_id: source_id || null, table: table || null }).then((r) => r.data),
   plan: (spec: Spec) => api.post<Plan>("/ml-studio/plan", { spec }).then((r) => r.data),
   start: (spec: Spec, name: string, goal: string) => api.post<{ id: string }>("/ml-studio/projects", { spec, name, goal }).then((r) => r.data),
   list: () => api.get<{ projects: StudioProject[] }>("/ml-studio/projects").then((r) => r.data.projects),

@@ -16,7 +16,7 @@ export type ProjectSource = {
   sync_error?: string | null;
 };
 
-export type ResultColumn = { name: string; dtype: string; role: string };
+export type ResultColumn = { name: string; dtype: string; role: string; label?: string; format?: "currency" | "percent" | "ratio" | "integer" | "number"; currency?: string };
 
 export type RunStep = {
   id: string;
@@ -50,7 +50,9 @@ export type Visual = VisualBase &
   (
     | { type: "waterfall"; title: string; items: { label: string; value: number; kind: "total" | "up" | "down" }[]; format: string; currency?: string | null }
     | { type: "diverging"; title: string; items: { label: string; value: number; share: number | null }[]; format: string; currency?: string | null }
-    | { type: "chart"; title: string; chart_type?: string | null; columns: ResultColumn[]; rows: Record<string, unknown>[]; truncated?: boolean }
+    | { type: "chart"; title: string; chart_type?: string | null; columns: ResultColumn[]; rows: Record<string, unknown>[]; truncated?: boolean;
+        // round 14: "table" = a formatted detail table; a note under the chart
+        display?: "table" | null; note?: string | null; time_column?: string | null }
     | { type: "kpis"; items: { label: string; display: string; fact_id: string }[] }
   );
 
