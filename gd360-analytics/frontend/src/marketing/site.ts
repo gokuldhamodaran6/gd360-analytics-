@@ -5,12 +5,13 @@ export const SITE = {
   founderName: "Gokul Dhamodaran",
   founderRole: "Founder & CEO",
   /** Two or three lines in your own words. Empty shows a short default. */
-  founderBio: "",
-  founderLinkedIn: "", // e.g. "https://www.linkedin.com/in/…"
-  founderEmail: "",
-  investorsEmail: "", // e.g. "investors@yourdomain.com"
-  helloEmail: "", // press, partners and general enquiries
-  careersEmail: "",
+  founderBio:
+    "Gokul founded GD360 on one conviction: every team deserves answers it can prove, not charts it has to take on trust. He leads product, design and engineering, and holds every release to a single test — would a finance lead sign off on this answer without re-checking it?",
+  founderLinkedIn: "https://www.linkedin.com/in/gokuldhamodaran/",
+  founderEmail: "gokuldhamodaranb@gmail.com",
+  investorsEmail: "gokuldhamodaranb@gmail.com",
+  helloEmail: "gokuldhamodaranb@gmail.com", // press, partners and general enquiries
+  careersEmail: "gokuldhamodaranb@gmail.com",
   /** Registered company name and address for the footer. */
   legalLine: "",
   /** Set VITE_BILLING_ENABLED=true once card payments are connected. */
