@@ -33,6 +33,7 @@ import InviteJoin from "./pages/InviteJoin";
 import HomePage from "./pages/Home";
 import ProjectWorkspace from "./pages/ProjectWorkspace";
 import ProjectDashboard from "./pages/ProjectDashboard";
+import SpacePage from "./pages/SpacePage";
 import CommandPalette from "./components/CommandPalette";
 import ErrorBoundary from "./components/ErrorBoundary";
 
@@ -118,6 +119,8 @@ export default function App() {
       <Route path="/projects" element={<Protected><Dashboard /></Protected>} />
       <Route path="/p/:projectId" element={<Protected><ProjectWorkspace /></Protected>} />
       <Route path="/project-dashboards/:dashboardId" element={<Protected><ProjectDashboard /></Protected>} />
+      {/* 2026-10-09 (round 15): one Space - channel hub / overview. */}
+      <Route path="/spaces/:id" element={<Protected><SpacePage /></Protected>} />
       <Route path="/workspace/:datasourceId" element={<Protected><Workspace /></Protected>} />
       <Route path="/dashboards" element={<Protected><Dashboards /></Protected>} />
       {/* 2026-10-07 (dashboard from a prompt): describe -> propose -> refine
