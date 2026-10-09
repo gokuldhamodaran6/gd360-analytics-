@@ -7,7 +7,8 @@ import { api } from "../api/client";
 // is only one set of accounts in the app) - but it only lets you in if
 // that account is on the admin allow-list, and it will not sign you into
 // the app at all if it is not, unlike the regular login form.
-const ADMIN_EMAILS = ["gokuldhamodaranb@gmail.com", "gokuldhamodaran6@gmail.com"];
+// 2026-10-10: who gets in is decided by the backend (Mission Control roles:
+// ADMIN_EMAILS owners plus invited staff) - see GET /admin/v2/me.
 
 export default function AdminLogin() {
   const [email, setEmail] = useState("");
@@ -21,9 +22,10 @@ export default function AdminLogin() {
     setBusy(true);
     try {
       const { data } = await api.post("/auth/login", { email, password });
-      const loggedInEmail = (data.user?.email || "").toLowerCase();
-      if (!ADMIN_EMAILS.includes(loggedInEmail)) {
-        setError("This account does not have admin access.");
+      try {
+        await api.get("/admin/v2/me", { headers: { Authorization: `Bearer ${data.access_token}` } });
+      } catch {
+        setError("This account does not have Mission Control access.");
         setBusy(false);
         return;
       }
