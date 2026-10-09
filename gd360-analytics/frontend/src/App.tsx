@@ -1,9 +1,11 @@
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useAuth } from "./api/AuthContext";
 import Login from "./pages/Login";
-import Register from "./pages/Register";
 import AdminLogin from "./pages/AdminLogin";
-import Landing from "./pages/Landing";
+import MarketingHome from "./marketing/pages/Home";
+import MarketingPricing from "./marketing/pages/Pricing";
+import MarketingAbout from "./marketing/pages/About";
+import MarketingStart from "./marketing/pages/Start";
 import Dashboard from "./pages/Dashboard";
 import Workspace from "./pages/Workspace";
 import Dashboards from "./pages/Dashboards";
@@ -58,7 +60,7 @@ function Home() {
   if (loading) return null;
   // 2026-10-08 (round 11): signed in, "/" is the one-question Home; the
   // full Projects library (folders, bulk actions) moved to /projects.
-  return user ? <HomePage /> : <Landing />;
+  return user ? <HomePage /> : <MarketingHome />;
 }
 
 // 2026-09-24 (Dashboard Builder Phase 4, white-label custom domains): this
@@ -107,7 +109,12 @@ export default function App() {
       <ErrorBoundary resetKey={boundaryKey}>
       <Routes>
       <Route path="/login" element={<Login />} />
-      <Route path="/register" element={<Register />} />
+      {/* 2026-10-09: the public website (approved "GD360 Website — Final"
+          mockup). "Get started" is the new sign-up flow; /register opens it too. */}
+      <Route path="/pricing" element={<MarketingPricing />} />
+      <Route path="/about" element={<MarketingAbout />} />
+      <Route path="/start" element={<MarketingStart />} />
+      <Route path="/register" element={<MarketingStart />} />
       <Route path="/admin-login" element={<AdminLogin />} />
       <Route path="/" element={<Home />} />
       {/* Must be registered before "/workspace/:datasourceId" below would
