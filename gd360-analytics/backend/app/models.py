@@ -2411,3 +2411,18 @@ class AppAuthPending(Base):
     encrypted_tokens = Column(Text, nullable=False)
     state_note = Column(JSON, nullable=True)       # non-secret details: scopes granted, expiry, account name
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class DemoRequest(Base):
+    """2026-10-09: an Enterprise demo request from the public Pricing page
+    (POST /site/demo-request). Listed for the owner on the admin page."""
+    __tablename__ = "demo_requests"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=False, index=True)
+    company = Column(String, nullable=True)
+    team_size = Column(String, nullable=True)
+    question = Column(Text, nullable=True)
+    status = Column(String, default="new", nullable=False)  # new | contacted | closed
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
