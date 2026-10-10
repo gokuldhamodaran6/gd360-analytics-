@@ -19,11 +19,13 @@ import MLStudio from "./pages/MLStudio";
 import MLStudioNew from "./pages/MLStudioNew";
 import MLStudioProject from "./pages/MLStudioProject";
 import MLModelDetail from "./pages/MLModelDetail";
-import Jobs from "./pages/Jobs";
 import Automations from "./pages/Automations";
 import AutomationEdit from "./pages/AutomationEdit";
 import Experiments from "./pages/Experiments";
-import Governance from "./pages/Governance";
+import TrustCenter from "./pages/TrustCenter";
+import DomainSettings from "./pages/DomainSettings";
+import DomainViewerApp, { UnknownHost, useCustomHostKind } from "./pages/DomainViewerApp";
+import { MfaRequiredBanner } from "./components/TwoStepSection";
 import AdminApp from "./admin/AdminApp";
 import InAppMessages from "./components/InAppMessages";
 import Profile from "./pages/Profile";
@@ -101,7 +103,7 @@ export default function App() {
   const boundaryKey = useLocation().pathname;
   const hostname = typeof window !== "undefined" ? window.location.hostname : "";
   if (!isRecognizedHost(hostname)) {
-    return <ErrorBoundary resetKey={boundaryKey}><PublicDashboardView /></ErrorBoundary>;
+    return <ErrorBoundary resetKey={boundaryKey}><CustomHost host={hostname} /></ErrorBoundary>;
   }
   return (
     <>
@@ -114,6 +116,7 @@ export default function App() {
       <CommandPalette />
       {/* 2026-10-10: Mission Control announcements + the Help button (signed-in app pages only). */}
       <InAppMessages />
+      <MfaRequiredBanner />
       <ErrorBoundary resetKey={boundaryKey}>
       <Routes>
       <Route path="/login" element={<Login />} />
@@ -198,7 +201,8 @@ export default function App() {
           the /catalog route and its entire page are gone outright too,
           since that one genuinely duplicated the Projects filter and Data
           Sources page. */}
-      <Route path="/jobs" element={<Protected><Jobs /></Protected>} />
+      {/* 2026-10-10 (round 19): Jobs is part of the Automations home now. */}
+      <Route path="/jobs" element={<Navigate to="/automations" replace />} />
       {/* 2026-10-08 (round 12): Automations - WHEN -> DO -> TELL. /jobs keeps
           the older dashboard schedules and pipelines reachable. */}
       <Route path="/automations" element={<Protected><Automations /></Protected>} />
@@ -213,7 +217,10 @@ export default function App() {
           Experiments exactly like the sidebar. Owner-only - the backend
           403s a non-owner, and Governance.tsx shows a plain message for
           that instead of a raw error. */}
-      <Route path="/governance" element={<Protected><Governance /></Protected>} />
+      {/* 2026-10-10 (round 19): Governance became the Trust Center. */}
+      <Route path="/governance" element={<RedirectKeepingQuery to="/trust" />} />
+      <Route path="/trust" element={<Protected><TrustCenter /></Protected>} />
+      <Route path="/settings/domains" element={<Protected><DomainSettings /></Protected>} />
       {/* 2026-10-10: Mission Control — the internal admin portal (src/admin). */}
       <Route path="/admin/*" element={<Protected><AdminApp /></Protected>} />
       <Route path="/profile" element={<Protected><Profile /></Protected>} />
@@ -255,4 +262,15 @@ export default function App() {
 function RedirectKeepingQuery({ to }: { to: string }) {
   const { search } = useLocation();
   return <Navigate to={`${to}${search}`} replace />;
+}
+
+// 2026-10-10 (round 19): a hostname this app doesn't recognise is either a
+// company domain (the viewer app, src/viewer), one dashboard's own older
+// white-label address (PublicDashboardView, unchanged) or not set up.
+function CustomHost({ host }: { host: string }) {
+  const state = useCustomHostKind(host);
+  if (state.kind === "loading") return <div className="dash-shell min-h-screen bg-base" />;
+  if (state.kind === "org" && state.site) return <DomainViewerApp site={state.site} />;
+  if (state.kind === "none") return <UnknownHost />;
+  return <PublicDashboardView />;
 }

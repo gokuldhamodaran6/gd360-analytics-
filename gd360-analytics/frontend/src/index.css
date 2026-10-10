@@ -1191,3 +1191,51 @@ input[type="radio"] {
   --auto-tell-fill: 234 241 252;
   --auto-tell-border: 198 216 245;
 }
+
+/* ============================================================
+   2026-10-10 (round 19): Automations home, Trust Center, company domains.
+   One colour per kind of work that runs by itself - the same on the
+   Automations table, the timeline, the run history and the drawer.
+   ink (text/dots) + a soft fill; dark is the bare :root as everywhere.
+   ============================================================ */
+:root {
+  --ops-automation: 197 155 255;
+  --ops-alert: 242 196 107;
+  --ops-refresh: 122 167 255;
+  --ops-chain: 67 229 160;
+  --ops-sync: 255 138 122;
+  --ops-fill-alpha: 0.12;
+  --trust-ring-track: 31 39 41;
+}
+:root[data-theme="light"] {
+  --ops-automation: 118 74 206;
+  --ops-alert: 160 98 0;
+  --ops-refresh: 38 96 210;
+  --ops-chain: 15 122 88;
+  --ops-sync: 190 62 46;
+  --ops-fill-alpha: 0.1;
+  --trust-ring-track: 227 227 222;
+}
+.ops-kind-automation { --k: var(--ops-automation); }
+.ops-kind-alert { --k: var(--ops-alert); }
+.ops-kind-refresh { --k: var(--ops-refresh); }
+.ops-kind-chain { --k: var(--ops-chain); }
+.ops-kind-sync { --k: var(--ops-sync); }
+.ops-ink { color: rgb(var(--k)); }
+.ops-dot { background: rgb(var(--k)); }
+.ops-chip {
+  color: rgb(var(--k));
+  background: rgb(var(--k) / var(--ops-fill-alpha));
+  border: 1px solid rgb(var(--k) / 0.28);
+}
+.ops-stripe { box-shadow: inset 3px 0 0 rgb(var(--k)); }
+.ops-row { transition: background-color 120ms ease; }
+.ops-row:hover { background: rgb(var(--color-subtle)); }
+.ops-tile {
+  background: linear-gradient(180deg, rgb(var(--color-surface)) 0%, rgb(var(--color-surface) / 0.86) 100%);
+}
+.trust-ring-track { stroke: rgb(var(--trust-ring-track)); }
+.copy-mono { font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+@keyframes ops-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.ops-pulse { animation: ops-pulse 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .ops-pulse { animation: none; } }
