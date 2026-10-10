@@ -980,11 +980,11 @@ export default function Dashboard() {
                   <div role="menu" className="absolute right-0 top-full mt-1.5 z-30 w-72 rounded-card border border-border bg-surface shadow-pop p-1.5">
                     <button type="button" role="menuitem" className="w-full flex items-start gap-3 px-3 py-2.5 rounded-ctl text-left hover:bg-subtle" onClick={() => navigate("/")}>
                       <KindTile kind="answer" size={32} />
-                      <span className="flex flex-col"><span className="text-ui font-semibold text-text">Ask a question</span><span className="text-caption text-muted">An answer across any of your sources</span></span>
+                      <span className="flex flex-col"><span className="text-ui font-semibold text-text">Instant Answers</span><span className="text-caption text-muted">Ask anything, answered in seconds across your sources</span></span>
                     </button>
-                    <button type="button" role="menuitem" className="w-full flex items-start gap-3 px-3 py-2.5 rounded-ctl text-left hover:bg-subtle" onClick={() => navigate("/?intent=analyze")}>
+                    <button type="button" role="menuitem" className="w-full flex items-start gap-3 px-3 py-2.5 rounded-ctl text-left hover:bg-subtle" onClick={() => navigate("/?intent=guided")}>
                       <KindTile kind="analysis" size={32} />
-                      <span className="flex flex-col"><span className="text-ui font-semibold text-text">Analyze a table</span><span className="text-caption text-muted">Hands-on in Studio: chat, data, charts, SQL</span></span>
+                      <span className="flex flex-col"><span className="text-ui font-semibold text-text">Guided Analysis</span><span className="text-caption text-muted">Step by step on one or more sources, every step yours to change</span></span>
                     </button>
                   </div>
                 )}
@@ -1212,15 +1212,15 @@ export default function Dashboard() {
               <p className="text-sm text-muted max-w-md mx-auto leading-relaxed mb-5">
                 {isViewerHere
                   ? "Nothing's been shared into this workspace yet. You have view-only access here, so ask the workspace owner to add a data source."
-                  : "Every question you ask becomes an Answer, and every hands-on session in Studio becomes an Analysis. Both land here."}
+                  : "Every Instant Answer and every Guided Analysis you run lands here, ready to reopen, share or turn into a dashboard."}
               </p>
               {!isViewerHere && (
                 <div className="flex items-center justify-center gap-2.5 flex-wrap">
                   <button className="btn-primary text-sm px-4 py-2.5 inline-flex items-center gap-1.5" onClick={() => navigate("/")}>
-                    <KindIcon kind="answer" size={15} /> Ask a question
+                    <KindIcon kind="answer" size={15} /> Instant Answers
                   </button>
-                  <button className="btn-secondary text-sm px-4 py-2.5 inline-flex items-center gap-1.5" onClick={() => navigate("/?intent=analyze")}>
-                    <KindIcon kind="analysis" size={15} /> Analyze a table
+                  <button className="btn-secondary text-sm px-4 py-2.5 inline-flex items-center gap-1.5" onClick={() => navigate("/?intent=guided")}>
+                    <KindIcon kind="analysis" size={15} /> Guided Analysis
                   </button>
                 </div>
               )}

@@ -321,7 +321,7 @@ function StartDialog({
     kind === "answer"
       ? "Pick a question you've asked. It opens with “Create dashboard” ready."
       : kind === "analysis"
-      ? "Pick an analysis from Studio. It opens with “Create dashboard” ready."
+      ? "Pick a Guided Analysis. It opens with “Create dashboard” ready."
       : "Pick the data source it computes on, then add blocks yourself.";
 
   return createPortal(
@@ -375,8 +375,8 @@ function StartDialog({
                 <div className="p-4 text-ui text-muted">
                   {items.length === 0
                     ? kind === "answer"
-                      ? <>No answers yet. <Link to="/" className="text-text underline">Ask a question</Link> first.</>
-                      : <>No analyses yet. <Link to="/?intent=analyze" className="text-text underline">Analyze a table</Link> first.</>
+                      ? <>No answers yet. <Link to="/" className="text-text underline">Get an Instant Answer</Link> first.</>
+                      : <>No analyses yet. <Link to="/?intent=guided" className="text-text underline">Start a Guided Analysis</Link> first.</>
                     : "Nothing matches."}
                 </div>
               )}
@@ -495,7 +495,7 @@ export default function Dashboards() {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
               <StartTile kind="dashboard" recommended highlight={highlightStart} title="Describe it" text="“Bookings and cancellations by hotel and month.” GD360 drafts it with filters; you refine." onClick={() => navigate("/dashboards/new")} />
               <StartTile kind="answer" highlight={highlightStart} title="From an answer" text="Turn something you asked into a live dashboard." onClick={() => setStart("answer")} />
-              <StartTile kind="analysis" highlight={highlightStart} title="From an analysis" text="Use what you explored in Studio." onClick={() => setStart("analysis")} />
+              <StartTile kind="analysis" highlight={highlightStart} title="From an analysis" text="Use what you worked through in Guided Analysis." onClick={() => setStart("analysis")} />
               <StartTile kind="blank" highlight={highlightStart} title="Blank canvas" text="Pick a source and add blocks yourself." onClick={() => setStart("blank")} />
             </div>
           </section>

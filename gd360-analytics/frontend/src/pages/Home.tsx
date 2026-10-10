@@ -1,15 +1,16 @@
 // 2026-10-08 (round 11): the signed-in home page.
 // 2026-10-09 (round 15): the scope chip asks one Space, chosen sources or
 // everything (spaces/ScopePicker.tsx). ?space=<id> preselects a Space.
-// 2026-10-10 (Clarity Blueprint, Option 1 - "one front door, three
-// intents"): Home asks what you want to DO, not where to go:
-//   Ask a question   -> an Answer across any sources (/p/:id)
-//   Analyze a table  -> Studio on one source (/workspace/:id, ?draft= runs
-//                       the first instruction)
-//   Build a dashboard -> the full dashboard, drafted from a description
-//                       (/dashboards/new?datasource=&goal=&auto=1)
-// ?intent=ask|analyze|build preselects one. Everything made from here lands
-// in Library (answers, analyses) or Dashboards, each labelled by kind.
+// 2026-10-10 (Clarity Blueprint, round 2): Home offers the two ways to work
+// with data - dashboards are made FROM either one, so they are not a third
+// door here:
+//   Instant Answers  -> ask in plain English, answered in seconds across
+//                       every source, with the evidence (/p/:id)
+//   Guided Analysis  -> work step by step on one or more sources, seeing and
+//                       changing every step (/workspace/:id?extra=&draft=)
+// ?intent=guided preselects Guided Analysis (?intent=analyze still works).
+// ?source=<id>[&connected=1] starts both on one source - where "Try it now"
+// lands right after connecting data.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
@@ -24,19 +25,16 @@ import ScopePicker, { Scope, loadScope, saveScope, scopeSummary, startersFor } f
 import { conversationHref, conversationKind, dashboardHref, Kind, KindIcon, KindPill, KindTile } from "../lib/kinds";
 
 type Tab = "recent" | "pinned" | "shared";
-type Intent = "ask" | "analyze" | "build";
+type Intent = "instant" | "guided";
 
 const INTENTS: { id: Intent; kind: Kind; title: string; sub: string }[] = [
-  { id: "ask", kind: "answer", title: "Ask a question", sub: "An answer in seconds, from any source" },
-  { id: "analyze", kind: "analysis", title: "Analyze a table", sub: "Hands-on in Studio, step by step" },
-  { id: "build", kind: "dashboard", title: "Build a dashboard", sub: "Live, with filters. You refine it" },
+  { id: "instant", kind: "answer", title: "Instant Answers", sub: "Ask in plain English. Answered in seconds, with the evidence." },
+  { id: "guided", kind: "analysis", title: "Guided Analysis", sub: "Work step by step. See, change and approve every step." },
 ];
 
-const ANALYZE_STARTERS = ["Profile this table and point out anything unusual", "Find gaps, duplicates and outliers", "Show the main measure by month"];
-const BUILD_STARTERS = ["Weekly revenue health with a trend and the top segments", "Bookings, cancellations and average rate by month", "Top customers and where they come from"];
+const GUIDED_STARTERS = ["Profile the data and point out anything unusual", "Clean the dates, then compare revenue by year", "Find gaps, duplicates and outliers"];
 
-// Sources people analyze or build dashboards on first: warehouses, databases
-// and files before connected apps.
+// Sources people analyze first: warehouses, databases and files before apps.
 const CORE_KINDS = new Set(["bigquery", "snowflake", "postgres", "mysql", "redshift", "sqlserver", "databricks", "supabase", "csv", "excel", "file"]);
 
 function errorText(e: any, fallback: string): string {
@@ -72,12 +70,13 @@ export default function Home() {
   const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
   const [searchParams, setSearchParams] = useSearchParams();
   const spaceParam = searchParams.get("space");
+  const sourceParam = searchParams.get("source");
+  const justConnected = searchParams.get("connected") === "1";
   const intentParam = searchParams.get("intent");
-  const intent: Intent = intentParam === "analyze" || intentParam === "build" ? intentParam : "ask";
+  const intent: Intent = intentParam === "guided" || intentParam === "analyze" ? "guided" : "instant";
   const [question, setQuestion] = useState("");
   const [instruction, setInstruction] = useState("");
-  const [goal, setGoal] = useState("");
-  const [sourceId, setSourceId] = useState("");
+  const [guidedIds, setGuidedIds] = useState<string[]>([]);
   const [sources, setSources] = useState<ProjectSource[] | null>(null);
   const [spaces, setSpaces] = useState<Space[] | null>(null);
   const [scope, setScopeState] = useState<Scope>({ kind: "all" });
@@ -90,7 +89,7 @@ export default function Home() {
 
   const setIntent = (next: Intent) => {
     const p = new URLSearchParams(searchParams);
-    if (next === "ask") p.delete("intent");
+    if (next === "instant") p.delete("intent");
     else p.set("intent", next);
     setSearchParams(p, { replace: true });
     setError("");
@@ -126,13 +125,15 @@ export default function Home() {
     dashboardApi.list().then(setDashboards).catch(() => setDashboards([]));
   }, [activeWorkspaceId]);
 
-  // The starting scope: ?space=<id> wins, else the last one used here.
+  // The starting scope: ?source=<id> (just connected) wins, then ?space=<id>,
+  // else the last one used here.
   useEffect(() => {
     if (!activeWorkspaceId) return;
-    if (spaceParam) setScope({ kind: "space", spaceId: spaceParam });
+    if (sourceParam) setScopeState({ kind: "sources", ids: [sourceParam] });
+    else if (spaceParam) setScope({ kind: "space", spaceId: spaceParam });
     else setScopeState(loadScope(activeWorkspaceId) || { kind: "all" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeWorkspaceId, spaceParam]);
+  }, [activeWorkspaceId, spaceParam, sourceParam]);
 
   // Drop a remembered Space or sources that are gone (or not in this workspace).
   useEffect(() => {
@@ -145,30 +146,34 @@ export default function Home() {
     }
   }, [sources, spaces, scope]);
 
-  // The one source Analyze / Build work on: the last one used here, else the
-  // first warehouse, database or file.
   const orderedSources = useMemo(() => {
     const list = [...(sources || [])];
     list.sort((a, b) => Number(CORE_KINDS.has(b.kind)) - Number(CORE_KINDS.has(a.kind)));
     return list;
   }, [sources]);
+  // Guided Analysis starts on: the just-connected source, else the last one
+  // used here, else the first warehouse, database or file.
   useEffect(() => {
     if (!activeWorkspaceId || !orderedSources.length) return;
-    setSourceId((cur) => {
-      if (cur && orderedSources.some((s) => s.id === cur)) return cur;
+    const known = new Set(orderedSources.map((s) => s.id));
+    setGuidedIds((cur) => {
+      if (sourceParam && known.has(sourceParam)) return [sourceParam];
+      const kept = cur.filter((id) => known.has(id));
+      if (kept.length) return kept;
       const last = loadLastSource(activeWorkspaceId);
-      if (last && orderedSources.some((s) => s.id === last)) return last;
-      return orderedSources[0].id;
+      if (last && known.has(last)) return [last];
+      return [orderedSources[0].id];
     });
-  }, [activeWorkspaceId, orderedSources]);
-  const chooseSource = (id: string) => {
-    setSourceId(id);
-    if (activeWorkspaceId) saveLastSource(activeWorkspaceId, id);
+  }, [activeWorkspaceId, orderedSources, sourceParam]);
+  const setGuided = (ids: string[]) => {
+    setGuidedIds(ids);
+    if (activeWorkspaceId && ids[0]) saveLastSource(activeWorkspaceId, ids[0]);
   };
 
   const chosenSpace = scope.kind === "space" ? (spaces || []).find((s) => s.id === scope.spaceId) || null : null;
   const summary = scopeSummary(scope, sources, spaces);
   const askStarters = useMemo(() => startersFor(chosenSpace), [chosenSpace]);
+  const connectedSource = sourceParam ? (sources || []).find((s) => s.id === sourceParam) || null : null;
 
   const recent = useMemo<RecentItem[]>(() => {
     const convs = projects || [];
@@ -214,46 +219,28 @@ export default function Home() {
     }
   };
 
-  const openStudio = () => {
-    if (!sourceId) {
-      setError("Pick a source to analyze.");
+  const startGuided = () => {
+    const [first, ...rest] = guidedIds;
+    if (!first) {
+      setError("Pick at least one source to analyze.");
       return;
     }
+    const q = new URLSearchParams();
+    if (rest.length) q.set("extra", rest.join(","));
     const draft = instruction.trim();
-    navigate(`/workspace/${sourceId}${draft.length >= 2 ? `?draft=${encodeURIComponent(draft)}` : ""}`);
-  };
-
-  const buildDashboard = () => {
-    if (!sourceId) {
-      setError("Pick a source for the dashboard.");
-      return;
-    }
-    const g = goal.trim();
-    if (g.length < 4) {
-      setError("Describe what the dashboard should show - a sentence is enough.");
-      return;
-    }
-    const q = new URLSearchParams({ datasource: sourceId, goal: g, auto: "1" });
-    navigate(`/dashboards/new?${q.toString()}`);
+    if (draft.length >= 2) q.set("draft", draft);
+    navigate(`/workspace/${first}${q.toString() ? `?${q.toString()}` : ""}`);
   };
 
   const firstName = (user?.full_name || "").split(" ")[0];
   const noSources = sources !== null && sources.length === 0;
-  const starters = intent === "ask" ? askStarters : intent === "analyze" ? ANALYZE_STARTERS : BUILD_STARTERS;
+  const starters = intent === "instant" ? askStarters : GUIDED_STARTERS;
   const pickStarter = (s: string) => {
-    if (intent === "ask") setQuestion(s);
-    else if (intent === "analyze") setInstruction(s);
-    else setGoal(s);
+    if (intent === "instant") setQuestion(s);
+    else setInstruction(s);
     boxRef.current?.focus();
   };
-
-  const submit = () => (intent === "ask" ? ask() : intent === "analyze" ? openStudio() : buildDashboard());
-  const tone =
-    intent === "ask"
-      ? { border: "border-kind-answer-border", label: "text-kind-answer" }
-      : intent === "analyze"
-      ? { border: "border-kind-analysis-border", label: "text-kind-analysis" }
-      : { border: "border-kind-dashboard-border", label: "text-kind-dashboard" };
+  const submit = () => (intent === "instant" ? ask() : startGuided());
 
   return (
     <div className="dash-shell flex min-h-screen">
@@ -267,11 +254,21 @@ export default function Home() {
         <TopNav hideLogo />
         <main className="flex flex-col items-center px-4 sm:px-8 pt-12 sm:pt-16 pb-16 gap-10">
           <div className="w-full max-w-[820px] flex flex-col items-center gap-5 text-center">
+            {justConnected && connectedSource && (
+              <div role="status" data-connected-banner="" className="w-full rounded-card border border-kind-answer-border bg-kind-answer-fill px-4 py-3 flex items-center gap-3 text-left">
+                <span className="w-7 h-7 rounded-full bg-kind-answer text-[rgb(var(--color-base))] grid place-items-center shrink-0" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 7" /></svg>
+                </span>
+                <span className="text-ui text-text leading-snug">
+                  <b>{connectedSource.name}</b> is connected. Ask it anything for an instant answer, or analyze it step by step.
+                </span>
+              </div>
+            )}
             <h1 className="m-0 text-[32px] sm:text-[40px] font-semibold tracking-tight text-text text-balance">
-              {firstName ? `What do you want to do, ${firstName}?` : "What do you want to do?"}
+              {firstName ? `What do you want to know, ${firstName}?` : "What do you want to know?"}
             </h1>
-            <p className="m-0 text-body text-muted max-w-[56ch]">
-              Pick one — everything you make lands in <Link to="/library" className="text-text underline-offset-2 hover:underline">Library</Link>.
+            <p className="m-0 text-body text-muted max-w-[60ch]">
+              Two ways to work — both end in answers, charts and live dashboards, all kept in <Link to="/library" className="text-text underline-offset-2 hover:underline">Library</Link>.
             </p>
 
             {noSources ? (
@@ -286,7 +283,7 @@ export default function Home() {
               </div>
             ) : (
               <>
-                <div role="tablist" aria-label="What do you want to do" className="w-full grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-left" data-home-intents="">
+                <div role="tablist" aria-label="How do you want to work" className="w-full grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-left" data-home-intents="">
                   {INTENTS.map((it) => {
                     const on = it.id === intent;
                     return (
@@ -297,15 +294,15 @@ export default function Home() {
                         aria-selected={on}
                         data-intent={it.id}
                         onClick={() => setIntent(it.id)}
-                        className={`ui-focus text-left flex items-center gap-3 min-h-[64px] px-3.5 py-3 rounded-[14px] border transition-colors ${
+                        className={`ui-focus text-left flex items-center gap-3.5 min-h-[72px] px-4 py-3.5 rounded-[16px] border transition-colors ${
                           on
-                            ? `bg-surface shadow-card ring-1 ${it.kind === "answer" ? "border-kind-answer-border ring-kind-answer-border" : it.kind === "analysis" ? "border-kind-analysis-border ring-kind-analysis-border" : "border-kind-dashboard-border ring-kind-dashboard-border"}`
+                            ? `bg-surface shadow-card ring-1 ${it.kind === "answer" ? "border-kind-answer-border ring-kind-answer-border" : "border-kind-analysis-border ring-kind-analysis-border"}`
                             : "border-border bg-transparent opacity-80 hover:opacity-100 hover:bg-surface/60"
                         }`}
                       >
-                        <KindTile kind={it.kind} size={34} />
-                        <span className="min-w-0 flex flex-col items-start">
-                          <span className="text-body font-semibold text-text">{it.title}</span>
+                        <KindTile kind={it.kind} size={38} />
+                        <span className="min-w-0 flex flex-col items-start gap-0.5">
+                          <span className="text-section font-semibold text-text">{it.title}</span>
                           <span className="text-caption text-muted">{it.sub}</span>
                         </span>
                       </button>
@@ -313,29 +310,24 @@ export default function Home() {
                   })}
                 </div>
 
-                <div className={`w-full text-left rounded-[20px] border bg-surface shadow-pop p-4 sm:p-[18px] flex flex-col gap-3 ${tone.border}`} data-home-composer={intent}>
-                  {intent === "analyze" && (
+                <div className={`w-full text-left rounded-[20px] border bg-surface shadow-pop p-4 sm:p-[18px] flex flex-col gap-3 ${intent === "instant" ? "border-kind-answer-border" : "border-kind-analysis-border"}`} data-home-composer={intent}>
+                  {intent === "guided" ? (
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`font-mono text-[11px] uppercase tracking-[0.12em] ${tone.label}`}>Analyze in Studio</span>
-                      <SourceSelect sources={orderedSources} value={sourceId} onChange={chooseSource} label="Table to analyze" />
+                      <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-kind-analysis">Guided Analysis on</span>
+                      <SourceMultiSelect sources={orderedSources} value={guidedIds} onChange={setGuided} />
                     </div>
+                  ) : (
+                    <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-kind-answer">Instant Answers</span>
                   )}
-                  {intent === "build" && (
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`font-mono text-[11px] uppercase tracking-[0.12em] ${tone.label}`}>Build a dashboard</span>
-                      <SourceSelect sources={orderedSources} value={sourceId} onChange={chooseSource} label="Data source for the dashboard" />
-                    </div>
-                  )}
-                  {intent === "ask" && <span className={`font-mono text-[11px] uppercase tracking-[0.12em] ${tone.label}`}>Ask</span>}
                   <label htmlFor="home-box" className="sr-only">
-                    {intent === "ask" ? "Your question" : intent === "analyze" ? "What do you want to do with it (optional)" : "Describe the dashboard"}
+                    {intent === "instant" ? "Your question" : "What do you want to find out (optional)"}
                   </label>
                   <textarea
                     id="home-box"
                     ref={boxRef}
                     rows={3}
-                    value={intent === "ask" ? question : intent === "analyze" ? instruction : goal}
-                    onChange={(e) => (intent === "ask" ? setQuestion : intent === "analyze" ? setInstruction : setGoal)(e.target.value)}
+                    value={intent === "instant" ? question : instruction}
+                    onChange={(e) => (intent === "instant" ? setQuestion : setInstruction)(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
@@ -343,26 +335,20 @@ export default function Home() {
                       }
                     }}
                     placeholder={
-                      intent === "ask"
+                      intent === "instant"
                         ? "e.g. Why is our revenue lower this month?"
-                        : intent === "analyze"
-                        ? "What do you want to do with it? (optional) e.g. clean the dates, then compare revenue by year"
-                        : "Describe it, e.g. bookings, average rate and cancellations by hotel and month"
+                        : "What do you want to find out? e.g. clean the dates, then compare revenue by year (optional)"
                     }
                     className="w-full resize-none bg-transparent border-0 outline-none text-[18px] leading-relaxed text-text placeholder:text-faint"
                     disabled={busy}
                   />
                   <div className="flex items-center justify-between gap-3 flex-wrap">
-                    {intent === "ask" ? (
+                    {intent === "instant" ? (
                       <ScopePicker scope={scope} onChange={setScope} sources={sources} spaces={spaces} />
                     ) : (
-                      <span className="text-caption text-muted">
-                        {intent === "analyze"
-                          ? "Opens Studio: chat, data, charts and SQL side by side."
-                          : "GD360 drafts it with filters from your real data. You review, then publish."}
-                      </span>
+                      <span className="text-caption text-muted">You see the plan, run it one step at a time, and change any step before the next.</span>
                     )}
-                    {intent === "ask" ? (
+                    {intent === "instant" ? (
                       <button
                         type="button"
                         aria-label="Ask"
@@ -376,13 +362,9 @@ export default function Home() {
                           <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
                         )}
                       </button>
-                    ) : intent === "analyze" ? (
-                      <button type="button" onClick={openStudio} disabled={!sourceId} className="btn-primary text-sm inline-flex items-center gap-2" data-open-studio="">
-                        <KindIcon kind="analysis" size={15} /> Open in Studio
-                      </button>
                     ) : (
-                      <button type="button" onClick={buildDashboard} disabled={!sourceId || goal.trim().length < 4} className="btn-primary text-sm inline-flex items-center gap-2" data-build-dashboard="">
-                        <KindIcon kind="dashboard" size={15} /> Build dashboard
+                      <button type="button" onClick={startGuided} disabled={!guidedIds.length} className="btn-primary text-sm inline-flex items-center gap-2" data-open-studio="">
+                        <KindIcon kind="analysis" size={15} /> Start analysis
                       </button>
                     )}
                   </div>
@@ -402,11 +384,6 @@ export default function Home() {
                     {s}
                   </button>
                 ))}
-                {intent === "build" && (
-                  <Link to="/dashboards?start=1" className="ui-focus h-[34px] px-3.5 rounded-full border border-dashed border-border text-ui text-muted hover:text-text inline-flex items-center">
-                    Or start from an answer or analysis →
-                  </Link>
-                )}
               </div>
             )}
           </div>
@@ -483,23 +460,85 @@ export default function Home() {
   );
 }
 
-function SourceSelect({ sources, value, onChange, label }: { sources: ProjectSource[]; value: string; onChange: (id: string) => void; label: string }) {
+// The sources Guided Analysis works on: the first one is the main table,
+// the rest are joined in. A chip per source and an "Add source" menu.
+function SourceMultiSelect({ sources, value, onChange }: { sources: ProjectSource[]; value: string[]; onChange: (ids: string[]) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent) {
+        if (e.key === "Escape") setOpen(false);
+        return;
+      }
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [open]);
+  const byId = new Map(sources.map((s) => [s.id, s]));
+  const toggle = (id: string) => {
+    if (value.includes(id)) {
+      const next = value.filter((x) => x !== id);
+      onChange(next.length ? next : value);
+    } else onChange([...value, id]);
+  };
   return (
-    <label className="relative inline-flex items-center">
-      <span className="sr-only">{label}</span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        data-source-select=""
-        className="ui-focus appearance-none h-8 pl-3 pr-8 rounded-full border border-border-strong bg-base text-ui font-medium text-text max-w-[min(420px,80vw)] truncate cursor-pointer"
+    <div className="relative flex items-center gap-1.5 flex-wrap" ref={ref} data-source-multi="">
+      {value.map((id) => {
+        const s = byId.get(id);
+        if (!s) return null;
+        return (
+          <span key={id} className="inline-flex items-center gap-1.5 h-8 pl-3 pr-1.5 rounded-full border border-border-strong bg-base text-ui font-medium text-text max-w-[260px]">
+            <span className="truncate">{s.name}</span>
+            <span className="text-caption text-muted shrink-0">{s.label}</span>
+            {value.length > 1 && (
+              <button type="button" onClick={() => toggle(id)} aria-label={`Remove ${s.name}`} className="ui-focus w-5 h-5 grid place-items-center rounded-full text-muted hover:text-text hover:bg-subtle">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12" /></svg>
+              </button>
+            )}
+          </span>
+        );
+      })}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        data-add-source=""
+        className="ui-focus inline-flex items-center gap-1 h-8 px-3 rounded-full border border-dashed border-border-strong text-ui text-muted hover:text-text"
       >
-        {sources.map((s) => (
-          <option key={s.id} value={s.id}>
-            {s.name} · {s.label}
-          </option>
-        ))}
-      </select>
-      <svg className="pointer-events-none absolute right-3 text-muted" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
-    </label>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+        {value.length ? "Add source" : "Pick sources"}
+      </button>
+      {open && (
+        <div role="menu" className="absolute left-0 top-[calc(100%+6px)] z-30 w-[320px] max-w-[calc(100vw-48px)] max-h-[320px] overflow-y-auto rounded-card border border-border bg-surface shadow-pop p-1.5">
+          {sources.map((s) => {
+            const on = value.includes(s.id);
+            return (
+              <button
+                key={s.id}
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={on}
+                onClick={() => toggle(s.id)}
+                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-ctl text-left hover:bg-subtle"
+              >
+                <span className={`w-4 h-4 rounded-[5px] border grid place-items-center shrink-0 ${on ? "bg-kind-analysis border-kind-analysis text-[rgb(var(--color-base))]" : "border-border-strong"}`} aria-hidden="true">
+                  {on && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 7" /></svg>}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-ui text-text">{s.name}</span>
+                <span className="text-caption text-muted shrink-0">{s.label}</span>
+              </button>
+            );
+          })}
+          <p className="m-0 px-3 pt-2 pb-1 text-caption text-muted">The first source is the main table; the others are joined in where they match.</p>
+        </div>
+      )}
+    </div>
   );
 }

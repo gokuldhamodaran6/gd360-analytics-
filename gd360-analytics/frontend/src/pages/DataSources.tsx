@@ -22,21 +22,28 @@ import { errorText, ErrorNote, Skeleton } from "../data/shared";
 // connect flow). With no ?tab=, a workspace with no sources opens on the
 // Catalog and any other on Sources. The Catalog also handles the return
 // from an app's own sign-in page (?connect=<kind>&pending=<id> or &error=).
+//
+// 2026-10-10: connecting something new is never hidden. "Connect data" sits
+// in the header on every tab, the Connected tab opens with an "Add data"
+// strip of the sources most teams start with, and the third tab is named
+// for what it does ("Add data"). After a source connects, "Start with this
+// data" lands on Home with it attached, where the person chooses Instant
+// Answers or Guided Analysis.
 
 type Tab = "sources" | "spaces" | "catalog";
 const TABS: Tab[] = ["sources", "spaces", "catalog"];
 
 const HEAD: Record<Tab, { title: string; text: string }> = {
   sources: {
-    title: "Your sources",
-    text: "Every app, database, warehouse and file connected to this workspace — and the Spaces each one is in.",
+    title: "Your data",
+    text: "Everything connected to this workspace, and the Spaces each source is in. Add more any time.",
   },
   spaces: {
     title: "Spaces",
     text: "A Space is the set of sources one team works from. Ask a Space, give it dashboards and automations, and decide who can see it — sales stays with sales, payroll stays with HR.",
   },
   catalog: {
-    title: "Connect a source",
+    title: "Add data",
     text: "Databases, warehouses, files and every app your teams run on — social pages, ads, stores, CRM, finance and HR. Read-only, encrypted, and organised into Spaces the moment it lands.",
   },
 };
@@ -115,6 +122,10 @@ export default function DataSources() {
       return list.some((x) => x.id === s.id) ? list.map((x) => (x.id === s.id ? s : x)) : [...list, s];
     });
 
+  // "Start with this data": Home, with the new source attached, where the
+  // person picks Instant Answers or Guided Analysis.
+  const startWith = (ds: { id: string }) => navigate(`/?source=${encodeURIComponent(ds.id)}&connected=1`);
+
   const afterConnect = () => {
     loadSources();
     loadSpaces();
@@ -190,12 +201,18 @@ export default function DataSources() {
                         on ? "bg-surface2 text-text" : "text-secondary hover:text-text"
                       }`}
                     >
-                      {t === "sources" ? "Sources" : t === "spaces" ? "Spaces" : "Catalog"}
+                      {t === "sources" ? "Connected" : t === "spaces" ? "Spaces" : "Add data"}
                       {count !== undefined && <span className="font-mono text-[12px] text-muted">{count}</span>}
                     </button>
                   );
                 })}
               </div>
+              {tab !== "catalog" && tab !== "spaces" && !isViewerHere && (
+                <button type="button" className="btn-primary h-10 text-[14px] inline-flex items-center gap-2" onClick={() => setTab("catalog")} data-connect-data="">
+                  <PlusGlyph />
+                  Connect data
+                </button>
+              )}
               {tab === "spaces" && !isViewerHere && (
                 <button type="button" className="btn-primary h-10 text-[14px] inline-flex items-center gap-2" onClick={() => setEditor("new")}>
                   <PlusGlyph />
@@ -220,6 +237,19 @@ export default function DataSources() {
                 {Array.from({ length: 6 }).map((_, i) => (
                   <Skeleton key={i} className="h-[150px] rounded-[14px]" />
                 ))}
+              </div>
+            )}
+            {tab === "sources" && !isViewerHere && (
+              <div className="mb-6">
+                <Catalog
+                  variant="quick"
+                  workspaceId={activeWorkspaceId}
+                  spaces={spaces}
+                  isViewer={isViewerHere}
+                  onSourcesChanged={afterConnect}
+                  onCreated={startWith}
+                  onBrowseAll={() => setTab("catalog")}
+                />
               </div>
             )}
             {tab === "sources" && (
@@ -251,7 +281,7 @@ export default function DataSources() {
                 spaces={spaces}
                 isViewer={isViewerHere}
                 onSourcesChanged={afterConnect}
-                onCreated={(ds) => navigate(`/workspace/${ds.id}`)}
+                onCreated={startWith}
               />
             )}
           </div>

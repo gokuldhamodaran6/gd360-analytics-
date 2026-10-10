@@ -203,7 +203,7 @@ function GooglePicker({ connectionId }: { connectionId: string }) {
         resource_id: resourceId,
         resource_name: resourceName,
       });
-      navigate(`/workspace/${ds.id}`);
+      navigate(`/?source=${encodeURIComponent(ds.id)}&connected=1`);
     } catch (err: any) {
       setFinishError(err?.response?.data?.detail || "Could not finish connecting - please try again.");
       setFinishing(false);
@@ -353,7 +353,7 @@ function ResourcePicker({ provider, connectionId }: { provider: string; connecti
         resource_name: selected.name,
         drive_id: selected.drive_id || undefined,
       });
-      navigate(`/workspace/${ds.id}`);
+      navigate(`/?source=${encodeURIComponent(ds.id)}&connected=1`);
     } catch (err: any) {
       setFinishError(err?.response?.data?.detail || "Could not finish connecting - please try again.");
     } finally {

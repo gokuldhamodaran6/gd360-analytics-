@@ -16,7 +16,6 @@ import {
   ExactRowsPill, NeedsQueryHelpCard, SqlThatRan, WarehouseFooter, WarehouseResultTable, builderColumnsFromSchema,
 } from "../components/WarehouseTurn";
 import AddDataPicker from "../components/AddDataPicker";
-import GokuChat from "../components/GokuChat";
 import WorkspaceChart from "../components/WorkspaceChart";
 import ExplorePanel from "../components/ExplorePanel";
 import DataTable from "../components/DataTable";
@@ -2221,7 +2220,7 @@ export default function Workspace() {
           {/* 2026-10-10 (Clarity Blueprint): this page is Studio - an
               ANALYSIS of one table, labelled as such and living in Library. */}
           <div className="font-mono text-[11px] text-muted uppercase tracking-[0.06em] mb-1">
-            <a href="/library?type=analysis" onClick={(e) => { e.preventDefault(); navigate("/library?type=analysis"); }} className="hover:text-text">Library</a> / Analysis · Studio
+            <a href="/library?type=analysis" onClick={(e) => { e.preventDefault(); navigate("/library?type=analysis"); }} className="hover:text-text">Library</a> / Guided Analysis
           </div>
           <div className="flex items-center gap-1.5 min-w-0">
             <KindPill kind="analysis" className="shrink-0 mr-1">Analysis</KindPill>
@@ -3043,17 +3042,8 @@ export default function Workspace() {
         </div>
       )}
 
-      {datasourceId && (
-        <GokuChat
-          datasourceId={datasourceId}
-          sourceIds={sourceIds}
-          busy={busy}
-          onRunInMainChat={(prompt) => runPrompt(prompt)}
-          analysisMode={analysisMode}
-          onAnalysisModeChange={setAnalysisMode}
-          startFresh={!resumeConversationId}
-        />
-      )}
+      {/* 2026-10-10: the floating Goku helper is gone - answers come from
+          the main engine now, and one place to ask is clearer. */}
       </div>
     </div>
     </ChartThemeProvider>

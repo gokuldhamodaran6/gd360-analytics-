@@ -492,10 +492,10 @@ function WhatNext({ studioHref, studioSource, onCreate }: { studioHref: string |
           onClick={(e) => e.stopPropagation()}
           className="ui-focus flex flex-col items-start gap-1.5 p-3 rounded-ctl border border-border bg-base hover:border-kind-analysis-border text-left"
         >
-          <KindPill kind="analysis">Studio</KindPill>
+          <KindPill kind="analysis">Guided Analysis</KindPill>
           <span className="flex flex-col gap-0.5 min-w-0">
             <span className="text-ui font-semibold text-text">Go deeper{studioSource ? ` on ${studioSource}` : ""}</span>
-            <span className="text-caption text-muted leading-snug">Opens this question in Studio — clean, slice and chart it step by step.</span>
+            <span className="text-caption text-muted leading-snug">Continue this question step by step — clean, slice and chart it, changing any step.</span>
           </span>
         </Link>
       )}
