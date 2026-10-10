@@ -2687,3 +2687,342 @@ class AICall(Base):
     latency_ms = Column(Integer, nullable=True)
     status = Column(String, nullable=False, default="ok")  # ok | error
     error = Column(String, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-10: Initiatives - plan, run and prove any activity (an event, a
+# webinar, a campaign, account-based marketing, hiring, a product build),
+# plus the go-to-market layer they share: target accounts with ICP tiers,
+# contacts, every engagement signal (website visits, email opens and clicks,
+# registrations, attendance, walk-ins, meetings), native email campaigns,
+# reminders, and the connections that bring data in (Apollo, HubSpot, CSV
+# exports from ZoomInfo / Salesforce / any tool). See services/initiatives/.
+# ---------------------------------------------------------------------------
+
+def _token() -> str:
+    return secrets.token_urlsafe(18)
+
+
+class Initiative(Base):
+    __tablename__ = "initiatives"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False)
+    workspace_id = Column(String, nullable=True, index=True)
+    title = Column(String, nullable=False)
+    kind = Column(String, nullable=False, default="custom")  # event|webinar|campaign|abm|hiring|product|custom
+    department = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="active")  # planning|active|done|archived
+    brief = Column(Text, nullable=True)
+    summary = Column(Text, nullable=True)
+    starts_on = Column(String, nullable=True)   # YYYY-MM-DD
+    key_date = Column(String, nullable=True)    # the event / launch / start date
+    location = Column(String, nullable=True)
+    budget = Column(Float, nullable=True)
+    details = Column(JSON, nullable=True)       # format, audience, goal, answers
+    targets = Column(JSON, nullable=True)       # [{key,label,target,unit,actual?,why}]
+    phases = Column(JSON, nullable=True)        # [{id,title,window}]
+    tools = Column(JSON, nullable=True)         # [{key,why}]
+    plan_meta = Column(JSON, nullable=True)     # why, assumptions, learned
+    audience = Column(JSON, nullable=True)      # accounts in scope: {tiers,segments,lists,all}
+    public_token = Column(String, unique=True, index=True, default=_token)
+    walkin_key = Column(String, nullable=False, default=_token)
+    registration_open = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class InitiativeTask(Base):
+    __tablename__ = "initiative_tasks"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id"), nullable=False, index=True)
+    phase_id = Column(String, nullable=True)
+    title = Column(String, nullable=False)
+    detail = Column(Text, nullable=True)
+    owner_name = Column(String, nullable=True)
+    due_on = Column(String, nullable=True)      # YYYY-MM-DD
+    status = Column(String, nullable=False, default="todo")  # todo|doing|review|done|blocked
+    tool_key = Column(String, nullable=True)
+    # deliverables: [{label, url, version, kind, added_at}] - the Figma file,
+    # the doc, the build; approval: {state none|submitted|approved|changes,
+    # approver, approver_email, token, note, decided_by, decided_at, history[]}
+    evidence = Column(JSON, nullable=True)
+    approval = Column(JSON, nullable=True)
+    approval_token = Column(String, nullable=True, index=True)
+    position = Column(Integer, default=0)
+    origin = Column(String, default="planner")  # planner|you|assistant
+    done_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class InitiativeMessage(Base):
+    __tablename__ = "initiative_messages"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id"), nullable=False, index=True)
+    role = Column(String, nullable=False)  # user|assistant
+    content = Column(Text, nullable=False)
+    actions = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class GtmProfile(Base):
+    """One per workspace: the ideal customer profile accounts are scored on."""
+    __tablename__ = "gtm_profiles"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    workspace_id = Column(String, nullable=False, unique=True)
+    icp = Column(JSON, nullable=True)  # industries, countries, min_employees, max_employees, titles, keywords
+    site_key = Column(String, unique=True, default=_token)  # website tracking
+    site_domains = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class GtmAccount(Base):
+    __tablename__ = "gtm_accounts"
+    __table_args__ = (UniqueConstraint("workspace_id", "key", name="uq_gtm_account_key"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    workspace_id = Column(String, nullable=False, index=True)
+    key = Column(String, nullable=False)  # domain, else normalised name
+    name = Column(String, nullable=False)
+    domain = Column(String, nullable=True, index=True)
+    industry = Column(String, nullable=True)
+    employees = Column(Integer, nullable=True)
+    revenue = Column(Float, nullable=True)
+    country = Column(String, nullable=True)
+    region = Column(String, nullable=True)
+    city = Column(String, nullable=True)
+    segment = Column(String, nullable=True)
+    list_name = Column(String, nullable=True)
+    linkedin_url = Column(String, nullable=True)
+    owner_name = Column(String, nullable=True)
+    source = Column(String, nullable=True)  # csv|apollo|hubspot|registration|walk_in|manual|website
+    external_ids = Column(JSON, nullable=True)
+    icp_score = Column(Integer, nullable=True)
+    icp_tier = Column(String, nullable=True)  # A|B|C
+    icp_reasons = Column(JSON, nullable=True)
+    engagement_score = Column(Float, default=0)
+    engagement_7d = Column(Float, default=0)
+    last_engaged_at = Column(DateTime, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class GtmContact(Base):
+    __tablename__ = "gtm_contacts"
+    __table_args__ = (UniqueConstraint("workspace_id", "email", name="uq_gtm_contact_email"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    workspace_id = Column(String, nullable=False, index=True)
+    account_id = Column(String, ForeignKey("gtm_accounts.id"), nullable=True, index=True)
+    email = Column(String, nullable=True)
+    name = Column(String, nullable=True)
+    title = Column(String, nullable=True)
+    seniority = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
+    linkedin_url = Column(String, nullable=True)
+    country = Column(String, nullable=True)
+    source = Column(String, nullable=True)
+    subscribed = Column(Boolean, default=False)   # on the newsletter list
+    unsubscribed = Column(Boolean, default=False)  # never email again
+    lists = Column(JSON, nullable=True)
+    visitor_ids = Column(JSON, nullable=True)  # website visitor ids stitched to this person
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class GtmEngagement(Base):
+    __tablename__ = "gtm_engagements"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    workspace_id = Column(String, nullable=False, index=True)
+    account_id = Column(String, nullable=True, index=True)
+    contact_id = Column(String, nullable=True, index=True)
+    initiative_id = Column(String, nullable=True, index=True)
+    campaign_id = Column(String, nullable=True)
+    kind = Column(String, nullable=False)
+    channel = Column(String, nullable=True)
+    detail = Column(JSON, nullable=True)
+    visitor_id = Column(String, nullable=True, index=True)
+    occurred_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class GtmCampaign(Base):
+    __tablename__ = "gtm_campaigns"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    workspace_id = Column(String, nullable=False, index=True)
+    initiative_id = Column(String, nullable=True, index=True)
+    owner_id = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    subject = Column(String, nullable=False, default="")
+    body = Column(Text, nullable=False, default="")
+    audience = Column(JSON, nullable=True)
+    status = Column(String, nullable=False, default="draft")  # draft|scheduled|sending|sent|failed
+    scheduled_at = Column(DateTime, nullable=True)
+    sent_at = Column(DateTime, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class GtmCampaignSend(Base):
+    __tablename__ = "gtm_campaign_sends"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    campaign_id = Column(String, ForeignKey("gtm_campaigns.id"), nullable=False, index=True)
+    contact_id = Column(String, nullable=True)
+    email = Column(String, nullable=False)
+    token = Column(String, unique=True, index=True, default=_token)
+    status = Column(String, nullable=False, default="queued")  # queued|sent|failed|skipped
+    error = Column(String, nullable=True)
+    sent_at = Column(DateTime, nullable=True)
+    opened_at = Column(DateTime, nullable=True)
+    clicked_at = Column(DateTime, nullable=True)
+
+
+class GtmConnection(Base):
+    __tablename__ = "gtm_connections"
+    __table_args__ = (UniqueConstraint("workspace_id", "provider", name="uq_gtm_connection"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    workspace_id = Column(String, nullable=False, index=True)
+    provider = Column(String, nullable=False)  # apollo|hubspot|ipinfo
+    secret_enc = Column(Text, nullable=True)
+    masked = Column(String, nullable=True)
+    status = Column(String, default="connected")
+    last_sync_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+    meta = Column(JSON, nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class GtmReminder(Base):
+    __tablename__ = "gtm_reminders"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    workspace_id = Column(String, nullable=True, index=True)
+    owner_id = Column(String, nullable=False, index=True)
+    initiative_id = Column(String, nullable=True, index=True)
+    task_id = Column(String, nullable=True)
+    account_id = Column(String, nullable=True)
+    note = Column(String, nullable=False)
+    remind_at = Column(DateTime, nullable=False, index=True)
+    sent_at = Column(DateTime, nullable=True)
+    done = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class InitiativeItem(Base):
+    """A card on an initiative's board: a candidate (hiring), a feature or
+    story (product build), a target account moving through the pipeline
+    (ABM, events, campaigns) or anything else a custom initiative tracks."""
+    __tablename__ = "initiative_items"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id"), nullable=False, index=True)
+    group_name = Column(String, nullable=True)   # the role, the milestone, the segment
+    title = Column(String, nullable=False)
+    subtitle = Column(String, nullable=True)
+    stage = Column(String, nullable=False)
+    email = Column(String, nullable=True)
+    link = Column(String, nullable=True)
+    account_id = Column(String, nullable=True)
+    owner_name = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
+    data = Column(JSON, nullable=True)
+    position = Column(Integer, default=0)
+    stage_changed_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class InitiativeUpdate(Base):
+    """The initiative's running log - what happened, with numbers: "design
+    approved", "LinkedIn post live, reach 4,200, 63 clicks", "landing page
+    B live". Feeds Today, the results and the assistant."""
+    __tablename__ = "initiative_updates"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id"), nullable=False, index=True)
+    kind = Column(String, nullable=False, default="update")  # update|approval|post|metric|milestone|risk|deliverable|system
+    text = Column(Text, nullable=False)
+    channel = Column(String, nullable=True)
+    link = Column(String, nullable=True)
+    numbers = Column(JSON, nullable=True)   # {"reach": 4200, "clicks": 63, ...}
+    task_id = Column(String, nullable=True)
+    link_id = Column(String, nullable=True)  # the tracked post / ad / page the numbers belong to
+    paid = Column(Boolean, nullable=True)
+    region = Column(String, nullable=True)
+    author = Column(String, nullable=True)
+    occurred_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class InitiativeLink(Base):
+    """A tracked asset: a landing page, a social post, an ad, any link. Each
+    gets a short GD360 link (/public/gtm/l/{code}) that counts clicks and
+    tags the visit, and landing pages report visits and conversions."""
+    __tablename__ = "initiative_links"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id"), nullable=False, index=True)
+    workspace_id = Column(String, nullable=False, index=True)
+    kind = Column(String, nullable=False, default="landing_page")  # landing_page|social_post|ad|email|other
+    label = Column(String, nullable=False)
+    url = Column(String, nullable=False)
+    channel = Column(String, nullable=True)   # linkedin, instagram, google_ads ...
+    variant = Column(String, nullable=True)   # A / B
+    paid = Column(Boolean, default=False)     # organic post vs paid promotion
+    region = Column(String, nullable=True)    # e.g. US - only what this initiative is about
+    code = Column(String, unique=True, index=True, default=lambda: secrets.token_urlsafe(6))
+    clicks = Column(Integer, default=0)
+    last_click_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class InitiativeMember(Base):
+    """A person working on an initiative - a GD360 user or not - with a role,
+    a team, their own targets, and a private link to their own "My invites"
+    page (/r/{token}) where they log personal outreach in two taps."""
+    __tablename__ = "initiative_members"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=True)
+    user_id = Column(String, nullable=True)
+    role = Column(String, nullable=True)       # Account executive, SDR, Booth staff ...
+    team = Column(String, nullable=True)       # "Team West", "Enterprise"
+    targets = Column(JSON, nullable=True)      # {"invites": 30, "registrations": 10, "meetings": 4}
+    token = Column(String, unique=True, index=True, default=lambda: secrets.token_urlsafe(18))
+    ref = Column(String, unique=True, index=True, default=lambda: secrets.token_urlsafe(5))
+    last_update_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class InitiativeOutreach(Base):
+    """One account / person a team member is working for this initiative,
+    and where it stands: not contacted -> invited -> replied -> interested
+    -> registered -> attended -> meeting -> opportunity (or declined)."""
+    __tablename__ = "initiative_outreach"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id"), nullable=False, index=True)
+    member_id = Column(String, nullable=True, index=True)
+    account_id = Column(String, nullable=True, index=True)
+    contact_id = Column(String, nullable=True, index=True)
+    person_name = Column(String, nullable=True)
+    segment = Column(String, nullable=True)    # target | customer
+    status = Column(String, nullable=False, default="not_contacted")
+    channel = Column(String, nullable=True)    # last channel used
+    touches = Column(Integer, default=0)
+    last_touch_at = Column(DateTime, nullable=True)
+    next_step = Column(String, nullable=True)
+    next_step_on = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
+    history = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)

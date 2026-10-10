@@ -431,6 +431,9 @@ class Settings(BaseSettings):
     # Abuse guard: emails one account's automations may send per 24 hours.
     AUTOMATION_DAILY_EMAIL_CAP: int = 300
     AUTOMATION_MAX_PER_TICK: int = 5
+    # --- 2026-10-10 (Initiatives): marketing emails one workspace's
+    # campaigns may send per 24 hours (uses the same email settings above).
+    GTM_DAILY_EMAIL_CAP: int = 2000
 
     # --- 2026-10-08 (round 13): ML Studio (services/ml_studio.py).
     # Rows one training run loads into this server's memory. A table with

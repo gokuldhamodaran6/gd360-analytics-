@@ -10,7 +10,7 @@ from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, dashboard_comments, admin, conversations, goku,
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
     data_access_rules, ml_models, metric_definitions, transforms, pipelines, projects, apps, automations, ml_studio,
-    spaces, site, admin_v2, admin_ops, admin_biz, inapp, guided,
+    spaces, site, admin_v2, admin_ops, admin_biz, inapp, guided, initiatives, gtm, gtm_public,
 )
 from .services.scheduler import start_scheduler
 
@@ -215,6 +215,10 @@ app.include_router(admin_v2.router)
 app.include_router(admin_ops.router)
 app.include_router(admin_biz.router)
 app.include_router(inapp.router)
+# 2026-10-10: Initiatives + the account-based marketing centre (+ public pages/tracking)
+app.include_router(initiatives.router)
+app.include_router(gtm.router)
+app.include_router(gtm_public.router)
 # 2026-09-30 (Gokul's own bug report - Governance/Jobs redesign + Pipelines/
 # Catalog removal round): the standalone /catalog router is gone - Gokul's
 # own words were that it duplicated the Projects filter and Data Sources
