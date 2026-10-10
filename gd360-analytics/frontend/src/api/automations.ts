@@ -102,6 +102,10 @@ export type Automation = {
   last_condition: boolean | null;
   triggered: { count: number; since: string | null } | null;
   created_at: string;
+  // 2026-10-10 (round 19): the workspace it belongs to, and - when a member's
+  // automation emails people outside the company - the owner/admin OK.
+  workspace_id?: string | null;
+  approval?: { status: "pending" | "approved" | "rejected"; requested_at: string | null; approved_at: string | null; note: string | null } | null;
 };
 
 export type KpiOption = { key: string; label: string; display: string; kind?: string | null; delta?: string | null };
@@ -127,6 +131,7 @@ export type Draft = {
   steps: Step[];
   stop_on_quality_fail: boolean;
   tell: TellIn;
+  workspace_id?: string | null;
 };
 
 export type Preview = {

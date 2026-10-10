@@ -5,10 +5,16 @@ type User = { id: string; email: string; full_name?: string; company?: string };
 
 type CaptchaChallenge = { captcha_id: string; question: string };
 
+// 2026-10-10 (round 19): a password sign-in can need a second step (an
+// authenticator code) - login() then resolves with the short-lived token
+// for completeMfa() instead of signing in.
+export type LoginResult = { mfaRequired: boolean; mfaToken?: string };
+
 type AuthContextType = {
   user: User | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<LoginResult>;
+  completeMfa: (mfaToken: string, code: string) => Promise<void>;
   register: (
     email: string,
     password: string,
@@ -41,8 +47,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(user);
   };
 
-  const login = async (email: string, password: string) => {
+  const login = async (email: string, password: string): Promise<LoginResult> => {
     const { data } = await api.post("/auth/login", { email, password });
+    if (data.mfa_required) return { mfaRequired: true, mfaToken: data.mfa_token };
+    persist(data.access_token, data.user);
+    return { mfaRequired: false };
+  };
+
+  const completeMfa = async (mfaToken: string, code: string) => {
+    const { data } = await api.post("/auth/login/mfa", { mfa_token: mfaToken, code });
     persist(data.access_token, data.user);
   };
 
@@ -78,10 +91,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const changePassword = async (currentPassword: string, newPassword: string) => {
-    await api.post("/auth/change-password", {
+    const { data } = await api.post("/auth/change-password", {
       current_password: currentPassword,
       new_password: newPassword,
     });
+    // 2026-10-10 (round 19): changing the password signs out every other
+    // session; this one carries on with the new token the server returns.
+    if (data?.access_token) localStorage.setItem("gd360_token", data.access_token);
   };
 
   const logout = () => {
@@ -92,7 +108,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, loading, login, register, getCaptcha, updateProfile, changePassword, logout }}
+      value={{ user, loading, login, completeMfa, register, getCaptcha, updateProfile, changePassword, logout }}
     >
       {children}
     </AuthContext.Provider>

@@ -41,7 +41,7 @@ export function errorDetailText(detail: unknown): string | undefined {
   return text || undefined;
 }
 
-function normalizeErrorDetail(err: any): void {
+export function normalizeErrorDetail(err: any): void {
   const body = err?.response?.data;
   if (body && typeof body === "object" && !(typeof Blob !== "undefined" && body instanceof Blob) && body.detail != null && typeof body.detail !== "string") {
     body.detail = errorDetailText(body.detail);
@@ -1407,7 +1407,7 @@ export const folderApi = {
 // "viewer" added 2026-09-23 (roles & attribution round): full read access,
 // no create/edit/delete - see backend services/workspace_access.py for
 // exactly what that does and doesn't allow.
-export type WorkspaceRole = "owner" | "member" | "viewer";
+export type WorkspaceRole = "owner" | "admin" | "member" | "viewer";
 
 // 2026-10-07 (identity-colour round): the appearance document's types live
 // with the code that resolves it (src/dashboard/theme/appearance.ts). The
@@ -1460,7 +1460,7 @@ export const workspaceApi = {
   // Promotes/demotes an existing member between full access ("member") and
   // read-only ("viewer") - owner-only server-side, and the owner's own row
   // is never a valid target (see backend update_member_role).
-  updateMemberRole: (id: string, userId: string, role: "member" | "viewer") =>
+  updateMemberRole: (id: string, userId: string, role: "admin" | "member" | "viewer") =>
     api.patch<WorkspaceMember>(`/workspaces/${id}/members/${userId}/role`, { role }).then((r) => r.data),
   // 2026-10-07 (identity-colour round): the workspace brand kit - the look
   // every dashboard of the workspace starts from. Any member reads it;
@@ -3108,7 +3108,7 @@ export const publicDashboardApi = {
       .then((r) => ({ blocks: r.data.blocks, matchedRows: r.data.matched_rows, colors: r.data.colors || null })),
 };
 
-function publicRunBody(req: RunPageRequest) {
+export function publicRunBody(req: RunPageRequest) {
   return {
     filters: req.filters || [],
     block_filters: req.block_filters || {},
