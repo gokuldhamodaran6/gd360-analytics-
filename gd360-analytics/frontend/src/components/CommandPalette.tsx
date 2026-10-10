@@ -195,6 +195,7 @@ export default function CommandPalette() {
   const openConversation = (c: ConversationSummary) => {
     // 2026-10-08 (round 11): a multi-source Project opens its own page
     if (c.kind === "project") return navigate(`/p/${c.id}`);
+    if (c.kind === "guided") return navigate(`/g/${c.id}`);
     if (!c.datasource_id) return;
     navigate(`/workspace/${c.datasource_id}?conversation=${c.id}`);
   };
@@ -202,7 +203,7 @@ export default function CommandPalette() {
     navigate(d.layout_version === 3 ? `/project-dashboards/${d.id}` : d.layout_version === 2 ? `/dashboard-builder/${d.id}` : `/dashboards/${d.id}`);
   };
   const openDatasource = (ds: DataSourceSummary) => {
-    navigate(`/workspace/${ds.id}`);
+    navigate(`/?intent=guided&source=${encodeURIComponent(ds.id)}`);
   };
 
   const allItems = useMemo<Item[]>(() => {
