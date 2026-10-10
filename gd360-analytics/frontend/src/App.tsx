@@ -35,6 +35,11 @@ import InviteJoin from "./pages/InviteJoin";
 import HomePage from "./pages/Home";
 import ProjectWorkspace from "./pages/ProjectWorkspace";
 import GuidedAnalysis from "./pages/GuidedAnalysis";
+import Initiatives from "./pages/Initiatives";
+import InitiativeNew from "./pages/InitiativeNew";
+import InitiativeDetail from "./pages/InitiativeDetail";
+import Accounts from "./pages/Accounts";
+import { ApprovePage, EventRegister, RepPage, WalkInCapture } from "./pages/PublicInitiative";
 import ProjectDashboard from "./pages/ProjectDashboard";
 import SpacePage from "./pages/SpacePage";
 import CommandPalette from "./components/CommandPalette";
@@ -134,6 +139,15 @@ export default function App() {
       <Route path="/projects" element={<RedirectKeepingQuery to="/library" />} />
       <Route path="/p/:projectId" element={<Protected><ProjectWorkspace /></Protected>} />
       <Route path="/g/:projectId" element={<Protected><GuidedAnalysis /></Protected>} />
+      {/* 2026-10-10: Initiatives + Accounts, and their public no-login pages */}
+      <Route path="/initiatives" element={<Protected><Initiatives /></Protected>} />
+      <Route path="/initiatives/new" element={<Protected><InitiativeNew /></Protected>} />
+      <Route path="/initiatives/:initiativeId" element={<Protected><InitiativeDetail /></Protected>} />
+      <Route path="/accounts" element={<Protected><Accounts /></Protected>} />
+      <Route path="/e/:token" element={<EventRegister />} />
+      <Route path="/w/:token" element={<WalkInCapture />} />
+      <Route path="/a/:token" element={<ApprovePage />} />
+      <Route path="/r/:token" element={<RepPage />} />
       <Route path="/project-dashboards/:dashboardId" element={<Protected><ProjectDashboard /></Protected>} />
       {/* 2026-10-09 (round 15): one Space - channel hub / overview. */}
       <Route path="/spaces/:id" element={<Protected><SpacePage /></Protected>} />
