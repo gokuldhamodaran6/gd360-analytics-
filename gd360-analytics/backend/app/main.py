@@ -10,7 +10,7 @@ from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, dashboard_comments, admin, conversations, goku,
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
     data_access_rules, ml_models, metric_definitions, transforms, pipelines, projects, apps, automations, ml_studio,
-    spaces, site, admin_v2, admin_ops, admin_biz, inapp,
+    spaces, site, admin_v2, admin_ops, admin_biz, inapp, guided,
 )
 from .services.scheduler import start_scheduler
 
@@ -199,6 +199,8 @@ app.include_router(pipelines.router)
 # 2026-10-08 (round 11): multi-source Projects (services/project_engine) and
 # the synced app sources they can draw on (Shopify, GA4, Meta Ads, Google Ads).
 app.include_router(projects.router)
+# 2026-10-10: Guided Analysis - the same engine, one step at a time.
+app.include_router(guided.router)
 app.include_router(apps.router)
 # 2026-10-08 (round 12): Automations - WHEN -> DO -> TELL (services/automations.py).
 app.include_router(automations.router)
