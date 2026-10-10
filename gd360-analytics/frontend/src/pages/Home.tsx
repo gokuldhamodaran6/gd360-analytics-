@@ -25,54 +25,35 @@ import ScopePicker, { Scope, loadScope, saveScope, scopeSummary } from "../space
 import { conversationHref, conversationKind, dashboardHref, Kind, KindIcon, KindPill, KindTile } from "../lib/kinds";
 
 // 2026-10-10: Home greets in the person's own time of day (their browser's
-// time zone) - a different, hand-written line each part of the day, steady
-// for that part of the day so it never flickers between visits.
-type Daypart = "morning" | "afternoon" | "evening" | "night";
-const GREETINGS: Record<Daypart, [string, string][]> = {
-  morning: [
-    ["Good morning, {n}.", "Fresh numbers, clear head. Where shall we start?"],
-    ["Morning, {n}.", "Yesterday's data is in. Ask it anything."],
-    ["Rise and analyze, {n}.", "Your sources are ready when you are."],
-    ["A bright start, {n}.", "One good question sets up the whole day."],
-  ],
-  afternoon: [
-    ["Good afternoon, {n}.", "What's worth knowing before the day is out?"],
-    ["Afternoon, {n}.", "Pick up a thread, or pull a new one."],
-    ["Hello again, {n}.", "The numbers have moved since this morning."],
-    ["Halfway there, {n}.", "Let's see how today is really going."],
-  ],
-  evening: [
-    ["Good evening, {n}.", "Close the day with a clear picture."],
-    ["Evening, {n}.", "Let's see how the day really went."],
-    ["Still curious, {n}?", "So is your data. Ask away."],
-    ["Winding down, {n}?", "One last look before tomorrow."],
-  ],
-  night: [
-    ["Burning the midnight oil, {n}?", "Your data never sleeps either."],
-    ["Late one, {n}.", "Quiet hours, sharp answers."],
-    ["The night shift, {n}.", "Let's make it count."],
-    ["Up late, {n}?", "Good questions don't keep office hours."],
-  ],
+// time zone) - plain and professional: "Good morning, Gokul." with a short,
+// calm second line that changes by part of the day.
+type Daypart = "morning" | "afternoon" | "evening";
+const LINES: Record<Daypart, string[]> = {
+  morning: ["What would you like to look into today?", "Your sources are ready when you are."],
+  afternoon: ["What would you like to look into?", "Pick up where you left off, or start something new."],
+  evening: ["What would you like to look into?", "A clear picture before the day closes."],
 };
 
 function daypart(h: number): Daypart {
   if (h >= 5 && h < 12) return "morning";
   if (h >= 12 && h < 17) return "afternoon";
-  if (h >= 17 && h < 22) return "evening";
-  return "night";
+  return "evening";
+}
+
+function capitalise(name: string): string {
+  return name
+    .split(/([\s-])/)
+    .map((w) => (w.length > 1 && /[a-z]/.test(w[0]) ? w[0].toUpperCase() + w.slice(1) : w))
+    .join("");
 }
 
 function greeting(first: string, now: Date): { title: string; line: string } {
-  const n = first || "there";
   const part = daypart(now.getHours());
-  const day = now.getDay();
-  const seed = now.getFullYear() * 400 + now.getMonth() * 32 + now.getDate() + ["morning", "afternoon", "evening", "night"].indexOf(part) * 7;
-  const fill = (t: [string, string]) => ({ title: t[0].replace("{n}", n), line: t[1] });
-  if (day === 1 && part === "morning") return fill(["Happy Monday, {n}.", "A fresh week of numbers. Where do we begin?"]);
-  if (day === 5 && (part === "afternoon" || part === "evening")) return fill(["Happy Friday, {n}.", "Close the week knowing exactly where you stand."]);
-  if ((day === 0 || day === 6) && part !== "night" && seed % 2 === 0) return fill(["Weekend mode, {n}.", "Curiosity doesn't keep office hours."]);
-  const set = GREETINGS[part];
-  return fill(set[seed % set.length]);
+  const n = capitalise((first || "").trim());
+  const hello = part === "morning" ? "Good morning" : part === "afternoon" ? "Good afternoon" : "Good evening";
+  const set = LINES[part];
+  const seed = now.getFullYear() * 400 + now.getMonth() * 32 + now.getDate();
+  return { title: n ? `${hello}, ${n}.` : `${hello}.`, line: set[seed % set.length] };
 }
 
 /** "Kolkata" from the browser's time zone ("Asia/Kolkata"). */
@@ -147,8 +128,9 @@ export default function Home() {
   const sourceParam = searchParams.get("source");
   const justConnected = searchParams.get("connected") === "1";
   const intentParam = searchParams.get("intent");
+  const qParam = searchParams.get("q");
   const intent: Intent = intentParam === "guided" || intentParam === "analyze" ? "guided" : "instant";
-  const [question, setQuestion] = useState("");
+  const [question, setQuestion] = useState(() => (qParam || "").slice(0, 2000));
   const [instruction, setInstruction] = useState("");
   const [guidedIds, setGuidedIds] = useState<string[]>([]);
   const [sources, setSources] = useState<ProjectSource[] | null>(null);
