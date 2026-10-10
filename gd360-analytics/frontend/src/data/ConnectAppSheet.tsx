@@ -644,8 +644,8 @@ export default function ConnectAppSheet({
                   <div className="p-3.5 rounded-[12px] bg-primary/10 border border-primary/30 text-[13.5px] text-text">
                     Ready.{" "}
                     {appSpaces.length
-                      ? `${label} is in ${appSpaces.map((s) => s.name).join(", ")}. Ask about it, or open the Space’s overview.`
-                      : `Ask about ${label} any time.`}
+                      ? `${label} is in ${appSpaces.map((s) => s.name).join(", ")}. Get instant answers from it, analyze it step by step, or open the Space’s overview.`
+                      : `Get instant answers from ${label}, or analyze it step by step.`}
                   </div>
                 )}
                 <button
@@ -653,10 +653,11 @@ export default function ConnectAppSheet({
                   className="btn-primary h-11 text-[14px]"
                   onClick={() => {
                     onClose();
-                    navigate(appSpaces[0] ? `/?space=${encodeURIComponent(appSpaces[0].id)}` : "/");
+                    navigate(`/?source=${encodeURIComponent(app.id)}&connected=1`);
                   }}
+                  data-start-with=""
                 >
-                  Ask about {label}
+                  Start with {label}
                 </button>
                 {appSpaces[0] && (
                   <button

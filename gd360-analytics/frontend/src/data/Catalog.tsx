@@ -140,12 +140,40 @@ function RequestDialog({
   );
 }
 
+// 2026-10-10: the sources most teams start with, shown right on the
+// Connected tab ("Add data" strip) so connecting something new is one click
+// from the page people land on - not a tab and then a tile.
+const QUICK_IDS = ["files", "google_sheets", "bigquery", "snowflake", "postgres", "shopify", "ga4", "stripe"];
+
+function QuickTile({ c, disabled, onOpen }: { c: CatalogConnector; disabled: boolean; onOpen: () => void }) {
+  const connected = c.status === "connected";
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      disabled={disabled}
+      data-quick-connect-tile={c.id}
+      aria-label={`Connect ${c.label}`}
+      className="ui-focus group flex items-center gap-3 min-w-0 h-[60px] px-3 rounded-[12px] border border-border bg-base/40 text-left transition-colors hover:border-border-strong hover:bg-surface2/70 disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <BrandTile slug={c.slug} monogram={c.monogram} color={c.color} ink={c.ink} size={34} />
+      <span className="min-w-0 flex flex-col">
+        <span className="text-[13.5px] font-semibold text-text truncate">{c.id === "files" ? "Upload a file" : c.label}</span>
+        <span className="text-[11.5px] text-muted truncate">{c.id === "files" ? "CSV, Excel, Parquet" : connected ? "Connected" : "Connect"}</span>
+      </span>
+      <svg className="ml-auto shrink-0 text-faint group-hover:text-text transition-colors" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+    </button>
+  );
+}
+
 export default function Catalog({
   workspaceId,
   spaces,
   isViewer,
   onSourcesChanged,
   onCreated,
+  variant = "full",
+  onBrowseAll,
 }: {
   workspaceId?: string | null;
   spaces: Space[] | null;
@@ -154,6 +182,10 @@ export default function Catalog({
   onSourcesChanged: () => void;
   /** The person chose "Try it out" on a just-connected source. */
   onCreated: (ds: { id: string; name: string; kind: string; created_at: string }) => void;
+  /** "quick": the compact "Add data" strip above the connected sources. */
+  variant?: "full" | "quick";
+  /** quick only: open the whole catalog. */
+  onBrowseAll?: () => void;
 }) {
   const [params, setParams] = useSearchParams();
   const [categories, setCategories] = useState<CatalogCategory[] | null>(null);
@@ -192,6 +224,7 @@ export default function Catalog({
   const pending = params.get("pending");
   const returnError = params.get("error");
   useEffect(() => {
+    if (variant === "quick") return; // the full catalog handles sign-in returns
     if (!connectKind && !returnError) return;
     if (connectKind && apps === null) return; // wait for the app list
     const meta = connectKind ? (apps || []).find((a) => a.kind === connectKind) : undefined;
@@ -269,6 +302,76 @@ export default function Catalog({
   };
 
   const loading = !connectors && !loadError;
+
+  const sheets = (
+    <>
+      {open?.type === "app" && (
+        <ConnectAppSheet
+          key={`${open.meta.kind}-${open.pendingId || ""}`}
+          meta={open.meta}
+          tile={open.tile}
+          workspaceId={workspaceId}
+          spaces={spaces}
+          pendingId={open.pendingId}
+          initialError={open.error}
+          onClose={() => setOpen(null)}
+          onConnected={(_app: ConnectedApp) => afterConnect()}
+        />
+      )}
+      {open?.type === "form" && (
+        <SourceFormSheet
+          start={open.start}
+          connector={open.connector}
+          onClose={() => setOpen(null)}
+          onConnected={(_ds: CreatedDataSource) => afterConnect()}
+          onCreated={(ds) => {
+            setOpen(null);
+            onCreated(ds);
+          }}
+        />
+      )}
+      {open?.type === "request" && (
+        <RequestDialog
+          connector={open.connector}
+          viewer={isViewer}
+          onClose={() => setOpen(null)}
+          onPick={(start) => {
+            const conn = (connectors || []).find((c) => c.flow === (start.mode === "file" ? "file" : start.mode)) || null;
+            setOpen({ type: "form", start, connector: conn });
+          }}
+        />
+      )}
+    </>
+  );
+
+  if (variant === "quick") {
+    const quick = QUICK_IDS.map((id) => (connectors || []).find((c) => c.id === id)).filter((c): c is CatalogConnector => !!c);
+    return (
+      <section aria-labelledby="quick-connect-title" data-quick-connect="" className="rounded-[16px] border border-border bg-surface p-4 sm:p-5 flex flex-col gap-4">
+        <div className="flex justify-between items-start gap-3 flex-wrap">
+          <div className="flex flex-col gap-1 min-w-0">
+            <h2 id="quick-connect-title" className="m-0 text-[16px] font-semibold text-text">Add data</h2>
+            <p className="m-0 text-[13px] text-muted">Connect a warehouse, database, file or app in about a minute — read-only and encrypted.</p>
+          </div>
+          {onBrowseAll && (
+            <button type="button" onClick={onBrowseAll} className="ui-focus inline-flex items-center gap-1.5 h-9 px-3 rounded-[10px] border border-border text-[13.5px] text-secondary hover:text-text hover:border-border-strong" data-browse-all="">
+              Browse all {total || ""} sources
+              <span aria-hidden="true">→</span>
+            </button>
+          )}
+        </div>
+        {notice && <ErrorNote>{notice}</ErrorNote>}
+        {loadError && <ErrorNote>{loadError}</ErrorNote>}
+        <div className="grid gap-2.5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(240px, 100%), 1fr))" }}>
+          {loading && Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-[60px] rounded-[12px]" />)}
+          {quick.map((c) => (
+            <QuickTile key={c.id} c={c} disabled={isViewer} onOpen={() => openTile(c)} />
+          ))}
+        </div>
+        {sheets}
+      </section>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -390,42 +493,7 @@ export default function Catalog({
         </div>
       </div>
 
-      {open?.type === "app" && (
-        <ConnectAppSheet
-          key={`${open.meta.kind}-${open.pendingId || ""}`}
-          meta={open.meta}
-          tile={open.tile}
-          workspaceId={workspaceId}
-          spaces={spaces}
-          pendingId={open.pendingId}
-          initialError={open.error}
-          onClose={() => setOpen(null)}
-          onConnected={(_app: ConnectedApp) => afterConnect()}
-        />
-      )}
-      {open?.type === "form" && (
-        <SourceFormSheet
-          start={open.start}
-          connector={open.connector}
-          onClose={() => setOpen(null)}
-          onConnected={(_ds: CreatedDataSource) => afterConnect()}
-          onCreated={(ds) => {
-            setOpen(null);
-            onCreated(ds);
-          }}
-        />
-      )}
-      {open?.type === "request" && (
-        <RequestDialog
-          connector={open.connector}
-          viewer={isViewer}
-          onClose={() => setOpen(null)}
-          onPick={(start) => {
-            const conn = (connectors || []).find((c) => c.flow === (start.mode === "file" ? "file" : start.mode)) || null;
-            setOpen({ type: "form", start, connector: conn });
-          }}
-        />
-      )}
+      {sheets}
     </div>
   );
 }
