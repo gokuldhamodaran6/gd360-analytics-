@@ -359,6 +359,15 @@ function initials(nameOrEmail: string): string {
 // a dropdown listing every real workspace the account belongs to (its own
 // personal one, plus any team workspace it created or joined), switch
 // between them, create a new one, or invite people to the active one.
+function GlobeGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" width={14} height={14} fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" className="text-muted" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z" />
+    </svg>
+  );
+}
+
 function WorkspaceSwitcher({
   workspaces,
   activeWorkspaceId,
@@ -381,6 +390,7 @@ function WorkspaceSwitcher({
   collapsed?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const navigate = useNavigate();
   const btnRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -497,6 +507,15 @@ function WorkspaceSwitcher({
           >
             <PaletteIcon size={14} className="text-muted" /> Brand kit…
           </button>
+          {/* 2026-10-10 (round 19): the workspace's own address for dashboards. */}
+          <button
+            type="button"
+            data-open-domain=""
+            onClick={() => { setOpen(false); navigate("/settings/domains"); }}
+            className="ui-focus-inset w-full flex items-center gap-2.5 px-3.5 py-2 text-ui text-left hover:bg-subtle transition-colors"
+          >
+            <GlobeGlyph /> Company domain…
+          </button>
         </div>
       )}
     </div>
@@ -584,6 +603,9 @@ function InviteMembersModal({
 
   const inviteUrl = detail ? `${window.location.origin}/invite/${detail.invite_token}` : "";
   const isOwner = detail?.role === "owner";
+  // 2026-10-10 (round 19): admins manage members and viewers too; only the
+  // owner makes or changes admins.
+  const isManager = isOwner || detail?.role === "admin";
 
   const copyLink = async () => {
     try {
@@ -625,7 +647,7 @@ function InviteMembersModal({
   // "Can view" (role="viewer", 2026-09-23) sees the same data/Projects but
   // can't chat/analyze, create or change anything - owner-only to change,
   // same as removing someone.
-  const updateRole = async (userId: string, role: "member" | "viewer") => {
+  const updateRole = async (userId: string, role: "admin" | "member" | "viewer") => {
     setBusy(true);
     setError("");
     try {
@@ -664,12 +686,12 @@ function InviteMembersModal({
                 <CopyIcon className="w-3.5 h-3.5" /> {copied ? "Copied!" : "Copy"}
               </button>
             </div>
-            {isOwner && (
+            {isManager && (
               <button type="button" disabled={busy} className="text-xs text-muted hover:text-text transition mb-5" onClick={regenerate}>
                 Reset link (old link stops working)
               </button>
             )}
-            {!isOwner && <div className="mb-5" />}
+            {!isManager && <div className="mb-5" />}
 
             <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2">
               Members &middot; {detail.member_count}
@@ -684,23 +706,24 @@ function InviteMembersModal({
                     <span className="block text-sm truncate">{m.full_name || m.email}</span>
                     {m.full_name && <span className="block text-[11px] text-muted truncate">{m.email}</span>}
                   </span>
-                  {isOwner && m.user_id !== currentUserId && m.role !== "owner" ? (
+                  {isManager && m.user_id !== currentUserId && m.role !== "owner" && (isOwner || m.role !== "admin") ? (
                     <select
                       className="text-[11px] bg-surface2 border border-border rounded-md px-1.5 py-1 shrink-0 cursor-pointer"
                       value={m.role}
                       disabled={busy}
                       title="What this person can do in this workspace"
-                      onChange={(e) => updateRole(m.user_id, e.target.value as "member" | "viewer")}
+                      onChange={(e) => updateRole(m.user_id, e.target.value as "admin" | "member" | "viewer")}
                     >
+                      {isOwner && <option value="admin">Admin</option>}
                       <option value="member">Can edit</option>
                       <option value="viewer">Can view</option>
                     </select>
                   ) : (
                     <span className="text-[10px] uppercase tracking-wide text-muted shrink-0">
-                      {m.role === "owner" ? "Owner" : m.role === "viewer" ? "Can view" : "Can edit"}
+                      {m.role === "owner" ? "Owner" : m.role === "admin" ? "Admin" : m.role === "viewer" ? "Can view" : "Can edit"}
                     </span>
                   )}
-                  {isOwner && m.user_id !== currentUserId && (
+                  {isManager && m.user_id !== currentUserId && m.role !== "owner" && (isOwner || m.role !== "admin") && (
                     <button
                       type="button"
                       disabled={busy}
@@ -1218,12 +1241,14 @@ function SidebarNav({
             the ACTIVE workspace's owner rather than always shown - no
             invasive prop plumbing needed, both `workspaces` and
             `activeWorkspaceId` are already passed into this component. */}
-        {workspaces.find((w) => w.id === activeWorkspaceId)?.role === "owner" && (
+        {/* 2026-10-10 (round 19): the Trust Center (/trust) - owners and admins. */}
+        {["owner", "admin"].includes(workspaces.find((w) => w.id === activeWorkspaceId)?.role || "") && (
           <Link
-            to="/governance"
+            to="/trust"
             onClick={onNavigate}
             title={collapsed ? "Trust Center" : undefined}
-            className={linkClass(pathname.startsWith("/governance"))}
+            className={linkClass(pathname.startsWith("/governance") || pathname.startsWith("/trust"))}
+            data-nav="trust"
           >
             <GovernanceIcon />
             {!collapsed && "Trust Center"}
