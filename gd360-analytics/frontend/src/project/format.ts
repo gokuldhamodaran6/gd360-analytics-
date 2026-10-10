@@ -95,3 +95,20 @@ export function formatCell(v: unknown, kind?: string | null, currency?: string |
   if (kind === "integer" || Number.isInteger(v)) return `${sign}${Math.round(a).toLocaleString("en-US")}`;
   return `${sign}${a.toLocaleString("en-US", { maximumFractionDigits: a >= 1000 ? 0 : 2 })}`;
 }
+
+
+// 2026-10-10: a year is a label, not a quantity - "2021", never "2,021".
+// True for a column named like a year (year, start_year, arrival_date_year,
+// fy, yr) whose values are all whole numbers between 1800 and 2200.
+const YEAR_NAME = /(^|[_\s-])(year|yr|fy)$|^(year|yr|fy)([_\s-]|$)/i;
+export function isYearColumn(name: string, values: unknown[]): boolean {
+  if (!YEAR_NAME.test(String(name || "").trim())) return false;
+  let seen = 0;
+  for (const v of values) {
+    if (v === null || v === undefined || v === "") continue;
+    const n = typeof v === "number" ? v : Number(v);
+    if (!Number.isInteger(n) || n < 1800 || n > 2200) return false;
+    seen++;
+  }
+  return seen > 0;
+}

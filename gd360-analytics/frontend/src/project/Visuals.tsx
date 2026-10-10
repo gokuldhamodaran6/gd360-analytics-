@@ -2,9 +2,9 @@
 // split into its parts (waterfall), the change by segment (diverging bars),
 // a row of headline numbers, and any result table (WorkspaceChart, the same
 // chart component the one-source analysis uses).
-import WorkspaceChart from "../components/WorkspaceChart";
 import type { DashKpi, Visual } from "../api/projects";
-import { formatCell, formatValue } from "./format";
+import { formatCell, formatValue, isYearColumn } from "./format";
+import ChartWithControls from "./ChartControls";
 
 export function WaterfallChart({ visual }: { visual: Extract<Visual, { type: "waterfall" }> }) {
   const totals = visual.items.filter((i) => i.kind === "total").map((i) => Math.abs(i.value));
@@ -147,17 +147,14 @@ export function VisualCard({ visual, id, chartType }: { visual: Visual; id: stri
       </div>
       {visual.type === "waterfall" && <WaterfallChart visual={visual} />}
       {visual.type === "diverging" && <DivergingBars visual={visual} />}
-      {visual.type === "chart" && (visual.display === "table" || (chartType || visual.chart_type) === "table") && <DataTable visual={visual} />}
-      {visual.type === "chart" && !(visual.display === "table" || (chartType || visual.chart_type) === "table") && (
-        <WorkspaceChart
-          columns={visual.columns as any}
-          rows={visual.rows as any}
-          truncated={visual.truncated}
-          chartType={chartType || visual.chart_type || null}
-          title={visual.title}
+      {visual.type === "chart" && (
+        <ChartWithControls
           id={id}
-          variant="full"
-          minHeight={260}
+          title={visual.title}
+          columns={visual.columns}
+          rows={visual.rows}
+          truncated={visual.truncated}
+          chartType={visual.display === "table" ? "table" : chartType || visual.chart_type || null}
         />
       )}
       {visual.type === "chart" && visual.note && <p className="m-0 text-caption text-muted">{visual.note}</p>}
@@ -170,7 +167,9 @@ export function VisualCard({ visual, id, chartType }: { visual: Visual; id: stri
 export function DataTable({ visual }: { visual: Extract<Visual, { type: "chart" }> }) {
   const cols = visual.columns || [];
   const rows = (visual.rows || []) as Record<string, unknown>[];
-  const numeric = (c: (typeof cols)[number]) => c.dtype === "number" || Boolean(c.format);
+  // a year column is written as it is ("2021"), left-aligned like any label
+  const years = new Set(cols.filter((c) => isYearColumn(c.name, rows.map((r) => r[c.name]))).map((c) => c.name));
+  const numeric = (c: (typeof cols)[number]) => !years.has(c.name) && (c.dtype === "number" || Boolean(c.format));
   return (
     <div className="overflow-x-auto -mx-1">
       <table className="w-full border-collapse text-ui tabular-nums">
