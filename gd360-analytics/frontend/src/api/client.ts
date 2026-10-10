@@ -1044,6 +1044,8 @@ export type ConversationSummary = {
   // /p/:id), "analysis" = the one-source analysis chat (/workspace/:id).
   kind?: "project" | "analysis";
   source_ids?: string[];
+  // 2026-10-10 (Library): how many dashboards were made from this item.
+  dashboard_count?: number;
 };
 
 export type ConversationMessage = {
@@ -1547,6 +1549,12 @@ export type DashboardSummary = {
   // still types cleanly - "not exactly 2" always means "open the old
   // viewer".
   layout_version?: number;
+  // 2026-10-10 (one kind of dashboard): what it was made from - an answer
+  // (/p/:id) or an analysis (/workspace/...) - for its "Made from" line.
+  source_kind?: "answer" | "analysis" | null;
+  source_title?: string | null;
+  source_id?: string | null;
+  source_datasource_id?: string | null;
 };
 
 export type SavedChart = {
@@ -1584,6 +1592,9 @@ export const dashboardApi = {
       .then((r) => r.data),
   removeChart: (dashboardId: string, chartId: string) =>
     api.delete(`/dashboards/${dashboardId}/charts/${chartId}`).then(() => undefined),
+  // 2026-10-10: a classic chart board becomes a full dashboard in place
+  // (same id/link, name and sharing; every pinned chart kept).
+  upgrade: (id: string) => api.post<DashboardSummary>(`/dashboards/${id}/upgrade`).then((r) => r.data),
 };
 
 // ---- Dashboard Builder (2026-09-24, Phase 1): the new real-time,
@@ -2012,6 +2023,8 @@ export type DashboardBuilderDetail = DashboardBranding & {
   // is null, or when that Project has since been deleted.
   source_conversation_title: string | null;
   source_conversation_datasource_id: string | null;
+  // 2026-10-10: "answer" | "analysis" - which page "Made from" opens.
+  source_conversation_kind?: "answer" | "analysis" | null;
   // 2026-09-29 (design revamp): "merge with other dashboards in the same
   // project" - every other dashboard built from this same source
   // conversation that this person can currently see, for the merge
@@ -2092,6 +2105,7 @@ export type DashboardPickerEntry = {
   name: string;
   can_edit: boolean;
   datasource_name: string | null;
+  datasource_id?: string | null;
   pages: DashboardPickerPage[];
 };
 
@@ -2228,6 +2242,11 @@ export const dashboardBuilderApi = {
   createBlank: (conversationId: string) =>
     api
       .post<DashboardBuilderDetail>("/dashboard-builder/create-blank", { conversation_id: conversationId })
+      .then((r) => r.data),
+  // 2026-10-10: the Dashboards page's "Blank canvas" - straight from a source.
+  createBlankOnSource: (datasourceId: string, name?: string) =>
+    api
+      .post<DashboardBuilderDetail>("/dashboard-builder/create-blank", { datasource_id: datasourceId, name: name || undefined })
       .then((r) => r.data),
   // 2026-09-25 (Round 5, template gallery): the catalog behind
   // BuildDashboardModal.tsx's "Start from a template" step - see

@@ -154,7 +154,7 @@ export type Project = {
   pinned: boolean;
   can_edit: boolean;
   runs: ProjectRun[];
-  dashboards: { id: string; name: string }[];
+  dashboards: { id: string; name: string; layout_version?: number }[];
   // 2026-10-09 (round 15): the Space a project was asked in, if any.
   space_id?: string | null;
   space_name?: string | null;
@@ -177,6 +177,7 @@ export type ProjectDashboard = {
   id: string;
   name: string;
   project_id: string | null;
+  run_id?: string | null;
   question: string | null;
   headline: string | null;
   tiles: DashTile[];
@@ -211,8 +212,18 @@ export const projectsApi = {
   replan: (runId: string, note: string) =>
     api.post<{ run_id: string }>(`/projects/runs/${runId}/replan`, { note }).then((r) => r.data),
   stop: (runId: string) => api.post(`/projects/runs/${runId}/stop`).then((r) => r.data),
-  makeDashboard: (id: string, runId?: string, name?: string) =>
-    api.post<{ dashboard_id: string; name: string }>(`/projects/${id}/dashboard`, { run_id: runId, name }).then((r) => r.data),
+  // 2026-10-10 (one kind of dashboard): builds the full dashboard (filters,
+  // cross-filter, canvas, publish) from an answer - new, added to an
+  // existing one, or upgrading this answer's classic dashboard in place.
+  makeDashboard: (
+    id: string,
+    payload: { run_id?: string; name?: string; datasource_id?: string; add_to_dashboard_id?: string; replace_dashboard_id?: string },
+  ) =>
+    api
+      .post<{ dashboard_id: string; name: string; layout_version: number; page_id: string | null; datasource_id: string; datasource_name: string }>(
+        `/projects/${id}/dashboard`, payload, { timeout: 240000 },
+      )
+      .then((r) => r.data),
   dashboard: (id: string) => api.get<ProjectDashboard>(`/projects/dashboards/${id}`).then((r) => r.data),
   refreshDashboard: (id: string) =>
     api.post<ProjectDashboard>(`/projects/dashboards/${id}/refresh`, undefined, { timeout: 180000 }).then((r) => r.data),
