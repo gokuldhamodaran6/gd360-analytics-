@@ -1042,7 +1042,7 @@ export type ConversationSummary = {
   can_delete: boolean;
   // 2026-10-08 (round 11): "project" = a multi-source Project (opens
   // /p/:id), "analysis" = the one-source analysis chat (/workspace/:id).
-  kind?: "project" | "analysis";
+  kind?: "project" | "analysis" | "guided";
   source_ids?: string[];
   // 2026-10-10 (Library): how many dashboards were made from this item.
   dashboard_count?: number;

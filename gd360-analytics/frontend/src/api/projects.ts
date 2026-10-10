@@ -29,7 +29,8 @@ export type RunStep = {
   mode: SourceMode | "combine" | null;
   dialect: string | null;
   sql: string;
-  status: "pending" | "running" | "done" | "failed" | "skipped";
+  // "stale" (Guided Analysis): an earlier step it builds on changed
+  status: "pending" | "running" | "done" | "failed" | "skipped" | "stale";
   rows_returned: number | null;
   rows_read?: number | null;
   bytes_scanned?: number | null;
@@ -41,6 +42,11 @@ export type RunStep = {
   preview: Record<string, unknown>[] | null;
   note?: string | null;
   freshness?: string | null;
+  // 2026-10-10 (Guided Analysis)
+  approved?: boolean;
+  tweaks?: string[];
+  edits?: string[];
+  added?: boolean;
 };
 
 export type Fact = { id: string; label: string; value: number | null; kind: string; display: string };
@@ -97,6 +103,8 @@ export type RunResult = {
   evidence?: EvidenceTable[];
   sources_used?: string[];
   queries?: number;
+  // 2026-10-10 (Guided Analysis): a step changed after the answer was written
+  answer_stale?: boolean;
 };
 
 export type PlanStep = {
@@ -138,6 +146,8 @@ export type ProjectRun = {
   started_at: string | null;
   finished_at: string | null;
   headline: string | null;
+  // 2026-10-10 (Guided Analysis): a step or the answer is being worked on
+  busy?: boolean;
   duration_seconds: number | null;
   plan?: Plan | null;
   steps?: RunStep[];
@@ -147,6 +157,8 @@ export type ProjectRun = {
 export type Project = {
   id: string;
   title: string;
+  // "project" = an Instant Answer, "guided" = a Guided Analysis
+  kind?: "project" | "guided" | null;
   source_ids: string[];
   sources: ProjectSource[];
   workspace_id: string | null;
@@ -200,8 +212,9 @@ export const projectsApi = {
     api.get<ProjectSource[]>("/projects/sources", { params: { workspace_id: workspaceId || undefined } }).then((r) => r.data),
   // 2026-10-09 (round 15): space_id asks one Space (its sources you can use);
   // send space_id or source_ids, never both.
-  create: (payload: { question: string; source_ids?: string[]; space_id?: string; workspace_id?: string; auto_run?: boolean }) =>
-    api.post<{ project_id: string; run_id: string; space_id?: string | null }>("/projects", payload).then((r) => r.data),
+  // mode "guided" starts a Guided Analysis (the same engine, one step at a time).
+  create: (payload: { question: string; source_ids?: string[]; space_id?: string; workspace_id?: string; auto_run?: boolean; mode?: "answer" | "guided" }) =>
+    api.post<{ project_id: string; run_id: string; space_id?: string | null; kind?: string }>("/projects", payload).then((r) => r.data),
   get: (id: string) => api.get<Project>(`/projects/${id}`).then((r) => r.data),
   update: (id: string, payload: { title?: string; source_ids?: string[] }) =>
     api.patch<{ id: string; title: string; source_ids: string[] }>(`/projects/${id}`, payload).then((r) => r.data),
@@ -229,6 +242,25 @@ export const projectsApi = {
     api.post<ProjectDashboard>(`/projects/dashboards/${id}/refresh`, undefined, { timeout: 180000 }).then((r) => r.data),
   updateDashboard: (id: string, payload: { name?: string; tiles?: DashTile[] }) =>
     api.patch<ProjectDashboard>(`/projects/dashboards/${id}`, payload).then((r) => r.data),
+};
+
+// 2026-10-10: Guided Analysis - backend routers/guided.py. Each call returns
+// the run as GET /projects/runs/{id} does; work continues in the background.
+export const guidedApi = {
+  runStep: (runId: string, stepId: string) => api.post<ProjectRun>(`/guided/runs/${runId}/steps/${stepId}/run`).then((r) => r.data),
+  approve: (runId: string, stepId: string, runNext = true) =>
+    api.post<ProjectRun>(`/guided/runs/${runId}/steps/${stepId}/approve`, { run_next: runNext }).then((r) => r.data),
+  revise: (runId: string, stepId: string, instruction: string) =>
+    api.post<ProjectRun>(`/guided/runs/${runId}/steps/${stepId}/revise`, { instruction }, { timeout: 120000 }).then((r) => r.data),
+  setSql: (runId: string, stepId: string, sql: string) =>
+    api.put<ProjectRun>(`/guided/runs/${runId}/steps/${stepId}/sql`, { sql }).then((r) => r.data),
+  remove: (runId: string, stepId: string) => api.delete<ProjectRun>(`/guided/runs/${runId}/steps/${stepId}`).then((r) => r.data),
+  add: (runId: string, instruction: string, afterId?: string | null) =>
+    api
+      .post<ProjectRun & { added_step_id: string }>(`/guided/runs/${runId}/steps`, { instruction, after_id: afterId || undefined }, { timeout: 120000 })
+      .then((r) => r.data),
+  runRest: (runId: string) => api.post<ProjectRun>(`/guided/runs/${runId}/run-rest`).then((r) => r.data),
+  finish: (runId: string) => api.post<ProjectRun>(`/guided/runs/${runId}/finish`).then((r) => r.data),
 };
 
 export type AppField = { key: string; label: string; placeholder: string; secret: boolean; multiline?: boolean; optional?: boolean };
