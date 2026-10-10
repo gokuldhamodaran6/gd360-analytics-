@@ -624,6 +624,13 @@ class DashboardOut(BaseModel):
     # DashboardBuilderView.tsx). Lets the Dashboards.tsx list page route a
     # click at each dashboard to the right viewer/editor.
     layout_version: int = 1
+    # 2026-10-10 (one kind of dashboard): where it was made from - "answer"
+    # (a Home question, /p/:id), "analysis" (a Studio chat) or None - with
+    # that item's title and ids, for the "Made from ..." line on its card.
+    source_kind: Optional[str] = None
+    source_title: Optional[str] = None
+    source_id: Optional[str] = None
+    source_datasource_id: Optional[str] = None
 
 
 class SavedChartOut(BaseModel):
@@ -676,7 +683,12 @@ class GenerateDashboardRequest(BaseModel):
 # fills every block themselves via the existing Phase 2 canvas. See
 # routers/dashboard_builder.py's create_blank_dashboard.
 class CreateBlankDashboardRequest(BaseModel):
-    conversation_id: str = Field(min_length=1)
+    # 2026-10-10 (one kind of dashboard): a blank dashboard can start from
+    # a chat (conversation_id) OR straight from a data source (datasource_id,
+    # the Dashboards page's "Blank canvas") - one of the two is required.
+    conversation_id: Optional[str] = None
+    datasource_id: Optional[str] = None
+    name: Optional[str] = Field(default=None, max_length=120)
 
 
 # 2026-09-25 (Round 5, template gallery): the third choice in
@@ -829,6 +841,9 @@ class DashboardPickerOut(BaseModel):
     name: str
     can_edit: bool
     datasource_name: Optional[str] = None
+    # 2026-10-10: lets "Add to an existing dashboard" offer only the ones
+    # built on the same data source.
+    datasource_id: Optional[str] = None
     pages: list[DashboardPickerPageOut]
 
 
@@ -853,6 +868,9 @@ class DashboardBuilderOut(BaseModel):
     # the link in that case rather than showing a dead one.
     source_conversation_title: Optional[str] = None
     source_conversation_datasource_id: Optional[str] = None
+    # 2026-10-10: "answer" (a Home question, /p/:id) or "analysis" (a Studio
+    # chat, /workspace/...) - what the dashboard's "Made from" chip opens.
+    source_conversation_kind: Optional[str] = None
     # 2026-09-29 (design revamp): "merge with other dashboards in the same
     # project" - every OTHER real (layout_version==2), currently viewable
     # dashboard built from this SAME source conversation, so the frontend
