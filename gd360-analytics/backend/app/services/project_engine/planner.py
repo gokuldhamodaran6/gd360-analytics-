@@ -124,6 +124,22 @@ If the sources cannot answer the question, set can_answer to false, explain in
 At most {MAX_STEPS} steps and {MAX_COMBINE} combine steps."""
 
 
+# 2026-10-10 (Guided Analysis): the same planner, for a plan the person runs
+# one step at a time - checking, and changing, each result before the next.
+GUIDED_NOTE = """
+THIS IS A GUIDED ANALYSIS. The person runs your plan ONE STEP AT A TIME, checks each
+result and may change a step before the next one runs. So:
+- Use 3 to 6 steps (steps plus combine steps), in the order a careful analyst works:
+  first the headline numbers, then each breakdown, then the comparison that answers
+  the question.
+- Each step does ONE thing a person can check from its result table. Its title is
+  plain English (at most 8 words, no SQL words); its purpose says in one sentence
+  what it computes and why it matters for the question.
+- Give every step and combine step "tweaks": up to 3 short changes a person might
+  want next (at most 6 words each), e.g. "By month instead", "Only completed
+  bookings", "Top 10 only", "Add share of total"."""
+
+
 REPAIR_SYSTEM = f"""You are the {REPAIR_MARKER} step. A query in a GD360 plan was rejected.
 Rewrite it so it runs, keeping its purpose and its output column names.
 Use only the tables and columns listed, in the given SQL dialect.
@@ -142,7 +158,7 @@ def _history_text(history: list[dict]) -> str:
 
 
 def _ask_model(question: str, catalog: Catalog, history: list[dict], note: str | None,
-               previous: dict | None, problems: list[str] | None) -> dict:
+               previous: dict | None, problems: list[str] | None, guided: bool = False) -> dict:
     user = [f"CATALOG\n{catalog.prompt_text()}", _history_text(history)]
     if previous and note:
         user.append("Your previous plan:\n" + json.dumps(_plan_for_prompt(previous))[:6000])
@@ -152,7 +168,7 @@ def _ask_model(question: str, catalog: Catalog, history: list[dict], note: str |
         user.append("These problems must be fixed:\n- " + "\n- ".join(problems))
     user.append(f"Question: {question}")
     messages = [
-        {"role": "system", "content": PLANNER_SYSTEM.replace("{today}", date.today().isoformat())},
+        {"role": "system", "content": PLANNER_SYSTEM.replace("{today}", date.today().isoformat()) + (GUIDED_NOTE if guided else "")},
         {"role": "user", "content": "\n\n".join(u for u in user if u)},
     ]
     return ai_engine._plan_with_retry(messages, max_tokens=6000)
@@ -160,6 +176,16 @@ def _ask_model(question: str, catalog: Catalog, history: list[dict], note: str |
 
 def _plan_for_prompt(plan: dict) -> dict:
     return {k: plan.get(k) for k in ("title", "understanding", "assumptions", "steps", "combine", "analysis")}
+
+
+def clean_tweaks(raw) -> list[str]:
+    """Up to 3 short suggested changes for a guided step."""
+    out = []
+    for t in raw if isinstance(raw, list) else []:
+        t = re.sub(r"\s+", " ", str(t or "")).strip().rstrip(".")
+        if t and len(t) <= 60 and t not in out:
+            out.append(t)
+    return out[:3]
 
 
 _ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,15}$")
@@ -208,7 +234,7 @@ def validate_plan(raw: dict, catalog: Catalog) -> tuple[dict, list[str]]:
         plan["steps"].append({
             "id": sid, "title": str(st.get("title") or f"Step {i + 1}")[:80], "purpose": str(st.get("purpose") or "")[:240],
             "source_id": src.id, "source_name": src.name, "source_kind": src.kind, "mode": src.mode,
-            "dialect": src.dialect, "sql": sql,
+            "dialect": src.dialect, "sql": sql, "tweaks": clean_tweaks(st.get("tweaks")),
         })
     for i, cb in enumerate((raw.get("combine") or [])[:MAX_COMBINE]):
         if not isinstance(cb, dict):
@@ -224,7 +250,8 @@ def validate_plan(raw: dict, catalog: Catalog) -> tuple[dict, list[str]]:
             continue
         ids.add(cid)
         plan["combine"].append({"id": cid, "title": str(cb.get("title") or f"Combine {i + 1}")[:80],
-                                "purpose": str(cb.get("purpose") or "")[:240], "sql": sql})
+                                "purpose": str(cb.get("purpose") or "")[:240], "sql": sql,
+                                "tweaks": clean_tweaks(cb.get("tweaks"))})
     if not plan["steps"]:
         problems.append("The plan has no step that can run.")
 
@@ -255,19 +282,19 @@ def validate_plan(raw: dict, catalog: Catalog) -> tuple[dict, list[str]]:
 
 
 def make_plan(question: str, catalog: Catalog, history: list[dict] | None = None,
-              note: str | None = None, previous: dict | None = None) -> dict:
+              note: str | None = None, previous: dict | None = None, guided: bool = False) -> dict:
     """A validated plan. Raises PlanningError when no usable plan came back."""
     if not catalog.sources:
         raise PlanningError("This project has no data sources you can use.")
     history = history or []
     try:
-        raw = _ask_model(question, catalog, history, note, previous, None)
+        raw = _ask_model(question, catalog, history, note, previous, None, guided)
     except Exception as e:  # noqa: BLE001
         raise PlanningError(ai_engine.friendly_ai_error(e)) from e
     plan, problems = validate_plan(raw, catalog)
     if problems and plan.get("can_answer", True):
         try:
-            raw2 = _ask_model(question, catalog, history, None, raw, problems)
+            raw2 = _ask_model(question, catalog, history, None, raw, problems, guided)
             plan2, problems2 = validate_plan(raw2, catalog)
             if len(problems2) <= len(problems) and plan2.get("steps"):
                 plan, problems = plan2, problems2

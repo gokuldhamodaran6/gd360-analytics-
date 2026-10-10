@@ -114,6 +114,7 @@ def initial_steps(plan: dict) -> list[dict]:
             "mode": st.get("mode"), "dialect": st.get("dialect"), "sql": st["sql"], "status": "pending",
             "rows_returned": None, "bytes_scanned": None, "rows_read": None, "duration_ms": None, "error": None,
             "repaired": False, "truncated": False, "columns": None, "preview": None,
+            "tweaks": st.get("tweaks") or [], "approved": False,
         })
     for cb in plan.get("combine") or []:
         out.append({
@@ -121,6 +122,7 @@ def initial_steps(plan: dict) -> list[dict]:
             "source_name": "Combined", "source_kind": "duckdb", "mode": "combine", "dialect": "duckdb", "sql": cb["sql"],
             "status": "pending", "rows_returned": None, "duration_ms": None, "error": None, "repaired": False,
             "truncated": False, "columns": None, "preview": None,
+            "tweaks": cb.get("tweaks") or [], "approved": False,
         })
     return out
 
@@ -132,12 +134,13 @@ def plan_run(db: Session, run_id: str) -> None:
     conv = db.get(models.Conversation, run.conversation_id)
     user = db.get(models.User, run.owner_id)
     catalog = build_catalog(db, user, list(conv.source_ids or []))
+    guided = bool(conv and conv.kind == "guided")
     previous = None
     if run.note:
         # a re-plan: the plan this run replaces is kept on the run itself
         previous = (run.plan or {}).get("replaced_plan") or run.plan
     try:
-        plan = planner.make_plan(run.question, catalog, _history(db, run), note=run.note, previous=previous)
+        plan = planner.make_plan(run.question, catalog, _history(db, run), note=run.note, previous=previous, guided=guided)
     except planner.PlanningError as e:
         run.status = "failed"
         run.error_message = str(e)
@@ -166,6 +169,12 @@ def plan_run(db: Session, run_id: str) -> None:
     if conv and (not conv.title or conv.title in ("New analysis", "New project")) and plan.get("title"):
         conv.title = plan["title"][:80]
     db.commit()
+    if guided:
+        # 2026-10-10 (Guided Analysis): the plan is shown and the first step
+        # runs straight away; every later step waits for the person.
+        from . import guided as guided_engine
+        guided_engine.run_first_step(db, run_id)
+        return
     if run.auto_run:
         execute_run(db, run_id)
 
