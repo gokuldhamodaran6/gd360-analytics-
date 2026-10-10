@@ -16,7 +16,7 @@ progress (plan -> each step -> the answer).
   POST /projects/runs/{run_id}/execute   run a plan that was shown first
   POST /projects/runs/{run_id}/replan    change the plan in words
   POST /projects/runs/{run_id}/stop      stop a run
-  POST /projects/{id}/dashboard       a live dashboard from an answer
+  POST /projects/{id}/dashboard       a full dashboard from an answer (the one kind)
 """
 from __future__ import annotations
 
@@ -82,6 +82,14 @@ class UpdateProjectRequest(BaseModel):
 class DashboardRequest(BaseModel):
     run_id: str | None = None
     name: str | None = Field(default=None, max_length=120)
+    # 2026-10-10 (one kind of dashboard): which of the answer's sources the
+    # dashboard computes on (default: the one the answer leaned on most),
+    # and where it goes - a new dashboard, new pages on an existing one
+    # (add_to_dashboard_id), or the in-place upgrade of this answer's
+    # classic dashboard (replace_dashboard_id).
+    datasource_id: str | None = None
+    add_to_dashboard_id: str | None = None
+    replace_dashboard_id: str | None = None
 
 
 # ---- helpers -----------------------------------------------------------------
@@ -332,15 +340,16 @@ def get_project(project_id: str, db: Session = Depends(get_db), user: models.Use
         .order_by(models.ProjectRun.created_at.asc()).all()
     )
     dashboards = (
-        db.query(models.Dashboard.id, models.Dashboard.name)
-        .filter(models.Dashboard.source_conversation_id == conv.id).all()
+        db.query(models.Dashboard.id, models.Dashboard.name, models.Dashboard.layout_version)
+        .filter(models.Dashboard.source_conversation_id == conv.id)
+        .order_by(models.Dashboard.created_at.asc()).all()
     )
     return {
         "id": conv.id, "title": conv.title, "source_ids": conv.source_ids or [], "sources": sources,
         "workspace_id": conv.workspace_id, "created_at": conv.created_at, "pinned": bool(conv.pinned),
         "can_edit": workspace_access.can_edit_conversation(db, conv, user),
         "runs": [_run_out(r, full=False) for r in runs if r.status != "replaced"],
-        "dashboards": [{"id": d.id, "name": d.name} for d in dashboards],
+        "dashboards": [{"id": d.id, "name": d.name, "layout_version": d.layout_version or 1} for d in dashboards],
         **_space_ref(db, conv, user),
     }
 
@@ -388,21 +397,86 @@ def ask(project_id: str, payload: AskRequest, db: Session = Depends(get_db), use
     return {"project_id": conv.id, "run_id": run.id}
 
 
+def _primary_source_id(run: models.ProjectRun, conv: models.Conversation) -> str | None:
+    """The source an answer leaned on most - the one most of its queries ran in."""
+    counts: dict[str, int] = {}
+    for st in (run.plan or {}).get("steps") or []:
+        sid = st.get("source_id") if isinstance(st, dict) else None
+        if sid:
+            counts[sid] = counts.get(sid, 0) + 1
+    ordered = sorted(counts, key=lambda k: -counts[k])
+    for sid in ordered + list(conv.source_ids or []):
+        if sid in (conv.source_ids or []):
+            return sid
+    return (conv.source_ids or [None])[0]
+
+
+def _goal_from_run(run: models.ProjectRun) -> str:
+    """The plain-English brief a dashboard is planned from: the question,
+    what the answer found, and the views it drew."""
+    result = run.result or {}
+    ans = result.get("answer") or {}
+    parts = [f'A live dashboard for the question: "{(run.question or "").strip()}".']
+    if ans.get("headline"):
+        parts.append(f"What the answer found: {ans['headline']}")
+    titles = [
+        v.get("title") for v in (result.get("visuals") or [])
+        if isinstance(v, dict) and v.get("title") and v.get("type") != "kpis"
+    ]
+    if titles:
+        parts.append("Include these views: " + "; ".join(str(t) for t in titles[:6]) + ".")
+    parts.append(
+        "Lead with the headline numbers as KPI tiles, then the breakdowns behind them and the trend over time, "
+        "with filters for the main categories."
+    )
+    return " ".join(parts)[:1900]
+
+
 @router.post("/{project_id}/dashboard", status_code=201)
 def make_dashboard(project_id: str, payload: DashboardRequest, db: Session = Depends(get_db),
                    user: models.User = Depends(get_current_user)):
+    """2026-10-10 (one kind of dashboard): an answer's "Create dashboard"
+    builds the same full dashboard as everywhere else in GD360 - filters,
+    cross-filter, canvas, publish - computed live on one of the sources the
+    answer used, and linked back to this answer ("Made from"). It can also
+    add pages to an existing dashboard, or upgrade this answer's classic
+    dashboard in place (same id, name and sharing)."""
+    _rate_limit(user.id)
     conv = _project(db, project_id, user, edit=True)
     q = db.query(models.ProjectRun).filter(models.ProjectRun.conversation_id == conv.id, models.ProjectRun.status == "done")
     run = q.filter(models.ProjectRun.id == payload.run_id).first() if payload.run_id else \
         q.order_by(models.ProjectRun.created_at.desc()).first()
     if not run:
         raise HTTPException(400, "Ask a question and let it finish first - the dashboard is built from its answer.")
-    from ..services.project_engine import dashboards
-    try:
-        dash = dashboards.dashboard_from_run(db, conv, run, user, name=payload.name)
-    except dashboards.DashboardBuildError as e:
-        raise HTTPException(400, str(e))
-    return {"dashboard_id": dash.id, "name": dash.name}
+
+    ds_id = payload.datasource_id or _primary_source_id(run, conv)
+    if not ds_id or ds_id not in (conv.source_ids or []):
+        raise HTTPException(400, "Pick one of the sources this answer used.")
+    ds = db.get(models.DataSource, ds_id)
+    if not ds or not workspace_access.can_access_datasource(db, ds, user):
+        raise HTTPException(404, "That data source could not be found.")
+    if not workspace_access.can_edit_datasource(db, ds, user):
+        raise HTTPException(403, f"You have view-only access to {ds.name}, so a dashboard can't be built on it.")
+
+    from .dashboard_builder import build_dashboard_from_goal
+    from .dashboards import _can_edit as _can_edit_v2
+    add_to = replace = None
+    if payload.add_to_dashboard_id:
+        add_to = db.get(models.Dashboard, payload.add_to_dashboard_id)
+        if not add_to or add_to.layout_version != 2 or not _can_edit_v2(db, add_to, user):
+            raise HTTPException(404, "That dashboard wasn't found, or you can't edit it.")
+    if payload.replace_dashboard_id:
+        replace = db.get(models.Dashboard, payload.replace_dashboard_id)
+        if not replace or replace.layout_version != 3 or (replace.project_spec or {}).get("project_id") != conv.id \
+                or not _can_edit_v2(db, replace, user):
+            raise HTTPException(404, "That classic dashboard wasn't found, or you can't edit it.")
+
+    dash, pages = build_dashboard_from_goal(
+        db, user, ds, _goal_from_run(run), name=(payload.name or "").strip() or None,
+        conversation_id=conv.id, add_to=add_to, replace=replace,
+    )
+    return {"dashboard_id": dash.id, "name": dash.name, "layout_version": dash.layout_version,
+            "page_id": pages[0] if pages else None, "datasource_id": ds.id, "datasource_name": ds.name}
 
 
 # ---- dashboards built from a project (layout_version 3) ---------------------
@@ -431,7 +505,8 @@ def _dashboard_out(db: Session, d: models.Dashboard, user: models.User) -> dict:
         if ds and workspace_access.can_access_datasource(db, ds, user):
             sources.append(_source_summary(db, ds, user))
     return {
-        "id": d.id, "name": d.name, "project_id": spec.get("project_id"), "question": spec.get("question"),
+        "id": d.id, "name": d.name, "project_id": spec.get("project_id"), "run_id": spec.get("run_id"),
+        "question": spec.get("question"),
         "headline": spec.get("headline"), "tiles": spec.get("tiles") or [], "snapshot": d.project_snapshot or {},
         "snapshot_at": d.snapshot_at, "sources": sources, "can_edit": _can_edit(db, d, user),
         "workspace_id": d.workspace_id, "assumptions": (spec.get("plan") or {}).get("assumptions") or [],

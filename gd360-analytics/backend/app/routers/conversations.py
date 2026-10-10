@@ -246,6 +246,19 @@ def list_conversations(
         u.id: u for u in db.query(models.User).filter(models.User.id.in_(creator_ids)).all()
     } if creator_ids else {}
 
+    # 2026-10-10 (Library): how many dashboards were made from each item -
+    # one grouped count, not a query per row.
+    dash_counts: dict[str, int] = {}
+    conv_ids = [c.id for c in conversations]
+    if conv_ids:
+        from sqlalchemy import func
+        for cid, n in (
+            db.query(models.Dashboard.source_conversation_id, func.count(models.Dashboard.id))
+            .filter(models.Dashboard.source_conversation_id.in_(conv_ids))
+            .group_by(models.Dashboard.source_conversation_id).all()
+        ):
+            dash_counts[cid] = int(n)
+
     out = []
     for c in conversations:
         messages = sorted(c.messages, key=lambda m: m.created_at)
@@ -274,6 +287,7 @@ def list_conversations(
             "kind": c.kind or "analysis",
             "source_ids": c.source_ids if c.kind == "project" else ([c.datasource_id] if c.datasource_id else []),
             "message_count": len(messages),
+            "dashboard_count": dash_counts.get(c.id, 0),
             "last_message": last.content,
             "last_chart_type": last_chart_type,
             "pinned": bool(c.pinned),

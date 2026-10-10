@@ -115,8 +115,28 @@ def _check_can_share_into(db: Session, user: models.User, workspace_id: str) -> 
         raise HTTPException(403, "You have view-only access to that workspace.")
 
 
-def _dashboard_out(db: Session, dash: models.Dashboard, user: models.User) -> schemas.DashboardOut:
+def _source_ref(conv: models.Conversation | None, user: models.User, db: Session) -> dict:
+    """2026-10-10: the answer/analysis a dashboard was made from, only when
+    the viewer can still open it (never leaks a title they can't see)."""
+    if not conv or not workspace_access.can_access_conversation(db, conv, user):
+        return {}
+    return {
+        "source_kind": "answer" if conv.kind == "project" else "analysis",
+        "source_title": conv.title, "source_id": conv.id, "source_datasource_id": conv.datasource_id,
+    }
+
+
+def _dashboard_out(db: Session, dash: models.Dashboard, user: models.User,
+                   conv_cache: dict | None = None) -> schemas.DashboardOut:
     creator = db.query(models.User).filter(models.User.id == dash.owner_id).first()
+    conv = None
+    if dash.source_conversation_id:
+        if conv_cache is not None and dash.source_conversation_id in conv_cache:
+            conv = conv_cache[dash.source_conversation_id]
+        else:
+            conv = db.get(models.Conversation, dash.source_conversation_id)
+    elif dash.layout_version == 3 and (dash.project_spec or {}).get("project_id"):
+        conv = db.get(models.Conversation, dash.project_spec["project_id"])
     ws_name = None
     if dash.workspace_id:
         ws = db.query(models.Workspace).filter(models.Workspace.id == dash.workspace_id).first()
@@ -134,6 +154,7 @@ def _dashboard_out(db: Session, dash: models.Dashboard, user: models.User) -> sc
         can_edit=_can_edit(db, dash, user),
         can_delete=_can_delete(db, dash, user),
         layout_version=dash.layout_version or 1,
+        **_source_ref(conv, user, db),
     )
 
 
@@ -153,7 +174,9 @@ def list_dashboards(db: Session = Depends(get_db), user: models.User = Depends(g
         )
     else:
         dashboards = db.query(models.Dashboard).filter(models.Dashboard.owner_id == user.id).all()
-    out = [_dashboard_out(db, d, user) for d in dashboards]
+    conv_ids = {d.source_conversation_id for d in dashboards if d.source_conversation_id}
+    conv_cache = {c.id: c for c in db.query(models.Conversation).filter(models.Conversation.id.in_(list(conv_ids))).all()} if conv_ids else {}
+    out = [_dashboard_out(db, d, user, conv_cache) for d in dashboards]
     out.sort(key=lambda d: d.created_at, reverse=True)
     return out
 
@@ -192,6 +215,44 @@ def get_dashboard(dashboard_id: str, db: Session = Depends(get_db), user: models
         for c in sorted(d.charts, key=lambda c: c.position)
     ]
     return schemas.DashboardDetailOut(**base.model_dump(), charts=charts)
+
+
+@router.post("/{dashboard_id}/upgrade", response_model=schemas.DashboardOut)
+def upgrade_chart_board(dashboard_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """2026-10-10 (one kind of dashboard): turns a classic chart board
+    (layout 1) into a full dashboard IN PLACE - same id, so every old link
+    keeps working, same name, owner and sharing. Every pinned chart becomes
+    a chart block on a "Pinned charts" page, in the same order, with its
+    insight kept. Nothing is recomputed and nothing is lost."""
+    d = _get_editable(db, user, dashboard_id)
+    if (d.layout_version or 1) != 1:
+        raise HTTPException(409, "This is already a full dashboard.")
+    from .dashboard_builder import _layout_blocks  # local: dashboard_builder imports this module
+    charts = sorted(d.charts, key=lambda c: c.position)
+    page = models.DashboardPage(dashboard_id=d.id, name="Pinned charts", position=0)
+    db.add(page)
+    db.flush()
+    items = []
+    for i, c in enumerate(charts):
+        config = {"chart_spec": c.chart_spec}
+        if (c.insight or "").strip():
+            config["ai_explanation"] = c.insight.strip()
+        items.append({"type": "chart", "title": c.title or "Chart", "config": config, "position": i})
+    for item in _layout_blocks([], items):
+        db.add(models.DashboardBlock(
+            page_id=page.id, type=item["type"], title=item["title"], x=item["x"], y=item["y"],
+            w=item["w"], h=item["h"], config=item["config"], position=item["position"],
+        ))
+    for c in charts:
+        db.delete(c)
+    d.layout_version = 2
+    audit.log_audit_event(
+        db, actor=user, action="dashboard_upgraded", workspace_id=d.workspace_id,
+        target_type="dashboard", target_id=d.id,
+    )
+    db.commit()
+    db.refresh(d)
+    return _dashboard_out(db, d, user)
 
 
 @router.patch("/{dashboard_id}", response_model=schemas.DashboardOut)

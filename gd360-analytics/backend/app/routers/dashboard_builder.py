@@ -2607,6 +2607,9 @@ def _builder_out(db: Session, d: models.Dashboard, user: models.User) -> schemas
         source_conversation_id=d.source_conversation_id,
         source_conversation_title=source_conv.title if source_conv else None,
         source_conversation_datasource_id=source_conv.datasource_id if source_conv else None,
+        # 2026-10-10 (one kind of dashboard): "Made from answer" vs "Made
+        # from analysis" - which page the provenance chip opens.
+        source_conversation_kind=(("answer" if source_conv.kind == "project" else "analysis") if source_conv else None),
         sibling_dashboards=sibling_dashboards,
         datasource_id=ds.id if ds else None,
         datasource_name=ds.name if ds else None,
@@ -2756,6 +2759,7 @@ def list_my_dashboards(db: Session = Depends(get_db), user: models.User = Depend
             name=d.name,
             can_edit=_can_edit(db, d, user),
             datasource_name=ds.name if ds else None,
+            datasource_id=ds.id if ds else None,
             pages=[
                 schemas.DashboardPickerPageOut(id=p.id, name=p.name)
                 for p in sorted(d.pages, key=lambda p: p.position)
@@ -3264,16 +3268,24 @@ def create_blank_dashboard(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    conv = db.query(models.Conversation).filter(models.Conversation.id == payload.conversation_id).first()
-    if not conv or not workspace_access.can_access_conversation(db, conv, user):
-        raise HTTPException(404, "Conversation not found.")
-
-    dashboard = models.Dashboard(
-        owner_id=user.id,
-        name="Untitled dashboard",
-        layout_version=2,
-        source_conversation_id=conv.id,
-    )
+    name = (payload.name or "").strip()[:120] or "Untitled dashboard"
+    if payload.conversation_id:
+        conv = db.query(models.Conversation).filter(models.Conversation.id == payload.conversation_id).first()
+        if not conv or not workspace_access.can_access_conversation(db, conv, user):
+            raise HTTPException(404, "Conversation not found.")
+        dashboard = models.Dashboard(
+            owner_id=user.id,
+            name=name,
+            layout_version=2,
+            source_conversation_id=conv.id,
+        )
+    elif payload.datasource_id:
+        ds = _resolve_proposal_datasource(db, user, payload.datasource_id)
+        dashboard = models.Dashboard(
+            owner_id=user.id, name=name, layout_version=2, datasource_id=ds.id, default_period="month",
+        )
+    else:
+        raise HTTPException(400, "Pick a data source for the new dashboard.")
     db.add(dashboard)
     db.flush()
     page = models.DashboardPage(dashboard_id=dashboard.id, name="Overview", position=0)
@@ -4132,6 +4144,100 @@ def commit_proposal(
     ds = _resolve_proposal_datasource(db, user, proposal["datasource_id"])
     dashboard = _commit_proposal(db, user, ds, proposal, payload.keep, payload.name, payload.visibility)
     return _builder_out(db, dashboard, user)
+
+
+# 2026-10-10 (one kind of dashboard - Clarity Blueprint, Option 1): every
+# way of making a dashboard now ends in this same full kind (layout 2:
+# filters, cross-filter, canvas, publish). An Answer's "Create dashboard"
+# and the one-click upgrade of a classic answer dashboard (layout 3) both
+# come through here: describe -> validated proposal -> committed blocks,
+# exactly the /dashboards/new flow, just without the review step.
+
+def _move_pages(db: Session, source: models.Dashboard, target: models.Dashboard, suffix: str | None = None) -> list[str]:
+    """Moves every page (with its blocks, SQL and all) from `source` onto
+    `target`, after target's own pages, and merges source's filter
+    parameters into target's by id. Returns the moved page ids. The caller
+    deletes `source` afterwards."""
+    next_position = max((p.position for p in target.pages), default=-1) + 1
+    taken = {p.name for p in target.pages}
+    moved: list[str] = []
+    for page in sorted(list(source.pages), key=lambda p: p.position):
+        name = page.name
+        if suffix and name in taken:
+            name = f"{name} ({suffix})"[:120]
+        page.name = name
+        page.position = next_position
+        next_position += 1
+        target.pages.append(page)  # re-parents (never orphaned, so never deleted)
+        moved.append(page.id)
+    params = list(target.parameters or []) if isinstance(target.parameters, list) else []
+    known = {p.get("id") for p in params if isinstance(p, dict)}
+    for p in source.parameters or []:
+        if isinstance(p, dict) and p.get("id") not in known:
+            params.append(p)
+            known.add(p.get("id"))
+    target.parameters = params
+    if not target.date_column and source.date_column:
+        target.date_column = source.date_column
+    if not target.default_period and source.default_period:
+        target.default_period = source.default_period
+    db.flush()
+    return moved
+
+
+def build_dashboard_from_goal(
+    db: Session, user: models.User, ds: models.DataSource, goal: str, *, name: str | None = None,
+    conversation_id: str | None = None, add_to: models.Dashboard | None = None,
+    replace: models.Dashboard | None = None,
+) -> tuple[models.Dashboard, list[str]]:
+    """Builds a full dashboard on `ds` from a plain-English goal. Returns
+    (dashboard, page ids that were created).
+
+    - default: a new private dashboard, linked back to conversation_id.
+    - add_to: the new pages are added to that existing dashboard (same
+      data source only - a dashboard computes against one source).
+    - replace: the classic dashboard row `replace` becomes this full
+      dashboard IN PLACE - same id (old links keep working), name,
+      owner and sharing - with the new pages and filters."""
+    if add_to is not None and add_to.datasource_id and add_to.datasource_id != ds.id:
+        raise HTTPException(400, "That dashboard is built on a different data source - pick one built on the same source, or create a new dashboard.")
+    try:
+        proposal = _build_proposal(db, user, ds, goal, conversation_id=conversation_id)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"Could not plan a dashboard on {ds.name}: {e}")
+    if proposal["valid_blocks"] == 0:
+        reasons = [f'"{b["title"]}": {b["error"]}' for p in proposal["pages"] for b in p["blocks"] if b.get("error")]
+        detail = f"GD360 couldn't build a dashboard from this on {ds.name}."
+        if reasons:
+            detail += " Specifically: " + "; ".join(reasons[:3])
+        raise HTTPException(400, detail)
+    fresh = _commit_proposal(db, user, ds, proposal, None, name, "private", source_conversation_id=conversation_id)
+    if add_to is None and replace is None:
+        return fresh, [p.id for p in fresh.pages]
+    target = add_to if add_to is not None else replace
+    if replace is not None:
+        target.layout_version = 2
+        target.datasource_id = ds.id
+        target.parameters = []
+        target.date_column = None
+        target.default_period = None
+        target.project_spec = None
+        target.project_snapshot = None
+        target.snapshot_at = None
+        if conversation_id:
+            target.source_conversation_id = conversation_id
+        for old_page in list(target.pages):  # a classic answer dashboard has none; be safe
+            db.delete(old_page)
+        db.flush()
+    moved = _move_pages(db, fresh, target, suffix=None if replace is not None else "new")
+    if not target.datasource_id:
+        target.datasource_id = ds.id
+    db.delete(fresh)
+    db.commit()
+    db.refresh(target)
+    return target, moved
 
 
 @router.post("/{dashboard_id}/blocks/{block_id}/swap", response_model=schemas.DashboardBuilderOut)
