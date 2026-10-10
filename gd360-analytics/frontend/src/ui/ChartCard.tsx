@@ -48,7 +48,7 @@ export function ChartCard({
   const footer = footerProp !== undefined ? footerProp : computed ? <ComputedIn {...computed} /> : undefined;
   const bodyStyle = bodyHeight !== undefined ? { height: typeof bodyHeight === "number" ? `${bodyHeight}px` : bodyHeight } : undefined;
   return (
-    <Tag id={id} aria-busy={loading || undefined} className={cn("flex min-w-0 flex-col overflow-hidden rounded-card border border-border bg-surface shadow-card", className)}>
+    <Tag id={id} data-pdf-block="" aria-busy={loading || undefined} className={cn("flex min-w-0 flex-col overflow-hidden rounded-card border border-border bg-surface shadow-card", className)}>
       <header className={cn("flex items-start justify-between gap-3 px-4 pb-2.5 pt-3.5", headerClassName)}>
         <div className="flex min-w-0 items-start gap-2.5">
           {leading && <span className="mt-0.5 shrink-0">{leading}</span>}
@@ -57,7 +57,7 @@ export function ChartCard({
             {subtitle && <div className="text-[12.5px] text-muted">{subtitle}</div>}
           </div>
         </div>
-        {toolbar && <div className="flex shrink-0 items-center gap-1">{toolbar}</div>}
+        {toolbar && <div className="flex shrink-0 items-center gap-1" data-pdf-exclude="">{toolbar}</div>}
       </header>
       <div className={cn("relative min-h-0 flex-1", !flush && "px-4 pb-3", bodyClassName)} style={bodyStyle}>
         {error ? (
