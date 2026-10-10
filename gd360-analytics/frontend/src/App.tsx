@@ -34,6 +34,7 @@ import PrivacyPolicy from "./pages/PrivacyPolicy";
 import InviteJoin from "./pages/InviteJoin";
 import HomePage from "./pages/Home";
 import ProjectWorkspace from "./pages/ProjectWorkspace";
+import GuidedAnalysis from "./pages/GuidedAnalysis";
 import ProjectDashboard from "./pages/ProjectDashboard";
 import SpacePage from "./pages/SpacePage";
 import CommandPalette from "./components/CommandPalette";
@@ -132,6 +133,7 @@ export default function App() {
       <Route path="/library" element={<Protected><Dashboard /></Protected>} />
       <Route path="/projects" element={<RedirectKeepingQuery to="/library" />} />
       <Route path="/p/:projectId" element={<Protected><ProjectWorkspace /></Protected>} />
+      <Route path="/g/:projectId" element={<Protected><GuidedAnalysis /></Protected>} />
       <Route path="/project-dashboards/:dashboardId" element={<Protected><ProjectDashboard /></Protected>} />
       {/* 2026-10-09 (round 15): one Space - channel hub / overview. */}
       <Route path="/spaces/:id" element={<Protected><SpacePage /></Protected>} />
