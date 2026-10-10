@@ -103,6 +103,54 @@ def table_columns(schema_cache, table: str) -> list[dict] | None:
     return out
 
 
+_KEY_SUFFIXES = ("_id", "_key", "_code", "_sku", "id", "sku")
+
+
+def tables_with_column(schema_cache, column: str) -> list[str]:
+    """Every table in a multi-table schema_cache that has `column`."""
+    if not isinstance(schema_cache, dict):
+        return []
+    out = []
+    for t in schema_cache:
+        cols = table_columns(schema_cache, t) or []
+        if any(c["name"] == column for c in cols):
+            out.append(t)
+    return out
+
+
+def related_filter_path(schema_cache, base_table: str, column: str) -> tuple[str, str] | None:
+    """2026-10-10 (cross-table filters): a dashboard filter on a column
+    the block's own table does not have (Product category on a sales
+    table, when product_category lives in product_catalog). Returns
+    (other_table, key) where other_table has `column` and both tables
+    share the join key `key` (an id/key/code column of the same name) -
+    so the block can be filtered with
+        key IN (SELECT key FROM other_table WHERE <filter on column>)
+    a semi-join every SQL dialect runs, that never duplicates rows. None
+    when no such single-hop relation exists (the filter is then skipped
+    for that block, as before)."""
+    base_cols = {c["name"] for c in table_columns(schema_cache, base_table) or []}
+    if not base_cols or column in base_cols:
+        return None
+    best: tuple[int, str, str] | None = None
+    for other in tables_with_column(schema_cache, column):
+        if other == base_table:
+            continue
+        other_cols = {c["name"] for c in table_columns(schema_cache, other) or []}
+        shared = [k for k in base_cols & other_cols if k != column]
+        for k in shared:
+            low = k.lower()
+            if not low.endswith(_KEY_SUFFIXES):
+                continue
+            # prefer the key named after the other table ("product_id" for
+            # product_catalog), then any *_id
+            stem = low.rsplit("_", 1)[0]
+            score = 2 if stem and stem in other.lower() else 1
+            if best is None or score > best[0]:
+                best = (score, other, k)
+    return (best[1], best[2]) if best else None
+
+
 def builder_columns(schema_cache, tables: list[str] | None) -> dict[str, list[dict]]:
     """{table: [{name, type}]} for exactly the given tables (every table
     in schema_cache when `tables` is None) - what routers/chat.py hands
@@ -1477,7 +1525,21 @@ def build_block_sql(
     for column in dict.fromkeys(not_null):
         where_parts.append(f"{_quote_ident(kind, column)} IS NOT NULL")
     for f in extra_filters or []:
-        if not isinstance(f, dict) or f.get("column") not in known:
+        if not isinstance(f, dict):
+            continue
+        if f.get("column") not in known:
+            # 2026-10-10: a filter on another table's column reaches this
+            # block through a shared key (see related_filter_path).
+            path = related_filter_path(schema_cache, s["table"], f.get("column")) if isinstance(f.get("column"), str) else None
+            if not path:
+                continue
+            other, key = path
+            other_known = {c["name"] for c in table_columns(schema_cache, other) or []}
+            checked = _validate_filter(f, other_known, other, strict=False)
+            if checked:
+                other_sql = qualified_table_ident(kind, other, connection_info, alias_tables)
+                qk = _quote_ident(kind, key)
+                where_parts.append(f"{qk} IN (SELECT {qk} FROM {other_sql} WHERE {render_filter(kind, checked)})")
             continue
         checked = _validate_filter(f, known, s["table"], strict=False)
         if checked:
