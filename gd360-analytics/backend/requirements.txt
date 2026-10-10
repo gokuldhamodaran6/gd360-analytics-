@@ -78,3 +78,4 @@ apscheduler==3.10.4
 # separate model registry/blob store).
 scikit-learn==1.5.2
 joblib==1.4.2
+segno==1.6.1
