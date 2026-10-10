@@ -22,6 +22,8 @@ import { CommentsSheet } from "./comments/CommentThread";
 import type { CommentsApi } from "./comments/useComments";
 import { completeAppearance, type DashboardAppearance } from "./theme/appearance";
 import { ChartThemeProvider, useDashboardScope } from "./theme/ChartThemeContext";
+import { useThemeMode, useTransientTheme } from "../api/ThemeContext";
+import { exportDashboardPdf, type PdfOrientation, type PdfTheme } from "./pdfExport";
 import type { ChartTheme } from "./theme/chartTheme";
 
 // 2026-10-07 (Option A dashboard view, Main.dc.html): the page a dashboard
@@ -178,7 +180,31 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function ExportMenu({ page, run, exportApis, mode }: { page: DashboardBuilderPage | undefined; run: DashboardRun; exportApis: React.MutableRefObject<Record<string, ChartExportApi | null>>; mode: "warehouse" | "file" }) {
+const PDF_PREF_KEY = "gd360_pdf_export";
+
+function loadPdfPref(): { theme: PdfTheme; orientation: PdfOrientation } {
+  try {
+    const v = JSON.parse(localStorage.getItem(PDF_PREF_KEY) || "{}");
+    return {
+      theme: v.theme === "dark" || v.theme === "light" ? v.theme : "screen",
+      orientation: v.orientation === "portrait" ? "portrait" : "landscape",
+    };
+  } catch {
+    return { theme: "screen", orientation: "landscape" };
+  }
+}
+
+function ExportMenu({ page, run, exportApis, mode, onPdf, pdfBusy }: { page: DashboardBuilderPage | undefined; run: DashboardRun; exportApis: React.MutableRefObject<Record<string, ChartExportApi | null>>; mode: "warehouse" | "file"; onPdf: (theme: PdfTheme, orientation: PdfOrientation) => void; pdfBusy: boolean }) {
+  const [pdfPref, setPdfPref] = useState(loadPdfPref);
+  const setPref = (next: Partial<typeof pdfPref>) => {
+    const merged = { ...pdfPref, ...next };
+    setPdfPref(merged);
+    try {
+      localStorage.setItem(PDF_PREF_KEY, JSON.stringify(merged));
+    } catch {
+      /* a per-browser convenience */
+    }
+  };
   const blocks = (page?.blocks || []).filter((b) => isDataBlock(b) || b.type === "sql");
   const csvFor = (b: DashboardBlock) => {
     if (mode === "warehouse") {
@@ -225,9 +251,41 @@ function ExportMenu({ page, run, exportApis, mode }: { page: DashboardBuilderPag
             );
           })}
           <div className="my-1 border-t border-subtle" />
-          <button type="button" role="menuitem" className="ui-focus-inset flex w-full items-center gap-2.5 px-3 py-2 text-left text-ui text-text hover:bg-subtle" onClick={() => { close(); if (typeof window !== "undefined") window.print(); }}>
-            Print / Save as PDF
-          </button>
+          {/* The whole dashboard as a PDF file, in the theme picked here:
+              the same layout as on screen, never re-flowed for paper. */}
+          <div className="flex flex-col gap-2.5 px-3 pb-2 pt-1.5" data-pdf-options="">
+            <div className="text-caption font-medium uppercase tracking-caps text-muted">Whole dashboard as PDF</div>
+            <div className="flex flex-col gap-1">
+              <span className="text-caption text-secondary">Theme</span>
+              <SegmentedControl<PdfTheme>
+                ariaLabel="PDF theme"
+                size="sm"
+                value={pdfPref.theme}
+                onChange={(v) => setPref({ theme: v })}
+                options={[{ value: "screen", label: "As on screen" }, { value: "dark", label: "Dark" }, { value: "light", label: "Light" }]}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <span className="text-caption text-secondary">Page</span>
+              <SegmentedControl<PdfOrientation>
+                ariaLabel="PDF page orientation"
+                size="sm"
+                value={pdfPref.orientation}
+                onChange={(v) => setPref({ orientation: v })}
+                options={[{ value: "landscape", label: "Landscape" }, { value: "portrait", label: "Portrait" }]}
+              />
+            </div>
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<DownloadIcon size={14} />}
+              loading={pdfBusy}
+              data-download-pdf=""
+              onClick={() => { close(); onPdf(pdfPref.theme, pdfPref.orientation); }}
+            >
+              Download PDF
+            </Button>
+          </div>
         </div>
       )}
     </Popover>
@@ -320,6 +378,34 @@ function ShellBody({
     return { ...owner, commentCounts: counts, onComments: (b: DashboardBlock) => setCommentsFor(b) };
   }, [owner, comments]);
   const exportApis = useRef<Record<string, ChartExportApi | null>>({});
+  // Download PDF: the content area below, captured as drawn on screen.
+  const mainRef = useRef<HTMLElement>(null);
+  const subtitleRef = useRef<HTMLDivElement>(null);
+  const screenTheme = useThemeMode();
+  const setTransientTheme = useTransientTheme();
+  const [pdfStage, setPdfStage] = useState<null | "theme" | "capture" | "write">(null);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+  const downloadPdf = async (theme: PdfTheme, orientation: PdfOrientation) => {
+    if (!mainRef.current || pdfStage) return;
+    setPdfError(null);
+    setPdfStage("capture");
+    try {
+      await exportDashboardPdf({
+        target: mainRef.current,
+        title: dashboard.name,
+        subtitle: subtitleRef.current?.innerText || "",
+        theme,
+        orientation,
+        currentTheme: screenTheme,
+        setTransientTheme,
+        onStage: setPdfStage,
+      });
+    } catch {
+      setPdfError("Couldn't make the PDF. Please try again.");
+    } finally {
+      setPdfStage(null);
+    }
+  };
   const onExportApi = useCallback((blockId: string, api: ChartExportApi | null) => {
     if (api) exportApis.current[blockId] = api;
     else delete exportApis.current[blockId];
@@ -445,7 +531,7 @@ function ShellBody({
               options={[{ value: "dashboard", label: "Dashboard" }, { value: "canvas", label: "Canvas" }]}
             />
           )}
-          <ExportMenu page={page} run={run} exportApis={exportApis} mode={mode} />
+          <ExportMenu page={page} run={run} exportApis={exportApis} mode={mode} onPdf={downloadPdf} pdfBusy={pdfStage !== null} />
           {mode === "warehouse" && (
             <Button variant="ghost" iconOnly aria-label="Recompute every block" title="Recompute every block" icon={<RefreshIcon size={15} />} onClick={run.refresh} loading={run.loading && !run.ready}>
               Refresh
@@ -474,7 +560,7 @@ function ShellBody({
             ) : (
               <h1 className="truncate text-title font-semibold text-text">{dashboard.name}</h1>
             )}
-            <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-ui text-muted" data-dashboard-subtitle="">
+            <div ref={subtitleRef} className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-ui text-muted" data-dashboard-subtitle="">
               {subtitleParts.map((p, i) => (
                 <span key={i} className="inline-flex items-center gap-1.5">
                   {i > 0 && <span aria-hidden="true">·</span>}
@@ -498,6 +584,27 @@ function ShellBody({
         </div>
         {pageActions && headerControls}
       </header>
+
+      {(pdfStage || pdfError) && (
+        <div
+          role={pdfError ? "alert" : "status"}
+          data-pdf-exclude=""
+          data-pdf-status=""
+          className="fixed bottom-5 left-1/2 z-50 inline-flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-surface px-4 py-2 text-ui text-text shadow-pop print:hidden"
+        >
+          {pdfError ? (
+            <>
+              <WarningIcon size={14} className="text-danger" /> {pdfError}
+              <button type="button" className="ui-focus ml-1 rounded px-1 text-caption text-muted hover:text-text" onClick={() => setPdfError(null)}>Dismiss</button>
+            </>
+          ) : (
+            <>
+              <span className="ui-spinner !h-3.5 !w-3.5 !border-[1.5px]" aria-hidden="true" />
+              {pdfStage === "theme" ? "Switching the theme for the PDF…" : pdfStage === "write" ? "Writing the PDF…" : "Capturing the dashboard…"}
+            </>
+          )}
+        </div>
+      )}
 
       {savePrompt && (
         <form
@@ -537,7 +644,7 @@ function ShellBody({
       )}
       <div className="flex min-h-0 flex-1 items-stretch">
         {showRail && rail("rail")}
-        <main className="min-w-0 flex-1 px-4 pb-10 pt-1 sm:px-6 print:px-0">
+        <main ref={mainRef} className="min-w-0 flex-1 px-4 pb-10 pt-1 sm:px-6 print:px-0" data-dashboard-main="">
           {beforeContent}
           {legacyCount > 0 && (
             <div className="mb-4">
