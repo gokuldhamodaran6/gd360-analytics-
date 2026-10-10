@@ -3887,6 +3887,16 @@ def _build_proposal(
     if date_column:
         parameters.append({"id": "p_date_range", "name": "date_range", "column": date_column, "label": "Date range",
                            "control": "date_range", "options_from": None, "default": None, "table": None})
+    # 2026-10-10 (cross-table filters): a filter whose column is not in the
+    # main table records the table that has it, so its options load.
+    for prm in parameters:
+        col = prm.get("column")
+        if prm.get("table") or not col or not primary_table:
+            continue
+        if not any(c["name"] == col for c in (query_builder.table_columns(schema, primary_table) or [])):
+            holders = query_builder.tables_with_column(schema, col)
+            if holders:
+                prm["table"] = holders[0]
 
     suggestions = [str(x).strip()[:120] for x in (raw.get("suggestions") or []) if isinstance(x, str) and str(x).strip()][:4]
     return {
@@ -6529,6 +6539,24 @@ def _parameter_options_for(db, d, ds, param_id, search, limit, user_id) -> schem
     if not param:
         raise HTTPException(404, "Parameter not found on this dashboard.")
     table = param.get("table") or _dashboard_primary_table(d, ds)
+    # 2026-10-10 (cross-table filters): the filter's column may live in a
+    # different table than the dashboard's main one (product_category in
+    # product_catalog) - read the options from the table that has it.
+    if table and param.get("column"):
+        schema, _aliases = query_builder.with_version_aliases(ds.schema_cache, dashboard_engine.load_versions(db, ds))
+        if not any(c["name"] == param["column"] for c in (query_builder.table_columns(schema, table) or [])):
+            holders = query_builder.tables_with_column(schema, param["column"])
+            if holders:
+                table = holders[0]
+            else:
+                # Not in any table of this source (renamed or removed since):
+                # say so plainly instead of a raw SQL error.
+                label = param.get("label") or param["column"]
+                return schemas.ParameterOptionsOut(
+                    parameter_id=param_id, column=param["column"], table=table, search=search, values=[],
+                    truncated=False, cached=False,
+                    error=f"“{label}” isn't in this data source any more. Edit filters and choose another column.",
+                )
     if not table:
         raise HTTPException(400, "This dashboard has no table to read parameter options from.")
     res = dashboard_engine.distinct_values(
