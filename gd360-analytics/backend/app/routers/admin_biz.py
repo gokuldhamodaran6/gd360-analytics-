@@ -64,6 +64,8 @@ DEFAULT_MATRIX = [
     ("ml.models", "ML models", ["∞", "3", "20", "∞", "∞"], "soft"),
     ("automations.max", "Automations", ["∞", "2", "20", "∞", "∞"], "soft"),
     ("automations.interval", "Fastest automation interval", ["15 min", "daily", "hourly", "15 min", "5 min"], "hard"),
+    ("initiatives.access", "Initiatives (plan, track, campaigns)", ["yes", "—", "yes", "yes", "yes"], "hard"),
+    ("gtm.accounts", "Target accounts (account-based marketing)", ["∞", "—", "1,000", "10,000", "custom"], "soft"),
     ("access.rules", "Row and column access rules", ["yes", "—", "yes", "yes", "yes"], "hard"),
     ("audit.retention_days", "Audit log retention (days)", ["90", "—", "30", "365", "2555"], "hard"),
     ("sso", "Single sign-on", ["—", "—", "Google", "Google + Microsoft", "SAML + SCIM"], "hard"),
