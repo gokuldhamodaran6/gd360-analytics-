@@ -669,13 +669,23 @@ def next_sync_time(ds: models.DataSource, now: datetime | None = None) -> dateti
     return now + SYNC_INTERVALS.get(interval, timedelta(hours=1))
 
 
-def sync_datasource(db: Session, ds: models.DataSource) -> dict:
+def sync_datasource(db: Session, ds: models.DataSource, reason: str = "schedule") -> dict:
     """Fetch and store every table of one synced source. Never raises: the
-    outcome (tables, rows, error) is returned and recorded on the source."""
+    outcome (tables, rows, error) is returned and recorded on the source,
+    and (2026-10-10, round 19) as one SyncRun row for the run history."""
     app = APPS.get(ds.kind)
     started = time.perf_counter()
     if not app:
         return {"ok": False, "error": f"{ds.kind} is not a synced app."}
+    run_id = None
+    try:
+        run = models.SyncRun(datasource_id=ds.id, owner_id=ds.owner_id, reason=reason, status="running",
+                             started_at=datetime.utcnow())
+        db.add(run)
+        db.commit()
+        run_id = run.id
+    except Exception:  # noqa: BLE001 - history is best effort, never blocks a sync
+        db.rollback()
     try:
         tables = app["fetch"](credentials(ds), ds.connection_info or {})
         counts = {}
@@ -687,6 +697,7 @@ def sync_datasource(db: Session, ds: models.DataSource) -> dict:
         ds.sync_error = None
         ds.next_sync_at = next_sync_time(ds)
         db.commit()
+        _finish_run(db, run_id, "success", None, sum(counts.values()))
         return {"ok": True, "tables": counts, "seconds": round(time.perf_counter() - started, 1)}
     except Exception as e:  # noqa: BLE001
         db.rollback()
@@ -696,7 +707,23 @@ def sync_datasource(db: Session, ds: models.DataSource) -> dict:
         ds.sync_error = msg
         ds.next_sync_at = next_sync_time(ds)
         db.commit()
+        _finish_run(db, run_id, "failed", msg, None)
         return {"ok": False, "error": msg}
+
+
+def _finish_run(db: Session, run_id: str | None, status: str, error: str | None, rows: int | None) -> None:
+    if not run_id:
+        return
+    try:
+        run = db.get(models.SyncRun, run_id)
+        if run:
+            run.status = status
+            run.error_message = error
+            run.rows = rows
+            run.finished_at = datetime.utcnow()
+            db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
 
 
 def due_sources(db: Session, now: datetime | None = None) -> list[models.DataSource]:

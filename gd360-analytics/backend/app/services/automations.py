@@ -702,7 +702,7 @@ def _step_sync_source(db, step, user, ctx):
         df = refresh_api_datasource(db, ds)
         return {"rows": int(len(df))}
     from .synced_sources import sync_datasource
-    out = sync_datasource(db, ds)
+    out = sync_datasource(db, ds, reason="automation")
     if not out.get("ok"):
         raise StepFailed(out.get("error") or "The sync failed.")
     return {"tables": out.get("tables"), "rows": sum((out.get("tables") or {}).values())}

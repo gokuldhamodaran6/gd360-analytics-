@@ -111,7 +111,7 @@ def can_edit(db: Session, space: models.Space, user: models.User) -> bool:
     if space.owner_id == user.id:
         return True
     if space.workspace_id:
-        return workspace_access.member_role(db, user.id, space.workspace_id) == "owner"
+        return workspace_access.member_role(db, user.id, space.workspace_id) in ("owner", "admin")
     return False
 
 

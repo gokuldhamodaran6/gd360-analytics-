@@ -58,7 +58,11 @@ from .. import models
 # existed; "viewer" (added 2026-09-23) is the one role that doesn't. Kept
 # as a set (not just `!= "viewer"`) so a future role slots in explicitly
 # rather than silently inheriting write access by default.
-_EDIT_ROLES = {"owner", "member"}
+_EDIT_ROLES = {"owner", "admin", "member"}
+# 2026-10-10 (round 19): "admin" is a second tier of owner - manages people,
+# the company domain and the Trust Center, but never billing or deleting the
+# workspace (those stay with the one owner).
+ADMIN_ROLES = {"owner", "admin"}
 
 
 def member_workspace_ids(db: Session, user_id: str) -> set[str]:
@@ -78,6 +82,13 @@ def member_role(db: Session, user_id: str, workspace_id: str) -> str | None:
         .first()
     )
     return row[0] if row else None
+
+
+def is_admin(db: Session, user_id: str, workspace_id: str | None) -> bool:
+    """Owner or admin of this workspace."""
+    if not workspace_id:
+        return False
+    return member_role(db, user_id, workspace_id) in ADMIN_ROLES
 
 
 def can_access_datasource(db: Session, ds: models.DataSource, user: models.User) -> bool:
