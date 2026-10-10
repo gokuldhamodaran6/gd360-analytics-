@@ -47,6 +47,11 @@ google-cloud-bigquery==3.45.2
 # this was actually caught. pyarrow>=13.0.0 (db-dtypes' own floor) is already
 # satisfied transitively via snowflake-connector-python[pandas] below.
 db-dtypes==1.7.2
+# 2026-10-10: pinned. Left unpinned, a fresh build picked up pyarrow 26.0.0,
+# which needs NumPy 2 - with numpy==1.26.4 above, `import db_dtypes` fails and
+# every BigQuery block showed "Please install the 'db-dtypes' package".
+# 19.0.1 supports NumPy 1.x and satisfies db-dtypes and Snowflake's [pandas].
+pyarrow==19.0.1
 # Snowflake data-warehouse connector (Enterprise Scale Roadmap, Phase 2) -
 # the [pandas] extra pulls in pyarrow, needed for cur.fetch_pandas_all()
 # in services/connectors.py SnowflakeConnector.
