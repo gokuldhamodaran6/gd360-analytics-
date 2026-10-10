@@ -11,6 +11,7 @@ from .routers import (
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
     data_access_rules, ml_models, metric_definitions, transforms, pipelines, projects, apps, automations, ml_studio,
     spaces, site, admin_v2, admin_ops, admin_biz, inapp, guided, initiatives, gtm, gtm_public,
+    ops, trust, domains,
 )
 from .services.scheduler import start_scheduler
 
@@ -152,6 +153,66 @@ async def ai_context_and_kill_switches(request: Request, call_next):
         ai_meter.reset_context(token)
 
 
+# 2026-10-10 (round 19, company domains): a company's own address
+# (data.acmeretail.com) runs this same SPA, which signs viewers in with their
+# GD360 account and opens dashboards through /viewer/*. Those origins can't
+# be in the fixed list above, so - like /public/* - they are answered here,
+# outermost, but ONLY for an origin that is a LIVE company domain and only
+# for the sign-in endpoints and /viewer/*. Tokens travel as a bearer header
+# (no cookies), so reflecting the origin grants nothing a viewer's own token
+# doesn't already. /viewer/site (which site is this address?) answers any
+# origin: it is what a not-yet-known address asks first.
+import re as _re  # noqa: E402
+import time as _time  # noqa: E402
+from urllib.parse import urlparse as _urlparse  # noqa: E402
+
+_DOMAIN_AUTH_PATHS = _re.compile(
+    r"^/auth/(login|login/mfa|register|captcha|me|code/request|code/verify|verify-email/request|verify-email/confirm)$"
+)
+_LIVE_HOSTS: dict = {"at": 0.0, "hosts": set()}
+
+
+def _live_company_hosts() -> set:
+    if _time.time() - _LIVE_HOSTS["at"] > 30:
+        from .database import SessionLocal
+        from . import models as _models
+        db = SessionLocal()
+        try:
+            _LIVE_HOSTS["hosts"] = {h for (h,) in db.query(_models.WorkspaceDomain.hostname)
+                                    .filter(_models.WorkspaceDomain.status == "live").all()}
+            _LIVE_HOSTS["at"] = _time.time()
+        except Exception as e:  # noqa: BLE001
+            print(f"[main] company domain list unavailable: {e}")
+        finally:
+            db.close()
+    return _LIVE_HOSTS["hosts"]
+
+
+@app.middleware("http")
+async def company_domain_cors(request: Request, call_next):
+    origin = request.headers.get("origin")
+    path = request.url.path
+    allowed = False
+    if origin and origin not in _cors_origins and (path.startswith("/viewer/") or _DOMAIN_AUTH_PATHS.match(path)):
+        if path == "/viewer/site":
+            allowed = True
+        else:
+            host = (_urlparse(origin).hostname or "").lower()
+            allowed = bool(host) and host in _live_company_hosts()
+    if allowed and request.method == "OPTIONS":
+        return Response(status_code=200, headers={
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": request.headers.get("access-control-request-headers", "*"),
+            "Access-Control-Max-Age": "600", "Vary": "Origin",
+        })
+    response = await call_next(request)
+    if allowed:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers.setdefault("Vary", "Origin")
+    return response
+
+
 app.include_router(auth.router)
 app.include_router(datasources.router)
 app.include_router(chat.router)
@@ -219,6 +280,11 @@ app.include_router(inapp.router)
 app.include_router(initiatives.router)
 app.include_router(gtm.router)
 app.include_router(gtm_public.router)
+# 2026-10-10 (round 19): the Automations home, the Trust Center and company domains.
+app.include_router(ops.router)
+app.include_router(trust.router)
+app.include_router(domains.router)
+app.include_router(domains.viewer_router)
 # 2026-09-30 (Gokul's own bug report - Governance/Jobs redesign + Pipelines/
 # Catalog removal round): the standalone /catalog router is gone - Gokul's
 # own words were that it duplicated the Projects filter and Data Sources

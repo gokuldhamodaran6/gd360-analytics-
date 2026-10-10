@@ -36,6 +36,12 @@ class UserOut(BaseModel):
     # building a UserOut without explicitly setting it never accidentally
     # grants admin UI.
     is_admin: bool = False
+    # 2026-10-10 (round 19): 2-step sign-in. mfa_setup_required is set on
+    # /auth/me when a workspace this person belongs to requires 2-step and
+    # they haven't turned it on yet.
+    mfa_enabled: bool = False
+    mfa_setup_required: bool = False
+    email_verified: bool = False
 
     class Config:
         from_attributes = True
@@ -45,6 +51,11 @@ class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserOut
+    # 2026-10-10 (round 19): when the account has 2-step sign-in on, /login
+    # returns access_token "" with mfa_required true and an mfa_token for
+    # POST /auth/login/mfa.
+    mfa_required: bool = False
+    mfa_token: Optional[str] = None
 
 
 class CaptchaOut(BaseModel):

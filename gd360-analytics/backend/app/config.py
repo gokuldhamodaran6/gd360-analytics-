@@ -377,6 +377,10 @@ class Settings(BaseSettings):
     # window.location.hostname at runtime and resolves it to the right
     # dashboard by calling this backend.
     RENDER_FRONTEND_SERVICE_ID: str = ""
+    # 2026-10-10 (round 19, company domains): the hostname a company's CNAME
+    # record points at (e.g. gd360-analytics-web.onrender.com). Empty = the
+    # host part of FRONTEND_ORIGIN, which is right for this installation.
+    FRONTEND_CNAME_TARGET: str = ""
 
     # --- 2026-10-08 (round 11): synced app sources (services/synced_sources.py).
     # The API versions each app is called with. Apps retire old versions on a

@@ -289,6 +289,24 @@ _NEW_COLUMNS = [
     ("demo_requests", "owner_email", "TEXT"),
     ("demo_requests", "notes", "TEXT"),
     ("demo_requests", "deal_id", "TEXT"),
+    # 2026-10-10 (round 19): Trust Center, Automations approvals, 2-step
+    # sign-in, share view counts. (sync_runs, sensitive_columns,
+    # login_codes and the workspace_domains/domain_* tables are new tables -
+    # create_all() makes them.)
+    ("users", "mfa_secret_enc", "TEXT"),
+    ("users", "mfa_enabled_at", "TIMESTAMP"),
+    ("users", "mfa_recovery_hashes", "JSON"),
+    ("users", "email_verified_at", "TIMESTAMP"),
+    ("workspaces", "policies", "JSON"),
+    ("automations", "approval_status", "TEXT"),
+    ("automations", "approval_requested_at", "TIMESTAMP"),
+    ("automations", "approval_requested_by_id", "TEXT"),
+    ("automations", "approved_by_id", "TEXT"),
+    ("automations", "approved_at", "TIMESTAMP"),
+    ("automations", "approved_recipients", "JSON"),
+    ("automations", "approval_note", "TEXT"),
+    ("dashboard_shares", "view_count", "INTEGER DEFAULT 0"),
+    ("dashboard_shares", "last_viewed_at", "TIMESTAMP"),
 ]
 
 

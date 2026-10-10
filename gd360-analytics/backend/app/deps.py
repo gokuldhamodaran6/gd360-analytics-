@@ -23,6 +23,11 @@ def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
     payload = decode_access_token_full(token)
+    # 2026-10-10 (round 19): only a real access token signs a person in. The
+    # app's other signed tokens (OAuth state, private-dashboard viewer, the
+    # 2-step pending token) all carry a "typ" and are refused here.
+    if payload and payload.get("typ"):
+        raise credentials_exception
     user_id = payload.get("sub") if payload else None
     if user_id is None:
         raise credentials_exception

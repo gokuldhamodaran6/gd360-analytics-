@@ -46,6 +46,25 @@ class User(Base):
     # 2026-10-10 (Mission Control): set when an admin suspends the account.
     # deps.get_current_user and /auth/login refuse a suspended user.
     disabled_at = Column(DateTime, nullable=True)
+    # 2026-10-10 (round 19, Trust Center): optional 2-step sign-in with an
+    # authenticator app (TOTP, RFC 6238). The secret is stored encrypted
+    # (security.encrypt_secret); mfa_enabled_at is set only after the person
+    # proves the app works with a first code. Recovery codes are stored as
+    # SHA-256 hashes and each one works once.
+    mfa_secret_enc = Column(Text, nullable=True)
+    mfa_enabled_at = Column(DateTime, nullable=True)
+    mfa_recovery_hashes = Column(JSON, nullable=True)
+    # Set the first time this person proves they own their email (a one-time
+    # code sent to it). Company domains only trust a verified email.
+    email_verified_at = Column(DateTime, nullable=True)
+
+    @property
+    def mfa_enabled(self) -> bool:
+        return bool(self.mfa_enabled_at)
+
+    @property
+    def email_verified(self) -> bool:
+        return bool(self.email_verified_at)
 
     # foreign_keys is explicit here for the same reason DataSource.owner's
     # own relationship below states it - DataSource.governance_last_
@@ -92,6 +111,9 @@ class Workspace(Base):
     # NULL = no kit: dashboards use the product defaults. The shape and its
     # validation live in services/appearance.py (normalize_kit).
     brand_kit = Column(JSON, nullable=True)
+    # 2026-10-10 (round 19): company rules shown and changed in the Trust
+    # Center (services/policies.py has the defaults and their meaning).
+    policies = Column(JSON, nullable=True)
 
     members = relationship("WorkspaceMember", back_populates="workspace", cascade="all, delete-orphan")
 
@@ -103,7 +125,7 @@ class WorkspaceMember(Base):
     id = Column(String, primary_key=True, default=gen_uuid)
     workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False)
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    role = Column(String, default="member")  # "owner" | "member"
+    role = Column(String, default="member")  # "owner" | "admin" | "member" | "viewer"
     created_at = Column(DateTime, default=datetime.utcnow)
 
     workspace = relationship("Workspace", back_populates="members")
@@ -1082,6 +1104,10 @@ class DashboardShare(Base):
     render_custom_domain_id = Column(String, nullable=True)
     custom_domain_status = Column(String, nullable=True)
     custom_domain_error = Column(String, nullable=True)
+    # 2026-10-10 (round 19): how often the published link is opened, for the
+    # Trust Center's sharing list (counted by the public GET, not per block).
+    view_count = Column(Integer, nullable=True, default=0)
+    last_viewed_at = Column(DateTime, nullable=True)
 
     dashboard = relationship("Dashboard", back_populates="share")
     allowed_emails = relationship(
@@ -2342,6 +2368,18 @@ class Automation(Base):
     last_condition = Column(Boolean, nullable=True)      # threshold trigger: was it true at the last check
     last_checked_at = Column(DateTime, nullable=True)
     last_value = Column(String, nullable=True)           # threshold trigger: the value seen at the last check
+    # 2026-10-10 (round 19): in a team workspace, an automation a member
+    # builds that emails people outside the company waits for an owner or
+    # admin's OK (workspace policy external_email_needs_approval). While
+    # "pending" it stays switched off. approved_recipients is the list that
+    # was approved, so adding a new outside address asks again.
+    approval_status = Column(String, nullable=True)      # None | pending | approved | rejected
+    approval_requested_at = Column(DateTime, nullable=True)
+    approval_requested_by_id = Column(String, nullable=True)
+    approved_by_id = Column(String, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    approved_recipients = Column(JSON, nullable=True)
+    approval_note = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -3026,3 +3064,185 @@ class InitiativeOutreach(Base):
     history = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+
+# ============================================================================
+# 2026-10-10 (round 19): Automations home, Trust Center, company domain.
+# ============================================================================
+
+class SyncRun(Base):
+    """One sync of a synced app source (Shopify, GA4, Meta Ads, Google Ads):
+    written by services/synced_sources.sync_datasource so the Automations
+    home can show the same run history for syncs as for everything else."""
+    __tablename__ = "sync_runs"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    datasource_id = Column(String, ForeignKey("datasources.id", ondelete="CASCADE"), nullable=False, index=True)
+    owner_id = Column(String, nullable=True, index=True)
+    reason = Column(String, nullable=False, default="schedule")   # schedule | manual | automation
+    status = Column(String, nullable=False, default="running")    # running | success | failed
+    error_message = Column(Text, nullable=True)
+    rows = Column(Integer, nullable=True)
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class SensitiveColumn(Base):
+    """A column the Trust Center found (or a person marked) as holding
+    personal or sensitive data. status: flagged (found, nobody decided yet),
+    confirmed (yes, sensitive) or dismissed (not sensitive - never flagged
+    again). category: email | phone | name | address | birth_date | salary |
+    government_id | payment | ip_address | health | other."""
+    __tablename__ = "sensitive_columns"
+    __table_args__ = (UniqueConstraint("datasource_id", "table_name", "column_name", name="uq_sensitive_column"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    datasource_id = Column(String, ForeignKey("datasources.id", ondelete="CASCADE"), nullable=False, index=True)
+    table_name = Column(String, nullable=False, default="")
+    column_name = Column(String, nullable=False)
+    category = Column(String, nullable=False, default="other")
+    reason = Column(String, nullable=True)          # "column name", "values look like emails" ...
+    source = Column(String, nullable=False, default="auto")   # auto | manual
+    status = Column(String, nullable=False, default="flagged")
+    decided_by_id = Column(String, nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LoginCode(Base):
+    """A one-time 6-digit sign-in code sent by email (viewers on a company
+    domain can sign in with one instead of a password). Only a SHA-256 hash
+    of the code is stored; five wrong tries burn it."""
+    __tablename__ = "login_codes"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    email = Column(String, nullable=False, index=True)
+    code_hash = Column(String, nullable=False)
+    purpose = Column(String, nullable=False, default="sign_in")
+    host = Column(String, nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WorkspaceDomain(Base):
+    """A company's own address for its dashboards (e.g. data.acmeretail.com):
+    one per workspace. Owners and admins connect it with two DNS records -
+    a CNAME to GD360 and a TXT record proving they control the domain - and
+    GD360 then registers it with Render, which issues the HTTPS certificate.
+
+    status: pending_dns (records not found yet) -> pending_ssl (records
+    found, certificate being issued) -> live; or error.
+    audience: who may open dashboards here by default -
+      "company"  : anyone signing in with an email at one of allowed_email_domains
+      "invited"  : only invited_emails (plus workspace members)
+      "public"   : anyone, no sign-in (refused while sensitive data is published)
+    Each published dashboard can be stricter, never looser."""
+    __tablename__ = "workspace_domains"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, unique=True, index=True)
+    hostname = Column(String, nullable=False, unique=True, index=True)
+    verify_token = Column(String, nullable=False, default=lambda: secrets.token_hex(8))
+    status = Column(String, nullable=False, default="pending_dns")
+    dns_cname_ok = Column(Boolean, nullable=False, default=False)
+    dns_txt_ok = Column(Boolean, nullable=False, default=False)
+    render_custom_domain_id = Column(String, nullable=True)
+    last_error = Column(Text, nullable=True)
+    last_checked_at = Column(DateTime, nullable=True)
+    verified_at = Column(DateTime, nullable=True)
+    live_at = Column(DateTime, nullable=True)
+    audience = Column(String, nullable=False, default="company")
+    allowed_email_domains = Column(JSON, nullable=True)
+    invited_emails = Column(JSON, nullable=True)
+    site_title = Column(String, nullable=True)        # "Acme Retail Data"
+    show_powered_by = Column(Boolean, nullable=False, default=True)
+    publish_needs_approval = Column(Boolean, nullable=False, default=True)
+    logo_image = Column(LargeBinary, nullable=True)
+    logo_content_type = Column(String, nullable=True)
+    created_by_id = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DomainPublication(Base):
+    """One dashboard published at a path on a WorkspaceDomain
+    (data.acmeretail.com/sales). status: pending (a member asked; an owner
+    or admin decides), live, rejected, removed.
+    audience: "domain" (the domain's default), "invited" (invited_emails
+    only) or "members" (members of the workspace only).
+    row_rule: optional per-viewer row filter -
+      {"column": "region", "table": null, "by_email": {"dana@x.com": ["North"]},
+       "by_domain": {"x.com": [...]}, "default": [] }  (empty = sees nothing)"""
+    __tablename__ = "domain_publications"
+    __table_args__ = (UniqueConstraint("domain_id", "path", name="uq_domain_publication_path"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    domain_id = Column(String, ForeignKey("workspace_domains.id", ondelete="CASCADE"), nullable=False, index=True)
+    workspace_id = Column(String, nullable=False, index=True)
+    dashboard_id = Column(String, ForeignKey("dashboards.id", ondelete="CASCADE"), nullable=False, index=True)
+    path = Column(String, nullable=False)              # "sales" (no slashes at the ends)
+    title = Column(String, nullable=True)
+    audience = Column(String, nullable=False, default="domain")
+    invited_emails = Column(JSON, nullable=True)
+    row_rule = Column(JSON, nullable=True)
+    status = Column(String, nullable=False, default="live")
+    requested_by_id = Column(String, nullable=True)
+    requested_at = Column(DateTime, nullable=True)
+    request_note = Column(Text, nullable=True)
+    decided_by_id = Column(String, nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    decision_note = Column(Text, nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    view_count = Column(Integer, nullable=False, default=0)
+    last_viewed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DomainView(Base):
+    """One signed-in visit to a published dashboard on a company domain -
+    who opened what and when (for "viewers, 30 days" and the audit log)."""
+    __tablename__ = "domain_views"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    publication_id = Column(String, ForeignKey("domain_publications.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(String, nullable=True, index=True)
+    email = Column(String, nullable=True)
+    viewed_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class DomainAccessRequest(Base):
+    """A viewer on the company domain asking to open a dashboard they can't
+    see yet ("Ask for access"). Owners, admins and the publisher decide."""
+    __tablename__ = "domain_access_requests"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    publication_id = Column(String, ForeignKey("domain_publications.id", ondelete="CASCADE"), nullable=False, index=True)
+    workspace_id = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=True)
+    email = Column(String, nullable=False)
+    note = Column(Text, nullable=True)
+    status = Column(String, nullable=False, default="pending")   # pending | approved | declined
+    decided_by_id = Column(String, nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class DomainSubscription(Base):
+    """A viewer's weekly email with the link to a published dashboard
+    ("Email me on Mondays"). Sent Mondays 08:00 in the viewer's time zone."""
+    __tablename__ = "domain_subscriptions"
+    __table_args__ = (UniqueConstraint("publication_id", "user_id", name="uq_domain_subscription"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    publication_id = Column(String, ForeignKey("domain_publications.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    email = Column(String, nullable=False)
+    timezone = Column(String, nullable=False, default="UTC")
+    next_send_at = Column(DateTime, nullable=True, index=True)
+    last_sent_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

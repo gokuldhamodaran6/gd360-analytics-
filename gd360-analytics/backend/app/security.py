@@ -63,6 +63,29 @@ def decode_access_token_full(token: str) -> Optional[dict]:
         return None
 
 
+def create_mfa_token(user_id: str, token_version: int = 0, host: str | None = None) -> str:
+    """2026-10-10 (round 19): proves the password step of a 2-step sign-in
+    passed. It carries no "sub" and has a "typ", so deps.get_current_user
+    never accepts it as an access token; it only works at
+    POST /auth/login/mfa, for 10 minutes."""
+    expire = datetime.now(timezone.utc) + timedelta(minutes=10)
+    payload = {"uid": user_id, "typ": "mfa_pending", "tv": int(token_version or 0), "exp": expire,
+               "nonce": secrets.token_urlsafe(8)}
+    if host:
+        payload["host"] = host
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+
+def decode_mfa_token(token: str) -> Optional[dict]:
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+    except JWTError:
+        return None
+    if payload.get("typ") != "mfa_pending" or not payload.get("uid"):
+        return None
+    return payload
+
+
 def create_oauth_state(user_id: str, provider: str) -> str:
     """A short-lived, signed token that round-trips through a third-party
     OAuth consent screen (Google/Microsoft - see routers/connections.py) and
