@@ -300,6 +300,7 @@ function StartDialog({
 
   const pick = (c: ConversationSummary) => {
     if (kind === "answer") navigate(`/p/${c.id}?create=1`);
+    else if (c.kind === "guided") navigate(`/g/${c.id}?create=1`);
     else if (c.datasource_id) navigate(`/workspace/${c.datasource_id}?conversation=${c.id}&create=1`);
   };
 

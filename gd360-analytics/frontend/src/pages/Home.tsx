@@ -21,18 +21,92 @@ import { projectsApi, ProjectSource } from "../api/projects";
 import { timeAgo, autoRunPreference } from "../project/format";
 import { useAuth } from "../api/AuthContext";
 import { Space, spacesApi } from "../api/spaces";
-import ScopePicker, { Scope, loadScope, saveScope, scopeSummary, startersFor } from "../spaces/ScopePicker";
+import ScopePicker, { Scope, loadScope, saveScope, scopeSummary } from "../spaces/ScopePicker";
 import { conversationHref, conversationKind, dashboardHref, Kind, KindIcon, KindPill, KindTile } from "../lib/kinds";
+
+// 2026-10-10: Home greets in the person's own time of day (their browser's
+// time zone) - a different, hand-written line each part of the day, steady
+// for that part of the day so it never flickers between visits.
+type Daypart = "morning" | "afternoon" | "evening" | "night";
+const GREETINGS: Record<Daypart, [string, string][]> = {
+  morning: [
+    ["Good morning, {n}.", "Fresh numbers, clear head. Where shall we start?"],
+    ["Morning, {n}.", "Yesterday's data is in. Ask it anything."],
+    ["Rise and analyze, {n}.", "Your sources are ready when you are."],
+    ["A bright start, {n}.", "One good question sets up the whole day."],
+  ],
+  afternoon: [
+    ["Good afternoon, {n}.", "What's worth knowing before the day is out?"],
+    ["Afternoon, {n}.", "Pick up a thread, or pull a new one."],
+    ["Hello again, {n}.", "The numbers have moved since this morning."],
+    ["Halfway there, {n}.", "Let's see how today is really going."],
+  ],
+  evening: [
+    ["Good evening, {n}.", "Close the day with a clear picture."],
+    ["Evening, {n}.", "Let's see how the day really went."],
+    ["Still curious, {n}?", "So is your data. Ask away."],
+    ["Winding down, {n}?", "One last look before tomorrow."],
+  ],
+  night: [
+    ["Burning the midnight oil, {n}?", "Your data never sleeps either."],
+    ["Late one, {n}.", "Quiet hours, sharp answers."],
+    ["The night shift, {n}.", "Let's make it count."],
+    ["Up late, {n}?", "Good questions don't keep office hours."],
+  ],
+};
+
+function daypart(h: number): Daypart {
+  if (h >= 5 && h < 12) return "morning";
+  if (h >= 12 && h < 17) return "afternoon";
+  if (h >= 17 && h < 22) return "evening";
+  return "night";
+}
+
+function greeting(first: string, now: Date): { title: string; line: string } {
+  const n = first || "there";
+  const part = daypart(now.getHours());
+  const day = now.getDay();
+  const seed = now.getFullYear() * 400 + now.getMonth() * 32 + now.getDate() + ["morning", "afternoon", "evening", "night"].indexOf(part) * 7;
+  const fill = (t: [string, string]) => ({ title: t[0].replace("{n}", n), line: t[1] });
+  if (day === 1 && part === "morning") return fill(["Happy Monday, {n}.", "A fresh week of numbers. Where do we begin?"]);
+  if (day === 5 && (part === "afternoon" || part === "evening")) return fill(["Happy Friday, {n}.", "Close the week knowing exactly where you stand."]);
+  if ((day === 0 || day === 6) && part !== "night" && seed % 2 === 0) return fill(["Weekend mode, {n}.", "Curiosity doesn't keep office hours."]);
+  const set = GREETINGS[part];
+  return fill(set[seed % set.length]);
+}
+
+/** "Kolkata" from the browser's time zone ("Asia/Kolkata"). */
+function timeZoneCity(): string | null {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    const raw = (tz.split("/").pop() || "").replace(/_/g, " ");
+    // older zone names some browsers still report
+    const city = ({ Calcutta: "Kolkata", Saigon: "Ho Chi Minh City", Kiev: "Kyiv", Rangoon: "Yangon", Katmandu: "Kathmandu" } as Record<string, string>)[raw] || raw;
+    return city && city !== "UTC" ? city : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The current time, refreshed every minute. */
+function useNow(): Date {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(new Date()), 60_000);
+    return () => window.clearInterval(t);
+  }, []);
+  return now;
+}
 
 type Tab = "recent" | "pinned" | "shared";
 type Intent = "instant" | "guided";
 
 const INTENTS: { id: Intent; kind: Kind; title: string; sub: string }[] = [
-  { id: "instant", kind: "answer", title: "Instant Answers", sub: "Ask in plain English. Answered in seconds, with the evidence." },
-  { id: "guided", kind: "analysis", title: "Guided Analysis", sub: "Work step by step. See, change and approve every step." },
+  { id: "instant", kind: "answer", title: "Instant Answers", sub: "Answered in seconds, with the evidence" },
+  { id: "guided", kind: "analysis", title: "Guided Analysis", sub: "Step by step — you check every step" },
 ];
 
-const GUIDED_STARTERS = ["Profile the data and point out anything unusual", "Clean the dates, then compare revenue by year", "Find gaps, duplicates and outliers"];
+const GUIDED_DEFAULT = "Give me an overview of this data: the headline numbers, how they change over time, and the biggest segments.";
 
 // Sources people analyze first: warehouses, databases and files before apps.
 const CORE_KINDS = new Set(["bigquery", "snowflake", "postgres", "mysql", "redshift", "sqlserver", "databricks", "supabase", "csv", "excel", "file"]);
@@ -172,7 +246,6 @@ export default function Home() {
 
   const chosenSpace = scope.kind === "space" ? (spaces || []).find((s) => s.id === scope.spaceId) || null : null;
   const summary = scopeSummary(scope, sources, spaces);
-  const askStarters = useMemo(() => startersFor(chosenSpace), [chosenSpace]);
   const connectedSource = sourceParam ? (sources || []).find((s) => s.id === sourceParam) || null : null;
 
   const recent = useMemo<RecentItem[]>(() => {
@@ -219,28 +292,35 @@ export default function Home() {
     }
   };
 
-  const startGuided = () => {
-    const [first, ...rest] = guidedIds;
-    if (!first) {
+  // A Guided Analysis is the Instant Answers engine run one step at a time,
+  // on every source picked here (pages/GuidedAnalysis.tsx).
+  const startGuided = async () => {
+    if (!guidedIds.length) {
       setError("Pick at least one source to analyze.");
       return;
     }
-    const q = new URLSearchParams();
-    if (rest.length) q.set("extra", rest.join(","));
-    const draft = instruction.trim();
-    if (draft.length >= 2) q.set("draft", draft);
-    navigate(`/workspace/${first}${q.toString() ? `?${q.toString()}` : ""}`);
+    if (busy) return;
+    const q = instruction.trim().length >= 2 ? instruction.trim() : GUIDED_DEFAULT;
+    setBusy(true);
+    setError("");
+    try {
+      const out = await projectsApi.create({
+        question: q, source_ids: guidedIds, workspace_id: activeWorkspaceId || undefined, mode: "guided",
+      });
+      navigate(`/g/${out.project_id}`);
+    } catch (e: any) {
+      setError(errorText(e, "Couldn't start the analysis. Please try again."));
+      setBusy(false);
+    }
   };
 
   const firstName = (user?.full_name || "").split(" ")[0];
   const noSources = sources !== null && sources.length === 0;
-  const starters = intent === "instant" ? askStarters : GUIDED_STARTERS;
-  const pickStarter = (s: string) => {
-    if (intent === "instant") setQuestion(s);
-    else setInstruction(s);
-    boxRef.current?.focus();
-  };
   const submit = () => (intent === "instant" ? ask() : startGuided());
+  const now = useNow();
+  const hello = useMemo(() => greeting(firstName, now), [firstName, now.getHours(), now.toDateString()]); // eslint-disable-line react-hooks/exhaustive-deps
+  const place = useMemo(() => timeZoneCity(), []);
+  const night = now.getHours() < 6 || now.getHours() >= 19;
 
   return (
     <div className="dash-shell flex min-h-screen">
@@ -252,24 +332,31 @@ export default function Home() {
       />
       <div className="flex-1 min-w-0">
         <TopNav hideLogo />
-        <main className="flex flex-col items-center px-4 sm:px-8 pt-12 sm:pt-16 pb-16 gap-10">
-          <div className="w-full max-w-[820px] flex flex-col items-center gap-5 text-center">
+        <main className="flex flex-col items-center px-4 sm:px-8 pt-14 sm:pt-[12vh] pb-16 gap-12">
+          <div className="w-full max-w-[760px] flex flex-col items-center gap-7 text-center">
             {justConnected && connectedSource && (
               <div role="status" data-connected-banner="" className="w-full rounded-card border border-kind-answer-border bg-kind-answer-fill px-4 py-3 flex items-center gap-3 text-left">
                 <span className="w-7 h-7 rounded-full bg-kind-answer text-[rgb(var(--color-base))] grid place-items-center shrink-0" aria-hidden="true">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 7" /></svg>
                 </span>
                 <span className="text-ui text-text leading-snug">
-                  <b>{connectedSource.name}</b> is connected. Ask it anything for an instant answer, or analyze it step by step.
+                  <b>{connectedSource.name}</b> is connected. Ask it anything, or work through it step by step.
                 </span>
               </div>
             )}
-            <h1 className="m-0 text-[32px] sm:text-[40px] font-semibold tracking-tight text-text text-balance">
-              {firstName ? `What do you want to know, ${firstName}?` : "What do you want to know?"}
-            </h1>
-            <p className="m-0 text-body text-muted max-w-[60ch]">
-              Two ways to work — both end in answers, charts and live dashboards, all kept in <Link to="/library" className="text-text underline-offset-2 hover:underline">Library</Link>.
-            </p>
+            <div className="flex flex-col items-center gap-3" data-home-greeting="">
+              <span className="inline-flex items-center gap-2 h-7 px-3 rounded-full border border-border bg-surface/70 font-mono text-[11.5px] tracking-[0.04em] text-muted">
+                {night ? (
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" /></svg>
+                ) : (
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
+                )}
+                {now.toLocaleDateString(undefined, { weekday: "long" })} · {now.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
+                {place ? ` · ${place}` : ""}
+              </span>
+              <h1 className="m-0 text-[34px] sm:text-[46px] leading-[1.08] font-semibold tracking-[-0.03em] text-text text-balance">{hello.title}</h1>
+              <p className="m-0 text-[16px] sm:text-[17px] text-muted text-balance">{hello.line}</p>
+            </div>
 
             {noSources ? (
               <div className="w-full rounded-card border border-border bg-surface p-6 text-left flex flex-col sm:flex-row sm:items-center gap-4 justify-between">
@@ -282,110 +369,91 @@ export default function Home() {
                 <Link to="/data" className="btn-primary text-sm shrink-0">Connect data</Link>
               </div>
             ) : (
-              <>
-                <div role="tablist" aria-label="How do you want to work" className="w-full grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-left" data-home-intents="">
-                  {INTENTS.map((it) => {
-                    const on = it.id === intent;
-                    return (
-                      <button
-                        key={it.id}
-                        type="button"
-                        role="tab"
-                        aria-selected={on}
-                        data-intent={it.id}
-                        onClick={() => setIntent(it.id)}
-                        className={`ui-focus text-left flex items-center gap-3.5 min-h-[72px] px-4 py-3.5 rounded-[16px] border transition-colors ${
-                          on
-                            ? `bg-surface shadow-card ring-1 ${it.kind === "answer" ? "border-kind-answer-border ring-kind-answer-border" : "border-kind-analysis-border ring-kind-analysis-border"}`
-                            : "border-border bg-transparent opacity-80 hover:opacity-100 hover:bg-surface/60"
-                        }`}
-                      >
-                        <KindTile kind={it.kind} size={38} />
-                        <span className="min-w-0 flex flex-col items-start gap-0.5">
-                          <span className="text-section font-semibold text-text">{it.title}</span>
-                          <span className="text-caption text-muted">{it.sub}</span>
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <div className={`w-full text-left rounded-[20px] border bg-surface shadow-pop p-4 sm:p-[18px] flex flex-col gap-3 ${intent === "instant" ? "border-kind-answer-border" : "border-kind-analysis-border"}`} data-home-composer={intent}>
-                  {intent === "guided" ? (
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-kind-analysis">Guided Analysis on</span>
-                      <SourceMultiSelect sources={orderedSources} value={guidedIds} onChange={setGuided} />
-                    </div>
-                  ) : (
-                    <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-kind-answer">Instant Answers</span>
-                  )}
-                  <label htmlFor="home-box" className="sr-only">
-                    {intent === "instant" ? "Your question" : "What do you want to find out (optional)"}
-                  </label>
-                  <textarea
-                    id="home-box"
-                    ref={boxRef}
-                    rows={3}
-                    value={intent === "instant" ? question : instruction}
-                    onChange={(e) => (intent === "instant" ? setQuestion : setInstruction)(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        submit();
-                      }
-                    }}
-                    placeholder={
-                      intent === "instant"
-                        ? "e.g. Why is our revenue lower this month?"
-                        : "What do you want to find out? e.g. clean the dates, then compare revenue by year (optional)"
-                    }
-                    className="w-full resize-none bg-transparent border-0 outline-none text-[18px] leading-relaxed text-text placeholder:text-faint"
-                    disabled={busy}
-                  />
-                  <div className="flex items-center justify-between gap-3 flex-wrap">
-                    {intent === "instant" ? (
-                      <ScopePicker scope={scope} onChange={setScope} sources={sources} spaces={spaces} />
-                    ) : (
-                      <span className="text-caption text-muted">You see the plan, run it one step at a time, and change any step before the next.</span>
-                    )}
-                    {intent === "instant" ? (
-                      <button
-                        type="button"
-                        aria-label="Ask"
-                        onClick={() => ask()}
-                        disabled={busy || question.trim().length < 2}
-                        className="ui-focus w-11 h-11 rounded-[13px] bg-primary text-on-primary grid place-items-center disabled:opacity-40"
-                      >
-                        {busy ? (
-                          <span className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
-                        ) : (
-                          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                        )}
-                      </button>
-                    ) : (
-                      <button type="button" onClick={startGuided} disabled={!guidedIds.length} className="btn-primary text-sm inline-flex items-center gap-2" data-open-studio="">
-                        <KindIcon kind="analysis" size={15} /> Start analysis
-                      </button>
-                    )}
+              <div
+                className={`w-full text-left rounded-[22px] border bg-surface shadow-pop p-3 sm:p-3.5 flex flex-col gap-2 transition-colors ${
+                  intent === "instant" ? "border-border focus-within:border-kind-answer-border" : "border-border focus-within:border-kind-analysis-border"
+                }`}
+                data-home-composer={intent}
+              >
+                <div className="flex items-center justify-between gap-3 flex-wrap px-1 pt-0.5">
+                  <div role="tablist" aria-label="How do you want to work" className="inline-flex p-[3px] rounded-full border border-border bg-base" data-home-intents="">
+                    {INTENTS.map((it) => {
+                      const on = it.id === intent;
+                      return (
+                        <button
+                          key={it.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={on}
+                          data-intent={it.id}
+                          onClick={() => setIntent(it.id)}
+                          className={`ui-focus inline-flex items-center gap-1.5 h-8 px-3.5 rounded-full text-ui font-medium transition-colors ${
+                            on
+                              ? it.kind === "answer" ? "bg-kind-answer-fill text-kind-answer" : "bg-kind-analysis-fill text-kind-analysis"
+                              : "text-muted hover:text-text"
+                          }`}
+                        >
+                          <KindIcon kind={it.kind} size={14} />
+                          {it.title}
+                        </button>
+                      );
+                    })}
                   </div>
+                  <span className="hidden sm:inline text-caption text-muted pr-1">{INTENTS.find((i) => i.id === intent)?.sub}</span>
                 </div>
-              </>
-            )}
-            {error && <div role="alert" className="text-ui text-danger">{error}</div>}
-            {!noSources && (
-              <div className="flex gap-2 flex-wrap justify-center">
-                {starters.map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => pickStarter(s)}
-                    className="ui-focus h-[34px] px-3.5 rounded-full border border-border bg-surface text-ui text-muted hover:text-text"
-                  >
-                    {s}
-                  </button>
-                ))}
+                <label htmlFor="home-box" className="sr-only">
+                  {intent === "instant" ? "Your question" : "What do you want to find out"}
+                </label>
+                <textarea
+                  id="home-box"
+                  ref={boxRef}
+                  rows={2}
+                  value={intent === "instant" ? question : instruction}
+                  onChange={(e) => (intent === "instant" ? setQuestion : setInstruction)(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      submit();
+                    }
+                  }}
+                  placeholder={intent === "instant" ? "Ask anything about your business…" : "What do you want to work out, step by step?"}
+                  className="w-full min-h-[64px] resize-none bg-transparent border-0 outline-none px-2 pt-2 text-[18px] leading-relaxed text-text placeholder:text-faint"
+                  disabled={busy}
+                />
+                <div className="flex items-center justify-between gap-3 flex-wrap px-1 pb-0.5">
+                  {intent === "instant" ? (
+                    <ScopePicker scope={scope} onChange={setScope} sources={sources} spaces={spaces} />
+                  ) : (
+                    <SourceMultiSelect sources={orderedSources} value={guidedIds} onChange={setGuided} />
+                  )}
+                  {intent === "instant" ? (
+                    <button
+                      type="button"
+                      aria-label="Ask"
+                      onClick={() => ask()}
+                      disabled={busy || question.trim().length < 2}
+                      className="ui-focus w-11 h-11 rounded-[14px] bg-primary text-on-primary grid place-items-center disabled:opacity-40"
+                    >
+                      {busy ? (
+                        <span className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+                      ) : (
+                        <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                      )}
+                    </button>
+                  ) : (
+                    <button type="button" onClick={startGuided} disabled={!guidedIds.length || busy} className="btn-primary text-sm inline-flex items-center gap-2 h-11" data-open-studio="">
+                      {busy ? (
+                        <span className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" aria-hidden="true" />
+                      ) : (
+                        <KindIcon kind="analysis" size={15} />
+                      )}
+                      {busy ? "Planning…" : "Start"}
+                    </button>
+                  )}
+                </div>
               </div>
             )}
+            {error && <div role="alert" className="text-ui text-danger">{error}</div>}
           </div>
 
           <section aria-label="Pick up where you left off" className="w-full max-w-[880px] flex flex-col gap-3">
@@ -536,7 +604,7 @@ function SourceMultiSelect({ sources, value, onChange }: { sources: ProjectSourc
               </button>
             );
           })}
-          <p className="m-0 px-3 pt-2 pb-1 text-caption text-muted">The first source is the main table; the others are joined in where they match.</p>
+          <p className="m-0 px-3 pt-2 pb-1 text-caption text-muted">GD360 plans across every source you pick and joins them where they match.</p>
         </div>
       )}
     </div>

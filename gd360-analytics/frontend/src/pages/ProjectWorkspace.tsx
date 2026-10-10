@@ -8,7 +8,7 @@
 // the selected question's Plan, Sources (each query as it runs), Results
 // (the answer drawn) and Evidence (every table and the query behind it).
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { ChartThemeProvider } from "../dashboard/theme/ChartThemeContext";
@@ -239,7 +239,24 @@ export default function ProjectWorkspace() {
     () => (current && project ? answerSources(current, project.sources)[0]?.source || null : null),
     [current, project],
   );
-  const studioHref = deeperSource && current ? `/workspace/${deeperSource.id}?draft=${encodeURIComponent(current.question)}` : null;
+  // 2026-10-10: "Continue step by step" starts a Guided Analysis of the same
+  // question on the same sources - the plan shown, every step yours to change.
+  const navigate = useNavigate();
+  const [guiding, setGuiding] = useState(false);
+  const startGuided = async () => {
+    if (!current || !project || guiding) return;
+    setGuiding(true);
+    try {
+      const out = await projectsApi.create({
+        question: current.question, source_ids: project.source_ids, workspace_id: project.workspace_id || undefined, mode: "guided",
+      });
+      navigate(`/g/${out.project_id}`);
+    } catch (e: any) {
+      setError(errorText(e, "Couldn't start the Guided Analysis. Please try again."));
+      setGuiding(false);
+    }
+  };
+  const studioHref = deeperSource && current ? "guided" : null;
   const canCreate = !!project?.can_edit && current?.status === "done";
 
   // Dashboards -> "From an answer" lands here with ?create=1.
@@ -396,7 +413,7 @@ export default function ProjectWorkspace() {
                     busy={busy || !!activeRun}
                     next={
                       current?.id === r.id && r.status === "done" && project?.can_edit ? (
-                        <WhatNext studioHref={studioHref} studioSource={deeperSource?.name || null} onCreate={() => setCreateOpen(true)} />
+                        <WhatNext studioHref={studioHref} studioSource={project?.sources.length && project.sources.length > 1 ? `${project.sources.length} sources` : deeperSource?.name || null} onGuided={startGuided} guiding={guiding} onCreate={() => setCreateOpen(true)} />
                       ) : null
                     }
                   />
@@ -482,22 +499,24 @@ function crumb(active: ProjectRun | null, current: ProjectRun | null): string {
 
 // The two ways forward from an answer - always the same two, always named
 // for what they do.
-function WhatNext({ studioHref, studioSource, onCreate }: { studioHref: string | null; studioSource: string | null; onCreate: () => void }) {
+function WhatNext({ studioHref, studioSource, onGuided, guiding, onCreate }: { studioHref: string | null; studioSource: string | null; onGuided: () => void; guiding: boolean; onCreate: () => void }) {
   return (
     <div className="flex flex-col gap-2" data-what-next="">
       <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-kind-answer">What next?</span>
       {studioHref && (
-        <Link
-          to={studioHref}
-          onClick={(e) => e.stopPropagation()}
-          className="ui-focus flex flex-col items-start gap-1.5 p-3 rounded-ctl border border-border bg-base hover:border-kind-analysis-border text-left"
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onGuided(); }}
+          disabled={guiding}
+          data-continue-guided=""
+          className="ui-focus flex flex-col items-start gap-1.5 p-3 rounded-ctl border border-border bg-base hover:border-kind-analysis-border text-left disabled:opacity-60"
         >
           <KindPill kind="analysis">Guided Analysis</KindPill>
           <span className="flex flex-col gap-0.5 min-w-0">
-            <span className="text-ui font-semibold text-text">Go deeper{studioSource ? ` on ${studioSource}` : ""}</span>
-            <span className="text-caption text-muted leading-snug">Continue this question step by step — clean, slice and chart it, changing any step.</span>
+            <span className="text-ui font-semibold text-text">{guiding ? "Starting…" : `Continue step by step${studioSource ? ` on ${studioSource}` : ""}`}</span>
+            <span className="text-caption text-muted leading-snug">The same question as a plan you run one step at a time — check and change every step.</span>
           </span>
-        </Link>
+        </button>
       )}
       <button
         type="button"
