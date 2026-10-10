@@ -1162,6 +1162,23 @@ function SidebarNav({
           <DashboardsIcon />
           {!collapsed && "Dashboards"}
         </Link>
+        {/* 2026-10-10: Initiatives (+ Accounts) - plan, run and prove events,
+            campaigns, account-based marketing, hiring and product builds. */}
+        <Link
+          to="/initiatives"
+          onClick={onNavigate}
+          title={collapsed ? "Initiatives" : undefined}
+          className={linkClass(pathname.startsWith("/initiatives") || pathname.startsWith("/accounts"))}
+          data-nav="initiatives"
+        >
+          <InitiativesIcon />
+          {!collapsed && (
+            <span className="flex-1 flex items-center justify-between gap-2">
+              Initiatives
+              <span className="text-[9.5px] font-mono tracking-[0.08em] px-1.5 py-[1px] rounded border border-tint-border text-primary">PRO</span>
+            </span>
+          )}
+        </Link>
         <Link
           to="/automations"
           onClick={onNavigate}
@@ -1309,6 +1326,14 @@ function SidebarNav({
         </div>
       )}
     </>
+  );
+}
+
+function InitiativesIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="shrink-0">
+      <circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="4.5" /><path d="M12 12 19 5M16 5h3v3" />
+    </svg>
   );
 }
 

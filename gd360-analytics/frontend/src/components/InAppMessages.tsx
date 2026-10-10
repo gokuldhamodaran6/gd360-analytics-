@@ -8,7 +8,7 @@ import { useAuth } from "../api/AuthContext";
 
 type Ann = { id: string; kind: "banner" | "modal"; title: string; body?: string; cta_label?: string; cta_url?: string };
 
-const HIDDEN_ON = ["/admin", "/pricing", "/about", "/start", "/register", "/login", "/admin-login", "/help", "/public", "/d/", "/invite", "/privacy", "/connect/"];
+const HIDDEN_ON = ["/admin", "/pricing", "/about", "/start", "/register", "/login", "/admin-login", "/help", "/public", "/d/", "/invite", "/privacy", "/connect/", "/e/", "/w/", "/a/", "/r/"];
 
 const S = {
   card: { background: "#0B0F10", border: "1px solid #24413A", color: "#E8EEEC", fontFamily: "Geist, 'Helvetica Neue', system-ui, sans-serif", boxShadow: "0 30px 80px -30px rgba(0,0,0,.8)" } as const,
