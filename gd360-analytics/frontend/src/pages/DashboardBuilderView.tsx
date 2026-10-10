@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { MadeFromLink, sourceHref } from "../lib/kinds";
 import { Link, useParams } from "react-router-dom";
+import { DomainPublishRow, PublishToDomainSheet } from "../components/PublishToDomain";
 import {
   dashboardBuilderApi, DashboardBlock, DashboardBuilderDetail, DashboardBuilderPage, DashboardBlockType, datasourceApi, WorkspaceSummary, qualityChecksApi,
 } from "../api/client";
@@ -474,7 +475,7 @@ function MergeDashboardsPanel({ dash, onChange, inline = false, onMerged }: { da
   );
 }
 
-function PublishPanel({ dash, onChange, triggerClassName }: { dash: DashboardBuilderDetail; onChange: (d: DashboardBuilderDetail) => void; triggerClassName?: string }) {
+function PublishPanel({ dash, onChange, triggerClassName, onOpenDomain }: { dash: DashboardBuilderDetail; onChange: (d: DashboardBuilderDetail) => void; triggerClassName?: string; onOpenDomain?: () => void }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -551,7 +552,12 @@ function PublishPanel({ dash, onChange, triggerClassName }: { dash: DashboardBui
         {dash.is_published ? (dash.share_mode === "private" ? "Published · Private" : "Published") : "Publish"}
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-80 card bg-surface shadow-2xl border border-border p-4 z-30">
+        <div className="absolute right-0 top-full mt-2 w-[340px] max-w-[calc(100vw-32px)] card bg-surface shadow-2xl border border-border p-4 z-30">
+          {/* 2026-10-10 (round 19): the company's own address comes first. */}
+          {onOpenDomain && (
+            <DomainPublishRow dashboardId={dash.id} onOpen={() => { setOpen(false); onOpenDomain(); }} />
+          )}
+          <div className="text-[10.5px] font-mono uppercase tracking-[0.1em] text-muted mb-2">Link</div>
           {error && <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-3">{error}</div>}
           {!showEditForm ? (
             <>
@@ -616,14 +622,14 @@ function PublishPanel({ dash, onChange, triggerClassName }: { dash: DashboardBui
                   className={`flex-1 px-2.5 py-1.5 transition ${mode === "public" ? "bg-primary text-on-primary" : "text-muted hover:text-text hover:bg-surface2"}`}
                   onClick={() => setMode("public")}
                 >
-                  Public
+                  Anyone with the link
                 </button>
                 <button
                   type="button"
                   className={`flex-1 px-2.5 py-1.5 transition ${mode === "private" ? "bg-primary text-on-primary" : "text-muted hover:text-text hover:bg-surface2"}`}
                   onClick={() => setMode("private")}
                 >
-                  Private
+                  Named people
                 </button>
               </div>
 
@@ -1133,6 +1139,15 @@ function DashboardBuilderViewBody({
   handleWorkspaceCreated: (ws: WorkspaceSummary) => void;
 }) {
   const isEditing = dash.can_edit && editing;
+  // 2026-10-10 (round 19): "Publish to company domain" - also opened by
+  // ?publish=domain (the Domains settings page's "Edit" link).
+  const [domainOpen, setDomainOpen] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("publish") === "domain";
+    } catch {
+      return false;
+    }
+  });
 
   // Phase 5, Batch A (2026-09-28, data governance & quality): whether any
   // quality check on this dashboard's own data source is currently
@@ -1414,7 +1429,8 @@ function DashboardBuilderViewBody({
                 )}
               </Popover>
             )}
-            <PublishPanel dash={dash} onChange={setDash} triggerClassName={buttonClasses({ variant: "secondary" })} />
+            <PublishPanel dash={dash} onChange={setDash} triggerClassName={buttonClasses({ variant: "secondary" })} onOpenDomain={dash.can_edit ? () => setDomainOpen(true) : undefined} />
+            {dash.can_edit && <PublishToDomainSheet dashboardId={dash.id} open={domainOpen} onClose={() => setDomainOpen(false)} />}
           </>
         }
         contextRow={{

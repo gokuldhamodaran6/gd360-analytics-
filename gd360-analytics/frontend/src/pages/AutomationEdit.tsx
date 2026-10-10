@@ -118,6 +118,14 @@ export default function AutomationEdit() {
               start.name = `${k.label} watch`;
               start.tell = { email: o.me ? [o.me] : [], mode: "always" };
             }
+          } else if (params.get("alert")) {
+            // 2026-10-10 (round 19): "New → Alert" on the Automations home.
+            const q = o.questions.find((x) => x.kpis.length);
+            const d = o.project_dashboards.find((x) => x.kpis.length);
+            const target = q ? { kind: "project_run" as const, run_id: q.id } : d ? { kind: "dashboard" as const, dashboard_id: d.id } : { kind: "project_run" as const, run_id: "" };
+            const k = (q || d)?.kpis.find((x) => x.key !== "total") || (q || d)?.kpis[0];
+            start.trigger = { type: "threshold", target, kpi: k?.key || "", op: "drops_by", value: 10, check: { every: "hour", minute: 0 } };
+            if (k) start.name = `${k.label} watch`;
           }
           setDraft(start);
         }
@@ -149,10 +157,11 @@ export default function AutomationEdit() {
     setSaving(true);
     setError("");
     try {
-      const body = { ...draft, name: draft.name.trim() || autoName(draft, opts) };
-      if (isNew) await automationsApi.create(body);
-      else await automationsApi.update(automationId!, body);
-      navigate("/automations");
+      const body = { ...draft, name: draft.name.trim() || autoName(draft, opts), workspace_id: isNew ? activeWorkspaceId || null : undefined };
+      const saved = isNew ? await automationsApi.create(body) : await automationsApi.update(automationId!, body);
+      // 2026-10-10 (round 19): a member's automation that emails people
+      // outside the company waits for an owner's or admin's OK - say so.
+      navigate(saved?.approval?.status === "pending" ? "/automations?waiting=" + encodeURIComponent(saved.id) : "/automations");
     } catch (e: any) {
       setError(errorText(e, "Couldn't save it."));
       setSaving(false);

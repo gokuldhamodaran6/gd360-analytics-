@@ -1,9 +1,10 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
+import { TwoStepSection } from "../components/TwoStepSection";
 
 export default function Profile() {
   const { user, updateProfile, changePassword } = useAuth();
@@ -23,6 +24,11 @@ export default function Profile() {
   const [passwordError, setPasswordError] = useState("");
   const [passwordNotice, setPasswordNotice] = useState("");
   const [passwordBusy, setPasswordBusy] = useState(false);
+
+  // 2026-10-10 (round 19): "Set it up" in the 2-step banner lands here.
+  useEffect(() => {
+    if (window.location.hash === "#security") setTimeout(() => document.getElementById("security")?.scrollIntoView({ behavior: "smooth", block: "start" }), 150);
+  }, []);
 
   const onSaveProfile = async (e: FormEvent) => {
     e.preventDefault();
@@ -56,7 +62,7 @@ export default function Profile() {
     setPasswordBusy(true);
     try {
       await changePassword(currentPassword, newPassword);
-      setPasswordNotice("Your password has been updated.");
+      setPasswordNotice("Your password has been updated. Your other devices have been signed out.");
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
@@ -125,6 +131,8 @@ export default function Profile() {
             {passwordBusy ? "Updating..." : "Update password"}
           </button>
         </form>
+
+        <TwoStepSection />
       </div>
       </div>
     </div>

@@ -2,6 +2,7 @@ import { FormEvent, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
 import ThemeToggle from "../components/ThemeToggle";
+import MfaStep from "../components/MfaStep";
 
 // Small, dependency-free eye / eye-off icons for the "show password" toggle
 // below - so someone checking what they actually typed doesn't need to
@@ -25,7 +26,10 @@ function EyeOffIcon({ className }: { className?: string }) {
 }
 
 export default function Login() {
-  const { login } = useAuth();
+  const { login, completeMfa } = useAuth();
+  // 2026-10-10 (round 19): set when the password was right and the account
+  // uses 2-step sign-in - the form then asks for the authenticator code.
+  const [mfaToken, setMfaToken] = useState<string | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const [email, setEmail] = useState("");
@@ -45,7 +49,11 @@ export default function Login() {
     setError("");
     setBusy(true);
     try {
-      await login(email, password);
+      const res = await login(email, password);
+      if (res.mfaRequired && res.mfaToken) {
+        setMfaToken(res.mfaToken);
+        return;
+      }
       navigate(from, { replace: true });
     } catch (err: any) {
       setError(err?.response?.data?.detail || "Login failed.");
@@ -64,6 +72,18 @@ export default function Login() {
           <h1 className="text-3xl font-extrabold gradient-text">GD360 Analytics</h1>
           <p className="text-muted mt-2">AI-driven, no-code 360&deg; data analytics.</p>
         </div>
+        {mfaToken ? (
+          <div className="card p-8">
+            <MfaStep
+              email={email}
+              onBack={() => { setMfaToken(null); setPassword(""); }}
+              onSubmit={async (code) => {
+                await completeMfa(mfaToken, code);
+                navigate(from, { replace: true });
+              }}
+            />
+          </div>
+        ) : (
         <form onSubmit={onSubmit} className="card p-8 space-y-4">
           <h2 className="text-xl font-semibold mb-2">Welcome back</h2>
           {error && <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
@@ -114,6 +134,7 @@ export default function Login() {
             <Link to="/privacy" className="hover:text-text hover:underline">Privacy Policy</Link>
           </p>
         </form>
+        )}
       </div>
     </div>
   );
