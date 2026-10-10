@@ -1,16 +1,23 @@
+// 2026-10-10 (one kind of dashboard): this is now a CLASSIC answer
+// dashboard - still viewable, but new answers create the full kind. A banner
+// offers the one-click upgrade (same id/link, name and sharing) through the
+// answer's Create-dashboard sheet; ?upgrade=1 opens it straight away. A
+// dashboard that has already been upgraded redirects to its new view.
 // 2026-10-08 (round 11): a live dashboard built from a Project answer. It
 // re-runs the answer's checked queries in every source on Refresh (no AI
 // involved), and can be arranged: rename, hide, reorder, resize and change
 // the chart of any tile.
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
 import TopNav from "../components/TopNav";
 import WorkspaceChart from "../components/WorkspaceChart";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { ChartThemeProvider } from "../dashboard/theme/ChartThemeContext";
 import { dashboardApi } from "../api/client";
-import { DashTile, ProjectDashboard as PD, projectsApi } from "../api/projects";
+import { DashTile, ProjectDashboard as PD, ProjectRun, projectsApi } from "../api/projects";
+import CreateDashboardSheet from "../components/CreateDashboardSheet";
+import { KindIcon, KindPill } from "../lib/kinds";
 import { KpiRow, SourceTags, VisualCard } from "../project/Visuals";
 import { ModeBadge } from "../project/RunPanels";
 import { timeAgo } from "../project/format";
@@ -35,13 +42,61 @@ export default function ProjectDashboard() {
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
   const [notFound, setNotFound] = useState(false);
+  const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const [upgradeRun, setUpgradeRun] = useState<ProjectRun | null>(null);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const [upgradeLoading, setUpgradeLoading] = useState(false);
 
   useEffect(() => {
     projectsApi
       .dashboard(dashboardId)
       .then((d) => { setDash(d); setName(d.name); })
-      .catch((e) => (e?.response?.status === 404 ? setNotFound(true) : setError(errorText(e, "Couldn't load this dashboard."))));
-  }, [dashboardId]);
+      .catch(async (e) => {
+        if (e?.response?.status !== 404) {
+          setError(errorText(e, "Couldn't load this dashboard."));
+          return;
+        }
+        // Upgraded already? The same id is now a full dashboard.
+        try {
+          const any = await dashboardApi.get(dashboardId);
+          if (any.layout_version === 2) {
+            navigate(`/dashboard-builder/${dashboardId}`, { replace: true });
+            return;
+          }
+        } catch {
+          /* fall through to not found */
+        }
+        setNotFound(true);
+      });
+  }, [dashboardId, navigate]);
+
+  const startUpgrade = async () => {
+    if (!dash?.project_id || !dash.run_id) {
+      setError("This dashboard's answer is no longer available, so it can't be rebuilt. Create a new one from Dashboards.");
+      return;
+    }
+    setUpgradeLoading(true);
+    try {
+      const r = upgradeRun || (await projectsApi.run(dash.run_id));
+      setUpgradeRun(r);
+      setUpgradeOpen(true);
+    } catch (e: any) {
+      setError(errorText(e, "Couldn't open this dashboard's answer."));
+    } finally {
+      setUpgradeLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (params.get("upgrade") === "1" && dash?.can_edit) {
+      const next = new URLSearchParams(params);
+      next.delete("upgrade");
+      setParams(next, { replace: true });
+      startUpgrade();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dash?.id]);
 
   const refresh = async () => {
     setRefreshing(true);
@@ -108,6 +163,16 @@ export default function ProjectDashboard() {
 
   return (
     <ChartThemeProvider localScope={`project-dashboard:${dashboardId}`}>
+      {dash?.project_id && (
+        <CreateDashboardSheet
+          open={upgradeOpen}
+          onClose={() => setUpgradeOpen(false)}
+          projectId={dash.project_id}
+          run={upgradeRun}
+          sources={dash.sources}
+          replaceDashboardId={dash.id}
+        />
+      )}
       <div className="dash-shell flex min-h-screen">
         <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
         <div className="flex-1 min-w-0">
@@ -120,7 +185,7 @@ export default function ProjectDashboard() {
                   <div className="flex flex-col gap-2 min-w-0">
                     {dash.project_id && (
                       <Link to={`/p/${dash.project_id}`} className="font-mono text-caption text-muted uppercase hover:text-text truncate">
-                        ← From project “{dash.question}”
+                        ← Made from answer “{dash.question}”
                       </Link>
                     )}
                     {editing ? (
@@ -181,6 +246,23 @@ export default function ProjectDashboard() {
                   </div>
                 </div>
 
+                {dash.can_edit && !editing && (
+                  <div className="rounded-card border border-kind-dashboard-border bg-kind-dashboard-fill p-4 flex flex-wrap items-center gap-3" data-classic-banner="">
+                    <KindPill kind="dashboard">Classic</KindPill>
+                    <span className="flex-1 min-w-[240px] text-ui text-text leading-snug">
+                      Every dashboard in GD360 is now the full kind — live filters, cross-filter, canvas and publishing. Upgrade keeps this link, name and sharing.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={startUpgrade}
+                      disabled={upgradeLoading}
+                      data-upgrade-classic=""
+                      className="ui-focus inline-flex items-center gap-2 h-10 px-4 rounded-ctl font-semibold text-sm bg-kind-dashboard text-[rgb(var(--color-base))] hover:opacity-90 disabled:opacity-50"
+                    >
+                      <KindIcon kind="dashboard" size={15} /> {upgradeLoading ? "Opening…" : "Upgrade to a live dashboard"}
+                    </button>
+                  </div>
+                )}
                 {error && <div role="alert" className="rounded-card border border-danger-border bg-danger-fill p-3 text-ui text-text">{error}</div>}
                 {(dash.snapshot.warnings || []).length > 0 && !editing && (
                   <div className="rounded-card border border-warning-border bg-warning-fill p-3 text-ui text-warning">{dash.snapshot.warnings!.join(" ")}</div>

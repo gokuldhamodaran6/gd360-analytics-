@@ -4,6 +4,7 @@ import { dashboardApi, DashboardDetail } from "../api/client";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
 import ChartCanvas from "../components/ChartCanvas";
+import { KindIcon, KindPill } from "../lib/kinds";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 
 function PeopleIcon({ className = "w-3 h-3" }: { className?: string }) {
@@ -53,13 +54,30 @@ export default function DashboardView() {
   const [deleting, setDeleting] = useState(false);
 
   const [sharePickerOpen, setSharePickerOpen] = useState(false);
+  const [upgrading, setUpgrading] = useState(false);
+  const upgrade = async () => {
+    if (!dash || upgrading) return;
+    setUpgrading(true);
+    try {
+      await dashboardApi.upgrade(dash.id);
+      navigate(`/dashboard-builder/${dash.id}`, { replace: true });
+    } catch {
+      setUpgrading(false);
+      setError("Couldn't upgrade this board. Please try again.");
+    }
+  };
   const [sharing, setSharing] = useState(false);
 
   const load = () => {
     if (!dashboardId) return;
     dashboardApi
       .get(dashboardId)
-      .then((data) => setDash(data))
+      .then((data) => {
+        // 2026-10-10: an upgraded board (same id) is a full dashboard now.
+        if (data.layout_version === 2) navigate(`/dashboard-builder/${data.id}`, { replace: true });
+        else if (data.layout_version === 3) navigate(`/project-dashboards/${data.id}`, { replace: true });
+        else setDash(data);
+      })
       .catch((err) => setError(err?.response?.status === 404 ? "Chart board not found." : "Couldn't load this chart board."));
   };
 
@@ -262,6 +280,26 @@ export default function DashboardView() {
           )}
         </div>
 
+        {/* 2026-10-10 (one kind of dashboard): chart boards are retired -
+            one click turns this into a full dashboard, in place. */}
+        {dash.can_edit && (
+          <div className="mt-6 rounded-card border border-kind-dashboard-border bg-kind-dashboard-fill p-4 flex flex-wrap items-center gap-3" data-classic-banner="">
+            <KindPill kind="dashboard">Classic</KindPill>
+            <span className="flex-1 min-w-[240px] text-ui text-text leading-snug">
+              Chart boards are now full dashboards — layout, pages, filters and publishing. Upgrade keeps every chart, this link, the name and sharing.
+            </span>
+            <button
+              type="button"
+              onClick={upgrade}
+              disabled={upgrading}
+              data-upgrade-board=""
+              className="ui-focus inline-flex items-center gap-2 h-10 px-4 rounded-ctl font-semibold text-sm bg-kind-dashboard text-[rgb(var(--color-base))] hover:opacity-90 disabled:opacity-50"
+            >
+              <KindIcon kind="dashboard" size={15} /> {upgrading ? "Upgrading…" : "Upgrade to a dashboard"}
+            </button>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
           {dash.charts.map((c) => (
             <div key={c.id} className="space-y-2">
@@ -289,8 +327,8 @@ export default function DashboardView() {
           ))}
           {dash.charts.length === 0 && (
             <div className="text-muted text-sm">
-              No charts saved to this board yet. Open a Project&rsquo;s chart and use &ldquo;Save chart&rdquo; to
-              pin one here.
+              No charts on this board. Upgrade it to a dashboard, then add blocks - or use &ldquo;Add to
+              dashboard&rdquo; on any chart in Studio.
             </div>
           )}
         </div>

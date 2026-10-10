@@ -1,15 +1,22 @@
+// 2026-10-10 (Clarity Blueprint, Option 1): this page is an ANSWER - a
+// question asked on Home, labelled as such, living in Library. Its next
+// steps are explicit: go deeper on one table in Studio, or create the one
+// kind of dashboard (components/CreateDashboardSheet.tsx). ?create=1 opens
+// that sheet straight away (Dashboards -> "From an answer").
 // 2026-10-08 (round 11): a multi-source Project. Left: the conversation -
 // every question and GD360's reply, live while it plans and runs. Right:
 // the selected question's Plan, Sources (each query as it runs), Results
 // (the answer drawn) and Evidence (every table and the query behind it).
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { ChartThemeProvider } from "../dashboard/theme/ChartThemeContext";
 import { projectsApi, Project, ProjectRun } from "../api/projects";
 import { EvidenceTab, PlanTab, ResultsTab, SourcesTab } from "../project/RunPanels";
 import { autoRunPreference, timeAgo } from "../project/format";
+import CreateDashboardSheet, { answerSources } from "../components/CreateDashboardSheet";
+import { dashboardHref, KindIcon, KindPill } from "../lib/kinds";
 
 type TabId = "plan" | "sources" | "results" | "evidence";
 const ACTIVE = new Set(["planning", "running"]);
@@ -29,7 +36,6 @@ function defaultTab(run: ProjectRun | null): TabId {
 export default function ProjectWorkspace() {
   const { projectId = "" } = useParams();
   const [params, setParams] = useSearchParams();
-  const navigate = useNavigate();
   const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
   const [project, setProject] = useState<Project | null>(null);
   const [runs, setRuns] = useState<Record<string, ProjectRun>>({});
@@ -39,7 +45,9 @@ export default function ProjectWorkspace() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notFound, setNotFound] = useState(false);
-  const [dashBusy, setDashBusy] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [dashMenuOpen, setDashMenuOpen] = useState(false);
+  const dashMenuRef = useRef<HTMLDivElement>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   // "Change" on an assumption opens the Plan tab's change box with it filled in
@@ -64,6 +72,23 @@ export default function ProjectWorkspace() {
       document.removeEventListener("keydown", close);
     };
   }, [shareOpen]);
+
+  useEffect(() => {
+    if (!dashMenuOpen) return;
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent) {
+        if (e.key === "Escape") setDashMenuOpen(false);
+        return;
+      }
+      if (dashMenuRef.current && !dashMenuRef.current.contains(e.target as Node)) setDashMenuOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [dashMenuOpen]);
 
   const loadProject = useCallback(async () => {
     try {
@@ -208,23 +233,33 @@ export default function ProjectWorkspace() {
     }
   };
 
-  const makeDashboard = async () => {
-    if (!current || current.status !== "done") return;
-    setDashBusy(true);
-    try {
-      const out = await projectsApi.makeDashboard(projectId, current.id);
-      navigate(`/project-dashboards/${out.dashboard_id}`);
-    } catch (e: any) {
-      setError(errorText(e, "Couldn't build the dashboard."));
-      setDashBusy(false);
+  // "Go deeper in Studio": the source this answer leaned on most, opened in
+  // Studio with the same question ready to run.
+  const deeperSource = useMemo(
+    () => (current && project ? answerSources(current, project.sources)[0]?.source || null : null),
+    [current, project],
+  );
+  const studioHref = deeperSource && current ? `/workspace/${deeperSource.id}?draft=${encodeURIComponent(current.question)}` : null;
+  const canCreate = !!project?.can_edit && current?.status === "done";
+
+  // Dashboards -> "From an answer" lands here with ?create=1.
+  useEffect(() => {
+    if (params.get("create") === "1" && canCreate) {
+      setCreateOpen(true);
+      const next = new URLSearchParams(params);
+      next.delete("create");
+      setParams(next, { replace: true });
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canCreate]);
+
+  const dashboards = project?.dashboards || [];
 
   if (notFound) {
     return (
       <div className="min-h-screen grid place-items-center bg-base px-6">
         <div className="text-center">
-          <div className="text-section font-semibold text-text">This project doesn't exist or isn't shared with you.</div>
+          <div className="text-section font-semibold text-text">This answer doesn't exist or isn't shared with you.</div>
           <Link to="/" className="btn-primary text-sm mt-4 inline-flex">Go home</Link>
         </div>
       </div>
@@ -233,6 +268,13 @@ export default function ProjectWorkspace() {
 
   return (
     <ChartThemeProvider localScope={`project:${projectId}`}>
+      <CreateDashboardSheet
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        projectId={projectId}
+        run={current}
+        sources={project?.sources || []}
+      />
       <div className="dash-shell flex min-h-screen">
         <AppSidebar
           workspaces={workspaces}
@@ -242,11 +284,14 @@ export default function ProjectWorkspace() {
         />
         <div className="flex-1 min-w-0 flex flex-col lg:h-screen">
           <header className="flex items-center justify-between gap-4 pl-14 pr-4 sm:pr-6 lg:pl-6 py-3 border-b border-border bg-base flex-wrap">
-            <div className="flex flex-col gap-0.5 min-w-0">
+            <div className="flex flex-col gap-1 min-w-0 flex-[1_1_320px]">
               <span className="font-mono text-[11px] text-muted uppercase tracking-[0.06em]">
-                <Link to="/projects" className="hover:text-text">Projects</Link> / {crumb(activeRun, current)}
+                <Link to="/library?type=answer" className="hover:text-text">Library</Link> / Answer · {crumb(activeRun, current)}
               </span>
-              <h1 className="m-0 text-section font-semibold text-text truncate">{project?.title || "…"}</h1>
+              <span className="flex items-center gap-2.5 min-w-0">
+                <KindPill kind="answer" className="shrink-0" />
+                <h1 className="m-0 text-section font-semibold text-text truncate">{project?.title || "…"}</h1>
+              </span>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
               {activeRun ? (
@@ -286,19 +331,35 @@ export default function ProjectWorkspace() {
                       Set an alert
                     </Link>
                   )}
-                  {project?.dashboards?.length ? (
-                    <Link to={`/project-dashboards/${project.dashboards[project.dashboards.length - 1].id}`} className="btn-secondary text-sm">
-                      Open dashboard
+                  {dashboards.length === 1 ? (
+                    <Link to={dashboardHref(dashboards[0])} className="btn-secondary text-sm inline-flex items-center gap-1.5" data-open-dashboard="">
+                      <KindIcon kind="dashboard" size={14} className="text-kind-dashboard" /> Open dashboard
                     </Link>
+                  ) : dashboards.length > 1 ? (
+                    <div className="relative" ref={dashMenuRef}>
+                      <button type="button" className="btn-secondary text-sm inline-flex items-center gap-1.5" aria-expanded={dashMenuOpen} onClick={() => setDashMenuOpen((v) => !v)}>
+                        <KindIcon kind="dashboard" size={14} className="text-kind-dashboard" /> Dashboards ({dashboards.length})
+                      </button>
+                      {dashMenuOpen && (
+                        <div role="menu" className="absolute right-0 top-[calc(100%+6px)] z-30 w-[280px] max-w-[calc(100vw-32px)] rounded-card border border-border bg-surface shadow-pop p-1.5">
+                          {[...dashboards].reverse().map((d) => (
+                            <Link key={d.id} role="menuitem" to={dashboardHref(d)} className="block px-3 py-2 rounded-ctl text-ui text-text hover:bg-subtle truncate">
+                              {d.name}
+                            </Link>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   ) : null}
                   <button
                     type="button"
-                    className="btn-primary text-sm"
-                    onClick={makeDashboard}
-                    disabled={!current || current.status !== "done" || dashBusy || !project?.can_edit}
-                    title={current?.status === "done" ? "A live dashboard of this answer, across every source it used" : "Available once an answer is ready"}
+                    className="btn-primary text-sm inline-flex items-center gap-1.5"
+                    onClick={() => setCreateOpen(true)}
+                    disabled={!canCreate}
+                    data-answer-create-dashboard=""
+                    title={current?.status === "done" ? "A live dashboard with filters, made from this answer" : "Available once the answer is ready"}
                   >
-                    {dashBusy ? "Building…" : "Make dashboard"}
+                    <KindIcon kind="dashboard" size={15} /> Create dashboard
                   </button>
                 </>
               )}
@@ -333,6 +394,11 @@ export default function ProjectWorkspace() {
                     }}
                     canEdit={!!project?.can_edit}
                     busy={busy || !!activeRun}
+                    next={
+                      current?.id === r.id && r.status === "done" && project?.can_edit ? (
+                        <WhatNext studioHref={studioHref} studioSource={deeperSource?.name || null} onCreate={() => setCreateOpen(true)} />
+                      ) : null
+                    }
                   />
                 ))}
                 <div ref={threadEnd} />
@@ -414,11 +480,45 @@ function crumb(active: ProjectRun | null, current: ProjectRun | null): string {
   return "Project";
 }
 
+// The two ways forward from an answer - always the same two, always named
+// for what they do.
+function WhatNext({ studioHref, studioSource, onCreate }: { studioHref: string | null; studioSource: string | null; onCreate: () => void }) {
+  return (
+    <div className="flex flex-col gap-2" data-what-next="">
+      <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-kind-answer">What next?</span>
+      {studioHref && (
+        <Link
+          to={studioHref}
+          onClick={(e) => e.stopPropagation()}
+          className="ui-focus flex flex-col items-start gap-1.5 p-3 rounded-ctl border border-border bg-base hover:border-kind-analysis-border text-left"
+        >
+          <KindPill kind="analysis">Studio</KindPill>
+          <span className="flex flex-col gap-0.5 min-w-0">
+            <span className="text-ui font-semibold text-text">Go deeper{studioSource ? ` on ${studioSource}` : ""}</span>
+            <span className="text-caption text-muted leading-snug">Opens this question in Studio — clean, slice and chart it step by step.</span>
+          </span>
+        </Link>
+      )}
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onCreate(); }}
+        className="ui-focus flex flex-col items-start gap-1.5 p-3 rounded-ctl border border-border bg-base hover:border-kind-dashboard-border text-left"
+      >
+        <KindPill kind="dashboard" />
+        <span className="flex flex-col gap-0.5 min-w-0">
+          <span className="text-ui font-semibold text-text">Create a dashboard</span>
+          <span className="text-caption text-muted leading-snug">Live, with filters — the same kind as every dashboard in GD360.</span>
+        </span>
+      </button>
+    </div>
+  );
+}
+
 function ThreadItem({
-  run, selected, onSelect, onRun, onAsk, onRetry, onChangeAssumption, canEdit, busy,
+  run, selected, onSelect, onRun, onAsk, onRetry, onChangeAssumption, canEdit, busy, next,
 }: {
   run: ProjectRun; selected: boolean; onSelect: () => void; onRun: () => void; onAsk: (q: string) => void; onRetry: () => void;
-  onChangeAssumption: (a: string) => void; canEdit: boolean; busy: boolean;
+  onChangeAssumption: (a: string) => void; canEdit: boolean; busy: boolean; next?: ReactNode;
 }) {
   const steps = run.steps || [];
   const ans = run.result?.answer;
@@ -526,6 +626,7 @@ function ThreadItem({
                 <span key={s} className="inline-flex items-center h-[22px] px-2 rounded-md bg-subtle text-caption text-secondary">{s}</span>
               ))}
             </div>
+            {next}
             {ans.next_questions.length > 0 && canEdit && (
               <div className="flex flex-col gap-1.5">
                 <span className="text-caption uppercase tracking-caps text-muted">Ask next</span>

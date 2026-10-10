@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { dashboardProposalApi, datasourceApi, type DataSourceSummary, type ProposalTemplate } from "../api/client";
 import AppSidebar from "../components/AppSidebar";
@@ -63,6 +63,18 @@ export default function NewDashboard() {
     flow.propose({ datasource_id: sourceId, goal: goal.trim(), template_id: templateId, conversation_id: conversationId });
   };
 
+  // 2026-10-10 (Clarity Blueprint): Home's "Build a dashboard" and Studio's
+  // "From this analysis" arrive with ?auto=1 - the draft starts straight
+  // away, nothing to click twice. Still nothing is created until Publish.
+  const autoRan = useRef(false);
+  useEffect(() => {
+    if (autoRan.current || params.get("auto") !== "1" || !sources || !sourceId || goal.trim().length < 4) return;
+    if (!sources.some((d) => d.id === sourceId)) return;
+    autoRan.current = true;
+    propose();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sources, sourceId]);
+
   return (
     <div className="dash-shell flex min-h-screen" data-new-dashboard="">
       <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
@@ -84,7 +96,7 @@ export default function NewDashboard() {
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex flex-col gap-0.5">
               <h1 className="text-title font-semibold text-text">New dashboard</h1>
-              <p className="text-ui text-muted">Describe what the team needs; GD360 proposes a dashboard from your data, you refine it, then publish.</p>
+              <p className="text-ui text-muted">Describe what the team needs; GD360 drafts a live dashboard with filters from your data, you refine it, then publish.</p>
             </div>
             <StepRail step={flow.step} />
           </div>

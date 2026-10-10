@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   conversationApi, ConversationSummary, datasourceApi, DataSourceSummary, folderApi, FolderSummary, WorkspaceSummary,
 } from "../api/client";
@@ -9,6 +9,13 @@ import AppSidebar from "../components/AppSidebar";
 import ConversationRow from "../components/ConversationRow";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import ViewToggle, { ViewMode, useViewMode } from "../components/ViewToggle";
+import { conversationKind, KindIcon, KindTile } from "../lib/kinds";
+
+// 2026-10-10 (Clarity Blueprint, Option 1): this page is Library - every
+// Answer (a question asked on Home) and every Analysis (hands-on work in
+// Studio), each labelled, filterable by kind with ?type=answer|analysis.
+// Dashboards live on their own page.
+type TypeFilter = "all" | "answer" | "analysis";
 
 type SortKey = "newest" | "oldest" | "title";
 // A folder's real id, or one of the two built-in tabs:
@@ -41,40 +48,6 @@ const FOLDER_PAGE_SIZE = 6;
 // any other string - one specific folder's own id: just that folder's
 // Projects.
 type FolderFilter = "all" | "files" | "folders" | string;
-
-function ChartTypeIcon({ chartType }: { chartType: string | null }) {
-  const t = (chartType || "").toLowerCase();
-  if (t.includes("pie") || t.includes("donut")) {
-    return (
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M21.21 15.89A10 10 0 1 1 8 2.83" />
-        <path d="M22 12A10 10 0 0 0 12 2v10z" />
-      </svg>
-    );
-  }
-  if (t.includes("scatter") || t.includes("bubble")) {
-    return (
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-        <circle cx="6" cy="17" r="2" />
-        <circle cx="12" cy="9" r="2" />
-        <circle cx="18" cy="14" r="2" />
-        <circle cx="15" cy="6" r="2" />
-      </svg>
-    );
-  }
-  if (t.includes("line") || t.includes("area")) {
-    return (
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M3 17l5-6 4 3 5-8 4 5" />
-      </svg>
-    );
-  }
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />
-    </svg>
-  );
-}
 
 function PlusIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
@@ -498,7 +471,7 @@ function FolderCard({
     </span>
   );
 
-  const meta = `${folder.project_count} project${folder.project_count === 1 ? "" : "s"}`;
+  const meta = `${folder.project_count} item${folder.project_count === 1 ? "" : "s"}`;
   const handleClick = () => { if (!renaming) onOpen(); };
 
   if (variant === "row") {
@@ -549,6 +522,33 @@ function FolderCard({
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const typeParam = searchParams.get("type");
+  const typeFilter: TypeFilter = typeParam === "answer" || typeParam === "analysis" ? typeParam : "all";
+  const setTypeFilter = (t: TypeFilter) => {
+    const p = new URLSearchParams(searchParams);
+    if (t === "all") p.delete("type");
+    else p.set("type", t);
+    setSearchParams(p, { replace: true });
+  };
+  const [newMenuOpen, setNewMenuOpen] = useState(false);
+  const newMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!newMenuOpen) return;
+    const close = (e: MouseEvent | KeyboardEvent) => {
+      if (e instanceof KeyboardEvent) {
+        if (e.key === "Escape") setNewMenuOpen(false);
+        return;
+      }
+      if (!newMenuRef.current?.contains(e.target as Node)) setNewMenuOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [newMenuOpen]);
   const [datasources, setDatasources] = useState<DataSourceSummary[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [folders, setFolders] = useState<FolderSummary[]>([]);
@@ -628,7 +628,7 @@ export default function Dashboard() {
   // A fresh search/sort/pinned/folder choice always lands back on page 1 -
   // same reasoning as DataSources.tsx's own pager - never leave it pointed
   // at a page that just emptied out from under it.
-  useEffect(() => { setPage(1); setFolderPage(1); }, [search, pinnedOnly, folderFilter, sortBy]);
+  useEffect(() => { setPage(1); setFolderPage(1); }, [search, pinnedOnly, folderFilter, sortBy, typeFilter]);
 
   const resetPageState = () => {
     setSearch("");
@@ -650,10 +650,6 @@ export default function Dashboard() {
     createWorkspace(ws);
   };
 
-  // "+ New Project" now lands straight on a blank chat page - see
-  // pages/NewProject.tsx - instead of opening a connect-data popup first;
-  // connecting data happens from inside that page instead.
-  const openConnectFlow = () => navigate("/project/new");
 
   const openConversation = (c: ConversationSummary) => {
     // 2026-10-08 (round 11): a multi-source Project opens its own page
@@ -711,6 +707,9 @@ export default function Dashboard() {
     if (pinnedOnly) {
       list = list.filter((c) => c.pinned);
     }
+    if (typeFilter !== "all") {
+      list = list.filter((c) => conversationKind(c) === typeFilter);
+    }
     // "All" and "Files" both show only the UNFILED Projects here - a filed
     // Project is represented by its folder's own card instead (rendered
     // separately, above this list, only in "All"). Picking a specific
@@ -731,11 +730,13 @@ export default function Dashboard() {
     // Pinned projects still float to the top within whichever sort is active.
     sorted.sort((a, b) => Number(b.pinned) - Number(a.pinned));
     return sorted;
-  }, [conversations, search, pinnedOnly, folderFilter, sortBy]);
+  }, [conversations, search, pinnedOnly, folderFilter, sortBy, typeFilter]);
 
   const hasAnyProjects = conversations.length > 0;
-  const hasFiltersApplied = search.trim() !== "" || pinnedOnly || folderFilter !== "all";
-  const clearFilters = () => { setSearch(""); setPinnedOnly(false); setFolderFilter("all"); };
+  const hasFiltersApplied = search.trim() !== "" || pinnedOnly || folderFilter !== "all" || typeFilter !== "all";
+  const clearFilters = () => { setSearch(""); setPinnedOnly(false); setFolderFilter("all"); setTypeFilter("all"); };
+  const answerCount = useMemo(() => conversations.filter((c) => conversationKind(c) === "answer").length, [conversations]);
+  const analysisCount = conversations.length - answerCount;
 
   // Pagination - PAGE_SIZE=12, same precedent as DataSources.tsx's own
   // pager, applied to whichever scope is currently showing (unfiled-only in
@@ -817,10 +818,10 @@ export default function Dashboard() {
       setMoveMsg(
         res.skipped.length > 0
           ? `Moved ${res.moved.length}, skipped ${res.skipped.length} (no permission).`
-          : `Moved ${res.moved.length} project${res.moved.length === 1 ? "" : "s"}.`
+          : `Moved ${res.moved.length} item${res.moved.length === 1 ? "" : "s"}.`
       );
     } catch {
-      setMoveMsg("Could not move those projects.");
+      setMoveMsg("Could not move those items.");
     } finally {
       setMoving(false);
       setTimeout(() => setMoveMsg(""), 4000);
@@ -945,9 +946,9 @@ export default function Dashboard() {
           {/* ---- Header: page title + the one primary action ---- */}
           <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-6">
             <div>
-              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Projects</h1>
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Library</h1>
               <p className="text-sm text-muted mt-1">
-                Every analysis you've started, in one place. Start a new one whenever you're ready.
+                Everything you've asked and analyzed. Dashboards have <Link to="/dashboards" className="text-text hover:underline">their own page</Link>.
               </p>
             </div>
             <div className="flex items-center gap-2.5 shrink-0">
@@ -963,14 +964,31 @@ export default function Dashboard() {
               >
                 <NewFolderIcon className="w-4 h-4" /> New Folder
               </button>
-              <button
-                className="btn-primary text-sm px-4 py-2.5 inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
-                onClick={openConnectFlow}
-                disabled={isViewerHere}
-                title={isViewerHere ? "You have view-only access to this workspace." : undefined}
-              >
-                <PlusIcon className="w-4 h-4" /> New Project
-              </button>
+              <div className="relative" ref={newMenuRef}>
+                <button
+                  className="btn-primary text-sm px-4 py-2.5 inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={() => setNewMenuOpen((v) => !v)}
+                  disabled={isViewerHere}
+                  aria-expanded={newMenuOpen}
+                  aria-haspopup="menu"
+                  title={isViewerHere ? "You have view-only access to this workspace." : undefined}
+                  data-library-new=""
+                >
+                  <PlusIcon className="w-4 h-4" /> New <ChevronDownIcon />
+                </button>
+                {newMenuOpen && (
+                  <div role="menu" className="absolute right-0 top-full mt-1.5 z-30 w-72 rounded-card border border-border bg-surface shadow-pop p-1.5">
+                    <button type="button" role="menuitem" className="w-full flex items-start gap-3 px-3 py-2.5 rounded-ctl text-left hover:bg-subtle" onClick={() => navigate("/")}>
+                      <KindTile kind="answer" size={32} />
+                      <span className="flex flex-col"><span className="text-ui font-semibold text-text">Ask a question</span><span className="text-caption text-muted">An answer across any of your sources</span></span>
+                    </button>
+                    <button type="button" role="menuitem" className="w-full flex items-start gap-3 px-3 py-2.5 rounded-ctl text-left hover:bg-subtle" onClick={() => navigate("/?intent=analyze")}>
+                      <KindTile kind="analysis" size={32} />
+                      <span className="flex flex-col"><span className="text-ui font-semibold text-text">Analyze a table</span><span className="text-caption text-muted">Hands-on in Studio: chat, data, charts, SQL</span></span>
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1005,7 +1023,7 @@ export default function Dashboard() {
                   className={`inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition ${
                     folderFilter === "files" ? "bg-primary text-on-primary border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
                   }`}
-                  title="Only Projects not filed into any folder"
+                  title="Only items not filed into any folder"
                 >
                   Files
                   <span className={folderFilter === "files" ? "text-white/80" : "text-muted"}>{unfiledCount}</span>
@@ -1060,7 +1078,7 @@ export default function Dashboard() {
                         />
                       ) : confirmDeleteFolder ? (
                         <>
-                          <span>Delete &ldquo;{activeFolder.name}&rdquo;? Its projects stay - they'll just be unfiled.</span>
+                          <span>Delete &ldquo;{activeFolder.name}&rdquo;? Everything in it stays - it'll just be unfiled.</span>
                           <button type="button" className="text-muted hover:text-text" onClick={() => setConfirmDeleteFolder(false)} disabled={folderBusy}>
                             Cancel
                           </button>
@@ -1094,11 +1112,31 @@ export default function Dashboard() {
           {hasAnyProjects && (
             <div className="flex flex-col lg:flex-row lg:items-center gap-2.5 lg:gap-2 mb-3 p-2 rounded-xl border border-border bg-surface/60">
               <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 flex-1 min-w-0">
+                <div role="tablist" aria-label="Show" className="flex gap-0.5 rounded-ctl border border-border bg-base p-[3px] shrink-0 self-start sm:self-auto" data-library-types="">
+                  {([
+                    ["all", "All", conversations.length],
+                    ["answer", "Answers", answerCount],
+                    ["analysis", "Analyses", analysisCount],
+                  ] as [TypeFilter, string, number][]).map(([t, label, n]) => (
+                    <button
+                      key={t}
+                      type="button"
+                      role="tab"
+                      aria-selected={typeFilter === t}
+                      onClick={() => setTypeFilter(t)}
+                      className={`h-[34px] px-3 rounded-[7px] text-sm inline-flex items-center gap-1.5 ${typeFilter === t ? "bg-subtle text-text" : "text-muted hover:text-text"}`}
+                    >
+                      {t !== "all" && <KindIcon kind={t} size={13} className={t === "answer" ? "text-kind-answer" : "text-kind-analysis"} />}
+                      {label}
+                      <span className="font-mono text-[11px] text-muted">{n}</span>
+                    </button>
+                  ))}
+                </div>
                 <div className="relative flex-1 min-w-0 sm:max-w-xs">
                   <SearchIcon className="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     className="input input-icon h-10 text-sm w-full"
-                    placeholder="Search projects..."
+                    placeholder="Search answers and analyses…"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                   />
@@ -1170,16 +1208,21 @@ export default function Dashboard() {
           {/* ---- Projects grid ---- */}
           {!loading && !hasAnyProjects && (
             <div className="card p-10 text-center">
-              <div className="text-lg font-semibold mb-1.5">No projects yet</div>
-              <p className="text-sm text-muted max-w-sm mx-auto leading-relaxed mb-5">
+              <div className="text-lg font-semibold mb-1.5">Your Library is empty</div>
+              <p className="text-sm text-muted max-w-md mx-auto leading-relaxed mb-5">
                 {isViewerHere
                   ? "Nothing's been shared into this workspace yet. You have view-only access here, so ask the workspace owner to add a data source."
-                  : "A project is one analysis - connect a data source and start asking GD360 questions about it to create your first one."}
+                  : "Every question you ask becomes an Answer, and every hands-on session in Studio becomes an Analysis. Both land here."}
               </p>
               {!isViewerHere && (
-                <button className="btn-primary text-sm px-4 py-2.5 inline-flex items-center gap-1.5" onClick={openConnectFlow}>
-                  <PlusIcon className="w-4 h-4" /> New Project
-                </button>
+                <div className="flex items-center justify-center gap-2.5 flex-wrap">
+                  <button className="btn-primary text-sm px-4 py-2.5 inline-flex items-center gap-1.5" onClick={() => navigate("/")}>
+                    <KindIcon kind="answer" size={15} /> Ask a question
+                  </button>
+                  <button className="btn-secondary text-sm px-4 py-2.5 inline-flex items-center gap-1.5" onClick={() => navigate("/?intent=analyze")}>
+                    <KindIcon kind="analysis" size={15} /> Analyze a table
+                  </button>
+                </div>
               )}
             </div>
           )}
@@ -1194,10 +1237,12 @@ export default function Dashboard() {
           {!loading && hasAnyProjects && showFilesSection && filteredProjects.length === 0 && !(showFolderIndex && !hasFiltersApplied) && (
             <div className="card p-10 text-center text-sm text-muted">
               {folderFilter === "files"
-                ? "No unfiled projects."
+                ? "Nothing unfiled."
                 : activeFolder
-                ? `No projects in "${activeFolder.name}" yet.`
-                : "No projects match your filters."}{" "}
+                ? `Nothing in "${activeFolder.name}" yet.`
+                : typeFilter !== "all" && !search.trim() && !pinnedOnly
+                ? `No ${typeFilter === "answer" ? "answers" : "analyses"} here yet.`
+                : "Nothing matches your filters."}{" "}
               {hasFiltersApplied && (
                 <button className="text-primary font-medium hover:underline" onClick={clearFilters}>
                   Clear filters
@@ -1275,9 +1320,8 @@ export default function Dashboard() {
                   <ConversationRow
                     key={c.id}
                     conversation={c}
-                    icon={<ChartTypeIcon chartType={c.last_chart_type} />}
-                    subtitle={`${c.datasource_name || "Removed data source"} · ${timeAgo(c.updated_at)}`}
-                    trailing={c.message_count}
+                    kind={conversationKind(c)}
+                    subtitle={`${c.datasource_name || "Removed data source"} · ${timeAgo(c.updated_at)}${c.dashboard_count ? ` · ${c.dashboard_count} dashboard${c.dashboard_count === 1 ? "" : "s"}` : ""}`}
                     onOpen={() => openConversation(c)}
                     onRenamed={renameConversation}
                     onPinned={pinConversation}
@@ -1333,7 +1377,7 @@ export default function Dashboard() {
               </button>
               <h2 className="text-lg font-bold mb-1">New folder</h2>
               <p className="text-xs text-muted mb-4 leading-relaxed">
-                Give it a name - you can move projects into it right after, or any time later.
+                Give it a name - you can move answers and analyses into it right after, or any time later.
               </p>
               <input
                 autoFocus

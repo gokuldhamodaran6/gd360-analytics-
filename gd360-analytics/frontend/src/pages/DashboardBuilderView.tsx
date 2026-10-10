@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { MadeFromLink, sourceHref } from "../lib/kinds";
 import { Link, useParams } from "react-router-dom";
 import {
   dashboardBuilderApi, DashboardBlock, DashboardBuilderDetail, DashboardBuilderPage, DashboardBlockType, datasourceApi, WorkspaceSummary, qualityChecksApi,
@@ -11,7 +12,7 @@ import {
 } from "../dashboard";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { brandingBackgroundImageStyle, brandingStyleVars, hexToRgbTriple, useBrandingAsset } from "../lib/branding";
-import { ConfirmDialog, ExternalIcon, MergeIcon as KitMergeIcon, MoreIcon, PaletteIcon as KitPaletteIcon, Popover, Sheet, WarningIcon, buttonClasses, cn } from "../ui";
+import { ConfirmDialog, MergeIcon as KitMergeIcon, MoreIcon, PaletteIcon as KitPaletteIcon, Popover, Sheet, WarningIcon, buttonClasses, cn } from "../ui";
 import { MenuRow } from "../dashboard/menu";
 import { AppearanceSheet } from "../dashboard/theme/AppearanceSheet";
 import { BrandAssets } from "../dashboard/theme/BrandAssets";
@@ -1379,21 +1380,13 @@ function DashboardBuilderViewBody({
         onPinColor={appearance.pin}
         onOpenAppearance={openAppearance}
         subtitleExtra={
-          dash.can_edit && dash.source_conversation_title && dash.source_conversation_datasource_id ? (
-            // "see from which project this dashboard was created": the chat
-            // analysis it was generated from, opened beside the dashboard.
-            <Link
-              to={`/workspace/${dash.source_conversation_datasource_id}?conversation=${dash.source_conversation_id}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              data-source-link=""
-              className="ui-focus inline-flex max-w-full items-center gap-1 rounded text-ui text-muted hover:text-brand-ink hover:underline"
-              title="Open the chat analysis this dashboard was built from in a new tab"
-            >
-              <span className="truncate">Built from &ldquo;{dash.source_conversation_title}&rdquo;</span>
-              <ExternalIcon size={12} className="shrink-0" />
-            </Link>
-          ) : undefined
+          // 2026-10-10 (one kind of dashboard): "Made from answer / analysis"
+          // - the way back to what this dashboard was made from.
+          dash.can_edit && dash.source_conversation_title && dash.source_conversation_id ? (() => {
+            const kind = dash.source_conversation_kind === "answer" ? "answer" : "analysis";
+            const href = sourceHref(kind, dash.source_conversation_id, dash.source_conversation_datasource_id);
+            return href ? <MadeFromLink kind={kind} title={dash.source_conversation_title} href={href} /> : undefined;
+          })() : undefined
         }
         headerExtra={
           <>

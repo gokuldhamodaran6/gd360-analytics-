@@ -23,6 +23,7 @@ import DataTable from "../components/DataTable";
 import DataFlowMap, { FlowJumpTarget } from "../components/DataFlowMap";
 import BuildDashboardModal from "../components/BuildDashboardModal";
 import PushToDashboardMenu from "../components/PushToDashboardMenu";
+import { KindIcon, KindPill } from "../lib/kinds";
 // 2026-09-30 (bug-fix round, Gokul's own ask): QualityChecksPanel/
 // AccessRulesPanel/MetricsPanel/TransformsPanel imports removed along with
 // this page's own Quality checks/Access/Metrics/Transforms tabs - see the
@@ -211,7 +212,7 @@ function LinkedDashboardsMenu({ dashboards }: { dashboards: DashboardBuilderSumm
         onClick={() => goTo(dashboards[0].id)}
         title={dashboards[0].name}
       >
-        <GridIcon /> View Dashboard
+        <KindIcon kind="dashboard" size={14} className="text-kind-dashboard" /> Open dashboard
       </button>
     );
   }
@@ -223,7 +224,7 @@ function LinkedDashboardsMenu({ dashboards }: { dashboards: DashboardBuilderSumm
         className="btn-secondary text-sm flex items-center gap-1.5"
         onClick={() => setOpen((o) => !o)}
       >
-        <GridIcon /> View Dashboards ({dashboards.length}) <ChevronDownIcon />
+        <KindIcon kind="dashboard" size={14} className="text-kind-dashboard" /> Dashboards ({dashboards.length}) <ChevronDownIcon />
       </button>
       {open && (
         <div className="absolute right-0 top-full mt-2 w-64 dash-card bg-surface shadow-2xl border border-border p-1.5 z-30">
@@ -485,6 +486,15 @@ export default function Workspace() {
   // Gokul asked to appear once an analysis is done - opens the AI/blank
   // choice modal, same header row as "Save chart to dashboard".
   const [buildDashboardOpen, setBuildDashboardOpen] = useState(false);
+  // 2026-10-10: Dashboards -> "From an analysis" opens this analysis with
+  // ?create=1, which opens "Create dashboard" once the analysis has loaded.
+  const createParam = searchParams.get("create") === "1";
+  const createHandled = useRef(false);
+  useEffect(() => {
+    if (!createParam || createHandled.current || !conversationId) return;
+    createHandled.current = true;
+    setBuildDashboardOpen(true);
+  }, [createParam, conversationId]);
   // 2026-09-28 (senior-UX round): every v2 dashboard already built from
   // THIS conversation, so the header can offer a way straight back to it
   // (LinkedDashboardsMenu above) instead of it becoming unreachable from
@@ -538,6 +548,20 @@ export default function Workspace() {
   const [conversationTitle, setConversationTitle] = useState<string | null>(null);
   const [renamingConversation, setRenamingConversation] = useState(false);
   const [conversationTitleDraft, setConversationTitleDraft] = useState("");
+  // 2026-10-10: the brief "Create dashboard -> From this analysis" drafts
+  // from - this analysis's name and the last few things it asked.
+  const analysisGoal = useMemo(() => {
+    const asks = turns
+      .filter((t) => t.role === "user" && (t.content || "").trim())
+      .map((t) => t.content.trim().slice(0, 160))
+      .slice(-5);
+    if (!asks.length && !conversationTitle) return null;
+    const parts: string[] = [];
+    if (conversationTitle) parts.push(`A live dashboard for the analysis "${conversationTitle}".`);
+    if (asks.length) parts.push(`It explored: ${asks.join("; ")}.`);
+    parts.push("Lead with the headline numbers as KPI tiles, then the breakdowns and the trend over time, with filters for the main categories.");
+    return parts.join(" ").slice(0, 1900);
+  }, [turns, conversationTitle]);
   const [savingConversationTitle, setSavingConversationTitle] = useState(false);
   const [conversationRenameFailed, setConversationRenameFailed] = useState(false);
 
@@ -2194,7 +2218,13 @@ export default function Workspace() {
               their first question, which auto-titles it immediately (see
               deriveConversationTitle above), the same as any other Project
               already gets on the Projects page. */}
+          {/* 2026-10-10 (Clarity Blueprint): this page is Studio - an
+              ANALYSIS of one table, labelled as such and living in Library. */}
+          <div className="font-mono text-[11px] text-muted uppercase tracking-[0.06em] mb-1">
+            <a href="/library?type=analysis" onClick={(e) => { e.preventDefault(); navigate("/library?type=analysis"); }} className="hover:text-text">Library</a> / Analysis · Studio
+          </div>
           <div className="flex items-center gap-1.5 min-w-0">
+            <KindPill kind="analysis" className="shrink-0 mr-1">Analysis</KindPill>
             {renamingConversation ? (
               <input
                 autoFocus
@@ -2212,7 +2242,7 @@ export default function Workspace() {
               <span className="flex items-center gap-1.5 min-w-0">
                 <span
                   className={`text-[16px] font-bold truncate ${conversationTitle ? "text-text" : "text-muted italic"}`}
-                  title={conversationTitle || "Untitled - ask your first question to name this Project automatically"}
+                  title={conversationTitle || "Untitled - ask your first question to name this analysis automatically"}
                 >
                   {conversationTitle || "Untitled"}
                 </span>
@@ -2220,7 +2250,7 @@ export default function Workspace() {
                   <button
                     type="button"
                     className="opacity-60 hover:opacity-100 transition shrink-0"
-                    title="Rename this Project"
+                    title="Rename this analysis"
                     onClick={startRenameConversation}
                   >
                     &#9998;
@@ -2233,7 +2263,7 @@ export default function Workspace() {
           </div>
 
           <div className="text-sm text-muted flex items-center gap-1.5 min-w-0 mt-0.5">
-            <span className="shrink-0">Analyzing:</span>
+            <span className="shrink-0">on</span>
             {renamingDs ? (
               <input
                 autoFocus
@@ -2302,22 +2332,9 @@ export default function Workspace() {
           {hasChart && (
             <>
               {saveMsg && <span className="text-xs text-accent">{saveMsg}</span>}
-              {/* 2026-10-07 (chart-integrity round): what is saved is the
-                  figure of what is ON SCREEN (displaySpec - the chart
-                  model's figure with this tab's style), never the stored
-                  one. A result shown as a table has no figure to pin on a
-                  chart board, so this one action is left out for it; "Add
-                  to dashboard" below adds it as a table. */}
-              {displaySpec && (
-                <SaveChartMenu
-                  chartSpec={displaySpec}
-                  title={chartStyle.title || chartTitle || "Untitled chart"}
-                  insight={activeChartInsight}
-                  dsName={dsName}
-                  onSaved={setSaveMsg}
-                  preview={<WorkspaceChart resolved={resolvedChart} variant="bare" title={chartStyle.title || chartTitle} minHeight={150} />}
-                />
-              )}
+              {/* 2026-10-10 (one kind of dashboard): "Save chart" (a flat
+                  chart board) is retired - a chart goes onto a real dashboard
+                  with "Add to dashboard" below. */}
               {/* 2026-10-01 (chat-to-dashboard round): pushes this SAME
                   chart onto an existing Dashboard Builder (v2) page - see
                   PushToDashboardMenu's own module docstring for why this is
@@ -2355,8 +2372,9 @@ export default function Workspace() {
                 type="button"
                 className="btn-primary text-sm flex items-center gap-1.5"
                 onClick={() => setBuildDashboardOpen(true)}
+                data-studio-create-dashboard=""
               >
-                <SparkleIcon /> Build Dashboard
+                <KindIcon kind="dashboard" size={15} /> Create dashboard
               </button>
             </>
           )}
@@ -2369,6 +2387,7 @@ export default function Workspace() {
         currentDatasourceId={datasourceId || null}
         currentDatasourceName={dsName}
         onClose={() => setBuildDashboardOpen(false)}
+        suggestedGoal={analysisGoal}
       />
 
       <AddDataPicker
