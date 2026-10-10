@@ -127,6 +127,19 @@
   --chart-axis: 42 52 54;
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
   --shadow-pop: 0 8px 24px -8px rgb(0 0 0 / 0.6), 0 1px 2px rgb(0 0 0 / 0.4);
+  /* 2026-10-10 (Clarity Blueprint, one product with three intents): the
+     colour of each kind of work, the same everywhere it appears (Home,
+     Library, page headers, dashboard cards). Answer = brand green,
+     Analysis (Studio) = blue, Dashboard = amber. ink / fill / border. */
+  --color-kind-answer: 67 229 160;
+  --color-kind-answer-fill: 19 35 32;
+  --color-kind-answer-border: 36 65 58;
+  --color-kind-analysis: 157 189 255;
+  --color-kind-analysis-fill: 15 23 41;
+  --color-kind-analysis-border: 45 63 99;
+  --color-kind-dashboard: 242 184 75;
+  --color-kind-dashboard-fill: 35 27 12;
+  --color-kind-dashboard-border: 92 66 22;
 }
 :root[data-theme="light"] {
   --color-subtle: 241 241 237;
@@ -161,6 +174,15 @@
   --chart-axis: 212 212 206;
   --shadow-card: 0 1px 2px rgb(22 22 21 / 0.04);
   --shadow-pop: 0 8px 24px -8px rgb(22 22 21 / 0.18), 0 1px 2px rgb(22 22 21 / 0.06);
+  --color-kind-answer: 15 92 70;
+  --color-kind-answer-fill: 232 243 238;
+  --color-kind-answer-border: 195 223 211;
+  --color-kind-analysis: 37 84 178;
+  --color-kind-analysis-fill: 236 242 253;
+  --color-kind-analysis-border: 196 213 245;
+  --color-kind-dashboard: 146 64 14;
+  --color-kind-dashboard-fill: 253 243 228;
+  --color-kind-dashboard-border: 243 220 189;
 }
 /* Theme-independent scale tokens: radius, spacing (8-pt grid, 4 only inside
    components), the type scale and the caps tracking. Exposed in

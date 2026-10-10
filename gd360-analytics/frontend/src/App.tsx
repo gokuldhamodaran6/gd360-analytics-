@@ -24,7 +24,6 @@ import Automations from "./pages/Automations";
 import AutomationEdit from "./pages/AutomationEdit";
 import Experiments from "./pages/Experiments";
 import Governance from "./pages/Governance";
-import NewProject from "./pages/NewProject";
 import AdminApp from "./admin/AdminApp";
 import InAppMessages from "./components/InAppMessages";
 import Profile from "./pages/Profile";
@@ -124,9 +123,14 @@ export default function App() {
           otherwise be ambiguous with it if this ever moved under
           /workspace - kept as its own top-level path instead so there's no
           risk of "new" ever being parsed as a real :datasourceId. */}
-      <Route path="/project/new" element={<Protected><NewProject /></Protected>} />
+      {/* 2026-10-10 (Clarity Blueprint): starting hands-on work is Home's
+          "Analyze a table" now. */}
+      <Route path="/project/new" element={<Navigate to="/?intent=analyze" replace />} />
       {/* 2026-10-08 (round 11): multi-source Projects and their dashboards. */}
-      <Route path="/projects" element={<Protected><Dashboard /></Protected>} />
+      {/* 2026-10-10 (Clarity Blueprint): "Projects" is now Library - every
+          answer and analysis, labelled. Old /projects links still land there. */}
+      <Route path="/library" element={<Protected><Dashboard /></Protected>} />
+      <Route path="/projects" element={<RedirectKeepingQuery to="/library" />} />
       <Route path="/p/:projectId" element={<Protected><ProjectWorkspace /></Protected>} />
       <Route path="/project-dashboards/:dashboardId" element={<Protected><ProjectDashboard /></Protected>} />
       {/* 2026-10-09 (round 15): one Space - channel hub / overview. */}
@@ -229,4 +233,10 @@ export default function App() {
       </ErrorBoundary>
     </>
   );
+}
+
+// 2026-10-10: a moved page keeps its query string (e.g. /projects?type=answer).
+function RedirectKeepingQuery({ to }: { to: string }) {
+  const { search } = useLocation();
+  return <Navigate to={`${to}${search}`} replace />;
 }
