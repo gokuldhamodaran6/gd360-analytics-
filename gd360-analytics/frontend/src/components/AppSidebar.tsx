@@ -12,7 +12,7 @@ import { ChipCloseIcon, SourceDot } from "./ChatPanel";
 // 30 px "G" mark, muted stroke icons, the active one in brand ink on the
 // brand tint. Navigation, routes, the workspace switcher and the mobile
 // drawer behave exactly as they did.
-import { BarChartIcon, ClockIcon, DatabaseIcon, FlaskIcon, GridIcon, NetworkIcon, PaletteIcon, ShieldCheckIcon, SidebarIcon } from "../ui";
+import { ClockIcon, DatabaseIcon, FlaskIcon, GridIcon, NetworkIcon, PaletteIcon, ShieldCheckIcon, SidebarIcon } from "../ui";
 import { BrandKitSheet } from "../dashboard/theme/BrandKitSheet";
 import { Space, spacesApi } from "../api/spaces";
 
@@ -35,11 +35,18 @@ import { Space, spacesApi } from "../api/spaces";
 // Workspace.tsx, Profile.tsx and the admin pages keep their current
 // top-bar-only layout until a later round.
 
-const ProjectsIcon = () => <GridIcon size={18} />;
+// 2026-10-10 (Clarity Blueprint): Library - every answer and analysis - is
+// drawn as a stack of layers, so it never looks like the Dashboards grid.
+const ProjectsIcon = () => (
+  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 3l9 5-9 5-9-5z" />
+    <path d="M3 13l9 5 9-5" />
+  </svg>
+);
 
 // 2026-09-23 (shared dashboards v1): a second top-level nav entry next to
 // Projects, for the new /dashboards list page.
-const DashboardsIcon = () => <BarChartIcon size={18} />;
+const DashboardsIcon = () => <GridIcon size={18} />;
 
 // 2026-09-28 (scheduled auto-refresh + background jobs round): the Jobs
 // page's own nav entry, between Dashboards and Data Sources - a scheduled
@@ -1100,7 +1107,10 @@ function SidebarNav({
   // Projects library moved to /projects, and a multi-source project (/p/:id)
   // counts as being in Projects.
   const onHome = pathname === "/";
-  const onProjects = pathname.startsWith("/projects") || pathname.startsWith("/p/") || pathname.startsWith("/workspace/");
+  // 2026-10-10: "Projects" is now Library (/library); an answer (/p/:id) and
+  // a Studio analysis (/workspace/:id) both live in it.
+  const onProjects =
+    pathname.startsWith("/library") || pathname.startsWith("/projects") || pathname.startsWith("/p/") || pathname.startsWith("/workspace/");
 
   // Shared class builder for the six nav links below: expanded keeps
   // today's icon+label row exactly as it was; collapsed centers just the
@@ -1131,9 +1141,9 @@ function SidebarNav({
           <HomeIcon />
           {!collapsed && "Home"}
         </Link>
-        <Link to="/projects" onClick={onNavigate} title={collapsed ? "Projects" : undefined} className={linkClass(onProjects)}>
+        <Link to="/library" onClick={onNavigate} title={collapsed ? "Library" : undefined} className={linkClass(onProjects)} data-nav="library">
           <ProjectsIcon />
-          {!collapsed && "Projects"}
+          {!collapsed && "Library"}
         </Link>
         <Link
           to="/dashboards"

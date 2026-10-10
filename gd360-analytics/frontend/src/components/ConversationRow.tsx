@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Kind, KindPill, KindTile } from "../lib/kinds";
 import { conversationApi, ConversationSummary, FolderSummary } from "../api/client";
 
 function MoreIcon({ className }: { className?: string }) {
@@ -146,7 +147,7 @@ function RowMenu({
     return (
       <div className="p-3 w-56" onClick={(e) => e.stopPropagation()}>
         <div className="text-xs text-text leading-relaxed mb-3">
-          Delete this conversation? This can&rsquo;t be undone.
+          Delete it for good? This can&rsquo;t be undone.
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -232,8 +233,12 @@ export default function ConversationRow({
   selectMode = false,
   selected = false,
   onToggleSelect,
+  kind,
 }: {
   conversation: ConversationSummary;
+  // 2026-10-10 (Library): when set, the row shows the kind's own tile and
+  // label (Answer / Analysis - see lib/kinds.tsx) instead of a generic icon.
+  kind?: Kind;
   // "card": the homepage / Workspace style (icon + title + subtitle).
   // "row": the compact style used inside a data source's own popup, where
   // the data source is already named in the header above the list.
@@ -518,14 +523,23 @@ export default function ConversationRow({
       {activeBar}
       <div className={`flex items-start gap-3 ${active ? "pl-1.5" : ""}`}>
         {checkbox}
-        {icon && (
+        {kind ? (
+          <KindTile kind={kind} />
+        ) : icon ? (
           <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-primary/25 to-accent/25 flex items-center justify-center text-primary shrink-0">
             {icon}
           </div>
-        )}
+        ) : null}
         <div className="min-w-0 flex-1">
           {titleBlock}
-          {subtitle && <div className="text-xs text-muted mt-0.5 truncate">{subtitle}</div>}
+          {kind ? (
+            <div className="mt-1 flex items-center gap-1.5 min-w-0">
+              <KindPill kind={kind} className="h-[18px] px-1.5 text-[10.5px] shrink-0" />
+              {subtitle && <span className="text-xs text-muted truncate">{subtitle}</span>}
+            </div>
+          ) : (
+            subtitle && <div className="text-xs text-muted mt-0.5 truncate">{subtitle}</div>
+          )}
         </div>
         <div className="flex items-center gap-1 shrink-0">
           {trailing && <div className="text-xs text-muted">{trailing}</div>}

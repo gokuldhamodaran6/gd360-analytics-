@@ -176,8 +176,13 @@ export default function BuildDashboardModal({
   currentDatasourceId,
   currentDatasourceName,
   onClose,
+  suggestedGoal,
 }: {
   open: boolean;
+  // 2026-10-10 (one kind of dashboard): "From this analysis" drafts the
+  // dashboard straight away from what this analysis asked (its title and
+  // recent questions) instead of an empty description box.
+  suggestedGoal?: string | null;
   conversationId: string | null;
   // 2026-09-28 (data-source visibility round): the data source this SAME
   // chat page is actually analyzing right now (Workspace.tsx's own
@@ -234,10 +239,14 @@ export default function BuildDashboardModal({
 
   // 2026-10-07: "Build with AI" -> the Builder (/dashboards/new) with this
   // chat's data source and conversation preselected.
-  const goToBuilder = () => {
+  const goToBuilder = (fromAnalysis: boolean) => {
     const q = new URLSearchParams();
     if (currentDatasourceId) q.set("datasource", currentDatasourceId);
     if (conversationId) q.set("conversation", conversationId);
+    if (fromAnalysis && suggestedGoal && suggestedGoal.trim().length >= 4) {
+      q.set("goal", suggestedGoal.trim());
+      q.set("auto", "1");
+    }
     onClose();
     navigate(`/dashboards/new${q.toString() ? `?${q.toString()}` : ""}`);
   };
@@ -296,10 +305,10 @@ export default function BuildDashboardModal({
 
         {step === "choose" ? (
           <>
-            <h2 className="text-lg font-bold mb-1">Build a dashboard</h2>
+            <h2 className="text-lg font-bold mb-1">Create a dashboard</h2>
             <p className="text-xs text-muted mb-5 leading-relaxed max-w-sm">
-              Turn this analysis into a real, publishable dashboard - a live page you can share, not just a
-              saved chart.
+              The same full dashboard as everywhere in GD360 - live filters, cross-filter, canvas and
+              publishing - linked back to this analysis.
             </p>
 
             {error && (
@@ -309,19 +318,34 @@ export default function BuildDashboardModal({
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {suggestedGoal && suggestedGoal.trim().length >= 4 && (
+                <button
+                  type="button"
+                  data-from-analysis=""
+                  onClick={() => goToBuilder(true)}
+                  className="text-left border border-primary/50 bg-primary/5 rounded-2xl p-4 hover:border-primary transition group sm:col-span-2"
+                >
+                  <span className="dash-icon-chip dash-accent-0 mb-3 group-hover:brightness-110 transition">
+                    <SparkleIcon className="w-[18px] h-[18px]" />
+                  </span>
+                  <div className="font-semibold text-sm mb-1">From this analysis <span className="ml-1 text-[10px] font-semibold uppercase tracking-wide text-primary">Recommended</span></div>
+                  <div className="text-xs text-muted leading-relaxed">
+                    GD360 drafts it from what you've explored here, on {currentDatasourceName ? <span className="font-medium text-text">{currentDatasourceName}</span> : "your data"} - you keep, swap or remove each block, then publish.
+                  </div>
+                </button>
+              )}
               <button
                 type="button"
                 data-build-with-ai=""
-                onClick={goToBuilder}
+                onClick={() => goToBuilder(false)}
                 className="text-left border border-border rounded-2xl p-4 hover:border-primary hover:bg-primary/5 transition disabled:opacity-50 disabled:cursor-not-allowed group"
               >
-                <span className="dash-icon-chip dash-accent-0 mb-3 group-hover:brightness-110 transition">
+                <span className="dash-icon-chip dash-accent-1 mb-3 group-hover:brightness-110 transition">
                   <SparkleIcon className="w-[18px] h-[18px]" />
                 </span>
-                <div className="font-semibold text-sm mb-1">Build with AI</div>
+                <div className="font-semibold text-sm mb-1">Describe it</div>
                 <div className="text-xs text-muted leading-relaxed">
-                  Describe what you want to see - GD360 proposes a dashboard from {currentDatasourceName ? <span className="font-medium text-text">{currentDatasourceName}</span> : "your real data"}, you keep,
-                  swap or remove each block, refine it, then publish.
+                  Say what you want to see - GD360 proposes a dashboard from {currentDatasourceName ? <span className="font-medium text-text">{currentDatasourceName}</span> : "your real data"}, you refine it, then publish.
                 </div>
               </button>
 
@@ -334,7 +358,7 @@ export default function BuildDashboardModal({
                 <span className="dash-icon-chip dash-accent-2 mb-3 group-hover:brightness-110 transition">
                   <GridIcon className="w-[18px] h-[18px]" />
                 </span>
-                <div className="font-semibold text-sm mb-1">{creatingBlank ? "Starting…" : "Create your own"}</div>
+                <div className="font-semibold text-sm mb-1">{creatingBlank ? "Starting…" : "Blank canvas"}</div>
                 <div className="text-xs text-muted leading-relaxed">
                   Start from a blank canvas - add your own blocks, then ask AI or build manually to fill
                   each one in.

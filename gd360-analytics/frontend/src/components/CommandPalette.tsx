@@ -106,7 +106,7 @@ function CornerReturnIcon({ className = "w-3 h-3" }: { className?: string }) {
 
 type Item = {
   id: string;
-  section: "Quick actions" | "Projects" | "Dashboards" | "Data sources";
+  section: "Quick actions" | "Library" | "Dashboards" | "Data sources";
   label: string;
   subtitle?: string;
   icon: JSX.Element;
@@ -207,10 +207,12 @@ export default function CommandPalette() {
 
   const allItems = useMemo<Item[]>(() => {
     const quickActions: Item[] = [
-      { id: "qa-new-project", section: "Quick actions", label: "New Project", subtitle: "Start a fresh analysis", icon: <PlusIcon />, run: () => navigate("/project/new") },
-      { id: "qa-new-dashboard", section: "Quick actions", label: "New Dashboard", subtitle: "Build a dashboard", icon: <PlusIcon />, run: () => navigate("/dashboards") },
+      { id: "qa-ask", section: "Quick actions", label: "Ask a question", subtitle: "An answer across your sources", icon: <PlusIcon />, run: () => navigate("/") },
+      { id: "qa-analyze", section: "Quick actions", label: "Analyze a table", subtitle: "Open Studio on one source", icon: <PlusIcon />, run: () => navigate("/?intent=analyze") },
+      { id: "qa-build", section: "Quick actions", label: "Build a dashboard", subtitle: "Describe it - GD360 drafts it with filters", icon: <PlusIcon />, run: () => navigate("/?intent=build") },
+      { id: "qa-new-dashboard", section: "Quick actions", label: "New dashboard", subtitle: "Describe it, or start from an answer or analysis", icon: <PlusIcon />, run: () => navigate("/dashboards?start=1") },
       { id: "qa-connect-data", section: "Quick actions", label: "Connect data", subtitle: "Add a new data source", icon: <PlusIcon />, run: () => navigate("/data") },
-      { id: "qa-go-projects", section: "Quick actions", label: "Go to Projects", icon: <ProjectsIcon />, run: () => navigate("/projects") },
+      { id: "qa-go-projects", section: "Quick actions", label: "Go to Library", subtitle: "Every answer and analysis", icon: <ProjectsIcon />, run: () => navigate("/library") },
       { id: "qa-go-dashboards", section: "Quick actions", label: "Go to Dashboards", icon: <DashboardsIcon />, run: () => navigate("/dashboards") },
       { id: "qa-go-data", section: "Quick actions", label: "Go to Data Sources", icon: <DataSourcesIcon />, run: () => navigate("/data") },
       { id: "qa-new-automation", section: "Quick actions", label: "New automation", subtitle: "Run something on a schedule, on new data or when a number crosses a line", icon: <PlusIcon />, run: () => navigate("/automations/new") },
@@ -227,9 +229,9 @@ export default function CommandPalette() {
       .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
       .map((c) => ({
         id: `proj-${c.id}`,
-        section: "Projects" as const,
-        label: c.title || "Untitled Project",
-        subtitle: c.datasource_name || undefined,
+        section: "Library" as const,
+        label: c.title || (c.kind === "project" ? "Untitled answer" : "Untitled analysis"),
+        subtitle: `${c.kind === "project" ? "Answer" : "Analysis"}${c.datasource_name ? ` · ${c.datasource_name}` : ""}`,
         icon: <ProjectsIcon />,
         run: () => openConversation(c),
       }));
@@ -240,7 +242,7 @@ export default function CommandPalette() {
         id: `dash-${d.id}`,
         section: "Dashboards" as const,
         label: d.name,
-        subtitle: d.workspace_name || "Personal",
+        subtitle: `Dashboard${d.source_kind && d.source_title ? ` · from ${d.source_kind} “${d.source_title}”` : ` · ${d.workspace_name || "Personal"}`}`,
         icon: <DashboardsIcon />,
         run: () => openDashboard(d),
       }));
@@ -251,7 +253,7 @@ export default function CommandPalette() {
         id: `ds-${ds.id}`,
         section: "Data sources" as const,
         label: ds.name,
-        subtitle: ds.kind,
+        subtitle: `${ds.kind} · open in Studio`,
         icon: <DataSourcesIcon />,
         run: () => openDatasource(ds),
       }));
@@ -264,7 +266,7 @@ export default function CommandPalette() {
     const q = query.trim().toLowerCase();
     const matches = (item: Item) =>
       !q || item.label.toLowerCase().includes(q) || (item.subtitle || "").toLowerCase().includes(q);
-    const sections: Item["section"][] = ["Quick actions", "Projects", "Dashboards", "Data sources"];
+    const sections: Item["section"][] = ["Quick actions", "Library", "Dashboards", "Data sources"];
     return sections
       .map((section) => ({
         section,
@@ -327,7 +329,7 @@ export default function CommandPalette() {
           <input
             ref={inputRef}
             className="flex-1 min-w-0 bg-transparent text-sm outline-none placeholder:text-muted"
-            placeholder="Search Projects, Dashboards, Data Sources, or run a quick action..."
+            placeholder="Search Library, Dashboards, Data Sources, or run a quick action..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />

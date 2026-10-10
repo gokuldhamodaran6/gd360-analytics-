@@ -211,7 +211,7 @@ export default function PushToDashboardMenu({
             <div className="text-xs text-muted py-2">Loading your dashboards&hellip;</div>
           ) : editableDashboards.length === 0 ? (
             <div className="text-xs text-muted py-1">
-              You don't have an editable dashboard yet - build one first with "Build Dashboard", then come back here to
+              You don't have an editable dashboard yet - create one first with "Create dashboard", then come back here to
               push more charts onto it.
             </div>
           ) : (

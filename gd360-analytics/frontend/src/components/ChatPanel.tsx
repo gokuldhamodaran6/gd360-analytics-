@@ -786,14 +786,14 @@ function DashboardTieIn({
           </svg>
         </span>
         <div className="flex-1 min-w-0 text-[11.5px] text-fg/80 leading-snug">
-          Nothing from this chat is on a dashboard yet.
+          Nothing from this analysis is on a dashboard yet.
         </div>
         <button
           type="button"
           className="btn-primary text-[11px] px-3 py-1.5 shrink-0"
           onClick={onOpenBuildDashboard}
         >
-          Build Dashboard
+          Create dashboard
         </button>
       </div>
     );
@@ -811,11 +811,11 @@ function DashboardTieIn({
       <div className="flex-1 min-w-0 text-[11.5px] text-fg/80 leading-snug">
         {dashboards.length === 1 ? (
           <>
-            <span className="font-semibold">"{first.name}"</span> has {totalBlocks} block{totalBlocks === 1 ? "" : "s"} built from this chat so far.
+            <span className="font-semibold">"{first.name}"</span> has {totalBlocks} block{totalBlocks === 1 ? "" : "s"} made from this analysis.
           </>
         ) : (
           <>
-            <span className="font-semibold">{dashboards.length} dashboards</span> built from this chat, {totalBlocks} block{totalBlocks === 1 ? "" : "s"} total.
+            <span className="font-semibold">{dashboards.length} dashboards</span> made from this analysis, {totalBlocks} block{totalBlocks === 1 ? "" : "s"} in all.
           </>
         )}
       </div>
@@ -825,7 +825,7 @@ function DashboardTieIn({
           className="btn-secondary text-[11px] px-3 py-1.5 shrink-0"
           onClick={() => onOpenDashboard(first.id)}
         >
-          {dashboards.length === 1 ? "View dashboard" : "View dashboards"} &rarr;
+          {dashboards.length === 1 ? "Open dashboard" : "Open dashboards"} &rarr;
         </button>
       )}
     </div>
