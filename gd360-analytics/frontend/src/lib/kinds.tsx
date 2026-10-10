@@ -5,8 +5,9 @@
 //
 //   Answer    - a question asked on Home, answered across any sources
 //               (pages/ProjectWorkspace.tsx, /p/:id). Brand green.
-//   Analysis  - hands-on work on one table in Studio: chat, data, charts,
-//               SQL (pages/Workspace.tsx, /workspace/:id). Blue.
+//   Analysis  - Guided Analysis: the same engine step by step, on one or
+//               more sources (pages/GuidedAnalysis.tsx, /g/:id); older
+//               one-source analyses open in Studio (/workspace/:id). Blue.
 //   Dashboard - the one kind of dashboard: filters, cross-filter, canvas,
 //               publish (pages/DashboardBuilderView.tsx). Amber.
 //
@@ -39,9 +40,11 @@ export function conversationKind(c: { kind?: string | null }): Kind {
   return c.kind === "project" ? "answer" : "analysis";
 }
 
-/** Where a Library item opens. */
+/** Where a Library item opens. A Guided Analysis ("guided") opens its step
+ *  notebook; an older one-source analysis opens Studio. */
 export function conversationHref(c: { id: string; kind?: string | null; datasource_id?: string | null }): string | null {
   if (c.kind === "project") return `/p/${c.id}`;
+  if (c.kind === "guided") return `/g/${c.id}`;
   return c.datasource_id ? `/workspace/${c.datasource_id}?conversation=${c.id}` : null;
 }
 
@@ -57,6 +60,8 @@ export function sourceHref(kind: string | null | undefined, id: string | null | 
   if (!id) return null;
   if (kind === "answer") return `/p/${id}`;
   if (kind === "analysis" && datasourceId) return `/workspace/${datasourceId}?conversation=${id}`;
+  // a Guided Analysis carries no single workspace source
+  if (kind === "analysis") return `/g/${id}`;
   return null;
 }
 
