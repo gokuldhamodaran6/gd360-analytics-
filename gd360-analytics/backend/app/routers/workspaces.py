@@ -174,7 +174,7 @@ def get_brand_kit(workspace_id: str, db: Session = Depends(get_db), user: models
     member = _get_membership(db, workspace_id, user.id)
     ws = db.query(models.Workspace).filter(models.Workspace.id == workspace_id).first()
     return schemas.WorkspaceBrandKitOut(
-        workspace_id=ws.id, workspace_name=ws.name, brand_kit=_kit_of(ws), can_edit=member.role == "owner",
+        workspace_id=ws.id, workspace_name=ws.name, brand_kit=_kit_of(ws), can_edit=member.role in ("owner", "admin"),
     )
 
 
@@ -186,8 +186,8 @@ def set_brand_kit(
     user: models.User = Depends(get_current_user),
 ):
     member = _get_membership(db, workspace_id, user.id)
-    if member.role != "owner":
-        raise HTTPException(403, "Only the workspace owner can change the brand kit.")
+    if member.role not in ("owner", "admin"):
+        raise HTTPException(403, "Only the workspace's owner and admins can change the brand kit.")
     ws = db.query(models.Workspace).filter(models.Workspace.id == workspace_id).first()
     if payload.brand_kit is None:
         ws.brand_kit = None
@@ -237,10 +237,11 @@ def regenerate_invite(workspace_id: str, db: Session = Depends(get_db), user: mo
     """Invalidates the old shareable link and issues a new one - for when
     an old link was shared somewhere it shouldn't have been."""
     member = _get_membership(db, workspace_id, user.id)
-    if member.role != "owner":
-        raise HTTPException(403, "Only the workspace owner can reset the invite link.")
+    if member.role not in ("owner", "admin"):
+        raise HTTPException(403, "Only the workspace's owner and admins can reset the invite link.")
     ws = db.query(models.Workspace).filter(models.Workspace.id == workspace_id).first()
     ws.invite_token = models.gen_uuid()
+    audit.log_audit_event(db, actor=user, action="invite_link_reset", workspace_id=ws.id, target_type="workspace", target_id=ws.id)
     db.commit()
     db.refresh(ws)
     return _workspace_out(db, ws, user.id)
@@ -260,6 +261,8 @@ def delete_workspace(workspace_id: str, db: Session = Depends(get_db), user: mod
             400,
             f"This workspace still has {datasource_count} data source(s) in it. Move or delete them first.",
         )
+    audit.log_audit_event(db, actor=user, action="workspace_deleted", workspace_id=None, target_type="workspace",
+                          target_id=ws.id, metadata={"name": ws.name})
     db.delete(ws)
     db.commit()
     return {"id": workspace_id, "deleted": True}
@@ -277,8 +280,8 @@ def remove_member(
     whole workspace instead, so a workspace is never left ownerless."""
     acting_member = _get_membership(db, workspace_id, user.id)
     is_self = member_user_id == user.id
-    if not is_self and acting_member.role != "owner":
-        raise HTTPException(403, "Only the workspace owner can remove other members.")
+    if not is_self and acting_member.role not in ("owner", "admin"):
+        raise HTTPException(403, "Only the workspace's owner and admins can remove other members.")
     if is_self and acting_member.role == "owner":
         raise HTTPException(400, "The workspace owner can't leave their own workspace - delete it instead.")
     target = (
@@ -288,6 +291,13 @@ def remove_member(
     )
     if not target:
         raise HTTPException(404, "That person isn't in this workspace.")
+    if not is_self and target.role == "owner":
+        raise HTTPException(400, "The workspace owner can't be removed.")
+    if not is_self and target.role == "admin" and acting_member.role != "owner":
+        raise HTTPException(403, "Only the owner can remove an admin.")
+    gone = db.query(models.User).filter(models.User.id == member_user_id).first()
+    audit.log_audit_event(db, actor=user, action="member_left" if is_self else "member_removed", workspace_id=workspace_id,
+                          target_type="user", target_id=member_user_id, metadata={"name": gone.email if gone else None})
     db.delete(target)
     db.commit()
     return {"user_id": member_user_id, "removed": True}
@@ -308,10 +318,10 @@ def update_member_role(
     themselves - an owner who wants to stop being the owner transfers the
     workspace a different way (not built yet) or just deletes it."""
     acting_member = _get_membership(db, workspace_id, user.id)
-    if acting_member.role != "owner":
-        raise HTTPException(403, "Only the workspace owner can change a member's role.")
-    if payload.role not in ("member", "viewer"):
-        raise HTTPException(400, "role must be 'member' or 'viewer'.")
+    if acting_member.role not in ("owner", "admin"):
+        raise HTTPException(403, "Only the workspace's owner and admins can change a member's role.")
+    if payload.role not in ("admin", "member", "viewer"):
+        raise HTTPException(400, "role must be 'admin', 'member' or 'viewer'.")
     if member_user_id == user.id:
         raise HTTPException(400, "You can't change your own role.")
     target = (
@@ -323,6 +333,8 @@ def update_member_role(
         raise HTTPException(404, "That person isn't in this workspace.")
     if target.role == "owner":
         raise HTTPException(400, "The workspace owner's role can't be changed.")
+    if (payload.role == "admin" or target.role == "admin") and acting_member.role != "owner":
+        raise HTTPException(403, "Only the owner can make or change admins.")
     target.role = payload.role
     audit.log_audit_event(
         db, actor=user, action="member_role_changed", workspace_id=workspace_id,

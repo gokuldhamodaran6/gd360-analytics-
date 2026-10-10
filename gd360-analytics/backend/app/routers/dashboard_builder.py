@@ -393,7 +393,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas, security
 from ..database import get_db
 from ..deps import get_current_user
-from ..services import ai_engine, chart_builder, dashboard_engine, data_access_rules, render_domains, workspace_access
+from ..services import ai_engine, audit, chart_builder, dashboard_engine, data_access_rules, policies, render_domains, workspace_access
 from ..services import appearance as appearance_svc
 from ..services import chart_recommender
 from ..services import forecast as forecast_svc
@@ -6101,11 +6101,17 @@ def _is_canonical_run(payload: schemas.RunPageRequest, d: models.Dashboard) -> b
 def _run_page_for(
     db: Session, d: models.Dashboard, page: models.DashboardPage, ds: models.DataSource,
     payload: schemas.RunPageRequest, user_id: str, persist_last_run: bool, anonymous: bool = False,
+    hidden_block_ids: set[str] | None = None,
 ) -> schemas.RunPageOut:
     """The shared body of the authenticated and public run endpoints.
     `anonymous`: the published link - the run may register new chart
-    colours only when it is canonical (services/appearance.py, rule 7)."""
+    colours only when it is canonical (services/appearance.py, rule 7).
+    `hidden_block_ids` (2026-10-10, company domain row rules): blocks this
+    viewer may not see - never compiled, never run."""
     runnable, skipped = _warehouse_page_blocks(page, payload.block_ids)
+    if hidden_block_ids:
+        runnable = [r for r in runnable if r["id"] not in hidden_block_ids]
+        skipped = [b for b in skipped if b not in hidden_block_ids]
     # Reading order (top to bottom, left to right): the order the colour
     # registry meets this page's blocks in, whatever order they ran in.
     reading_order = [(b.id, b.type) for b in sorted(page.blocks, key=lambda b: (b.y or 0, b.x or 0, b.position or 0, b.id))]
@@ -7696,6 +7702,11 @@ def publish_dashboard(
     d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
     if payload.mode not in ("public", "private"):
         raise HTTPException(400, f'Unknown share mode "{payload.mode}".')
+    # 2026-10-10 (round 19): a workspace can turn "anyone with the link" off
+    # (Trust Center > Policies). Named people and the company domain stay.
+    if payload.mode == "public" and d.workspace_id and policies.for_workspace_id(db, d.workspace_id).get("block_public_links"):
+        raise HTTPException(403, "This workspace doesn't allow \"anyone with the link\" dashboards. "
+                                 "Share it with named people, or publish it on the company domain.")
 
     share = d.share
     if not share:
@@ -7706,7 +7717,13 @@ def publish_dashboard(
     if payload.mode == "private":
         password = (payload.password or "").strip()
         share.password_hash = security.hash_password(password) if password else None
+    else:
+        # A public link has no password - drop one left from private mode.
+        share.password_hash = None
     share.published_at = datetime.utcnow()
+    audit.log_audit_event(db, actor=user, action="dashboard_published", workspace_id=d.workspace_id,
+                          target_type="dashboard", target_id=d.id,
+                          metadata={"name": d.name, "mode": payload.mode, "password": bool(share.password_hash)})
     db.commit()
     db.refresh(d)
     return _builder_out(db, d, user)
@@ -7740,6 +7757,8 @@ def add_share_email(
         raise HTTPException(400, "That email is already on this dashboard's access list.")
 
     db.add(models.DashboardShareEmail(share_id=share.id, email=email))
+    audit.log_audit_event(db, actor=user, action="dashboard_share_email_added", workspace_id=d.workspace_id,
+                          target_type="dashboard", target_id=d.id, metadata={"name": d.name, "email": email})
     db.commit()
     db.refresh(d)
     return _builder_out(db, d, user)
@@ -7766,6 +7785,8 @@ def remove_share_email(
     )
     if not row:
         raise HTTPException(404, "That person isn't on this dashboard's access list.")
+    audit.log_audit_event(db, actor=user, action="dashboard_share_email_removed", workspace_id=d.workspace_id,
+                          target_type="dashboard", target_id=d.id, metadata={"name": d.name, "email": row.email})
     db.delete(row)
     db.commit()
     db.refresh(d)
@@ -7782,6 +7803,8 @@ def unpublish_dashboard(
         # - republishing later keeps the exact same link instead of
         # silently breaking anyone who'd bookmarked it.
         d.share.published_at = None
+        audit.log_audit_event(db, actor=user, action="dashboard_unpublished", workspace_id=d.workspace_id,
+                              target_type="dashboard", target_id=d.id, metadata={"name": d.name})
         db.commit()
     db.refresh(d)
     return _builder_out(db, d, user)
@@ -7807,6 +7830,8 @@ def set_custom_domain(
         raise HTTPException(400, "Publish this dashboard first, then add a custom domain.")
 
     domain = _normalize_domain(payload.domain)
+    if db.query(models.WorkspaceDomain).filter(models.WorkspaceDomain.hostname == domain).first():
+        raise HTTPException(400, f'"{domain}" is a company domain on GD360 - publish to it from "Publish to company domain" instead.')
 
     clash = (
         db.query(models.DashboardShare)
@@ -7842,6 +7867,8 @@ def set_custom_domain(
     share.render_custom_domain_id = domain_id
     share.custom_domain_status = status_value
     share.custom_domain_error = None
+    audit.log_audit_event(db, actor=user, action="dashboard_custom_domain_set", workspace_id=d.workspace_id,
+                          target_type="dashboard", target_id=d.id, metadata={"name": d.name, "domain": domain})
     db.commit()
     db.refresh(d)
     return _builder_out(db, d, user)
@@ -7898,6 +7925,8 @@ def remove_custom_domain(
         except (render_domains.RenderDomainsNotConfigured, render_domains.RenderDomainError):
             pass
 
+    audit.log_audit_event(db, actor=user, action="dashboard_custom_domain_removed", workspace_id=d.workspace_id,
+                          target_type="dashboard", target_id=d.id, metadata={"name": d.name, "domain": share.custom_domain})
     share.custom_domain = None
     share.render_custom_domain_id = None
     share.custom_domain_status = None
@@ -8031,6 +8060,18 @@ def _public_filtered_out(out: schemas.FilteredBlocksOut) -> schemas.FilteredBloc
     for b in out.blocks:
         b.config = _public_block_config(b.type, b.config)
     return out
+
+
+def _count_view(db: Session, share: models.DashboardShare) -> None:
+    """2026-10-10 (round 19): views of a published link, for the Trust
+    Center's Sharing tab. Best effort - a view is never refused over it."""
+    try:
+        share.view_count = (share.view_count or 0) + 1
+        share.last_viewed_at = datetime.utcnow()
+        db.commit()
+    except Exception as e:  # noqa: BLE001
+        print(f"[dashboard_builder] view count skipped (non-fatal): {e}")
+        db.rollback()
 
 
 def _render_public_dashboard(
@@ -8191,7 +8232,9 @@ def get_public_dashboard(
     above). See _render_public_dashboard above for the actual access
     checks, shared with get_public_dashboard_by_domain below."""
     share = _resolve_share_by_slug(db, slug)
-    return _render_public_dashboard(db, share, x_dashboard_access_token)
+    out = _render_public_dashboard(db, share, x_dashboard_access_token)
+    _count_view(db, share)
+    return out
 
 
 # 2026-10-05 (public-filters round): "in published dashboard i cannot
@@ -8388,7 +8431,13 @@ def get_public_filter_options(
     page = next((p for p in d.pages if p.id == page_id), None)
     if not page:
         raise HTTPException(404, "Page not found on this dashboard.")
+    return _page_filter_options(page, column)
 
+
+def _page_filter_options(page: models.DashboardPage, column: str) -> dict:
+    """Distinct values of `column` from the page's own stored block rows
+    (never the live datasource) - shared by the slug link and the company
+    domain viewer (routers/domains.py)."""
     frames: list[pd.DataFrame] = []
     for block in page.blocks:
         if block.type not in ("table", "chart"):
@@ -8462,4 +8511,6 @@ def get_public_dashboard_by_domain(
     loaded through a customer's own custom domain rather than GD360's
     own onrender.com URL with a /d/:slug path in it."""
     share = _resolve_share_by_domain(db, hostname)
-    return _render_public_dashboard(db, share, x_dashboard_access_token)
+    out = _render_public_dashboard(db, share, x_dashboard_access_token)
+    _count_view(db, share)
+    return out

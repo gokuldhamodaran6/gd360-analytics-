@@ -63,7 +63,7 @@ router = APIRouter(prefix="/dashboards", tags=["dashboards"])
 # Same "viewer is the one role without write access" set as
 # services/workspace_access.py - kept local rather than imported since a
 # dashboard isn't scoped to a data source at all, just to a workspace.
-_EDIT_ROLES = {"owner", "member"}
+_EDIT_ROLES = {"owner", "admin", "member"}
 
 
 def _can_view(db: Session, dash: models.Dashboard, user: models.User) -> bool:
@@ -87,7 +87,7 @@ def _can_delete(db: Session, dash: models.Dashboard, user: models.User) -> bool:
         return True
     if not dash.workspace_id:
         return False
-    return workspace_access.member_role(db, user.id, dash.workspace_id) == "owner"
+    return workspace_access.member_role(db, user.id, dash.workspace_id) in ("owner", "admin")
 
 
 def _get_viewable(db: Session, user: models.User, dashboard_id: str) -> models.Dashboard:
@@ -289,7 +289,13 @@ def share_dashboard(
         raise HTTPException(403, "Only the dashboard's creator can change who it's shared with.")
     if payload.workspace_id:
         _check_can_share_into(db, user, payload.workspace_id)
+    before = d.workspace_id
     d.workspace_id = payload.workspace_id
+    if before != d.workspace_id:
+        # 2026-10-10 (round 19): who can see a dashboard is a Trust Center fact.
+        audit.log_audit_event(db, actor=user, action="dashboard_moved_to_workspace",
+                              workspace_id=d.workspace_id or before, target_type="dashboard", target_id=d.id,
+                              metadata={"name": d.name, "shared": bool(d.workspace_id)})
     db.commit()
     db.refresh(d)
     return _dashboard_out(db, d, user)

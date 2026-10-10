@@ -111,7 +111,7 @@ def _client_ip(request: Request) -> str:
 # plain owner_id check today; they're written to match the real three-tier
 # shape everywhere else in this app already uses, so nothing has to change
 # here if that workspace-assignment feature is ever built later.
-_EDIT_ROLES = {"owner", "member"}
+_EDIT_ROLES = {"owner", "admin", "member"}
 
 
 def _can_view_experiment(db: Session, exp: models.Experiment, user: models.User) -> bool:

@@ -345,7 +345,7 @@ def bulk_move_conversations(
         if not target_folder:
             raise HTTPException(404, "Folder not found.")
         role = workspace_access.member_role(db, user.id, target_folder.workspace_id)
-        is_edit_role = role in {"owner", "member"} or target_folder.owner_id == user.id
+        is_edit_role = role in {"owner", "admin", "member"} or target_folder.owner_id == user.id
         if role is None and target_folder.owner_id != user.id:
             raise HTTPException(404, "Folder not found.")
         if not is_edit_role:

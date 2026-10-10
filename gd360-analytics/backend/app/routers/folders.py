@@ -41,7 +41,7 @@ from ..services import workspace_access
 
 router = APIRouter(prefix="/folders", tags=["folders"])
 
-_EDIT_ROLES = {"owner", "member"}
+_EDIT_ROLES = {"owner", "admin", "member"}
 
 
 def _can_view(db: Session, folder: models.Folder, user: models.User) -> bool:

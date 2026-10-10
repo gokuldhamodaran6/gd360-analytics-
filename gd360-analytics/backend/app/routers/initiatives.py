@@ -57,7 +57,7 @@ def workspace_for(db: Session, user: models.User, workspace_id: str | None, edit
         role = "owner"
     if not ws or not role:
         raise HTTPException(404, "Workspace not found.")
-    if edit and role not in ("owner", "member"):
+    if edit and role not in ("owner", "admin", "member"):
         raise HTTPException(403, "You have view access to this workspace. Ask an owner for edit access to make changes.")
     return workspace_id
 
@@ -239,7 +239,7 @@ def get_initiative(initiative_id: str, db: Session = Depends(get_db), user: mode
     conn = connected.for_initiative(db, user, i)
     role = workspace_access.member_role(db, user.id, i.workspace_id)
     ws = db.get(models.Workspace, i.workspace_id)
-    can_edit = role in ("owner", "member") or (ws and ws.owner_id == user.id)
+    can_edit = role in ("owner", "admin", "member") or (ws and ws.owner_id == user.id)
     meta = catalog.KINDS.get(i.kind) or catalog.KINDS["custom"]
     return {
         **{k: (_iso(v) if isinstance(v, datetime) else v) for k, v in s.items()},
@@ -987,7 +987,7 @@ def ask(initiative_id: str, body: AskBody, db: Session = Depends(get_db), user: 
     i = initiative_for(db, user, initiative_id)
     role = workspace_access.member_role(db, user.id, i.workspace_id)
     ws = db.get(models.Workspace, i.workspace_id)
-    can_edit = role in ("owner", "member") or bool(ws and ws.owner_id == user.id)
+    can_edit = role in ("owner", "admin", "member") or bool(ws and ws.owner_id == user.id)
     return assistant.chat(db, i, user, body.message.strip(), can_act=can_edit)
 
 

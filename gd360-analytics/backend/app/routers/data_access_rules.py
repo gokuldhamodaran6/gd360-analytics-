@@ -42,8 +42,10 @@ def _get_owned_datasource(db: Session, user: models.User, datasource_id: str) ->
     ds = db.query(models.DataSource).filter(models.DataSource.id == datasource_id).first()
     if not ds or not workspace_access.can_access_datasource(db, ds, user):
         raise HTTPException(404, "Datasource not found.")
-    if ds.owner_id != user.id:
-        raise HTTPException(403, "Only this data source's owner can manage access rules.")
+    # 2026-10-10 (round 19, Trust Center): the workspace's owner and admins
+    # manage access rules on its shared sources too.
+    if ds.owner_id != user.id and not (ds.workspace_id and workspace_access.is_admin(db, user.id, ds.workspace_id)):
+        raise HTTPException(403, "Only this data source's owner or a workspace admin can manage access rules.")
     return ds
 
 

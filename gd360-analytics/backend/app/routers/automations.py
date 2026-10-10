@@ -17,6 +17,7 @@ from .. import models
 from ..deps import get_current_user
 from ..database import get_db
 from ..services import automations as svc
+from ..services import audit, ops_home, policies, workspace_access
 from ..services.project_engine.catalog import KIND_LABELS, accessible_sources, freshness_text, source_mode
 
 router = APIRouter(prefix="/automations", tags=["automations"])
@@ -37,6 +38,9 @@ class AutomationBody(BaseModel):
     steps: list[dict] = Field(default_factory=list)
     stop_on_quality_fail: bool = True
     tell: dict = Field(default_factory=dict)
+    # 2026-10-10 (round 19): the workspace it belongs to (the app's active
+    # workspace). Only read on create; an automation never moves.
+    workspace_id: str | None = None
 
 
 class ToggleBody(BaseModel):
@@ -44,10 +48,70 @@ class ToggleBody(BaseModel):
 
 
 def _get(db: Session, user: models.User, automation_id: str) -> models.Automation:
+    """The automation's owner - or (round 19) an owner/admin of its team
+    workspace, who can open, pause, run and approve it."""
     a = db.get(models.Automation, automation_id)
-    if not a or a.owner_id != user.id:
+    if not a:
+        raise HTTPException(404, "Automation not found.")
+    if a.owner_id != user.id and not (a.workspace_id and workspace_access.is_admin(db, user.id, a.workspace_id)):
         raise HTTPException(404, "Automation not found.")
     return a
+
+
+def _apply_approval(db: Session, user: models.User, a: models.Automation) -> None:
+    """Round 19: a member's automation in a team workspace that emails people
+    outside the company waits for an owner's or admin's OK (when the
+    workspace rule is on). Owners and admins never wait. An approved list
+    stays approved; adding a new outside address asks again."""
+    ws = db.get(models.Workspace, a.workspace_id) if a.workspace_id else None
+    if not ws or ws.is_personal:
+        return
+    rules = policies.get(ws)
+    emails = list((a.tell or {}).get("email") or [])
+    outside = ops_home._external_list(db, ws, emails)  # noqa: SLF001
+    if workspace_access.is_admin(db, user.id, ws.id) or not rules.get("external_email_needs_approval") or not outside:
+        if a.approval_status == "pending" and (not outside or workspace_access.is_admin(db, user.id, ws.id)):
+            a.approval_status = "approved" if outside else None
+            a.approved_by_id = user.id if outside else None
+            a.approved_at = datetime.utcnow() if outside else None
+            a.approved_recipients = emails if outside else None
+        return
+    approved = {e.lower() for e in (a.approved_recipients or [])} if a.approval_status == "approved" else set()
+    if all(e.lower() in approved for e in outside):
+        return
+    a.approval_status = "pending"
+    a.approval_requested_at = datetime.utcnow()
+    a.approval_requested_by_id = user.id
+    a.approved_by_id = None
+    a.approved_at = None
+    a.approval_note = None
+    a.enabled = False
+    a.next_run_at = None
+    _notify_approvers(db, ws, a, user, outside)
+
+
+def _notify_approvers(db: Session, ws: models.Workspace, a: models.Automation, user: models.User, outside: list[str]) -> None:
+    """Best effort: emails the owners and admins that an OK is needed."""
+    if not svc.email_configured():
+        return
+    rows = (db.query(models.User.email).join(models.WorkspaceMember, models.WorkspaceMember.user_id == models.User.id)
+            .filter(models.WorkspaceMember.workspace_id == ws.id,
+                    models.WorkspaceMember.role.in_(tuple(workspace_access.ADMIN_ROLES))).all())
+    to = [e for (e,) in rows if e and e != user.email][:10]
+    if not to:
+        return
+    who = user.full_name or user.email
+    link = f"{svc.app_url()}/automations"
+    subject = f"{who} wants to email {len(outside)} {'person' if len(outside) == 1 else 'people'} outside {ws.name}"
+    text = (f"{who} built the automation \"{a.name}\" in {ws.name}. It emails: {', '.join(outside)}.\n"
+            f"It stays off until an owner or admin approves it: {link}")
+    html = (f"<p>{who} built the automation <b>{a.name}</b> in {ws.name}. It emails people outside the company: "
+            f"{', '.join(outside)}.</p><p>It stays off until an owner or admin approves it.</p>"
+            f"<p><a href=\"{link}\">Review it in GD360</a></p>")
+    try:
+        svc.send_email(to, subject, html, text)
+    except Exception as e:  # noqa: BLE001
+        print(f"[automations] approval email failed: {e}")
 
 
 def _tell_out(tell: dict) -> dict:
@@ -92,6 +156,11 @@ def _out(db: Session, a: models.Automation) -> dict:
         "last_run": _run_out(last), "running": svc.is_running(a.id),
         "last_value": a.last_value, "last_checked_at": iso(a.last_checked_at), "last_condition": a.last_condition,
         "triggered": triggered, "created_at": iso(a.created_at),
+        "workspace_id": a.workspace_id,
+        "approval": {
+            "status": a.approval_status, "requested_at": iso(a.approval_requested_at),
+            "approved_at": iso(a.approved_at), "note": a.approval_note,
+        } if a.approval_status else None,
     }
 
 
@@ -118,11 +187,23 @@ def create_automation(body: AutomationBody, db: Session = Depends(get_db), user:
         fields = svc.validate(db, user, body.model_dump())
     except svc.AutomationError as e:
         _bad(e)
-    a = models.Automation(owner_id=user.id, **fields)
+    ws_id = body.workspace_id
+    if ws_id:
+        role = workspace_access.member_role(db, user.id, ws_id)
+        if role is None:
+            raise HTTPException(404, "Workspace not found.")
+        if role == "viewer":
+            raise HTTPException(403, "You have view-only access to this workspace.")
+    a = models.Automation(owner_id=user.id, workspace_id=ws_id, **fields)
     if fields["trigger"]["type"] == "new_data":
         a.last_seen_data_at = svc.data_version(db.get(models.DataSource, fields["trigger"]["datasource_id"]))
+    _apply_approval(db, user, a)
     svc.schedule_initial(a)
     db.add(a)
+    db.flush()
+    audit.log_audit_event(db, actor=user, action="automation_created", workspace_id=ws_id,
+                          target_type="automation", target_id=a.id,
+                          metadata={"name": a.name, "waiting_for_ok": a.approval_status == "pending"})
     db.commit()
     db.refresh(a)
     return _out(db, a)
@@ -296,13 +377,19 @@ def update_automation(automation_id: str, body: AutomationBody, db: Session = De
     except svc.AutomationError as e:
         _bad(e)
     trigger_changed = fields["trigger"] != (a.trigger or {}) or fields["timezone"] != a.timezone
+    was_pending = a.approval_status == "pending"
     for k, v in fields.items():
         setattr(a, k, v)
     if trigger_changed:
         a.last_condition = None
         if fields["trigger"]["type"] == "new_data":
             a.last_seen_data_at = svc.data_version(db.get(models.DataSource, fields["trigger"]["datasource_id"]))
+    _apply_approval(db, user, a)
+    if was_pending and a.approval_status == "pending":
+        a.enabled = False
     svc.schedule_initial(a)
+    audit.log_audit_event(db, actor=user, action="automation_updated", workspace_id=a.workspace_id,
+                          target_type="automation", target_id=a.id, metadata={"name": a.name})
     db.commit()
     db.refresh(a)
     return _out(db, a)
@@ -312,6 +399,10 @@ def update_automation(automation_id: str, body: AutomationBody, db: Session = De
 def toggle_automation(automation_id: str, body: ToggleBody, db: Session = Depends(get_db),
                       user: models.User = Depends(get_current_user)):
     a = _get(db, user, automation_id)
+    if body.enabled and a.approval_status == "pending":
+        raise HTTPException(409, "This automation is waiting for an owner's or admin's OK before it can run.")
+    if body.enabled and a.approval_status == "rejected":
+        raise HTTPException(409, "An owner or admin turned this automation down - change who it emails, then save it to ask again.")
     a.enabled = body.enabled
     if body.enabled and (a.trigger or {}).get("type") == "new_data":
         # turning back on never replays data that landed while it was off
@@ -328,6 +419,8 @@ def delete_automation(automation_id: str, db: Session = Depends(get_db), user: m
     db.query(models.AutomationRun).filter(models.AutomationRun.automation_id == a.id).update(
         {models.AutomationRun.automation_id: None}, synchronize_session=False
     )
+    audit.log_audit_event(db, actor=user, action="automation_deleted", workspace_id=a.workspace_id,
+                          target_type="automation", target_id=a.id, metadata={"name": a.name})
     db.delete(a)
     db.commit()
 
@@ -335,8 +428,10 @@ def delete_automation(automation_id: str, db: Session = Depends(get_db), user: m
 @router.post("/{automation_id}/run", status_code=202)
 def run_now(automation_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     a = _get(db, user, automation_id)
+    if a.approval_status == "pending":
+        raise HTTPException(409, "This automation is waiting for an owner's or admin's OK.")
     try:
-        run_id = svc.start_manual_run(a.id, user.id)
+        run_id = svc.start_manual_run(a.id, a.owner_id)
     except svc.AutomationError as e:
         raise HTTPException(409, str(e))
     return {"run_id": run_id}

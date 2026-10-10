@@ -51,7 +51,7 @@ def _can_edit_pipeline(db: Session, p: models.Pipeline, user: models.User) -> bo
     if not p.workspace_id:
         return False
     role = workspace_access.member_role(db, user.id, p.workspace_id)
-    return role in ("owner", "member")
+    return role in ("owner", "admin", "member")
 
 
 def _get_visible_pipeline(db: Session, user: models.User, pipeline_id: str) -> models.Pipeline:

@@ -158,7 +158,7 @@ def _sync_in_background(datasource_id: str) -> None:
         try:
             ds = db.get(models.DataSource, datasource_id)
             if ds:
-                synced_sources.sync_datasource(db, ds)
+                synced_sources.sync_datasource(db, ds, reason="manual")
         except Exception as e:  # noqa: BLE001
             print(f"[apps] background sync failed for {datasource_id}: {e}")
         finally:
@@ -465,7 +465,7 @@ def connect_app(payload: ConnectAppRequest, db: Session = Depends(get_db), user:
         raise HTTPException(400, f"sync_interval must be one of: {', '.join(synced_sources.SYNC_INTERVALS)}")
     if payload.workspace_id:
         role = workspace_access.member_role(db, user.id, payload.workspace_id)
-        if role not in ("owner", "member"):
+        if role not in ("owner", "admin", "member"):
             raise HTTPException(403, "You can't add sources to that workspace.")
     # 2026-10-09 (round 15): a sign-in's tokens, then any typed fields (e.g. the
     # Google Ads customer id), then the accounts/pages that were chosen.
