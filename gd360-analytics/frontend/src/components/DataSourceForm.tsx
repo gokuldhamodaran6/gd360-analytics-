@@ -1557,7 +1557,7 @@ export default function DataSourceForm({
               Close
             </button>
             <button type="button" className="btn-primary flex-1" onClick={proceedToWorkspace}>
-              Try it out &rarr;
+              Start with this data &rarr;
             </button>
           </div>
         </div>

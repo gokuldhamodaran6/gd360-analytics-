@@ -28,6 +28,14 @@ export default function InAppMessages() {
   const [err, setErr] = useState("");
   const hidden = !user || HIDDEN_ON.some((p) => loc.pathname.startsWith(p));
 
+  // 2026-10-10: the help form opens from the sidebar's "Help & support"
+  // (no floating button over every page).
+  useEffect(() => {
+    const open = () => { setHelpOpen(true); setState(""); setErr(""); };
+    window.addEventListener("gd360:open-help", open);
+    return () => window.removeEventListener("gd360:open-help", open);
+  }, []);
+
   useEffect(() => {
     if (hidden) return;
     let alive = true;
@@ -90,8 +98,6 @@ export default function InAppMessages() {
           </div>
         </div>
       )}
-      <button type="button" aria-label="Help — message the GD360 team" title="Help" onClick={() => { setHelpOpen(true); setState(""); setErr(""); }}
-        style={{ position: "fixed", right: 18, bottom: banner && !modal ? 86 : 18, zIndex: 54, width: 44, height: 44, borderRadius: 44, border: "1px solid #24413A", background: "#132320", color: "#43E5A0", fontWeight: 800, fontSize: 18, cursor: "pointer", boxShadow: "0 12px 34px -14px rgba(0,0,0,.8)" }}>?</button>
       {helpOpen && (
         <div style={{ position: "fixed", inset: 0, zIndex: 81, background: "rgba(3,5,6,.6)", display: "grid", placeItems: "center", padding: 16 }} onClick={() => setHelpOpen(false)}>
           <form onSubmit={send} role="dialog" aria-modal="true" aria-label="Message the GD360 team" onClick={(e) => e.stopPropagation()} style={{ ...S.card, width: "min(480px,100%)", borderRadius: 22, padding: 22, display: "flex", flexDirection: "column", gap: 12 }}>

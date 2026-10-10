@@ -1272,6 +1272,26 @@ function SidebarNav({
           mobile drawer's own call site never passes `onToggleCollapse`, so
           it never grows this button. Manual/user-controlled only: nothing
           in this file ever calls this on its own based on route/page. */}
+      {/* 2026-10-10: Help & support lives here, not floating over every page. */}
+      <div className={`shrink-0 pb-1 ${collapsed ? "px-2" : "px-3"}`}>
+        <button
+          type="button"
+          onClick={() => { onNavigate(); window.dispatchEvent(new Event("gd360:open-help")); }}
+          title={collapsed ? "Help & support" : undefined}
+          aria-label="Help & support"
+          data-nav="help"
+          className={`ui-focus flex items-center gap-2.5 rounded-ctl text-ui font-medium text-muted hover:text-text hover:bg-subtle transition-colors ${
+            collapsed ? "justify-center w-10 h-10 mx-auto" : "w-full px-2.5 h-9"
+          }`}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3" />
+            <path d="M12 17h.01" />
+          </svg>
+          {!collapsed && "Help & support"}
+        </button>
+      </div>
       {onToggleCollapse && (
         <div className={`shrink-0 pb-3 ${collapsed ? "px-2" : "px-3"}`}>
           <button
@@ -1463,8 +1483,17 @@ export default function AppSidebar({
           changes needed anywhere else. */}
       <div
         className={`hidden lg:flex shrink-0 h-screen sticky top-0 border-r border-border bg-surface flex-col transition-[width] duration-200 ${
-          collapsed ? "w-14" : "w-60"
+          collapsed ? "w-14 cursor-e-resize" : "w-60"
         }`}
+        data-sidebar-rail={collapsed ? "collapsed" : "expanded"}
+        // 2026-10-10: a click anywhere on the collapsed rail that is not a
+        // link or button opens it - the whole strip is the target.
+        onClick={(e) => {
+          if (!collapsed) return;
+          const el = e.target as HTMLElement;
+          if (el.closest("a,button,input,select,textarea,[role='menu'],[role='dialog']")) return;
+          setCollapsed(false);
+        }}
       >
         <SidebarNav
           workspaces={workspaces}

@@ -207,9 +207,9 @@ export default function CommandPalette() {
 
   const allItems = useMemo<Item[]>(() => {
     const quickActions: Item[] = [
-      { id: "qa-ask", section: "Quick actions", label: "Ask a question", subtitle: "An answer across your sources", icon: <PlusIcon />, run: () => navigate("/") },
-      { id: "qa-analyze", section: "Quick actions", label: "Analyze a table", subtitle: "Open Studio on one source", icon: <PlusIcon />, run: () => navigate("/?intent=analyze") },
-      { id: "qa-build", section: "Quick actions", label: "Build a dashboard", subtitle: "Describe it - GD360 drafts it with filters", icon: <PlusIcon />, run: () => navigate("/?intent=build") },
+      { id: "qa-ask", section: "Quick actions", label: "Instant Answers", subtitle: "Ask anything - answered in seconds across your sources", icon: <PlusIcon />, run: () => navigate("/") },
+      { id: "qa-analyze", section: "Quick actions", label: "Guided Analysis", subtitle: "Work step by step on one or more sources", icon: <PlusIcon />, run: () => navigate("/?intent=guided") },
+      { id: "qa-build", section: "Quick actions", label: "New dashboard", subtitle: "From an answer, an analysis, or a description", icon: <PlusIcon />, run: () => navigate("/dashboards?start=1") },
       { id: "qa-new-dashboard", section: "Quick actions", label: "New dashboard", subtitle: "Describe it, or start from an answer or analysis", icon: <PlusIcon />, run: () => navigate("/dashboards?start=1") },
       { id: "qa-connect-data", section: "Quick actions", label: "Connect data", subtitle: "Add a new data source", icon: <PlusIcon />, run: () => navigate("/data") },
       { id: "qa-go-projects", section: "Quick actions", label: "Go to Library", subtitle: "Every answer and analysis", icon: <ProjectsIcon />, run: () => navigate("/library") },
@@ -253,7 +253,7 @@ export default function CommandPalette() {
         id: `ds-${ds.id}`,
         section: "Data sources" as const,
         label: ds.name,
-        subtitle: `${ds.kind} · open in Studio`,
+        subtitle: `${ds.kind} · start a Guided Analysis`,
         icon: <DataSourcesIcon />,
         run: () => openDatasource(ds),
       }));
