@@ -50,6 +50,8 @@ FEATURES = [
     ("/datasources", "Data prep"),
     ("/pipelines", "Pipelines"),
     ("/admin", "Ask Admin"),
+    ("/initiatives", "Initiatives"),
+    ("/gtm", "Initiatives"),
 ]
 
 

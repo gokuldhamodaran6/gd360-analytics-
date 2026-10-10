@@ -381,6 +381,14 @@ def _tick() -> None:
         except Exception as e:  # noqa: BLE001 - never stops the loop
             logger.warning("[scheduler] automations tick failed: %s", e)
             db.rollback()
+
+        # 2026-10-10 (Initiatives): due reminders and scheduled campaigns.
+        from .initiatives.reminders import tick as initiatives_tick
+        try:
+            initiatives_tick(db, datetime.utcnow())
+        except Exception as e:  # noqa: BLE001 - never stops the loop
+            logger.warning("[scheduler] initiatives tick failed: %s", e)
+            db.rollback()
     finally:
         db.close()
 
