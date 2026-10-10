@@ -50,6 +50,16 @@ export default {
         "series-4": "rgb(var(--color-series-4) / <alpha-value>)",
         "series-5": "rgb(var(--color-series-5) / <alpha-value>)",
         "series-6": "rgb(var(--color-series-6) / <alpha-value>)",
+        // 2026-10-10: the three kinds of work (see src/lib/kinds.tsx).
+        "kind-answer": "rgb(var(--color-kind-answer) / <alpha-value>)",
+        "kind-answer-fill": "rgb(var(--color-kind-answer-fill) / <alpha-value>)",
+        "kind-answer-border": "rgb(var(--color-kind-answer-border) / <alpha-value>)",
+        "kind-analysis": "rgb(var(--color-kind-analysis) / <alpha-value>)",
+        "kind-analysis-fill": "rgb(var(--color-kind-analysis-fill) / <alpha-value>)",
+        "kind-analysis-border": "rgb(var(--color-kind-analysis-border) / <alpha-value>)",
+        "kind-dashboard": "rgb(var(--color-kind-dashboard) / <alpha-value>)",
+        "kind-dashboard-fill": "rgb(var(--color-kind-dashboard-fill) / <alpha-value>)",
+        "kind-dashboard-border": "rgb(var(--color-kind-dashboard-border) / <alpha-value>)",
       },
       fontFamily: {
         sans: ["Geist", "system-ui", "sans-serif"],
