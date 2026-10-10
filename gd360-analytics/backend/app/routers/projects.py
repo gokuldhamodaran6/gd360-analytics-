@@ -63,6 +63,10 @@ class CreateProjectRequest(BaseModel):
     auto_run: bool = True
     # 2026-10-09 (round 15): ask within a Space - its sources this person can use.
     space_id: str | None = None
+    # 2026-10-10: "answer" = Instant Answers (planned and run in one go);
+    # "guided" = Guided Analysis (the same plan, run one step at a time -
+    # services/project_engine/guided.py, routers/guided.py).
+    mode: str = "answer"
 
 
 class AskRequest(BaseModel):
@@ -167,7 +171,7 @@ def _usable_ids(db: Session, user: models.User, ids: list[str]) -> list[str]:
 
 def _project(db: Session, project_id: str, user: models.User, edit: bool = False) -> models.Conversation:
     conv = db.get(models.Conversation, project_id)
-    if not conv or conv.kind != "project" or not workspace_access.can_access_conversation(db, conv, user):
+    if not conv or conv.kind not in ("project", "guided") or not workspace_access.can_access_conversation(db, conv, user):
         raise HTTPException(404, "Project not found.")
     if edit and not workspace_access.can_edit_conversation(db, conv, user):
         raise HTTPException(403, "You have view-only access to this project.")
@@ -182,6 +186,11 @@ def _run(db: Session, run_id: str, user: models.User, edit: bool = False) -> tup
     return run, conv
 
 
+def _guided_busy(run_id: str) -> bool:
+    from ..services.project_engine import guided
+    return guided.is_busy(run_id)
+
+
 def _run_out(run: models.ProjectRun, full: bool = True) -> dict:
     ans = (run.result or {}).get("answer") or {}
     out = {
@@ -189,6 +198,8 @@ def _run_out(run: models.ProjectRun, full: bool = True) -> dict:
         "error": run.error_message, "note": run.note, "auto_run": bool(run.auto_run),
         "created_at": run.created_at, "started_at": run.started_at, "finished_at": run.finished_at,
         "headline": ans.get("headline"),
+        # 2026-10-10 (Guided Analysis): a step or the answer is being worked on
+        "busy": _guided_busy(run.id),
         "duration_seconds": (
             round(((run.finished_at or datetime.utcnow()) - (run.started_at or run.created_at)).total_seconds(), 1)
             if run.started_at else None
@@ -197,7 +208,10 @@ def _run_out(run: models.ProjectRun, full: bool = True) -> dict:
     if full:
         plan = dict(run.plan or {})
         plan.pop("replaced_plan", None)
-        out.update({"plan": plan if plan.get("steps") is not None else None, "steps": run.steps or [], "result": run.result})
+        # a guided analysis keeps every step's full result on the run; the
+        # page reads each step's preview instead
+        result = {k: v for k, v in (run.result or {}).items() if k != "guided_tables"} if run.result else run.result
+        out.update({"plan": plan if plan.get("steps") is not None else None, "steps": run.steps or [], "result": result})
     return out
 
 
@@ -222,13 +236,31 @@ def recover_interrupted_runs() -> None:
     db = SessionLocal()
     try:
         stuck = db.query(models.ProjectRun).filter(models.ProjectRun.status.in_(("planning", "running"))).all()
+        guided_ids = {
+            c.id for c in db.query(models.Conversation.id).filter(models.Conversation.kind == "guided").all()
+        }
         for r in stuck:
+            if r.conversation_id in guided_ids and r.status == "running" and r.steps:
+                # a guided analysis that was writing its answer: its steps are
+                # all still there - go back to the steps
+                r.status = "planned"
+                continue
             r.status = "failed"
             r.error_message = "This was interrupted by a server restart. Ask it again to get the answer."
             r.finished_at = datetime.utcnow()
+        # a guided step that was running when the server stopped
+        if guided_ids:
+            from sqlalchemy.orm.attributes import flag_modified
+            for r in db.query(models.ProjectRun).filter(
+                models.ProjectRun.conversation_id.in_(guided_ids), models.ProjectRun.status == "planned"
+            ).all():
+                if any(s.get("status") == "running" for s in r.steps or []):
+                    r.steps = [{**s, "status": "failed", "error": "This step was interrupted by a server restart. Run it again."}
+                               if s.get("status") == "running" else s for s in r.steps or []]
+                    flag_modified(r, "steps")
+        db.commit()
         if stuck:
-            db.commit()
-            print(f"[projects] marked {len(stuck)} interrupted run(s) as failed")
+            print(f"[projects] recovered {len(stuck)} interrupted run(s)")
     except Exception as e:  # noqa: BLE001
         print(f"[projects] interrupted-run recovery skipped: {e}")
         db.rollback()
@@ -274,16 +306,17 @@ def create_project(payload: CreateProjectRequest, db: Session = Depends(get_db),
         if not editable:
             raise HTTPException(403, "You have view-only access to these sources.")
         ids = editable + [i for i in ids if i not in editable]
+    guided = payload.mode == "guided"
     conv = models.Conversation(
-        owner_id=user.id, datasource_id=ids[0], kind="project", source_ids=ids,
+        owner_id=user.id, datasource_id=ids[0], kind="guided" if guided else "project", source_ids=ids,
         workspace_id=payload.workspace_id or first.workspace_id, title=payload.question.strip()[:80],
         space_id=space.id if space else None,
     )
     db.add(conv)
     db.commit()
-    run = _new_run(db, conv, user, payload.question, payload.auto_run)
+    run = _new_run(db, conv, user, payload.question, False if guided else payload.auto_run)
     executor.start_planning(run.id)
-    return {"project_id": conv.id, "run_id": run.id, "space_id": conv.space_id}
+    return {"project_id": conv.id, "run_id": run.id, "space_id": conv.space_id, "kind": conv.kind}
 
 
 @router.get("/runs/{run_id}")
@@ -345,7 +378,7 @@ def get_project(project_id: str, db: Session = Depends(get_db), user: models.Use
         .order_by(models.Dashboard.created_at.asc()).all()
     )
     return {
-        "id": conv.id, "title": conv.title, "source_ids": conv.source_ids or [], "sources": sources,
+        "id": conv.id, "title": conv.title, "kind": conv.kind, "source_ids": conv.source_ids or [], "sources": sources,
         "workspace_id": conv.workspace_id, "created_at": conv.created_at, "pinned": bool(conv.pinned),
         "can_edit": workspace_access.can_edit_conversation(db, conv, user),
         "runs": [_run_out(r, full=False) for r in runs if r.status != "replaced"],
@@ -385,6 +418,8 @@ def update_project(project_id: str, payload: UpdateProjectRequest, db: Session =
 def ask(project_id: str, payload: AskRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     _rate_limit(user.id)
     conv = _project(db, project_id, user, edit=True)
+    if conv.kind == "guided":
+        raise HTTPException(400, "A Guided Analysis answers one question - add or change its steps instead.")
     busy = (
         db.query(models.ProjectRun)
         .filter(models.ProjectRun.conversation_id == conv.id, models.ProjectRun.status.in_(("planning", "running")))

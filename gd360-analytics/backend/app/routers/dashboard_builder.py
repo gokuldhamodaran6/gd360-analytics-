@@ -2606,7 +2606,8 @@ def _builder_out(db: Session, d: models.Dashboard, user: models.User) -> schemas
         created_at=d.created_at,
         source_conversation_id=d.source_conversation_id,
         source_conversation_title=source_conv.title if source_conv else None,
-        source_conversation_datasource_id=source_conv.datasource_id if source_conv else None,
+        # a Guided Analysis opens at /g/:id, so it carries no workspace source
+        source_conversation_datasource_id=source_conv.datasource_id if source_conv and source_conv.kind != "guided" else None,
         # 2026-10-10 (one kind of dashboard): "Made from answer" vs "Made
         # from analysis" - which page the provenance chip opens.
         source_conversation_kind=(("answer" if source_conv.kind == "project" else "analysis") if source_conv else None),

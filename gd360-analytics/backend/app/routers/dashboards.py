@@ -122,7 +122,9 @@ def _source_ref(conv: models.Conversation | None, user: models.User, db: Session
         return {}
     return {
         "source_kind": "answer" if conv.kind == "project" else "analysis",
-        "source_title": conv.title, "source_id": conv.id, "source_datasource_id": conv.datasource_id,
+        # a Guided Analysis opens at /g/:id - no single-source workspace link
+        "source_title": conv.title, "source_id": conv.id,
+        "source_datasource_id": None if conv.kind == "guided" else conv.datasource_id,
     }
 
 

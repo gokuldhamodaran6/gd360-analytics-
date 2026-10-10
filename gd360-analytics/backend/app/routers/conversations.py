@@ -230,7 +230,7 @@ def list_conversations(
     ds_ids = {c.datasource_id for c in conversations if c.datasource_id}
     # 2026-10-08 (round 11): a multi-source project names all its sources
     for c in conversations:
-        if c.kind == "project":
+        if c.kind in ("project", "guided"):
             ds_ids.update(c.source_ids or [])
     if ds_ids:
         rows = db.query(models.DataSource).filter(models.DataSource.id.in_(ds_ids)).all()
@@ -281,11 +281,11 @@ def list_conversations(
             "title": c.title or "Untitled analysis",
             "datasource_id": c.datasource_id,
             "datasource_name": (
-                _project_sources_label(c, datasource_names) if c.kind == "project"
+                _project_sources_label(c, datasource_names) if c.kind in ("project", "guided")
                 else (datasource_names.get(c.datasource_id) if c.datasource_id else None)
             ),
             "kind": c.kind or "analysis",
-            "source_ids": c.source_ids if c.kind == "project" else ([c.datasource_id] if c.datasource_id else []),
+            "source_ids": c.source_ids if c.kind in ("project", "guided") else ([c.datasource_id] if c.datasource_id else []),
             "message_count": len(messages),
             "dashboard_count": dash_counts.get(c.id, 0),
             "last_message": last.content,
