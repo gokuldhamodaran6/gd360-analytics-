@@ -369,8 +369,145 @@ def is_no(text: str) -> bool:
     return bool(_NO.match((text or "").strip()))
 
 
+# round 29: "use the previous data", "use the same data", "with what I have", "from the last answer"
+_USE_EXISTING = re.compile(
+    r"\b(?:use|using|with|from|stick (?:with|to)|stay (?:with|on)|keep)\s+(?:the\s+|my\s+|our\s+)?"
+    r"(?:previous|same|last|existing|current|old|earlier|connected|that)\s+(?:data|source|sources|one|answer|dataset|file)\b|"
+    r"\b(?:with|from)\s+(?:the\s+)?(?:data|what)\s+(?:i|we)\s+(?:have|had|already have)\b|"
+    r"\bfrom the (?:previous|last|same) answer\b|\bin (?:my|our|the) (?:own )?data\b", re.I)
+# "I don't want to connect Google Ads", "don't connect", "no need to connect", "not connecting"
+_REFUSE_CONNECT = re.compile(
+    r"\b(?:don'?t|do not|dont|no need to|not going to|won'?t|never|without)\s+(?:want\s+to\s+|need\s+to\s+|wanna\s+)?"
+    r"(?:connect|connecting|add|adding|link|linking|set up|hook up)\b|\bno need\b|\bnot now\b", re.I)
+
+
 def wants_connected(text: str) -> bool:
-    return bool(_USE_CONNECTED.search(text or ""))
+    return bool(_USE_CONNECTED.search(text or "") or _USE_EXISTING.search(text or ""))
+
+
+def refuses_connect(text: str) -> bool:
+    """Round 29: a "no" to connecting, however it's said - not only when the sentence starts with "no"."""
+    return bool(_REFUSE_CONNECT.search(text or "")) or is_no(text)
+
+
+def wants_existing(text: str) -> bool:
+    return bool(_USE_EXISTING.search(text or ""))
+
+
+# ---- round 29: the question, tidied ------------------------------------------------------------
+# Speech comes in without capitals or punctuation, with fillers and the odd grammar slip. Before
+# anything else Euliv reads the question back tidied - rules only, no AI tokens, never a change
+# of meaning: casing of names, a few agreement fixes, fillers out, a question mark.
+_FILLERS = re.compile(r"^(?:(?:um+|uh+|erm+|hmm+|so|okay so|ok so|well|like|basically|actually|right|alright|and)[\s,]+)+", re.I)
+_PROPER = {
+    "google ads": "Google Ads", "facebook ads": "Facebook Ads", "meta ads": "Meta Ads", "google analytics": "Google Analytics",
+    "ga4": "GA4", "ga 4": "GA4", "youtube": "YouTube", "you tube": "YouTube", "linkedin": "LinkedIn", "tiktok": "TikTok",
+    "tik tok": "TikTok", "instagram": "Instagram", "facebook": "Facebook", "shopify": "Shopify", "hubspot": "HubSpot",
+    "hub spot": "HubSpot", "klaviyo": "Klaviyo", "stripe": "Stripe", "woocommerce": "WooCommerce", "bigquery": "BigQuery",
+    "big query": "BigQuery", "google": "Google", "meta": "Meta", "e commerce": "e-commerce", "ecommerce": "e-commerce",
+    "roas": "ROAS", "roi": "ROI", "cac": "CAC", "ctr": "CTR", "cpc": "CPC", "cpa": "CPA", "kpi": "KPI", "kpis": "KPIs",
+    "aov": "AOV", "ltv": "LTV", "seo": "SEO", "sem": "SEM", "crm": "CRM", "b2b": "B2B", "b2c": "B2C", "usa": "USA", "uk": "UK",
+    "mom": "MoM", "yoy": "YoY", "ytd": "YTD", "mtd": "MTD",
+}
+_SHORTS = {"i": "I", "im": "I'm", "ive": "I've", "id": "I'd", "dont": "don't", "doesnt": "doesn't", "didnt": "didn't",
+           "whats": "what's", "hows": "how's", "whos": "who's", "wheres": "where's", "isnt": "isn't", "arent": "aren't",
+           "wasnt": "wasn't", "werent": "weren't", "cant": "can't", "wont": "won't", "lets": "let's", "thats": "that's"}
+_MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
+_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+_NOT_PLURAL = {"sales"} - {"sales"}  # placeholder kept empty: "sales" is plural ("what are my sales")
+_SINGULAR_S = {"analysis", "business", "status", "revenue", "news", "ads", "analytics", "process", "address", "class", "access",
+               "progress", "success", "loss", "gross", "basis", "bonus", "campus", "census", "focus", "virus", "series", "this",
+               "his", "its", "us", "gas", "plus", "minus", "is", "was", "has", "does", "less", "across", "versus", "vs"}
+_STOP_HEAD = r"(?:for|in|of|by|from|last|this|with|on|during|across|between|vs|versus|compared|over|per|since|from|to|and|at|so|in)"
+_COUNTABLE = r"(?:orders|customers|users|sessions|bookings|clicks|products|units|items|visits|leads|visitors|signups|sign ups|guests|nights|rooms|transactions|purchases|subscribers|followers|impressions|conversions|campaigns)"
+_PAST = {"increased": "increase", "decreased": "decrease", "dropped": "drop", "grew": "grow", "went": "go", "changed": "change",
+         "improved": "improve", "declined": "decline", "fell": "fall", "rose": "rise", "performed": "perform", "made": "make", "sold": "sell"}
+
+
+def _plural_head(chunk: str) -> bool:
+    ws = [w for w in re.findall(r"[a-z0-9'-]+", chunk.lower())]
+    if not ws:
+        return False
+    head = ws[-1]
+    return head.endswith("s") and head not in _SINGULAR_S and not head.endswith(("ss", "us", "is")) and len(head) > 3
+
+
+def polish_question(text: str, source_names: list[str] | None = None) -> tuple[str, list[str]]:
+    """(the question tidied, what was changed in words). Rules only - the meaning never changes."""
+    raw = re.sub(r"\s+", " ", (text or "").strip())
+    if not raw:
+        return raw, []
+    notes: list[str] = []
+    s = _FILLERS.sub("", raw).strip() or raw
+    s = re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", s, flags=re.I)  # "the the" -> "the"
+    low = s.lower()
+    # agreement: "what is the paid marketing activities" -> "what are ..."; "what was the orders" -> "what were ..."
+    m = re.match(rf"^(what|how|where|which|who)\s+(is|was)\s+((?:the|my|our|your|all|all the)\s+)?(.+?)(?=\s+{_STOP_HEAD}\b|[?.!]|$)", low)
+    if m and _plural_head(m.group(4)):
+        verb = {"is": "are", "was": "were"}[m.group(2)]
+        a, b = m.span(2)
+        s = s[:a] + verb + s[b:]
+        notes.append(f"{m.group(2)} → {verb}")
+        low = s.lower()
+    # "how much orders" -> "how many orders"
+    m = re.search(rf"\bhow much\s+(?:\w+\s+)?{_COUNTABLE}\b", low)
+    if m:
+        s = s[:m.start()] + "how many" + s[m.start() + len("how much"):]
+        notes.append("how much → how many")
+        low = s.lower()
+    # "did sales increased" -> "did sales increase"
+    m = re.search(r"\b(did|does|do|didn't|doesn't|don't)\s+((?:\w+\s+){0,4}?)(" + "|".join(_PAST) + r")\b", low)
+    if m:
+        a, b = m.span(3)
+        s = s[:a] + _PAST[m.group(3)] + s[b:]
+        notes.append(f"{m.group(3)} → {_PAST[m.group(3)]}")
+        low = s.lower()
+    # "tell me detail about X" -> "Tell me more about X"
+    s = re.sub(r"\b(tell me|give me|show me)\s+(?:the\s+)?(?:details?|detailed info|info)\s+(?:about|on|of)\b", r"\1 more about", s, flags=re.I)
+    # "the e-commerce data what is the Google Ads share" -> "In the e-commerce data, what is the Google Ads share"
+    m = re.match(r"^((?:in|from|for|on|with)\s+)?((?:the|my|our)\s+[\w'\- ]{2,40}?)[,\s]+(what|what's|whats|how|which|why|who|when|where|show|tell|give|can|could|is|are)\b(.*)$", s, re.I)
+    if m and not re.match(r"^(?:the|my|our)\s+(?:top|best|worst|total|number)\b", m.group(2), re.I):
+        prep = (m.group(1) or "in ").strip()
+        s = f"{prep} {m.group(2)}, {m.group(3)}{m.group(4)}"
+    low = s.lower()
+    # "what are top products" -> "what are the top products"
+    m = re.match(r"^(what are|what were|who are|who were|show me|which are|give me|list)\s+(top|bottom|best|worst|biggest|highest|lowest)\b", low)
+    if m:
+        a = m.end(1)
+        s = s[:a] + " the" + s[a:]
+        low = s.lower()
+    # names and short forms, exactly as the app and your data spell them
+    names = sorted(source_names or [], key=len, reverse=True)
+    for n in names:
+        # a source named in passing ("e-commerce data" for "Ecommerce_Data 2021-2025"): written as the source is named -
+        # without its numbers unless they were said (they'd read as dates), and only for names that sound like data
+        # ("…data", "…orders", "…export") so everyday words ("marketing channels") stay the person's own
+        full = re.sub(r"[^a-z0-9]", "", n.lower())
+        bare = re.sub(r"\s*\b\d[\d\s_-]*\b", " ", n).strip(" _-")
+        core = re.sub(r"[^a-z]", "", bare.lower())
+        dataish = re.search(r"(data|dataset|export|sheet|file|table|report|db|warehouse)$", core)
+        for key, show in ((full, n), (core, bare)):
+            if len(key) < 6 or (key == core and not dataish):
+                continue
+            pat = r"(?<![\w])" + r"[\s_-]?".join(re.escape(ch) for ch in key) + r"(?![\w])"
+            if re.search(pat, s, re.I):
+                s = re.sub(pat, show, s, count=1, flags=re.I)
+                s = re.sub(r"\b(?:the|my|our)\s+(" + re.escape(show) + r")", r"\1", s, flags=re.I)  # "the Ecommerce_Data"
+                break
+    for k in sorted(_PROPER, key=len, reverse=True):
+        if not any(k in n.lower() for n in names):
+            s = re.sub(rf"(?<![\w-]){re.escape(k)}(?![\w-])", _PROPER[k], s, flags=re.I)
+    s = re.sub(r"\b(" + "|".join(_SHORTS) + r")\b", lambda mm: _SHORTS[mm.group(1).lower()] if mm.group(1).lower() in _SHORTS else mm.group(1), s, flags=re.I)
+    s = re.sub(r"\b(" + "|".join(_MONTHS + _DAYS) + r")\b", lambda mm: mm.group(1).title(), s, flags=re.I)
+    s = re.sub(r"\bq([1-4])\b", lambda mm: "Q" + mm.group(1), s, flags=re.I)
+    s = re.sub(r"\s+([?.!,])", r"\1", s).strip(" ,")
+    if s:
+        s = s[0].upper() + s[1:]
+    if not re.search(r"[?.!]$", s):
+        q = re.search(r"(?:^|,\s*)(what|what's|how|how's|why|which|who|whom|whose|when|where|is|are|was|were|do|does|did|can|could|"
+                      r"should|will|would|has|have|had)\b", s, re.I)
+        s += "?" if q else "."
+    return s, notes
 
 
 # ---- topics and sources ---------------------------------------------------------
@@ -471,7 +608,12 @@ def _says(said: str, name: str) -> bool:
     if f" {n} " in said:
         return True
     squashed = n.replace(" ", "")
-    return len(squashed) >= 5 and squashed in said.replace(" ", "")
+    if len(squashed) >= 5 and squashed in said.replace(" ", ""):
+        return True
+    # round 29: the name without its numbers ("Ecommerce_Data 2021-2025" said as "e-commerce data")
+    core = re.sub(r"\s+", " ", re.sub(r"\b\d[\d ]*\b", " ", n)).strip()
+    sq = core.replace(" ", "")
+    return core != n and len(sq) >= 8 and len(core.split()) >= 2 and sq in said.replace(" ", "")
 
 
 def label_of(ds: models.DataSource) -> str:
@@ -649,6 +791,8 @@ _CUR = {"$": "dollars", "€": "euros", "£": "pounds", "₹": "rupees", "¥": "
 def speakable(text: str) -> str:
     t = str(text or "")
     t = re.sub(r"[*`#>]+", "", t).replace("_", " ")
+    # round 29: quote marks aren't spoken, and a "?" inside a quote mustn't split what's said into odd pieces
+    t = re.sub(r"[“”\"]", "", t)
     t = t.replace("−", "-").replace("–", " to ").replace("—", ", ").replace("·", ",")
 
     def money(m):

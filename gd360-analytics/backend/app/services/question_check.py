@@ -667,6 +667,86 @@ def _coverage(db: Session, ds: models.DataSource, table_name: str, key: str | No
     return (lo, hi) if lo and hi else None
 
 
+# ---- round 29: is a name a VALUE in the person's data? ("Google Ads" as a channel) ----------------
+CHANNELISH = re.compile(r"(channel|source|medium|utm|platform|campaign|network|referr|traffic|marketing|ad_?group|ads?_|_ads?$)", re.I)
+_VALS: dict[tuple, tuple] = {}
+
+
+def _norm_val(v) -> str:
+    return " " + re.sub(r"[^a-z0-9]+", " ", str(v).lower()).strip() + " "
+
+
+def _distinct(db: Session, ds: models.DataSource, table_name: str, key: str | None, col: str) -> set[str]:
+    ck = (ds.id, key or table_name, col, _cov_version(ds))
+    hit = _VALS.get(ck)
+    if hit and time.time() - hit[0] < COVERAGE_TTL_S:
+        return hit[1]
+    if len(_VALS) > COVERAGE_CACHE_MAX:
+        _VALS.clear()
+    vals: set[str] = set()
+    mode = source_mode(ds.kind)
+    try:
+        if mode == "live":
+            from . import warehouse_exec
+            from .profiling import _quote_ident
+            from .project_engine.executor import _detached
+            ref = key or table_name
+            tref = f"`{ref}`" if ds.kind == "bigquery" else ".".join(_quote_ident(ds.kind, p) for p in ref.split("."))
+            sql = f"SELECT DISTINCT {_quote_ident(ds.kind, col)} AS v FROM {tref} LIMIT 500"
+            ex = cf.ThreadPoolExecutor(max_workers=1)
+            try:
+                df, _ = ex.submit(warehouse_exec.run_sql, _detached(ds), sql).result(timeout=COVERAGE_BUDGET_S)
+            finally:
+                ex.shutdown(wait=False, cancel_futures=True)
+            vals = {_norm_val(v) for v in df.iloc[:, 0].dropna().tolist()} if len(df) else set()
+        elif mode == "synced" or ds.kind in ("csv", "excel", "file"):
+            if mode == "synced":
+                from . import synced_sources
+                frame = synced_sources.load_table(db, ds.id, key)
+            else:
+                from . import data_loader
+                frame = data_loader.load_dataframe(ds, table=key, db=db)
+            if col in frame.columns:
+                vals = {_norm_val(v) for v in frame[col].dropna().astype(str).unique()[:2000]}
+    except Exception as e:  # noqa: BLE001 - only a hint; never a blocker
+        print(f"[question_check] values of {ds.name}.{table_name}.{col} unavailable: {str(e)[:160]}")
+    _VALS[ck] = (time.time(), vals)
+    return vals
+
+
+def sources_with_value(db: Session, user: models.User, pool: list, names: list[str], limit: int = 8) -> list:
+    """The sources where one of `names` is a value in a channel / platform / campaign column."""
+    want = [_norm_val(n) for n in names if n and len(n.strip()) >= 3]
+    if not want:
+        return []
+    try:
+        from . import data_access_rules
+    except Exception:  # noqa: BLE001
+        data_access_rules = None
+    out = []
+    t0 = time.time()
+    for ds in pool[:limit]:
+        if time.time() - t0 > 2 * COVERAGE_BUDGET_S:
+            break
+        try:
+            if data_access_rules and data_access_rules.has_active_restrictions(db, ds, user):
+                continue  # never peek past someone's access rules
+        except Exception:  # noqa: BLE001
+            continue
+        found = False
+        for tname, key, cols in _source_tables(db, ds, user):
+            for col in [str(c.get("name")) for c in cols if CHANNELISH.search(str(c.get("name") or ""))][:3]:
+                vals = _distinct(db, ds, tname, key, col)
+                if any(w.strip() and any(w in v for v in vals) for w in want):
+                    found = True
+                    break
+            if found:
+                break
+        if found:
+            out.append(ds)
+    return out
+
+
 def _as_date(v) -> date | None:
     if v is None:
         return None
@@ -695,9 +775,11 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
           coverage: bool = True, accepted: list[str] | None = None) -> dict:
     today = today or date.today()
     q = (question or "").strip()
+    # round 29: a source's own name never counts as a date ("Ecommerce_Data 2021-2025" is not "2021 to 2025")
+    qd = _without_names(q, [s.name for s in accessible_sources(db, user, workspace_id)])
     issues: list[dict] = []
-    issues += date_issues(q, today, accepted)
-    period, alts = (None, []) if any(i["kind"] in ("year_typo", "month_typo") for i in issues) else parse_period(q, today)
+    issues += date_issues(qd, today, accepted)
+    period, alts = (None, []) if any(i["kind"] in ("year_typo", "month_typo") for i in issues) else parse_period(qd, today)
     qw = words(q)
     topic = _topic(qw)
     needs_time = bool(period) or bool(HISTORY.search(q))
@@ -961,6 +1043,16 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
     }
 
 
+def _without_names(q: str, names: list[str]) -> str:
+    out = q
+    for n in sorted(names or [], key=len, reverse=True):
+        if re.search(r"\d", n or ""):
+            pat = r"[\s_-]?".join(re.escape(ch) for ch in re.sub(r"[^a-z0-9]", "", n.lower()))
+            if len(pat) >= 6:
+                out = re.sub(pat, " ", out, flags=re.I)
+    return out
+
+
 def _human(col: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[_\-]+", " ", col)).strip().lower()
 
@@ -1056,14 +1148,18 @@ _ASK_VERBS = {"perform", "performing", "doing", "did", "do", "does", "is", "are"
 def _asked_core(q: str) -> str | None:
     """The thing asked about, in the person's own words: "what is the paid marketing activities" ->
     "paid marketing activities" - so the read-back doesn't flatten it to "your marketing data"."""
-    s = _ASK_FILLER.sub(" ", _strip_period(q or "").lower())
+    s = _ASK_FILLER.sub(" ", _strip_period(q or ""))
+    s = re.sub(r"^(?:in|from|for)\s+(?:the|my|our)\s+[\w'\- ]{2,40}?,\s*", "", s.strip(), flags=re.I)  # "In the e-commerce data, …"
+    s = re.sub(r"^(?:tell|show|give)\s+(?:me|us)\s+(?:more\s+)?about\s+", "", s.strip(), flags=re.I)
     s = _ASK_LEAD.sub("", s.strip())
     s = re.sub(r"\s+", " ", re.sub(r"[?.!,]+", " ", s)).strip()
-    s = re.sub(r"\s+data$", "", s).strip()
-    ws = s.split()
-    if not (2 <= len(ws) <= 5) or any(w in _ASK_VERBS for w in ws) or re.search(r"[0-9_]|\bby\b", s):
+    s = re.sub(r"\s+(?:data|alone|only)$", "", s, flags=re.I).strip()
+    s = re.sub(r"^(?:the|my|our)\s+", "", s, flags=re.I)
+    ws = s.lower().split()
+    if not (1 <= len(ws) <= 5) or (len(ws) == 1 and not s[:1].isupper()) or any(w in _ASK_VERBS for w in ws) \
+            or re.search(r"[0-9_]|\bby\b", s):
         return None
-    return s
+    return s[:1].lower() + s[1:] if s[:2].islower() or not s[1:2].isupper() and s.split()[0].lower() in ("the", "my") else s
 
 
 def _what(q: str, qw: set[str], topic: str | None) -> str:
