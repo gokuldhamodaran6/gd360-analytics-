@@ -29,7 +29,7 @@ import { deviceText, LevelBars } from "../thread/Dictation";
 import {
   cancelSpeech, claimMic, headphonesOn, heardEuliv, isSpeaking, isTouchDevice, loadSettings, loadVoices, meterUseful, MIC_HELP, MicMonitor, type MicProblem, micOwner, onMicOwner,
   onSettings, type Rec, recognitionClass, releaseMic, saveSettings, SOUND_LEVEL, speak, speechInputSupported,
-  speechLang, speechOutputSupported, wakeInAny, type EulivSettings,
+  speechLang, speechOutputSupported, voiceLang, wakeInAny, autoEnglish, ENGLISHES, type EulivSettings,
 } from "../thread/voice";
 
 const HIDDEN_ON = ["/admin", "/pricing", "/about", "/start", "/register", "/login", "/admin-login", "/help", "/public", "/d/", "/invite", "/privacy", "/connect/", "/e/", "/w/", "/a/", "/r/"];
@@ -58,7 +58,21 @@ function errText(e: any): string {
 
 // ---- listening once -----------------------------------------------------------------
 
-type Heard = { text: string; reason: "ok" | "silent" | "unclear" | "stopped" | "network" | "unsupported" | MicProblem; label: string };
+type Heard = { text: string; alts?: string[]; reason: "ok" | "silent" | "unclear" | "stopped" | "network" | "unsupported" | MicProblem; label: string };
+
+/** Whole-sentence readings: the best one, then each phrase swapped for the recognizer's next guess. */
+function readings(segs: string[][], best: string): string[] {
+  const out: string[] = [];
+  const base = segs.map((a) => a[0] || "");
+  segs.forEach((alts, j) => {
+    alts.slice(1).forEach((alt) => {
+      if (!alt.trim()) return;
+      const t = base.map((b, i) => (i === j ? alt : b)).join(" ").replace(/\s+/g, " ").trim();
+      if (t && t.toLowerCase() !== best.toLowerCase() && !out.some((x) => x.toLowerCase() === t.toLowerCase())) out.push(t);
+    });
+  });
+  return out.slice(0, 6);
+}
 
 function listenOnce(o: {
   onInterim: (t: string) => void;
@@ -72,6 +86,8 @@ function listenOnce(o: {
     if (!Cls) return resolve({ text: "", reason: "unsupported", label: "" });
     let finals = "";
     let interim = "";
+    // round 30: the recognizer's other readings of each finished phrase - the server keeps the one that fits
+    let segs: string[][] = [];
     let settled = false;
     let gotWords = false;
     let meterProblem: MicProblem | null = null; // the meter's finding - used to explain silence
@@ -97,7 +113,7 @@ function listenOnce(o: {
       const text = said();
       const explained = meterProblem && meterProblem !== "failed" && meterProblem !== "unsupported" ? meterProblem : null;
       const why = text ? "ok" : (reason === "silent" || reason === "unclear") && explained ? explained : reason;
-      resolve({ text, reason: why, label: mon.label });
+      resolve({ text, alts: interim.trim() ? [] : readings(segs, text), reason: why, label: mon.label });
     }
     o.control.current = { finish: () => end("stopped") };
     try {
@@ -109,22 +125,29 @@ function listenOnce(o: {
     r.lang = speechLang();
     r.continuous = true;
     r.interimResults = true;
-    r.maxAlternatives = 1;
+    r.maxAlternatives = 4;
     r.onresult = (e: any) => {
       let f = "";
       let i2 = "";
+      const sg: string[][] = [];
       for (let i = 0; i < e.results.length; i++) {
         const tr = e.results[i][0]?.transcript || "";
-        if (e.results[i].isFinal) f += tr;
-        else i2 += tr;
+        if (e.results[i].isFinal) {
+          f += tr;
+          const all: string[] = [];
+          for (let k = 0; k < Math.min(4, e.results[i].length || 1); k++) all.push(String(e.results[i][k]?.transcript || ""));
+          sg.push(all);
+        } else i2 += tr;
       }
       finals = f;
       interim = i2;
+      segs = sg;
       if (said()) gotWords = true;
       o.onInterim(said());
       window.clearTimeout(t.silence);
-      // a pause after words finishes the turn (a little longer mid-sentence)
-      t.silence = window.setTimeout(() => end("ok"), i2 ? 1700 : 1150);
+      // a pause after words finishes the turn. Round 30: a little more room - people who think
+      // mid-sentence, or speak English as a second language, were being cut off
+      t.silence = window.setTimeout(() => end("ok"), i2 ? 2000 : 1400);
     };
     r.onerror = (e: any) => {
       const c = e?.error;
@@ -527,7 +550,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
   const unclear = useRef(0);
   const micTrouble = useRef(false); // the last listen hit a mic problem - don't re-listen by itself (typing still works)
   const idSeq = useRef(0);
-  const handleRef = useRef<((t: string) => unknown) | null>(null);
+  const handleRef = useRef<((t: string, alts?: string[]) => unknown) | null>(null);
   // round 27: what Euliv said lately - anything the mic hears that matches it is its own voice, not the person
   const spokenLog = useRef<{ text: string; ended: number | null }[]>([]);
   const echoes = useRef(0);
@@ -538,8 +561,10 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
   settingsRef.current = settings;
   const canListen = speechInputSupported();
 
+  const lastReply = useRef("");
   const push = useCallback((m: Omit<Msg, "id">) => {
     const id = ++idSeq.current;
+    if (m.who === "euliv" && m.text) lastReply.current = m.text;
     // one connect card at a time: a newer one replaces the older
     const strip = m.card?.type === "connect";
     setMsgs((cur) => [
@@ -636,7 +661,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
       proven.current = true;
       micTrouble.current = false;
       unclear.current = 0;
-      return handle(heard.text);
+      return handle(heard.text, heard.alts);
     }
     if (heard.reason === "stopped") {
       setPhase("idle");
@@ -870,7 +895,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [say, push, pollAnswer, afterReply, watchConnect, onClose]);
 
-  const turnWith = useCallback(async (text: string, event?: string, runId?: string) => {
+  const turnWith = useCallback(async (text: string, event?: string, runId?: string, alts?: string[], youId?: number) => {
     setPhase("thinking");
     let out: EulivTurn;
     const s = session.current;
@@ -879,7 +904,11 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
         text, state: state.current, workspace_id: workspaceId(), event, run_id: runId,
         save: settingsRef.current.keep !== false, greeting: greeting.current || undefined,
         // round 28: what Euliv just said - the server drops a "you" that is only Euliv's own voice coming back
-        last_said: recentEuliv(20000).join(" | ").slice(-3000) || undefined,
+        // newest first - keep the start, so the line just said is never the part cut off
+        last_said: recentEuliv(20000).join(" | ").slice(0, 3000) || undefined,
+        // round 30: Euliv's last line on screen - the same fallback is never said twice in a row
+        last_reply: lastReply.current.slice(0, 500) || undefined,
+        alts: alts?.length ? alts : undefined,
       });
     } catch (e) {
       if (s !== session.current) return;
@@ -888,12 +917,14 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
       return;
     }
     if (s !== session.current || !alive.current) return;
+    // round 30: the server picked a better reading of what was said ("thank you", not "think you")
+    if (youId && out.heard && out.heard !== text) patch(youId, { text: out.heard });
     return react(out);
-  }, [say, afterReply, react]);
+  }, [say, afterReply, react, patch]);
 
-  const handle = useCallback(async (text: string) => {
-    push({ who: "you", text });
-    return turnWith(text);
+  const handle = useCallback(async (text: string, alts?: string[]) => {
+    const id = push({ who: "you", text });
+    return turnWith(text, undefined, undefined, alts, id);
   }, [push, turnWith]);
   handleRef.current = handle;
 
@@ -1192,7 +1223,7 @@ function EulivSettingsPanel({ settings, wakeProblem, onDone }: { settings: Euliv
     return () => monRef.current?.stop();
   }, []);
 
-  const lang = speechLang().toLowerCase().split("-")[0];
+  const lang = voiceLang().toLowerCase().split("-")[0];
   const shown = voices.filter((v) => v.lang.toLowerCase().startsWith(lang)).slice(0, 40);
 
   const runTest = async () => {
@@ -1239,6 +1270,15 @@ function EulivSettingsPanel({ settings, wakeProblem, onDone }: { settings: Euliv
       <Toggle id="euliv-talkover" on={!!settings.talkOver} onChange={(v) => saveSettings({ talkOver: v })} label="Talk over Euliv"
         help="Interrupt just by talking while Euliv speaks. Best with headphones - on speakers Euliv could hear its own voice. With headphones this is on by itself." />
       <Toggle id="euliv-keep" on={settings.keep !== false} onChange={(v) => saveSettings({ keep: v })} label="Keep a written record" help="Each talk is saved in Library under “Talks”, so you can read it again or carry on. Words only - never audio." />
+
+      <label className="flex flex-col gap-1.5 text-[12.5px] text-secondary" data-euliv-accent="">
+        Your English
+        <select value={settings.lang || ""} onChange={(e) => saveSettings({ lang: e.target.value || null })} className="h-10 rounded-[10px] border border-border-strong bg-base px-2.5 text-[14px] text-text">
+          <option value="">Automatic - {ENGLISHES.find(([c]) => c.toLowerCase() === autoEnglish().toLowerCase())?.[1] || autoEnglish()}</option>
+          {ENGLISHES.map(([c, n]) => <option key={c} value={c}>{n}</option>)}
+        </select>
+        <span className="text-[12px] text-muted">Euliv listens for this accent. Pick yours if it mishears you.</span>
+      </label>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className="flex flex-col gap-1.5 text-[12.5px] text-secondary">
