@@ -19,6 +19,10 @@ import { AppearanceSheet } from "../dashboard/theme/AppearanceSheet";
 import { BrandAssets } from "../dashboard/theme/BrandAssets";
 import { previewSamples } from "../dashboard/theme/PalettePreview";
 import { useDashboardAppearance } from "../dashboard/theme/useAppearanceEditor";
+// 2026-10-11 (Explain & Alerts): Ask AI beside the dashboard - explain any
+// chart, ask about the page, and alerts GD360 drafts for you. It only reads
+// what the page shows; editing and the builder are untouched.
+import { AskAIButton, AskSeed, DashboardAskAI, NoticedBanner, useBoardWatch } from "../components/DashboardAskAI";
 
 // 2026-09-25d (elite pass): the dashboard builder/editor - the exact page
 // Gokul's own screenshots of the live app's edit mode were taken from -
@@ -1044,7 +1048,9 @@ export default function DashboardBuilderView() {
       .then((data) => {
         if (cancelled) return;
         setDash(data);
-        setActivePageId(data.pages[0]?.id || null);
+        // ?page=<id> (an alert's "Open dashboard") opens that page
+        const wanted = new URLSearchParams(window.location.search).get("page");
+        setActivePageId(data.pages.find((p) => p.id === wanted)?.id || data.pages[0]?.id || null);
         // A dashboard with no block on any page has nothing to view yet
         // ("Create your own", a blank start) - nor has one whose blocks
         // were all added but never built (a template's layout): its owner
@@ -1352,6 +1358,11 @@ function DashboardBuilderViewBody({
     [moreSheet, activePage, run, warehouse, dash.datasource_name]
   );
 
+  // 2026-10-11 (Explain & Alerts): the Ask AI drawer and what it watches.
+  const [askOpen, setAskOpen] = useState(false);
+  const [askSeed, setAskSeed] = useState<AskSeed>(null);
+  const boardWatch = useBoardWatch(dash.id, activePage?.id, !isEditing && run.ready);
+
   const tabs = (
     <PageTabsBar
       dash={isEditing ? dash : { ...dash, can_edit: false }}
@@ -1376,6 +1387,16 @@ function DashboardBuilderViewBody({
             )}
           </div>
         </div>
+      )}
+      {!isEditing && (
+        <NoticedBanner
+          dashboardId={dash.id}
+          noticed={boardWatch.data?.noticed || null}
+          onWatch={(s) => {
+            setAskSeed({ kind: "watch", suggestion: s });
+            setAskOpen(true);
+          }}
+        />
       )}
       <DashboardShell
         dashboard={dash}
@@ -1406,6 +1427,7 @@ function DashboardBuilderViewBody({
         headerExtra={
           <>
             {logoUrl && <img src={logoUrl} alt="" className="h-8 w-auto max-w-[140px] object-contain rounded-md" />}
+            {!isEditing && <AskAIButton onClick={() => setAskOpen(true)} alerts={boardWatch.data?.alerts.length || 0} />}
             {/* The owner's More menu - while viewing and while editing:
                 the dashboard's appearance is not a layout edit. */}
             {dash.can_edit && (
@@ -1459,6 +1481,19 @@ function DashboardBuilderViewBody({
           samples={appearanceSamples}
           registry={run.colors?.assignments ?? null}
           brandExtra={<BrandAssets dash={dash} controller={appearance} onChange={setDash} logoUrl={logoUrl} backgroundImageUrl={backgroundImageUrl} onAssetChanged={bumpBranding} />}
+        />
+      )}
+      {!isEditing && (
+        <DashboardAskAI
+          open={askOpen}
+          onClose={() => setAskOpen(false)}
+          dash={dash}
+          page={activePage || null}
+          run={run}
+          warehouse={warehouse}
+          watch={boardWatch}
+          seed={askSeed}
+          onSeedUsed={() => setAskSeed(null)}
         />
       )}
       {isEditing && (

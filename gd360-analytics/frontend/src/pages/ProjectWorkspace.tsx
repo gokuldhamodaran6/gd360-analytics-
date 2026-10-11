@@ -7,6 +7,9 @@
 // as Home (a Space or chosen sources), and GD360 asks before it builds a
 // dashboard - a page per question, everything on one page, or "add this as
 // page 2" when an earlier answer is already on one (thread/DashboardFlow.tsx).
+// 2026-10-11 (Explain & Alerts): Explain on every chart and cause, "Ask
+// about this", and typed "explain this" follow-ups answered from the answer
+// on screen with no new question (thread/Explain.tsx).
 // 2026-10-08 (round 11): a multi-source Project. Left: the conversation -
 // every question and GD360's reply, live while it plans and runs. Right:
 // the selected question's Plan, Sources (each query as it runs), Results
@@ -16,7 +19,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { ChartThemeProvider } from "../dashboard/theme/ChartThemeContext";
-import { projectsApi, Project, ProjectRun, ProjectSource } from "../api/projects";
+import { Explanation, projectsApi, Project, ProjectRun, ProjectSource } from "../api/projects";
 import { Space, spacesApi } from "../api/spaces";
 import ScopePicker, { Scope } from "../spaces/ScopePicker";
 import { ThreadComposer } from "../thread/parts";
@@ -25,6 +28,8 @@ import {
   primaryDashboard, threadPrompt, useDashboardFlow,
 } from "../thread/DashboardFlow";
 import { EvidenceTab, PlanTab, ResultsTab, SourcesTab } from "../project/RunPanels";
+import { NotificationBell } from "../components/NotificationCenter";
+import { AboutChip, AboutChipView, ExplainProvider, ExplainTurn, scrollToTarget, timeline, useExplainController } from "../thread/Explain";
 import { autoRunPreference, timeAgo } from "../project/format";
 import { answerSources } from "../components/CreateDashboardSheet";
 import { dashboardHref, KindIcon, KindPill } from "../lib/kinds";
@@ -69,6 +74,9 @@ export default function ProjectWorkspace() {
   const [copied, setCopied] = useState(false);
   // "Change" on an assumption opens the Plan tab's change box with it filled in
   const [replanSeed, setReplanSeed] = useState<{ text: string; n: number } | null>(null);
+  const [about, setAbout] = useState<AboutChip | null>(null);
+  const [localExplains, setLocalExplains] = useState<Explanation[]>([]);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const threadEnd = useRef<HTMLDivElement>(null);
   const threadPane = useRef<HTMLDivElement>(null);
   const shareRef = useRef<HTMLDivElement>(null);
@@ -220,7 +228,38 @@ export default function ProjectWorkspace() {
     return all.length && !same(all, project.source_ids) ? { source_ids: all } : {};
   };
 
-  const ask = async (text: string, autoRun = autoRunPreference()) => {
+  const explains = useMemo(() => {
+    const seen = new Set<string>();
+    const out: Explanation[] = [];
+    for (const e of [...(project?.explains || []), ...localExplains]) {
+      const k = e.id || `${e.run_id}:${e.created_at}`;
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(e);
+      }
+    }
+    return out;
+  }, [project?.explains, localExplains]);
+  const addExplain = useCallback((e: Explanation) => setLocalExplains((cur) => [...cur, e]), []);
+  useEffect(() => {
+    const pane = threadPane.current;
+    if (pane && localExplains.length && pane.scrollHeight > pane.clientHeight) pane.scrollTo({ top: pane.scrollHeight, behavior: "smooth" });
+  }, [localExplains.length]);
+  const explainer = useExplainController({
+    runId: current && current.status === "done" && current.result?.answer ? current.id : null,
+    stored: explains,
+    onSaved: addExplain,
+    askAbout: project?.can_edit
+      ? (target, t) => {
+          if (!current) return;
+          setAbout({ runId: current.id, target, title: t });
+          window.setTimeout(() => composerRef.current?.focus(), 0);
+        }
+      : undefined,
+    onFollowup: project?.can_edit ? (q) => { setFollowUp(q); window.setTimeout(() => composerRef.current?.focus(), 0); } : undefined,
+  });
+
+  const ask = async (text: string, autoRun = autoRunPreference(), noRoute = false) => {
     const q = text.trim();
     if (q.length < 2 || busy || activeRun) return;
     const change = scopeChange();
@@ -231,8 +270,20 @@ export default function ProjectWorkspace() {
     setBusy(true);
     setError("");
     try {
-      const out = await projectsApi.ask(projectId, q, autoRun, change);
+      // 2026-10-11: on the same sources, "explain this" is answered from the
+      // answer on screen - no new question; anything needing new data runs.
+      const lastDone = [...ordered].reverse().find((r) => r.status === "done" && r.result?.answer);
+      const contextRun = about?.runId || (current?.status === "done" && current.result?.answer ? current.id : lastDone?.id);
+      const routing = !noRoute && !change.space_id && !change.source_ids && contextRun
+        ? { route: true, context_run_id: contextRun, explain_target: about?.target }
+        : {};
+      const out = await projectsApi.ask(projectId, q, autoRun, { ...change, ...routing });
       setFollowUp("");
+      setAbout(null);
+      if (out.kind === "explain") {
+        addExplain(out.explain);
+        return;
+      }
       const r = await loadRun(out.run_id);
       const p = await loadProject();
       if (p && (change.space_id || change.source_ids)) setScope(p.space_id ? { kind: "space", spaceId: p.space_id } : { kind: "sources", ids: p.source_ids });
@@ -398,6 +449,7 @@ export default function ProjectWorkspace() {
               </span>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
+              <NotificationBell />
               {activeRun ? (
                 <button type="button" className="btn-secondary text-sm" onClick={() => stop(activeRun.id)}>Stop</button>
               ) : (
@@ -482,7 +534,21 @@ export default function ProjectWorkspace() {
             <section aria-label="Conversation" className="flex-[1_1_360px] max-w-full lg:max-w-[440px] lg:h-full border-r border-border bg-base flex flex-col min-h-[60vh] lg:min-h-0">
               <div ref={threadPane} className="flex-1 overflow-auto px-5 py-6 flex flex-col gap-6">
                 {!project && <div className="text-ui text-muted">Loading…</div>}
-                {ordered.map((r) => (
+                {timeline(ordered, explains).map((item) => item.type === "explain" ? (
+                  <ExplainTurn
+                    key={`x${item.explain.id || item.explain.created_at}`}
+                    e={item.explain}
+                    runNumber={numberOf(item.explain.run_id)}
+                    canEdit={!!project?.can_edit}
+                    onOpen={() => {
+                      select(item.explain.run_id);
+                      setTab("results");
+                      if (item.explain.target.kind !== "answer") scrollToTarget(item.explain.target);
+                    }}
+                    onFollowup={(q) => { setFollowUp(q); window.setTimeout(() => composerRef.current?.focus(), 0); }}
+                    onRunInstead={() => item.explain.question && ask(item.explain.question, autoRunPreference(), true)}
+                  />
+                ) : ((r) => (
                   <div key={r.id} className="flex flex-col gap-3.5">
                   <ThreadItem
                     run={r}
@@ -511,7 +577,7 @@ export default function ProjectWorkspace() {
                     <CombineNudgeCard count={prompt.runs.length} onSetup={() => openCreate(r.id, "pages")} onDismiss={() => flow.dismiss(prompt.runs.map((x) => x.id))} />
                   )}
                   </div>
-                ))}
+                ))(item.run))}
                 <div ref={threadEnd} />
               </div>
               {project?.can_edit && (
@@ -519,10 +585,12 @@ export default function ProjectWorkspace() {
                   value={followUp}
                   onChange={setFollowUp}
                   onSubmit={() => ask(followUp)}
+                  inputRef={composerRef}
                   busy={busy}
                   locked={!!activeRun}
                   error={error}
                   placeholder="Ask a follow-up…"
+                  context={about ? <AboutChipView chip={about} onClear={() => setAbout(null)} /> : undefined}
                   picker={
                     scope && (
                       <ScopePicker scope={scope} onChange={setScope} sources={allSources} spaces={spaces} variant="compact" placement="above" disabled={busy} />
@@ -553,7 +621,11 @@ export default function ProjectWorkspace() {
                   <PlanTab run={current} canEdit={!!project?.can_edit} busy={busy} seed={replanSeed} onRun={() => runPlan(current.id)} onReplan={(n) => replan(current.id, n)} />
                 )}
                 {current && currentTab === "sources" && <SourcesTab run={current} />}
-                {current && currentTab === "results" && <ResultsTab run={current} />}
+                {current && currentTab === "results" && (
+                  <ExplainProvider value={explainer}>
+                    <ResultsTab run={current} />
+                  </ExplainProvider>
+                )}
                 {current && currentTab === "evidence" && <EvidenceTab run={current} />}
               </div>
             </section>

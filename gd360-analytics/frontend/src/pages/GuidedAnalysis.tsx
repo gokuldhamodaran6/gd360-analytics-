@@ -24,6 +24,12 @@
 //     on one page, or - when a dashboard already holds an earlier answer -
 //     "add this as page 2?" (thread/DashboardFlow.tsx).
 //
+// 2026-10-11 (Explain & Alerts, canvas A2/A3): every chart and cause in an
+// answer has Explain (answered from the numbers already computed - nothing
+// re-runs) and "Ask about this"; a typed follow-up that only asks to explain
+// what's on screen is answered the same way, as a reply in the conversation
+// with no new question tab (thread/Explain.tsx).
+//
 // /g/:projectId - a Conversation with kind "guided"; ?run=<id> opens one question.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -31,7 +37,7 @@ import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { ChartThemeProvider, useChartTheme } from "../dashboard/theme/ChartThemeContext";
 import { resolveWorkspaceChart } from "../lib/workspaceChart";
-import { guidedApi, Project, ProjectRun, ProjectSource, projectsApi, RunStep } from "../api/projects";
+import { Explanation, guidedApi, Project, ProjectRun, ProjectSource, projectsApi, RunStep } from "../api/projects";
 import { Space, spacesApi } from "../api/spaces";
 import { EvidenceTab, layoutSql, ResultsTab } from "../project/RunPanels";
 import { DataTable } from "../project/Visuals";
@@ -44,6 +50,8 @@ import {
   AddToDashboardCard, AddToDashboardDialog, CombineNudgeCard, CreateFromThreadDialog, isAnswered, PlacementToast,
   primaryDashboard, shortTitle, threadPrompt, useDashboardFlow,
 } from "../thread/DashboardFlow";
+import { NotificationBell } from "../components/NotificationCenter";
+import { AboutChip, AboutChipView, ExplainProvider, ExplainTurn, scrollToTarget, timeline, useExplainController } from "../thread/Explain";
 
 function errorText(e: any, fallback: string): string {
   const d = e?.response?.data?.detail;
@@ -100,6 +108,10 @@ export default function GuidedAnalysis() {
   const [createLayout, setCreateLayout] = useState<"pages" | "merge" | "latest" | undefined>(undefined);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  // 2026-10-11 (Explain & Alerts): "Ask about this" chip, and explanations
+  // received in this visit (the thread's stored ones come with the project)
+  const [about, setAbout] = useState<AboutChip | null>(null);
+  const [localExplains, setLocalExplains] = useState<Explanation[]>([]);
   const stepRefs = useRef<Record<string, HTMLElement | null>>({});
   const threadPane = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -270,6 +282,55 @@ export default function GuidedAnalysis() {
     window.setTimeout(() => stepRefs.current[stepId]?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
   };
 
+  const explains = useMemo(() => {
+    const seen = new Set<string>();
+    const out: Explanation[] = [];
+    for (const e of [...(project?.explains || []), ...localExplains]) {
+      const k = e.id || `${e.run_id}:${e.created_at}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(e);
+    }
+    return out;
+  }, [project?.explains, localExplains]);
+  const addExplain = useCallback((e: Explanation) => setLocalExplains((cur) => [...cur, e]), []);
+  // a new reply in the conversation comes into view
+  useEffect(() => {
+    const pane = threadPane.current;
+    if (pane && localExplains.length && pane.scrollHeight > pane.clientHeight) pane.scrollTo({ top: pane.scrollHeight, behavior: "smooth" });
+  }, [localExplains.length]);
+  const explainer = useExplainController({
+    runId: run && isAnswered(run) ? run.id : null,
+    stored: explains,
+    onSaved: addExplain,
+    askAbout: canEdit
+      ? (target, t) => {
+          if (!run) return;
+          setAbout({ runId: run.id, target, title: t });
+          window.setTimeout(() => composerRef.current?.focus(), 0);
+        }
+      : undefined,
+    onFollowup: canEdit ? (q) => suggest(q) : undefined,
+  });
+
+  /** A follow-up as a new question, never read as "explain" (the reply's "Run a new analysis instead"). */
+  const askAsRun = async (q: string) => {
+    if (asking || threadBusy || !project) return;
+    setAsking(true);
+    setAskError("");
+    try {
+      const out = await projectsApi.ask(projectId, q, mode === "quick", { mode: mode === "quick" ? "answer" : "guided" });
+      if (out.kind === "explain" || !out.run_id) return;
+      await loadRun(out.run_id);
+      await loadProject();
+      select(out.run_id, "steps");
+    } catch (e: any) {
+      setAskError(errorText(e, "Couldn't ask that. Please try again."));
+    } finally {
+      setAsking(false);
+    }
+  };
+
   const ask = async () => {
     const q = followUp.trim();
     if (q.length < 2 || asking || threadBusy || !project || !scope) return;
@@ -288,8 +349,18 @@ export default function GuidedAnalysis() {
         }
         extra = { source_ids: scope.ids };
       } else if (scope.kind === "all" && !sameIds(all, project.source_ids)) extra = { source_ids: all };
-      const out = await projectsApi.ask(projectId, q, mode === "quick", { mode: mode === "quick" ? "answer" : "guided", ...extra });
+      // 2026-10-11: on the same sources, "explain this" is answered from the
+      // answer on screen (no new question); anything needing new data runs.
+      const sameSources = extra.space_id === undefined && extra.source_ids === undefined;
+      const contextRun = about?.runId || (run && isAnswered(run) ? run.id : answered[answered.length - 1]?.id);
+      const routing = sameSources && contextRun ? { route: true, context_run_id: contextRun, explain_target: about?.target } : {};
+      const out = await projectsApi.ask(projectId, q, mode === "quick", { mode: mode === "quick" ? "answer" : "guided", ...extra, ...routing });
       setFollowUp("");
+      setAbout(null);
+      if (out.kind === "explain") {
+        addExplain(out.explain);
+        return;
+      }
       await loadRun(out.run_id);
       const p = await loadProject();
       if (p && extra.space_id === undefined && extra.source_ids === undefined) {
@@ -394,6 +465,7 @@ export default function GuidedAnalysis() {
               )}
             </div>
             <div className="flex gap-2 flex-wrap items-center">
+              <NotificationBell />
               <button
                 type="button"
                 className="btn-secondary text-sm"
@@ -432,7 +504,26 @@ export default function GuidedAnalysis() {
             <section aria-label="Conversation" className="flex-[1_1_360px] max-w-full lg:max-w-[420px] lg:h-full border-r border-border bg-[rgb(var(--color-base))] flex flex-col min-h-[60vh] lg:min-h-0" data-guided-conversation="">
               <div ref={threadPane} className="flex-1 overflow-auto px-5 py-6 flex flex-col gap-7">
                 {!project && <div className="text-ui text-muted">Loading…</div>}
-                {ordered.map((r, i) => {
+                {timeline(ordered, explains).map((item) => {
+                  if (item.type === "explain") {
+                    const e = item.explain;
+                    return (
+                      <ExplainTurn
+                        key={`x${e.id || e.created_at}`}
+                        e={e}
+                        runNumber={numberOf(e.run_id)}
+                        canEdit={canEdit}
+                        onOpen={() => {
+                          select(e.run_id, "answer");
+                          if (e.target.kind !== "answer") scrollToTarget(e.target);
+                        }}
+                        onFollowup={suggest}
+                        onRunInstead={() => e.question && askAsRun(e.question)}
+                      />
+                    );
+                  }
+                  const r = item.run;
+                  const i = numberOf(r.id) - 1;
                   const isLast = i === ordered.length - 1;
                   return (
                     <div key={r.id} className="flex flex-col gap-3.5">
@@ -491,7 +582,9 @@ export default function GuidedAnalysis() {
                     )
                   }
                   context={
-                    answered.length > 0 && followUp.trim().length > 0 ? (
+                    about ? (
+                      <AboutChipView chip={about} onClear={() => setAbout(null)} />
+                    ) : answered.length > 0 && followUp.trim().length > 0 ? (
                       <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-[10px] bg-kind-analysis-fill/60 text-[12px] leading-snug text-kind-analysis" data-continue-strip="">
                         <ContinueIcon size={13} />
                         <span className="flex-1 min-w-0">
@@ -564,14 +657,16 @@ export default function GuidedAnalysis() {
               <div className="shrink-0 px-5 sm:px-7 pt-6 pb-16 max-w-[1120px] w-full flex flex-col gap-3" data-guided-steps="">
                 {!run && project && <div className="text-ui text-muted">Ask a question to start.</div>}
                 {run && currentView === "answer" && (
-                  <AnswerView
-                    run={run}
-                    number={numberOf(run.id)}
-                    canEdit={canEdit}
-                    placed={runPlaced}
-                    onCreate={() => (primary && !runPlaced ? setAddDialogOpen(true) : openCreate(run.id))}
-                    onSteps={() => setView("steps")}
-                  />
+                  <ExplainProvider value={explainer}>
+                    <AnswerView
+                      run={run}
+                      number={numberOf(run.id)}
+                      canEdit={canEdit}
+                      placed={runPlaced}
+                      onCreate={() => (primary && !runPlaced ? setAddDialogOpen(true) : openCreate(run.id))}
+                      onSteps={() => setView("steps")}
+                    />
+                  </ExplainProvider>
                 )}
                 {run && currentView === "evidence" && <EvidenceTab run={run} />}
                 {run && currentView === "steps" && (

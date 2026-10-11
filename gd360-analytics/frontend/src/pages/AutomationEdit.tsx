@@ -492,10 +492,24 @@ function ThresholdFields({ draft, set, opts }: { draft: Draft; set: (p: Partial<
       ? opts?.questions.find((q) => q.id === (t.target as any).run_id)?.kpis || []
       : opts?.project_dashboards.find((d) => d.id === (t.target as any).dashboard_id)?.kpis || [];
   const kpi = kpis.find((k) => k.key === t.kpi);
-  const pct = !!kpi && (kpi.kind === "percent" || kpi.kind === "ratio" || /%$/.test(kpi.display || ""));
+  const pct = (!!kpi && (kpi.kind === "percent" || kpi.kind === "ratio" || /%$/.test(kpi.display || ""))) || (t.target.kind === "board" && t.unit === "%");
   const upd = (patch: Partial<typeof t>) => set({ trigger: { ...t, ...patch } as Trigger });
+  // 2026-10-11 (Explain & Alerts): an alert set up on a dashboard watches one
+  // of its number tiles - which tile is chosen on the dashboard itself.
+  const board = t.target.kind === "board" ? t.target : null;
   return (
     <div className="flex flex-col gap-4">
+      {board ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-ctl border border-border bg-subtle px-3 py-2.5" data-board-target="">
+          <span className="text-ui text-text">
+            Watching <b className="font-semibold">{t.kpi_label || board.label || "a number"}</b> on a dashboard
+            {board.window === "last_7_days" ? " · last 7 days" : board.window === "total" ? "" : " · last 30 days"}
+          </span>
+          <Link to={`/dashboard-builder/${board.dashboard_id}${board.page_id ? `?page=${board.page_id}` : ""}`} className="text-caption text-muted underline underline-offset-2 hover:text-text">
+            Change it on the dashboard
+          </Link>
+        </div>
+      ) : (
       <div className="flex flex-wrap items-end gap-4">
         <label className="flex flex-col gap-1.5 text-caption text-muted min-w-[240px] flex-1 max-w-[440px]">
           Watch
@@ -527,6 +541,7 @@ function ThresholdFields({ draft, set, opts }: { draft: Draft; set: (p: Partial<
           </select>
         </label>
       </div>
+      )}
       <div className="flex flex-wrap items-end gap-4">
         <label className="flex flex-col gap-1.5 text-caption text-muted">
           When it
