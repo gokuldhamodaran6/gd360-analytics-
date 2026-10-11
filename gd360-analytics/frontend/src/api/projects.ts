@@ -290,13 +290,40 @@ export type ProjectDashboard = {
   assumptions: string[];
 };
 
+// 2026-10-11 (round 24, Understand before answering): the read-back of a
+// question before it runs (backend services/question_check.py).
+export type CheckPeriod = { start: string; end: string; label: string; text: string; assumed?: boolean; key?: string };
+export type CheckOption = {
+  id: string; label: string; value: string; detail?: string; recommended?: boolean;
+  fit?: string; why?: string; action?: "connect" | "upload" | "more"; period?: CheckPeriod;
+};
+export type CheckIssue = {
+  id: string;
+  kind: "year_typo" | "month_typo" | "future_year" | "choose" | "swap" | "confirm_pick" | "cant_answer";
+  title: string; text: string; options: CheckOption[]; multi?: boolean; said?: string; fix?: { from: string };
+};
+export type CheckCandidate = {
+  id: string; name: string; kind: string; label: string; freshness?: string; fit: string; why: string; says?: string;
+  coverage?: { start: string; end: string; text: string } | null; date_column?: string | null; measures?: string[];
+  table?: string | null; named?: boolean; score: number;
+};
+export type QuestionCheck = {
+  question: string; ready: boolean; what?: string; topic?: string | null; period: CheckPeriod | null;
+  period_options?: CheckPeriod[]; needs_time?: boolean; issues: CheckIssue[]; candidates: CheckCandidate[];
+  picked: string[]; picked_sources?: { id: string; name: string; label: string }[]; restated: string | null;
+  connect?: { kind: string; label: string; url: string }[]; sources_considered?: number; skipped?: boolean;
+};
+export type RunBrief = { period?: CheckPeriod | null; restated?: string | null; notes?: string[] };
+
 export const projectsApi = {
+  check: (payload: { question: string; source_ids?: string[]; space_id?: string; workspace_id?: string }) =>
+    api.post<QuestionCheck>("/projects/check", payload, { timeout: 20000 }).then((r) => r.data),
   sources: (workspaceId?: string) =>
     api.get<ProjectSource[]>("/projects/sources", { params: { workspace_id: workspaceId || undefined } }).then((r) => r.data),
   // 2026-10-09 (round 15): space_id asks one Space (its sources you can use);
   // send space_id or source_ids, never both.
   // mode "guided" starts a Guided Analysis (the same engine, one step at a time).
-  create: (payload: { question: string; source_ids?: string[]; space_id?: string; workspace_id?: string; auto_run?: boolean; mode?: "answer" | "guided" }) =>
+  create: (payload: { question: string; source_ids?: string[]; space_id?: string; workspace_id?: string; auto_run?: boolean; mode?: "answer" | "guided"; brief?: RunBrief }) =>
     api.post<{ project_id: string; run_id: string; space_id?: string | null; kind?: string }>("/projects", payload).then((r) => r.data),
   get: (id: string) => api.get<Project>(`/projects/${id}`).then((r) => r.data),
   update: (id: string, payload: { title?: string; source_ids?: string[] }) =>
