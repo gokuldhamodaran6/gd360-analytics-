@@ -13,6 +13,16 @@ Every automation reads as one sentence - WHEN -> DO -> TELL:
         (incoming webhooks) - every time, only when something changed, or
         only when it fails.
 
+2026-10-11 (Explain & Alerts): a threshold can also watch a number tile on
+a dashboard - or the ratio of two (target kind "board", computed by
+services/dashboard_watch.py exactly as the dashboard computes it). TELL
+gains the GD360 bell (tell.in_app: user ids; a Notification row each,
+written the moment the alert fires - nothing is held for office hours),
+"remind" ("once": tell once when it crosses, again only after it recovers;
+"daily": also remind once a day while it stays crossed), any app by
+webhook (tell.webhook, https only, never a private address) and a
+per-person "Snooze a week" (tell.muted).
+
 Runs happen in the scheduler's 60-second tick (services/scheduler.py) and,
 for "Run now" / "Test it now", on a background thread. Every run is
 recorded as an AutomationRun before any work starts.
@@ -57,6 +67,8 @@ STEP_TYPES = (
     "sync_source", "quality_check", "rescore_model", "summarise",
 )
 MODES = ("always", "on_change", "on_failure")
+REMIND = ("once", "daily")
+MAX_IN_APP = 25
 OPS = ("below", "above", "drops_by", "rises_by")
 MAX_STEPS = 8
 MAX_RECIPIENTS = 10
@@ -329,6 +341,9 @@ def do_text(db: Session, steps: list[dict], trigger: dict | None = None) -> str:
 
 def tell_text(tell: dict) -> str:
     bits = []
+    people = tell.get("in_app") or []
+    if people:
+        bits.append("GD360 bell" if len(people) == 1 else f"GD360 bell for {len(people)} people")
     emails = tell.get("email") or []
     if emails:
         bits.append(f"email {emails[0]}" if len(emails) == 1 else f"email {len(emails)} people")
@@ -336,6 +351,8 @@ def tell_text(tell: dict) -> str:
         bits.append("Slack " + (tell["slack"].get("label") or "channel"))
     if tell.get("teams"):
         bits.append("Teams " + (tell["teams"].get("label") or "channel"))
+    if tell.get("webhook"):
+        bits.append(tell["webhook"].get("label") or "webhook")
     if not bits:
         return "No one"
     text = " · ".join(bits)
@@ -350,6 +367,9 @@ def tell_text(tell: dict) -> str:
 def tell_sentence(tell: dict, threshold: bool = False) -> str:
     """The TELL part as it reads inside the full sentence."""
     bits = []
+    people = tell.get("in_app") or []
+    if people:
+        bits.append("notify you in GD360" if len(people) == 1 else f"notify {len(people)} people in GD360")
     emails = tell.get("email") or []
     if emails:
         bits.append(f"email {emails[0]}" if len(emails) == 1 else f"email {len(emails)} people")
@@ -357,12 +377,14 @@ def tell_sentence(tell: dict, threshold: bool = False) -> str:
         bits.append("post in Slack " + (tell["slack"].get("label") or "channel"))
     if tell.get("teams"):
         bits.append("post in Teams " + (tell["teams"].get("label") or "channel"))
+    if tell.get("webhook"):
+        bits.append("send to " + (tell["webhook"].get("label") or "a webhook"))
     if not bits:
         return ""
     text = bits[0] if len(bits) == 1 else ", ".join(bits[:-1]) + " and " + bits[-1]
     mode = tell.get("mode") or "always"
     if threshold and mode == "always":
-        text += " only if it happens"
+        text += " the moment it happens" + (", then once a day while it stays that way" if tell.get("remind") == "daily" else "")
     elif mode == "on_change":
         text += ", only when something changes"
     elif mode == "on_failure":
@@ -376,7 +398,7 @@ def sentence(db: Session, a: dict) -> dict:
     tell = a.get("tell") or {}
     chip = tell_text(tell)
     if thr and (tell.get("mode") or "always") == "always" and chip != "No one":
-        chip += ", only if it happens"
+        chip += ", the moment it happens" + (" (daily reminder)" if tell.get("remind") == "daily" else "")
     return {
         "when": when_text(db, trig),
         "do": do_text(db, a.get("steps") or [], trig),
@@ -408,6 +430,57 @@ def check_webhook(kind: str, url: str) -> str:
         if not ok:
             raise AutomationError("A Teams webhook is a link from Teams (Workflows › “Post to a channel when a webhook request is received”).")
     return url
+
+
+def _public_host(host: str) -> bool:
+    """True when every address the host resolves to is a public one."""
+    import ipaddress
+    import socket
+    try:
+        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            return False
+    return True
+
+
+def check_generic_webhook(url: str) -> str:
+    """Any app that takes a webhook (Zapier, Make, n8n, your own endpoint):
+    https only, on port 443, never an address inside a private network."""
+    url = (url or "").strip()
+    p = urlparse(url)
+    host = (p.hostname or "").lower()
+    if p.scheme != "https" or not host or p.username or p.password:
+        raise AutomationError("The webhook must be an https:// link.")
+    if p.port not in (None, 443):
+        raise AutomationError("The webhook must use the standard https port.")
+    if host in ("localhost",) or host.endswith(".local") or host.endswith(".internal") or not _public_host(host):
+        raise AutomationError("That webhook address isn't reachable from the internet.")
+    return url
+
+
+def _clean_in_app(db: Session, user: models.User, ids) -> list[str]:
+    """People the owner can reach in GD360: themselves, and members of a workspace they share."""
+    from . import workspace_access
+    ids = [str(i) for i in (ids or []) if i][:MAX_IN_APP + 1]
+    if len(ids) > MAX_IN_APP:
+        raise AutomationError(f"Up to {MAX_IN_APP} people in GD360 per alert.")
+    mine = workspace_access.member_workspace_ids(db, user.id)
+    out: list[str] = []
+    for uid in ids:
+        if uid in out:
+            continue
+        if uid != user.id:
+            theirs = workspace_access.member_workspace_ids(db, uid)
+            if not (mine & theirs):
+                raise AutomationError("One of the people isn't in a workspace with you.")
+        out.append(uid)
+    return out
 
 
 def validate(db: Session, user: models.User, body: dict, existing: models.Automation | None = None) -> dict:
@@ -463,10 +536,14 @@ def validate(db: Session, user: models.User, body: dict, existing: models.Automa
             check = {"every": "hour", "minute": 0}
         if check["every"] != "hour":
             _hm(check.get("time") or "06:00")
+        keys = ("kind", "run_id", "dashboard_id")
+        if target.get("kind") == "board":
+            keys += ("page_id", "block_id", "den_block_id", "ratio_as", "window", "label")
+            kpi = dict(kpi, kind=kpi.get("kind") or "number")
         clean = {
-            "type": "threshold", "target": {k: target.get(k) for k in ("kind", "run_id", "dashboard_id") if target.get(k)},
+            "type": "threshold", "target": {k: target.get(k) for k in keys if target.get(k)},
             "kpi": key, "kpi_label": kpi.get("label"), "op": trig["op"], "value": value,
-            "unit": "%" if is_percent(kpi) and trig["op"] in ("below", "above") else "",
+            "unit": "%" if (is_percent(kpi) and trig["op"] in ("below", "above")) or trig["op"] in ("drops_by", "rises_by") else "",
             "check": check,
         }
     out["trigger"] = clean
@@ -525,6 +602,29 @@ def validate(db: Session, user: models.User, body: dict, existing: models.Automa
     if len(emails) > MAX_RECIPIENTS:
         raise AutomationError(f"Up to {MAX_RECIPIENTS} email recipients per automation.")
     tell = {"email": emails, "mode": tell_in.get("mode") if tell_in.get("mode") in MODES else "always"}
+    # 2026-10-11: the GD360 bell, daily reminders, any app by webhook and
+    # per-person snoozes - kept as they are when an editor that doesn't
+    # know about them saves the automation.
+    tell["in_app"] = _clean_in_app(db, user, tell_in["in_app"]) if "in_app" in tell_in else list(old_tell.get("in_app") or [])
+    remind = tell_in.get("remind") if "remind" in tell_in else old_tell.get("remind")
+    tell["remind"] = remind if remind in REMIND else "once"
+    wh_url = tell_in.get("webhook_url")
+    wh_label = str(tell_in.get("webhook_label") or "").strip()[:60]
+    if wh_url:
+        wh_url = check_generic_webhook(wh_url)
+        tell["webhook"] = {"url_enc": encrypt_secret(wh_url), "masked": mask_url(wh_url), "label": wh_label or "Webhook"}
+    elif wh_url == "" or tell_in.get("webhook_remove"):
+        tell["webhook"] = None
+    elif old_tell.get("webhook"):
+        tell["webhook"] = {**old_tell["webhook"], "label": wh_label or old_tell["webhook"].get("label")}
+    else:
+        tell["webhook"] = None
+    for keep in ("muted", "guests", "guest_link"):
+        if old_tell.get(keep) and keep not in tell_in:
+            tell[keep] = old_tell[keep]
+    if "guests" in tell_in:
+        tell["guests"] = [e for e in emails if e.lower() in {str(g).lower() for g in tell_in.get("guests") or []}]
+        tell["guest_link"] = str(tell_in.get("guest_link") or "")[:200] or None
     for kind in ("slack", "teams"):
         url = tell_in.get(f"{kind}_url")
         label = str(tell_in.get(f"{kind}_label") or "").strip()[:60]
@@ -552,6 +652,13 @@ def _snapshot_for_target(db: Session, user: models.User, target: dict) -> tuple[
         if not _dash_visible(db, d, user) or d.layout_version != 3:
             raise AutomationError("Pick a project dashboard you can see.")
         return d.project_snapshot or {}, {"name": d.name, "link": f"/project-dashboards/{d.id}"}
+    if kind == "board":
+        from . import dashboard_watch
+        try:
+            ev = dashboard_watch.evaluate(db, user, target)
+        except dashboard_watch.WatchError as e:
+            raise AutomationError(str(e))
+        return {"kpis": [dashboard_watch.as_kpi(ev)]}, {"name": ev["dashboard"]["name"], "link": ev["link"]}
     if kind == "project_run":
         r = db.get(models.ProjectRun, target.get("run_id") or "")
         if not _run_visible(db, r, user) or r.status != "done":
@@ -570,6 +677,13 @@ def _fresh_snapshot(db: Session, user: models.User, target: dict) -> tuple[dict,
     """Re-runs the target's plan now (no language model) for a threshold check."""
     from .project_engine.dashboards import refresh as refresh_dashboard3, rerun_snapshot
     kind = target.get("kind")
+    if kind == "board":
+        from . import dashboard_watch
+        try:
+            ev = dashboard_watch.evaluate(db, user, target)
+        except dashboard_watch.WatchError as e:
+            raise StepFailed(str(e))
+        return {"kpis": [dashboard_watch.as_kpi(ev)]}, {"name": ev["dashboard"]["name"], "link": ev["link"]}
     if kind == "dashboard":
         d = db.get(models.Dashboard, target.get("dashboard_id") or "")
         if not _dash_visible(db, d, user):
@@ -781,7 +895,11 @@ def build_message(db: Session, name: str, tz: str, ctx: dict, failed: str | None
     when = f"{local.strftime('%a')} {local.day} {local.strftime('%b')}"
     kpis = _kpi_lines(ctx.get("kpis") or [])
     lines: list[str] = []
-    if alert:
+    if alert and alert.get("title"):
+        headline = alert["title"]
+        if alert.get("why"):
+            lines.append(alert["why"])
+    elif alert:
         headline = f"{alert['kpi']} is {alert['value']} - {alert['condition']}."
     elif failed:
         headline = f"{name} could not finish: {failed}"
@@ -801,14 +919,17 @@ def build_message(db: Session, name: str, tz: str, ctx: dict, failed: str | None
         lines.append(f"Quality rules on {q['source']}: {q['checked'] - q['failing']} of {q['checked']} passed.")
     link = ctx.get("link")
     return {
-        "subject": (f"Alert: {alert['kpi']} - {name}" if alert else f"{'Failed: ' if failed else ''}{name} · {when}"),
+        "subject": ((alert.get("title") or f"Alert: {alert['kpi']} - {name}") if alert else f"{'Failed: ' if failed else ''}{name} · {when}"),
         "title": f"{ctx.get('subject_name') or name} · {when}",
         "headline": headline,
         "lines": lines,
         "kpis": kpis,
         "link": (app_url() + link) if link else None,
+        "app_link": link or None,
         "link_label": ctx.get("link_label") or "Open in GD360",
         "failed": bool(failed),
+        "alert": bool(alert),
+        "source_text": ctx.get("subject_name"),
     }
 
 
@@ -962,23 +1083,85 @@ def _emails_sent_today(db: Session, owner_id: str) -> int:
     return n
 
 
-def deliver(db: Session, owner_id: str, tell: dict, message: dict) -> list[dict]:
+def generic_payload(m: dict) -> dict:
+    return {
+        "event": "gd360.alert" if m.get("alert") else "gd360.automation", "title": m.get("title"),
+        "headline": m.get("headline"), "lines": m.get("lines") or [], "kpis": m.get("kpis") or [],
+        "link": m.get("link"), "failed": bool(m.get("failed")), "sent_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+
+def post_generic_webhook(url: str, payload: dict) -> str:
+    """Re-checks the address right before sending and never follows a redirect."""
+    check_generic_webhook(url)
+    r = requests.post(url, json=payload, timeout=15, allow_redirects=False)
+    if r.status_code >= 300:
+        raise RuntimeError(f"The webhook refused it ({r.status_code}).")
+    return "sent"
+
+
+def _notify_in_app(db: Session, tell: dict, message: dict, automation: models.Automation | None,
+                   alert: dict | None) -> dict | None:
+    from . import notifications
+    people = [u for u in tell.get("in_app") or [] if not notifications.is_muted(tell, user_id=u)]
+    if not people:
+        return None
+    link = message.get("app_link")
+    data = {"automation_id": automation.id if automation else None, "link": link, "why": (alert or {}).get("why"),
+            "value": (alert or {}).get("value"), "line": (alert or {}).get("line"),
+            "dashboard_id": (alert or {}).get("dashboard_id"), "page_id": (alert or {}).get("page_id"),
+            "block_id": (alert or {}).get("block_id"), "reminder": bool((alert or {}).get("reminder"))}
+    kind = "reminder" if (alert or {}).get("reminder") else ("alert" if alert else ("failed" if message.get("failed") else "info"))
+    body = (alert or {}).get("why") or (" · ".join(message.get("lines") or [])[:600] or None)
+    data["source"] = message.get("source_text")
+    notifications.create(db, people, kind=kind, title=message.get("headline") or message.get("subject") or "GD360",
+                         body=body, link=link, data=data, automation_id=automation.id if automation else None,
+                         workspace_id=automation.workspace_id if automation else None)
+    db.flush()
+    return {"channel": "in_app", "to": f"{len(people)} {'person' if len(people) == 1 else 'people'} in GD360",
+            "status": "sent", "count": len(people)}
+
+
+def deliver(db: Session, owner_id: str, tell: dict, message: dict, automation: models.Automation | None = None,
+            alert: dict | None = None) -> list[dict]:
     from ..security import decrypt_secret
+    from . import notifications
     out = []
-    emails = tell.get("email") or []
-    if emails:
-        cap = get_settings().AUTOMATION_DAILY_EMAIL_CAP
-        if _emails_sent_today(db, owner_id) + len(emails) > cap:
-            out.append({"channel": "email", "to": ", ".join(emails), "status": "skipped",
+    try:
+        row = _notify_in_app(db, tell, message, automation, alert)
+        if row:
+            out.append(row)
+    except Exception as e:  # noqa: BLE001 - recorded on the run, never raised
+        db.rollback()
+        out.append({"channel": "in_app", "to": "GD360", "status": "failed", "detail": str(e)[:300]})
+    emails = [e for e in tell.get("email") or [] if not notifications.is_muted(tell, email=e)]
+    guests = {str(g).lower() for g in tell.get("guests") or []}
+    groups = [(emails, message)]
+    if guests and tell.get("guest_link"):
+        guest_msg = {**message, "link": app_url() + tell["guest_link"]}
+        groups = [([e for e in emails if e.lower() not in guests], message), ([e for e in emails if e.lower() in guests], guest_msg)]
+    cap = get_settings().AUTOMATION_DAILY_EMAIL_CAP
+    for group, msg in groups:
+        if not group:
+            continue
+        if _emails_sent_today(db, owner_id) + len(group) > cap:
+            out.append({"channel": "email", "to": ", ".join(group), "status": "skipped",
                         "detail": f"Daily email limit reached ({cap} a day)."})
-        else:
-            try:
-                send_email(emails, message["subject"], email_html(message), email_text(message))
-                out.append({"channel": "email", "to": ", ".join(emails), "status": "sent", "count": len(emails)})
-            except NotConfigured as e:
-                out.append({"channel": "email", "to": ", ".join(emails), "status": "not_configured", "detail": str(e)})
-            except Exception as e:  # noqa: BLE001 - recorded on the run, never raised
-                out.append({"channel": "email", "to": ", ".join(emails), "status": "failed", "detail": str(e)[:300]})
+            continue
+        try:
+            send_email(group, msg["subject"], email_html(msg), email_text(msg))
+            out.append({"channel": "email", "to": ", ".join(group), "status": "sent", "count": len(group)})
+        except NotConfigured as e:
+            out.append({"channel": "email", "to": ", ".join(group), "status": "not_configured", "detail": str(e)})
+        except Exception as e:  # noqa: BLE001 - recorded on the run, never raised
+            out.append({"channel": "email", "to": ", ".join(group), "status": "failed", "detail": str(e)[:300]})
+    hook = tell.get("webhook")
+    if hook:
+        try:
+            post_generic_webhook(decrypt_secret(hook["url_enc"]), generic_payload(message))
+            out.append({"channel": "webhook", "to": hook.get("label"), "status": "sent"})
+        except Exception as e:  # noqa: BLE001
+            out.append({"channel": "webhook", "to": hook.get("label"), "status": "failed", "detail": str(e)[:300]})
     for kind, build in (("slack", slack_payload), ("teams", teams_payload)):
         hook = tell.get(kind)
         if not hook:
@@ -1042,7 +1225,7 @@ def execute(db: Session, *, owner: models.User, name: str, tz: str, steps: list[
         or (mode == "on_failure" and failed)
         or (mode == "on_change" and (failed or not automation or automation.last_digest != d))
     )
-    deliveries = deliver(db, owner.id, tell, message) if should else []
+    deliveries = deliver(db, owner.id, tell, message, automation=automation, alert=alert) if should else []
     run.step_results = results
     run.message = message
     run.deliveries = deliveries
@@ -1245,17 +1428,54 @@ def _check_threshold(db: Session, a: models.Automation) -> None:
     kpi = next((k for k in snap.get("kpis") or [] if k.get("key") == trig.get("kpi")), None)
     met, val = condition_met(trig, kpi or {})
     was = a.last_condition
-    a.last_checked_at = datetime.utcnow()
+    now = datetime.utcnow()
+    a.last_checked_at = now
     a.last_value = val
     a.last_condition = met
     db.commit()
-    if met and not was:
-        alert = {"kpi": trig.get("kpi_label") or "The number", "value": val, "condition": threshold_text(db, trig)}
+    # 2026-10-11: "every day while it's below" - one reminder a day while the
+    # condition stays true (the first message is still the crossing itself).
+    remind = (a.tell or {}).get("remind") == "daily" and met and was and (
+        a.last_run_at is None or now - a.last_run_at >= timedelta(hours=23, minutes=30))
+    if (met and not was) or remind:
+        alert = alert_info(db, trig, kpi or {}, val, reminder=bool(remind and was))
         preset = {"kpis": snap.get("kpis") or [], "link": info["link"], "subject_name": info["name"], "link_label": "Open in GD360"}
         owner_ = db.get(models.User, a.owner_id)
         execute(db, owner=owner_, name=a.name, tz=a.timezone, steps=a.steps or [], tell=a.tell or {},
                 stop_on_quality_fail=a.stop_on_quality_fail, reason="threshold", automation=a, alert=alert,
                 preset_ctx=preset)
+
+
+def line_text(trig: dict) -> str:
+    op, unit = trig.get("op"), trig.get("unit") or ""
+    v = f"{_num_text(trig.get('value'))}{unit}"
+    if op == "below":
+        return f"below your {v} line"
+    if op == "above":
+        return f"above your {v} line"
+    if op == "drops_by":
+        return f"down more than {_num_text(trig.get('value'))}%"
+    return f"up more than {_num_text(trig.get('value'))}%"
+
+
+def alert_info(db: Session, trig: dict, kpi: dict, val: str, reminder: bool = False) -> dict:
+    """What an alert message says. A dashboard alert reads like a person
+    wrote it ("Profit margin is 18.9% - below your 20% line"); the others
+    keep their sentence."""
+    label = trig.get("kpi_label") or (trig.get("target") or {}).get("label") or "The number"
+    target = trig.get("target") or {}
+    if target.get("kind") != "board":
+        return {"kpi": label, "value": val, "condition": threshold_text(db, trig)}
+    lt = line_text(trig)
+    shown = val if trig.get("op") in ("below", "above") else (kpi.get("delta") or val)
+    title = (f"Still {lt.split(' your ')[0] if ' your ' in lt else lt}: {label} is {kpi.get('display') or val}" if reminder
+             else f"{label} is {shown} - {lt}")
+    if trig.get("op") in ("drops_by", "rises_by"):
+        title = (f"Still {lt}: {label} is {kpi.get('display') or val}" if reminder
+                 else f"{label} is {lt} ({kpi.get('display') or val} now)")
+    return {"kpi": label, "value": val, "condition": threshold_text(db, trig), "title": title,
+            "why": kpi.get("why"), "line": lt, "reminder": reminder,
+            "dashboard_id": target.get("dashboard_id"), "page_id": target.get("page_id"), "block_id": target.get("block_id")}
 
 
 def tick(db: Session, now: datetime | None = None) -> int:
