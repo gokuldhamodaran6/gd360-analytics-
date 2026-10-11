@@ -53,13 +53,18 @@ _WAKE_STRIP = re.compile(
 _GREET_STRIP = re.compile(rf"^\s*(?:{GREETINGS}|good (?:morning|afternoon|evening))\b[\s,!.]*", re.I)
 
 
-_GREETING_WORDS = {"hi", "hey", "hello", "helo", "hallo", "hullo", "hiya", "heya", "hai", "hay", "hy", "ok", "okay", "yo",
-                   "ola", "hola", "oye", "hie", "aye", "ey"}
-# round 25b: the name's sound (same rule as thread/voice.ts NAME_SOUND): a vowel sound, L, a short i/ee/ea, then V/F/B
+_GREETING_WORDS = {"hi", "hey", "hello", "helo", "hallo", "hullo", "hiya", "heya", "hai", "hay", "hy", "hye", "ok", "okay", "yo",
+                   "ola", "hola", "oye", "hie", "aye", "ey", "hei", "namaste", "vanakkam"}
+# round 27 (same rules as thread/voice.ts): the name by its sound, generously, but only where a person says it
+_WEAK_GREETINGS = {"i", "a", "ay", "high", "eh", "oh", "ah", "hm", "huh"}
 _NAME_SOUND = re.compile(r"^h?(?:[yj]?[aeiouw]{1,3}|[yj])l(?:[iey]|ea|ie|ei)(?:v|f|ph|b|w)e?$")
 _CORE_SHAPES = ["euliv", "eulive", "yuliv", "yulive", "uliv", "ulive", "euleav", "euleave"]
-_BARE_NAMES = {"liv", "leev"}
-_STRICT_SHAPES = ["euliv", "eulive", "yuliv", "yulive", "uliv", "euleev"]
+_BARE_NAMES = {"liv", "leev", "lif", "leef"}
+_STRICT_SHAPES = ["euliv", "eulive", "yuliv", "yulive", "uliv", "euleev", "euleve"]
+_OBJECT_WORDS = {"it", "that", "this", "them", "those", "these", "me", "him", "her", "us", "alone", "here", "there", "with", "in",
+                 "on", "at", "for", "to", "out", "off", "up", "forever", "is", "was", "and", "of"}
+_QUESTION_START = {"what", "whats", "how", "show", "why", "which", "who", "when", "where", "can", "could", "give", "tell", "are", "did",
+                   "do", "does", "compare", "list", "open", "pull", "find", "please"}
 
 
 def _squeeze(w: str) -> str:
@@ -82,21 +87,37 @@ def _lev(a: str, b: str) -> int:
     return prev[-1]
 
 
+def _outline(w: str) -> tuple[str, str]:
+    core = re.sub(r"^[hyjw]+", "", w)
+    skel = _squeeze(re.sub(r"[fbw]", "v", re.sub(r"[aeiouy]", "", core.replace("ph", "v"))))
+    return core, skel
+
+
+def _near_name(word: str) -> bool:
+    c = _clean(word)
+    return bool(_NAME_SOUND.match(c)) or c in _BARE_NAMES or (len(c) >= 5 and any(_lev(c, x) <= 1 for x in _CORE_SHAPES))
+
+
 def sounds_like_euliv(word: str, strict: bool = False) -> bool:
     """The same sound match as the browser (thread/voice.ts soundsLikeEuliv)."""
     w = _clean(word)
     if strict:
         return 4 <= len(w) <= 10 and any(_lev(w, x) <= 1 for x in _STRICT_SHAPES)
-    if w in _BARE_NAMES:
-        return True
-    if len(w) < 4 or len(w) > 10:
+    if len(w) < 3 or len(w) > 11:
         return False
-    return bool(_NAME_SOUND.match(w)) or (len(w) >= 5 and any(_lev(w, x) <= 1 for x in _CORE_SHAPES))
+    if _near_name(w):
+        return True
+    core, skel = _outline(w)
+    if skel == "lv":
+        return len(core) <= 8
+    if skel == "l":
+        return bool(re.match(r"^[aeiou]", core)) and len(core) <= 6
+    return False
 
 
 def _is_greeting(word: str) -> bool:
     raw = re.sub(r"[^a-z]", "", (word or "").lower())
-    return _clean(word) in _GREETING_WORDS or bool(re.fullmatch(r"h+e+y+|h+i+|he+l+o+", raw))
+    return _clean(word) in _GREETING_WORDS or bool(re.fullmatch(r"h+e+y+|h+i+|he+l+o+|h+a+i+", raw))
 
 
 def wake_split(text: str) -> tuple[bool, str]:
@@ -109,31 +130,70 @@ def wake_split(text: str) -> tuple[bool, str]:
     def rest_from(k: int) -> str:
         return re.sub(r"^[\s,.!?:;-]+", "", " ".join(parts[k:])).strip()
 
+    def fits(i: int, n: int, strict: bool) -> bool:
+        if i + n > len(parts):
+            return False
+        if n > 1 and _clean(parts[i]) in ("i", "a", "the", "to", "my", "our"):
+            return False
+        joined = "".join(parts[i:i + n])
+        if len(_clean(joined)) > 11 or not sounds_like_euliv(joined, strict):
+            return False
+        nxt = _clean(parts[i + n]) if i + n < len(parts) else ""
+        if not strict and not _near_name(joined):
+            if nxt in _OBJECT_WORDS:
+                return False
+            if re.match(r"^l", re.sub(r"^[hyjw]+", "", _clean(joined))) and nxt and nxt not in _QUESTION_START:
+                return False
+        return True
+
     def name_at(i: int, strict: bool) -> int:
-        for n in range(1, (1 if strict else 3) + 1):
-            if i + n > len(parts):
-                break
-            if n > 1 and _clean(parts[i]) in ("i", "a", "the", "to"):
-                break
-            joined = "".join(parts[i:i + n])
-            if len(_clean(joined)) > 10:
-                break
-            if sounds_like_euliv(joined, strict):
+        # a close spelling of the name wins at its own length ("Euliv, I want ..." is not "Euliv I");
+        # otherwise the longest reading ("eli v" is one name)
+        top = 1 if strict else 3
+        for n in range(1, top + 1):
+            if fits(i, n, strict) and _near_name("".join(parts[i:i + n])):
+                return n
+        for n in range(top, 0, -1):
+            if fits(i, n, strict):
                 return n
         return 0
 
-    for i, p in enumerate(parts):
+    for i, p in enumerate(parts[:4]):
         if _is_greeting(p):
             for j in range(i + 1, min(i + 2, len(parts) - 1) + 1):
+                if _clean(parts[j]) in ("i", "a", "the", "my"):
+                    break
                 n = name_at(j, False)
                 if n:
                     return True, rest_from(j + n)
                 if not _is_greeting(parts[j]) and _clean(parts[j]) != "there":
                     break
+    if len(parts) >= 2 and _clean(parts[0]) in _WEAK_GREETINGS:
+        n = name_at(1, False)
+        if n and 1 + n == len(parts):
+            return True, ""
     n0 = name_at(0, True)
     if n0:
         return True, rest_from(n0)
+    if len(parts) <= 2:
+        j = _clean("".join(parts))
+        if re.match(r"^[aeiouyj]", j) and len(j) >= 4 and sounds_like_euliv(j) and _outline(j)[1] == "lv":
+            return True, ""
     return False, ""
+
+
+# round 27: Euliv's own phrases - when these come back as "what the person said", the mic heard Euliv
+_OWN_PHRASES = [
+    "didn t catch that", "say it again", "which data should i use", "here s what you have", "how can i help", "shall i go ahead",
+    "to hear them", "talk soon", "just to confirm", "in your sources", "pick one a few", "i couldn t find", "one moment",
+    "working it out", "the data from your last answer", "anything else i can look at", "i m not sure what you d like",
+]
+
+
+def is_own_words(text: str) -> bool:
+    """Euliv hearing itself (speakers, no headset): its own stock phrases in what came back."""
+    h = " " + re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower())).strip() + " "
+    return any(f" {p} " in h for p in _OWN_PHRASES)
 
 
 def strip_wake(text: str) -> str:
