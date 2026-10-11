@@ -166,12 +166,25 @@ _FIRM_END = re.compile(r"^(?:bye|bye bye|goodbye|good bye|see (?:you|ya)|stop|st
                        r"goodnight|good night|forget it|never ?mind,? (?:bye|stop))\b[\s.!]*$", re.I)
 
 
+# round 26: "close the voice tab", "thank you, you can close it now", "please close Euliv", "end the chat"
+_CLOSE = re.compile(
+    r"^(?:(?:ok|okay|alright|great|perfect|cool|thanks|thank you|thank u|cheers|please|you can|can you|could you|just|now|so|and)[\s,.!]+)*"
+    r"(?:close|exit|quit|shut|end|stop|dismiss|hang up|turn off)"
+    r"(?:\s+(?:it|this|that|now|the|a|voice|euliv|you|assistant|chat|tab|window|panel|popup|pop up|pop-up|box|screen|"
+    r"conversation|talk|session|down|off|up|please|for now|listening|mode|thing|thanks|thank you))*[\s.!]*$", re.I)
+
+
+def wants_close(text: str) -> bool:
+    t = re.sub(rf"[\s,]+(?:{EXACT_NAMES})[\s.!?]*$", "", (text or "").strip(), flags=re.I).strip()
+    return bool(_CLOSE.match(t))
+
+
 def firm_end(text: str) -> bool:
     """bye / stop / cancel - the only ways to leave while Euliv waits on an answer ("that's it" and "done"
     mean "go ahead" during a read-back)."""
     t = re.sub(rf"[\s,]+(?:{EXACT_NAMES})[\s.!?]*$", "", (text or "").strip(), flags=re.I).strip()
     core = _POLITE.sub("", t).strip()
-    return bool(_FIRM_END.match(t) or (core and _FIRM_END.match(core)))
+    return bool(_FIRM_END.match(t) or (core and _FIRM_END.match(core)) or wants_close(text))
 
 
 def hard_end(text: str) -> bool:
@@ -224,6 +237,8 @@ def intent(text: str) -> str:
         return "greeting"
     core = _POLITE.sub("", t).strip()
     if core and _END.match(core) or (not core and re.search(r"\b(?:bye|that'?s all|that'?s it)\b", t, re.I)):
+        return "end"
+    if wants_close(t):
         return "end"
     if _END.match(t):
         return "end"

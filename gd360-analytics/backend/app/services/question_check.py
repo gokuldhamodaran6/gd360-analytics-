@@ -1042,6 +1042,30 @@ def _cant_issue(weak: list[dict], others: list[dict], period: dict | None, what:
             "options": opts, "multi": False}
 
 
+_ASK_LEAD = re.compile(
+    r"^(?:(?:hi|hey|ok|okay|so|and|also|now|please|euliv|actually)[\s,]+)*(?:(?:can|could|would) you\s+)?(?:please\s+)?"
+    r"(?:(?:tell|show|give|get|find|pull|check|explain)\s+(?:me\s+|us\s+)?(?:about\s+)?|"
+    r"i (?:want|would like|wanna|need) to (?:see|know|check|look at|understand)\s+(?:about\s+)?|"
+    r"(?:let'?s|lets) (?:look at|see|check)\s+|what (?:is|are|was|were)\s+|what'?s\s+|whats\s+|which\s+)?"
+    r"(?:(?:the|my|our|all|all of|of)\s+)*", re.I)
+_ASK_FILLER = re.compile(r"\b(?:whatever (?:we|i) have|that (?:we|i) have|we have|please|for me|right now|history of|overall)\b", re.I)
+_ASK_VERBS = {"perform", "performing", "doing", "did", "do", "does", "is", "are", "was", "were", "going", "look", "looks", "like",
+              "has", "have", "had", "can", "could", "should", "would", "will", "change", "changed", "drop", "dropped", "grow", "grew"}
+
+
+def _asked_core(q: str) -> str | None:
+    """The thing asked about, in the person's own words: "what is the paid marketing activities" ->
+    "paid marketing activities" - so the read-back doesn't flatten it to "your marketing data"."""
+    s = _ASK_FILLER.sub(" ", _strip_period(q or "").lower())
+    s = _ASK_LEAD.sub("", s.strip())
+    s = re.sub(r"\s+", " ", re.sub(r"[?.!,]+", " ", s)).strip()
+    s = re.sub(r"\s+data$", "", s).strip()
+    ws = s.split()
+    if not (2 <= len(ws) <= 5) or any(w in _ASK_VERBS for w in ws) or re.search(r"[0-9_]|\bby\b", s):
+        return None
+    return s
+
+
 def _what(q: str, qw: set[str], topic: str | None) -> str:
     meas = [w for w in ("revenue", "sales", "orders", "profit", "spend", "conversions", "bookings", "traffic", "customers")
             if w in qw or w.rstrip("s") in qw]
@@ -1052,6 +1076,9 @@ def _what(q: str, qw: set[str], topic: str | None) -> str:
     if meas:
         return "your " + " and ".join(meas[:2])
     if topic:
+        core = _asked_core(q)
+        if core:
+            return f"your {core}"
         return f"your {TOPIC_LABEL[topic]} data"
     core = _strip_period(q)
     return f"“{core}”" if core else "your question"
