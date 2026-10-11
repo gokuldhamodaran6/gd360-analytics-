@@ -546,7 +546,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
       ...cur.slice(-40).map((x) => {
         if (strip && x.card?.type === "connect") return { ...x, card: undefined };
         // a newer turn: the earlier read-back is settled - it stays, read-only
-        if (m.who === "euliv" && x.card && (x.card.type === "plan" || x.card.type === "fix_date" || x.card.type === "rephrase") && x.card.live) return { ...x, card: { ...x.card, live: false } };
+        if (m.who === "euliv" && x.card && (x.card.type === "plan" || x.card.type === "fix_date" || x.card.type === "rephrase" || x.card.type === "question") && x.card.live) return { ...x, card: { ...x.card, live: false } };
         return x;
       }),
       { ...m, id },
@@ -644,7 +644,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
     }
     // round 25: Euliv only asks again when it is waiting on an answer from the person;
     // after an answer, silence or background noise (or its own voice's echo) just goes quiet
-    const waitingOnPerson = ["plan", "fix_date", "connect", "rephrase"].includes(state.current.awaiting || "");
+    const waitingOnPerson = ["plan", "fix_date", "connect", "rephrase", "question"].includes(state.current.awaiting || "");
     if (heard.reason === "silent" && proven.current) {
       setPhase("idle"); // they've finished - no need to nag
       return;
@@ -807,6 +807,11 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
       }
       case "fix_date": {
         const ok = await say(out.say, out.speak, out.issue ? { type: "fix_date", issue: out.issue, live: true } : undefined);
+        return afterReply(ok);
+      }
+      case "question": {
+        // round 29: the question first, tidied - "Your question: “…” Is that right?"
+        const ok = await say(out.say, out.speak, { type: "question", question: out.question || "", said: out.said || "", notes: out.notes || [], live: true });
         return afterReply(ok);
       }
       case "rephrase": {

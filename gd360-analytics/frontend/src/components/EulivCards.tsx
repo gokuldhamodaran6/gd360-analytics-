@@ -21,6 +21,7 @@ export type Card =
   | { type: "plan"; plan: PlanCard; live: boolean }
   | { type: "fix_date"; issue: CheckIssue; live: boolean }
   | { type: "rephrase"; question: string; live: boolean }
+  | { type: "question"; question: string; said: string; notes: string[]; live: boolean }
   | { type: "connect"; connect: EulivConnect; opened: boolean; done?: boolean }
   | { type: "answer"; data: EulivAnswer; runId?: string }
   | { type: "explain"; data: NonNullable<EulivTurn["explain"]> }
@@ -46,6 +47,7 @@ export function cardFromSaved(c: any): Card | undefined {
   if (c.type === "plan") return { type: "plan", plan: c as PlanCard, live: false };
   if (c.type === "fix_date" && c.issue) return { type: "fix_date", issue: c.issue, live: false };
   if (c.type === "rephrase") return undefined;
+  if (c.type === "question") return { type: "question", question: c.question || "", said: c.said || "", notes: c.notes || [], live: false };
   if (c.type === "connect" && c.connect) return { type: "connect", connect: c.connect, opened: true };
   if (c.type === "explain") return { type: "explain", data: c };
   if (c.type === "answer") return { type: "answer", data: { status: c.status, link: c.link, card: c.card, missing: c.missing }, runId: c.run_id };
@@ -54,6 +56,7 @@ export function cardFromSaved(c: any): Card | undefined {
 
 export function EulivCardView({ card, h }: { card: Card; h: CardHandlers }) {
   if (card.type === "plan") return <PlanView card={card} h={h} />;
+  if (card.type === "question") return <QuestionView card={card} h={h} />;
   if (card.type === "rephrase") {
     return card.live && !h.readOnly ? <QuestionEditor question={card.question} onSave={(t) => h.onRephrase?.(t)} autoFocus /> : null;
   }
@@ -314,6 +317,49 @@ function AnswerView({ card, h }: { card: Extract<Card, { type: "answer" }>; h: C
           {c.period ? `${c.sources_used.length ? " · " : ""}${c.period.text}` : ""}
         </span>
       )}
+    </div>
+  );
+}
+
+/**
+ * Round 29: the question, read back first - tidied (names, grammar, a year that can't be right) -
+ * for a "yes" before any data is chosen. Edit it right here; nothing runs yet.
+ */
+function QuestionView({ card, h }: { card: Extract<Card, { type: "question" }>; h: CardHandlers }) {
+  const [editing, setEditing] = useState(false);
+  const live = card.live && !h.readOnly;
+  if (editing && live) {
+    return (
+      <div className="rounded-[18px] border border-border-strong bg-base/40 p-4" data-euliv-question="editing">
+        <QuestionEditor question={card.question} autoFocus onSave={(t) => { setEditing(false); h.onRephrase?.(t); }} onCancel={() => setEditing(false)} />
+      </div>
+    );
+  }
+  if (!live) {
+    return (
+      <div className="flex items-center gap-2 flex-wrap rounded-[14px] border border-border bg-base/30 px-3.5 py-2.5 text-[13px]" data-euliv-question="done">
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-muted">Question</span>
+        <span className="text-secondary">“{card.question}”</span>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-[18px] border border-kind-answer-border bg-kind-answer-fill/40 overflow-hidden" data-euliv-question="live">
+      <div className="px-4 pt-4 pb-3 flex flex-col gap-2">
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-muted">Your question</span>
+        <p className="m-0 text-[18px] leading-snug font-medium text-text text-pretty" data-euliv-question-text="">“{card.question}”</p>
+      </div>
+      <div className="px-4 py-3 border-t border-border/70 flex items-center gap-2 flex-wrap bg-base/30">
+        <button type="button" onClick={() => h.onPick("yes")} className="ui-focus h-10 px-4 rounded-full bg-primary text-on-primary text-[14px] font-semibold inline-flex items-center gap-2" data-euliv-question-yes="">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>
+          Yes, proceed
+        </button>
+        <button type="button" onClick={() => setEditing(true)} className="ui-focus h-10 px-4 rounded-full border border-border-strong text-[14px] text-secondary hover:text-text inline-flex items-center gap-2" data-euliv-question-edit="">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+          Edit
+        </button>
+        <span className="ml-auto hidden sm:inline text-[11.5px] text-faint">say “yes”, or tell me the change</span>
+      </div>
     </div>
   );
 }
