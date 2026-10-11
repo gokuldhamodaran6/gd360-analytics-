@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import type { DashKpi, EvidenceTable, ProjectRun, RunStep } from "../api/projects";
 import { KpiRow, VisualCard } from "./Visuals";
+import { ExplainButton, ExplainPanel, useExplain } from "../thread/Explain";
 import { autoRunPreference, bytes, ms, MODE_LABEL, setAutoRunPreference } from "./format";
 
 const MODE_CLASS: Record<string, string> = {
@@ -333,17 +334,45 @@ export function ResultsTab({ run }: { run: ProjectRun }) {
   const facts = new Map((res.facts || []).map((f) => [f.id, f]));
   const kpis = ((res as any).kpis || []) as DashKpi[];
   const visuals = res.visuals || [];
+  // 2026-10-11 (Explain & Alerts): an Explain button on every chart and cause
+  // card when the page provides a controller (thread/Explain.tsx); the
+  // target index is the chart's place in the result, as the backend counts it.
+  const explain = useExplain();
+  const card = (v: (typeof visuals)[number], key: string, cid: string) => {
+    const index = visuals.indexOf(v);
+    const t = { kind: "visual" as const, index };
+    const canExplain = Boolean(explain) && v.type !== "kpis";
+    return (
+      <VisualCard
+        key={key}
+        visual={v}
+        id={cid}
+        anchor={`visual:${index}`}
+        actions={canExplain ? <ExplainButton target={t} title={(v as any).title || "this chart"} compact /> : undefined}
+        footer={canExplain ? <ExplainPanel target={t} title={(v as any).title || "this chart"} /> : undefined}
+      />
+    );
+  };
   const lead = visuals.filter((v) => v.type === "waterfall");
   const rest = visuals.filter((v) => v.type !== "waterfall");
   const overall = (res.summary as any)?.direction as string | undefined;
   const changeWord = overall === "up" ? "rise" : overall === "down" ? "drop" : "change";
   let causeNo = 0;
+  // 2026-10-11: causes are often different cuts of the same change (by
+  // channel, by segment...), so their shares overlap - say so once instead
+  // of letting 128% + 71% + 46% look like an error.
+  const shareSum = ans.causes
+    .filter((c) => !(overall && c.direction && c.direction !== overall))
+    .reduce((t, c) => t + (pctOf(c.share) || 0), 0);
   return (
     <div className="flex flex-col gap-5">
-      {lead.map((v, i) => (
-        <VisualCard key={`w${i}`} visual={v} id={`${run.id}:w${i}`} />
-      ))}
+      {lead.map((v, i) => card(v, `w${i}`, `${run.id}:w${i}`))}
       {!lead.length && kpis.length > 0 && <KpiRow items={kpis} />}
+      {ans.causes.length > 1 && shareSum > 105 && (
+        <p className="m-0 -mb-2 text-caption text-muted" data-share-note="">
+          Each cause looks at the same {changeWord} from a different angle - by channel, segment or price - so their shares overlap and add up to more than 100%.
+        </p>
+      )}
       {ans.causes.length > 0 && (
         <div className="grid gap-3.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))" }}>
           {ans.causes.map((c, i) => {
@@ -352,7 +381,7 @@ export function ResultsTab({ run }: { run: ProjectRun }) {
             const amount = c.amount || c.fact_ids.map((id) => facts.get(id)).find((f) => f && f.kind !== "percent")?.display;
             const tone = c.direction === "down" ? "text-danger" : c.direction === "up" ? "text-good" : "text-text";
             return (
-              <article key={i} className="rounded-card border border-border bg-surface p-5 flex flex-col gap-3 min-w-0">
+              <article key={i} data-explain-anchor={`cause:${i}`} className="rounded-card border border-border bg-surface p-5 flex flex-col gap-3 min-w-0">
                 <div className="flex justify-between items-center gap-2">
                   <span className={`font-mono text-caption uppercase tracking-[0.06em] ${offset ? "text-warning" : c.direction === "down" ? "text-danger" : c.direction === "up" ? "text-good" : "text-muted"}`}>{label}</span>
                   <span
@@ -367,15 +396,20 @@ export function ResultsTab({ run }: { run: ProjectRun }) {
                 {amount && (
                   <div className="flex items-baseline gap-2 flex-wrap">
                     <span className={`font-mono text-[26px] leading-none tracking-tight ${tone}`}>{amount}</span>
-                    {c.share && <span className="text-ui text-muted">{offset ? `made up ${c.share}` : `${c.share} of the ${changeWord}`}</span>}
+                    {c.share && <span className="text-ui text-muted">{shareText(c.share, Boolean(offset), changeWord)}</span>}
                   </div>
                 )}
                 {c.detail && <p className="m-0 text-ui text-secondary leading-relaxed">{c.detail}</p>}
-                {(c.sources || []).length > 0 && (
-                  <div className="flex gap-1.5 flex-wrap mt-auto pt-1">
-                    {c.sources!.map((n) => (
+                {((c.sources || []).length > 0 || explain) && (
+                  <div className="flex gap-1.5 flex-wrap items-center mt-auto pt-1">
+                    {(c.sources || []).map((n) => (
                       <span key={n} className="inline-flex items-center h-[22px] px-2 rounded-md bg-subtle text-caption text-secondary">{n}</span>
                     ))}
+                    {explain && (
+                      <span className="ml-auto">
+                        <ExplainButton target={{ kind: "cause", index: i }} title={c.title} compact />
+                      </span>
+                    )}
                   </div>
                 )}
               </article>
@@ -383,6 +417,7 @@ export function ResultsTab({ run }: { run: ProjectRun }) {
           })}
         </div>
       )}
+      {explain && ans.causes.map((c, i) => <ExplainPanel key={`ce${i}`} target={{ kind: "cause", index: i }} title={c.title} />)}
       {ans.ruled_out.length > 0 && (
         <section className="rounded-card border border-border bg-surface p-5 flex flex-col gap-3.5">
           <h3 className="m-0 text-section font-semibold text-text">Checked and ruled out</h3>
@@ -400,9 +435,7 @@ export function ResultsTab({ run }: { run: ProjectRun }) {
         </section>
       )}
       {lead.length > 0 && kpis.length > 0 && <KpiRow items={kpis} />}
-      {rest.map((v, i) => (
-        <VisualCard key={`v${i}`} visual={v} id={`${run.id}:${i}`} />
-      ))}
+      {rest.map((v, i) => card(v, `v${i}`, `${run.id}:${i}`))}
       {(res.warnings || []).length > 0 && (
         <div className="rounded-card border border-warning-border bg-warning-fill p-3.5 text-ui text-warning flex flex-col gap-1">
           {res.warnings!.map((w, i) => <span key={i}>{w}</span>)}
@@ -506,4 +539,19 @@ export function Empty({ text, spinner = false }: { text: string; spinner?: boole
       {text}
     </div>
   );
+}
+
+/** "128.2%" -> 128.2 */
+function pctOf(share?: string | null): number | null {
+  const m = /(-?\d+(?:\.\d+)?)\s*%/.exec(share || "");
+  return m ? Math.abs(parseFloat(m[1])) : null;
+}
+
+/** How a cause's share reads: more than all of the change means other parts
+ *  moved the other way, and that is said instead of a bare "128.2%". */
+function shareText(share: string, offset: boolean, changeWord: string): string {
+  if (offset) return `made up ${share}`;
+  const p = pctOf(share);
+  if (p != null && p > 100) return `${share} of the ${changeWord} - more than all of it; gains elsewhere made up ${(p - 100).toFixed(p - 100 < 10 ? 1 : 0)}%`;
+  return `${share} of the ${changeWord}`;
 }

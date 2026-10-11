@@ -2,27 +2,47 @@
 // split into its parts (waterfall), the change by segment (diverging bars),
 // a row of headline numbers, and any result table (WorkspaceChart, the same
 // chart component the one-source analysis uses).
+import type { ReactNode } from "react";
 import type { DashKpi, Visual } from "../api/projects";
 import { formatCell, formatValue, isYearColumn } from "./format";
 import ChartWithControls from "./ChartControls";
 
+/** A round number at or below v, on the scale of `span` (for an axis start). */
+function niceFloor(v: number, span: number): number {
+  if (v <= 0 || span <= 0) return 0;
+  const step = Math.pow(10, Math.floor(Math.log10(span)));
+  return Math.max(0, Math.floor(v / step) * step);
+}
+
 export function WaterfallChart({ visual }: { visual: Extract<Visual, { type: "waterfall" }> }) {
-  const totals = visual.items.filter((i) => i.kind === "total").map((i) => Math.abs(i.value));
   // running levels: every step starts where the previous one ended
   let level = 0;
   const bars = visual.items.map((it) => {
     if (it.kind === "total") {
       level = it.value;
-      return { ...it, lo: 0, hi: it.value };
+      return { ...it, lo: 0, hi: it.value, end: it.value };
     }
     const from = level;
     level = level + it.value;
-    return { ...it, lo: Math.min(from, level), hi: Math.max(from, level) };
+    return { ...it, lo: Math.min(from, level), hi: Math.max(from, level), end: level };
   });
-  const max = Math.max(...bars.map((b) => b.hi), ...totals, 1);
+  const max = Math.max(...bars.map((b) => b.hi), 1);
+  // 2026-10-11: when the changes are small next to the totals (a -2.8% move
+  // on $12.4M), a bar chart from zero draws them as 3px slivers. The axis
+  // then starts just below the lowest level - marked as a broken axis, and
+  // said in words - so every step is visible at its true size relative to
+  // the others.
+  const allPositive = bars.every((b) => b.lo >= 0);
+  const floorLevel = Math.min(...bars.map((b) => (b.kind === "total" ? b.hi : b.lo)));
+  const moveSpan = max - floorLevel;
+  const zoom = allPositive && floorLevel > 0 && moveSpan > 0 && moveSpan < max * 0.35;
+  const base = zoom ? niceFloor(floorLevel - moveSpan * 0.6, moveSpan) : 0;
+  const range = Math.max(max - base, 1e-9);
   const H = 220;
+  const y = (v: number) => ((Math.max(v, base) - base) / range) * H;
+  const firstTotal = bars.find((b) => b.kind === "total");
   return (
-    <figure className="m-0" aria-label={visual.title}>
+    <figure className="m-0" aria-label={visual.title} data-waterfall={zoom ? "zoomed" : "zero"}>
       <div className="overflow-x-auto">
         <div className="grid gap-4 min-w-[520px]" style={{ gridTemplateColumns: `repeat(${bars.length}, minmax(0, 1fr))` }}>
           {bars.map((b, i) => {
@@ -31,15 +51,36 @@ export function WaterfallChart({ visual }: { visual: Extract<Visual, { type: "wa
               b.kind === "total"
                 ? formatValue(b.value, visual.format, visual.currency)
                 : formatValue(b.value, visual.format, visual.currency, true);
+            const pct = b.kind !== "total" && firstTotal && firstTotal.value
+              ? `${b.value > 0 ? "+" : "−"}${Math.abs((b.value / firstTotal.value) * 100).toFixed(1)}%`
+              : null;
+            const next = bars[i + 1];
             return (
               <div key={i} className="flex flex-col gap-2 min-w-0">
-                <span className={`font-mono text-ui text-center ${b.kind === "down" ? "text-danger" : b.kind === "up" ? "text-good" : "text-text"}`}>{label}</span>
+                <span className={`font-mono text-ui text-center ${b.kind === "down" ? "text-danger" : b.kind === "up" ? "text-good" : "text-text"}`}>
+                  {label}
+                  <span className="block text-[11px] text-muted" aria-hidden={pct ? undefined : true}>{pct || "\u00a0"}</span>
+                </span>
                 <div className="relative border-b border-border-strong" style={{ height: H }}>
                   <span
                     className={`absolute left-[14%] right-[14%] rounded-t ${color}`}
-                    style={{ bottom: (b.lo / max) * H, height: Math.max(3, ((b.hi - b.lo) / max) * H) }}
+                    style={{ bottom: y(b.lo), height: Math.max(3, y(b.hi) - y(b.lo)) }}
                     title={`${b.label}: ${label}`}
                   />
+                  {zoom && b.kind === "total" && (
+                    // the broken-axis mark: this bar does not start at zero
+                    <svg aria-hidden="true" className="absolute left-[14%] right-[14%] bottom-[10px] w-[72%] h-[10px] text-[rgb(var(--color-surface))]" viewBox="0 0 100 10" preserveAspectRatio="none">
+                      <path d="M0 7 L100 1 L100 4 L0 10 Z" fill="currentColor" />
+                    </svg>
+                  )}
+                  {next && (
+                    // the level this bar ends at, carried to the next one
+                    <span
+                      aria-hidden="true"
+                      className="absolute border-t border-dashed border-[rgb(var(--color-faint))]"
+                      style={{ bottom: y(b.end), left: "86%", width: "calc(28% + 1rem)" }}
+                    />
+                  )}
                 </div>
                 <span className="text-caption text-muted text-center leading-snug">{b.label}</span>
               </div>
@@ -47,10 +88,15 @@ export function WaterfallChart({ visual }: { visual: Extract<Visual, { type: "wa
           })}
         </div>
       </div>
-      <figcaption className="mt-3 flex flex-wrap gap-4 text-caption text-muted">
+      <figcaption className="mt-3 flex flex-wrap items-center gap-4 text-caption text-muted">
         <Legend className="bg-[rgb(var(--color-border-strong))]" label="Total" />
         <Legend className="bg-danger" label="Pulled it down" />
         <Legend className="bg-good" label="Pushed it up" />
+        {zoom && (
+          <span className="ml-auto" data-waterfall-axis="">
+            Bars start at {formatValue(base, visual.format, visual.currency)}, so the changes are visible
+          </span>
+        )}
       </figcaption>
     </figure>
   );
@@ -135,15 +181,25 @@ export function KpiRow({ items }: { items: DashKpi[] }) {
   );
 }
 
-export function VisualCard({ visual, id, chartType }: { visual: Visual; id: string; chartType?: string | null }) {
+export function VisualCard({
+  visual, id, chartType, actions, footer, anchor,
+}: {
+  visual: Visual; id: string; chartType?: string | null;
+  // 2026-10-11 (Explain & Alerts): the Explain button beside the title, and
+  // the explanation under the chart (thread/Explain.tsx)
+  actions?: ReactNode; footer?: ReactNode; anchor?: string;
+}) {
   if (visual.type === "kpis") {
     return <KpiRow items={visual.items.map((k) => ({ key: k.fact_id, label: k.label, display: k.display }))} />;
   }
   return (
-    <section className="rounded-card border border-border bg-surface p-4 sm:p-5 flex flex-col gap-3 min-w-0 [&>div.card]:border-0 [&>div.card]:bg-transparent [&>div.card]:p-0 [&>div.card]:shadow-none [&>div.card]:rounded-none [&>div.card:hover]:shadow-none">
+    <section data-explain-anchor={anchor} className="rounded-card border border-border bg-surface p-4 sm:p-5 flex flex-col gap-3 min-w-0 [&>div.card]:border-0 [&>div.card]:bg-transparent [&>div.card]:p-0 [&>div.card]:shadow-none [&>div.card]:rounded-none [&>div.card:hover]:shadow-none">
       <div className="flex items-start justify-between gap-3">
         <h3 className="m-0 text-section font-semibold text-text leading-snug">{visual.title}</h3>
-        <SourceTags names={visual.sources} />
+        <div className="flex items-center gap-2 shrink-0">
+          <SourceTags names={visual.sources} />
+          {actions}
+        </div>
       </div>
       {visual.type === "waterfall" && <WaterfallChart visual={visual} />}
       {visual.type === "diverging" && <DivergingBars visual={visual} />}
@@ -158,6 +214,7 @@ export function VisualCard({ visual, id, chartType }: { visual: Visual; id: stri
         />
       )}
       {visual.type === "chart" && visual.note && <p className="m-0 text-caption text-muted">{visual.note}</p>}
+      {footer}
     </section>
   );
 }
