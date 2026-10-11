@@ -32,6 +32,7 @@ turn is stateless on the server.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from contextvars import ContextVar
@@ -342,8 +343,7 @@ def _plan_from_check(db: Session, user: models.User, q: str, c: dict, state: Tur
             when = f" I'll compare {p['parts'][0]['text']} with {p['parts'][1]['text']}."
         elif p.get("future"):
             when = f" {p['text']} hasn't happened yet, so it will be a forecast."
-        say = (f"{lead}I found {b['what']} in {n_good} places.{when} {eu.numbered(b['options'])} "
-               "Which should I use? You can pick one, a few, or all of them.")
+        say = f"{lead}I found {b['what']} in {n_good} places.{when} {eu.numbered(b['options'])} Which would you like - one or several?"
         return _plan_reply(say, state, b)
 
     picked = c.get("picked") or []
@@ -364,23 +364,167 @@ def _plan_from_check(db: Session, user: models.User, q: str, c: dict, state: Tur
     return _plan_reply(say, state, b)
 
 
+def _guard(q: str, c: dict, named: bool, state: TurnState) -> dict | None:
+    """Things that aren't questions about data: a remark, or words that match nothing at all."""
+    cands = c.get("candidates") or []
+    if (len(q.split()) <= 4 and not eu.questionish(q) and not c.get("period") and not named
+            and not any(x.get("score", 0) >= 4 for x in cands)):
+        return _reply("What would you like me to look at? For example, 'sales last month'.", "chat", _keep(state))
+    # round 27: words that match nothing in any data - ask what they mean instead of reading out every source
+    if (not c.get("topic") and not c.get("period") and not named and not any((x.get("score") or 0) > 0 for x in cands)
+            and not (qc.words(q) & qc.MEASURE_WORDS)):
+        return _reply("I'm not sure which numbers that's about. Could you say it another way?", "chat", _keep(state))
+    return None
+
+
+def _confirm_question(db: Session, user: models.User, q: str, ws: str | None, state: TurnState, lead: str = "",
+                      accepted: list[str] | None = None, no_connect: bool = False) -> dict:
+    """Round 29: the question first. Euliv tidies what was said (names, grammar, a year that can't be right) and
+    reads it back - "Your question: “What are the paid marketing activities?” Is that right?" - before any data."""
+    pool = accessible_sources(db, user, ws)
+    polished, notes = eu.polish_question(q, [s.name for s in pool])
+    for i in qc.date_issues(polished, _today(), accepted):
+        if i["kind"] in ("year_typo", "month_typo") and i.get("options"):
+            val = i["options"][0]["value"]
+            m0 = re.search(rf"\b{re.escape(i['said'])}\b", polished, re.I)
+            polished = qc.apply_fixes(polished, {i["said"]: val})
+            notes.append(f"{m0.group(0) if m0 else i['said']} → {val}")
+    try:
+        c0 = qc.check(db, user, polished, workspace_id=ws, accepted=accepted, today=_today(), coverage=False)
+    except Exception:  # noqa: BLE001
+        c0 = {"candidates": [], "topic": None, "period": None}
+    named0 = any(x.get("named") for x in c0.get("candidates") or [])
+    named_app = bool(eu._named(polished, pool)[1])  # noqa: SLF001 - "Google Ads" is a subject, even when not connected
+    g = None if named_app else _guard(polished, c0, named0, state)
+    if g:
+        return g
+    b = {"question": polished, "said": q, "notes": notes, "accepted": list(accepted or []), "no_connect": no_connect}
+    st = _keep(state, awaiting="question", pending_question=polished, brief=b, retries=0)
+    lead = (lead + " ") if lead else ""
+    # round 29: short and sweet. The tidied question is simply "your question" - never a list of the person's slips
+    say = lead + f"Your question is: “{polished}” Shall I proceed with this, or would you like to change it?"
+    return _reply(say, "question", st, question=polished, said=q, notes=notes)
+
+
+def _question_turn(db: Session, user: models.User, text: str, state: TurnState, ws: str | None, kind: str) -> dict:
+    """The person's answer to "Your question: “…” Is that right?"."""
+    b = dict(state.brief or {})
+    q = b.get("question") or state.pending_question or ""
+    t = text.strip()
+    yes = eu.is_yes(t) or re.match(r"^(?:that'?s|that is|it'?s|its)\s+(?:right|correct|it|fine|perfect|good)\b|^(?:correct|right|"
+                                    r"exactly|perfect|yes that'?s it|yep that'?s it|spot on|bang on|proceed|continue|carry on|go on|"
+                                    r"(?:please\s+)?(?:proceed|go)\s+(?:with (?:this|that|it)|ahead))\b", t, re.I)
+    if yes and len(t.split()) <= 6:
+        return _new_question(db, user, q, ws, _keep(state), "", accepted=b.get("accepted") or [],
+                             no_connect=bool(b.get("no_connect")))
+    m = _REPHRASE.match(t)
+    if m:
+        if m.group(1) and len(m.group(1).split()) >= 2:
+            return _confirm_question(db, user, m.group(1).strip(" .?!"), ws, _keep(state), "Okay.")
+        st = _keep(state, awaiting="rephrase", pending_question=q, brief={"question": q})
+        return _reply(f"Sure. What should the question be?", "rephrase", st, question=q)
+    # "no, 2024" / "I meant March": change just that in the question
+    yr = re.search(r"\b(19\d\d|20\d\d)\b", t)
+    mo = re.search(rf"\b{qc.MONTH_RE}\b", t.lower())
+    if len(t.split()) <= 5 and (yr or mo):
+        fixed = q
+        if yr:
+            fixed = re.sub(r"\b(19\d\d|20\d\d)\b", yr.group(1), fixed, count=1) if re.search(r"\b(19|20)\d\d\b", fixed) \
+                else fixed.rstrip("?.!") + f" in {yr.group(1)}?"
+        if mo:
+            name = qc.MONTHS[qc.MONTH_NUM[mo.group(0)[:3]] - 1].title()
+            fixed = re.sub(rf"\b{qc.MONTH_RE}\b", name, fixed, count=1, flags=re.I) if re.search(rf"\b{qc.MONTH_RE}\b", fixed, re.I) else fixed
+        return _confirm_question(db, user, fixed, ws, _keep(state), "Okay.", accepted=(b.get("accepted") or []) + ([yr.group(1)] if yr else []))
+    # "no, I meant the paid ones by channel" / a whole new wording: that's the question now
+    rest = re.sub(r"^(?:no|nope|nah|not quite|wrong|sorry|actually)[\s,.!]*(?:i (?:meant|mean|said)\s+)?", "", t, flags=re.I).strip()
+    if rest and len(rest.split()) >= 3:
+        return _confirm_question(db, user, rest, ws, _keep(state), "Okay.")
+    if eu.is_no(t):
+        st = _keep(state, awaiting="rephrase", pending_question=q, brief={"question": q})
+        return _reply("No problem. What should the question be? You can also tap Edit and type it.", "rephrase", st, question=q)
+    if state.retries >= 1:
+        return _new_question(db, user, q, ws, _keep(state), "I'll take it as it is.", accepted=b.get("accepted") or [],
+                             no_connect=bool(b.get("no_connect")))
+    st = state.model_copy(update={"retries": state.retries + 1})
+    return _reply(f"Shall I proceed with “{q}”? Say yes - or tell me the change.", "question", st, question=q,
+                  said=b.get("said") or q, notes=b.get("notes") or [])
+
+
+def _in_last_answer(db: Session, user: models.User, state: TurnState, names: list[str]) -> bool:
+    """Is this name something the last answer talked about ("Google Ads" as a channel in your data)?"""
+    if not state.last_run_id:
+        return False
+    try:
+        run, _conv = projects._run(db, state.last_run_id, user)  # noqa: SLF001 - same access rules as the thread page
+    except HTTPException:
+        return False
+    blob = " " + re.sub(r"[^a-z0-9]+", " ", json.dumps(run.result or {}, default=str).lower()) + " "
+    return any(f" {re.sub(r'[^a-z0-9]+', ' ', n.lower()).strip()} " in blob for n in names if n)
+
+
+def _conv_first(pool: list, state: TurnState, db: Session, user: models.User) -> list:
+    """The conversation's own data first, then the rest - the likeliest place for a name to live."""
+    ids = set(_conv_source_ids(db, user, state)) if state.project_id else set()
+    return [s for s in pool if s.id in ids] + [s for s in pool if s.id not in ids]
+
+
 def _new_question(db: Session, user: models.User, q: str, ws: str | None, state: TurnState, lead: str = "",
-                  accepted: list[str] | None = None) -> dict:
-    # an app named in the question that isn't connected ("followers on Instagram"): offer to connect it
+                  accepted: list[str] | None = None, confirmed: bool = True, no_connect: bool = False) -> dict:
+    # round 29: a question just said is first read back, tidied, for a yes - then the data
+    if not confirmed:
+        topic0 = qc._topic(qc.words(q))  # noqa: SLF001
+        about_answer = bool(state.project_id and state.last_run_id and _is_follow_up(q, state, topic0, False))
+        if not about_answer:
+            return _confirm_question(db, user, q, ws, state, lead, accepted, no_connect)
+    # an app named in the question that isn't connected ("followers on Instagram")
     from ..services import synced_sources
     pool = accessible_sources(db, user, ws)
     named_ds, missing = eu._named(q, pool)  # noqa: SLF001
+    connect_also: list[dict] = []
+    value_in: list = []  # sources where the named app is a value ("Google Ads" in a channel column)
     if missing and not named_ds and missing[0] in synced_sources.APPS:
-        conn = eu._connect_info(missing[0])  # noqa: SLF001
-        st = _keep(state, awaiting="connect", pending_question=q, connect=conn)
-        say = (f"{(lead + ' ') if lead else ''}{conn['label']} isn't connected yet, so I can't see that. Shall I connect it now? "
-               "Or say 'use what's connected' and I'll try with the data you have.")
-        return _reply(say, "connect_offer", st, connect=conn)
-    try:
-        c = qc.check(db, user, q, workspace_id=ws, accepted=accepted, today=_today())
-    except Exception as e:  # noqa: BLE001 - never stand between a person and an answer
-        logger.warning("[assistant] question check skipped: %s", e)
-        c = {"ready": True, "issues": [], "candidates": [], "picked": [], "what": "the answer", "period": None}
+        label = KIND_LABELS.get(missing[0], missing[0])
+        said = [a for a, k in eu.ALIASES.items() if k == missing[0] and f" {a} " in eu._norm(q)] + [label]  # noqa: SLF001
+        conv_ids = _conv_source_ids(db, user, state) if state.project_id and state.last_run_id else []
+        if conv_ids and _in_last_answer(db, user, state, said):
+            # round 29: "Google Ads" was in the last answer - a channel in the person's data, not an app to connect
+            names = _names_of(db, conv_ids)
+            return _follow_plan(db, user, q, state, lead, c=_safe_check(db, user, q, ws, accepted), same=conv_ids,
+                                say_core=f"{label} is in your last answer - I'll dig into it in {names}.")
+        # only where the name really is a value in the data ("Google Ads" in a channel column) - never just
+        # because a channel column exists ("followers on Instagram" is not a channel in an orders file)
+        channel = [] if no_connect else qc.sources_with_value(db, user, _conv_first(pool, state, db, user), said)
+        in_conv = [s for s in channel if s.id in set(conv_ids)]
+        if in_conv or (no_connect and conv_ids):
+            # the conversation's own data has channels (or they said no to connecting): carry on there
+            ids = [s.id for s in in_conv] or conv_ids
+            names = _names_of(db, ids)
+            core = (f"I'll look at {label} as a channel in {names}." if in_conv else f"Understood - I'll use {names}, as before.")
+            return _follow_plan(db, user, q, state, lead, c=_safe_check(db, user, q, ws, accepted), same=ids, say_core=core)
+        value_in = channel
+        if no_connect or channel:
+            # the person said no to connecting, or their data has it as a channel: look there, connecting stays one tap away
+            info = eu._connect_info(missing[0])  # noqa: SLF001
+            connect_also = [{"kind": info.get("kind"), "label": info.get("label"), "url": info.get("url")}]
+            if not no_connect:
+                lead = ((lead + " ") if lead else "") + f"{label} isn't connected, so I'll look for it as a channel in your data."
+        else:
+            conn = eu._connect_info(missing[0])  # noqa: SLF001
+            st = _keep(state, awaiting="connect", pending_question=q, connect=conn)
+            say = f"{(lead + ' ') if lead else ''}{conn['label']} isn't connected. Shall I connect it - or use the data you have?"
+            return _reply(say, "connect_offer", st, connect=conn)
+    c = _safe_check(db, user, q, ws, accepted)
+    if value_in:
+        # the data that holds the name is the data to use - offered first, already ticked
+        have = {x["id"] for x in c.get("candidates") or []}
+        extra = [qc._source_brief(s) | {"score": 5, "named": False, "table": None, "date_column": None, "measures": [],  # noqa: SLF001
+                                         "coverage": None, "fit": "good", "why": "has it as a channel", "says": f"{s.name} has it as a channel"}
+                 for s in value_in if s.id not in have]
+        c["candidates"] = extra + [x for x in c.get("candidates") or []]
+        c["picked"] = [s.id for s in value_in]
+        c["issues"] = [i for i in c.get("issues") or [] if i["kind"] not in ("choose", "swap", "confirm_pick", "cant_answer")]
+    if connect_also:
+        c["connect"] = (c.get("connect") or []) + [x for x in connect_also if x["kind"] not in {y.get("kind") for y in c.get("connect") or []}]
     cands = c.get("candidates") or []
     named_ids = {x["id"] for x in cands if x.get("named")}
     named = bool(named_ids)
@@ -402,26 +546,29 @@ def _new_question(db: Session, user: models.User, q: str, ws: str | None, state:
         top = max((x.get("score") or 0 for x in good), default=0)
         if same and eu.questionish(q) and max(x.get("score") or 0 for x in same) >= top * 0.5:
             return _follow_plan(db, user, q, state, lead, c=c, same=[x["id"] for x in same])
+        if named and named_ids <= set(conv_ids):
+            return _follow_plan(db, user, q, state, lead, c=c, same=list(named_ids))  # they named the same data
+        if no_connect or eu.wants_existing(q):
+            return _follow_plan(db, user, q, state, lead, c=c, same=conv_ids)  # "use the previous data"
         if eu.questionish(q) and len(q.split()) >= 3:
             names = _names_of(db, conv_ids)
             lead = (lead + " " if lead else "") + (
-                f"That needs different data from your last answer - {names} doesn't have it." if names else "")
+                f"That needs different data - {names} doesn't have it." if names else "")
             lead = lead.strip()
 
-    # a short remark with nothing to look up ("hmm okay", "great stuff"): don't build an analysis out of it
-    words = q.split()
-    if (len(words) <= 4 and not eu.questionish(q) and not c.get("period") and not named
-            and not any(x.get("score", 0) >= 4 for x in cands)):
-        return _reply("I'm not sure what you'd like me to look at. Ask me about your data - like 'sales last month' - "
-                      "or say 'bye' to finish.", "chat", _keep(state))
-    # round 27: words that match nothing in any data (no subject, no measure, no date, no source) - ask what
-    # they mean instead of reading out every source they have
-    if (not c.get("topic") and not c.get("period") and not named and not any((x.get("score") or 0) > 0 for x in cands)
-            and not (qc.words(q) & qc.MEASURE_WORDS)):
-        return _reply("I'm not sure which numbers that's about. Could you say it another way - for example "
-                      "'e-commerce sales last month' or 'which campaigns brought the most orders'?", "chat", _keep(state))
+    g = _guard(q, c, named or bool(missing), state)
+    if g:
+        return g
     st = _keep(state, topic=c.get("topic") or state.topic)
     return _plan_from_check(db, user, q, c, st, ws, lead)
+
+
+def _safe_check(db: Session, user: models.User, q: str, ws: str | None, accepted: list[str] | None) -> dict:
+    try:
+        return qc.check(db, user, q, workspace_id=ws, accepted=accepted, today=_today())
+    except Exception as e:  # noqa: BLE001 - never stand between a person and an answer
+        logger.warning("[assistant] question check skipped: %s", e)
+        return {"ready": True, "issues": [], "candidates": [], "picked": [], "what": "the answer", "period": None}
 
 
 def _conv_source_ids(db: Session, user: models.User, state: TurnState) -> list[str]:
@@ -439,7 +586,7 @@ def _names_of(db: Session, ids: list[str]) -> str:
 
 
 def _follow_plan(db: Session, user: models.User, q: str, state: TurnState, lead: str = "", c: dict | None = None,
-                 same: list[str] | None = None) -> dict:
+                 same: list[str] | None = None, say_core: str | None = None) -> dict:
     conv = None
     if state.project_id:
         try:
@@ -473,9 +620,11 @@ def _follow_plan(db: Session, user: models.User, q: str, state: TurnState, lead:
              needs_time=bool(c.get("needs_time")), topic=c.get("topic") or state.topic, options=opts + extra,
              selected=keep, orig_selected=keep, same_data=True)
     names = eu.names_text([o for o in opts if o["id"] in set(keep)], limit=3)
+    if say_core:
+        return _plan_reply(lead + say_core + " Shall I go ahead?", state, b)  # short: the card shows the detail
     r = _restated(b)
     r = ("your " + r[5:]) if r.startswith("Your ") else r[:1].lower() + r[1:]
-    say = lead + f"I'll stay with {names}, the data from your last answer. So: {r} Shall I go ahead, or change anything?"
+    say = lead + f"I'll use {names}, as in your last answer. So: {r} Shall I go ahead?"
     return _plan_reply(say, state, b)
 
 
@@ -554,7 +703,7 @@ def _plan_turn(db: Session, user: models.User, text: str, state: TurnState, ws: 
     m = _REPHRASE.match(text.strip())
     if m:
         if m.group(1) and len(m.group(1).split()) >= 2:
-            return _new_question(db, user, m.group(1).strip(" .?!"), ws, _keep(state), "Okay, the new question:")
+            return _new_question(db, user, m.group(1).strip(" .?!"), ws, _keep(state), "Okay.", confirmed=False)
         st = _keep(state, awaiting="rephrase", pending_question=b.get("question"), brief=b)
         return _reply(f"Sure. You asked: “{b.get('question')}”. What should the question be?", "rephrase", st,
                       question=b.get("question"))
@@ -572,7 +721,7 @@ def _plan_turn(db: Session, user: models.User, text: str, state: TurnState, ws: 
             return _plan_reply(f"Okay. Which data should I use instead? {eu.numbered(b['options'])}", state, b)
 
     if _looks_new(text, opts):
-        return _new_question(db, user, text, ws, _keep(state), "Okay, a new question.")
+        return _new_question(db, user, text, ws, _keep(state), "Okay, a new question.", confirmed=False)
 
     r = eu.select_sources(text, opts, sel)
     op = r["op"]
@@ -592,10 +741,8 @@ def _plan_turn(db: Session, user: models.User, text: str, state: TurnState, ws: 
         warn = f" Heads up: {fits[0]['name']} has {fits[0]['note']}." if fits and fits[0].get("note") else ""
         # round 26: the data is settled - now the question itself, read back once more, so the person can
         # carry on with it or change it before anything runs
-        r = _restated(b)
-        r = ("your " + r[5:]) if r.startswith("Your ") else r[:1].lower() + r[1:]
-        say = (f"Got it: {eu.names_text(picked, limit=4)}.{warn} Just to confirm - you asked “{b.get('question')}”, "
-               f"so I'll look at {r} Shall I go ahead, or would you like to change the question?")
+        # round 29: the question was agreed first - now only the go-ahead
+        say = f"Got it - {eu.names_text(picked, limit=4)}.{warn} Shall I go ahead?"
         return _plan_reply(say, state, b)
     if op == "more":
         b["options"] = _all_options(db, user, ws, opts)
@@ -627,7 +774,7 @@ def _plan_turn(db: Session, user: models.User, text: str, state: TurnState, ws: 
         return _plan_reply("No problem. What should I change - the data, the dates, or the question? Or ask me something new.",
                            state, b)
     if intent == "question" and len(text.split()) > 4:
-        return _new_question(db, user, text, ws, _keep(state))
+        return _new_question(db, user, text, ws, _keep(state), confirmed=False)
     if state.retries >= 2:
         return _reply("Let's leave that one. Ask me again whenever you're ready.", "chat", _keep(state))
     st = _keep(state, awaiting="plan", pending_question=b.get("question"), brief=b, retries=state.retries + 1)
@@ -745,6 +892,9 @@ def _card_of(out: dict) -> dict | None:
         return out["plan"]
     if a == "rephrase":
         return {"type": "rephrase", "question": out.get("question") or ""}
+    if a == "question":
+        return {"type": "question", "question": out.get("question") or "", "said": out.get("said") or "",
+                "notes": out.get("notes") or []}
     if a == "fix_date" and out.get("issue"):
         return {"type": "fix_date", "issue": out["issue"]}
     if a in ("connect", "connect_offer") and out.get("connect"):
@@ -762,7 +912,7 @@ def _record(db: Session, user: models.User, payload: TurnRequest, said: str, out
         return out
     a = out.get("action")
     talk = _talk(db, user, payload.state.talk_id)
-    meaningful = a in ("plan", "fix_date", "rephrase", "run", "explain", "connect", "connect_offer", "connect_wait") or bool(talk)
+    meaningful = a in ("plan", "fix_date", "rephrase", "question", "run", "explain", "connect", "connect_offer", "connect_wait") or bool(talk)
     if not meaningful:
         return out
     if not talk:
@@ -855,7 +1005,7 @@ def _turn(db: Session, user: models.User, payload: TurnRequest) -> dict:
 
     kind = eu.intent(text)
     # "no" while Euliv is waiting on an answer from the person is an answer, not goodbye
-    if kind == "end" and state.awaiting in ("plan", "fix_date", "connect", "connecting", "rephrase") and not eu.firm_end(text):
+    if kind == "end" and state.awaiting in ("plan", "fix_date", "connect", "connecting", "rephrase", "question") and not eu.firm_end(text):
         kind = "question"
     if kind == "end":
         return _reply("Okay. Talk soon!", "end", _keep(state))
@@ -899,20 +1049,27 @@ def _turn(db: Session, user: models.User, payload: TurnRequest) -> dict:
             return _reply(f"{named[0].name} is already connected. Ask me anything about it.", "chat", state)
 
     # ---- answering what Euliv asked -----------------------------------------------
+    if state.awaiting == "question" and state.brief:
+        return _question_turn(db, user, text, state, ws, kind)
     if state.awaiting == "fix_date" and state.brief:
         return _fix_date_turn(db, user, text, state, ws)
     if state.awaiting == "rephrase":
         if eu.is_no(text) or re.fullmatch(r"(?:keep it|leave it|it'?s fine|never ?mind)[\s.!]*", text.strip(), re.I):
             b = dict(state.brief or {})
             if b:
-                return _plan_reply(_plan_say(b, "Okay, keeping it."), state, b)
-        return _new_question(db, user, text, ws, _keep(state), "Okay.")
+                if b.get("options") is not None and b.get("what") is not None:
+                    return _plan_reply(_plan_say(b, "Okay, keeping it."), state, b)
+                if b.get("question"):
+                    return _new_question(db, user, b["question"], ws, _keep(state), "Okay, keeping it.")
+        return _new_question(db, user, text, ws, _keep(state), "Okay.", confirmed=False)
     if state.awaiting == "plan" and state.brief:
         return _plan_turn(db, user, text, state, ws, kind)
     if state.awaiting in ("connect", "connecting") and state.pending_question:
         c = state.connect or {}
-        if eu.wants_connected(text):
-            return _new_question(db, user, state.pending_question, ws, _keep(state))
+        # round 29: "I don't want to connect Google Ads, use the previous data" - heard however it's said
+        if eu.wants_connected(text) or eu.refuses_connect(text) and (eu.wants_existing(text) or len(text.split()) >= 4):
+            return _new_question(db, user, state.pending_question, ws, _keep(state),
+                                 "Understood - I'll use your existing data.", no_connect=True)
         if eu.is_no(text):
             have = bool(accessible_sources(db, user, ws))
             say = ("No problem. I can answer from the data you already have - just ask." if have
@@ -923,21 +1080,47 @@ def _turn(db: Session, user: models.User, payload: TurnRequest) -> dict:
             return _reply(f"Tap “Connect {c.get('label') or 'it'}” to open it in a new tab. Connect it there and come back - "
                           "I'll carry on by myself.", "connect", st, connect=c)
         if kind == "question" and len(text.split()) > 3:
-            return _new_question(db, user, text, ws, _keep(state))
+            # the same app again ("what is the Google Ads percentage"): never the same offer twice
+            _hit, miss = eu._named(text, accessible_sources(db, user, ws))  # noqa: SLF001
+            if c.get("kind") and c.get("kind") in miss:
+                return _new_question(db, user, text, ws, _keep(state), "Understood - I'll use your existing data.",
+                                     confirmed=False, no_connect=True)
+            return _new_question(db, user, text, ws, _keep(state), confirmed=False)
 
     # ---- small talk -----------------------------------------------------------
     if kind == "greeting":
         return _reply(hello_text(user), "chat", state)
     if kind == "thanks":
-        return _reply("You're welcome. Anything else?", "chat", state)
+        return _reply("My pleasure. Anything else?", "chat", state)
     if kind == "ack":
-        return _reply("Okay. Anything else I can look at?", "chat", state)
+        return _reply("Okay. Anything else?", "chat", state)
     if kind == "help":
         return _reply("Ask me about your business in plain words - like 'how is my e-commerce doing over the last 3 months', "
                       "'what were sales last month', or 'why did revenue drop'. I'll read it back, check which of your data "
                       "can answer it, and only then work it out.", "chat", state)
 
-    return _new_question(db, user, text, ws, state)
+    return _new_question(db, user, text, ws, state, confirmed=False)
+
+
+def _sentences(text: str) -> list[str]:
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9$£€])", (text or "").strip()) if s.strip()]
+
+
+def _no_repeats(parts: list[str], keep: int) -> str:
+    """Up to `keep` sentences, skipping any that mostly repeat one already said."""
+    out: list[str] = []
+    seen: list[set[str]] = []
+    for p in parts:
+        if not p:
+            continue
+        w = set(re.findall(r"[a-z0-9.$%]+", p.lower()))
+        if any(len(w & s) >= 0.6 * len(w) for s in seen if s and w):
+            continue
+        out.append(p if re.search(r"[.!?]$", p) else p + ".")
+        seen.append(w)
+        if len(out) >= keep:
+            break
+    return " ".join(out)
 
 
 def _deliver(db: Session, user: models.User, talk_id: str | None, run_id: str, out: dict) -> None:
@@ -994,8 +1177,8 @@ def _answer(db: Session, user: models.User, run_id: str) -> dict:
     ans = result.get("answer") or {}
     head = str(ans.get("headline") or "").strip()
     body = str(ans.get("answer") or "").strip()
-    first = eu.first_sentences(body, 2, 300)
-    say = head if head and first.startswith(head[:40]) else " ".join(x for x in (head, first) if x)
+    # round 29: the headline and the answer's first sentences often say the same thing - say it once
+    say = _no_repeats([head] + _sentences(body)[:3], 2)
     say = say or "Here's what I found."
     kpis = [{"label": k.get("label"), "display": k.get("display"), "delta": k.get("delta"), "dir": k.get("delta_dir"),
              "note": k.get("note")} for k in (result.get("kpis") or [])[:4]]
