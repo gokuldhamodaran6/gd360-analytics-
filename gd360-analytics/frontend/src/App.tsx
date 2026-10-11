@@ -39,6 +39,7 @@ import InviteJoin from "./pages/InviteJoin";
 import HomePage from "./pages/Home";
 import ProjectWorkspace from "./pages/ProjectWorkspace";
 import GuidedAnalysis from "./pages/GuidedAnalysis";
+import TalkPage from "./pages/TalkPage";
 import Initiatives from "./pages/Initiatives";
 import InitiativeNew from "./pages/InitiativeNew";
 import InitiativeDetail from "./pages/InitiativeDetail";
@@ -148,6 +149,8 @@ export default function App() {
       <Route path="/projects" element={<RedirectKeepingQuery to="/library" />} />
       <Route path="/p/:projectId" element={<Protected><ProjectWorkspace /></Protected>} />
       <Route path="/g/:projectId" element={<Protected><GuidedAnalysis /></Protected>} />
+      {/* 2026-10-11 (round 24): a saved talk with Euliv */}
+      <Route path="/v/:talkId" element={<Protected><TalkPage /></Protected>} />
       {/* 2026-10-10: Initiatives + Accounts, and their public no-login pages */}
       <Route path="/initiatives" element={<Protected><Initiatives /></Protected>} />
       <Route path="/initiatives/new" element={<Protected><InitiativeNew /></Protected>} />
