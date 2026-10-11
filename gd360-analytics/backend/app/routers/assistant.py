@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from contextvars import ContextVar
 from datetime import date, datetime, timedelta
 
@@ -125,6 +126,8 @@ class TurnRequest(BaseModel):
     today: str | None = Field(default=None, max_length=10)  # the person's local date, YYYY-MM-DD
     # round 28: what Euliv said in the last seconds - a "you" that is only Euliv's own voice coming back is dropped
     last_said: str | None = Field(default=None, max_length=4000)
+    last_reply: str | None = Field(default=None, max_length=1000)  # round 30: Euliv's last line on screen
+    alts: list[str] | None = Field(default=None, max_length=8)  # round 30: the recognizer's other readings
 
 
 def _reply(say: str, action: str, state: TurnState, **extra) -> dict:
@@ -446,7 +449,7 @@ def _question_turn(db: Session, user: models.User, text: str, state: TurnState, 
         return _new_question(db, user, q, ws, _keep(state), "I'll take it as it is.", accepted=b.get("accepted") or [],
                              no_connect=bool(b.get("no_connect")))
     st = state.model_copy(update={"retries": state.retries + 1})
-    return _reply(f"Shall I proceed with “{q}”? Say yes - or tell me the change.", "question", st, question=q,
+    return _reply(f"Shall I proceed with “{q.rstrip('.!? ')}”? Say yes - or tell me the change.", "question", st, question=q,
                   said=b.get("said") or q, notes=b.get("notes") or [])
 
 
@@ -962,13 +965,117 @@ def hello(talk_id: str | None = None, db: Session = Depends(get_db), user: model
 def turn(payload: TurnRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     said = (payload.text or "").strip()
     _TODAY.set(local_today(payload.today))
+    heard = _best_reading(db, user, payload) if payload.alts and not payload.event else said
+    if heard != said:
+        payload = payload.model_copy(update={"text": heard})
+        said = heard
     out = _turn(db, user, payload)
+    if payload.alts:
+        out = {**out, "heard": heard}
+    out = _not_twice(out, payload.last_reply)
     return _record(db, user, payload, said, out)
+
+
+# ---- round 30: hearing the person right ---------------------------------------------------------
+# The browser's recognizer returns its best guess plus a few others. With an accent, the best guess
+# is often a near miss ("think you", "show me the revenew by mount") while a later one is right.
+# Keep the reading that makes sense here: one Euliv understands as a reply to what it just asked,
+# or one whose words are in this person's own data (source, table and column names). Rules only.
+
+_VOCAB: dict[tuple[str, str], tuple[float, set[str]]] = {}
+_PICK = re.compile(r"^(?:the\s+)?(?:one|two|three|four|five|six|first|second|third|fourth|fifth|last|all|both|\d)"
+                   r"(?:\s+(?:one|of them|please))?[\s.!]*$", re.I)
+_COMMON = {"what", "how", "why", "which", "who", "when", "where", "show", "me", "my", "our", "the", "a", "an", "of", "in",
+           "on", "for", "to", "and", "by", "is", "are", "was", "were", "did", "do", "does", "last", "this", "next", "month",
+           "year", "week", "day", "today", "yesterday", "compare", "with", "vs", "top", "best", "worst", "total", "per",
+           "each", "between", "from", "until", "since", "about", "tell", "give", "list", "it", "that", "can", "you", "i",
+           "we", "us", "please", "much", "many", "more", "less", "than", "over", "trend", "change", "growth", "average"}
+
+
+def _vocab(db: Session, user: models.User, ws: str | None) -> set[str]:
+    key = (str(user.id), ws or "")
+    hit = _VOCAB.get(key)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    v: set[str] = set(qc.MEASURE_WORDS) | {w for ws_ in qc.TOPIC_WORDS.values() for w in ws_} | set(qc.MONTHS)
+    t0 = time.time()
+    for ds in accessible_sources(db, user, ws)[:80]:
+        v |= qc.words(ds.name)
+        if time.time() - t0 > 1.5:
+            continue  # names only past the budget - hearing must stay instant
+        try:
+            for tname, _key, cols in qc._source_tables(db, ds, user):  # noqa: SLF001
+                v |= qc.words(tname)
+                for c in cols or []:
+                    v |= qc.words(str(c.get("name") or ""))
+        except Exception:  # noqa: BLE001
+            pass
+    _VOCAB[key] = (time.time(), v)
+    return v
+
+
+def _reading_score(text: str, waiting: bool, vocab: set[str]) -> float:
+    t = text.strip()
+    s = 0.0
+    k = eu.intent(t)
+    if k in ("thanks", "praise", "end", "greeting", "help", "ack"):
+        s += 3
+    if waiting and (eu.is_yes(t) or eu.is_no(t) or _PICK.match(t)):
+        s += 4
+    toks = re.findall(r"[a-z0-9]+", t.lower().replace("e-commerce", "ecommerce"))
+    for w in toks:
+        if w in vocab or (w.endswith("s") and w[:-1] in vocab) or w.isdigit():
+            s += 1.5
+        elif w in _COMMON or w in qc._STOP:  # noqa: SLF001
+            s += 0.2
+        else:
+            s -= 0.3
+    return s
+
+
+def _best_reading(db: Session, user: models.User, payload: TurnRequest) -> str:
+    said = (payload.text or "").strip()
+    cands = [said]
+    for a in payload.alts or []:
+        a = (a or "").strip()[:2000]
+        if a and a.lower() not in {c.lower() for c in cands}:
+            cands.append(a)
+    if len(cands) < 2:
+        return said
+    try:
+        vocab = _vocab(db, user, payload.workspace_id)
+    except Exception:  # noqa: BLE001 - never let hearing break the turn
+        return said
+    waiting = (payload.state.awaiting or "") in ("plan", "question", "fix_date", "connect", "connecting", "rephrase")
+    scored = [(_reading_score(c, waiting, vocab), -i, c) for i, c in enumerate(cands)]
+    best = max(scored)
+    first = scored[0][0]
+    # the recognizer's own first choice wins unless another reading clearly fits better
+    return best[2] if best[0] >= first + 1.0 else said
+
+
+# round 30: the same fallback twice in a row sounds broken - the second time, say it differently
+_SECOND_TRY = {
+    "What would you like me to look at? For example, 'sales last month'.":
+        "Sorry, I didn't catch a question there. Ask me about your data - like 'revenue by month' - or say 'bye' to close.",
+    "I'm not sure which numbers that's about. Could you say it another way?":
+        "Still not sure, sorry. Try naming the measure - like 'orders', 'revenue' or 'spend' - and a time, like 'last month'.",
+    "My pleasure. Anything else?": "Anytime. Just ask when you're ready.",
+}
+
+
+def _not_twice(out: dict, last: str | None) -> dict:
+    say = (out or {}).get("say") or ""
+    alt = _SECOND_TRY.get(say)
+    if alt and last and eu._norm(last) == eu._norm(say):  # noqa: SLF001
+        out = {**out, "say": alt, "speak": eu.speakable(alt)}
+    return out
 
 
 def _turn(db: Session, user: models.User, payload: TurnRequest) -> dict:
     state = payload.state
-    text = eu.strip_wake(payload.text)
+    # round 30: "I said thank you" / "I meant March" - the person repeating themselves; take what they meant
+    text, resaid = eu.resaid(eu.strip_wake(payload.text))
     ws = payload.workspace_id
 
     if payload.event == "needs_input" and payload.run_id:
@@ -1009,6 +1116,14 @@ def _turn(db: Session, user: models.User, payload: TurnRequest) -> dict:
         kind = "question"
     if kind == "end":
         return _reply("Okay. Talk soon!", "end", _keep(state))
+    # round 30: a thank-you while Euliv waits on an answer - thank them back and keep the question open
+    if kind in ("thanks", "praise") and not eu.is_yes(text) and state.brief:
+        if state.awaiting == "plan":
+            return _plan_reply("My pleasure. Shall I go ahead?", state, dict(state.brief))
+        if state.awaiting == "question":
+            q = state.brief.get("question") or state.pending_question or ""
+            return _reply(f"My pleasure. Shall I proceed with “{q.rstrip('.!? ')}”?", "question", state, question=q,
+                          said=state.brief.get("said") or q, notes=state.brief.get("notes") or [])
     if not text:
         return _reply(hello_text(user), "chat", state)
 
@@ -1091,7 +1206,11 @@ def _turn(db: Session, user: models.User, payload: TurnRequest) -> dict:
     if kind == "greeting":
         return _reply(hello_text(user), "chat", state)
     if kind == "thanks":
-        return _reply("My pleasure. Anything else?", "chat", state)
+        # "I said thank you" means Euliv missed it the first time - own that, briefly
+        return _reply(("Sorry about that - my pleasure. Anything else?" if resaid else "My pleasure. Anything else?"),
+                      "chat", state)
+    if kind == "praise":
+        return _reply("Glad it helps. Anything else?", "chat", state)
     if kind == "ack":
         return _reply("Okay. Anything else?", "chat", state)
     if kind == "help":
