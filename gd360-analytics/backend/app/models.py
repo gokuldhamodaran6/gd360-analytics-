@@ -2441,6 +2441,21 @@ class Notification(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
+class AssistantMemory(Base):
+    """2026-10-11 (Euliv, the voice assistant): what a person's words mean to
+    them - "marketing" -> the sources they chose the first time Euliv asked
+    (key "topic:marketing", value {"source_ids": [...]}). One row per person
+    per key."""
+    __tablename__ = "assistant_memory"
+    __table_args__ = (UniqueConstraint("user_id", "key", name="uq_assistant_memory"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    key = Column(String, nullable=False)
+    value = Column(JSON, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 class Space(Base):
     """2026-10-09 (round 15): a named, coloured group of data sources for one
     team or subject - "Marketing & Brand", "Sales", "Finance", "HR & People".
