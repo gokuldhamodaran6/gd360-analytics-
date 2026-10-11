@@ -429,6 +429,7 @@ export type EulivSettings = {
   lang: string | null;
   handsFree: boolean; // listen again after each reply
   keep: boolean; // keep a written record of each talk in Library (round 24)
+  wakeAsked?: boolean; // the "Turn on Hi Euliv" offer was answered (round 25)
 };
 
 const KEY = "gd360.euliv";
@@ -467,16 +468,90 @@ export function onSettings(f: (s: EulivSettings) => void): () => void {
 
 // ---- the name ---------------------------------------------------------------------------------
 
-// How recognisers write "Euliv" (not a dictionary word). Exact spellings count
-// alone; the look-alikes only right after "hi / hey / hello / ok".
-const EXACT = "e+u+\\s?li+ve?|eu\\s?leave|yu+li+ve?|ju+li+ve?|ew+li+ve?";
-const LOOSE = "you\\s?li+ve?|you\\s?leave|u\\s?li+ve?|o\\s?li+ve?|olive|yuli|julie|you'?ll\\s?live|ulysses?|you\\s?lift";
-const GREET = "hi|hey|hello|hiya|ok|okay|hai|hay";
-const WAKE_RE = new RegExp(`(?:^|\\s)(?:(?:${GREET})[\\s,!.]+(?:${EXACT}|${LOOSE})|(?:${EXACT}))\\b[\\s,.!?:;-]*`, "i");
+// ---- hearing the name (round 25) ------------------------------------------
+//
+// Speech recognisers write "Euliv" (not a dictionary word) in many ways, and
+// people say it in many ways: "hiii euliv", "heyyy you live", "hello olive",
+// "hai yuliv", "hi Liv", "okay eulive". Instead of a list of spellings the name
+// is matched by sound:
+//   1. letters stretched out are squeezed ("hiiii" -> "hi", "heyyy" -> "hey");
+//   2. a greeting (hi / hey / hello / hai / hiya / ok / yo ...), then the next one
+//      to three words joined ("you live" -> "youlive") are compared with the
+//      name's spoken shapes (euliv, uliv, youliv, olive, alive ...) allowing a
+//      couple of letters' difference, or by their consonant skeleton (L then V);
+//   3. without a greeting only a near-exact "Euliv" at the very start counts,
+//      so everyday words ("olive oil", "you live in") never wake it.
+
+const GREETING_WORDS = new Set(["hi", "hey", "hello", "helo", "hallo", "hullo", "hiya", "heya", "hai", "hay", "hy", "ok", "okay", "yo", "ola", "hola", "oye", "hie", "aye", "ey"]);
+// round 25b: the name's sound, not a list of look-alike words. "Euliv" = a vowel sound (eu / you / u / o / e / ju),
+// then L, then a short "i / ee / ea", then V (or F / B): euliv, you live, uleave, oliv, ewliv, yuleef, eulif ...
+// "love it", "leave it", "life", "Eli", "Liz", "Julie", "Olivia", "Elise", "I live" never match.
+const NAME_SOUND = /^h?(?:[yj]?[aeiouw]{1,3}|[yj])l(?:[iey]|ea|ie|ei)(?:v|f|ph|b|w)e?$/;
+const CORE_SHAPES = ["euliv", "eulive", "yuliv", "yulive", "uliv", "ulive", "euleav", "euleave"];
+const BARE_NAMES = new Set(["liv", "leev"]); // "hi Liv" - the recogniser swallowed the "eu" into "hi"
+const STRICT_SHAPES = ["euliv", "eulive", "yuliv", "yulive", "uliv", "euleev"];
+
+function squeeze(w: string): string {
+  return w.replace(/(.)\1+/g, "$1");
+}
+
+function lev(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (Math.abs(m - n) > 3) return 9;
+  const d = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 1; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return d[m][n];
+}
+
+function clean(w: string): string {
+  return squeeze((w || "").toLowerCase().replace(/[^a-z]/g, ""));
+}
+
+/** Does this (joined) word sound like "Euliv"? `strict`: no greeting before it. */
+export function soundsLikeEuliv(word: string, strict = false): boolean {
+  const w = clean(word);
+  if (strict) return w.length >= 4 && w.length <= 10 && STRICT_SHAPES.some((x) => lev(w, x) <= 1);
+  if (BARE_NAMES.has(w)) return true;
+  if (w.length < 4 || w.length > 10) return false;
+  return NAME_SOUND.test(w) || (w.length >= 5 && CORE_SHAPES.some((x) => lev(w, x) <= 1));
+}
+
+function isGreeting(word: string): boolean {
+  const w = clean(word);
+  return GREETING_WORDS.has(w) || /^h+e+y+$|^h+i+$|^he+l+o+$/.test(word.toLowerCase().replace(/[^a-z]/g, ""));
+}
 
 /** "hey Euliv, how is marketing" -> { woke: true, rest: "how is marketing" } */
 export function wakeIn(text: string): { woke: boolean; rest: string } {
-  const m = WAKE_RE.exec(text || "");
-  if (!m) return { woke: false, rest: "" };
-  return { woke: true, rest: (text.slice(m.index + m[0].length) || "").trim() };
+  const raw = (text || "").trim();
+  if (!raw) return { woke: false, rest: "" };
+  const parts = raw.split(/\s+/);
+  const restFrom = (k: number) => parts.slice(k).join(" ").replace(/^[\s,.!?:;-]+/, "").trim();
+  const nameAt = (i: number, strict: boolean): number => {
+    // without a greeting only a single word can be the name ("you live in London" is not)
+    for (let n = 1; n <= (strict ? 1 : 3) && i + n <= parts.length; n++) {
+      // "I live", "a live demo": a word of its own, never the start of the name
+      if (n > 1 && ["i", "a", "the", "to"].includes(clean(parts[i]))) break;
+      const joined = parts.slice(i, i + n).join("");
+      if (clean(joined).length > 10) break;
+      if (soundsLikeEuliv(joined, strict)) return n;
+    }
+    return 0;
+  };
+  for (let i = 0; i < parts.length; i++) {
+    if (isGreeting(parts[i])) {
+      // "hi euliv", "hey there euliv", "hello hello euliv"
+      for (let j = i + 1; j <= Math.min(i + 2, parts.length - 1); j++) {
+        const n = nameAt(j, false);
+        if (n) return { woke: true, rest: restFrom(j + n) };
+        if (!isGreeting(parts[j]) && clean(parts[j]) !== "there") break;
+      }
+    }
+  }
+  const n0 = nameAt(0, true);
+  if (n0) return { woke: true, rest: restFrom(n0) };
+  return { woke: false, rest: "" };
 }
