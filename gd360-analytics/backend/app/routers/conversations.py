@@ -20,6 +20,7 @@ so the frontend can show who made it and which actions to offer without
 re-deriving the role logic itself.
 """
 import re
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -259,6 +260,37 @@ def list_conversations(
         ):
             dash_counts[cid] = int(n)
 
+    # 2026-10-11 (Ask Journey): how many questions a thread has, and - for
+    # the newest Guided Analyses - the step waiting for the person's check
+    # (Home's "Needs you"). Light columns first; steps are loaded only for
+    # the latest question of at most 12 analyses.
+    question_counts: dict[str, int] = {}
+    needs_you: dict[str, dict] = {}
+    thread_ids = [c.id for c in conversations if c.kind in ("project", "guided")]
+    if thread_ids:
+        latest: dict[str, tuple] = {}
+        for rid, cid, created, status in (
+            db.query(models.ProjectRun.id, models.ProjectRun.conversation_id, models.ProjectRun.created_at,
+                     models.ProjectRun.status)
+            .filter(models.ProjectRun.conversation_id.in_(thread_ids)).all()
+        ):
+            if status == "replaced":
+                continue
+            question_counts[cid] = question_counts.get(cid, 0) + 1
+            if cid not in latest or (created and latest[cid][1] and created > latest[cid][1]):
+                latest[cid] = (rid, created, status)
+        guided_ids = [c.id for c in sorted(
+            (c for c in conversations if c.kind == "guided" and c.id in latest and latest[c.id][2] == "planned"),
+            key=lambda c: c.created_at or datetime.min, reverse=True,
+        )][:12]
+        for cid in guided_ids:
+            run = db.get(models.ProjectRun, latest[cid][0])
+            steps = (run.steps or []) if run else []
+            waiting = next((i for i, st in enumerate(steps) if st.get("status") == "done" and not st.get("approved")), None)
+            if waiting is not None:
+                needs_you[cid] = {"run_id": run.id, "question": run.question, "step": waiting + 1, "steps": len(steps),
+                                  "step_title": steps[waiting].get("title")}
+
     out = []
     for c in conversations:
         messages = sorted(c.messages, key=lambda m: m.created_at)
@@ -288,6 +320,8 @@ def list_conversations(
             "source_ids": c.source_ids if c.kind in ("project", "guided") else ([c.datasource_id] if c.datasource_id else []),
             "message_count": len(messages),
             "dashboard_count": dash_counts.get(c.id, 0),
+            "question_count": question_counts.get(c.id, 0),
+            "needs_you": needs_you.get(c.id),
             "last_message": last.content,
             "last_chart_type": last_chart_type,
             "pinned": bool(c.pinned),

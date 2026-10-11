@@ -4199,7 +4199,7 @@ def _move_pages(db: Session, source: models.Dashboard, target: models.Dashboard,
 def build_dashboard_from_goal(
     db: Session, user: models.User, ds: models.DataSource, goal: str, *, name: str | None = None,
     conversation_id: str | None = None, add_to: models.Dashboard | None = None,
-    replace: models.Dashboard | None = None,
+    replace: models.Dashboard | None = None, pages="auto",
 ) -> tuple[models.Dashboard, list[str]]:
     """Builds a full dashboard on `ds` from a plain-English goal. Returns
     (dashboard, page ids that were created).
@@ -4213,7 +4213,9 @@ def build_dashboard_from_goal(
     if add_to is not None and add_to.datasource_id and add_to.datasource_id != ds.id:
         raise HTTPException(400, "That dashboard is built on a different data source - pick one built on the same source, or create a new dashboard.")
     try:
-        proposal = _build_proposal(db, user, ds, goal, conversation_id=conversation_id)
+        # pages: "auto", or 1 / 2 (2026-10-11 - an answer added as one page)
+        proposal = _build_proposal(db, user, ds, goal, pages=pages if pages in (1, 2) else "auto",
+                                   conversation_id=conversation_id)
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001

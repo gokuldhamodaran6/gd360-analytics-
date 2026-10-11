@@ -17,6 +17,13 @@ progress (plan -> each step -> the answer).
   POST /projects/runs/{run_id}/replan    change the plan in words
   POST /projects/runs/{run_id}/stop      stop a run
   POST /projects/{id}/dashboard       a full dashboard from an answer (the one kind)
+  POST /projects/{id}/dashboard/undo     take back the last "add to a dashboard"
+  POST /projects/{id}/dashboard/dismiss  "Not now" on GD360's dashboard question
+
+2026-10-11 (Ask Journey): a Guided Analysis is a thread too - follow-up
+questions continue it (each one a new run, step by step or as a Quick
+answer), and the thread remembers which answers are on which dashboard
+(conversations.thread_meta) so GD360 can ask "add this as page 2?".
 """
 from __future__ import annotations
 
@@ -72,10 +79,25 @@ class CreateProjectRequest(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(min_length=2, max_length=2000)
     auto_run: bool = True
+    # 2026-10-11 (Ask Journey): in a Guided Analysis, "guided" plans the
+    # follow-up step by step, "answer" runs every step and writes the answer.
+    mode: str | None = None
+    # the thread's sources can change with the question (the same picker as
+    # Home): a Space, or chosen sources - never both
+    source_ids: list[str] | None = None
+    space_id: str | None = None
 
 
 class ReplanRequest(BaseModel):
     note: str = Field(min_length=2, max_length=1000)
+
+
+class UndoPlacementRequest(BaseModel):
+    action_id: str = Field(min_length=4, max_length=64)
+
+
+class DismissRequest(BaseModel):
+    run_ids: list[str] = Field(default_factory=list, max_length=50)
 
 
 class UpdateProjectRequest(BaseModel):
@@ -85,6 +107,14 @@ class UpdateProjectRequest(BaseModel):
 
 class DashboardRequest(BaseModel):
     run_id: str | None = None
+    # 2026-10-11 (Ask Journey): several answers on ONE page ("merge"); the
+    # page count (1 = exactly one page per call - "a page per question" is
+    # one call per answer); the new page's name; and merge_into_page_id to
+    # add the blocks under an existing page instead of a new page.
+    run_ids: list[str] | None = None
+    pages: int | None = None
+    page_name: str | None = Field(default=None, max_length=80)
+    merge_into_page_id: str | None = None
     name: str | None = Field(default=None, max_length=120)
     # 2026-10-10 (one kind of dashboard): which of the answer's sources the
     # dashboard computes on (default: the one the answer leaned on most),
@@ -205,6 +235,17 @@ def _run_out(run: models.ProjectRun, full: bool = True) -> dict:
             if run.started_at else None
         ),
     }
+    # 2026-10-11 (Ask Journey): what the conversation column needs without
+    # loading every run in full
+    steps = run.steps or []
+    out.update({
+        "answer_text": (str(ans.get("answer") or "")[:600] or None),
+        "next_questions": [str(q) for q in (ans.get("next_questions") or [])][:3],
+        "steps_total": len(steps),
+        "steps_done": sum(1 for s in steps if s.get("status") == "done"),
+        "steps_approved": sum(1 for s in steps if s.get("approved")),
+        "steps_reused": sum(1 for s in steps if s.get("reused")),
+    })
     if full:
         plan = dict(run.plan or {})
         plan.pop("replaced_plan", None)
@@ -276,27 +317,28 @@ def list_sources(workspace_id: str | None = None, db: Session = Depends(get_db),
     return [_source_summary(db, ds, user) for ds in rows]
 
 
-@router.post("", status_code=201)
-def create_project(payload: CreateProjectRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    _rate_limit(user.id)
-    # 2026-10-09 (round 15): a Space scopes the project to the Space's sources
-    # this person can use (a Space never grants access to data).
+def _scope_ids(db: Session, user: models.User, source_ids: list[str] | None, space_id: str | None,
+               workspace_id: str | None, question: str) -> tuple[list[str], object | None]:
+    """The sources a question is asked across, editable one first: a Space's
+    sources this person can use (2026-10-09, round 15 - a Space never grants
+    access to data), chosen sources, or - with neither - the ones that best
+    fit the question. Raises HTTPException when there is nothing usable."""
     space = None
-    if payload.space_id:
+    if space_id:
         from ..services import spaces as spaces_service
-        space = spaces_service.get_space(db, user, payload.space_id)
+        space = spaces_service.get_space(db, user, space_id)
         if not space:
             raise HTTPException(404, "Space not found.")
         in_space = spaces_service.space_source_ids(db, user, space.id)
-        if payload.source_ids:
-            in_space = [i for i in _usable_ids(db, user, payload.source_ids) if i in set(in_space)]
+        if source_ids:
+            in_space = [i for i in _usable_ids(db, user, source_ids) if i in set(in_space)]
         ids = in_space[:MAX_SOURCES]
         if not ids:
             raise HTTPException(400, "This Space has no sources you can use")
-    elif payload.source_ids:
-        ids = _usable_ids(db, user, payload.source_ids)
+    elif source_ids:
+        ids = _usable_ids(db, user, source_ids)
     else:
-        ids = _pick_for_question(accessible_sources(db, user, payload.workspace_id), payload.question)
+        ids = _pick_for_question(accessible_sources(db, user, workspace_id), question)
     if not ids:
         raise HTTPException(400, "Connect a data source first - there is nothing to ask about yet.")
     # editing tier on at least the first source: a workspace viewer can read but not create work
@@ -306,6 +348,14 @@ def create_project(payload: CreateProjectRequest, db: Session = Depends(get_db),
         if not editable:
             raise HTTPException(403, "You have view-only access to these sources.")
         ids = editable + [i for i in ids if i not in editable]
+    return ids, space
+
+
+@router.post("", status_code=201)
+def create_project(payload: CreateProjectRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    _rate_limit(user.id)
+    ids, space = _scope_ids(db, user, payload.source_ids, payload.space_id, payload.workspace_id, payload.question)
+    first = db.get(models.DataSource, ids[0])
     guided = payload.mode == "guided"
     conv = models.Conversation(
         owner_id=user.id, datasource_id=ids[0], kind="guided" if guided else "project", source_ids=ids,
@@ -372,19 +422,69 @@ def get_project(project_id: str, db: Session = Depends(get_db), user: models.Use
         db.query(models.ProjectRun).filter(models.ProjectRun.conversation_id == conv.id)
         .order_by(models.ProjectRun.created_at.asc()).all()
     )
-    dashboards = (
-        db.query(models.Dashboard.id, models.Dashboard.name, models.Dashboard.layout_version)
-        .filter(models.Dashboard.source_conversation_id == conv.id)
-        .order_by(models.Dashboard.created_at.asc()).all()
-    )
+    meta = conv.thread_meta if isinstance(conv.thread_meta, dict) else {}
     return {
         "id": conv.id, "title": conv.title, "kind": conv.kind, "source_ids": conv.source_ids or [], "sources": sources,
         "workspace_id": conv.workspace_id, "created_at": conv.created_at, "pinned": bool(conv.pinned),
         "can_edit": workspace_access.can_edit_conversation(db, conv, user),
         "runs": [_run_out(r, full=False) for r in runs if r.status != "replaced"],
-        "dashboards": [{"id": d.id, "name": d.name, "layout_version": d.layout_version or 1} for d in dashboards],
+        "dashboards": _thread_dashboards(db, conv, user),
+        # 2026-10-11 (Ask Journey): which answers went onto which dashboard,
+        # and the answers GD360 was told "Not now" about
+        "placements": [{"action_id": k, **v} for k, v in (meta.get("placements") or {}).items()],
+        "dismissed": list(meta.get("dismissed") or []),
         **_space_ref(db, conv, user),
     }
+
+
+def _live_info(db: Session, d: models.Dashboard) -> dict | None:
+    """Where a dashboard is published and how often it has been opened - a
+    company-domain page first, else its share link. None while unpublished."""
+    pub = (
+        db.query(models.DomainPublication)
+        .filter(models.DomainPublication.dashboard_id == d.id, models.DomainPublication.status == "live")
+        .order_by(models.DomainPublication.published_at.desc()).first()
+    )
+    if pub is not None:
+        dom = db.get(models.WorkspaceDomain, pub.domain_id)
+        if dom is not None:
+            return {"kind": "domain", "label": f"{dom.hostname}/{pub.path}", "url": f"https://{dom.hostname}/{pub.path}",
+                    "views": int(pub.view_count or 0)}
+    share = db.query(models.DashboardShare).filter(models.DashboardShare.dashboard_id == d.id).first()
+    if share is not None and share.published_at:
+        try:
+            from ..services.domains import app_url
+            base = app_url().rstrip("/")
+        except Exception:  # noqa: BLE001 - the label still helps without the full address
+            base = ""
+        return {"kind": "link", "label": f"/d/{share.slug}", "url": f"{base}/d/{share.slug}" if base else f"/d/{share.slug}",
+                "views": int(share.view_count or 0)}
+    return None
+
+
+def _thread_dashboards(db: Session, conv: models.Conversation, user: models.User) -> list[dict]:
+    """The dashboards made from this thread, plus any an answer from it was
+    added to - with their pages, whether this person can edit them, and
+    where they are live."""
+    from sqlalchemy import or_
+    from .dashboards import _can_edit, _can_view
+    meta = conv.thread_meta if isinstance(conv.thread_meta, dict) else {}
+    placed = {str(p.get("dashboard_id")) for p in (meta.get("placements") or {}).values() if p.get("dashboard_id")}
+    cond = models.Dashboard.source_conversation_id == conv.id
+    if placed:
+        cond = or_(cond, models.Dashboard.id.in_(placed))
+    out = []
+    for d in db.query(models.Dashboard).filter(cond).order_by(models.Dashboard.created_at.asc()).all():
+        if not _can_view(db, d, user):
+            continue
+        version = d.layout_version or 1
+        out.append({
+            "id": d.id, "name": d.name, "layout_version": version, "datasource_id": d.datasource_id,
+            "created_at": d.created_at, "can_edit": _can_edit(db, d, user),
+            "pages": [{"id": pg.id, "name": pg.name} for pg in sorted(d.pages, key=lambda x: x.position)] if version == 2 else [],
+            "live": _live_info(db, d),
+        })
+    return out
 
 
 def _space_ref(db: Session, conv: models.Conversation, user: models.User) -> dict:
@@ -418,32 +518,54 @@ def update_project(project_id: str, payload: UpdateProjectRequest, db: Session =
 def ask(project_id: str, payload: AskRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     _rate_limit(user.id)
     conv = _project(db, project_id, user, edit=True)
-    if conv.kind == "guided":
-        raise HTTPException(400, "A Guided Analysis answers one question - add or change its steps instead.")
     busy = (
         db.query(models.ProjectRun)
         .filter(models.ProjectRun.conversation_id == conv.id, models.ProjectRun.status.in_(("planning", "running")))
         .count()
     )
     if busy:
-        raise HTTPException(409, "GD360 is still working on the last question in this project.")
-    run = _new_run(db, conv, user, payload.question, payload.auto_run)
+        raise HTTPException(409, "GD360 is still working on the last question in this thread.")
+    # 2026-10-11 (Ask Journey): the follow-up can change the thread's sources
+    # with the same picker as Home; earlier answers keep what they used.
+    if payload.space_id or payload.source_ids:
+        ids, space = _scope_ids(db, user, payload.source_ids, payload.space_id, conv.workspace_id, payload.question)
+        conv.source_ids = ids
+        conv.datasource_id = ids[0]
+        conv.space_id = space.id if space else None
+        db.commit()
+    # A Guided Analysis follow-up continues the same analysis: planned step
+    # by step (mode "guided"), or run straight through to the answer ("answer").
+    auto = (payload.mode == "answer") if conv.kind == "guided" else payload.auto_run
+    run = _new_run(db, conv, user, payload.question, auto)
     executor.start_planning(run.id)
-    return {"project_id": conv.id, "run_id": run.id}
+    return {"project_id": conv.id, "run_id": run.id, "source_ids": conv.source_ids or [], **_space_ref(db, conv, user)}
 
 
 def _primary_source_id(run: models.ProjectRun, conv: models.Conversation) -> str | None:
     """The source an answer leaned on most - the one most of its queries ran in."""
+    return _primary_source_for([run], conv)
+
+
+def _primary_source_for(runs: list[models.ProjectRun], conv: models.Conversation) -> str | None:
+    """The source a set of answers leaned on most, across all their queries."""
     counts: dict[str, int] = {}
-    for st in (run.plan or {}).get("steps") or []:
-        sid = st.get("source_id") if isinstance(st, dict) else None
-        if sid:
-            counts[sid] = counts.get(sid, 0) + 1
+    for run in runs:
+        for st in (run.plan or {}).get("steps") or []:
+            sid = st.get("source_id") if isinstance(st, dict) else None
+            if sid:
+                counts[sid] = counts.get(sid, 0) + 1
     ordered = sorted(counts, key=lambda k: -counts[k])
     for sid in ordered + list(conv.source_ids or []):
         if sid in (conv.source_ids or []):
             return sid
     return (conv.source_ids or [None])[0]
+
+
+def _views_of(run: models.ProjectRun) -> list[str]:
+    return [
+        str(v.get("title")) for v in ((run.result or {}).get("visuals") or [])
+        if isinstance(v, dict) and v.get("title") and v.get("type") != "kpis"
+    ]
 
 
 def _goal_from_run(run: models.ProjectRun) -> str:
@@ -454,17 +576,104 @@ def _goal_from_run(run: models.ProjectRun) -> str:
     parts = [f'A live dashboard for the question: "{(run.question or "").strip()}".']
     if ans.get("headline"):
         parts.append(f"What the answer found: {ans['headline']}")
-    titles = [
-        v.get("title") for v in (result.get("visuals") or [])
-        if isinstance(v, dict) and v.get("title") and v.get("type") != "kpis"
-    ]
+    titles = _views_of(run)
     if titles:
-        parts.append("Include these views: " + "; ".join(str(t) for t in titles[:6]) + ".")
+        parts.append("Include these views: " + "; ".join(titles[:6]) + ".")
     parts.append(
         "Lead with the headline numbers as KPI tiles, then the breakdowns behind them and the trend over time, "
         "with filters for the main categories."
     )
     return " ".join(parts)[:1900]
+
+
+def _goal_from_runs(runs: list[models.ProjectRun]) -> str:
+    """2026-10-11 (Ask Journey): one page that answers several questions of
+    a thread together - each question, what it found, and its views."""
+    parts = ["A live dashboard on ONE page that answers these related questions together:"]
+    per = max(2, 6 // max(1, len(runs)))
+    for i, run in enumerate(runs, start=1):
+        ans = (run.result or {}).get("answer") or {}
+        bit = f'{i}) "{(run.question or "").strip()}"'
+        if ans.get("headline"):
+            bit += f" - found: {ans['headline']}"
+        titles = _views_of(run)
+        if titles:
+            bit += " - views: " + "; ".join(titles[:per])
+        parts.append(bit + ".")
+    parts.append(
+        "Lead with the headline numbers of every question as KPI tiles (each number once), then the breakdowns "
+        "and the trend over time, with filters for the main categories."
+    )
+    return " ".join(parts)[:1900]
+
+
+def _merge_pages_into(db: Session, dash: models.Dashboard, page_ids: list[str],
+                      target: models.DashboardPage) -> list[str]:
+    """Moves every block of the freshly built pages under the blocks already
+    on `target` (same columns, stacked below), then removes the emptied
+    pages. A SQL cell whose name is taken on `target` gets a free name, and
+    references to it ({{cell:name}}) follow. Returns the moved block ids."""
+    import json as _json
+    from sqlalchemy.orm.attributes import flag_modified
+    offset = max((b.y + b.h for b in target.blocks), default=0)
+    position = max((b.position or 0 for b in target.blocks), default=-1) + 1
+    taken = {(b.config or {}).get("name") for b in target.blocks if b.type == "sql"}
+    renames: dict[str, str] = {}
+    moved: list[models.DashboardBlock] = []
+    for pid in page_ids:
+        page = db.get(models.DashboardPage, pid)
+        if page is None or page.dashboard_id != dash.id or page.id == target.id:
+            continue
+        blocks = sorted(list(page.blocks), key=lambda b: (b.y, b.x))
+        height = max((b.y + b.h for b in blocks), default=0)
+        for b in blocks:
+            if b.type == "sql":
+                name = (b.config or {}).get("name")
+                if name and name in taken:
+                    n, fresh = 2, f"{name}_2"
+                    while fresh in taken:
+                        n += 1
+                        fresh = f"{name}_{n}"
+                    renames[name] = fresh
+                    b.config = {**(b.config or {}), "name": fresh}
+                    flag_modified(b, "config")
+                    name = fresh
+                if name:
+                    taken.add(name)
+            b.y = (b.y or 0) + offset
+            b.position = position
+            position += 1
+            target.blocks.append(b)  # re-parents the block (never orphaned)
+            moved.append(b)
+        offset += height
+        db.flush()
+        db.expire(page)  # its block list is now empty in the database - never cascade over moved blocks
+        db.delete(page)
+        db.flush()
+    if renames:
+        for b in moved:
+            raw = _json.dumps(b.config or {})
+            changed = raw
+            for old, new in renames.items():
+                changed = changed.replace("{{cell:%s}}" % old, "{{cell:%s}}" % new)
+            if changed != raw:
+                b.config = _json.loads(changed)
+                flag_modified(b, "config")
+    db.refresh(dash)
+    for i, pg in enumerate(sorted(dash.pages, key=lambda x: x.position)):
+        pg.position = i
+    db.flush()
+    return [b.id for b in moved]
+
+
+def _meta(conv: models.Conversation) -> dict:
+    return dict(conv.thread_meta) if isinstance(conv.thread_meta, dict) else {}
+
+
+def _save_meta(conv: models.Conversation, meta: dict) -> None:
+    from sqlalchemy.orm.attributes import flag_modified
+    conv.thread_meta = meta
+    flag_modified(conv, "thread_meta")
 
 
 @router.post("/{project_id}/dashboard", status_code=201)
@@ -475,16 +684,30 @@ def make_dashboard(project_id: str, payload: DashboardRequest, db: Session = Dep
     cross-filter, canvas, publish - computed live on one of the sources the
     answer used, and linked back to this answer ("Made from"). It can also
     add pages to an existing dashboard, or upgrade this answer's classic
-    dashboard in place (same id, name and sharing)."""
+    dashboard in place.
+
+    2026-10-11 (Ask Journey): several answers can go on one page together
+    (run_ids), an answer can be added as exactly one named page (pages=1,
+    page_name), or merged under an existing page (merge_into_page_id). The
+    thread remembers each placement, so GD360 can offer the next answer as
+    the next page, and the last one can be undone."""
+    import uuid
     _rate_limit(user.id)
     conv = _project(db, project_id, user, edit=True)
     q = db.query(models.ProjectRun).filter(models.ProjectRun.conversation_id == conv.id, models.ProjectRun.status == "done")
-    run = q.filter(models.ProjectRun.id == payload.run_id).first() if payload.run_id else \
-        q.order_by(models.ProjectRun.created_at.desc()).first()
-    if not run:
+    if payload.run_ids:
+        wanted = list(dict.fromkeys(str(r) for r in payload.run_ids))[:6]
+        runs = q.filter(models.ProjectRun.id.in_(wanted)).order_by(models.ProjectRun.created_at.asc()).all()
+        if len(runs) != len(wanted):
+            raise HTTPException(400, "Every answer you pick has to be finished first.")
+    else:
+        run = q.filter(models.ProjectRun.id == payload.run_id).first() if payload.run_id else \
+            q.order_by(models.ProjectRun.created_at.desc()).first()
+        runs = [run] if run else []
+    if not runs:
         raise HTTPException(400, "Ask a question and let it finish first - the dashboard is built from its answer.")
 
-    ds_id = payload.datasource_id or _primary_source_id(run, conv)
+    ds_id = payload.datasource_id or _primary_source_for(runs, conv)
     if not ds_id or ds_id not in (conv.source_ids or []):
         raise HTTPException(400, "Pick one of the sources this answer used.")
     ds = db.get(models.DataSource, ds_id)
@@ -505,13 +728,113 @@ def make_dashboard(project_id: str, payload: DashboardRequest, db: Session = Dep
         if not replace or replace.layout_version != 3 or (replace.project_spec or {}).get("project_id") != conv.id \
                 or not _can_edit_v2(db, replace, user):
             raise HTTPException(404, "That classic dashboard wasn't found, or you can't edit it.")
+    target_page = None
+    if payload.merge_into_page_id:
+        if add_to is None:
+            raise HTTPException(400, "Pick the dashboard whose page this goes on.")
+        target_page = next((pg for pg in add_to.pages if pg.id == payload.merge_into_page_id), None)
+        if target_page is None:
+            raise HTTPException(404, "That page isn't on this dashboard any more.")
 
-    dash, pages = build_dashboard_from_goal(
-        db, user, ds, _goal_from_run(run), name=(payload.name or "").strip() or None,
-        conversation_id=conv.id, add_to=add_to, replace=replace,
+    goal = _goal_from_run(runs[0]) if len(runs) == 1 else _goal_from_runs(runs)
+    pages = payload.pages if payload.pages in (1, 2) else (1 if (target_page is not None or len(runs) > 1) else "auto")
+    dash, page_ids = build_dashboard_from_goal(
+        db, user, ds, goal, name=(payload.name or "").strip() or None,
+        conversation_id=conv.id, add_to=add_to, replace=replace, pages=pages,
     )
+    block_ids: list[str] = []
+    if target_page is not None:
+        block_ids = _merge_pages_into(db, dash, page_ids, target_page)
+        page_ids = []
+    elif payload.page_name and payload.page_name.strip() and len(page_ids) == 1:
+        page = db.get(models.DashboardPage, page_ids[0])
+        if page is not None:
+            wanted = payload.page_name.strip()[:76]
+            taken = {pg.name for pg in dash.pages if pg.id != page.id}
+            name, n = wanted, 2
+            while name in taken:
+                name = f"{wanted} ({n})"
+                n += 1
+            page.name = name
+
+    mode = "replace" if replace is not None else "merge" if target_page is not None else "page" if add_to is not None else "new"
+    action_id = uuid.uuid4().hex[:12]
+    meta = _meta(conv)
+    placements = dict(meta.get("placements") or {})
+    placements[action_id] = {
+        "dashboard_id": dash.id, "dashboard_name": dash.name, "mode": mode, "run_ids": [r.id for r in runs],
+        "page_ids": page_ids, "block_ids": block_ids,
+        "page_id": target_page.id if target_page is not None else (page_ids[0] if page_ids else None),
+        "at": datetime.utcnow().isoformat() + "Z", "by": user.id,
+    }
+    if len(placements) > 100:
+        for k in sorted(placements, key=lambda k: placements[k].get("at") or "")[: len(placements) - 100]:
+            placements.pop(k, None)
+    meta["placements"] = placements
+    _save_meta(conv, meta)
+    db.commit()
+    db.refresh(dash)
     return {"dashboard_id": dash.id, "name": dash.name, "layout_version": dash.layout_version,
-            "page_id": pages[0] if pages else None, "datasource_id": ds.id, "datasource_name": ds.name}
+            "page_id": placements[action_id]["page_id"], "page_ids": page_ids, "block_ids": block_ids,
+            "datasource_id": ds.id, "datasource_name": ds.name, "action_id": action_id, "mode": mode,
+            "run_ids": [r.id for r in runs], "live": _live_info(db, dash)}
+
+
+@router.post("/{project_id}/dashboard/undo")
+def undo_placement(project_id: str, payload: UndoPlacementRequest, db: Session = Depends(get_db),
+                   user: models.User = Depends(get_current_user)):
+    """2026-10-11 (Ask Journey): takes back an answer that was added to a
+    dashboard from this thread - the page it became, or the blocks merged
+    under a page. Everything else on the dashboard stays as it is."""
+    from .dashboards import _can_edit as _can_edit_v2
+    conv = _project(db, project_id, user, edit=True)
+    meta = _meta(conv)
+    placements = dict(meta.get("placements") or {})
+    pl = placements.get(payload.action_id)
+    if not pl:
+        raise HTTPException(404, "There is nothing to undo.")
+    if pl.get("mode") not in ("page", "merge"):
+        raise HTTPException(400, "Open the dashboard to change or delete it.")
+    d = db.get(models.Dashboard, pl.get("dashboard_id"))
+    if d is None or not _can_edit_v2(db, d, user):
+        raise HTTPException(404, "That dashboard wasn't found, or you can't edit it.")
+    if pl["mode"] == "page":
+        doomed = [pg for pg in d.pages if pg.id in set(pl.get("page_ids") or [])]
+        if doomed and len(doomed) >= len(d.pages):
+            raise HTTPException(400, "That page is the only one left on the dashboard - open the dashboard to change it.")
+        for pg in doomed:
+            db.delete(pg)
+        db.flush()
+        db.refresh(d)
+        for i, pg in enumerate(sorted(d.pages, key=lambda x: x.position)):
+            pg.position = i
+    else:
+        page_ids = [pg.id for pg in d.pages]
+        ids = list(pl.get("block_ids") or [])
+        if ids and page_ids:
+            for b in db.query(models.DashboardBlock).filter(
+                models.DashboardBlock.id.in_(ids), models.DashboardBlock.page_id.in_(page_ids)
+            ).all():
+                db.delete(b)
+    placements.pop(payload.action_id, None)
+    meta["placements"] = placements
+    _save_meta(conv, meta)
+    db.commit()
+    return {"ok": True, "dashboard_id": d.id}
+
+
+@router.post("/{project_id}/dashboard/dismiss")
+def dismiss_dashboard_prompt(project_id: str, payload: DismissRequest, db: Session = Depends(get_db),
+                             user: models.User = Depends(get_current_user)):
+    """2026-10-11 (Ask Journey): "Not now" - GD360 stops offering these
+    answers for a dashboard (the Create dashboard button still works)."""
+    conv = _project(db, project_id, user, edit=True)
+    meta = _meta(conv)
+    dismissed = list(dict.fromkeys([*(meta.get("dismissed") or []), *[str(r) for r in payload.run_ids]]))[-200:]
+    meta["dismissed"] = dismissed
+    _save_meta(conv, meta)
+    db.commit()
+    return {"dismissed": dismissed}
 
 
 # ---- dashboards built from a project (layout_version 3) ---------------------
