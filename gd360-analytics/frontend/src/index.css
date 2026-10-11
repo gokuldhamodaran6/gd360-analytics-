@@ -140,6 +140,10 @@
   --color-kind-dashboard: 242 184 75;
   --color-kind-dashboard-fill: 35 27 12;
   --color-kind-dashboard-border: 92 66 22;
+  /* 2026-10-11 (Explain & Alerts): alerts and everything that watches a number. */
+  --color-kind-alert: 197 155 255;
+  --color-kind-alert-fill: 18 13 31;
+  --color-kind-alert-border: 74 54 120;
 }
 :root[data-theme="light"] {
   --color-subtle: 241 241 237;
@@ -183,6 +187,9 @@
   --color-kind-dashboard: 146 64 14;
   --color-kind-dashboard-fill: 253 243 228;
   --color-kind-dashboard-border: 243 220 189;
+  --color-kind-alert: 107 61 179;
+  --color-kind-alert-fill: 244 239 252;
+  --color-kind-alert-border: 219 205 242;
 }
 /* Theme-independent scale tokens: radius, spacing (8-pt grid, 4 only inside
    components), the type scale and the caps tracking. Exposed in

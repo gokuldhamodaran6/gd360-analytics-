@@ -28,6 +28,7 @@ import DomainViewerApp, { UnknownHost, useCustomHostKind } from "./pages/DomainV
 import { MfaRequiredBanner } from "./components/TwoStepSection";
 import AdminApp from "./admin/AdminApp";
 import InAppMessages from "./components/InAppMessages";
+import { NotificationCenter } from "./components/NotificationCenter";
 import Profile from "./pages/Profile";
 import HelpBigQuery from "./pages/HelpBigQuery";
 import HelpSnowflake from "./pages/HelpSnowflake";
@@ -116,6 +117,8 @@ export default function App() {
       <CommandPalette />
       {/* 2026-10-10: Mission Control announcements + the Help button (signed-in app pages only). */}
       <InAppMessages />
+      {/* 2026-10-11 (Explain & Alerts): alerts as toasts / desktop notifications the moment they fire. */}
+      <NotificationCenter />
       <MfaRequiredBanner />
       <ErrorBoundary resetKey={boundaryKey}>
       <Routes>
