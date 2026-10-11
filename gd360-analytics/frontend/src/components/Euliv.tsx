@@ -27,9 +27,9 @@ import { periodWords } from "./QuestionCheck";
 import { ACTIVE_WORKSPACE_KEY } from "../lib/useWorkspaceNav";
 import { deviceText, LevelBars } from "../thread/Dictation";
 import {
-  cancelSpeech, chunks, claimMic, isEcho, isTouchDevice, loadSettings, loadVoices, meterUseful, MIC_HELP, MicMonitor, type MicProblem, micOwner, onMicOwner,
+  cancelSpeech, claimMic, heardEuliv, isSpeaking, isTouchDevice, loadSettings, loadVoices, meterUseful, MIC_HELP, MicMonitor, type MicProblem, micOwner, onMicOwner,
   onSettings, type Rec, recognitionClass, releaseMic, saveSettings, SOUND_LEVEL, speak, speechInputSupported,
-  speechLang, speechOutputSupported, wakeIn, type EulivSettings,
+  speechLang, speechOutputSupported, wakeInAny, type EulivSettings,
 } from "../thread/voice";
 
 const HIDDEN_ON = ["/admin", "/pricing", "/about", "/start", "/register", "/login", "/admin-login", "/help", "/public", "/d/", "/invite", "/privacy", "/connect/", "/e/", "/w/", "/a/", "/r/"];
@@ -167,7 +167,7 @@ function listenOnce(o: {
 
 type Barge = { stop: () => void; hearing: () => boolean; heard: Promise<string | null> };
 
-function bargeListen(o: { echoText: () => string; onStart: () => void; onInterim: (t: string) => void }): Barge | null {
+function bargeListen(o: { echoOf: () => string[]; onStart: () => void; onInterim: (t: string) => void }): Barge | null {
   const Cls = recognitionClass();
   if (!Cls) return null;
   let r: Rec | null = null;
@@ -211,7 +211,8 @@ function bargeListen(o: { echoText: () => string; onStart: () => void; onInterim
     rec.onresult = (e: any) => {
       for (let i = e.resultIndex || 0; i < e.results.length; i++) {
         const tr = String(e.results[i][0]?.transcript || "").trim();
-        if (!tr || (!started && isEcho(tr, o.echoText()))) continue;
+        // Euliv's own voice through the speakers is not the person (round 27: checked on every result, final too)
+        if (!tr || heardEuliv(tr, o.echoOf(), true)) continue;
         last = tr;
         if (!started) {
           started = true;
@@ -301,11 +302,17 @@ function useWakeWord(on: boolean, onWake: (rest: string) => void) {
       rec.lang = speechLang();
       rec.continuous = true;
       rec.interimResults = true;
-      rec.maxAlternatives = 1;
+      // round 27: the recogniser's other guesses too - for an accent its first guess is often "Julie" or "I live"
+      rec.maxAlternatives = 5;
       rec.onresult = (e: any) => {
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          const tr = e.results[i][0]?.transcript || "";
-          const w = wakeIn(tr);
+        for (let i = e.resultIndex || 0; i < e.results.length; i++) {
+          const res = e.results[i];
+          const alts: string[] = [];
+          for (let k = 0; k < (res.length || 1); k++) if (res[k]?.transcript) alts.push(res[k].transcript);
+          // "hi" and the name can land in two pieces ("hi" … "Eliv"): read them together too
+          const prev = i > 0 ? e.results[i - 1][0]?.transcript || "" : "";
+          if (prev) alts.push(...alts.slice(0, 2).map((a) => `${prev} ${a}`));
+          const w = wakeInAny(alts);
           if (!w.woke) continue;
           if (e.results[i].isFinal) return fire(w.rest);
           // heard the name mid-sentence: wait for the end of what they're saying
@@ -320,7 +327,7 @@ function useWakeWord(on: boolean, onWake: (rest: string) => void) {
           setProblem(MIC_HELP.blocked);
           saveSettings({ wake: false });
           alive = false;
-        } else if (c === "network") backoff = Math.min(60000, backoff * 3);
+        } else if (c === "network") backoff = Math.min(8000, backoff * 2);
         else if (c === "audio-capture") {
           setProblem(MIC_HELP["no-device"]);
           backoff = 30000;
@@ -510,6 +517,11 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
   const micTrouble = useRef(false); // the last listen hit a mic problem - don't re-listen by itself (typing still works)
   const idSeq = useRef(0);
   const handleRef = useRef<((t: string) => unknown) | null>(null);
+  // round 27: what Euliv said lately - anything the mic hears that matches it is its own voice, not the person
+  const spokenLog = useRef<{ text: string; ended: number | null }[]>([]);
+  const echoes = useRef(0);
+  const recentEuliv = (ms: number) =>
+    spokenLog.current.filter((u) => u.ended === null || Date.now() - u.ended < ms).map((u) => u.text).reverse();
   const scroller = useRef<HTMLDivElement>(null);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -545,14 +557,13 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
     if (!settingsRef.current.speak || !speechOutputSupported()) return true;
     setPhase("speaking");
     const words = spoken || text;
+    const entry = { text: `${text} ${words}`, ended: null as number | null };
+    spokenLog.current = [...spokenLog.current.slice(-5), entry];
     // round 26: the person can talk over Euliv - it stops and listens
-    const parts = chunks(words);
-    let cur = 0;
-    let curAt = Date.now();
     const barge = settingsRef.current.handsFree && canListen && !micTrouble.current
       ? bargeListen({
-          // what Euliv is saying right now (and the sentence before, for a moment) - its echo isn't the person
-          echoText: () => `${Date.now() - curAt < 900 ? parts[cur - 1] || "" : ""} ${parts[cur] || ""}`,
+          // everything Euliv is saying now, and said in the last few seconds - its echo isn't the person
+          echoOf: () => recentEuliv(4000),
           onStart: () => {
             if (s !== session.current) return;
             cancelSpeech();
@@ -561,7 +572,8 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
           onInterim: (t) => s === session.current && setCaption(t),
         })
       : null;
-    const r = await speak(words, { onChunk: (i) => { cur = i; curAt = Date.now(); } });
+    const r = await speak(words);
+    entry.ended = Date.now();
     if (barge) {
       if (barge.hearing()) {
         const heardText = await barge.heard;
@@ -598,6 +610,15 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
     });
     if (s !== session.current || !alive.current) return;
     setCaption("");
+    // round 27: Euliv's own voice caught by the mic (speakers, no headset) is never taken as the person.
+    // Long echoes are checked against the last 15 s of what it said; short ones only right after it spoke.
+    if (heard.text && (heardEuliv(heard.text, recentEuliv(2500)) || heardEuliv(heard.text, recentEuliv(15000)) && heard.text.split(/\s+/).length >= 5)) {
+      if (echoes.current++ < 2) return listen(); // keep listening for the person
+      echoes.current = 0;
+      setPhase("idle");
+      return;
+    }
+    echoes.current = 0;
     if (heard.text) {
       proven.current = true;
       micTrouble.current = false;
@@ -650,8 +671,10 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
     if (!alive.current || spokeOk === null) return;
     if (spokeOk && settingsRef.current.handsFree && canListen && !micTrouble.current) {
       // a breath after speaking, so the tail of Euliv's own voice isn't heard as the person
+      // (round 27: and never while the computer's voice is still playing)
       const s = session.current;
-      await new Promise((r) => window.setTimeout(r, settingsRef.current.speak ? 450 : 0));
+      for (let i = 0; i < 30 && isSpeaking(); i++) await new Promise((r) => window.setTimeout(r, 100));
+      await new Promise((r) => window.setTimeout(r, settingsRef.current.speak ? 600 : 0));
       if (s !== session.current || !alive.current) return;
       return listen();
     }
@@ -807,6 +830,14 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
       case "explain": {
         const ok = await say(out.say, out.speak, out.explain ? { type: "explain", data: out.explain } : undefined);
         return afterReply(ok);
+      }
+      case "ignore": {
+        // round 27: the server recognised Euliv's own words coming back - drop them, keep listening
+        setMsgs((cur) => {
+          const k = [...cur].reverse().findIndex((m) => m.who === "you");
+          return k < 0 ? cur : cur.filter((_, idx) => idx !== cur.length - 1 - k);
+        });
+        return afterReply(true);
       }
       case "end": {
         if ((await say(out.say, out.speak)) === null) return;
