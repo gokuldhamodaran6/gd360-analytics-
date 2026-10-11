@@ -1046,6 +1046,10 @@ export type ConversationSummary = {
   source_ids?: string[];
   // 2026-10-10 (Library): how many dashboards were made from this item.
   dashboard_count?: number;
+  // 2026-10-11 (Ask Journey): questions in the thread, and - for a Guided
+  // Analysis - the step waiting for this person's check (Home's "Needs you")
+  question_count?: number;
+  needs_you?: { run_id: string; question: string; step: number; steps: number; step_title?: string | null } | null;
 };
 
 export type ConversationMessage = {

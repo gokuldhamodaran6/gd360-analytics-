@@ -47,6 +47,9 @@ export type RunStep = {
   tweaks?: string[];
   edits?: string[];
   added?: boolean;
+  // 2026-10-11 (Ask Journey): the result came from an earlier question in
+  // the thread (same query on the same source) - no new query ran
+  reused?: { question: number; step: number; title?: string | null; run_id?: string } | null;
 };
 
 export type Fact = { id: string; label: string; value: number | null; kind: string; display: string };
@@ -149,6 +152,14 @@ export type ProjectRun = {
   // 2026-10-10 (Guided Analysis): a step or the answer is being worked on
   busy?: boolean;
   duration_seconds: number | null;
+  // 2026-10-11 (Ask Journey): what the conversation column shows without
+  // the full run
+  answer_text?: string | null;
+  next_questions?: string[];
+  steps_total?: number;
+  steps_done?: number;
+  steps_approved?: number;
+  steps_reused?: number;
   plan?: Plan | null;
   steps?: RunStep[];
   result?: RunResult | null;
@@ -166,11 +177,55 @@ export type Project = {
   pinned: boolean;
   can_edit: boolean;
   runs: ProjectRun[];
-  dashboards: { id: string; name: string; layout_version?: number }[];
+  dashboards: ThreadDashboard[];
+  // 2026-10-11 (Ask Journey): which answers went onto which dashboard, and
+  // the answers GD360 was told "Not now" about
+  placements?: Placement[];
+  dismissed?: string[];
   // 2026-10-09 (round 15): the Space a project was asked in, if any.
   space_id?: string | null;
   space_name?: string | null;
   space_color?: string | null;
+};
+
+export type LiveInfo = { kind: "domain" | "link"; label: string; url: string; views: number };
+
+export type ThreadDashboard = {
+  id: string;
+  name: string;
+  layout_version?: number;
+  datasource_id?: string | null;
+  created_at?: string;
+  can_edit?: boolean;
+  pages?: { id: string; name: string }[];
+  live?: LiveInfo | null;
+};
+
+export type Placement = {
+  action_id: string;
+  dashboard_id: string;
+  dashboard_name?: string;
+  mode: "new" | "page" | "merge" | "replace";
+  run_ids: string[];
+  page_ids?: string[];
+  block_ids?: string[];
+  page_id?: string | null;
+  at?: string;
+};
+
+export type MakeDashboardResult = {
+  dashboard_id: string;
+  name: string;
+  layout_version: number;
+  page_id: string | null;
+  page_ids?: string[];
+  block_ids?: string[];
+  datasource_id: string;
+  datasource_name: string;
+  action_id?: string;
+  mode?: Placement["mode"];
+  run_ids?: string[];
+  live?: LiveInfo | null;
 };
 
 export type DashTile = {
@@ -218,8 +273,18 @@ export const projectsApi = {
   get: (id: string) => api.get<Project>(`/projects/${id}`).then((r) => r.data),
   update: (id: string, payload: { title?: string; source_ids?: string[] }) =>
     api.patch<{ id: string; title: string; source_ids: string[] }>(`/projects/${id}`, payload).then((r) => r.data),
-  ask: (id: string, question: string, autoRun = true) =>
-    api.post<{ project_id: string; run_id: string }>(`/projects/${id}/ask`, { question, auto_run: autoRun }).then((r) => r.data),
+  // 2026-10-11 (Ask Journey): a Guided Analysis follow-up picks its mode
+  // ("guided" step by step, "answer" straight through); any thread can
+  // change its sources with the question (space_id or source_ids).
+  ask: (
+    id: string,
+    question: string,
+    autoRun = true,
+    extra?: { mode?: "answer" | "guided"; source_ids?: string[]; space_id?: string },
+  ) =>
+    api
+      .post<{ project_id: string; run_id: string; source_ids?: string[] }>(`/projects/${id}/ask`, { question, auto_run: autoRun, ...(extra || {}) })
+      .then((r) => r.data),
   run: (runId: string) => api.get<ProjectRun>(`/projects/runs/${runId}`).then((r) => r.data),
   execute: (runId: string) => api.post(`/projects/runs/${runId}/execute`).then((r) => r.data),
   replan: (runId: string, note: string) =>
@@ -230,13 +295,16 @@ export const projectsApi = {
   // existing one, or upgrading this answer's classic dashboard in place.
   makeDashboard: (
     id: string,
-    payload: { run_id?: string; name?: string; datasource_id?: string; add_to_dashboard_id?: string; replace_dashboard_id?: string },
-  ) =>
-    api
-      .post<{ dashboard_id: string; name: string; layout_version: number; page_id: string | null; datasource_id: string; datasource_name: string }>(
-        `/projects/${id}/dashboard`, payload, { timeout: 240000 },
-      )
-      .then((r) => r.data),
+    payload: {
+      run_id?: string; name?: string; datasource_id?: string; add_to_dashboard_id?: string; replace_dashboard_id?: string;
+      // 2026-10-11 (Ask Journey)
+      run_ids?: string[]; pages?: 1 | 2; page_name?: string; merge_into_page_id?: string;
+    },
+  ) => api.post<MakeDashboardResult>(`/projects/${id}/dashboard`, payload, { timeout: 240000 }).then((r) => r.data),
+  undoPlacement: (id: string, actionId: string) =>
+    api.post<{ ok: boolean; dashboard_id: string }>(`/projects/${id}/dashboard/undo`, { action_id: actionId }).then((r) => r.data),
+  dismissDashboardPrompt: (id: string, runIds: string[]) =>
+    api.post<{ dismissed: string[] }>(`/projects/${id}/dashboard/dismiss`, { run_ids: runIds }).then((r) => r.data),
   dashboard: (id: string) => api.get<ProjectDashboard>(`/projects/dashboards/${id}`).then((r) => r.data),
   refreshDashboard: (id: string) =>
     api.post<ProjectDashboard>(`/projects/dashboards/${id}/refresh`, undefined, { timeout: 180000 }).then((r) => r.data),
