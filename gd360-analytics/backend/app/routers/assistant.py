@@ -109,6 +109,7 @@ class TurnState(BaseModel):
     # round 24: the read-back being agreed (question, what, period, numbered options, selected ...)
     brief: dict | None = None
     talk_id: str | None = None
+    asked: int = 0                        # round 31: questions read back in this talk - the wording varies like a person's
 
 
 class TurnRequest(BaseModel):
@@ -145,7 +146,8 @@ def _err_text(e: HTTPException) -> str:
 
 def _keep(state: TurnState, **upd) -> TurnState:
     """A fresh state that keeps the conversation's thread (project, talk, topic)."""
-    base = TurnState(project_id=state.project_id, last_run_id=state.last_run_id, topic=state.topic, talk_id=state.talk_id)
+    base = TurnState(project_id=state.project_id, last_run_id=state.last_run_id, topic=state.topic, talk_id=state.talk_id,
+                     asked=state.asked)
     return base.model_copy(update=upd) if upd else base
 
 
@@ -402,11 +404,23 @@ def _confirm_question(db: Session, user: models.User, q: str, ws: str | None, st
     if g:
         return g
     b = {"question": polished, "said": q, "notes": notes, "accepted": list(accepted or []), "no_connect": no_connect}
-    st = _keep(state, awaiting="question", pending_question=polished, brief=b, retries=0)
-    lead = (lead + " ") if lead else ""
-    # round 29: short and sweet. The tidied question is simply "your question" - never a list of the person's slips
-    say = lead + f"Your question is: “{polished}” Shall I proceed with this, or would you like to change it?"
-    return _reply(say, "question", st, question=polished, said=q, notes=notes)
+    n = state.asked or 0
+    st = _keep(state, awaiting="question", pending_question=polished, brief=b, retries=0, asked=n + 1)
+    # round 29: short and sweet. The tidied question is simply "your question" - never a list of the person's slips.
+    # Round 31: said in full the first time; after that it varies and gets shorter, the way a person talks.
+    # the card shows the question, so the line on screen doesn't repeat it (`show`); the voice says it all
+    if n == 0 and lead in ("", None):
+        say = f"Your question is: “{polished}” Shall I proceed with this, or would you like to change it?"
+        show = "Shall I proceed with this, or would you like to change it?"
+    else:
+        ways = [(f"Got it: “{polished}” Shall I go ahead?", "Got it. Shall I go ahead?"),
+                (f"So, “{polished}” Is that right?", "Is that right?"),
+                (f"“{polished}” Shall I go ahead?", "Shall I go ahead?")]
+        lead = "Thanks." if lead == "Okay." else lead
+        w, sh = ways[n % len(ways)]
+        say = ((lead + " ") if lead else "") + w
+        show = ((lead + " ") if lead else "") + sh
+    return _reply(say, "question", st, question=polished, said=q, notes=notes, show=show)
 
 
 def _question_turn(db: Session, user: models.User, text: str, state: TurnState, ws: str | None, kind: str) -> dict:
@@ -1072,6 +1086,44 @@ def _not_twice(out: dict, last: str | None) -> dict:
     return out
 
 
+_WAITING = ("question", "plan", "fix_date", "connect", "connecting", "rephrase")
+
+
+def _meta_turn(db: Session, user: models.User, text: str, state: TurnState, ws: str | None, payload: TurnRequest) -> dict | None:
+    """Round 31: what a person says about the conversation itself. Never read back as a question for the data."""
+    kind, to = eu.meta_intent(text)
+    if not kind:
+        return None
+    b = state.brief or {}
+    q = b.get("question") or state.pending_question or ""
+    if kind == "change":
+        if to:
+            return _confirm_question(db, user, to, ws, _keep(state), "Okay.")
+        if state.awaiting in _WAITING or q:
+            st = _keep(state, awaiting="rephrase", pending_question=q or None, brief={"question": q} if q else None)
+            return _reply("Of course. What would you like to ask instead?", "rephrase", st, question=q)
+        return _reply("Of course. What would you like to ask?", "chat", _keep(state))
+    if kind == "repeat":
+        last = (payload.last_reply or "").strip()
+        if not last:
+            return _reply("What would you like to look at?", "chat", state)
+        if state.awaiting == "question" and b:
+            return _reply(f"Sure. Your question is: “{q}” Shall I go ahead?", "question", state, question=q,
+                          said=b.get("said") or q, notes=b.get("notes") or [], show="Sure - here it is again. Shall I go ahead?")
+        if state.awaiting == "plan" and b.get("options") is not None:
+            return _plan_reply(last, state, dict(b))
+        return _reply(last, "chat", state)
+    if kind == "wait":
+        return _reply("Sure, take your time.", "chat", state)
+    if kind == "cancel":
+        if state.awaiting == "rephrase":
+            return None  # "never mind" here means "keep the question" - handled with the rephrase
+        if state.awaiting in _WAITING:
+            return _reply("Okay, I've dropped that. What would you like to look at?", "chat", _keep(state))
+        return None
+    return None
+
+
 def _turn(db: Session, user: models.User, payload: TurnRequest) -> dict:
     state = payload.state
     # round 30: "I said thank you" / "I meant March" - the person repeating themselves; take what they meant
@@ -1110,12 +1162,20 @@ def _turn(db: Session, user: models.User, payload: TurnRequest) -> dict:
     if not payload.event and (eu.is_own_words(text) or eu.heard_euliv(text, payload.last_said)):
         return _reply("", "ignore", state)
 
+    # round 31: the person talking about the talk - "I want to change it", "say that again", "wait", "never mind"
+    meta = None if payload.event else _meta_turn(db, user, text, state, ws, payload)
+    if meta:
+        return meta
+
     kind = eu.intent(text)
     # "no" while Euliv is waiting on an answer from the person is an answer, not goodbye
     if kind == "end" and state.awaiting in ("plan", "fix_date", "connect", "connecting", "rephrase", "question") and not eu.firm_end(text):
         kind = "question"
     if kind == "end":
         return _reply("Okay. Talk soon!", "end", _keep(state))
+    if not text and (payload.text or "").strip() and not payload.event:
+        # round 31: just the name - "Euliv?" - while it was talking or after a pause: it's listening
+        return _reply("Yes? I'm listening.", "chat", state)
     # round 30: a thank-you while Euliv waits on an answer - thank them back and keep the question open
     if kind in ("thanks", "praise") and not eu.is_yes(text) and state.brief:
         if state.awaiting == "plan":
