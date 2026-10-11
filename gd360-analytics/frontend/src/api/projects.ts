@@ -1,6 +1,7 @@
 // 2026-10-08 (round 11): multi-source Projects and synced apps - the client
 // for backend routers/projects.py and routers/apps.py.
 import { api } from "./client";
+import { localToday } from "./assistant";
 
 export type SourceMode = "live" | "synced" | "file";
 
@@ -292,7 +293,7 @@ export type ProjectDashboard = {
 
 // 2026-10-11 (round 24, Understand before answering): the read-back of a
 // question before it runs (backend services/question_check.py).
-export type CheckPeriod = { start: string; end: string; label: string; text: string; assumed?: boolean; key?: string };
+export type CheckPeriod = { start: string; end: string; label: string; text: string; assumed?: boolean; key?: string; future?: boolean; parts?: CheckPeriod[] };
 export type CheckOption = {
   id: string; label: string; value: string; detail?: string; recommended?: boolean;
   fit?: string; why?: string; action?: "connect" | "upload" | "more"; period?: CheckPeriod;
@@ -316,8 +317,8 @@ export type QuestionCheck = {
 export type RunBrief = { period?: CheckPeriod | null; restated?: string | null; notes?: string[] };
 
 export const projectsApi = {
-  check: (payload: { question: string; source_ids?: string[]; space_id?: string; workspace_id?: string }) =>
-    api.post<QuestionCheck>("/projects/check", payload, { timeout: 20000 }).then((r) => r.data),
+  check: (payload: { question: string; source_ids?: string[]; space_id?: string; workspace_id?: string; accepted?: string[] }) =>
+    api.post<QuestionCheck>("/projects/check", { ...payload, today: localToday() }, { timeout: 20000 }).then((r) => r.data),
   sources: (workspaceId?: string) =>
     api.get<ProjectSource[]>("/projects/sources", { params: { workspace_id: workspaceId || undefined } }).then((r) => r.data),
   // 2026-10-09 (round 15): space_id asks one Space (its sources you can use);

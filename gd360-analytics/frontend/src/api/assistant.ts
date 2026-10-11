@@ -8,8 +8,9 @@ export type EulivConnect = { kind: string | null; label: string; url: string };
 // round 24: the read-back being agreed - the numbered data options and what is ticked
 export type PlanOption = { id: string; name: string; kind?: string | null; label?: string; why?: string; fit?: string; note?: string; says?: string; recommended?: boolean };
 export type PlanCard = {
-  type: "plan"; options: PlanOption[]; selected: string[]; period: CheckPeriod | null; period_options: CheckPeriod[];
+  type: "plan"; question?: string; options: PlanOption[]; selected: string[]; period: CheckPeriod | null; period_options: CheckPeriod[];
   restated: string; needs_pick: boolean; connect: { kind: string; label: string; url: string }[]; mode?: string | null;
+  what?: string | null; needs_time?: boolean;
 };
 
 export type EulivState = {
@@ -28,7 +29,7 @@ export type EulivState = {
 export type EulivTurn = {
   say: string;
   speak: string;
-  action: "chat" | "choose" | "plan" | "fix_date" | "connect_offer" | "connect" | "connect_wait" | "run" | "explain" | "end" | "wait";
+  action: "chat" | "choose" | "plan" | "fix_date" | "rephrase" | "connect_offer" | "connect" | "connect_wait" | "run" | "explain" | "end" | "wait";
   plan?: PlanCard;
   issue?: CheckIssue;
   title?: string;
@@ -68,11 +69,17 @@ export type Talk = {
 
 export type EulivMemory = { topic: string; label: string; sources: EulivSource[]; updated_at: string };
 
+/** This computer's date (YYYY-MM-DD) - "last month" means the person's last month, whatever the server's time zone. */
+export function localToday(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 export const assistantApi = {
   hello: (talkId?: string | null) =>
     api.get<{ say: string; first_name: string }>("/assistant/hello", { params: { talk_id: talkId || undefined } }).then((r) => r.data),
   turn: (body: { text: string; state: EulivState; workspace_id?: string | null; event?: string; run_id?: string; save?: boolean; greeting?: string }) =>
-    api.post<EulivTurn>("/assistant/turn", body, { timeout: 30000 }).then((r) => r.data),
+    api.post<EulivTurn>("/assistant/turn", { ...body, today: localToday() }, { timeout: 30000 }).then((r) => r.data),
   answer: (runId: string, talkId?: string | null) =>
     api.get<EulivAnswer>(`/assistant/answer/${runId}`, { timeout: 15000, params: { talk_id: talkId || undefined } }).then((r) => r.data),
   talk: (id: string) => api.get<Talk>(`/assistant/talks/${id}`).then((r) => r.data),
