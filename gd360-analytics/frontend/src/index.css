@@ -1256,3 +1256,26 @@ input[type="radio"] {
   .gd-mic-live { animation: none; box-shadow: 0 0 0 4px rgb(var(--color-kind-answer) / 0.25); }
   .gd-mic-bar { animation: none; height: 10px; }
 }
+
+/* 2026-10-11: Euliv, the voice assistant - the orb (components/Euliv.tsx) */
+.gd-orb {
+  background:
+    radial-gradient(circle at 32% 28%, rgb(255 255 255 / 0.55), transparent 42%),
+    radial-gradient(circle at 70% 75%, rgb(var(--color-kind-analysis) / 0.95), transparent 60%),
+    radial-gradient(circle at 40% 60%, rgb(var(--color-kind-answer)), rgb(var(--color-kind-answer) / 0.75) 70%);
+  box-shadow: 0 0 0 1px rgb(var(--color-kind-answer) / 0.35), 0 18px 60px -18px rgb(var(--color-kind-answer) / 0.65);
+}
+.gd-orb-glow { background: radial-gradient(circle, rgb(var(--color-kind-answer) / 0.28), transparent 65%); }
+.gd-orb-speaking { animation: gd-orb-breathe 1.6s ease-in-out infinite; }
+.gd-orb-thinking { animation: gd-orb-turn 2.4s linear infinite; }
+.gd-orb-ring { border: 2px solid rgb(var(--color-kind-answer) / 0.0); border-top-color: rgb(var(--color-kind-answer) / 0.9); border-right-color: rgb(var(--color-kind-analysis) / 0.6); animation: ui-spin 1.1s linear infinite; }
+.gd-orb-idle { animation: gd-orb-float 4s ease-in-out infinite; }
+@keyframes gd-orb-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.07); } }
+@keyframes gd-orb-turn { from { filter: hue-rotate(0deg); } to { filter: hue-rotate(40deg); } }
+@keyframes gd-orb-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes gd-euliv-in { from { opacity: 0; transform: translateY(10px) scale(0.985); } to { opacity: 1; transform: none; } }
+.gd-euliv-in { animation: gd-euliv-in 0.24s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .gd-orb-speaking, .gd-orb-thinking, .gd-orb-idle, .gd-euliv-in { animation: none; }
+  .gd-orb-ring { animation-duration: 2.5s; }
+}
