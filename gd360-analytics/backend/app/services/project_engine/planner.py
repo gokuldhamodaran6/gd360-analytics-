@@ -154,6 +154,16 @@ def _history_text(history: list[dict]) -> str:
         lines.append(f"- Q: {h.get('question')}")
         if h.get("headline"):
             lines.append(f"  A: {h.get('headline')}")
+        # 2026-10-11 (Guided follow-ups): the steps that already ran for it
+        steps = h.get("steps") or []
+        if steps:
+            lines.append(
+                "  Steps that already ran for it. When your plan needs one of these exact results, copy its "
+                "source_id and SQL character for character - GD360 then reuses the result instead of querying again:"
+            )
+            for st in steps:
+                sql = re.sub(r"\s+", " ", str(st.get("sql") or "")).strip()[:700]
+                lines.append(f"    - {st.get('title')} [source_id {st.get('source_id')}]: {sql}")
     return "\n".join(lines)
 
 

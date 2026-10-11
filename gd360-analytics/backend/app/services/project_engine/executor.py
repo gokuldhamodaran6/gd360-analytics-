@@ -98,10 +98,23 @@ def _history(db: Session, run: models.ProjectRun) -> list[dict]:
         .order_by(models.ProjectRun.created_at.asc())
         .all()
     )
+    # 2026-10-11 (Guided follow-ups): in a Guided Analysis thread the two
+    # latest earlier questions also list the steps that ran, so a follow-up
+    # plan can reuse one exactly (guided.reuse_earlier then copies its result
+    # instead of querying the source again).
+    conv = db.get(models.Conversation, run.conversation_id)
+    guided = bool(conv and conv.kind == "guided")
+    recent = [p for p in prev if p.status != "replaced"][-4:]
     out = []
-    for p in prev[-4:]:
+    for i, p in enumerate(recent):
         ans = (p.result or {}).get("answer") or {}
-        out.append({"question": p.question, "headline": ans.get("headline")})
+        item = {"question": p.question, "headline": ans.get("headline")}
+        if guided and i >= len(recent) - 2:
+            item["steps"] = [
+                {"title": s.get("title"), "source_id": s.get("source_id"), "sql": s.get("sql")}
+                for s in (p.steps or []) if s.get("kind") != "combine" and s.get("status") == "done"
+            ][:8]
+        out.append(item)
     return out
 
 
@@ -168,12 +181,25 @@ def plan_run(db: Session, run_id: str) -> None:
     run.status = "planned"
     if conv and (not conv.title or conv.title in ("New analysis", "New project")) and plan.get("title"):
         conv.title = plan["title"][:80]
-    db.commit()
+    claimed = False
+    if guided:
+        # 2026-10-11: busy BEFORE the plan is visible, so the page keeps
+        # following the run until its first step (or every step) is done
+        from . import guided as guided_engine
+        claimed = guided_engine.claim_for_planning(run_id)
+    try:
+        db.commit()
+    except Exception:
+        if claimed:
+            guided_engine._release(run_id)
+        raise
     if guided:
         # 2026-10-10 (Guided Analysis): the plan is shown and the first step
         # runs straight away; every later step waits for the person.
-        from . import guided as guided_engine
-        guided_engine.run_first_step(db, run_id)
+        # 2026-10-11: a follow-up first takes every step that is the same as
+        # one an earlier question already ran; a follow-up asked as a Quick
+        # answer (auto_run) runs every step and writes the answer.
+        guided_engine.after_plan(db, run_id, bool(run.auto_run), claimed)
         return
     if run.auto_run:
         execute_run(db, run_id)

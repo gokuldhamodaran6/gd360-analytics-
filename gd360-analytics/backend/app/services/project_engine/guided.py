@@ -268,7 +268,7 @@ def run_step(db: Session, run_id: str, step_id: str) -> None:
 
     _drop_table(run, step_id)
     set_step(step_id, status="running", error=None, approved=False, columns=None, preview=None,
-             rows_returned=None, duration_ms=None, repaired=False, truncated=False)
+             rows_returned=None, duration_ms=None, repaired=False, truncated=False, reused=None)
     if step.get("kind") == "combine":
         ok = _run_combine(db, run, step, set_step)
     else:
@@ -282,21 +282,114 @@ def run_step(db: Session, run_id: str, step_id: str) -> None:
     db.commit()
 
 
-def run_first_step(db: Session, run_id: str) -> None:
-    """Called on the planning thread right after a guided plan is stored."""
-    run = db.get(models.ProjectRun, run_id)
-    if not run or not run.steps:
-        return
-    if not _claim(run_id):
+def claim_for_planning(run_id: str) -> bool:
+    """2026-10-11: taken by the planning thread BEFORE the plan is stored, so
+    the page never sees a stored plan with nothing working on it (it stops
+    following a run that looks idle). Released by after_plan."""
+    return _claim(run_id)
+
+
+def after_plan(db: Session, run_id: str, run_everything: bool, claimed: bool) -> None:
+    """Called on the planning thread right after a guided plan is stored.
+    Takes every step an earlier question already ran (reuse_earlier), then
+    either runs the first step that still has no result (step by step) or
+    every step and the answer (a follow-up asked as a Quick answer). When
+    every step already has a result, the answer is written."""
+    if not claimed and not _claim(run_id):
         return
     try:
-        run_step(db, run_id, run.steps[0]["id"])
+        run = db.get(models.ProjectRun, run_id)
+        if not run or not run.steps:
+            return
+        try:
+            reuse_earlier(db, run)
+        except Exception:  # noqa: BLE001 - reuse is a shortcut; the steps can always run
+            traceback.print_exc()
+            db.rollback()
+            run = db.get(models.ProjectRun, run_id)
+        if run_everything:
+            _run_all(db, run_id)
+        else:
+            first = next((s for s in run.steps or [] if s.get("status") != "done"), None)
+            if first is None:
+                finish(db, run_id)
+            else:
+                run_step(db, run_id, first["id"])
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
         db.rollback()
         _fail_running(db, run_id, f"Something went wrong: {str(e)[:200]}")
     finally:
         _release(run_id)
+
+
+def run_first_step(db: Session, run_id: str) -> None:
+    """The first step that has no result yet (kept for callers outside the
+    planning thread)."""
+    after_plan(db, run_id, False, False)
+
+
+def _run_all(db: Session, run_id: str) -> None:
+    """2026-10-11: a follow-up asked as a Quick answer inside a Guided
+    Analysis - every step runs, then the answer is written. The steps stay
+    on the run, so the person can still open, change or re-run any of them."""
+    run_rest(db, run_id)
+    run = db.get(models.ProjectRun, run_id)
+    if run:
+        db.refresh(run)
+        run.steps = [{**s, "approved": True} if s.get("status") == "done" else s for s in run.steps or []]
+        flag_modified(run, "steps")
+        db.commit()
+
+
+def _norm_sql(sql: str | None) -> str:
+    return re.sub(r"\s+", " ", (sql or "").strip().rstrip(";")).strip().lower()
+
+
+def reuse_earlier(db: Session, run: models.ProjectRun) -> int:
+    """2026-10-11 (Guided follow-ups): every step of a new question that is
+    the same query on the same source as a step an earlier question in this
+    thread already ran takes that stored result - no new query - and is
+    marked approved, with where it came from ("reused": question and step
+    number). Returns how many steps were reused."""
+    earlier = (
+        db.query(models.ProjectRun)
+        .filter(models.ProjectRun.conversation_id == run.conversation_id, models.ProjectRun.id != run.id,
+                models.ProjectRun.created_at <= run.created_at)
+        .order_by(models.ProjectRun.created_at.asc()).all()
+    )
+    earlier = [p for p in earlier if p.status != "replaced"]
+    index: dict[tuple, tuple] = {}
+    for qn, p in enumerate(earlier, start=1):
+        tables = _stored(p)
+        for sn, st in enumerate(p.steps or [], start=1):
+            if st.get("kind") == "combine" or st.get("status") != "done" or st.get("id") not in tables:
+                continue
+            index[(st.get("source_id"), _norm_sql(st.get("sql")))] = (qn, sn, p, st)
+    if not index:
+        return 0
+    reused = 0
+    for st in list(run.steps or []):
+        if st.get("kind") == "combine" or st.get("status") == "done":
+            continue
+        hit = index.get((st.get("source_id"), _norm_sql(st.get("sql"))))
+        if not hit:
+            continue
+        qn, sn, p, src = hit
+        result = dict(run.result or {})
+        tables = dict(result.get("guided_tables") or {})
+        tables[st["id"]] = _stored(p)[src["id"]]
+        result["guided_tables"] = tables
+        run.result = result
+        flag_modified(run, "result")
+        _set_step(run, st["id"], status="done", approved=True, error=None, columns=src.get("columns"),
+                  preview=src.get("preview"), rows_returned=src.get("rows_returned"), duration_ms=0,
+                  truncated=bool(src.get("truncated")), repaired=False,
+                  reused={"question": qn, "step": sn, "title": src.get("title"), "run_id": p.id})
+        reused += 1
+    if reused:
+        db.commit()
+    return reused
 
 
 def run_rest(db: Session, run_id: str) -> None:
