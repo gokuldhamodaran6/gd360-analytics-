@@ -431,3 +431,218 @@ def first_sentences(text: str, n: int = 2, max_chars: int = 320) -> str:
             break
         out = (out + " " + p).strip()
     return out
+
+
+# ---- picking data by voice (round 24) ------------------------------------------------
+#
+# "the first and third"   -> exactly those          "add Shopify" / "the second too" -> plus that
+# "remove the first"      -> without it              "only the third" / "just Meta"   -> only that
+# "drop both, use the 4th" / "swap Meta for Shopify" / "Shopify instead of Meta"
+# "all of them" / "both" / "all except Meta"         "none" / "start over"
+# "that's it" / "yes, go ahead"  -> confirm           "what else do I have?" -> show everything
+# "which is best?" / "I'm not sure" -> Euliv recommends
+
+_ORDINALS = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3, "fourth": 4, "4th": 4, "fifth": 5,
+             "5th": 5, "sixth": 6, "6th": 6, "seventh": 7, "7th": 7, "eighth": 8, "8th": 8, "ninth": 9, "9th": 9,
+             "tenth": 10, "10th": 10}
+_CARDINALS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+              "ten": 10, "won": 1, "to": None, "too": None, "for": None}
+_NOT_COUNT = r"(?:months?|days?|weeks?|years?|quarters?|sources?|thousand|hundred|million|percent|%|of them|of those|hours?|minutes?)"
+_VERBS = [
+    ("remove", r"remove|drop|without|except|excluding|exclude|unselect|deselect|untick|uncheck|take out|take off|skip|minus|"
+               r"leave out|get rid of|forget|not|no|but not|instead of"),
+    ("add", r"add|also|plus|include|including|as well as|along with|put in|bring in|and also|with|together with"),
+    ("only", r"only|just|switch to|change to|use only|only use"),
+    ("swap_from", r"replace|swap|change|switch"),
+]
+_POST_ADD = re.compile(r"^\s*(?:too|as well|also)\b")
+_CONFIRM = re.compile(r"^(?:yes|yeah|yep|yup|sure|ok|okay|go ahead|go|do it|perfect|correct|right|that'?s (?:it|all|right|correct|fine|good)|"
+                      r"thats (?:it|all|right)|done|sounds good|confirm(?:ed)?|great|good|fine|run it|start|proceed|let'?s go|"
+                      r"go for it|that works|use (?:those|these|that|them|it)|exactly)\b", re.I)
+_MORE = re.compile(r"\b(show (?:me )?(?:all|everything|more|the rest|others?|other sources|all (?:my|the) data)|what (?:else|other)|"
+                   r"more options|other (?:sources|data|options)|anything else|list (?:them|all|everything)|what do i have|"
+                   r"what data do i have|which data do i have|all my data|show all)\b", re.I)
+_UNSURE = re.compile(r"\b(not sure|don'?t know|dont know|no idea|which (?:one )?(?:is best|is better|should i|do you recommend|would you)|"
+                     r"you (?:choose|pick|decide)|recommend|suggest|help me (?:choose|pick|decide)|confused|whatever you think|"
+                     r"what do you (?:think|suggest)|best one|which is right)\b", re.I)
+_NONE = re.compile(r"\b(none|nothing|clear (?:it|all|them)?|start over|unselect all|deselect all|remove all|remove both|"
+                   r"drop all|drop both|neither|(?:drop|remove|unselect|deselect|forget|skip|untick|lose)\s+"
+                   r"(?:it|that|this|them|those|these|that one|this one|everything))\b", re.I)
+_ALL = re.compile(r"\b(all|both|every one|everything|each of them|all of them)\b", re.I)
+
+
+def _mentions(t: str, options: list[dict]) -> list[tuple[int, int, str]]:
+    """(start, end, option id) for every option named or numbered in `t`."""
+    out: list[tuple[int, int, str]] = []
+    spans: list[tuple[int, int]] = []
+    firsts: dict[str, int] = {}
+    for o in options:
+        for n in {o.get("name"), o.get("label")}:
+            w = _norm(n).split()[:1]
+            if w:
+                firsts[w[0]] = firsts.get(w[0], 0) + 1
+    for o in options:
+        variants = {_norm(o.get("name")).strip()}
+        lab = _norm(o.get("label")).strip()
+        if lab and sum(1 for x in options if _norm(x.get("label")).strip() == lab) == 1:
+            variants.add(lab)
+        variants |= {a for a, k in ALIASES.items() if k == o.get("kind")
+                     and sum(1 for x in options if x.get("kind") == k) == 1}
+        for n in (o.get("name"), o.get("label")):
+            w = _norm(n).split()[:1]
+            if w and len(w[0]) >= 4 and firsts.get(w[0]) == 1 and w[0] not in {"data", "file", "the", "main", "test", "sample"}:
+                variants.add(w[0])
+        best = None
+        for v in sorted((v for v in variants if v and len(v) >= 3), key=len, reverse=True):
+            i = t.find(f" {v} ")
+            if i >= 0:
+                best = (i + 1, i + 1 + len(v))
+                break
+            sq = v.replace(" ", "")
+            if len(sq) >= 6:
+                j = t.replace(" ", "").find(sq)
+                if j >= 0:
+                    # map back roughly: position of the first word of the variant
+                    k = t.find(" " + v.split()[0][:3])
+                    best = (max(0, k + 1), max(0, k + 1) + len(v))
+                    break
+        if best:
+            out.append((best[0], best[1], o["id"]))
+            spans.append(best)
+
+    def free(a: int, b: int) -> bool:
+        return not any(a < y and b > x for x, y in spans)
+
+    n = len(options)
+    for m in re.finditer(r"\b(?:number|option|no|#)\s*(\d{1,2}|" + "|".join(k for k, v in _CARDINALS.items() if v) + r")\b", t):
+        k = m.group(1)
+        idx = int(k) if k.isdigit() else _CARDINALS.get(k)
+        if idx and 1 <= idx <= n and free(m.start(), m.end()):
+            out.append((m.start(), m.end(), options[idx - 1]["id"]))
+            spans.append((m.start(), m.end()))
+    for m in re.finditer(r"\b(" + "|".join(_ORDINALS) + r"|last)\b(?:\s+(?:one|option|source))?", t):
+        word = m.group(1)
+        if word == "last":
+            if not re.match(r"\s*(?:one|option|source|$)", t[m.end():]) and not m.group(0).strip().endswith(("one", "option", "source")):
+                continue
+            idx = n
+        else:
+            idx = _ORDINALS[word]
+        if 1 <= idx <= n and free(m.start(), m.end()):
+            out.append((m.start(), m.end(), options[idx - 1]["id"]))
+            spans.append((m.start(), m.end()))
+    for m in re.finditer(r"\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|won)\b", t):
+        k = m.group(1)
+        idx = int(k) if k.isdigit() else _CARDINALS.get(k)
+        if not idx or not (1 <= idx <= n) or not free(m.start(), m.end()):
+            continue
+        if re.match(rf"\s*{_NOT_COUNT}\b", t[m.end():]):
+            continue
+        if k == "one" and re.search(r"\b(?:the|this|that|which|first|second|third|last|other|a)\s+$", t[:m.start()]):
+            continue
+        out.append((m.start(), m.end(), options[idx - 1]["id"]))
+        spans.append((m.start(), m.end()))
+    out.sort()
+    return out
+
+
+def select_sources(text: str, options: list[dict], selected: list[str]) -> dict:
+    """What a spoken reply does to the picked sources - see the table above.
+    {"op": set|change|all|none|confirm|more|recommend|unknown, "selected": [...], "changed": bool}"""
+    t = _norm(text)
+    # "no, the third" / "actually just Meta" / "sorry, I meant two": a correction, not a removal
+    t = re.sub(r"^\s*(?:(?:no|nope|nah|sorry|actually|wait|hmm|umm?|uh|oh|well|ok|okay)\s+)+(?:i\s+(?:meant|mean|said)\s+)?", " ", t)
+    t = re.sub(r"^\s*i\s+(?:meant|mean|said)\s+", " ", t)
+    t = " " + t.strip() + " "
+    ids = [o["id"] for o in options]
+    sel = [i for i in selected if i in ids]
+    found = _mentions(t, options)
+    verbs = []
+    for kind, pat in _VERBS:
+        for m in re.finditer(rf"\b(?:{pat})\b", t):
+            verbs.append((m.start(), m.end(), kind))
+    # "swap/replace X with/for Y": X goes, Y comes in
+    for m in re.finditer(r"\b(?:with|for|to)\b", t):
+        if any(k == "swap_from" and s < m.start() for s, _e, k in verbs):
+            verbs.append((m.start(), m.end(), "add"))
+    verbs.sort()
+
+    # "drop both and use the fourth": after a clear-all, what follows starts afresh
+    cleared = _NONE.search(t)
+    floor = cleared.end() if cleared else -1
+
+    def mode_at(pos: int) -> str:
+        mode = "set"
+        for s, e, k in verbs:
+            if s >= pos:
+                break
+            if pos > floor >= e:
+                continue
+            mode = "remove" if k == "swap_from" else k
+        return mode
+
+    sets, adds, removes, onlys = [], [], [], []
+    # "swap that for X" / "replace it with X": what's picked now goes
+    if re.search(r"\b(?:swap|replace|change|switch)\s+(?:that|it|this|them|those|these)\b", t):
+        removes += sel
+    for i, (s, e, oid) in enumerate(found):
+        mode = mode_at(s)
+        nxt = found[i + 1][0] if i + 1 < len(found) else len(t)
+        if mode == "set" and _POST_ADD.match(t[e:nxt]):
+            mode = "add"
+        {"set": sets, "add": adds, "remove": removes, "only": onlys}.get(mode, sets).append(oid)
+    # "use X instead of Y": X is kept with the rest
+    if re.search(r"\binstead of\b", t) and sets and removes:
+        adds += sets
+        sets = []
+
+    has_all = bool(_ALL.search(t)) and not re.search(r"\bnot all\b", t)
+    if not found:
+        if _NONE.search(t):
+            return {"op": "none", "selected": [], "changed": bool(sel)}
+        if has_all:
+            new = ids if not re.search(r"\b(except|but not|apart from|other than)\b", t) else sel
+            return {"op": "all", "selected": new, "changed": new != sel}
+        if _UNSURE.search(t):
+            return {"op": "recommend", "selected": sel, "changed": False}
+        if _MORE.search(t) or re.search(r"\badd (?:more|another|others?|some)\b", t):
+            return {"op": "more", "selected": sel, "changed": False}
+        if _CONFIRM.match(t.strip()) or _CONFIRM.match((text or "").strip().lower()):
+            return {"op": "confirm", "selected": sel, "changed": False}
+        return {"op": "unknown", "selected": sel, "changed": False}
+
+    if onlys:
+        new = list(dict.fromkeys(onlys + adds))
+    elif has_all and removes and not sets:
+        new = [i for i in ids if i not in removes]
+    elif cleared:
+        new = [i for i in dict.fromkeys(sets + adds) if i not in removes]
+    elif sets:
+        new = [i for i in dict.fromkeys(sets + adds) if i not in removes]
+    else:
+        new = [i for i in dict.fromkeys(sel + adds) if i not in removes]
+    new = [i for i in ids if i in new]  # keep the list's order
+    return {"op": "set" if sets and not (adds or removes) else "change", "selected": new, "changed": new != sel}
+
+
+def numbered(options: list[dict], limit: int = 4) -> str:
+    """'One: Ecommerce_Data, in BigQuery. Two: ...' - for the ear."""
+    words_ = ["One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"]
+    parts = []
+    for i, o in enumerate(options[:limit]):
+        bit = f"{words_[i]}: {o['name']}"
+        lab = o.get("label") or ""
+        if lab and lab.lower() not in o["name"].lower():
+            if o.get("kind") in ("csv", "excel", "file"):
+                bit += f", {'an' if lab[:1].lower() in 'aeiou' else 'a'} {lab}"
+            elif o.get("kind") in CORE_KINDS:
+                bit += f", in {lab}"
+            elif o.get("kind"):
+                bit += f", from {lab}"
+        if o.get("note"):
+            bit += f" - {o['note']}"
+        parts.append(bit + ".")
+    more = len(options) - limit
+    if more > 0:
+        parts.append(f"And {more} more - say 'show all' to hear them.")
+    return " ".join(parts)
