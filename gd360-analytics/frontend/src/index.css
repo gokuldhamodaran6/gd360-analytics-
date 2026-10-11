@@ -1246,3 +1246,13 @@ input[type="radio"] {
 @keyframes ops-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .ops-pulse { animation: ops-pulse 1.4s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .ops-pulse { animation: none; } }
+
+/* 2026-10-11: voice typing - the live mic (thread/Dictation.tsx). */
+@keyframes gd-mic-ring { 0% { box-shadow: 0 0 0 0 rgb(var(--color-kind-answer) / 0.45); } 70% { box-shadow: 0 0 0 12px rgb(var(--color-kind-answer) / 0); } 100% { box-shadow: 0 0 0 0 rgb(var(--color-kind-answer) / 0); } }
+@keyframes gd-mic-bar { 0%, 100% { height: 4px; } 50% { height: 16px; } }
+.gd-mic-live { animation: gd-mic-ring 1.6s ease-out infinite; }
+.gd-mic-bar { height: 4px; animation: gd-mic-bar 0.9s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .gd-mic-live { animation: none; box-shadow: 0 0 0 4px rgb(var(--color-kind-answer) / 0.25); }
+  .gd-mic-bar { animation: none; height: 10px; }
+}
