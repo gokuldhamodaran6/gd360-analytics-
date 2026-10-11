@@ -20,7 +20,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
-import { assistantApi, type EulivAnswer, type EulivConnect, type EulivMemory, type EulivSource, type EulivState, type EulivTurn } from "../api/assistant";
+import { assistantApi, type EulivAnswer, type EulivConnect, type EulivMemory, type EulivState, type EulivTurn } from "../api/assistant";
+import type { CheckPeriod } from "../api/projects";
+import { type Card, cardFromSaved, EulivCardView } from "./EulivCards";
 import { ACTIVE_WORKSPACE_KEY } from "../lib/useWorkspaceNav";
 import { deviceText, LevelBars } from "../thread/Dictation";
 import {
@@ -33,8 +35,8 @@ const HIDDEN_ON = ["/admin", "/pricing", "/about", "/start", "/register", "/logi
 const OPEN_EVENT = "gd360:euliv";
 
 /** Opens Euliv from anywhere (Home, the top bar, the command palette ...). */
-export function openEuliv(first?: string) {
-  window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: { first } }));
+export function openEuliv(first?: string, opts: { talkId?: string } = {}) {
+  window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: { first, talkId: opts.talkId } }));
 }
 
 export const eulivAvailable = () => speechInputSupported() || speechOutputSupported();
@@ -325,12 +327,16 @@ export function TalkButton({ variant = "round", className = "" }: { variant?: "r
   );
 }
 
-type Card =
-  | { type: "choose"; candidates: EulivSource[] }
-  | { type: "connect"; connect: EulivConnect; opened: boolean; done?: boolean }
-  | { type: "answer"; data: EulivAnswer }
-  | { type: "explain"; data: NonNullable<EulivTurn["explain"]> }
-  | { type: "mic"; reason: string; label: string };
+/** The read-back sentence after a tap (the same words the server would use). */
+function restateLocal(plan: { restated: string; options: { id: string; name: string }[]; needs_pick?: boolean }, selected: string[], period: CheckPeriod | null): string {
+  const base = plan.restated.split(/, (?:from|looking across)/)[0].replace(/ for [^,]+$/, "").replace(/\.$/, "");
+  let s = base;
+  if (period) s += ` for ${period.label}${period.label !== period.text ? ` (${period.text})` : ""}`;
+  const names = plan.options.filter((o) => selected.includes(o.id)).map((o) => o.name);
+  if (names.length) s += ", from " + (names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
+  else if (!plan.needs_pick) s += ", looking across all your data";
+  return s + ".";
+}
 
 type Msg = { id: number; who: "you" | "euliv"; text: string; card?: Card; working?: string };
 type Phase = "idle" | "listening" | "thinking" | "working" | "speaking";
@@ -352,12 +358,14 @@ export default function EulivProvider() {
   const [open, setOpen] = useState(false);
   const [settings, setSettings] = useState<EulivSettings>(loadSettings);
   const firstRef = useRef<string | undefined>(undefined);
+  const talkRef = useRef<string | undefined>(undefined);
   const [openSeq, setOpenSeq] = useState(0);
 
   useEffect(() => onSettings(setSettings), []);
   useEffect(() => {
     const on = (e: Event) => {
       firstRef.current = (e as CustomEvent).detail?.first || undefined;
+      talkRef.current = (e as CustomEvent).detail?.talkId || undefined;
       setOpen(true);
       setOpenSeq((n) => n + 1);
     };
@@ -385,12 +393,12 @@ export default function EulivProvider() {
           <OrbGlyph size={14} /> Say “Hi Euliv”
         </button>
       )}
-      {open && <EulivPanel key={openSeq} first={firstRef.current} settings={settings} wakeProblem={wake.problem} onClose={() => setOpen(false)} />}
+      {open && <EulivPanel key={openSeq} first={firstRef.current} talkId={talkRef.current} settings={settings} wakeProblem={wake.problem} onClose={() => setOpen(false)} />}
     </>
   );
 }
 
-function EulivPanel({ first, settings, wakeProblem, onClose }: { first?: string; settings: EulivSettings; wakeProblem: string; onClose: () => void }) {
+function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?: string; talkId?: string; settings: EulivSettings; wakeProblem: string; onClose: () => void }) {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [phase, setPhase] = useState<Phase>("idle");
   const [level, setLevel] = useState(0);
@@ -398,6 +406,10 @@ function EulivPanel({ first, settings, wakeProblem, onClose }: { first?: string;
   const [typed, setTyped] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [topicLine, setTopicLine] = useState("");
+  // round 24: this talk, saved in Library as it happens
+  const [talk, setTalk] = useState<{ id: string; title: string } | null>(null);
+  const [wide, setWide] = useState(false);
+  const greeting = useRef("");
   const state = useRef<EulivState>({});
   const alive = useRef(true);
   const session = useRef(0);
@@ -415,7 +427,15 @@ function EulivPanel({ first, settings, wakeProblem, onClose }: { first?: string;
     const id = ++idSeq.current;
     // one connect card at a time: a newer one replaces the older
     const strip = m.card?.type === "connect";
-    setMsgs((cur) => [...cur.slice(-40).map((x) => (strip && x.card?.type === "connect" ? { ...x, card: undefined } : x)), { ...m, id }]);
+    setMsgs((cur) => [
+      ...cur.slice(-40).map((x) => {
+        if (strip && x.card?.type === "connect") return { ...x, card: undefined };
+        // a newer turn: the earlier read-back is settled - it stays, read-only
+        if (m.who === "euliv" && x.card && (x.card.type === "plan" || x.card.type === "fix_date") && x.card.live) return { ...x, card: { ...x.card, live: false } };
+        return x;
+      }),
+      { ...m, id },
+    ]);
     return id;
   }, []);
   const patch = useCallback((id: number, p: Partial<Msg>) => setMsgs((cur) => cur.map((m) => (m.id === id ? { ...m, ...p } : m))), []);
@@ -524,7 +544,7 @@ function EulivPanel({ first, settings, wakeProblem, onClose }: { first?: string;
       if (!alive.current) return;
       let a: EulivAnswer;
       try {
-        a = await assistantApi.answer(runId);
+        a = await assistantApi.answer(runId, state.current.talk_id);
         failures = 0;
       } catch (e) {
         if (++failures >= 4) return deliver(errText(e), undefined);
@@ -537,9 +557,17 @@ function EulivPanel({ first, settings, wakeProblem, onClose }: { first?: string;
         }
         continue;
       }
-      return deliver(a.say || (a.status === "done" ? "Here's what I found." : "That didn't finish."), a.speak, { type: "answer", data: a });
+      if (a.status === "needs_input") {
+        // "these sources can't answer that": say why, then offer other data
+        setMsgs((cur) => cur.filter((m) => m.id !== msgId));
+        if (intro) await intro;
+        if (s !== session.current) return;
+        return turnWith("", "needs_input", runId);
+      }
+      return deliver(a.say || (a.status === "done" ? "Here's what I found." : "That didn't finish."), a.speak, { type: "answer", data: a, runId });
     }
     if (alive.current) await deliver("This one is taking longer than usual. It keeps running - open it from your Library when it's ready.", undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [patch, push, say, afterReply]);
 
   const watching = useRef(false);
@@ -549,6 +577,8 @@ function EulivPanel({ first, settings, wakeProblem, onClose }: { first?: string;
     if (watching.current) return;
     watching.current = true;
     const t0 = Date.now();
+    // a minute of slack for clock differences between this computer and the server
+    const since = new Date(t0 - 60000).toISOString();
     let focusHit = false;
     const onFocus = () => (focusHit = true);
     window.addEventListener("focus", onFocus);
@@ -558,7 +588,7 @@ function EulivPanel({ first, settings, wakeProblem, onClose }: { first?: string;
         focusHit = false;
         if (!alive.current || state.current.awaiting !== "connecting") return;
         try {
-          const st = await assistantApi.connected(c.kind, workspaceId());
+          const st = await assistantApi.connected(c.kind, workspaceId(), since);
           if (st.connected) {
             setMsgs((cur) => cur.map((m) => (m.card?.type === "connect" ? { ...m, card: { ...m.card, done: true } } : m)));
             interrupt();
@@ -587,8 +617,20 @@ function EulivPanel({ first, settings, wakeProblem, onClose }: { first?: string;
 
   const react = useCallback(async (out: EulivTurn) => {
     state.current = out.state || {};
-    if (out.state?.topic) setTopicLine(out.state.topic);
+    if (out.talk_id) {
+      state.current.talk_id = out.talk_id;
+      setTalk({ id: out.talk_id, title: out.talk_title || "Talk with Euliv" });
+    }
+    if (out.plan) setTopicLine(out.plan.restated.replace(/\.$/, ""));
     switch (out.action) {
+      case "plan": {
+        const ok = await say(out.say, out.speak, out.plan ? { type: "plan", plan: out.plan, live: true } : undefined);
+        return afterReply(ok);
+      }
+      case "fix_date": {
+        const ok = await say(out.say, out.speak, out.issue ? { type: "fix_date", issue: out.issue, live: true } : undefined);
+        return afterReply(ok);
+      }
       case "run": {
         if (out.sources?.length) setTopicLine(out.sources.map((x) => x.name).join(" · "));
         // "Okay, looking at Google Ads" is said while the work starts - no waiting for it
@@ -598,10 +640,6 @@ function EulivPanel({ first, settings, wakeProblem, onClose }: { first?: string;
         void intro.then((r) => r !== null && s === session.current && setPhase("working"));
         if (!settingsRef.current.speak || !speechOutputSupported()) setPhase("working");
         return pollAnswer(out.run_id!, id, intro);
-      }
-      case "choose": {
-        const ok = await say(out.say, out.speak, { type: "choose", candidates: out.candidates || [] });
-        return afterReply(ok);
       }
       case "connect_offer": {
         const ok = await say(out.say, out.speak, out.connect ? { type: "connect", connect: out.connect, opened: false } : undefined);
@@ -637,12 +675,15 @@ function EulivPanel({ first, settings, wakeProblem, onClose }: { first?: string;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [say, push, pollAnswer, afterReply, watchConnect, onClose]);
 
-  const turnWith = useCallback(async (text: string, event?: string) => {
+  const turnWith = useCallback(async (text: string, event?: string, runId?: string) => {
     setPhase("thinking");
     let out: EulivTurn;
     const s = session.current;
     try {
-      out = await assistantApi.turn({ text, state: state.current, workspace_id: workspaceId(), event });
+      out = await assistantApi.turn({
+        text, state: state.current, workspace_id: workspaceId(), event, run_id: runId,
+        save: settingsRef.current.keep !== false, greeting: greeting.current || undefined,
+      });
     } catch (e) {
       if (s !== session.current) return;
       if ((await say(errText(e))) === null) return;
@@ -670,14 +711,31 @@ function EulivPanel({ first, settings, wakeProblem, onClose }: { first?: string;
     alive.current = true;
     void loadVoices();
     (async () => {
+      if (talkId) {
+        // carrying on a saved talk: its turns, its state, then "Welcome back"
+        try {
+          const t = await assistantApi.talk(talkId);
+          if (!alive.current) return;
+          state.current = { ...(t.state || {}), talk_id: t.id, awaiting: null, brief: null };
+          setTalk({ id: t.id, title: t.title });
+          for (const m of t.messages.slice(-30)) {
+            const card = cardFromSaved(m.card);
+            if (m.card?.type === "working") continue;
+            push({ who: m.role === "user" ? "you" : "euliv", text: m.text, card });
+          }
+        } catch {
+          /* start fresh */
+        }
+      }
       if (first) return handle(first);
       let hello = "Hi, how can I help you?";
       try {
-        hello = (await assistantApi.hello()).say;
+        hello = (await assistantApi.hello(talkId)).say;
       } catch {
         /* the greeting still works offline */
       }
       if (!alive.current) return;
+      if (!talkId) greeting.current = hello;
       const ok = await say(hello);
       afterReply(ok);
     })();
@@ -736,18 +794,50 @@ function EulivPanel({ first, settings, wakeProblem, onClose }: { first?: string;
     void handle(text);
   };
 
+  /** A tap on a data row: the live read-back changes in place (no round trip). */
+  const toggleSource = (id: string) => {
+    const b = state.current.brief;
+    if (!b) return;
+    const cur = b.selected || [];
+    const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+    state.current = { ...state.current, brief: { ...b, selected: next, chosen: true, mode: null } };
+    setMsgs((all) => all.map((m) => (m.card?.type === "plan" && m.card.live ? { ...m, card: { ...m.card, plan: { ...m.card.plan, selected: next, mode: null, restated: restateLocal(m.card.plan, next, m.card.plan.period) } } } : m)));
+    if (phase === "listening" || phase === "speaking") {
+      interrupt();
+      setPhase("idle");
+    }
+  };
+  const choosePeriod = (p: CheckPeriod) => {
+    const b = state.current.brief;
+    if (!b) return;
+    state.current = { ...state.current, brief: { ...b, period: p } };
+    setMsgs((all) => all.map((m) => (m.card?.type === "plan" && m.card.live ? { ...m, card: { ...m.card, plan: { ...m.card.plan, period: p, restated: restateLocal(m.card.plan, m.card.plan.selected, p) } } } : m)));
+  };
+  const goAhead = () => {
+    if (phase === "thinking") return;
+    interrupt();
+    void turnWith("", "confirm");
+  };
+
   const orbScale = phase === "listening" ? 1 + Math.min(0.28, level * 0.9) : 1;
   const status = phase === "listening" && caption ? "" : PHASE_TEXT[phase];
 
   return (
     <div className="fixed inset-0 z-[90] flex items-stretch sm:items-center justify-center bg-[rgb(var(--color-base)/0.78)] backdrop-blur-md" role="dialog" aria-modal="true" aria-label="Euliv" data-euliv="" data-phase={phase}>
-      <div className="gd-euliv-in relative w-full sm:w-[min(760px,calc(100vw-48px))] h-full sm:h-[min(800px,calc(100vh-48px))] sm:rounded-[28px] sm:border border-border bg-surface flex flex-col overflow-hidden shadow-[0_40px_120px_-40px_rgb(0_0_0/0.9)]">
+      <div className={`gd-euliv-in relative w-full ${wide ? "sm:w-[min(1080px,calc(100vw-48px))]" : "sm:w-[min(780px,calc(100vw-48px))]"} h-full sm:h-[min(860px,calc(100vh-48px))] transition-[width] duration-300 sm:rounded-[28px] sm:border border-border bg-surface flex flex-col overflow-hidden shadow-[0_40px_120px_-40px_rgb(0_0_0/0.9)]`}>
         <header className="flex items-center gap-3 px-4 sm:px-6 h-16 border-b border-border shrink-0">
           <OrbGlyph size={28} />
           <div className="flex-1 min-w-0 flex flex-col">
             <b className="text-[15px] text-text leading-tight">Euliv</b>
             <span className="text-[12px] text-muted truncate" data-euliv-topic="">{topicLine || "Your data, out loud"}</span>
           </div>
+          {talk && (
+            <Link to={`/v/${talk.id}`} onClick={onClose} title="This talk is saved in Library - open it"
+              className="ui-focus hidden sm:inline-flex items-center gap-1.5 h-8 px-3 rounded-full bg-kind-answer-fill text-kind-answer text-[12px] font-medium max-w-[240px]" data-euliv-saved="">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0"><path d="M5 12l5 5L20 7" /></svg>
+              <span className="truncate">Saved · {talk.title}</span>
+            </Link>
+          )}
           <button type="button" onClick={() => { if (!showSettings) { interrupt(); setPhase("idle"); } setShowSettings((v) => !v); }} aria-label="Euliv settings" aria-expanded={showSettings} className="ui-focus w-10 h-10 rounded-full grid place-items-center text-secondary hover:text-text hover:bg-subtle/70" data-euliv-settings-open="">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" /><circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="18" r="2" /></svg>
           </button>
@@ -773,7 +863,7 @@ function EulivPanel({ first, settings, wakeProblem, onClose }: { first?: string;
                       <span className="w-4 h-4 rounded-full gd-orb-ring" aria-hidden="true" /> {m.working}…
                     </span>
                   )}
-                  {m.card && <CardView card={m.card} onPick={pick} onConnect={connectTapped} onClose={onClose} />}
+                  {m.card && <EulivCardView card={m.card} h={{ onPick: pick, onConnect: connectTapped, onClose, onToggle: toggleSource, onGo: goAhead, onPeriod: choosePeriod, onExpand: (o) => o && setWide(true) }} />}
                 </div>
               ),
             )}
@@ -839,138 +929,6 @@ function MicGlyph() {
       <rect x="9" y="3" width="6" height="11" rx="3" />
       <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
     </svg>
-  );
-}
-
-function CardView({ card, onPick, onConnect, onClose }: { card: Card; onPick: (t: string) => void; onConnect: (c: EulivConnect) => void; onClose: () => void }) {
-  if (card.type === "choose") {
-    return (
-      <div className="flex flex-wrap gap-2" data-euliv-choose="">
-        {card.candidates.map((c) => (
-          <button key={c.id} type="button" onClick={() => onPick(c.name)} className="ui-focus h-10 px-4 rounded-full border border-border-strong bg-base/40 text-ui text-text hover:border-kind-answer-border hover:bg-kind-answer-fill/60 inline-flex items-center gap-2">
-            {c.name}
-            {c.label && c.label !== c.name && <span className="text-[11px] text-muted">{c.label}</span>}
-          </button>
-        ))}
-        {card.candidates.length > 1 && (
-          <button type="button" onClick={() => onPick(card.candidates.length === 2 ? "both" : "all of them")} className="ui-focus h-10 px-4 rounded-full bg-kind-answer-fill text-kind-answer text-ui font-medium hover:brightness-110">
-            {card.candidates.length === 2 ? "Both" : "All of them"}
-          </button>
-        )}
-      </div>
-    );
-  }
-  if (card.type === "connect") {
-    const c = card.connect;
-    return (
-      <div className="rounded-[18px] border border-border bg-base/40 p-4 flex flex-wrap items-center gap-3" data-euliv-connect={c.kind || ""}>
-        <span className="flex-1 min-w-[180px] text-ui text-secondary leading-snug">
-          {card.done ? (
-            <><b className="text-kind-answer">{c.label} is connected.</b> Carrying on with your question…</>
-          ) : (
-            <>Connect <b className="text-text">{c.label}</b> - it opens in a new tab, and Euliv picks up here when it's done.</>
-          )}
-        </span>
-        {!card.done && (
-          <>
-            <a
-              href={c.url}
-              target="_blank"
-              rel="noopener"
-              onClick={() => onConnect(c)}
-              className="ui-focus h-10 px-4 rounded-full bg-primary text-on-primary text-ui font-medium inline-flex items-center"
-              data-euliv-connect-open=""
-            >
-              Connect {c.label}
-            </a>
-            <button type="button" onClick={() => onPick("use what's connected")} className="ui-focus h-10 px-3 rounded-full text-ui text-secondary hover:text-text hover:bg-subtle/60">
-              Use what's connected
-            </button>
-          </>
-        )}
-      </div>
-    );
-  }
-  if (card.type === "mic") {
-    return (
-      <div className="rounded-[18px] border border-warning/40 bg-warning/10 p-4 flex flex-col gap-2 text-ui text-secondary" data-euliv-mic={card.reason}>
-        <b className="text-warning">Microphone check</b>
-        <ul className="m-0 pl-4 flex flex-col gap-1 leading-snug list-disc">
-          {card.reason === "blocked" ? (
-            <>
-              <li>Click the lock (or mic) icon at the left of the address bar.</li>
-              <li>Set Microphone to <b className="text-text">Allow</b>, then tap the orb again.</li>
-            </>
-          ) : card.reason === "in-use" ? (
-            <>
-              <li>Close Zoom, Teams, Meet or any other app using the microphone.</li>
-              <li>Then tap the orb again.</li>
-            </>
-          ) : (
-            <>
-              <li>Is the microphone plugged in (or your headset connected)?</li>
-              <li>Is it muted - a switch on the headset, or in your computer's sound settings?</li>
-              <li>Is the right microphone chosen in your browser's site settings?</li>
-            </>
-          )}
-        </ul>
-        {card.label && card.reason !== "silent" && <span className="text-[12px] text-muted">Listening to: {card.label.replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/i, "")}</span>}
-        <span className="text-[12px] text-muted">Euliv settings › Test microphone shows whether it can hear you.</span>
-      </div>
-    );
-  }
-  if (card.type === "explain") {
-    const d = card.data;
-    return (
-      <div className="rounded-[18px] border border-border bg-base/40 p-4 flex flex-col gap-2.5" data-euliv-explain="">
-        {d.points.length > 0 && (
-          <ul className="m-0 pl-4 flex flex-col gap-1.5 text-ui text-secondary leading-snug list-disc">
-            {d.points.map((p, i) => <li key={i}>{p.text}</li>)}
-          </ul>
-        )}
-        {d.takeaway && <span className="text-ui text-text">{d.takeaway}</span>}
-        <div className="flex flex-wrap gap-2">
-          {d.followups.map((q) => (
-            <button key={q} type="button" onClick={() => onPick(q)} className="ui-focus h-9 px-3 rounded-full border border-border text-[13px] text-secondary hover:text-text hover:border-border-strong">{q}</button>
-          ))}
-          <Link to={d.link} onClick={onClose} className="ui-focus h-9 px-3 rounded-full text-[13px] text-kind-analysis hover:underline inline-flex items-center">Open the answer →</Link>
-        </div>
-      </div>
-    );
-  }
-  const a = card.data;
-  if (a.status !== "done" || !a.card) {
-    return (
-      <Link to={a.link} onClick={onClose} className="text-ui text-kind-analysis hover:underline" data-euliv-failed="">
-        Open it to see what happened →
-      </Link>
-    );
-  }
-  const c = a.card;
-  return (
-    <div className="flex flex-col gap-3" data-euliv-answer="">
-      {c.kpis.length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {c.kpis.map((k, i) => (
-            <div key={i} className="rounded-[14px] border border-border bg-base/40 p-3 flex flex-col gap-0.5 min-w-0">
-              <span className="text-[10.5px] uppercase tracking-[0.08em] text-muted truncate">{k.label}</span>
-              <span className="text-[20px] font-semibold font-mono tabular-nums text-text truncate">{k.display}</span>
-              {k.delta && <span className={`text-[12px] ${k.dir === "up" ? "text-good" : k.dir === "down" ? "text-danger" : "text-secondary"}`}>{k.delta}{k.note ? ` ${k.note}` : ""}</span>}
-            </div>
-          ))}
-        </div>
-      )}
-      {c.answer && c.answer !== c.headline && !(a.say || "").includes(c.answer.slice(0, 120)) && <p className="m-0 text-ui text-secondary leading-relaxed line-clamp-4">{c.answer}</p>}
-      <div className="flex flex-wrap items-center gap-2">
-        <Link to={a.link} onClick={onClose} className="ui-focus h-9 px-4 rounded-full border border-border-strong text-[13px] text-text hover:bg-subtle/60 inline-flex items-center" data-euliv-open-answer="">
-          See the full answer
-        </Link>
-        {c.next_questions.map((q) => (
-          <button key={q} type="button" onClick={() => onPick(q)} className="ui-focus h-9 px-3 rounded-full border border-border text-[13px] text-secondary hover:text-text hover:border-border-strong">{q}</button>
-        ))}
-      </div>
-      {c.sources_used.length > 0 && <span className="text-[12px] text-muted">From {c.sources_used.join(", ")}</span>}
-    </div>
   );
 }
 
@@ -1045,6 +1003,7 @@ function EulivSettingsPanel({ settings, wakeProblem, onDone }: { settings: Euliv
       {wakeProblem && <span className="text-[12.5px] text-warning -mt-3 pl-8">{wakeProblem}</span>}
       <Toggle id="euliv-speak" on={settings.speak} disabled={!speechOutputSupported()} onChange={(v) => saveSettings({ speak: v })} label="Speak answers out loud" help="Off: Euliv writes its answers only." />
       <Toggle id="euliv-hands" on={settings.handsFree} onChange={(v) => saveSettings({ handsFree: v })} label="Keep the conversation going" help="After each answer Euliv listens for your next question - no tap needed." />
+      <Toggle id="euliv-keep" on={settings.keep !== false} onChange={(v) => saveSettings({ keep: v })} label="Keep a written record" help="Each talk is saved in Library under “Talks”, so you can read it again or carry on. Words only - never audio." />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className="flex flex-col gap-1.5 text-[12.5px] text-secondary">
