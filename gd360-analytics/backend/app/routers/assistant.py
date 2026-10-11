@@ -122,6 +122,8 @@ class TurnRequest(BaseModel):
     save: bool = True
     greeting: str | None = Field(default=None, max_length=300)
     today: str | None = Field(default=None, max_length=10)  # the person's local date, YYYY-MM-DD
+    # round 28: what Euliv said in the last seconds - a "you" that is only Euliv's own voice coming back is dropped
+    last_said: str | None = Field(default=None, max_length=4000)
 
 
 def _reply(say: str, action: str, state: TurnState, **extra) -> dict:
@@ -848,7 +850,7 @@ def _turn(db: Session, user: models.User, payload: TurnRequest) -> dict:
         return _reply("I don't see it connected yet. Finish connecting in the other tab and I'll carry on.", "connect_wait", state)
 
     # round 27: Euliv's own words came back through the mic (speakers): never answer itself - drop it, keep listening
-    if not payload.event and eu.is_own_words(text):
+    if not payload.event and (eu.is_own_words(text) or eu.heard_euliv(text, payload.last_said)):
         return _reply("", "ignore", state)
 
     kind = eu.intent(text)
