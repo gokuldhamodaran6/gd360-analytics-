@@ -230,7 +230,7 @@ export function ThreadComposer({
         />
         <div className="flex items-center gap-2 px-2.5 pb-2.5 pt-1">
           {voice.listening ? (
-            <ListeningStrip size="sm" heard={voice.heard} onStop={voice.stop} />
+            <ListeningStrip size="sm" heard={voice.heard} onStop={voice.stop} level={voice.level} hint={voice.hint} />
           ) : (
             <>
               <div className="min-w-0 flex-1 flex items-center">{picker}</div>
