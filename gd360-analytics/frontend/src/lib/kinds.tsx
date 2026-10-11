@@ -15,17 +15,20 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-export type Kind = "answer" | "analysis" | "dashboard";
+// 2026-10-11 (round 24): "talk" - a conversation with Euliv, saved in Library
+// (/v/:id). Its own look: the Euliv orb.
+export type Kind = "answer" | "analysis" | "dashboard" | "talk";
 
-export const KIND_LABEL: Record<Kind, string> = { answer: "Answer", analysis: "Analysis", dashboard: "Dashboard" };
+export const KIND_LABEL: Record<Kind, string> = { answer: "Answer", analysis: "Analysis", dashboard: "Dashboard", talk: "Talk" };
 
 // Full class strings (never assembled) so Tailwind's scanner keeps them.
 const PILL: Record<Kind, string> = {
   answer: "bg-kind-answer-fill text-kind-answer border-kind-answer-border",
   analysis: "bg-kind-analysis-fill text-kind-analysis border-kind-analysis-border",
   dashboard: "bg-kind-dashboard-fill text-kind-dashboard border-kind-dashboard-border",
+  talk: "bg-kind-analysis-fill text-text border-kind-analysis-border",
 };
-const TEXT: Record<Kind, string> = { answer: "text-kind-answer", analysis: "text-kind-analysis", dashboard: "text-kind-dashboard" };
+const TEXT: Record<Kind, string> = { answer: "text-kind-answer", analysis: "text-kind-analysis", dashboard: "text-kind-dashboard", talk: "text-kind-analysis" };
 
 export function kindClasses(kind: Kind): string {
   return PILL[kind];
@@ -37,6 +40,7 @@ export function kindText(kind: Kind): string {
 
 /** A conversation row (GET /conversations) is an Answer or an Analysis. */
 export function conversationKind(c: { kind?: string | null }): Kind {
+  if (c.kind === "voice") return "talk";
   return c.kind === "project" ? "answer" : "analysis";
 }
 
@@ -45,6 +49,7 @@ export function conversationKind(c: { kind?: string | null }): Kind {
 export function conversationHref(c: { id: string; kind?: string | null; datasource_id?: string | null }): string | null {
   if (c.kind === "project") return `/p/${c.id}`;
   if (c.kind === "guided") return `/g/${c.id}`;
+  if (c.kind === "voice") return `/v/${c.id}`;
   return c.datasource_id ? `/workspace/${c.datasource_id}?conversation=${c.id}` : null;
 }
 
@@ -95,6 +100,13 @@ export function KindIcon({ kind, size = 16, className = "" }: { kind: Kind; size
       </svg>
     );
   }
+  if (kind === "talk") {
+    return (
+      <svg {...common}>
+        <path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4" />
+      </svg>
+    );
+  }
   return (
     <svg {...common} strokeWidth={1.9}>
       <rect x="3" y="3" width="7" height="9" rx="1.2" />
@@ -119,6 +131,13 @@ export function KindPill({ kind, children, className = "" }: { kind: Kind; child
 
 /** The square icon tile at the start of a list row. */
 export function KindTile({ kind, size = 36 }: { kind: Kind; size?: number }) {
+  if (kind === "talk") {
+    return (
+      <span className="grid place-items-center shrink-0 rounded-full gd-orb text-[rgb(var(--color-base))]" style={{ width: size, height: size }} aria-hidden="true">
+        <KindIcon kind="talk" size={Math.round(size * 0.42)} />
+      </span>
+    );
+  }
   return (
     <span
       className={`grid place-items-center shrink-0 rounded-[10px] border ${PILL[kind]}`}
