@@ -29,7 +29,7 @@ export type EulivState = {
 export type EulivTurn = {
   say: string;
   speak: string;
-  action: "chat" | "choose" | "plan" | "fix_date" | "rephrase" | "connect_offer" | "connect" | "connect_wait" | "run" | "explain" | "end" | "wait" | "ignore";
+  action: "chat" | "choose" | "plan" | "fix_date" | "rephrase" | "connect_offer" | "connect" | "connect_wait" | "run" | "explain" | "end" | "wait" | "ignore" | "question";
   plan?: PlanCard;
   issue?: CheckIssue;
   title?: string;
@@ -41,6 +41,8 @@ export type EulivTurn = {
   run_id?: string;
   project_id?: string;
   question?: string;
+  said?: string; // round 29: what was said, before it was tidied
+  notes?: string[];
   sources?: EulivSource[];
   explain?: { headline: string | null; points: { text: string; ref: string | null }[]; takeaway: string | null; followups: string[]; link: string; run_id?: string | null };
 };
