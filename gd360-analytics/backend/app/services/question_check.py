@@ -152,9 +152,182 @@ def _year_for_month(m: int, today: date) -> int:
     return today.year if m <= today.month else today.year - 1
 
 
+# round 25: comparisons ("Jan 2026 vs Jan 2025", "this year so far compared to last year"),
+# days ("on March 15", "1 Oct 2025 to 31 Mar 2026"), year ranges ("between 2020 and 2024")
+# and years that haven't happened yet are all read correctly; a number that only looks
+# like a year ("top 2000 customers", "March 15") is never taken as one.
+_CMP = re.compile(r"\b(?:vs\.?|versus|compared\s+(?:to|with)|comparing\s+(?:it\s+|that\s+)?(?:to|with)|against|relative\s+to)\b")
+_YOY = re.compile(r"\b(?:yoy|year[\s-]+(?:over|on)[\s-]+year)\b")
+_MOM = re.compile(r"\b(?:mom|month[\s-]+(?:over|on)[\s-]+month)\b")
+_SAME_LY = re.compile(r"\b(?:the\s+)?same\s+(?:period|time|month|quarter|week|days?|months?|dates?)\s+(?:last|a|the\s+previous|previous|the\s+year\s+before)\s*(?:year)?\b")
+_BEFORE = re.compile(r"\b(?:the\s+)?(?:month|week|quarter|year|period|day|days|months|weeks)\s+before\b|"
+                     r"\b(?:the\s+)?(?:previous|prior|preceding)\s+(?:month|week|quarter|year|period)\b")
+_PREP = r"(?:in|of|since|from|during|for|until|till|to|through|between|on|and|early|late|mid|by|before|after)"
+_DAY_MON = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?({MONTH_RE})\b(?:\s*,?\s*('\d{{2}}|\d{{4}})\b)?")
+_MON_DAY = re.compile(rf"\b({MONTH_RE})\s+(\d{{1,2}})(?:st|nd|rd|th)?\b(?!\s*(?:%|k\b|m\b|units|orders|items))(?:\s*,?\s*(\d{{4}})\b)?")
+_MON_YR = re.compile(rf"\b({MONTH_RE})\b(?:\s*,?\s*('\d{{2}}|\d{{4}})\b)?")
+_RANGE_JOIN = re.compile(r"^\s*(?:to|until|till|through|thru|and|-|–|—)\s*(?:the\s+)?(?:end\s+of\s+)?$")
+_NOT_YEAR_BEFORE = {"top", "bottom", "first", "over", "under", "above", "below", "than", "least", "most", "about", "around",
+                    "only", "just", "exactly", "approximately", "approx", "max", "min", "limit", "rows", "row", "id", "number",
+                    "no", "code", "sku", "zip", "postcode", "room", "store", "#", "x"}
+_UNIT_AFTER = {"customers", "customer", "products", "product", "units", "unit", "items", "item", "rows", "records", "people",
+               "users", "dollars", "euros", "pounds", "rupees", "usd", "eur", "gbp", "inr", "stores", "employees", "accounts",
+               "km", "kg", "miles", "calories", "times", "pieces", "pcs", "skus", "leads", "rooms", "guests", "visitors"}
+
+
+def _future(p: dict | None, today: date) -> dict | None:
+    if p:
+        if date.fromisoformat(p["start"]) > today:
+            p["future"] = True
+        for part in p.get("parts") or []:
+            if date.fromisoformat(part["start"]) > today:
+                part["future"] = True
+    return p
+
+
 def parse_period(text: str, today: date) -> tuple[dict | None, list[dict]]:
-    """(the period the question asks about, other readings worth offering)."""
+    """(the period the question asks about, other readings worth offering).
+    A comparison comes back as one period with `parts` = [the first, the second]."""
     t = " " + (text or "").lower() + " "
+    m = _CMP.search(t)
+    if m:
+        left, right = t[:m.start()] + " ", " " + t[m.end():]
+        p1, a1 = _parse_one(left, today)
+        p2 = None
+        if p1 and _SAME_LY.search(right):
+            p2 = _shift_period(p1, months=12)
+        elif p1 and _BEFORE.search(right):
+            p2 = _shift_period(p1, back=True)
+        else:
+            p2, _ = _parse_one(right, today)
+            # "this year so far vs last year" means the same dates a year earlier - like for like
+            if p1 and p2 and p1["end"] == today.isoformat() and p2.get("label") in ("last year", "last month", "last quarter", "last week"):
+                p2 = _shift_period(p1, months={"last year": 12, "last quarter": 3, "last month": 1}.get(p2["label"], 0),
+                                   days=7 if p2["label"] == "last week" else 0)
+        if p1 and p2 and (p1["start"], p1["end"]) != (p2["start"], p2["end"]):
+            return _future(_compare(p1, p2), today), []
+        if p1 or p2:
+            return _future(p1 or p2, today), (a1 if p1 else [])
+    p, alts = _parse_one(t, today)
+    if p and _YOY.search(t):
+        return _future(_compare(p, _shift_period(p, months=12)), today), []
+    if p and _MOM.search(t) and date.fromisoformat(p["end"]) - date.fromisoformat(p["start"]) < timedelta(days=32):
+        return _future(_compare(p, _shift_period(p, back=True)), today), []
+    return _future(p, today), alts
+
+
+def _compare(p1: dict, p2: dict) -> dict:
+    a = min(date.fromisoformat(p1["start"]), date.fromisoformat(p2["start"]))
+    b = max(date.fromisoformat(p1["end"]), date.fromisoformat(p2["end"]))
+    text = f"{p1['text']} vs {p2['text']}"
+    out = _period(a, b, text, assumed=bool(p1.get("assumed") or p2.get("assumed")), key="compare")
+    out["text"] = text
+    out["parts"] = [p1, p2]
+    return out
+
+
+def _safe_day(y: int, m: int, d: int) -> date:
+    return date(y, m, min(d, monthrange(y, m)[1]))
+
+
+def _shift_period(p: dict, months: int = 0, days: int = 0, back: bool = False) -> dict:
+    """The same period moved earlier: by `months`, `days`, or (back=True) by its own length."""
+    a, b = date.fromisoformat(p["start"]), date.fromisoformat(p["end"])
+    whole_months = a.day == 1 and b == _month_end(b.year, b.month)
+    if back:
+        if whole_months:
+            months = (b.year - a.year) * 12 + b.month - a.month + 1
+        else:
+            days = (b - a).days + 1
+    if months:
+        ya, ma = _add_months(a.year, a.month, -months)
+        yb, mb = _add_months(b.year, b.month, -months)
+        na = date(ya, ma, 1) if whole_months else _safe_day(ya, ma, a.day)
+        nb = _month_end(yb, mb) if whole_months else _safe_day(yb, mb, b.day)
+    else:
+        na, nb = a - timedelta(days=days), b - timedelta(days=days)
+    out = _period(na, nb, fmt_range(na, nb), key="compare_to")
+    return out
+
+
+def _mentions(t: str, today: date) -> list[dict]:
+    """Every date a question names: '15 March', 'Mar 15, 2025', 'March 2025', "Jan '26", 'October'."""
+    found: list[dict] = []
+    taken: list[tuple[int, int]] = []
+
+    def free(s: int, e: int) -> bool:
+        return all(e <= a or s >= b for a, b in taken)
+
+    def add(s, e, mon, day, yr):
+        mm = MONTH_NUM.get(mon[:4] if mon.startswith("sept") else mon[:3])
+        if not mm:
+            return
+        if day is not None and not (1 <= day <= 31):
+            return
+        found.append({"s": s, "e": e, "m": mm, "d": day, "y": yr})
+        taken.append((s, e))
+
+    for m in _DAY_MON.finditer(t):
+        if free(m.start(), m.end()):
+            add(m.start(), m.end(), m.group(2), int(m.group(1)), _yr(m.group(3)))
+    for m in _MON_DAY.finditer(t):
+        if free(m.start(), m.end()):
+            if m.group(1) == "may" and not m.group(3) and not re.search(rf"\b{_PREP}\s*$", t[:m.start()]):
+                continue
+            add(m.start(), m.end(), m.group(1), int(m.group(2)), _yr(m.group(3)))
+    for m in _MON_YR.finditer(t):
+        if free(m.start(), m.end()):
+            if m.group(1) == "may" and not m.group(2) and not re.search(rf"\b{_PREP}\s*$", t[:m.start()]):
+                continue
+            add(m.start(), m.end(), m.group(1), None, _yr(m.group(2)))
+    found.sort(key=lambda x: x["s"])
+    return found
+
+
+def _resolve_year(mm: int, dd: int | None, today: date) -> int:
+    if dd is None:
+        return _year_for_month(mm, today)
+    return today.year if (mm, dd) <= (today.month, today.day) else today.year - 1
+
+
+def _span_of(x: dict, y: int) -> tuple[date, date]:
+    if x["d"] is not None and x["d"] <= monthrange(y, x["m"])[1]:
+        d = date(y, x["m"], x["d"])
+        return d, d
+    return date(y, x["m"], 1), _month_end(y, x["m"])
+
+
+def _mention_label(x: dict, y: int) -> str:
+    a, b = _span_of(x, y)
+    return fmt_range(a, b)
+
+
+def _year_ok(t: str, m: re.Match) -> bool:
+    """Is this 4-digit number meant as a year? 'in 2025', '2025 revenue' yes; 'top 2000 customers' no."""
+    before = re.findall(r"[a-z#$£€]+|\d+", t[:m.start()])
+    after = re.findall(r"[a-z]+|\d+", t[m.end():])
+    pre, post = t[max(0, m.start() - 1):m.start()], t[m.end():m.end() + 2]
+    if pre in ("$", "£", "€", "#", "₹") or post[:1] == "%" or re.match(r"[.,]\d", post):
+        return False
+    prev = before[-1] if before else ""
+    nxt = after[0] if after else ""
+    if prev in ("in", "for", "during", "of", "year", "fy", "since", "from", "between", "until", "till", "through", "to", "and", "vs"):
+        return True
+    if prev in _NOT_YEAR_BEFORE or nxt in _UNIT_AFTER:
+        return False
+    return True
+
+
+def _year_period(yr: int, today: date) -> dict:
+    if yr < today.year:
+        return _period(date(yr, 1, 1), date(yr, 12, 31), str(yr))
+    if yr == today.year:
+        return _period(date(yr, 1, 1), today, f"{yr} so far")
+    return _period(date(yr, 1, 1), date(yr, 12, 31), str(yr))
+
+
+def _parse_one(t: str, today: date) -> tuple[dict | None, list[dict]]:
+    t = " " + t.strip() + " "
     alts: list[dict] = []
     y0, m0 = today.year, today.month
 
@@ -185,7 +358,7 @@ def parse_period(text: str, today: date) -> tuple[dict | None, list[dict]]:
     if re.search(r"\byesterday\b", t):
         d = today - timedelta(days=1)
         return _period(d, d, "yesterday"), []
-    if re.search(r"\btoday\b", t) and not re.search(r"\bup to today\b", t):
+    if re.search(r"\btoday\b", t) and not re.search(r"\b(?:up )?to today\b", t):
         return _period(today, today, "today"), []
     if re.search(r"\b(last|previous|past) week\b", t):
         start = today - timedelta(days=today.weekday() + 7)
@@ -209,7 +382,7 @@ def parse_period(text: str, today: date) -> tuple[dict | None, list[dict]]:
     if re.search(r"\bthis year\b", t):
         return _period(date(y0, 1, 1), today, "this year so far"), []
 
-    m = re.search(r"\bq([1-4])(?:\s*(?:of\s*)?'?(\d{2}|\d{4}))?\b", t)
+    m = re.search(r"\bq([1-4])(?:\s*(?:of\s*)?(?:fy\s*)?('?\d{2}\b|\d{4}\b))?", t)
     if m:
         q = int(m.group(1))
         yr = _yr(m.group(2)) or (y0 if q <= q_now + 1 else y0 - 1)
@@ -217,34 +390,44 @@ def parse_period(text: str, today: date) -> tuple[dict | None, list[dict]]:
             a = date(yr, (q - 1) * 3 + 1, 1)
             return _period(a, _month_end(yr, (q - 1) * 3 + 3), f"Q{q} {yr}", assumed=not m.group(2)), []
 
-    rng = re.search(rf"\b(?:from|between)\s+({MONTH_RE})\s*('?\d{{2,4}})?\s+(?:to|and|until|till|-|–)\s+({MONTH_RE})\s*('?\d{{2,4}})?\b", t)
-    if rng:
-        m1, m2 = MONTH_NUM[rng.group(1)[:3]], MONTH_NUM[rng.group(3)[:3]]
-        y2 = _yr(rng.group(4)) or _year_for_month(m2, today)
-        y1 = _yr(rng.group(2)) or (y2 if m1 <= m2 else y2 - 1)
-        if y1 and y2:
-            return _period(date(y1, m1, 1), _month_end(y2, m2), "the months you named", assumed=not (rng.group(2) or rng.group(4))), []
+    ms = _mentions(t, today)
+    # two dates joined by "to / until / and / -": a range ("1 Oct 2025 to 31 Mar 2026", "from June to August")
+    for x, z in zip(ms, ms[1:]):
+        if not _RANGE_JOIN.match(t[x["e"]:z["s"]]):
+            continue
+        y2 = z["y"] or (None if x["y"] else _resolve_year(z["m"], z["d"], today))
+        y1 = x["y"]
+        if y1 and not y2:
+            y2 = y1 if (z["m"], z["d"] or 31) >= (x["m"], x["d"] or 1) else y1 + 1
+        if not y1:
+            y1 = y2 if (x["m"], x["d"] or 1) <= (z["m"], z["d"] or 31) else y2 - 1
+        a, _ = _span_of(x, y1)
+        _, b = _span_of(z, y2)
+        if a <= b:
+            assumed = not (x["y"] or z["y"])
+            return _period(a, b, fmt_range(a, b), assumed=assumed), []
+    if ms:
+        x = ms[0]
+        yr = x["y"] or _resolve_year(x["m"], x["d"], today)
+        a, b = _span_of(x, yr)
+        if re.search(r"\bsince\s*$", t[:x["s"]]):
+            return _period(a, today, f"since {fmt_range(a, b) if x['d'] else MONTHS[x['m'] - 1].title()}", assumed=not x["y"]), []
+        label = fmt_range(a, b)
+        return _period(a, b, label, assumed=not x["y"]), []
 
-    m = re.search(rf"\bsince\s+({MONTH_RE})\s*('?\d{{2,4}})?\b", t)
+    m = re.search(r"\b(?:from|between)?\s*((?:19|20)\d\d)\s*(?:-|–|to|and|until|till|through)\s*((?:19|20)\d\d)\b", t)
     if m:
-        mm = MONTH_NUM[m.group(1)[:3]]
-        yr = _yr(m.group(2)) or _year_for_month(mm, today)
-        if yr:
-            return _period(date(yr, mm, 1), today, f"since {MONTHS[mm - 1].title()}", assumed=not m.group(2)), []
-
-    m = re.search(rf"\b({MONTH_RE})\b\s*,?\s*('?\d{{2,6}})?", t)
-    if m and not re.search(rf"\bmay\b", m.group(0)) or (m and m.group(2)):
-        mm = MONTH_NUM.get(m.group(1)[:3])
-        raw = m.group(2)
-        yr = _yr(raw) if raw else _year_for_month(mm, today)
-        if mm and yr:
-            return _period(date(yr, mm, 1), _month_end(yr, mm), f"{MONTHS[mm - 1].title()} {yr}", assumed=not raw), []
-
-    m = re.search(r"\b(?:in|for|during|of|year)\s+(19\d\d|20\d\d)\b", t) or re.search(r"\b(19\d\d|20\d\d)\b", t)
-    if m:
+        y1, y2 = int(m.group(1)), int(m.group(2))
+        if 1990 <= y1 < y2 <= y0 + 5:
+            b = date(y2, 12, 31) if y2 != y0 else today
+            return _period(date(y1, 1, 1), b, f"{y1} – {y2}"), []
+    m = re.search(r"\bsince\s+((?:19|20)\d\d)\b", t)
+    if m and 1990 <= int(m.group(1)) <= y0:
+        return _period(date(int(m.group(1)), 1, 1), today, f"since {m.group(1)}"), []
+    for m in re.finditer(r"(?<![\d.,])\b((?:19|20)\d\d)\b", t):
         yr = int(m.group(1))
-        end = date(yr, 12, 31) if yr < y0 else today
-        return _period(date(yr, 1, 1), end, str(yr) if yr < y0 else f"{yr} so far"), []
+        if 1990 <= yr <= y0 + 10 and _year_ok(t, m):
+            return _year_period(yr, today), []
     return None, alts
 
 
@@ -261,9 +444,11 @@ def _yr(s: str | None) -> int | None:
     return None
 
 
-def date_issues(text: str, today: date) -> list[dict]:
-    """Years and months that can't be right: 20258, 202, 2027 (future), 'Janury 2025'."""
+def date_issues(text: str, today: date, accepted: list[str] | None = None) -> list[dict]:
+    """Years and months that can't be right: 20258, 202, 2027 (future), 'Janury 2025'.
+    `accepted`: what the person already said to keep as written - never asked about twice."""
     out: list[dict] = []
+    keep = {str(a).lower() for a in accepted or []}
     low = (text or "").lower()
     forecast = bool(FORECAST.search(low))
     strong = rf"(?:{MONTH_RE}|year|fy|q[1-4])"
@@ -272,13 +457,13 @@ def date_issues(text: str, today: date) -> list[dict]:
     # "in", "since" ... only a 5-6 digit one that ends the phrase ("sales in 20258?"),
     # so "orders of 20150 units" is left alone
     pat = (rf"\b{strong}\s*,?\s*'?(\d{{3,6}})\b"
-           rf"|\b{weak}\s+((?:19|20)\d{{3,4}})(?=\s*(?:$|[.,?!;)]|and\b|to\b|vs\b|versus\b|compared\b|until\b))")
+           rf"|\b{weak}\s+((?:19|20)\d{{2,4}})(?=\s*(?:$|[.,?!;)]|and\b|to\b|vs\b|versus\b|compared\b|until\b))")
     seen = set()
     for m in re.finditer(pat, low):
         if not (m.group(1) or m.group(2)):
             continue
         raw = m.group(1) or m.group(2)
-        if raw in seen:
+        if raw in seen or raw in keep:
             continue
         seen.add(raw)
         n = int(raw)
@@ -305,7 +490,7 @@ def date_issues(text: str, today: date) -> list[dict]:
     # a misspelt month right before a year: "Janury 2025"
     for m in re.finditer(r"\b([a-z]{4,10})\s+'?(\d{4})\b", low):
         tok = m.group(1)
-        if tok in MONTHS or tok[:3] in MON_ABBR and len(tok) <= 4 or tok in ("year", "since", "during", "until", "from"):
+        if tok in keep or tok in MONTHS or tok[:3] in MON_ABBR and len(tok) <= 4 or tok in ("year", "since", "during", "until", "from"):
             continue
         close = difflib.get_close_matches(tok, MONTHS, n=1, cutoff=0.78)
         if close:
@@ -428,11 +613,24 @@ def _score(ds: models.DataSource, tables, qw: set[str], topic: str | None, named
 _COV: dict[tuple, tuple] = {}
 
 
+COVERAGE_FAIL_TTL_S = 2 * 60
+COVERAGE_CACHE_MAX = 500
+
+
+def _cov_version(ds: models.DataSource) -> str:
+    """Changes when the data does (a sync, a re-upload, a clean) - so a fresh sync is never judged by an old range."""
+    v = getattr(ds, "last_synced_at", None) or getattr(ds, "cleaned_updated_at", None) or getattr(ds, "created_at", None)
+    return str(v or "")
+
+
 def _coverage(db: Session, ds: models.DataSource, table_name: str, key: str | None, col: str) -> tuple[date, date] | None:
-    ck = (ds.id, key or table_name, col)
+    ck = (ds.id, key or table_name, col, _cov_version(ds))
     hit = _COV.get(ck)
-    if hit and time.time() - hit[0] < COVERAGE_TTL_S:
+    if hit and time.time() - hit[0] < (COVERAGE_TTL_S if hit[1] else COVERAGE_FAIL_TTL_S):
         return (hit[1], hit[2]) if hit[1] else None
+    if len(_COV) > COVERAGE_CACHE_MAX:
+        for k in sorted(_COV, key=lambda k: _COV[k][0])[: COVERAGE_CACHE_MAX // 2]:
+            _COV.pop(k, None)
     mode = source_mode(ds.kind)
     if mode == "file" and ds.kind not in ("csv", "excel", "file"):
         # read-on-demand sources (Google Sheets, Excel Online, MongoDB, APIs) would be fetched just to
@@ -494,11 +692,11 @@ def _source_brief(ds: models.DataSource) -> dict:
 
 def check(db: Session, user: models.User, question: str, *, source_ids: list[str] | None = None,
           space_id: str | None = None, workspace_id: str | None = None, today: date | None = None,
-          coverage: bool = True) -> dict:
+          coverage: bool = True, accepted: list[str] | None = None) -> dict:
     today = today or date.today()
     q = (question or "").strip()
     issues: list[dict] = []
-    issues += date_issues(q, today)
+    issues += date_issues(q, today, accepted)
     period, alts = (None, []) if any(i["kind"] in ("year_typo", "month_typo") for i in issues) else parse_period(q, today)
     qw = words(q)
     topic = _topic(qw)
@@ -554,8 +752,16 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
         cands.append(c)
 
     # coverage for the strongest few that have dates (time-boxed)
-    if coverage and needs_time and period:
+    if coverage and needs_time and period and not period.get("future"):
         todo = [c for c in cands if c["fit"] == "good" and c["date_column"]][:3]
+        # round 25b: a person with row/column rules on a source never hears its full date range
+        # (it would describe rows they can't see) - unknown coverage is never a blocker
+        try:
+            from . import data_access_rules
+            restricted = {r[1].id for r in relevant if data_access_rules.has_active_restrictions(db, r[1], user)}
+        except Exception:  # noqa: BLE001
+            restricted = {r[1].id for r in relevant}
+        todo = [c for c in todo if c["id"] not in restricted]
         if todo:
             by_id = {r[1].id: r for r in relevant}
             from .project_engine.executor import _detached
@@ -587,8 +793,15 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
                 if hi < a or lo > b:
                     c["fit"] = "out_of_range"
                     c["why"] = f"its dates run {cov['text']} - nothing in {period['text']}"
-                elif hi < b - timedelta(days=3) and b <= today:
+                elif hi < b - timedelta(days=3) and b <= today and not period.get("parts"):
                     c["partial"] = f"its data stops on {fmt_day(hi)}"
+                if period.get("parts") and c["fit"] == "good":
+                    # a comparison needs both periods: which of them does this data have?
+                    has = [i for i, p in enumerate(period["parts"])
+                           if not (hi < date.fromisoformat(p["start"]) or lo > date.fromisoformat(p["end"]))]
+                    c["covers_parts"] = has
+                    if len(has) < len(period["parts"]):
+                        c["only"] = " and ".join(period["parts"][i]["text"] for i in has)
 
     for c in cands:
         if c["fit"] == "good" and not c["why"]:
@@ -684,7 +897,7 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
             picked = close[:1]
 
     # the period vs the data: offer the data's own latest window
-    if period:
+    if period and not period.get("parts"):
         oor = [c for c in cands if c["fit"] == "out_of_range"]
         if oor and not good:
             c = oor[0]
@@ -692,12 +905,41 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
             hi = date.fromisoformat(cov["end"])
             span = (date.fromisoformat(period["end"]) - date.fromisoformat(period["start"])).days
             shifted = _shift_to(hi, span, period)
-            for i in issues:
+            for i in (issues if shifted else []):
                 if i["kind"] == "cant_answer":
                     i["options"].insert(0, {"id": "shift", "label": f"Use its latest {_span_words(period)}: {shifted['text']}",
                                             "value": c["id"], "period": shifted, "recommended": True})
                     i["text"] = (f"{c['name']} has {what}, but its dates run {cov['text']} - nothing in {period['text']}. "
                                  f"I can use its latest {_span_words(period)} instead ({shifted['text']}).")
+
+    # a comparison no single source can make: put together the sources that have each period
+    if period and period.get("parts") and not any(i["kind"] in ("cant_answer", "swap") for i in issues):
+        whole = [c for c in good if "covers_parts" in c and not c.get("only")]
+        halves = [c for c in good if c.get("only")]
+        if not whole and halves and not (picked and all(not c.get("only") for c in picked)):
+            combo, got = [], set()
+            for c in halves:
+                new = set(c["covers_parts"]) - got
+                if new:
+                    combo.append(c)
+                    got |= new
+            if len(got) == len(period["parts"]) and len(combo) >= 2:
+                picked = combo
+                issues = [i for i in issues if i["kind"] not in ("choose", "confirm_pick")]
+                bits = "; ".join(f"{c['name']} has {c['only']}" for c in combo)
+                issues.append({
+                    "id": "combine", "kind": "confirm_pick", "title": "No one source has both periods",
+                    "text": f"No one source has both periods: {bits}. Shall I use them together?",
+                    "options": [opt(c, True) for c in combo], "multi": True,
+                })
+            elif picked and picked[0].get("only"):
+                issues = [i for i in issues if i["kind"] not in ("choose", "confirm_pick")]
+                issues.append({
+                    "id": "half", "kind": "confirm_pick", "title": "Only part of the comparison",
+                    "text": f"{picked[0]['name']} only has {picked[0]['only']}, so I can't compare both periods from it. "
+                            "Shall I use it anyway, or pick other data?",
+                    "options": [opt(c, n == 0) for n, c in enumerate(good[:4])], "multi": True,
+                })
 
     ready = not issues
     restated = _restate(what, period, picked, needs_time)
@@ -739,6 +981,8 @@ def _says_fit(c: dict, needs_time: bool) -> str:
         what += " by " + " and ".join(c["dims"][:2])
     if needs_time and c.get("date_column"):
         tail = f" ({cov['text']})" if cov else ""
+        if c.get("only"):
+            return f"{name} has {what} by date{tail} - only {c['only']} of the two periods"
         return f"{name} has {what} by date{tail}"
     return f"{name} has {what}"
 
@@ -752,8 +996,10 @@ def _cov_out(cov: tuple[date, date] | None) -> dict | None:
 
 
 def _shift_to(hi: date, span_days: int, period: dict) -> dict:
-    """The same length of time, ending where the data ends."""
+    """The same length of time, ending where the data ends (None when the period makes no sense)."""
     a0, b0 = date.fromisoformat(period["start"]), date.fromisoformat(period["end"])
+    if b0 < a0 or span_days < 0:
+        return None
     if a0.day == 1 and b0 == _month_end(b0.year, b0.month):
         months = (b0.year - a0.year) * 12 + b0.month - a0.month + 1
         ye, me = hi.year, hi.month
@@ -824,10 +1070,21 @@ def _strip_period(q: str) -> str:
     return s[:90]
 
 
+def _part_words(p: dict) -> str:
+    return p["label"] + (f" ({p['text']})" if p.get("label") != p.get("text") else "")
+
+
 def _restate(what: str, period: dict | None, picked: list[dict], needs_time: bool) -> str:
     s = what[0].upper() + what[1:]
-    if period:
-        s += f" for {period['label']}" + (f" ({period['text']})" if period["label"] != period["text"] else "")
+    if period and period.get("parts"):
+        a, b = period["parts"][:2]
+        s += f", comparing {_part_words(a)} with {_part_words(b)}"
+        if a.get("future") or b.get("future"):
+            s += " (part of it is a forecast - it hasn't happened yet)"
+    elif period:
+        s += f" for {_part_words(period)}"
+        if period.get("future"):
+            s += " (a forecast - it hasn't happened yet)"
     elif needs_time:
         s += " over all the dates in the data"
     if picked:
@@ -851,8 +1108,17 @@ def planner_context(brief: dict | None) -> str:
         return ""
     lines = []
     p = brief.get("period")
-    if p and p.get("start") and p.get("end"):
+    parts = [x for x in (p or {}).get("parts") or [] if isinstance(x, dict) and x.get("start") and x.get("end")]
+    if len(parts) >= 2:
+        a, b = parts[:2]
+        lines.append(f"- Compare two periods, exactly these date ranges (inclusive): {a['start']} to {a['end']} "
+                     f"({a.get('text') or ''}) versus {b['start']} to {b['end']} ({b.get('text') or ''}). "
+                     "Show both side by side and the change between them.")
+    elif p and p.get("start") and p.get("end"):
         lines.append(f"- Period: {p['start']} to {p['end']} inclusive ({p.get('text') or ''}). Use exactly this date range.")
+    if p and (p.get("future") or any(x.get("future") for x in parts)):
+        lines.append("- Some of that period hasn't happened yet: forecast it from the history and say it is a forecast; "
+                     "never treat the missing future rows as zero.")
     if brief.get("restated"):
         lines.append(f"- What the person confirmed they want: {brief['restated']}")
     for n in brief.get("notes") or []:

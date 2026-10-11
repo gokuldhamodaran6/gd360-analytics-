@@ -53,12 +53,94 @@ _WAKE_STRIP = re.compile(
 _GREET_STRIP = re.compile(rf"^\s*(?:{GREETINGS}|good (?:morning|afternoon|evening))\b[\s,!.]*", re.I)
 
 
+_GREETING_WORDS = {"hi", "hey", "hello", "helo", "hallo", "hullo", "hiya", "heya", "hai", "hay", "hy", "ok", "okay", "yo",
+                   "ola", "hola", "oye", "hie", "aye", "ey"}
+# round 25b: the name's sound (same rule as thread/voice.ts NAME_SOUND): a vowel sound, L, a short i/ee/ea, then V/F/B
+_NAME_SOUND = re.compile(r"^h?(?:[yj]?[aeiouw]{1,3}|[yj])l(?:[iey]|ea|ie|ei)(?:v|f|ph|b|w)e?$")
+_CORE_SHAPES = ["euliv", "eulive", "yuliv", "yulive", "uliv", "ulive", "euleav", "euleave"]
+_BARE_NAMES = {"liv", "leev"}
+_STRICT_SHAPES = ["euliv", "eulive", "yuliv", "yulive", "uliv", "euleev"]
+
+
+def _squeeze(w: str) -> str:
+    return re.sub(r"(.)\1+", r"\1", w)
+
+
+def _clean(w: str) -> str:
+    return _squeeze(re.sub(r"[^a-z]", "", (w or "").lower()))
+
+
+def _lev(a: str, b: str) -> int:
+    if abs(len(a) - len(b)) > 3:
+        return 9
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def sounds_like_euliv(word: str, strict: bool = False) -> bool:
+    """The same sound match as the browser (thread/voice.ts soundsLikeEuliv)."""
+    w = _clean(word)
+    if strict:
+        return 4 <= len(w) <= 10 and any(_lev(w, x) <= 1 for x in _STRICT_SHAPES)
+    if w in _BARE_NAMES:
+        return True
+    if len(w) < 4 or len(w) > 10:
+        return False
+    return bool(_NAME_SOUND.match(w)) or (len(w) >= 5 and any(_lev(w, x) <= 1 for x in _CORE_SHAPES))
+
+
+def _is_greeting(word: str) -> bool:
+    raw = re.sub(r"[^a-z]", "", (word or "").lower())
+    return _clean(word) in _GREETING_WORDS or bool(re.fullmatch(r"h+e+y+|h+i+|he+l+o+", raw))
+
+
+def wake_split(text: str) -> tuple[bool, str]:
+    """(woke, what came after the name) - "hiii euliv, sales today" -> (True, "sales today")."""
+    raw = (text or "").strip()
+    parts = raw.split()
+    if not parts:
+        return False, ""
+
+    def rest_from(k: int) -> str:
+        return re.sub(r"^[\s,.!?:;-]+", "", " ".join(parts[k:])).strip()
+
+    def name_at(i: int, strict: bool) -> int:
+        for n in range(1, (1 if strict else 3) + 1):
+            if i + n > len(parts):
+                break
+            if n > 1 and _clean(parts[i]) in ("i", "a", "the", "to"):
+                break
+            joined = "".join(parts[i:i + n])
+            if len(_clean(joined)) > 10:
+                break
+            if sounds_like_euliv(joined, strict):
+                return n
+        return 0
+
+    for i, p in enumerate(parts):
+        if _is_greeting(p):
+            for j in range(i + 1, min(i + 2, len(parts) - 1) + 1):
+                n = name_at(j, False)
+                if n:
+                    return True, rest_from(j + n)
+                if not _is_greeting(parts[j]) and _clean(parts[j]) != "there":
+                    break
+    n0 = name_at(0, True)
+    if n0:
+        return True, rest_from(n0)
+    return False, ""
+
+
 def strip_wake(text: str) -> str:
-    t = (text or "").strip()
-    m = _WAKE_STRIP.match(t)
-    if m and (re.search(EXACT_NAMES, m.group(0), re.I) or re.match(rf"\s*(?:{GREETINGS})\b", m.group(0), re.I)):
-        t = t[m.end():]
-    return t.strip()
+    woke, rest = wake_split(text)
+    if woke:
+        return rest
+    return (text or "").strip()
 
 
 # ---- intents -----------------------------------------------------------------
@@ -67,6 +149,42 @@ _END = re.compile(r"^(?:bye|bye bye|goodbye|good bye|see (?:you|ya)|stop|stop li
                   r"nothing else|no thanks|no thank you|close|exit|cancel|i'?m done|im done|we'?re done|done|goodnight|good night|"
                   r"thanks,? that'?s (?:all|it)|thank you,? that'?s (?:all|it)|end|quit)\b[\s.!]*$", re.I)
 _THANKS = re.compile(r"^(?:thanks|thank you|thank u|cheers|great,? thanks|perfect|awesome|nice|cool|got it|okay thanks|ok thanks)\b[\s.!]*$", re.I)
+# "no, you're good" / "I'm good" / "nope, that's all" / "all set" - the person is done (2026-10-11, round 25:
+# "no you are good" used to be taken as a follow-up and the last answer was read out again)
+_CLOSING = re.compile(
+    r"^(?:no|nope|nah|nothing|not really|i'?m|im|i am|we'?re|we are|all|that'?s|thats|that is|it'?s|its|ok|okay|fine)\b"
+    r"(?:[\s,.!]+(?:no|nope|thanks|thank you|thank u|you'?re|you are|youre|i'?m|im|i am|we'?re|we are|it'?s|its|that'?s|thats|"
+    r"all|for now|really|more|else|need|needed|nothing|just|so|totally|pretty|very|set|fine|good|great|ok|okay|done|it|"
+    r"right|perfect|sorted|cool|then|bye|enough|that|is|for|today|now|anything|i|we|am|are|be|will|ll|all good|all set))*[\s.!]*$",
+    re.I)
+_QUESTIONISH = re.compile(r"\?|\b(why|how|what|which|who|whom|when|where|show|compare|break|split|explain|tell|give|list|"
+                          r"top|bottom|best|worst|trend|change|changed|drop|dropped|rise|rose|grow|grew|fell|increase|decrease|"
+                          r"by|per|vs|versus|between|since|last|this|next|more|less|total|average|sum|count|forecast|predict)\b", re.I)
+
+
+_FIRM_END = re.compile(r"^(?:bye|bye bye|goodbye|good bye|see (?:you|ya)|stop|stop listening|close|exit|cancel|quit|"
+                       r"goodnight|good night|forget it|never ?mind,? (?:bye|stop))\b[\s.!]*$", re.I)
+
+
+def firm_end(text: str) -> bool:
+    """bye / stop / cancel - the only ways to leave while Euliv waits on an answer ("that's it" and "done"
+    mean "go ahead" during a read-back)."""
+    t = re.sub(rf"[\s,]+(?:{EXACT_NAMES})[\s.!?]*$", "", (text or "").strip(), flags=re.I).strip()
+    core = _POLITE.sub("", t).strip()
+    return bool(_FIRM_END.match(t) or (core and _FIRM_END.match(core)))
+
+
+def hard_end(text: str) -> bool:
+    """bye / stop / that's all - ends the talk whatever Euliv was waiting for."""
+    t = re.sub(rf"[\s,]+(?:{EXACT_NAMES})[\s.!?]*$", "", (text or "").strip(), flags=re.I).strip()
+    core = _POLITE.sub("", t).strip()
+    return bool(_END.match(t) or (core and _END.match(core)))
+
+
+def questionish(text: str) -> bool:
+    return bool(_QUESTIONISH.search(text or ""))
+
+
 _HELP = re.compile(r"\b(?:what can you do|what do you do|how do you work|help me|what can i ask|who are you|what are you)\b", re.I)
 _YES = re.compile(r"^(?:yes|yeah|yep|yup|sure|ok|okay|please|go ahead|do it|connect it|connect|yes please|let'?s do it|absolutely|"
                   r"of course|why not|sounds good|alright|all right)\b", re.I)
@@ -108,6 +226,10 @@ def intent(text: str) -> str:
     if core and _END.match(core) or (not core and re.search(r"\b(?:bye|that'?s all|that'?s it)\b", t, re.I)):
         return "end"
     if _END.match(t):
+        return "end"
+    if re.fullmatch(r"(?:ok|okay|alright|all right|fine|great|good|right|sure|hmm+|mm+|uh huh)[\s.!]*", t, re.I):
+        return "ack"
+    if _CLOSING.match(core or t) and not questionish(core or t):
         return "end"
     if _THANKS.match(t):
         return "thanks"
@@ -452,7 +574,7 @@ _VERBS = [
     ("remove", r"remove|drop|without|except|excluding|exclude|unselect|deselect|untick|uncheck|take out|take off|skip|minus|"
                r"leave out|get rid of|forget|not|no|but not|instead of"),
     ("add", r"add|also|plus|include|including|as well as|along with|put in|bring in|and also|with|together with"),
-    ("only", r"only|just|switch to|change to|use only|only use"),
+    ("only", r"only|just|switch to|change to|use only|only use|go with|going with|go for|stick with|stick to|let'?s use"),
     ("swap_from", r"replace|swap|change|switch"),
 ]
 _POST_ADD = re.compile(r"^\s*(?:too|as well|also)\b")
@@ -565,7 +687,13 @@ def select_sources(text: str, options: list[dict], selected: list[str]) -> dict:
     for m in re.finditer(r"\b(?:with|for|to)\b", t):
         if any(k == "swap_from" and s < m.start() for s, _e, k in verbs):
             verbs.append((m.start(), m.end(), "add"))
-    verbs.sort()
+    # "go with Shopify": the longer phrase wins over the "with" inside it
+    verbs.sort(key=lambda v: (v[0], -(v[1] - v[0])))
+    kept = []
+    for v in verbs:
+        if not any(k[0] <= v[0] and v[1] <= k[1] and k is not v for k in kept):
+            kept.append(v)
+    verbs = sorted(kept)
 
     # "drop both and use the fourth": after a clear-all, what follows starts afresh
     cleared = _NONE.search(t)
