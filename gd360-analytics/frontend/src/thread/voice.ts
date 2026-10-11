@@ -310,47 +310,73 @@ export function pickVoice(voices = voicesCache): SpeechSynthesisVoice | null {
   return pool.find((v) => v.localService) || pool[0] || voices[0] || null;
 }
 
-// ---- Euliv hearing itself (round 27) -------------------------------------------------------
+// ---- Euliv hearing itself (rounds 27-28) ----------------------------------------------------
 // On speakers (no headset) the mic hears Euliv's own voice, and browsers' echo cancellation does
 // not cover the computer's speech voice. Left alone, Euliv "hears" itself, answers that, hears
-// the answer ... a loop. Everything heard is checked against what Euliv said lately.
-const norm = (s: string) => (s || "").toLowerCase().replace(/[“”"][^“”"]*[“”"]/g, " ").replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+// the answer ... a loop. Round 28: Euliv no longer listens WHILE it talks unless the person wears
+// headphones (or turned "talk over Euliv" on), and everything heard is still checked against what
+// Euliv said lately - its framing words ("so I'll look at", "shall I go ahead") separately from the
+// person's own question it quoted back (“…”), so a person refining their question isn't mistaken for echo.
+const words = (s: string) => (s || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+const unquote = (s: string) => (s || "").replace(/[“"][^“”"]*[”"]/g, " ");
+const quoted = (s: string) => ((s || "").match(/[“"][^“”"]*[”"]/g) || []).join(" ");
 const STOPWORDS = new Set(["the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are", "was", "it", "i", "you", "your",
   "my", "me", "that", "this", "can", "could", "would", "should", "do", "did", "be", "with", "from", "at", "by", "so", "s", "t", "ll", "ve",
-  "what", "which", "how", "shall", "will", "just", "here", "have", "has", "if", "as", "all", "there"]);
-const content = (s: string) => norm(s).split(" ").filter((w) => w && !STOPWORDS.has(w));
+  "what", "which", "how", "shall", "will", "just", "here", "have", "has", "if", "as", "all", "there", "m", "d", "re"]);
+const content = (s: string) => words(s).split(" ").filter((w) => w && !STOPWORDS.has(w));
+/** Word set with neighbours joined too ("e commerce" also as "ecommerce") - recognisers split and join words differently. */
+const vocab = (s: string) => {
+  const ws = words(s).split(" ").filter(Boolean);
+  const out = new Set(ws);
+  for (let i = 0; i + 1 < ws.length; i++) out.add(ws[i] + ws[i + 1]);
+  return out;
+};
 const ANSWER_WORDS = new Set(["yes", "yeah", "yep", "yup", "sure", "okay", "ok", "correct", "perfect", "stop", "wait", "no", "nope",
-  "cancel", "first", "second", "third", "fourth", "number", "both", "none", "instead", "great", "exactly", "right"]);
+  "cancel", "first", "second", "third", "fourth", "number", "both", "none", "instead", "great", "exactly", "right", "actually"]);
+const ASK_START = /^(?:no|yes|yeah|ok|okay|actually|wait|and|also|now|so)?\s*(?:what|whats|how|why|which|who|when|where|show|give|tell|compare|list|can|could|break|split|pull|find)\b/;
 // Euliv's own phrases - a person doesn't say these to it
 const OWN_PHRASES = [
   "didn t catch that", "say it again", "which data should i use", "here s what you have", "how can i help", "shall i go ahead",
   "to hear them", "talk soon", "just to confirm", "in your sources", "pick one a few", "i couldn t find", "one moment",
   "working it out", "the data from your last answer", "anything else i can look at", "i m not sure what you d like",
+  "would you like to change the question", "so i ll look at", "i ll stay with", "anything to add",
 ];
 
 /**
  * Is this Euliv's own voice coming back through the mic?
- * `recent`: what Euliv said in the last few seconds (being said now first). `speaking`: heard while
- * Euliv was still talking - then even one or two of its own words ("go ahead", "one") count as echo.
+ * `recent`: what Euliv said in the last few seconds. `speaking`: heard while Euliv was still talking.
  */
 export function heardEuliv(heard: string, recent: string[], speaking = false): boolean {
-  const h = norm(heard);
+  const h = words(heard);
   if (!h) return true;
-  const said = recent.map(norm).filter(Boolean);
-  if (!said.length) return false;
-  const all = ` ${said.join(" | ")} `;
-  const hw = h.split(" ");
   if (OWN_PHRASES.some((p) => ` ${h} `.includes(` ${p} `))) return true;
-  if (all.includes(` ${h} `) && (speaking || hw.length >= 3)) return true; // all of it is something Euliv just said
-  for (let i = 0; i + 4 <= hw.length; i++) if (all.includes(` ${hw.slice(i, i + 4).join(" ")} `)) return true; // 4 words in a row
+  const said = recent.filter(Boolean);
+  if (!said.length) return false;
+  const full = ` ${said.map(words).join(" | ")} `; // everything Euliv said, the quoted question included
+  const frame = ` ${said.map((x) => words(unquote(x))).join(" | ")} `; // only Euliv's own words
+  const hw = h.split(" ");
+  // the whole of it is something Euliv just said
+  if (full.includes(` ${h} `) && (speaking || hw.length >= 3)) return true;
+  const mineAll = vocab(said.join(" "));
+  const mineFrame = vocab(said.map(unquote).join(" "));
+  const quote = vocab(said.map(quoted).join(" "));
+  // 4 of Euliv's own words in a row - not the person's own question words it repeated back
+  for (let i = 0; i + 4 <= hw.length; i++) {
+    const gram = hw.slice(i, i + 4);
+    if (frame.includes(` ${gram.join(" ")} `) && gram.some((w) => !quote.has(w) && !STOPWORDS.has(w))) return true;
+  }
   const cw = content(heard);
-  const mine = new Set(content(said.join(" ")));
-  // only filler words ("how", "that"): while Euliv talks, or when Euliv just said them - not the person
-  if (!cw.length) return speaking || all.includes(` ${h} `);
-  // a word Euliv didn't say that only a person answering would ("yes", "stop", "first"): the person
-  if (speaking && cw.some((w) => !mine.has(w) && ANSWER_WORDS.has(w))) return false;
-  const share = cw.filter((w) => mine.has(w)).length / cw.length;
-  return speaking ? share > 0.5 : cw.length >= 3 && share >= 0.75;
+  if (!cw.length) return speaking || full.includes(` ${h} `); // filler ("how") while it talks or right after it said it
+  if (speaking) {
+    // a word only a person answering would say, that Euliv didn't: the person ("yes", "stop", "first")
+    if (cw.some((w) => !mineAll.has(w) && ANSWER_WORDS.has(w))) return false;
+    return cw.filter((w) => mineAll.has(w)).length / cw.length > 0.5;
+  }
+  // after Euliv finished: a question or an answer from the person is the person
+  if (ASK_START.test(h) || cw.some((w) => ANSWER_WORDS.has(w) && !mineFrame.has(w))) return false;
+  const novel = cw.filter((w) => !mineAll.has(w) && !quote.has(w)).length;
+  const framing = cw.filter((w) => mineFrame.has(w)).length / cw.length;
+  return cw.length >= 4 && novel <= (cw.length >= 8 ? 1 : 0) && framing >= 0.5;
 }
 
 /** Back-compat: one sentence being spoken. */
@@ -476,12 +502,30 @@ export type EulivSettings = {
   handsFree: boolean; // listen again after each reply
   keep: boolean; // keep a written record of each talk in Library (round 24)
   wakeAsked?: boolean; // the "Turn on Hi Euliv" offer was answered (round 25)
+  talkOver?: boolean; // round 28: listen while Euliv speaks, so the person can just talk over it (best with headphones)
 };
 
 const KEY = "gd360.euliv";
 const DEFAULTS: EulivSettings = { wake: false, speak: true, voice: null, rate: 1, lang: null, handsFree: true, keep: true };
 const settingsListeners = new Set<(s: EulivSettings) => void>();
 let settingsCache: EulivSettings | null = null;
+
+/**
+ * Round 28: are the computer's sounds going to headphones? Then Euliv's voice can't reach the mic,
+ * and the person can safely talk over it. Read from the default output device's name (known once
+ * the mic has been allowed); unknown = speakers, the safe answer.
+ */
+export async function headphonesOn(): Promise<boolean> {
+  try {
+    const devs = await navigator.mediaDevices?.enumerateDevices?.();
+    const outs = (devs || []).filter((d) => d.kind === "audiooutput");
+    const def = outs.find((d) => d.deviceId === "default") || outs[0];
+    const label = (def?.label || "").toLowerCase();
+    return /head ?(phone|set)|airpods|earbuds|ear ?pods|\bbuds\b|earphone|in-ear|bose|jabra|beats|wh-?1000|wf-?1000|plantronics|poly |sennheiser|galaxy buds|pixel buds|nothing ear/.test(label);
+  } catch {
+    return false;
+  }
+}
 
 export function loadSettings(): EulivSettings {
   if (settingsCache) return settingsCache;
