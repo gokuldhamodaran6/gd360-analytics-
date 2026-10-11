@@ -27,7 +27,7 @@ import { periodWords } from "./QuestionCheck";
 import { ACTIVE_WORKSPACE_KEY } from "../lib/useWorkspaceNav";
 import { deviceText, LevelBars } from "../thread/Dictation";
 import {
-  cancelSpeech, claimMic, isTouchDevice, loadSettings, loadVoices, meterUseful, MIC_HELP, MicMonitor, type MicProblem, micOwner, onMicOwner,
+  cancelSpeech, chunks, claimMic, isEcho, isTouchDevice, loadSettings, loadVoices, meterUseful, MIC_HELP, MicMonitor, type MicProblem, micOwner, onMicOwner,
   onSettings, type Rec, recognitionClass, releaseMic, saveSettings, SOUND_LEVEL, speak, speechInputSupported,
   speechLang, speechOutputSupported, wakeIn, type EulivSettings,
 } from "../thread/voice";
@@ -158,6 +158,88 @@ function listenOnce(o: {
       }, 90);
     });
   });
+}
+
+// ---- talking over Euliv (round 26) ---------------------------------------------------------
+// While Euliv speaks, the mic stays open. The moment the person starts talking (words that
+// aren't Euliv's own voice coming back), Euliv stops mid-sentence and listens - "one", "go ahead",
+// "stop", a new question - like a person would. No waiting for a list of options to finish.
+
+type Barge = { stop: () => void; hearing: () => boolean; heard: Promise<string | null> };
+
+function bargeListen(o: { echoText: () => string; onStart: () => void; onInterim: (t: string) => void }): Barge | null {
+  const Cls = recognitionClass();
+  if (!Cls) return null;
+  let r: Rec | null = null;
+  let stopped = false;
+  let started = false;
+  let last = "";
+  let quiet: number | undefined;
+  let done: (t: string | null) => void = () => {};
+  const heard = new Promise<string | null>((res) => (done = res));
+  const finish = (t: string | null) => {
+    if (stopped) return;
+    stopped = true;
+    window.clearTimeout(quiet);
+    const cur = r;
+    r = null;
+    if (cur) {
+      cur.onend = null;
+      cur.onresult = null;
+      try {
+        cur.abort();
+      } catch {
+        /* ignore */
+      }
+    }
+    releaseMic("euliv");
+    done(t);
+  };
+  const start = () => {
+    if (stopped) return;
+    let rec: Rec;
+    try {
+      rec = new Cls();
+    } catch {
+      return;
+    }
+    if (!claimMic("euliv", () => finish(started ? last || null : null), 3)) return;
+    rec.lang = speechLang();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+    rec.onresult = (e: any) => {
+      for (let i = e.resultIndex || 0; i < e.results.length; i++) {
+        const tr = String(e.results[i][0]?.transcript || "").trim();
+        if (!tr || (!started && isEcho(tr, o.echoText()))) continue;
+        last = tr;
+        if (!started) {
+          started = true;
+          o.onStart();
+        }
+        o.onInterim(tr);
+        if (e.results[i].isFinal) return finish(tr);
+        // a pause after words: that's what they said
+        window.clearTimeout(quiet);
+        quiet = window.setTimeout(() => finish(last || null), 1600);
+      }
+    };
+    rec.onerror = () => {};
+    rec.onend = () => {
+      r = null;
+      if (stopped) return;
+      if (started) return finish(last || null);
+      window.setTimeout(start, 200); // the browser ended it on its own while Euliv still talks: open it again
+    };
+    r = rec;
+    try {
+      rec.start();
+    } catch {
+      r = null;
+    }
+  };
+  start();
+  return { stop: () => finish(null), hearing: () => started, heard };
 }
 
 // ---- "Hi Euliv" ----------------------------------------------------------------------------
@@ -355,7 +437,7 @@ const PHASE_TEXT: Record<Phase, string> = {
   listening: "Listening…",
   thinking: "Thinking…",
   working: "Working it out…",
-  speaking: "Speaking - tap to interrupt",
+  speaking: "Speaking - just talk to interrupt",
 };
 
 // ---- the conversation ---------------------------------------------------------------------------
@@ -427,6 +509,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
   const unclear = useRef(0);
   const micTrouble = useRef(false); // the last listen hit a mic problem - don't re-listen by itself (typing still works)
   const idSeq = useRef(0);
+  const handleRef = useRef<((t: string) => unknown) | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -461,9 +544,41 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
     push({ who: "euliv", text, card });
     if (!settingsRef.current.speak || !speechOutputSupported()) return true;
     setPhase("speaking");
-    const r = await speak(spoken || text);
+    const words = spoken || text;
+    // round 26: the person can talk over Euliv - it stops and listens
+    const parts = chunks(words);
+    let cur = 0;
+    let curAt = Date.now();
+    const barge = settingsRef.current.handsFree && canListen && !micTrouble.current
+      ? bargeListen({
+          // what Euliv is saying right now (and the sentence before, for a moment) - its echo isn't the person
+          echoText: () => `${Date.now() - curAt < 900 ? parts[cur - 1] || "" : ""} ${parts[cur] || ""}`,
+          onStart: () => {
+            if (s !== session.current) return;
+            cancelSpeech();
+            setPhase("listening");
+          },
+          onInterim: (t) => s === session.current && setCaption(t),
+        })
+      : null;
+    const r = await speak(words, { onChunk: (i) => { cur = i; curAt = Date.now(); } });
+    if (barge) {
+      if (barge.hearing()) {
+        const heardText = await barge.heard;
+        setCaption("");
+        if (s !== session.current || !alive.current) return null;
+        if (heardText) {
+          proven.current = true;
+          void handleRef.current?.(heardText);
+          return null; // what they said is the next step
+        }
+        return true; // a cough, not words: carry on as if Euliv had finished
+      }
+      barge.stop();
+    }
     if (s !== session.current || !alive.current || r === "cancelled") return null;
     return true; // "failed" (no voice available) still carries on - the words are on screen
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [push]);
 
   const listen = useCallback(async (): Promise<void> => {
@@ -729,6 +844,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
     push({ who: "you", text });
     return turnWith(text);
   }, [push, turnWith]);
+  handleRef.current = handle;
 
   /** Stop whatever is happening (speech, listening, a wait) - a new step follows. */
   const interrupt = useCallback(() => {
@@ -858,7 +974,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
   };
 
   const orbScale = phase === "listening" ? 1 + Math.min(0.28, level * 0.9) : 1;
-  const status = phase === "listening" && caption ? "" : PHASE_TEXT[phase];
+  const status = phase === "listening" && caption ? "" : phase === "speaking" && !(settings.handsFree && canListen) ? "Speaking - tap to interrupt" : PHASE_TEXT[phase];
 
   return (
     <div className="fixed inset-0 z-[90] flex items-stretch sm:items-center justify-center bg-[rgb(var(--color-base)/0.78)] backdrop-blur-md" role="dialog" aria-modal="true" aria-label="Euliv" data-euliv="" data-phase={phase}>
