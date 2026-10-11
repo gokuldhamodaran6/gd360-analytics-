@@ -29,7 +29,7 @@ export type EulivState = {
 export type EulivTurn = {
   say: string;
   speak: string;
-  action: "chat" | "choose" | "plan" | "fix_date" | "rephrase" | "connect_offer" | "connect" | "connect_wait" | "run" | "explain" | "end" | "wait";
+  action: "chat" | "choose" | "plan" | "fix_date" | "rephrase" | "connect_offer" | "connect" | "connect_wait" | "run" | "explain" | "end" | "wait" | "ignore";
   plan?: PlanCard;
   issue?: CheckIssue;
   title?: string;
