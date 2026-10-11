@@ -46,9 +46,54 @@ export function recognitionClass(): (new () => Rec) | null {
 export const speechInputSupported = () => recognitionClass() !== null;
 export const speechOutputSupported = () => typeof window !== "undefined" && "speechSynthesis" in window && typeof (window as any).SpeechSynthesisUtterance === "function";
 
+/** Round 30: the Englishes the browser's recognizer knows. Matching the speaker's accent is the
+ *  single biggest step up in what Euliv hears right (an Indian accent read as US English loses words). */
+export const ENGLISHES: [string, string][] = [
+  ["en-IN", "India"], ["en-GB", "United Kingdom"], ["en-US", "United States"], ["en-AU", "Australia"],
+  ["en-CA", "Canada"], ["en-IE", "Ireland"], ["en-NZ", "New Zealand"], ["en-SG", "Singapore"],
+  ["en-ZA", "South Africa"], ["en-NG", "Nigeria"], ["en-KE", "Kenya"], ["en-GH", "Ghana"],
+  ["en-PK", "Pakistan"], ["en-PH", "Philippines"], ["en-TZ", "Tanzania"],
+];
+
+const TZ_ENGLISH: [RegExp, string][] = [
+  [/^Asia\/(Kolkata|Calcutta)$/, "en-IN"], [/^Asia\/Karachi$/, "en-PK"], [/^Asia\/Singapore$/, "en-SG"],
+  [/^Asia\/Manila$/, "en-PH"], [/^Europe\/(London|Belfast|Guernsey|Jersey|Isle_of_Man)$/, "en-GB"], [/^Europe\/Dublin$/, "en-IE"],
+  [/^Australia\//, "en-AU"], [/^Pacific\/(Auckland|Chatham)$/, "en-NZ"], [/^Africa\/Lagos$/, "en-NG"],
+  [/^Africa\/Johannesburg$/, "en-ZA"], [/^Africa\/Nairobi$/, "en-KE"], [/^Africa\/Accra$/, "en-GH"],
+  [/^Africa\/Dar_es_Salaam$/, "en-TZ"],
+  [/^America\/(Toronto|Vancouver|Edmonton|Winnipeg|Halifax|St_Johns|Regina|Montreal|Moncton|Whitehorse|Yellowknife)$/, "en-CA"],
+];
+
+/** The English this person most likely speaks: a regional English the browser lists wins; a plain
+ *  en-US / en-GB (the default on most computers) gives way to the region of the computer's clock. */
+export function autoEnglish(): string {
+  if (typeof navigator === "undefined") return "en-US";
+  const langs = (navigator.languages?.length ? navigator.languages : [navigator.language]).filter(Boolean);
+  let zone = "";
+  try {
+    zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch {
+    /* ignore */
+  }
+  const byZone = TZ_ENGLISH.find(([re]) => re.test(zone))?.[1];
+  const english = langs.filter((l) => /^en(-|$)/i.test(l));
+  if (byZone && english.some((l) => l.toLowerCase() === byZone.toLowerCase())) return byZone;
+  const regional = english.find((l) => !/^en(-us|-gb)?$/i.test(l));
+  if (regional) return regional;
+  if (byZone) return byZone;
+  return english[0] || "en-US";
+}
+
+/** What Euliv LISTENS for (speech to text). */
 export function speechLang(): string {
   const s = loadSettings();
   if (s.lang) return s.lang;
+  return autoEnglish();
+}
+
+/** The language of Euliv's own VOICE: the computer's language, as before - the accent setting is
+ *  about hearing the person and never swaps the voice they're used to. */
+export function voiceLang(): string {
   return (typeof navigator !== "undefined" && navigator.language) || "en-US";
 }
 
@@ -298,7 +343,7 @@ export function pickVoice(voices = voicesCache): SpeechSynthesisVoice | null {
     const chosen = voices.find((v) => v.voiceURI === s.voice);
     if (chosen) return chosen;
   }
-  const lang = speechLang().toLowerCase();
+  const lang = voiceLang().toLowerCase();
   const base = lang.split("-")[0];
   const same = voices.filter((v) => v.lang.toLowerCase() === lang);
   const near = voices.filter((v) => v.lang.toLowerCase().startsWith(base));
@@ -452,7 +497,7 @@ export function speak(text: string, opts: { onChunk?: (i: number, total: number)
       if (voice) {
         u.voice = voice;
         u.lang = voice.lang;
-      } else u.lang = speechLang();
+      } else u.lang = voiceLang();
       u.rate = s.rate || 1;
       u.pitch = 1;
       opts.onChunk?.(i, parts.length);
