@@ -24,6 +24,7 @@ export type EulivState = {
   last_run_id?: string | null;
   topic?: string | null;
   retries?: number;
+  asked?: number;
 };
 
 export type EulivTurn = {
@@ -36,6 +37,7 @@ export type EulivTurn = {
   talk_id?: string;
   talk_title?: string;
   state: EulivState;
+  show?: string; // round 31: the line on screen when a card already shows the question
   heard?: string; // round 30: the reading of the person's words the server kept
   candidates?: EulivSource[];
   connect?: EulivConnect;
