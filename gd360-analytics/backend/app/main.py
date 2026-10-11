@@ -11,7 +11,7 @@ from .routers import (
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
     data_access_rules, ml_models, metric_definitions, transforms, pipelines, projects, apps, automations, ml_studio,
     spaces, site, admin_v2, admin_ops, admin_biz, inapp, guided, initiatives, gtm, gtm_public,
-    ops, trust, domains,
+    ops, trust, domains, notifications, dashboard_ai,
 )
 from .services.scheduler import start_scheduler
 
@@ -285,6 +285,9 @@ app.include_router(ops.router)
 app.include_router(trust.router)
 app.include_router(domains.router)
 app.include_router(domains.viewer_router)
+# 2026-10-11 (Explain & Alerts): the GD360 bell, and Ask AI + alerts on dashboards.
+app.include_router(notifications.router)
+app.include_router(dashboard_ai.router)
 # 2026-09-30 (Gokul's own bug report - Governance/Jobs redesign + Pipelines/
 # Catalog removal round): the standalone /catalog router is gone - Gokul's
 # own words were that it duplicated the Projects filter and Data Sources

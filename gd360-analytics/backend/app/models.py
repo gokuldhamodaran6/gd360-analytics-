@@ -2351,6 +2351,13 @@ class Automation(Base):
     tell (JSON): {"email": [...], "slack": {"url_enc": "...", "label": "#revenue"} | null,
                   "teams": {...} | null, "mode": "always"|"on_change"|"on_failure"}
     Webhook URLs are stored encrypted (security.encrypt_secret).
+    2026-10-11 (Explain & Alerts): a threshold target can also be
+    {"kind": "board", "dashboard_id", "page_id", "block_id", "den_block_id",
+     "ratio_as", "window", "label"} - a number tile (or a ratio of two) on a
+    dashboard (services/dashboard_watch.py). tell gains "in_app" (user ids -
+    the GD360 bell), "remind" ("once" | "daily"), "webhook" (any app),
+    "muted" ({user id or email: until}) and "guests"/"guest_link" (people
+    who open the dashboard through its private link).
     """
     __tablename__ = "automations"
 
@@ -2408,6 +2415,30 @@ class AutomationRun(Base):
     error_message = Column(Text, nullable=True)
     started_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     finished_at = Column(DateTime, nullable=True)
+
+
+class Notification(Base):
+    """2026-10-11 (Explain & Alerts): one message in a person's GD360 bell.
+
+    Written the moment something happens - an alert crossing its line, a
+    daily reminder while it stays crossed, an alert being switched on for
+    you - never held back for office hours. kind: "alert" | "reminder" |
+    "info". data (JSON) carries what the bell's buttons need:
+    {"automation_id", "dashboard_id", "page_id", "block_id", "value",
+    "line", "why", "link"}."""
+    __tablename__ = "notifications"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    workspace_id = Column(String, nullable=True, index=True)
+    kind = Column(String, nullable=False, default="info")
+    title = Column(String, nullable=False)
+    body = Column(Text, nullable=True)
+    link = Column(String, nullable=True)
+    data = Column(JSON, nullable=True)
+    automation_id = Column(String, nullable=True, index=True)
+    read_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
 class Space(Base):
