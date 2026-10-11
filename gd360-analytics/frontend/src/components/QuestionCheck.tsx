@@ -102,7 +102,7 @@ export function SourceChoiceList({
                   {r.recommended && (
                     <span className="h-[20px] px-1.5 rounded-md bg-kind-analysis-fill text-kind-analysis text-[11px] font-semibold inline-flex items-center">Best fit</span>
                   )}
-                  <span className="ml-auto"><FitBadge fit={r.fit} covered={Boolean(r.says && /\(/.test(r.says))} /></span>
+                  <span className="ml-auto"><FitBadge fit={r.fit} covered={Boolean(r.says && /\(/.test(r.says) && !/\bonly\b/.test(r.says))} /></span>
                 </span>
                 {r.says && (
                   <span className={`text-[12.5px] leading-snug ${warn ? "text-warning/90" : "text-secondary"}`}>
@@ -122,10 +122,21 @@ function rowOf(c: CheckCandidate, recommended = false): ChoiceRow {
   return { id: c.id, name: c.name, label: c.label, says: c.says || c.why, fit: c.fit, recommended };
 }
 
+const partWords = (p: CheckPeriod) => `${p.label}${p.label !== p.text ? ` (${p.text})` : ""}`;
+
+/** The period in the read-back sentence - one range, a comparison, or a forecast (same words as the server). */
+export function periodWords(period: CheckPeriod): string {
+  if (period.parts && period.parts.length >= 2) {
+    const [a, b] = period.parts;
+    return `, comparing ${partWords(a)} with ${partWords(b)}${a.future || b.future ? " (part of it is a forecast - it hasn't happened yet)" : ""}`;
+  }
+  return ` for ${partWords(period)}${period.future ? " (a forecast - it hasn't happened yet)" : ""}`;
+}
+
 function restate(check: Check, period: CheckPeriod | null, chosen: ChoiceRow[]): string {
   const what = (check.what || "the answer").replace(/^./, (c) => c.toUpperCase());
   let s = what;
-  if (period) s += ` for ${period.label}${period.label !== period.text ? ` (${period.text})` : ""}`;
+  if (period) s += periodWords(period);
   else if (check.needs_time) s += " over all the dates in the data";
   if (chosen.length) {
     const names = chosen.map((c) => c.name);
@@ -148,7 +159,8 @@ export default function QuestionCheckCard({
   busy?: boolean;
   onGo: (go: CheckGo) => void;
   onEdit: () => void;
-  onFixDate: (fixedQuestion: string) => void;
+  /** `kept`: the word the person chose to keep as written - not asked about again */
+  onFixDate: (fixedQuestion: string, kept?: string) => void;
 }) {
   const dateIssue = check.issues.find((i) => i.kind === "year_typo" || i.kind === "month_typo" || i.kind === "future_year");
   const dataIssue = check.issues.find((i) => ["choose", "swap", "confirm_pick", "cant_answer"].includes(i.kind));
@@ -183,6 +195,7 @@ export default function QuestionCheckCard({
   const [useShift, setUseShift] = useState<boolean>(Boolean(shift));
   const [period, setPeriod] = useState<CheckPeriod | null>(check.period);
   const [year, setYear] = useState<string | null>(null);
+  const [editingQ, setEditingQ] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -239,7 +252,7 @@ export default function QuestionCheckCard({
     if (e.key === "Escape") {
       e.preventDefault();
       onEdit();
-    } else if (e.key === "Enter" && !e.shiftKey && (e.target as HTMLElement).tagName !== "BUTTON") {
+    } else if (e.key === "Enter" && !e.shiftKey && !["BUTTON", "TEXTAREA"].includes((e.target as HTMLElement).tagName)) {
       e.preventDefault();
       go();
     }
@@ -265,13 +278,27 @@ export default function QuestionCheckCard({
         <p className="m-0 text-[17px] sm:text-[18px] leading-[1.45] font-medium text-text text-pretty" data-check-restated="">
           {dateIssue ? <>“{check.question}”</> : restate(check, effectivePeriod, chosen)}
         </p>
+        {editingQ ? (
+          <div className="pt-2"><QuestionEditor question={check.question} autoFocus onSave={(t) => { setEditingQ(false); onFixDate(t); }} onCancel={() => setEditingQ(false)} /></div>
+        ) : (
+          !dateIssue && (
+            <div className="flex items-center gap-2 flex-wrap text-[13px] text-muted" data-check-asked="">
+              <span className="truncate max-w-full">You asked: “{check.question}”</span>
+              <button type="button" onClick={() => setEditingQ(true)} className="ui-focus h-7 px-2.5 rounded-full border border-border text-[12px] text-secondary hover:text-text hover:border-border-strong inline-flex items-center gap-1" data-check-edit-question="">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+                Edit
+              </button>
+            </div>
+          )
+        )}
       </div>
 
       <div className="px-5 sm:px-6 py-5 flex flex-col gap-6">
         {dateIssue && <DateFix issue={dateIssue} chosen={year} busy={busy} onPick={(v) => {
           setYear(v);
           const from = dateIssue.fix?.from || dateIssue.said || "";
-          onFixDate(from && v !== from ? check.question.replace(new RegExp(`\\b${from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i"), v) : check.question);
+          if (!from || v.toLowerCase() === from.toLowerCase()) onFixDate(check.question, from || undefined);
+          else onFixDate(check.question.replace(new RegExp(`\\b${from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i"), v));
         }} />}
 
         {!dateIssue && (check.period_options || []).length > 1 && (
@@ -378,5 +405,45 @@ function DateFix({ issue, chosen, busy, onPick }: { issue: CheckIssue; chosen: s
         ))}
       </div>
     </section>
+  );
+}
+
+/** The question in a box: Enter checks it again from the start, Esc keeps the old one. */
+export function QuestionEditor({ question, onSave, onCancel, autoFocus = false }: { question: string; onSave: (t: string) => void; onCancel?: () => void; autoFocus?: boolean }) {
+  const [text, setText] = useState(question);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (!autoFocus || !ref.current) return;
+    ref.current.focus();
+    ref.current.setSelectionRange(text.length, text.length);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFocus]);
+  const save = () => {
+    const t = text.trim();
+    if (t.length >= 2) onSave(t);
+  };
+  return (
+    <div className="flex flex-col gap-2" data-question-editor="">
+      <label className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-muted" htmlFor="euliv-edit-q">Your question</label>
+      <textarea
+        id="euliv-edit-q"
+        ref={ref}
+        rows={2}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); save(); }
+          if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onCancel?.(); }
+        }}
+        className="w-full resize-none rounded-[12px] border border-border-strong bg-base/60 px-3 py-2.5 text-[15px] leading-snug text-text outline-none focus:border-kind-answer-border"
+      />
+      <div className="flex items-center gap-2">
+        <button type="button" onClick={save} disabled={text.trim().length < 2} className="ui-focus h-9 px-4 rounded-full bg-primary text-on-primary text-[13px] font-semibold disabled:opacity-40" data-question-editor-save="">
+          Check it again
+        </button>
+        {onCancel && <button type="button" onClick={onCancel} className="ui-focus h-9 px-3 rounded-full text-[13px] text-secondary hover:text-text">Keep it</button>}
+        <span className="ml-auto text-[11.5px] text-faint">Enter to check · nothing runs until you say go</span>
+      </div>
+    </div>
   );
 }

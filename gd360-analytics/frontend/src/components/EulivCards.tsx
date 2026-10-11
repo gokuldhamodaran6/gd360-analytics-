@@ -15,11 +15,12 @@ import type { EulivAnswer, EulivConnect, EulivTurn, PlanCard } from "../api/assi
 import { projectsApi, type CheckIssue, type CheckPeriod, type ProjectRun } from "../api/projects";
 import { ResultsTab } from "../project/RunPanels";
 import { Spinner } from "../thread/parts";
-import { SourceChoiceList } from "./QuestionCheck";
+import { QuestionEditor, SourceChoiceList } from "./QuestionCheck";
 
 export type Card =
   | { type: "plan"; plan: PlanCard; live: boolean }
   | { type: "fix_date"; issue: CheckIssue; live: boolean }
+  | { type: "rephrase"; question: string; live: boolean }
   | { type: "connect"; connect: EulivConnect; opened: boolean; done?: boolean }
   | { type: "answer"; data: EulivAnswer; runId?: string }
   | { type: "explain"; data: NonNullable<EulivTurn["explain"]> }
@@ -33,6 +34,8 @@ export type CardHandlers = {
   onGo?: () => void;
   onPeriod?: (p: CheckPeriod) => void;
   onExpand?: (open: boolean) => void;
+  /** the question was edited before running (round 25) */
+  onRephrase?: (text: string) => void;
   /** a saved talk: nothing is live, links don't close anything */
   readOnly?: boolean;
 };
@@ -42,6 +45,7 @@ export function cardFromSaved(c: any): Card | undefined {
   if (!c || typeof c !== "object") return undefined;
   if (c.type === "plan") return { type: "plan", plan: c as PlanCard, live: false };
   if (c.type === "fix_date" && c.issue) return { type: "fix_date", issue: c.issue, live: false };
+  if (c.type === "rephrase") return undefined;
   if (c.type === "connect" && c.connect) return { type: "connect", connect: c.connect, opened: true };
   if (c.type === "explain") return { type: "explain", data: c };
   if (c.type === "answer") return { type: "answer", data: { status: c.status, link: c.link, card: c.card, missing: c.missing }, runId: c.run_id };
@@ -50,6 +54,9 @@ export function cardFromSaved(c: any): Card | undefined {
 
 export function EulivCardView({ card, h }: { card: Card; h: CardHandlers }) {
   if (card.type === "plan") return <PlanView card={card} h={h} />;
+  if (card.type === "rephrase") {
+    return card.live && !h.readOnly ? <QuestionEditor question={card.question} onSave={(t) => h.onRephrase?.(t)} autoFocus /> : null;
+  }
   if (card.type === "fix_date") {
     return (
       <div className="flex flex-wrap gap-2" data-euliv-fixdate="">
@@ -167,6 +174,7 @@ function PlanView({ card, h }: { card: Extract<Card, { type: "plan" }>; h: CardH
   const canGo = !p.needs_pick || sel.length > 0 || p.mode === "shift";
   return (
     <div className={`rounded-[20px] border bg-base/30 overflow-hidden ${live ? "border-border-strong" : "border-border opacity-[0.92]"}`} data-euliv-plan={live ? "live" : "done"}>
+      {p.question && <AskedLine question={p.question} onSave={h.onRephrase} />}
       <div className="px-4 pt-3.5 pb-3 flex flex-col gap-1 border-b border-border">
         <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-muted">{live ? "What I'll do" : "Agreed"}</span>
         <span className="text-[14.5px] leading-snug text-text" data-euliv-restated="">{p.restated}</span>
@@ -203,6 +211,32 @@ function PlanView({ card, h }: { card: Extract<Card, { type: "plan" }>; h: CardH
             {picked.length ? `${picked.length} selected · ` : ""}say “one and three”, “add …”, “remove …”
           </span>
         </div>
+      )}
+    </div>
+  );
+}
+
+/** "You asked: …  Edit" - the question itself, changeable before anything runs. */
+function AskedLine({ question, onSave }: { question: string; onSave?: (t: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  if (editing && onSave) {
+    return (
+      <div className="px-4 pt-3.5 pb-3 border-b border-border">
+        <QuestionEditor question={question} autoFocus onSave={(t) => { setEditing(false); onSave(t); }} onCancel={() => setEditing(false)} />
+      </div>
+    );
+  }
+  return (
+    <div className="px-4 pt-3.5 pb-3 flex items-start gap-3 border-b border-border" data-euliv-asked="">
+      <span className="flex-1 min-w-0 flex flex-col gap-1">
+        <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-muted">You asked</span>
+        <span className="text-[14.5px] leading-snug text-secondary">“{question}”</span>
+      </span>
+      {onSave && (
+        <button type="button" onClick={() => setEditing(true)} className="ui-focus shrink-0 h-8 px-3 rounded-full border border-border text-[12.5px] text-secondary hover:text-text hover:border-border-strong inline-flex items-center gap-1.5" data-euliv-edit-question="">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+          Edit
+        </button>
       )}
     </div>
   );

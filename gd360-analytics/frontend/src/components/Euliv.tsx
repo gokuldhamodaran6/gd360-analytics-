@@ -23,6 +23,7 @@ import { useAuth } from "../api/AuthContext";
 import { assistantApi, type EulivAnswer, type EulivConnect, type EulivMemory, type EulivState, type EulivTurn } from "../api/assistant";
 import type { CheckPeriod } from "../api/projects";
 import { type Card, cardFromSaved, EulivCardView } from "./EulivCards";
+import { periodWords } from "./QuestionCheck";
 import { ACTIVE_WORKSPACE_KEY } from "../lib/useWorkspaceNav";
 import { deviceText, LevelBars } from "../thread/Dictation";
 import {
@@ -328,10 +329,18 @@ export function TalkButton({ variant = "round", className = "" }: { variant?: "r
 }
 
 /** The read-back sentence after a tap (the same words the server would use). */
-function restateLocal(plan: { restated: string; options: { id: string; name: string }[]; needs_pick?: boolean }, selected: string[], period: CheckPeriod | null): string {
-  const base = plan.restated.split(/, (?:from|looking across)/)[0].replace(/ for [^,]+$/, "").replace(/\.$/, "");
+function restateLocal(plan: { restated: string; what?: string | null; needs_time?: boolean; mode?: string | null; options: { id: string; name: string }[]; needs_pick?: boolean }, selected: string[], period: CheckPeriod | null): string {
+  if (plan.mode === "follow") {
+    const names = plan.options.filter((o) => selected.includes(o.id)).map((o) => o.name);
+    return `Your follow-up, answered from ${names.join(", ") || "the same data"}${period ? ` for ${period.text}` : ""}.`;
+  }
+  // the server's own pieces when it sent them (round 25b) - no guessing where the period starts in the sentence
+  const base = plan.what
+    ? plan.what.replace(/^./, (c) => c.toUpperCase())
+    : plan.restated.split(/, (?:from|looking across|comparing)/)[0].replace(/ for [^,]+$/, "").replace(/\.$/, "");
   let s = base;
-  if (period) s += ` for ${period.label}${period.label !== period.text ? ` (${period.text})` : ""}`;
+  if (period) s += periodWords(period);
+  else if (plan.what && plan.needs_time) s += " over all the dates in the data";
   const names = plan.options.filter((o) => selected.includes(o.id)).map((o) => o.name);
   if (names.length) s += ", from " + (names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
   else if (!plan.needs_pick) s += ", looking across all your data";
@@ -431,7 +440,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
       ...cur.slice(-40).map((x) => {
         if (strip && x.card?.type === "connect") return { ...x, card: undefined };
         // a newer turn: the earlier read-back is settled - it stays, read-only
-        if (m.who === "euliv" && x.card && (x.card.type === "plan" || x.card.type === "fix_date") && x.card.live) return { ...x, card: { ...x.card, live: false } };
+        if (m.who === "euliv" && x.card && (x.card.type === "plan" || x.card.type === "fix_date" || x.card.type === "rephrase") && x.card.live) return { ...x, card: { ...x.card, live: false } };
         return x;
       }),
       { ...m, id },
@@ -484,8 +493,15 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
       setPhase("idle");
       return;
     }
+    // round 25: Euliv only asks again when it is waiting on an answer from the person;
+    // after an answer, silence or background noise (or its own voice's echo) just goes quiet
+    const waitingOnPerson = ["plan", "fix_date", "connect", "rephrase"].includes(state.current.awaiting || "");
     if (heard.reason === "silent" && proven.current) {
       setPhase("idle"); // they've finished - no need to nag
+      return;
+    }
+    if (heard.reason === "unclear" && proven.current && !waitingOnPerson) {
+      setPhase("idle");
       return;
     }
     if (heard.reason === "unclear") {
@@ -517,7 +533,13 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
 
   const afterReply = useCallback(async (spokeOk: boolean | null) => {
     if (!alive.current || spokeOk === null) return;
-    if (spokeOk && settingsRef.current.handsFree && canListen && !micTrouble.current) return listen();
+    if (spokeOk && settingsRef.current.handsFree && canListen && !micTrouble.current) {
+      // a breath after speaking, so the tail of Euliv's own voice isn't heard as the person
+      const s = session.current;
+      await new Promise((r) => window.setTimeout(r, settingsRef.current.speak ? 450 : 0));
+      if (s !== session.current || !alive.current) return;
+      return listen();
+    }
     setPhase("idle");
   }, [canListen, listen]);
 
@@ -571,14 +593,17 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
   }, [patch, push, say, afterReply]);
 
   const watching = useRef(false);
+  // round 25b: the app being waited on - a second offer ("connect Shopify" after Google Ads) retargets the running watch
+  const watchTarget = useRef<{ c: EulivConnect; since: string } | null>(null);
   /** Waits (up to 15 min) for the source Euliv offered to be connected - in
    *  the other tab - then carries on with the question that needed it. */
   const watchConnect = useCallback(async (c: EulivConnect) => {
+    // a minute of slack for clock differences between this computer and the server
+    const prev = watchTarget.current;
+    watchTarget.current = { c, since: prev && prev.c.kind === c.kind ? prev.since : new Date(Date.now() - 60000).toISOString() };
     if (watching.current) return;
     watching.current = true;
     const t0 = Date.now();
-    // a minute of slack for clock differences between this computer and the server
-    const since = new Date(t0 - 60000).toISOString();
     let focusHit = false;
     const onFocus = () => (focusHit = true);
     window.addEventListener("focus", onFocus);
@@ -588,7 +613,8 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
         focusHit = false;
         if (!alive.current || state.current.awaiting !== "connecting") return;
         try {
-          const st = await assistantApi.connected(c.kind, workspaceId(), since);
+          const tgt = watchTarget.current || { c, since: new Date(t0 - 60000).toISOString() };
+          const st = await assistantApi.connected(tgt.c.kind, workspaceId(), tgt.since);
           if (st.connected) {
             setMsgs((cur) => cur.map((m) => (m.card?.type === "connect" ? { ...m, card: { ...m.card, done: true } } : m)));
             interrupt();
@@ -600,6 +626,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
       }
     } finally {
       watching.current = false;
+      watchTarget.current = null;
       window.removeEventListener("focus", onFocus);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -609,7 +636,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
   const connectTapped = (c: EulivConnect) => {
     interrupt();
     setPhase("idle");
-    if (state.current.awaiting !== "connecting") {
+    if (state.current.awaiting !== "connecting" || state.current.connect?.kind !== c.kind) {
       state.current = { ...state.current, awaiting: "connecting", connect: c };
       void watchConnect(c);
     }
@@ -629,6 +656,10 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
       }
       case "fix_date": {
         const ok = await say(out.say, out.speak, out.issue ? { type: "fix_date", issue: out.issue, live: true } : undefined);
+        return afterReply(ok);
+      }
+      case "rephrase": {
+        const ok = await say(out.say, out.speak, { type: "rephrase", question: (out as any).question || out.state?.pending_question || "", live: true });
         return afterReply(ok);
       }
       case "run": {
@@ -813,6 +844,13 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
     state.current = { ...state.current, brief: { ...b, period: p } };
     setMsgs((all) => all.map((m) => (m.card?.type === "plan" && m.card.live ? { ...m, card: { ...m.card, plan: { ...m.card.plan, period: p, restated: restateLocal(m.card.plan, m.card.plan.selected, p) } } } : m)));
   };
+  /** The question edited in the read-back: checked again from the start - nothing runs yet. */
+  const rephrase = (text: string) => {
+    if (phase === "thinking") return;
+    interrupt();
+    push({ who: "you", text });
+    void turnWith(text, "rephrase");
+  };
   const goAhead = () => {
     if (phase === "thinking") return;
     interrupt();
@@ -850,6 +888,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
           <EulivSettingsPanel settings={settings} wakeProblem={wakeProblem} onDone={() => setShowSettings(false)} />
         ) : (
           <div ref={scroller} className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-8 py-6 flex flex-col gap-5" aria-live="polite" data-euliv-log="">
+            <WakeOffer settings={settings} />
             {msgs.map((m) =>
               m.who === "you" ? (
                 <div key={m.id} className="self-end max-w-[85%] rounded-[18px] rounded-br-[6px] bg-subtle px-4 py-2.5 text-[15px] leading-snug text-text" data-euliv-you="">
@@ -863,7 +902,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
                       <span className="w-4 h-4 rounded-full gd-orb-ring" aria-hidden="true" /> {m.working}…
                     </span>
                   )}
-                  {m.card && <EulivCardView card={m.card} h={{ onPick: pick, onConnect: connectTapped, onClose, onToggle: toggleSource, onGo: goAhead, onPeriod: choosePeriod, onExpand: (o) => o && setWide(true) }} />}
+                  {m.card && <EulivCardView card={m.card} h={{ onPick: pick, onConnect: connectTapped, onClose, onToggle: toggleSource, onGo: goAhead, onPeriod: choosePeriod, onRephrase: rephrase, onExpand: (o) => o && setWide(true) }} />}
                 </div>
               ),
             )}
@@ -919,6 +958,33 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
           </span>
         </footer>
       </div>
+    </div>
+  );
+}
+
+/** Once per browser: "Start me by voice - turn on Hi Euliv". The wake word is off until
+ *  the person says yes (it keeps the microphone open while GD360 is in front). */
+function WakeOffer({ settings }: { settings: EulivSettings }) {
+  const [done, setDone] = useState<"" | "on" | "later">("");
+  const able = speechInputSupported() && !isTouchDevice();
+  if (!able || settings.wakeAsked || (settings.wake && !done)) return null;
+  if (done === "on") {
+    return (
+      <div className="order-last rounded-[16px] border border-kind-answer-border bg-kind-answer-fill/60 px-4 py-3 text-[13px] text-secondary" data-euliv-wake-on="">
+        <b className="text-text">“Hi Euliv” is on.</b> Close this and just say it whenever a GD360 tab is in front.
+      </div>
+    );
+  }
+  if (done) return null;
+  return (
+    <div className="order-last rounded-[16px] border border-border bg-base/40 px-4 py-3 flex flex-wrap items-center gap-3" data-euliv-wake-offer="">
+      <span className="flex-1 min-w-[220px] text-[13px] leading-snug text-secondary">
+        <b className="text-text">Start me by voice?</b> Turn on “Hi Euliv” and I'll listen for my name while GD360 is open in front. Nothing is sent until you say it.
+      </span>
+      <button type="button" onClick={() => { saveSettings({ wake: true, wakeAsked: true }); setDone("on"); }}
+        className="ui-focus h-9 px-4 rounded-full bg-primary text-on-primary text-[13px] font-semibold" data-euliv-wake-yes="">Turn on</button>
+      <button type="button" onClick={() => { saveSettings({ wakeAsked: true }); setDone("later"); }}
+        className="ui-focus h-9 px-3 rounded-full text-[13px] text-secondary hover:text-text">Not now</button>
     </div>
   );
 }
