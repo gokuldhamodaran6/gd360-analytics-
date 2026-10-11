@@ -412,6 +412,12 @@ def _new_question(db: Session, user: models.User, q: str, ws: str | None, state:
             and not any(x.get("score", 0) >= 4 for x in cands)):
         return _reply("I'm not sure what you'd like me to look at. Ask me about your data - like 'sales last month' - "
                       "or say 'bye' to finish.", "chat", _keep(state))
+    # round 27: words that match nothing in any data (no subject, no measure, no date, no source) - ask what
+    # they mean instead of reading out every source they have
+    if (not c.get("topic") and not c.get("period") and not named and not any((x.get("score") or 0) > 0 for x in cands)
+            and not (qc.words(q) & qc.MEASURE_WORDS)):
+        return _reply("I'm not sure which numbers that's about. Could you say it another way - for example "
+                      "'e-commerce sales last month' or 'which campaigns brought the most orders'?", "chat", _keep(state))
     st = _keep(state, topic=c.get("topic") or state.topic)
     return _plan_from_check(db, user, q, c, st, ws, lead)
 
@@ -750,7 +756,7 @@ def _card_of(out: dict) -> dict | None:
 
 def _record(db: Session, user: models.User, payload: TurnRequest, said: str, out: dict) -> dict:
     """Keeps the talk: created at the first real question, then every turn both ways."""
-    if not payload.save:
+    if not payload.save or out.get("action") == "ignore":
         return out
     a = out.get("action")
     talk = _talk(db, user, payload.state.talk_id)
@@ -840,6 +846,10 @@ def _turn(db: Session, user: models.User, payload: TurnRequest) -> dict:
         if fresh:
             return _new_question(db, user, q, ws, _keep(state), f"{fresh[0].name} is connected.")
         return _reply("I don't see it connected yet. Finish connecting in the other tab and I'll carry on.", "connect_wait", state)
+
+    # round 27: Euliv's own words came back through the mic (speakers): never answer itself - drop it, keep listening
+    if not payload.event and eu.is_own_words(text):
+        return _reply("", "ignore", state)
 
     kind = eu.intent(text)
     # "no" while Euliv is waiting on an answer from the person is an answer, not goodbye
