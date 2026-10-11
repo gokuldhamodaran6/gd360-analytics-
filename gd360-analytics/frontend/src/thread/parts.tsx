@@ -1,4 +1,3 @@
-
 // 2026-10-11 (Ask Journey): the pieces Home and every thread share - the
 // Quick answer | Guided switch, the follow-up box, the GD360 mark and the
 // small icons they use. One look, one behaviour, everywhere a question is
