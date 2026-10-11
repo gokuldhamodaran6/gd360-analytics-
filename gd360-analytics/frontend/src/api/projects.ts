@@ -182,11 +182,39 @@ export type Project = {
   // the answers GD360 was told "Not now" about
   placements?: Placement[];
   dismissed?: string[];
+  // 2026-10-11 (Explain & Alerts): explanations asked in this thread
+  explains?: Explanation[];
   // 2026-10-09 (round 15): the Space a project was asked in, if any.
   space_id?: string | null;
   space_name?: string | null;
   space_color?: string | null;
 };
+
+// 2026-10-11 (Explain & Alerts): an explanation of what is already on
+// screen - the answer, one chart or one cause - written from the run's own
+// numbers (no new run). written_by "numbers" = composed without a model.
+export type ExplainTarget = { kind: "answer" | "visual" | "cause"; index: number };
+
+export type Explanation = {
+  id: string | null;
+  run_id: string;
+  created_at: string;
+  target: ExplainTarget;
+  title: string;
+  question: string | null;
+  headline: string;
+  points: { text: string; ref: string | null }[];
+  takeaway: string | null;
+  followups: string[];
+  needs_new_data?: boolean;
+  new_question?: string | null;
+  written_by: "model" | "numbers";
+  seconds?: number;
+};
+
+export type AskResult =
+  | { kind?: "run"; project_id: string; run_id: string; source_ids?: string[] }
+  | { kind: "explain"; project_id: string; explain: Explanation; route?: string; run_id?: undefined; source_ids?: string[] };
 
 export type LiveInfo = { kind: "domain" | "link"; label: string; url: string; views: number };
 
@@ -280,11 +308,16 @@ export const projectsApi = {
     id: string,
     question: string,
     autoRun = true,
-    extra?: { mode?: "answer" | "guided"; source_ids?: string[]; space_id?: string },
+    extra?: {
+      mode?: "answer" | "guided"; source_ids?: string[]; space_id?: string;
+      // 2026-10-11 (Explain & Alerts): read the follow-up first - "explain
+      // this" is answered from the answer on screen without a new run
+      route?: boolean; context_run_id?: string; explain_target?: ExplainTarget;
+    },
   ) =>
-    api
-      .post<{ project_id: string; run_id: string; source_ids?: string[] }>(`/projects/${id}/ask`, { question, auto_run: autoRun, ...(extra || {}) })
-      .then((r) => r.data),
+    api.post<AskResult>(`/projects/${id}/ask`, { question, auto_run: autoRun, ...(extra || {}) }, { timeout: 90000 }).then((r) => r.data),
+  explain: (runId: string, target: ExplainTarget, question?: string) =>
+    api.post<Explanation>(`/projects/runs/${runId}/explain`, { target, question: question || undefined }, { timeout: 60000 }).then((r) => r.data),
   run: (runId: string) => api.get<ProjectRun>(`/projects/runs/${runId}`).then((r) => r.data),
   execute: (runId: string) => api.post(`/projects/runs/${runId}/execute`).then((r) => r.data),
   replan: (runId: string, note: string) =>

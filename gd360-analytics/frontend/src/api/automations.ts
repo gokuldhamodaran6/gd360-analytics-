@@ -11,7 +11,11 @@ export type Trigger =
   | { type: "new_data"; datasource_id: string }
   | {
       type: "threshold";
-      target: { kind: "project_run"; run_id: string } | { kind: "dashboard"; dashboard_id: string };
+      target:
+        | { kind: "project_run"; run_id: string }
+        | { kind: "dashboard"; dashboard_id: string }
+        // 2026-10-11 (Explain & Alerts): a number tile on a dashboard (or a ratio of two), set up from the dashboard's Ask AI
+        | { kind: "board"; dashboard_id: string; page_id?: string; block_id: string; den_block_id?: string; ratio_as?: string; window?: string; label?: string };
       kpi: string;
       kpi_label?: string;
       op: "below" | "above" | "drops_by" | "rises_by";
