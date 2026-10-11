@@ -36,6 +36,7 @@ export type EulivTurn = {
   talk_id?: string;
   talk_title?: string;
   state: EulivState;
+  heard?: string; // round 30: the reading of the person's words the server kept
   candidates?: EulivSource[];
   connect?: EulivConnect;
   run_id?: string;
@@ -80,7 +81,7 @@ export function localToday(): string {
 export const assistantApi = {
   hello: (talkId?: string | null) =>
     api.get<{ say: string; first_name: string }>("/assistant/hello", { params: { talk_id: talkId || undefined } }).then((r) => r.data),
-  turn: (body: { text: string; state: EulivState; workspace_id?: string | null; event?: string; run_id?: string; save?: boolean; greeting?: string; last_said?: string }) =>
+  turn: (body: { text: string; state: EulivState; workspace_id?: string | null; event?: string; run_id?: string; save?: boolean; greeting?: string; last_said?: string; last_reply?: string; alts?: string[] }) =>
     api.post<EulivTurn>("/assistant/turn", { ...body, today: localToday() }, { timeout: 30000 }).then((r) => r.data),
   answer: (runId: string, talkId?: string | null) =>
     api.get<EulivAnswer>(`/assistant/answer/${runId}`, { timeout: 15000, params: { talk_id: talkId || undefined } }).then((r) => r.data),
