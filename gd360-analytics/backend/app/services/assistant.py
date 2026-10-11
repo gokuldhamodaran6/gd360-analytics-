@@ -480,6 +480,87 @@ def _plural_head(chunk: str) -> bool:
     return head.endswith("s") and head not in _SINGULAR_S and not head.endswith(("ss", "us", "is")) and len(head) > 3
 
 
+# ---- round 31: talking about the talk ------------------------------------------------------------------
+# "I want to change it", "that's not what I meant", "say that again", "wait", "never mind" are about the
+# conversation, never a question for the data - a person would never read them back as one.
+_META_LEAD = r"^(?:(?:no|nope|wait|actually|sorry|hold on|hmm+|ok|okay|um+|uh+|oh|so|and|but)[\s,.!]+)*"
+_META_CHANGE = re.compile(
+    _META_LEAD +
+    r"(?:(?:i\s+(?:want|wanna|need|would\s+like|'?d\s+like)\s+to|can\s+i|could\s+i|may\s+i|let\s+me|let'?s|i'?ll|i\s+will|"
+    r"i\s+have\s+to|please)\s+)?"
+    r"(?:change|edit|rephrase|reword|redo|fix|correct|update|modify|tweak|ask\s+(?:it\s+)?(?:again|differently)|"
+    r"say\s+it\s+(?:again\s+)?differently|try\s+(?:that\s+)?again|start\s+(?:again|over)|ask\s+something\s+else|ask\s+a\s+different\s+question)"
+    r"(?:\s+(?:it|that|this|the\s+question|my\s+question|the\s+wording|what\s+i\s+(?:said|asked)))?"
+    r"(?:\s*(?:,|to|into|as|-|:)\s*(?P<to>.+?))?[\s.!?]*$", re.I)
+_META_WRONG = re.compile(
+    _META_LEAD + r"(?:(?:that'?s|that\s+is|it'?s|its|this\s+is)\s+(?:not\s+(?:right|correct|it|my\s+question|what\s+i\s+(?:meant|said|asked|wanted))|"
+    r"wrong|incorrect)|not\s+that|wrong\s+question|you\s+(?:got|heard|understood)\s+(?:it|me|that)\s+wrong|"
+    r"(?:that'?s\s+)?not\s+what\s+i\s+(?:meant|said|asked|wanted))[\s.!]*$", re.I)
+_META_REPEAT = re.compile(
+    r"^(?:(?:sorry|pardon|what|huh|excuse\s+me)[\s,?!.]*)?(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?"
+    r"(?:repeat(?:\s+(?:that|it|the\s+question|yourself|please))?|say\s+(?:that|it)\s+again|come\s+again|one\s+more\s+time|"
+    r"what\s+did\s+you\s+(?:say|ask|just\s+say)|i\s+(?:didn'?t|did\s+not|couldn'?t)\s+(?:get|catch|hear|understand)\s+(?:that|you|it))"
+    r"(?:\s+please)?[\s.!?]*$|^(?:sorry|pardon|what|huh|excuse\s+me)\s*[?.!]*$", re.I)
+_META_WAIT = re.compile(
+    r"^(?:(?:um+|uh+|hmm+|ok|okay|oh)[\s,]+)?(?:wait|hold\s+on|hang\s+on|one\s+(?:moment|second|sec|minute)|"
+    r"(?:just\s+)?a\s+(?:moment|second|sec|minute)|give\s+me\s+a\s+(?:moment|second|sec|minute)|let\s+me\s+think|"
+    r"wait\s+a\s+(?:moment|second|sec|minute)|pause)(?:\s+(?:please|a\s+(?:moment|second|sec|minute)))?[\s.!]*$", re.I)
+_META_CANCEL = re.compile(
+    r"^(?:(?:no|okay|ok|actually)[\s,]+)?(?:cancel\s+(?:that|it|this|the\s+question)|never\s*mind|forget\s+(?:that|this|the\s+question)|"
+    r"scratch\s+that|skip\s+(?:it|that|this)|leave\s+it|drop\s+(?:it|that))[\s.!]*$", re.I)
+
+
+def meta_intent(text: str) -> tuple[str | None, str | None]:
+    """('change', new wording or None) / ('repeat', None) / ('wait', None) / ('cancel', None) / (None, None)."""
+    t = re.sub(rf"[\s,]+(?:{EXACT_NAMES})[\s.!?]*$", "", (text or "").strip(), flags=re.I).strip()
+    if not t or len(t.split()) > 18:
+        return None, None
+    m = _META_CHANGE.match(t)
+    if m:
+        to = (m.group("to") or "").strip(" ,.-:")
+        return "change", (to if len(to.split()) >= 2 else None)
+    if _META_WRONG.match(t):
+        return "change", None
+    if _META_REPEAT.match(t):
+        return "repeat", None
+    if _META_WAIT.match(t):
+        return "wait", None
+    if _META_CANCEL.match(t):
+        return "cancel", None
+    return None, None
+
+
+# "to see the e-commerce performance", "I want to check sales by city", "I'd like to know how orders did"
+_WANT = re.compile(r"^(?:(?:i\s+(?:just\s+)?(?:want|wanna|would\s+like|need)|i'?d\s+like|can\s+i|could\s+i|let\s+me|let'?s|we\s+(?:want|need))\s+)?"
+                   r"(?:to\s+)?(see|view|check|look\s+at|have\s+a\s+look\s+at|know|find\s+out|understand|get|review|analy[sz]e|explore|track|compare)\s+(.+)$", re.I)
+
+
+def _from_want(s: str) -> str | None:
+    m = _WANT.match(s)
+    if not m:
+        return None
+    verb, rest = m.group(1).lower(), m.group(2).strip()
+    if re.match(r"^(?:what|how|why|which|who|when|where)\b", rest, re.I):
+        return "Tell me " + rest
+    if re.match(r"^(?:if|whether)\b", rest, re.I):
+        return "Tell me " + rest
+    pm = re.match(r"^(?:(the)\s+|(my|our)\s+)?(.+?)\s+performance(?:\s+(.+))?$", rest, re.I)
+    if pm and len(pm.group(3).split()) <= 4:
+        own = (pm.group(2) + " ") if pm.group(2) else ""
+        tail = (" " + pm.group(4)) if pm.group(4) else ""
+        if re.search(r"\b(last|previous|past|yesterday|ago|in\s+(?:19|20)\d\d|in\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))", tail, re.I):
+            return f"How did {own}{pm.group(3)} perform{tail}"
+        return f"How is {own}{pm.group(3)} performing{tail}"
+    if verb == "compare":
+        return "Compare " + rest
+    # "my e-commerce January 2025" -> "my e-commerce for January 2025"
+    pm = re.match(r"^(.*?)(\S+)\s+((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*(?:\s+(?:19|20)\d{2,3})?|(?:19|20)\d{2,3})$", rest, re.I)
+    if pm and pm.group(2).lower() not in {"in", "for", "from", "during", "since", "of", "on", "by", "to", "until", "last", "this",
+                                          "next", "over", "between", "and", "vs", "versus"}:
+        rest = f"{pm.group(1)}{pm.group(2)} for {pm.group(3)}"
+    return "Show " + rest
+
+
 def polish_question(text: str, source_names: list[str] | None = None) -> tuple[str, list[str]]:
     """(the question tidied, what was changed in words). Rules only - the meaning never changes."""
     raw = re.sub(r"\s+", " ", (text or "").strip())
@@ -488,6 +569,10 @@ def polish_question(text: str, source_names: list[str] | None = None) -> tuple[s
     notes: list[str] = []
     s = _FILLERS.sub("", raw).strip() or raw
     s = re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", s, flags=re.I)  # "the the" -> "the"
+    w = _from_want(s.rstrip(" .?!"))
+    if w:
+        s = w
+        notes.append("worded as a question")
     low = s.lower()
     # agreement: "what is the paid marketing activities" -> "what are ..."; "what was the orders" -> "what were ..."
     m = re.match(rf"^(what|how|where|which|who)\s+(is|was)\s+((?:the|my|our|your|all|all the)\s+)?(.+?)(?=\s+{_STOP_HEAD}\b|[?.!]|$)", low)
