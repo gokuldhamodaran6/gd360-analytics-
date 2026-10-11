@@ -222,7 +222,13 @@ def list_conversations(
         if not member:
             return []
         ds_ids_in_workspace = workspace_access.accessible_datasource_ids_in_workspace(db, user, workspace_id)
-        query = db.query(models.Conversation).filter(models.Conversation.datasource_id.in_(ds_ids_in_workspace))
+        # 2026-10-11 (round 24): a talk with Euliv belongs to the workspace it happened in (it may use no source yet)
+        from sqlalchemy import and_ as _and, or_ as _or
+        query = db.query(models.Conversation).filter(_or(
+            models.Conversation.datasource_id.in_(ds_ids_in_workspace),
+            _and(models.Conversation.kind == "voice", models.Conversation.owner_id == user.id,
+                 models.Conversation.workspace_id == workspace_id),
+        ))
     else:
         query = db.query(models.Conversation).filter(workspace_access.conversation_access_filter(db, user))
     conversations = query.all()
@@ -313,14 +319,16 @@ def list_conversations(
             "title": c.title or "Untitled analysis",
             "datasource_id": c.datasource_id,
             "datasource_name": (
-                _project_sources_label(c, datasource_names) if c.kind in ("project", "guided")
+                ", ".join((c.thread_meta or {}).get("sources") or []) or None if c.kind == "voice"
+                else _project_sources_label(c, datasource_names) if c.kind in ("project", "guided")
                 else (datasource_names.get(c.datasource_id) if c.datasource_id else None)
             ),
             "kind": c.kind or "analysis",
             "source_ids": c.source_ids if c.kind in ("project", "guided") else ([c.datasource_id] if c.datasource_id else []),
             "message_count": len(messages),
             "dashboard_count": dash_counts.get(c.id, 0),
-            "question_count": question_counts.get(c.id, 0),
+            "question_count": (int((c.thread_meta or {}).get("questions") or 0) if c.kind == "voice"
+                               else question_counts.get(c.id, 0)),
             "needs_you": needs_you.get(c.id),
             "last_message": last.content,
             "last_chart_type": last_chart_type,

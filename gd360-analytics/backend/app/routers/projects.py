@@ -82,6 +82,17 @@ class CreateProjectRequest(BaseModel):
     # "guided" = Guided Analysis (the same plan, run one step at a time -
     # services/project_engine/guided.py, routers/guided.py).
     mode: str = "answer"
+    # 2026-10-11 (round 24, Understand before answering): what the person
+    # agreed to on the check card / with Euliv - the period in dates and the
+    # read-back - handed to the planner so the answer is exactly that.
+    brief: dict | None = None
+
+
+class CheckRequest(BaseModel):
+    question: str = Field(min_length=2, max_length=2000)
+    source_ids: list[str] | None = None
+    space_id: str | None = None
+    workspace_id: str | None = None
 
 
 class AskRequest(BaseModel):
@@ -275,11 +286,29 @@ def _run_out(run: models.ProjectRun, full: bool = True) -> dict:
     return out
 
 
+def _clean_brief(brief: dict | None) -> dict | None:
+    if not isinstance(brief, dict):
+        return None
+    out: dict = {}
+    p = brief.get("period")
+    if isinstance(p, dict) and p.get("start") and p.get("end"):
+        out["period"] = {k: str(p.get(k) or "")[:40] for k in ("start", "end", "text", "label")}
+    if brief.get("restated"):
+        out["restated"] = str(brief["restated"])[:400]
+    notes = [str(n)[:200] for n in (brief.get("notes") or [])[:4]]
+    if notes:
+        out["notes"] = notes
+    return out or None
+
+
 def _new_run(db: Session, conv: models.Conversation, user: models.User, question: str, auto_run: bool,
-             note: str | None = None, replaced_plan: dict | None = None) -> models.ProjectRun:
+             note: str | None = None, replaced_plan: dict | None = None, brief: dict | None = None) -> models.ProjectRun:
+    plan = {"replaced_plan": replaced_plan} if replaced_plan else None
+    if brief:
+        plan = (plan or {}) | {"brief": brief}
     run = models.ProjectRun(
         conversation_id=conv.id, owner_id=user.id, question=question.strip(), status="planning",
-        auto_run=auto_run, note=note, plan={"replaced_plan": replaced_plan} if replaced_plan else None,
+        auto_run=auto_run, note=note, plan=plan,
     )
     db.add(run)
     if not note:
@@ -383,9 +412,24 @@ def create_project(payload: CreateProjectRequest, db: Session = Depends(get_db),
     )
     db.add(conv)
     db.commit()
-    run = _new_run(db, conv, user, payload.question, False if guided else payload.auto_run)
+    run = _new_run(db, conv, user, payload.question, False if guided else payload.auto_run, brief=_clean_brief(payload.brief))
     executor.start_planning(run.id)
     return {"project_id": conv.id, "run_id": run.id, "space_id": conv.space_id, "kind": conv.kind}
+
+
+@router.post("/check")
+def check_question(payload: CheckRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """2026-10-11 (round 24): read the question back before answering it -
+    dates, typos, which data can really answer it (services/question_check.py).
+    `ready` = nothing needs the person; ask straight away."""
+    from ..services import question_check
+    try:
+        return question_check.check(db, user, payload.question, source_ids=payload.source_ids,
+                                    space_id=payload.space_id, workspace_id=payload.workspace_id)
+    except Exception as e:  # noqa: BLE001 - the check must never stand between a person and their answer
+        print(f"[projects] question check skipped: {e}")
+        return {"question": payload.question, "ready": True, "issues": [], "candidates": [], "picked": [],
+                "restated": None, "period": None, "skipped": True}
 
 
 @router.get("/runs/{run_id}")
