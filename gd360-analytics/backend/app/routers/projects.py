@@ -38,7 +38,7 @@ from __future__ import annotations
 import re
 import time
 from collections import defaultdict, deque
-from datetime import datetime
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -93,6 +93,9 @@ class CheckRequest(BaseModel):
     source_ids: list[str] | None = None
     space_id: str | None = None
     workspace_id: str | None = None
+    # round 25: words the person chose to keep as written ("Keep 2027 - it's a forecast") - not asked again
+    accepted: list[str] = Field(default_factory=list, max_length=10)
+    today: str | None = Field(default=None, max_length=10)  # the person's local date (time zones)
 
 
 class AskRequest(BaseModel):
@@ -286,13 +289,37 @@ def _run_out(run: models.ProjectRun, full: bool = True) -> dict:
     return out
 
 
+def _local_today(said: str | None) -> date:
+    from .assistant import local_today
+    return local_today(said)
+
+
+def _clean_period(p) -> dict | None:
+    """A period from the client, kept only when its dates are real and run forwards."""
+    if not isinstance(p, dict) or not p.get("start") or not p.get("end"):
+        return None
+    try:
+        a, b = date.fromisoformat(str(p["start"])[:10]), date.fromisoformat(str(p["end"])[:10])
+    except ValueError:
+        return None
+    if b < a:
+        return None
+    out = {k: str(p.get(k) or "")[:80] for k in ("text", "label")} | {"start": a.isoformat(), "end": b.isoformat()}
+    if p.get("future") or a > date.today():
+        out["future"] = True
+    return out
+
+
 def _clean_brief(brief: dict | None) -> dict | None:
     if not isinstance(brief, dict):
         return None
     out: dict = {}
-    p = brief.get("period")
-    if isinstance(p, dict) and p.get("start") and p.get("end"):
-        out["period"] = {k: str(p.get(k) or "")[:40] for k in ("start", "end", "text", "label")}
+    p = _clean_period(brief.get("period"))
+    if p:
+        parts = [x for x in (_clean_period(y) for y in (brief["period"].get("parts") or [])[:2]) if x]
+        if len(parts) == 2:
+            p["parts"] = parts
+        out["period"] = p
     if brief.get("restated"):
         out["restated"] = str(brief["restated"])[:400]
     notes = [str(n)[:200] for n in (brief.get("notes") or [])[:4]]
@@ -425,7 +452,8 @@ def check_question(payload: CheckRequest, db: Session = Depends(get_db), user: m
     from ..services import question_check
     try:
         return question_check.check(db, user, payload.question, source_ids=payload.source_ids,
-                                    space_id=payload.space_id, workspace_id=payload.workspace_id)
+                                    space_id=payload.space_id, workspace_id=payload.workspace_id,
+                                    accepted=payload.accepted, today=_local_today(payload.today))
     except Exception as e:  # noqa: BLE001 - the check must never stand between a person and their answer
         print(f"[projects] question check skipped: {e}")
         return {"question": payload.question, "ready": True, "issues": [], "candidates": [], "picked": [],
@@ -453,7 +481,10 @@ def replan(run_id: str, payload: ReplanRequest, db: Session = Depends(get_db), u
     run, conv = _run(db, run_id, user, edit=True)
     if run.status in ("planning", "running"):
         raise HTTPException(409, "Wait for the current plan to finish first.")
-    new = _new_run(db, conv, user, run.question, auto_run=False, note=payload.note.strip(), replaced_plan=run.plan)
+    # the period agreed before the first plan still holds for the new one
+    kept = (run.plan or {}).get("brief") if isinstance(run.plan, dict) else None
+    new = _new_run(db, conv, user, run.question, auto_run=False, note=payload.note.strip(), replaced_plan=run.plan,
+                   brief=kept if isinstance(kept, dict) else None)
     if run.status == "planned":
         run.status = "replaced"
         db.commit()

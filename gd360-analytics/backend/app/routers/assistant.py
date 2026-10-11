@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -58,6 +59,24 @@ FOLLOW_UP = (
     "is that", "was that", "can you explain", "go deeper", "dig into",
 )
 MAX_OPTIONS = 12
+
+# round 25b: "today" is the person's own date (their browser's), not the server's - "last month" on
+# 1 Nov at 1am in Sydney is October, even while the server in UTC still says 31 Oct
+_TODAY: ContextVar[date | None] = ContextVar("euliv_today", default=None)
+
+
+def local_today(said: str | None) -> date:
+    """The client's date when it's within a day of the server's (time zones), else the server's."""
+    server = date.today()
+    try:
+        d = date.fromisoformat(str(said or "")[:10])
+    except ValueError:
+        return server
+    return d if abs((d - server).days) <= 1 else server
+
+
+def _today() -> date:
+    return _TODAY.get() or date.today()
 
 
 def first_name(user: models.User) -> str:
@@ -102,6 +121,7 @@ class TurnRequest(BaseModel):
     # keep a written record of the talk (Euliv settings > Keep a written record)
     save: bool = True
     greeting: str | None = Field(default=None, max_length=300)
+    today: str | None = Field(default=None, max_length=10)  # the person's local date, YYYY-MM-DD
 
 
 def _reply(say: str, action: str, state: TurnState, **extra) -> dict:
@@ -135,6 +155,10 @@ def _start(db: Session, user: models.User, question: str, source_ids: list[str] 
             db=db, user=user,
         )
     except HTTPException as e:
+        if state.awaiting == "plan" and state.brief:
+            # the read-back stays agreed: "go ahead" again in a moment runs it
+            return _reply(_err_text(e) + " Say 'go ahead' when you're ready.", "plan", state,
+                          plan=_talk_card(state.brief), title=_title_of(state.brief))
         return _reply(_err_text(e), "chat", _keep(state))
     names = eu.names_text(picked or [])
     if not say:
@@ -144,12 +168,14 @@ def _start(db: Session, user: models.User, question: str, source_ids: list[str] 
                   sources=picked or [])
 
 
-def _follow_up(db: Session, user: models.User, question: str, state: TurnState) -> dict | None:
+def _follow_up(db: Session, user: models.User, question: str, state: TurnState,
+               source_ids: list[str] | None = None) -> dict | None:
     """A follow-up in the conversation's project; None when it should be a new question."""
     try:
         out = projects.ask(
             state.project_id,
-            projects.AskRequest(question=question, route=True, context_run_id=state.last_run_id),
+            projects.AskRequest(question=question, route=True, context_run_id=state.last_run_id,
+                                source_ids=source_ids or None),
             db=db, user=user,
         )
     except HTTPException as e:
@@ -174,6 +200,8 @@ def _follow_up(db: Session, user: models.User, question: str, state: TurnState) 
 def _is_follow_up(text: str, state: TurnState, topic: str | None, named: bool) -> bool:
     if not state.project_id or not state.last_run_id:
         return False
+    if not eu.questionish(text):
+        return False  # "no you are good", "hmm okay" - a remark, not a question about the answer
     low = text.lower().strip()
     if named:
         return False  # a source was named - a fresh question on it
@@ -215,6 +243,10 @@ def _all_options(db: Session, user: models.User, ws: str | None, first: list[dic
 
 def _restated(b: dict) -> str:
     picked = [o for o in b.get("options") or [] if o["id"] in set(b.get("selected") or [])]
+    if b.get("mode") == "follow":
+        names = eu.names_text(picked, limit=4)
+        return f"Your follow-up, answered from {names or 'the same data'}" + (
+            f" for {b['period']['text']}" if b.get("period") else "") + "."
     s = qc._restate(b.get("what") or "the answer", b.get("period"), picked, bool(b.get("needs_time")))  # noqa: SLF001
     if not picked and not b.get("needs_pick"):
         s = s.rstrip(".") + ", looking across all your data."
@@ -239,10 +271,10 @@ def _title_of(b: dict) -> str:
 
 
 def _talk_card(b: dict, kind: str = "plan") -> dict:
-    return {"type": kind, "options": b.get("options") or [], "selected": b.get("selected") or [],
+    return {"type": kind, "question": b.get("question") or "", "options": b.get("options") or [], "selected": b.get("selected") or [],
             "period": b.get("period"), "period_options": b.get("period_options") or [],
             "restated": _restated(b), "needs_pick": bool(b.get("needs_pick")), "connect": b.get("connect") or [],
-            "mode": b.get("mode")}
+            "mode": b.get("mode"), "what": b.get("what"), "needs_time": bool(b.get("needs_time"))}
 
 
 def _plan_reply(say: str, state: TurnState, b: dict) -> dict:
@@ -289,7 +321,8 @@ def _plan_from_check(db: Session, user: models.User, q: str, c: dict, state: Tur
     if pick:
         ids = [o["value"] for o in pick["options"]]
         b["options"] = [_opt(by_id[i]) | {"recommended": n == 0} for n, i in enumerate(ids) if i in by_id]
-        b["selected"] = [ids[0]] if ids else []
+        # "use them together" (a comparison split across two sources) ticks them all
+        b["selected"] = (ids if pick.get("id") == "combine" else [ids[0]]) if ids else []
         b["chosen"] = True
         return _plan_reply(f"{lead}{pick['text']}", state, b)
 
@@ -298,7 +331,14 @@ def _plan_from_check(db: Session, user: models.User, q: str, c: dict, state: Tur
         b["options"] = [_opt(by_id[i]) | {"recommended": n == 0} for n, i in enumerate(ids) if i in by_id]
         b["needs_pick"] = True
         n_good = sum(1 for o in b["options"] if o["fit"] == "good")
-        say = (f"{lead}I found {b['what']} in {n_good} places. {eu.numbered(b['options'])} "
+        # the period is part of the read-back even before the data is picked
+        p = b.get("period") or {}
+        when = ""
+        if p.get("parts"):
+            when = f" I'll compare {p['parts'][0]['text']} with {p['parts'][1]['text']}."
+        elif p.get("future"):
+            when = f" {p['text']} hasn't happened yet, so it will be a forecast."
+        say = (f"{lead}I found {b['what']} in {n_good} places.{when} {eu.numbered(b['options'])} "
                "Which should I use? You can pick one, a few, or all of them.")
         return _plan_reply(say, state, b)
 
@@ -314,12 +354,14 @@ def _plan_from_check(db: Session, user: models.User, q: str, c: dict, state: Tur
             b["selected"] = mem
             lead = (lead + "Like last time:").strip()
     say = _plan_say(b, lead.strip())
-    if b["connect"] and b["selected"] and not any(o.get("kind") in {k["kind"] for k in b["connect"]} for o in b["options"]):
+    if b["connect"] and not b["selected"]:
+        # only worth saying out loud when nothing connected can answer; the card still offers it
         say += f" (Your {b['connect'][0]['label']} isn't connected - say 'connect {b['connect'][0]['label']}' to add it.)"
     return _plan_reply(say, state, b)
 
 
-def _new_question(db: Session, user: models.User, q: str, ws: str | None, state: TurnState, lead: str = "") -> dict:
+def _new_question(db: Session, user: models.User, q: str, ws: str | None, state: TurnState, lead: str = "",
+                  accepted: list[str] | None = None) -> dict:
     # an app named in the question that isn't connected ("followers on Instagram"): offer to connect it
     from ..services import synced_sources
     pool = accessible_sources(db, user, ws)
@@ -331,24 +373,58 @@ def _new_question(db: Session, user: models.User, q: str, ws: str | None, state:
                "Or say 'use what's connected' and I'll try with the data you have.")
         return _reply(say, "connect_offer", st, connect=conn)
     try:
-        c = qc.check(db, user, q, workspace_id=ws)
+        c = qc.check(db, user, q, workspace_id=ws, accepted=accepted, today=_today())
     except Exception as e:  # noqa: BLE001 - never stand between a person and an answer
         logger.warning("[assistant] question check skipped: %s", e)
         c = {"ready": True, "issues": [], "candidates": [], "picked": [], "what": "the answer", "period": None}
     named = any(x.get("named") for x in c.get("candidates") or [])
     if _is_follow_up(q, state, c.get("topic"), named):
-        out = _follow_up(db, user, q, state)
-        if out:
-            return out
+        # round 25: a follow-up is read back too - same data as the answer before - and runs on "go ahead"
+        return _follow_plan(db, user, q, state, lead)
+    # a short remark with nothing to look up ("hmm okay", "great stuff"): don't build an analysis out of it
+    words = q.split()
+    if (len(words) <= 4 and not eu.questionish(q) and not c.get("period") and not named
+            and not any(x.get("score", 0) >= 4 for x in c.get("candidates") or [])):
+        return _reply("I'm not sure what you'd like me to look at. Ask me about your data - like 'sales last month' - "
+                      "or say 'bye' to finish.", "chat", _keep(state))
     st = _keep(state, topic=c.get("topic") or state.topic)
     date_issue = next((i for i in c.get("issues") or [] if i["kind"] in ("year_typo", "month_typo", "future_year")), None)
     if date_issue:
-        st = st.model_copy(update={"awaiting": "fix_date", "pending_question": q, "brief": {"issue": date_issue, "question": q}})
+        st = st.model_copy(update={"awaiting": "fix_date", "pending_question": q,
+                                   "brief": {"issue": date_issue, "question": q, "accepted": list(accepted or [])}})
         return _reply((lead + " " if lead else "") + date_issue["text"], "fix_date", st, issue=date_issue)
     return _plan_from_check(db, user, q, c, st, ws, lead)
 
 
+def _follow_plan(db: Session, user: models.User, q: str, state: TurnState, lead: str = "") -> dict:
+    conv = None
+    if state.project_id:
+        try:
+            conv = projects._project(db, state.project_id, user)  # noqa: SLF001 - same access rules as the thread page
+        except HTTPException:
+            conv = None
+    if conv is None:
+        return _new_question(db, user, q, None, _keep(state, project_id=None, last_run_id=None), lead)
+    ids = list(conv.source_ids or [])
+    rows = {s.id: s for s in db.query(models.DataSource).filter(models.DataSource.id.in_(ids)).all()} if ids else {}
+    opts = [{"id": i, "name": rows[i].name, "kind": rows[i].kind, "label": KIND_LABELS.get(rows[i].kind, rows[i].kind),
+             "why": "", "fit": "good", "note": "used for the last answer", "says": "", "recommended": False}
+            for i in ids if i in rows]
+    b = {"question": q, "what": f"“{q}”", "period": None, "period_options": [], "needs_time": False, "topic": state.topic,
+         "connect": [], "options": opts, "selected": [o["id"] for o in opts], "needs_pick": False, "mode": "follow",
+         "orig_selected": [o["id"] for o in opts]}
+    say = (lead + " " if lead else "") + f"You asked: “{q}”. I'll answer it from the same data as before. Shall I go ahead?"
+    return _plan_reply(say, state, b)
+
+
 def _run_plan(db: Session, user: models.User, state: TurnState, b: dict, ws: str | None, lead: str = "") -> dict:
+    if b.get("mode") == "follow":
+        sel = b.get("selected") or []
+        changed = sorted(sel) != sorted(b.get("orig_selected") or [])
+        out = _follow_up(db, user, b["question"], _keep(state), sel if changed and sel else None)
+        if out:
+            return out
+        return _new_question(db, user, b["question"], ws, _keep(state, project_id=None, last_run_id=None))
     sel = b.get("selected") or []
     picked = [o for o in b.get("options") or [] if o["id"] in set(sel)]
     if b.get("topic") and sel and b.get("chosen"):
@@ -363,10 +439,56 @@ def _run_plan(db: Session, user: models.User, state: TurnState, b: dict, ws: str
                   brief=brief, say=say + ".")
 
 
+_REPHRASE = re.compile(r"^(?:(?:no|wait|actually|sorry|hold on)[\s,]+)*(?:can i |let me |i want to |i'?d like to )?"
+                       r"(?:change|edit|rephrase|reword|update|fix|correct|redo)\s+(?:the |my |that )?question\b(?:\s+to\s+(.+))?", re.I)
+
+
+_NEW_LEAD = re.compile(r"^(?:(?:no|actually|wait|sorry|instead|ok|okay|and|now|also|forget that|scratch that)[\s,]+)*"
+                       r"(?:what|what's|whats|how|why|which|who|show|give|tell|compare|list|can you|could you|"
+                       r"i want to (?:see|know)|let'?s look at|look at)\b", re.I)
+
+
+def _looks_new(text: str, opts: list[dict]) -> bool:
+    """A whole new question asked during a read-back ("actually, show me marketing spend last month instead"),
+    not an answer to it ("the first and third", "what else do I have?")."""
+    low = (text or "").lower().strip()
+    if len(low.split()) < 4:
+        return False
+    if any(eu._says(eu._norm(low), o["name"]) for o in opts if o.get("name")):  # noqa: SLF001
+        return False
+    qw = qc.words(low)
+    subject = bool(qw & qc.MEASURE_WORDS) or bool(qc._topic(qw)) or bool(qw & {"products", "product", "customers", "customer"})  # noqa: SLF001
+    return subject and (bool(_NEW_LEAD.match(low)) or bool(re.search(r"\binstead\b", low)))
+
+
+def _add_to_plan(state: TurnState, ds: models.DataSource) -> dict:
+    """"add Shopify" during a read-back, when Shopify is connected but wasn't offered: offer it, ticked."""
+    b = dict(state.brief or {})
+    opts = list(b.get("options") or [])
+    if not any(o["id"] == ds.id for o in opts):
+        opts.append({"id": ds.id, "name": ds.name, "kind": ds.kind, "label": KIND_LABELS.get(ds.kind, ds.kind), "why": "",
+                     "fit": "unknown", "note": "", "says": "", "recommended": False})
+    b["options"] = opts
+    b["selected"] = list(dict.fromkeys(list(b.get("selected") or []) + [ds.id]))
+    b["chosen"] = True
+    if b.get("mode") == "shift":
+        b["mode"] = None
+    picked = [o for o in opts if o["id"] in set(b["selected"])]
+    return _plan_reply(f"Added {ds.name}. Now: {eu.names_text(picked, limit=4)}. Anything else, or shall I go ahead?", state, b)
+
+
 def _plan_turn(db: Session, user: models.User, text: str, state: TurnState, ws: str | None, intent: str) -> dict:
     b = dict(state.brief or {})
     opts = b.get("options") or []
     sel = list(b.get("selected") or [])
+
+    m = _REPHRASE.match(text.strip())
+    if m:
+        if m.group(1) and len(m.group(1).split()) >= 2:
+            return _new_question(db, user, m.group(1).strip(" .?!"), ws, _keep(state), "Okay, the new question:")
+        st = _keep(state, awaiting="rephrase", pending_question=b.get("question"), brief=b)
+        return _reply(f"Sure. You asked: “{b.get('question')}”. What should the question be?", "rephrase", st,
+                      question=b.get("question"))
 
     if b.get("mode") == "shift":
         if eu.is_yes(text) or re.search(r"\b(do that|use (?:it|that|the latest)|latest)\b", text, re.I):
@@ -380,6 +502,9 @@ def _plan_turn(db: Session, user: models.User, text: str, state: TurnState, ws: 
             b["options"] = _all_options(db, user, ws, opts)
             return _plan_reply(f"Okay. Which data should I use instead? {eu.numbered(b['options'])}", state, b)
 
+    if _looks_new(text, opts):
+        return _new_question(db, user, text, ws, _keep(state), "Okay, a new question.")
+
     r = eu.select_sources(text, opts, sel)
     op = r["op"]
     if op == "confirm" or (op == "unknown" and eu.is_yes(text)):
@@ -389,6 +514,8 @@ def _plan_turn(db: Session, user: models.User, text: str, state: TurnState, ws: 
     if op in ("set", "change", "all", "none"):
         b["selected"] = r["selected"]
         b["chosen"] = True
+        if b.get("mode") == "shift":
+            b["mode"] = None  # their own pick replaces "use its latest window"
         picked = [o for o in opts if o["id"] in set(b["selected"])]
         if not picked:
             return _plan_reply("Okay, nothing picked yet. Which should I use? Say a number or a name.", state, b)
@@ -412,7 +539,7 @@ def _plan_turn(db: Session, user: models.User, text: str, state: TurnState, ws: 
         return _plan_reply(f"I'd go with {best['name']}{' - it ' + reason if reason else ''}. Shall I use that?", state, b)
 
     # not about the data: a new period? a no? a new question?
-    p, alts = qc.parse_period(text, date.today())
+    p, alts = qc.parse_period(text, _today())
     if p:
         b["period"] = p
         b["period_options"] = ([p] + alts) if alts else []
@@ -441,16 +568,19 @@ def _fix_date_turn(db: Session, user: models.User, text: str, state: TurnState, 
     raw = issue.get("said") or ""
     value = None
     m = re.search(r"\b(19\d\d|20\d\d)\b", text)
-    if m:
+    mo = re.search(rf"\b{qc.MONTH_RE}\b", text.lower()) if issue.get("kind") == "month_typo" else None
+    said = text.strip().strip(".!?").lower()
+    if raw and (said == raw.lower() or re.search(r"\b(keep (?:it|that|as)|as (?:i )?(?:wrote|said) it|as written)\b", said)):
+        value = raw  # "Keep as written" / "Keep 2027 - it's a forecast"
+    elif mo:
+        # a month typo answered with a month (and maybe a year): "yes, March 2025" fixes the month only
+        value = qc.MONTHS[qc.MONTH_NUM[mo.group(0)[:3]] - 1].title()
+    elif m:
         value = m.group(1)
     elif eu.is_yes(text) and issue.get("options"):
         value = issue["options"][0]["value"]
-    elif issue.get("kind") == "month_typo":
-        mo = re.search(rf"\b{qc.MONTH_RE}\b", text.lower())
-        if mo:
-            value = qc.MONTHS[qc.MONTH_NUM[mo.group(0)[:3]] - 1].title()
-        elif eu.is_no(text):
-            value = raw
+    elif issue.get("kind") == "month_typo" and eu.is_no(text):
+        value = raw
     elif issue.get("kind") == "future_year" and re.search(r"\b(keep|forecast|predict|future|no)\b", text, re.I):
         value = raw
     if not value:
@@ -461,10 +591,10 @@ def _fix_date_turn(db: Session, user: models.User, text: str, state: TurnState, 
         return _reply(f"Which year did you mean - {opts}?", "fix_date", st, issue=issue)
     fixed = qc.apply_fixes(q, {raw: value}) if value != raw else q
     lead = f"Got it - {value}." if value != raw else "Okay, keeping it as you said."
-    if value == raw and issue.get("kind") == "future_year":
-        # a forecast question: nothing to check against the data's dates
-        return _new_question(db, user, fixed, ws, _keep(state), lead)
-    return _new_question(db, user, fixed, ws, _keep(state), lead)
+    accepted = list(b.get("accepted") or [])
+    if value == raw:
+        accepted.append(raw)  # never asked about again in this question
+    return _new_question(db, user, fixed, ws, _keep(state), lead, accepted=accepted)
 
 
 def _or(items: list[str]) -> str:
@@ -478,7 +608,7 @@ def _needs_input_turn(db: Session, user: models.User, run_id: str, state: TurnSt
     names = [s.name for s in db.query(models.DataSource).filter(models.DataSource.id.in_(used)).all()] if used else []
     missing = str(((run.result or {}).get("answer") or {}).get("answer") or "").strip()
     try:
-        c = qc.check(db, user, run.question, workspace_id=ws, coverage=False)
+        c = qc.check(db, user, run.question, workspace_id=ws, coverage=False, today=_today())
     except Exception:  # noqa: BLE001
         c = {"candidates": [], "what": "the answer", "period": None, "needs_time": False, "topic": None, "connect": []}
     better = [_opt(x) for x in c.get("candidates") or [] if x["id"] not in used and x.get("fit") == "good"]
@@ -539,6 +669,8 @@ def _card_of(out: dict) -> dict | None:
     a = out.get("action")
     if a == "plan" and out.get("plan"):
         return out["plan"]
+    if a == "rephrase":
+        return {"type": "rephrase", "question": out.get("question") or ""}
     if a == "fix_date" and out.get("issue"):
         return {"type": "fix_date", "issue": out["issue"]}
     if a in ("connect", "connect_offer") and out.get("connect"):
@@ -556,7 +688,7 @@ def _record(db: Session, user: models.User, payload: TurnRequest, said: str, out
         return out
     a = out.get("action")
     talk = _talk(db, user, payload.state.talk_id)
-    meaningful = a in ("plan", "fix_date", "run", "explain", "connect", "connect_offer", "connect_wait") or bool(talk)
+    meaningful = a in ("plan", "fix_date", "rephrase", "run", "explain", "connect", "connect_offer", "connect_wait") or bool(talk)
     if not meaningful:
         return out
     if not talk:
@@ -605,6 +737,7 @@ def hello(talk_id: str | None = None, db: Session = Depends(get_db), user: model
 @router.post("/turn")
 def turn(payload: TurnRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     said = (payload.text or "").strip()
+    _TODAY.set(local_today(payload.today))
     out = _turn(db, user, payload)
     return _record(db, user, payload, said, out)
 
@@ -616,9 +749,19 @@ def _turn(db: Session, user: models.User, payload: TurnRequest) -> dict:
 
     if payload.event == "needs_input" and payload.run_id:
         return _needs_input_turn(db, user, payload.run_id, state, ws)
+    if payload.event == "rephrase" and (payload.text or "").strip():
+        # the question was edited in the read-back card: check the new wording from the start
+        return _new_question(db, user, eu.strip_wake(payload.text), ws, _keep(state), "Okay, with your edit:")
     if payload.event == "confirm" and state.awaiting == "plan" and state.brief:
         b = dict(state.brief)
         b["chosen"] = True
+        if b.get("mode") == "shift" and not b.get("selected"):
+            # "Use its latest window" was left as the choice
+            sug = b.get("suggest") or {}
+            b.update(mode=None, period=sug.get("period") or b.get("period"),
+                     selected=[sug["source"]] if sug.get("source") else [], needs_pick=False)
+        elif b.get("mode") == "shift":
+            b["mode"] = None  # they ticked their own data instead
         if b.get("needs_pick") and not b.get("selected"):
             return _plan_reply("Pick at least one source first.", state, b)
         return _run_plan(db, user, state, b, ws)
@@ -633,17 +776,29 @@ def _turn(db: Session, user: models.User, payload: TurnRequest) -> dict:
         return _reply("I don't see it connected yet. Finish connecting in the other tab and I'll carry on.", "connect_wait", state)
 
     kind = eu.intent(text)
+    # "no" while Euliv is waiting on an answer from the person is an answer, not goodbye
+    if kind == "end" and state.awaiting in ("plan", "fix_date", "connect", "connecting", "rephrase") and not eu.firm_end(text):
+        kind = "question"
     if kind == "end":
         return _reply("Okay. Talk soon!", "end", _keep(state))
     if not text:
         return _reply(hello_text(user), "chat", state)
 
     # ---- "connect Google Ads" / "upload a file" -----------------------------------
+    # round 25b: during a read-back, "add Shopify" names data to pick - not an app to connect
+    in_plan = state.awaiting == "plan" and bool(state.brief)
+    if in_plan:
+        b0 = state.brief or {}
+        r0 = eu.select_sources(text, b0.get("options") or [], list(b0.get("selected") or []))
+        if r0["op"] in ("set", "change"):
+            return _plan_turn(db, user, text, state, ws, kind)
     want = eu.connect_request(text)
     if want:
         from ..services import synced_sources
         label = KIND_LABELS.get(want, want)
         have = [s for s in accessible_sources(db, user, ws) if s.kind == want]
+        if have and in_plan:
+            return _add_to_plan(state, have[0])
         if have:
             return _reply(f"{label} is already connected as {have[0].name}. Ask me anything about it.", "chat", state)
         c = {"kind": want, "label": label,
@@ -660,12 +815,20 @@ def _turn(db: Session, user: models.User, payload: TurnRequest) -> dict:
     if target:
         named = [s for s in accessible_sources(db, user, ws) if eu._says(target, s.name)  # noqa: SLF001
                  or (len(target.strip()) >= 6 and f" {target.strip()} " in eu._norm(s.name))]  # noqa: SLF001
+        if named and in_plan:
+            return _add_to_plan(state, named[0])
         if named:
             return _reply(f"{named[0].name} is already connected. Ask me anything about it.", "chat", state)
 
     # ---- answering what Euliv asked -----------------------------------------------
     if state.awaiting == "fix_date" and state.brief:
         return _fix_date_turn(db, user, text, state, ws)
+    if state.awaiting == "rephrase":
+        if eu.is_no(text) or re.fullmatch(r"(?:keep it|leave it|it'?s fine|never ?mind)[\s.!]*", text.strip(), re.I):
+            b = dict(state.brief or {})
+            if b:
+                return _plan_reply(_plan_say(b, "Okay, keeping it."), state, b)
+        return _new_question(db, user, text, ws, _keep(state), "Okay.")
     if state.awaiting == "plan" and state.brief:
         return _plan_turn(db, user, text, state, ws, kind)
     if state.awaiting in ("connect", "connecting") and state.pending_question:
@@ -689,6 +852,8 @@ def _turn(db: Session, user: models.User, payload: TurnRequest) -> dict:
         return _reply(hello_text(user), "chat", state)
     if kind == "thanks":
         return _reply("You're welcome. Anything else?", "chat", state)
+    if kind == "ack":
+        return _reply("Okay. Anything else I can look at?", "chat", state)
     if kind == "help":
         return _reply("Ask me about your business in plain words - like 'how is my e-commerce doing over the last 3 months', "
                       "'what were sales last month', or 'why did revenue drop'. I'll read it back, check which of your data "
@@ -756,8 +921,9 @@ def _answer(db: Session, user: models.User, run_id: str) -> dict:
     say = say or "Here's what I found."
     kpis = [{"label": k.get("label"), "display": k.get("display"), "delta": k.get("delta"), "dir": k.get("delta_dir"),
              "note": k.get("note")} for k in (result.get("kpis") or [])[:4]]
+    # out loud: the gist in two sentences - the whole answer is on screen
     return {
-        "status": "done", "say": say, "speak": eu.speakable(say), "link": link, "project_id": conv.id,
+        "status": "done", "say": say, "speak": eu.speakable(eu.first_sentences(say, 2, 260)), "link": link, "project_id": conv.id,
         "card": {"headline": head or None, "answer": body[:900] or None, "kpis": kpis,
                  "next_questions": [str(q) for q in (ans.get("next_questions") or [])][:3],
                  "sources_used": result.get("sources_used") or [], "question": run.question,
