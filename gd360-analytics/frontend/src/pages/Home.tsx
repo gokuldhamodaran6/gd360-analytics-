@@ -29,6 +29,7 @@ import ScopePicker, { Scope, loadScope, saveScope, scopeSummary } from "../space
 import { conversationHref, conversationKind, dashboardHref, KindPill, KindTile } from "../lib/kinds";
 import { ArrowUpIcon, AskMode, BoltIcon, MODE_HINT, ModeSwitch, Spinner, StepsIcon, useAutoGrow } from "../thread/parts";
 import { ListeningStrip, MicButton, useDictation } from "../thread/Dictation";
+import { eulivAvailable, openEuliv, OrbGlyph, TalkButton } from "../components/Euliv";
 
 // 2026-10-10: Home greets in the person's own time of day (their browser's
 // time zone) - plain and professional: "Good morning, Gokul." with a short,
@@ -365,7 +366,7 @@ export default function Home() {
                 />
                 <div className="flex items-center gap-2.5 flex-wrap">
                   {voice.listening ? (
-                    <ListeningStrip heard={voice.heard} onStop={voice.stop} />
+                    <ListeningStrip heard={voice.heard} onStop={voice.stop} level={voice.level} hint={voice.hint} />
                   ) : (
                     <>
                       <Link
@@ -397,6 +398,7 @@ export default function Home() {
                         }}
                       />
                     )}
+                    {!voice.listening && <TalkButton />}
                     <button
                       type="submit"
                       aria-label={mode === "quick" ? "Ask for a quick answer" : "Start a guided analysis"}
@@ -420,6 +422,11 @@ export default function Home() {
                 <span className={`inline-flex items-center gap-2 transition-colors ${mode === "guided" ? "text-secondary" : "text-faint"}`}>
                   <StepsIcon size={14} className="text-kind-analysis" /> {MODE_HINT.guided} — then keep asking
                 </span>
+                {eulivAvailable() && (
+                  <button type="button" onClick={() => openEuliv()} className="ui-focus inline-flex items-center gap-2 rounded-full text-faint hover:text-secondary transition-colors" data-home-euliv-hint="">
+                    <OrbGlyph size={13} /> Or talk it through with Euliv — out loud
+                  </button>
+                )}
               </div>
             )}
           </div>
