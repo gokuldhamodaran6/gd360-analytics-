@@ -19,6 +19,14 @@ progress (plan -> each step -> the answer).
   POST /projects/{id}/dashboard       a full dashboard from an answer (the one kind)
   POST /projects/{id}/dashboard/undo     take back the last "add to a dashboard"
   POST /projects/{id}/dashboard/dismiss  "Not now" on GD360's dashboard question
+  POST /projects/runs/{run_id}/explain   explain the answer, a chart or a cause from what was already computed
+
+2026-10-11 (Explain & Alerts): "explain this chart" is answered from the
+run's own result in about two seconds - no new plan, no queries, no new
+question tab (services/explain.py). A typed follow-up sent with
+route=true is first read as "explain what's on screen" or "needs new
+data"; only the second starts a run. Explanations are kept on the thread
+(thread_meta["explains"]) so they are still there after a reload.
 
 2026-10-11 (Ask Journey): a Guided Analysis is a thread too - follow-up
 questions continue it (each one a new run, step by step or as a Quick
@@ -86,6 +94,17 @@ class AskRequest(BaseModel):
     # Home): a Space, or chosen sources - never both
     source_ids: list[str] | None = None
     space_id: str | None = None
+    # 2026-10-11 (Explain & Alerts): read the follow-up first - an
+    # "explain this" is answered from the answer on screen (context_run_id,
+    # else the thread's latest answer) without a new run.
+    route: bool = False
+    context_run_id: str | None = None
+    explain_target: dict | None = None
+
+
+class ExplainRequest(BaseModel):
+    target: dict | None = None
+    question: str | None = Field(default=None, max_length=1000)
 
 
 class ReplanRequest(BaseModel):
@@ -433,6 +452,8 @@ def get_project(project_id: str, db: Session = Depends(get_db), user: models.Use
         # and the answers GD360 was told "Not now" about
         "placements": [{"action_id": k, **v} for k, v in (meta.get("placements") or {}).items()],
         "dismissed": list(meta.get("dismissed") or []),
+        # 2026-10-11 (Explain & Alerts): explanations asked in this thread
+        "explains": list(meta.get("explains") or [])[-MAX_EXPLAINS:],
         **_space_ref(db, conv, user),
     }
 
@@ -525,6 +546,23 @@ def ask(project_id: str, payload: AskRequest, db: Session = Depends(get_db), use
     )
     if busy:
         raise HTTPException(409, "GD360 is still working on the last question in this thread.")
+    # 2026-10-11 (Explain & Alerts): "explain this chart" is answered from the
+    # answer on screen - no new run - unless the sources are changing.
+    if payload.route and not (payload.space_id or payload.source_ids):
+        done = _explain_context(db, conv, payload.context_run_id)
+        if done is not None:
+            from ..services import explain as explain_svc
+            ctx, _ = explain_svc.run_context(done.result or {}, _currency_of(done))
+            decision = (
+                {"route": "explain", "target": payload.explain_target, "by": "button"} if payload.explain_target
+                else explain_svc.route(payload.question, ctx)
+            )
+            if decision["route"] == "explain":
+                ex = explain_svc.explain_run(done.result or {}, decision.get("target"), payload.question, _currency_of(done))
+                if not ex.get("needs_new_data"):
+                    item = _keep_explain(db, conv, done, ex, user)
+                    return {"project_id": conv.id, "kind": "explain", "explain": item, "route": decision.get("by"),
+                            "source_ids": conv.source_ids or [], **_space_ref(db, conv, user)}
     # 2026-10-11 (Ask Journey): the follow-up can change the thread's sources
     # with the same picker as Home; earlier answers keep what they used.
     if payload.space_id or payload.source_ids:
@@ -538,7 +576,57 @@ def ask(project_id: str, payload: AskRequest, db: Session = Depends(get_db), use
     auto = (payload.mode == "answer") if conv.kind == "guided" else payload.auto_run
     run = _new_run(db, conv, user, payload.question, auto)
     executor.start_planning(run.id)
-    return {"project_id": conv.id, "run_id": run.id, "source_ids": conv.source_ids or [], **_space_ref(db, conv, user)}
+    return {"project_id": conv.id, "kind": "run", "run_id": run.id, "source_ids": conv.source_ids or [], **_space_ref(db, conv, user)}
+
+
+MAX_EXPLAINS = 60
+
+
+def _explain_context(db: Session, conv: models.Conversation, run_id: str | None) -> models.ProjectRun | None:
+    """The answer a follow-up is about: the one on screen, else the latest answer."""
+    if run_id:
+        r = db.get(models.ProjectRun, run_id)
+        if r and r.conversation_id == conv.id and r.status == "done" and (r.result or {}).get("answer"):
+            return r
+    return (
+        db.query(models.ProjectRun)
+        .filter(models.ProjectRun.conversation_id == conv.id, models.ProjectRun.status == "done")
+        .order_by(models.ProjectRun.created_at.desc())
+        .first()
+    )
+
+
+def _currency_of(run: models.ProjectRun) -> str:
+    return str(((run.plan or {}).get("analysis") or {}).get("currency") or "USD")
+
+
+def _keep_explain(db: Session, conv: models.Conversation, run: models.ProjectRun, ex: dict, user: models.User) -> dict:
+    import uuid
+    item = {"id": uuid.uuid4().hex[:12], "run_id": run.id, "created_at": datetime.utcnow().isoformat() + "Z",
+            "by": user.id, **ex}
+    meta = _meta(conv)
+    meta["explains"] = (list(meta.get("explains") or []) + [item])[-MAX_EXPLAINS:]
+    _save_meta(conv, meta)
+    db.commit()
+    return item
+
+
+@router.post("/runs/{run_id}/explain")
+def explain_run(run_id: str, payload: ExplainRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Explain the answer, one of its charts or one cause card - from the
+    numbers this run already computed (no new plan, no queries)."""
+    from ..services import explain as explain_svc
+    _rate_limit(user.id)
+    run, conv = _run(db, run_id, user)
+    if run.status != "done" or not (run.result or {}).get("answer"):
+        raise HTTPException(400, "This question has no answer to explain yet.")
+    try:
+        ex = explain_svc.explain_run(run.result or {}, payload.target, payload.question, _currency_of(run))
+    except explain_svc.ExplainError as e:
+        raise HTTPException(400, str(e))
+    if workspace_access.can_edit_conversation(db, conv, user):
+        return _keep_explain(db, conv, run, ex, user)
+    return {"id": None, "run_id": run.id, "created_at": datetime.utcnow().isoformat() + "Z", **ex}
 
 
 def _primary_source_id(run: models.ProjectRun, conv: models.Conversation) -> str | None:

@@ -116,9 +116,12 @@ def _notify_approvers(db: Session, ws: models.Workspace, a: models.Automation, u
 
 def _tell_out(tell: dict) -> dict:
     out = {"email": tell.get("email") or [], "mode": tell.get("mode") or "always"}
-    for kind in ("slack", "teams"):
+    for kind in ("slack", "teams", "webhook"):
         h = tell.get(kind)
         out[kind] = {"masked": h.get("masked"), "label": h.get("label")} if h else None
+    # 2026-10-11 (Explain & Alerts): the GD360 bell and daily reminders
+    out["in_app"] = list(tell.get("in_app") or [])
+    out["remind"] = tell.get("remind") or "once"
     return out
 
 
