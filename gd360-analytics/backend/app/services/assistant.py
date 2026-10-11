@@ -337,6 +337,50 @@ def connect_request(text: str) -> str | None:
     return None
 
 
+# round 30: thanks said any way - "okay thank you", "thank you so much Euliv", "thanks a lot for the help", "great, cheers".
+# Gratitude words plus only harmless filler; anything else ("thanks, now show revenue") is a question.
+_THANK_CORE = re.compile(r"\b(?:thanks|thank\s*(?:you|u|ya|yu)|thankyou|thx|cheers|much appreciated|appreciate(?:d)?(?:\s+it)?|"
+                         r"grateful)\b", re.I)
+_PRAISE = {"great", "perfect", "awesome", "nice", "cool", "good", "brilliant", "excellent", "lovely", "amazing", "fantastic",
+           "wonderful", "super", "superb", "interesting", "helpful", "useful", "wow", "neat", "sweet", "impressive"}
+_FILL = _PRAISE | {
+    "ok", "okay", "alright", "right", "so", "well", "oh", "ah", "hey", "hi", "yes", "yeah", "yep", "got", "it",
+    "that", "that's", "thats", "this", "was", "is", "very", "much", "so", "a", "lot", "lots", "many", "for", "the", "your",
+    "you", "answer", "answers", "help", "helping", "info", "information", "work", "really", "just", "again", "indeed",
+    "mate", "buddy", "euliv", "kindly", "one", "job", "real", "truly", "too", "and", "i", "said", "me",
+}
+
+
+def is_thanks(text: str) -> bool:
+    t = (text or "").strip()
+    if not t or "?" in t or not _THANK_CORE.search(t):
+        return False
+    rest = re.findall(r"[a-z']+", _THANK_CORE.sub(" ", t.lower()))
+    return all(w in _FILL for w in rest)
+
+
+def is_praise(text: str) -> bool:
+    """"wow, that's great" / "nice one" / "very helpful" - a kind word about the answer, not a question."""
+    t = (text or "").strip()
+    if not t or "?" in t:
+        return False
+    ws = re.findall(r"[a-z']+", t.lower())
+    return bool(ws) and len(ws) <= 8 and all(w in _FILL for w in ws) and any(w in _PRAISE for w in ws)
+
+
+# "I said thank you" / "I meant March" / "no, I said yes": the person repeating themselves - keep what they meant
+_RESAID = re.compile(r"^(?:no[\s,.!]+|sorry[\s,.!]+)?(?:i\s+(?:just\s+|already\s+)?(?:said|say|meant|mean|was saying)|"
+                     r"what i said (?:was|is)|i'?m saying)[\s,:]+(?=\S)", re.I)
+
+
+def resaid(text: str) -> tuple[str, bool]:
+    t = (text or "").strip()
+    m = _RESAID.match(t)
+    if m and len(t[m.end():].split()) >= 1:
+        return t[m.end():].strip(), True
+    return t, False
+
+
 def intent(text: str) -> str:
     t = re.sub(rf"[\s,]+(?:{EXACT_NAMES})[\s.!?]*$", "", (text or "").strip(), flags=re.I).strip()  # "thanks, Euliv"
     if not t:
@@ -350,10 +394,13 @@ def intent(text: str) -> str:
         return "end"
     if re.fullmatch(r"(?:ok|okay|alright|all right|fine|great|good|right|sure|hmm+|mm+|uh huh)[\s.!]*", t, re.I):
         return "ack"
+    # round 30: gratitude first - "okay thank you" / "that's great, thank you" is thanks, not goodbye
+    if _THANKS.match(t) or is_thanks(t):
+        return "thanks"
+    if is_praise(t):
+        return "praise"
     if _CLOSING.match(core or t) and not questionish(core or t):
         return "end"
-    if _THANKS.match(t):
-        return "thanks"
     if _HELP.search(t):
         return "help"
     if _GREET_STRIP.match(t) and not _GREET_STRIP.sub("", t).strip():
@@ -398,7 +445,8 @@ def wants_existing(text: str) -> bool:
 # Speech comes in without capitals or punctuation, with fillers and the odd grammar slip. Before
 # anything else Euliv reads the question back tidied - rules only, no AI tokens, never a change
 # of meaning: casing of names, a few agreement fixes, fillers out, a question mark.
-_FILLERS = re.compile(r"^(?:(?:um+|uh+|erm+|hmm+|so|okay so|ok so|well|like|basically|actually|right|alright|and)[\s,]+)+", re.I)
+_FILLERS = re.compile(r"^(?:(?:um+|uh+|erm+|hmm+|so|okay so|ok so|well|like|basically|actually|right|alright|and|"
+                      r"okay|ok|great|perfect|thanks|thank you|thank u|cheers|now|also)[\s,.!]+)+", re.I)
 _PROPER = {
     "google ads": "Google Ads", "facebook ads": "Facebook Ads", "meta ads": "Meta Ads", "google analytics": "Google Analytics",
     "ga4": "GA4", "ga 4": "GA4", "youtube": "YouTube", "you tube": "YouTube", "linkedin": "LinkedIn", "tiktok": "TikTok",
