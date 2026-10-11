@@ -310,21 +310,51 @@ export function pickVoice(voices = voicesCache): SpeechSynthesisVoice | null {
   return pool.find((v) => v.localService) || pool[0] || voices[0] || null;
 }
 
+// ---- Euliv hearing itself (round 27) -------------------------------------------------------
+// On speakers (no headset) the mic hears Euliv's own voice, and browsers' echo cancellation does
+// not cover the computer's speech voice. Left alone, Euliv "hears" itself, answers that, hears
+// the answer ... a loop. Everything heard is checked against what Euliv said lately.
+const norm = (s: string) => (s || "").toLowerCase().replace(/[“”"][^“”"]*[“”"]/g, " ").replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+const STOPWORDS = new Set(["the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are", "was", "it", "i", "you", "your",
+  "my", "me", "that", "this", "can", "could", "would", "should", "do", "did", "be", "with", "from", "at", "by", "so", "s", "t", "ll", "ve",
+  "what", "which", "how", "shall", "will", "just", "here", "have", "has", "if", "as", "all", "there"]);
+const content = (s: string) => norm(s).split(" ").filter((w) => w && !STOPWORDS.has(w));
+const ANSWER_WORDS = new Set(["yes", "yeah", "yep", "yup", "sure", "okay", "ok", "correct", "perfect", "stop", "wait", "no", "nope",
+  "cancel", "first", "second", "third", "fourth", "number", "both", "none", "instead", "great", "exactly", "right"]);
+// Euliv's own phrases - a person doesn't say these to it
+const OWN_PHRASES = [
+  "didn t catch that", "say it again", "which data should i use", "here s what you have", "how can i help", "shall i go ahead",
+  "to hear them", "talk soon", "just to confirm", "in your sources", "pick one a few", "i couldn t find", "one moment",
+  "working it out", "the data from your last answer", "anything else i can look at", "i m not sure what you d like",
+];
+
 /**
- * Round 26: is what the mic heard just Euliv's own voice coming back (speakers, no headset)?
- * `speaking` = the sentence being said right now. A run of its words, or nearly all of them, is echo;
- * "one", "go ahead", "stop" said over a different sentence is the person.
+ * Is this Euliv's own voice coming back through the mic?
+ * `recent`: what Euliv said in the last few seconds (being said now first). `speaking`: heard while
+ * Euliv was still talking - then even one or two of its own words ("go ahead", "one") count as echo.
  */
-export function isEcho(heard: string, speaking: string): boolean {
-  const norm = (s: string) => ` ${(s || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim()} `;
-  const h = norm(heard).trim();
+export function heardEuliv(heard: string, recent: string[], speaking = false): boolean {
+  const h = norm(heard);
   if (!h) return true;
-  const sp = norm(speaking);
-  if (sp.includes(` ${h} `)) return true;
+  const said = recent.map(norm).filter(Boolean);
+  if (!said.length) return false;
+  const all = ` ${said.join(" | ")} `;
   const hw = h.split(" ");
-  const sw = new Set(sp.trim().split(" "));
-  return hw.length >= 3 && hw.filter((w) => sw.has(w)).length / hw.length >= 0.8;
+  if (OWN_PHRASES.some((p) => ` ${h} `.includes(` ${p} `))) return true;
+  if (all.includes(` ${h} `) && (speaking || hw.length >= 3)) return true; // all of it is something Euliv just said
+  for (let i = 0; i + 4 <= hw.length; i++) if (all.includes(` ${hw.slice(i, i + 4).join(" ")} `)) return true; // 4 words in a row
+  const cw = content(heard);
+  const mine = new Set(content(said.join(" ")));
+  // only filler words ("how", "that"): while Euliv talks, or when Euliv just said them - not the person
+  if (!cw.length) return speaking || all.includes(` ${h} `);
+  // a word Euliv didn't say that only a person answering would ("yes", "stop", "first"): the person
+  if (speaking && cw.some((w) => !mine.has(w) && ANSWER_WORDS.has(w))) return false;
+  const share = cw.filter((w) => mine.has(w)).length / cw.length;
+  return speaking ? share > 0.5 : cw.length >= 3 && share >= 0.75;
 }
+
+/** Back-compat: one sentence being spoken. */
+export const isEcho = (heard: string, speaking: string) => heardEuliv(heard, [speaking], true);
 
 /** Split for speaking: one sentence (or a short group) at a time - Chrome stops long utterances around 15 s. */
 export function chunks(text: string): string[] {
@@ -498,14 +528,20 @@ export function onSettings(f: (s: EulivSettings) => void): () => void {
 //   3. without a greeting only a near-exact "Euliv" at the very start counts,
 //      so everyday words ("olive oil", "you live in") never wake it.
 
-const GREETING_WORDS = new Set(["hi", "hey", "hello", "helo", "hallo", "hullo", "hiya", "heya", "hai", "hay", "hy", "ok", "okay", "yo", "ola", "hola", "oye", "hie", "aye", "ey"]);
-// round 25b: the name's sound, not a list of look-alike words. "Euliv" = a vowel sound (eu / you / u / o / e / ju),
-// then L, then a short "i / ee / ea", then V (or F / B): euliv, you live, uleave, oliv, ewliv, yuleef, eulif ...
-// "love it", "leave it", "life", "Eli", "Liz", "Julie", "Olivia", "Elise", "I live" never match.
+// ---- "Hi Euliv": the name by its sound --------------------------------------------------
+// Round 27. People say it their own way - "hi Euliv", "hiiii Eliveee", "hey you-leave", "hello Uli",
+// "I live" (the recogniser drops the h of "hi") - and the recogniser spells it a dozen ways. So the
+// name is matched by SOUND, generously, but only where a person would say it: right after a greeting,
+// or as the whole thing said. Everyday sentences ("I live in London", "hey, I love it") don't wake it.
+const GREETING_WORDS = new Set(["hi", "hey", "hello", "helo", "hallo", "hullo", "hiya", "heya", "hai", "hay", "hy", "hye", "ok", "okay",
+  "yo", "ola", "hola", "oye", "hie", "aye", "ey", "hei", "heyy", "namaste", "vanakkam", "hallo"]);
+// words a recogniser writes for a quick "hi": a wake only when the name is all that follows ("I live" / "high Euliv")
+const WEAK_GREETINGS = new Set(["i", "a", "ay", "high", "eh", "oh", "ah", "hm", "huh"]);
+// "Euliv" = a vowel sound (eu / you / u / o / e / ju), then L, then a short i / ee / ea, then V (or F / B)
 const NAME_SOUND = /^h?(?:[yj]?[aeiouw]{1,3}|[yj])l(?:[iey]|ea|ie|ei)(?:v|f|ph|b|w)e?$/;
 const CORE_SHAPES = ["euliv", "eulive", "yuliv", "yulive", "uliv", "ulive", "euleav", "euleave"];
-const BARE_NAMES = new Set(["liv", "leev"]); // "hi Liv" - the recogniser swallowed the "eu" into "hi"
-const STRICT_SHAPES = ["euliv", "eulive", "yuliv", "yulive", "uliv", "euleev"];
+const BARE_NAMES = new Set(["liv", "leev", "lif", "leef"]); // "hi Liv" - the "eu" went into the "hi"
+const STRICT_SHAPES = ["euliv", "eulive", "yuliv", "yulive", "uliv", "euleev", "euleve"];
 
 function squeeze(w: string): string {
   return w.replace(/(.)\1+/g, "$1");
@@ -526,19 +562,45 @@ function clean(w: string): string {
   return squeeze((w || "").toLowerCase().replace(/[^a-z]/g, ""));
 }
 
-/** Does this (joined) word sound like "Euliv"? `strict`: no greeting before it. */
+/** The consonant outline: whatever the vowels and the accent, Euliv is "L-V" (or just "L" when the V is soft). */
+function outline(w: string): { core: string; skel: string } {
+  const core = w.replace(/^[hyjw]+/, "");
+  const skel = squeeze(core.replace(/ph/g, "v").replace(/[aeiouy]/g, "").replace(/[fbw]/g, "v"));
+  return { core, skel };
+}
+
+/**
+ * Does this (joined) word sound like "Euliv"?
+ * strict: nothing before it (only near-exact spellings). loose: after a greeting - also
+ * "you live", "Olive", "Eli V", "Uli", "Yulia", "Julie" (soft V), "live".
+ */
 export function soundsLikeEuliv(word: string, strict = false): boolean {
   const w = clean(word);
   if (strict) return w.length >= 4 && w.length <= 10 && STRICT_SHAPES.some((x) => lev(w, x) <= 1);
-  if (BARE_NAMES.has(w)) return true;
-  if (w.length < 4 || w.length > 10) return false;
-  return NAME_SOUND.test(w) || (w.length >= 5 && CORE_SHAPES.some((x) => lev(w, x) <= 1));
+  if (w.length < 3 || w.length > 11) return false;
+  if (BARE_NAMES.has(w) || NAME_SOUND.test(w)) return true;
+  if (w.length >= 5 && CORE_SHAPES.some((x) => lev(w, x) <= 1)) return true;
+  const { core, skel } = outline(w);
+  if (skel === "lv") return core.length <= 8; // live, leave, olive, alive, eliv, ulif, olivia, you-live
+  if (skel === "l") return /^[aeiou]/.test(core) && core.length <= 6; // eli, ellie, uli, yuli, yulia, julie, ollie
+  return false;
 }
 
 function isGreeting(word: string): boolean {
   const w = clean(word);
-  return GREETING_WORDS.has(w) || /^h+e+y+$|^h+i+$|^he+l+o+$/.test(word.toLowerCase().replace(/[^a-z]/g, ""));
+  return GREETING_WORDS.has(w) || /^h+e+y+$|^h+i+$|^he+l+o+$|^h+a+i+$/.test(word.toLowerCase().replace(/[^a-z]/g, ""));
 }
+
+const isWeakGreeting = (word: string) => WEAK_GREETINGS.has(clean(word));
+const OBJECT_WORDS = new Set(["it", "that", "this", "them", "those", "these", "me", "him", "her", "us", "alone", "here", "there",
+  "with", "in", "on", "at", "for", "to", "out", "off", "up", "forever", "is", "was", "and", "of"]);
+const QUESTION_START = new Set(["what", "whats", "how", "show", "why", "which", "who", "when", "where", "can", "could", "give", "tell",
+  "are", "did", "do", "does", "compare", "list", "open", "pull", "find", "please"]);
+/** Spelled close to the name itself (not just its outline): "eulive", "you live", "eliv" */
+const nearName = (w: string) => {
+  const c = clean(w);
+  return NAME_SOUND.test(c) || BARE_NAMES.has(c) || (c.length >= 5 && CORE_SHAPES.some((x) => lev(c, x) <= 1));
+};
 
 /** "hey Euliv, how is marketing" -> { woke: true, rest: "how is marketing" } */
 export function wakeIn(text: string): { woke: boolean; rest: string } {
@@ -546,28 +608,60 @@ export function wakeIn(text: string): { woke: boolean; rest: string } {
   if (!raw) return { woke: false, rest: "" };
   const parts = raw.split(/\s+/);
   const restFrom = (k: number) => parts.slice(k).join(" ").replace(/^[\s,.!?:;-]+/, "").trim();
-  const nameAt = (i: number, strict: boolean): number => {
-    // without a greeting only a single word can be the name ("you live in London" is not)
-    for (let n = 1; n <= (strict ? 1 : 3) && i + n <= parts.length; n++) {
-      // "I live", "a live demo": a word of its own, never the start of the name
-      if (n > 1 && ["i", "a", "the", "to"].includes(clean(parts[i]))) break;
-      const joined = parts.slice(i, i + n).join("");
-      if (clean(joined).length > 10) break;
-      if (soundsLikeEuliv(joined, strict)) return n;
+  const fits = (i: number, n: number, strict: boolean): boolean => {
+    if (i + n > parts.length) return false;
+    // "I live", "a live demo", "the leave": a word of its own, never the start of the name
+    if (n > 1 && ["i", "a", "the", "to", "my", "our"].includes(clean(parts[i]))) return false;
+    const joined = parts.slice(i, i + n).join("");
+    if (clean(joined).length > 11 || !soundsLikeEuliv(joined, strict)) return false;
+    const next = clean(parts[i + n] || "");
+    if (!strict && !nearName(joined)) {
+      // a verb, not the name: "leave it there", "love that", "life is good"
+      if (OBJECT_WORDS.has(next)) return false;
+      // "live", "life", "leave" (no vowel sound before the L): the name only when nothing - or a question - follows
+      if (/^l/.test(clean(joined).replace(/^[hyjw]+/, "")) && next && !QUESTION_START.has(next)) return false;
     }
+    return true;
+  };
+  const nameAt = (i: number, strict: boolean): number => {
+    // a close spelling of the name wins at its own length ("Euliv, I want ..." is not "Euliv I");
+    // otherwise the longest reading ("eli v" is one name)
+    const top = strict ? 1 : 3;
+    for (let n = 1; n <= top; n++) if (fits(i, n, strict) && nearName(parts.slice(i, i + n).join(""))) return n;
+    for (let n = top; n >= 1; n--) if (fits(i, n, strict)) return n;
     return 0;
   };
-  for (let i = 0; i < parts.length; i++) {
+  for (let i = 0; i < Math.min(parts.length, 4); i++) {
     if (isGreeting(parts[i])) {
-      // "hi euliv", "hey there euliv", "hello hello euliv"
+      // "hi euliv", "hey there euliv", "hello hello euliv", "hi hi eulive"
       for (let j = i + 1; j <= Math.min(i + 2, parts.length - 1); j++) {
+        if (["i", "a", "the", "my"].includes(clean(parts[j]))) break; // "hey I live in ..." is a sentence
         const n = nameAt(j, false);
         if (n) return { woke: true, rest: restFrom(j + n) };
         if (!isGreeting(parts[j]) && clean(parts[j]) !== "there") break;
       }
     }
   }
+  // a quick "hi" written as "I" / "high": only when the name is all that was said ("I live", "high Eliv")
+  if (parts.length >= 2 && isWeakGreeting(parts[0])) {
+    const n = nameAt(1, false);
+    if (n && 1 + n === parts.length) return { woke: true, rest: "" };
+  }
+  // the name on its own: "Euliv", "Eulive what is revenue", or just "you live" / "Olive" said alone
   const n0 = nameAt(0, true);
   if (n0) return { woke: true, rest: restFrom(n0) };
+  if (parts.length <= 2) {
+    const j = clean(parts.join(""));
+    if (/^[aeiouyj]/.test(j) && j.length >= 4 && soundsLikeEuliv(j, false) && outline(j).skel === "lv") return { woke: true, rest: "" };
+  }
+  return { woke: false, rest: "" };
+}
+
+/** Any of the recogniser's guesses (it offers a few) waking Euliv - the best one isn't always the right one. */
+export function wakeInAny(alternatives: string[]): { woke: boolean; rest: string } {
+  for (const t of alternatives) {
+    const w = wakeIn(t);
+    if (w.woke) return w;
+  }
   return { woke: false, rest: "" };
 }
