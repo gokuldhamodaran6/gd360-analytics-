@@ -475,6 +475,10 @@ class Conversation(Base):
     # if any. Its source_ids are the Space's sources the person could use at
     # the time; the Space itself never grants access to data.
     space_id = Column(String, nullable=True, index=True)
+    # 2026-10-11 (Ask Journey): what the thread remembers about its answers
+    # and dashboards - {"placements": {action_id: {...}}, "dismissed": [run ids]}.
+    # Written only by routers/projects.py.
+    thread_meta = Column(JSON, nullable=True)
 
     owner = relationship("User", back_populates="conversations")
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
