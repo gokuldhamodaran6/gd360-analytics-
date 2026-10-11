@@ -4,6 +4,10 @@
 // grouped by Space, a source can sit under several, plus "Not in a Space").
 // The chosen scope decides what Home sends: space_id for a Space,
 // source_ids for picked sources - never both.
+// 2026-10-11 (Ask Journey): ONE picker for Quick answer and Guided, on Home
+// and in every thread's follow-up box - `variant` only changes the trigger
+// ("composer": Home's box, "compact": a thread's box), `placement` opens it
+// above a box pinned to the bottom of the screen.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import BrandTile from "../components/BrandTile";
@@ -100,16 +104,47 @@ function LogoStack({ items }: { items: { kind: string; name: string }[] }) {
   );
 }
 
+/** The trigger's words: "All sources · 6", "Sales · 4", "2 sources". */
+export function scopeChipLabel(scope: Scope, sources: ProjectSource[] | null, spaces: Space[] | null): string {
+  const all = sources || [];
+  if (scope.kind === "space") {
+    const sp = (spaces || []).find((s) => s.id === scope.spaceId);
+    if (sp) return `${sp.name} · ${sp.sources.length}`;
+  }
+  if (scope.kind === "sources") {
+    const n = scope.ids.length;
+    if (n === 1) return all.find((s) => s.id === scope.ids[0])?.name || "1 source";
+    return `${n} sources`;
+  }
+  return `All sources · ${all.length}`;
+}
+
+function DbIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0">
+      <ellipse cx="12" cy="6" rx="7" ry="2.6" />
+      <path d="M5 6v12c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6V6" />
+      <path d="M5 12c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6" />
+    </svg>
+  );
+}
+
 export default function ScopePicker({
   scope,
   onChange,
   sources,
   spaces,
+  variant = "chip",
+  placement = "below",
+  disabled = false,
 }: {
   scope: Scope;
   onChange: (s: Scope) => void;
   sources: ProjectSource[] | null;
   spaces: Space[] | null;
+  variant?: "chip" | "composer" | "compact";
+  placement?: "below" | "above";
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<"spaces" | "sources">(scope.kind === "sources" ? "sources" : "spaces");
@@ -152,6 +187,8 @@ export default function ScopePicker({
     return out;
   }, [list, all]);
 
+  const chipLabel = scopeChipLabel(scope, sources, spaces);
+  const chipLogos = (scope.kind === "sources" ? all.filter((s) => scope.ids.includes(s.id)) : []).slice(0, 3);
   const pickedIds = scope.kind === "sources" ? scope.ids : [];
   const picked = new Set(pickedIds);
 
@@ -177,26 +214,62 @@ export default function ScopePicker({
     `ui-focus flex-1 h-8 rounded-[8px] text-ui ${on ? "bg-subtle text-text font-medium" : "text-muted hover:text-text"}`;
 
   return (
-    <div className="relative" ref={wrapRef}>
-      <button
-        ref={btnRef}
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="ui-focus inline-flex items-center gap-2 h-8 px-3 max-w-full rounded-full border border-tint-border bg-base text-ui text-secondary hover:text-text"
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        aria-label={`Ask across: ${sources === null ? "loading sources" : summary.label}. Change`}
-      >
-        <span className="w-2 h-2 rounded-[3px] shrink-0" style={{ background: summary.color }} aria-hidden="true" />
-        <span className="truncate">{sources === null ? "Loading sources…" : summary.label}</span>
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true" className="shrink-0"><path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
-      </button>
+    <div className="relative min-w-0" ref={wrapRef}>
+      {variant === "chip" ? (
+        <button
+          ref={btnRef}
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          disabled={disabled}
+          className="ui-focus inline-flex items-center gap-2 h-8 px-3 max-w-full rounded-full border border-tint-border bg-base text-ui text-secondary hover:text-text disabled:opacity-50"
+          aria-expanded={open}
+          aria-haspopup="dialog"
+          aria-label={`Ask across: ${sources === null ? "loading sources" : summary.label}. Change`}
+        >
+          <span className="w-2 h-2 rounded-[3px] shrink-0" style={{ background: summary.color }} aria-hidden="true" />
+          <span className="truncate">{sources === null ? "Loading sources…" : summary.label}</span>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true" className="shrink-0"><path d="M3 4.5l3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>
+        </button>
+      ) : (
+        <button
+          ref={btnRef}
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          disabled={disabled}
+          data-scope-chip={variant}
+          className={`ui-focus inline-flex items-center max-w-full rounded-full border transition-colors disabled:opacity-50 ${
+            variant === "composer"
+              ? "gap-2.5 h-11 pl-3.5 pr-3 text-[15px] text-text border-border-strong hover:border-[rgb(var(--color-faint))] hover:bg-subtle/60"
+              : "gap-1.5 h-8 pl-2.5 pr-2 text-caption text-secondary border-border hover:text-text hover:border-border-strong"
+          } ${open ? "border-[rgb(var(--color-faint))] bg-subtle/60" : ""}`}
+          aria-expanded={open}
+          aria-haspopup="dialog"
+          aria-label={`Ask across: ${sources === null ? "loading sources" : summary.label}. Change`}
+        >
+          {chipLogos.length > 0 ? (
+            <span className="flex items-center pl-1.5" aria-hidden="true">
+              {chipLogos.map((s, i) => (
+                <BrandTile key={`${s.id}-${i}`} kind={s.kind} name={s.name} size={variant === "composer" ? 20 : 16} className="-ml-1.5 ring-2 ring-[rgb(var(--color-surface))]" />
+              ))}
+            </span>
+          ) : (
+            <span className="text-muted"><DbIcon size={variant === "composer" ? 17 : 14} /></span>
+          )}
+          <span className="truncate">{sources === null ? "Loading…" : chipLabel}</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={`shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`}>
+            <path d={placement === "above" ? "M6 15l6-6 6 6" : "M6 9l6 6 6-6"} />
+          </svg>
+        </button>
+      )}
 
       {open && sources && (
         <div
           role="dialog"
           aria-label="Choose what to ask across"
-          className="absolute z-30 left-0 mt-2 w-[min(440px,calc(100vw-48px))] rounded-card border border-border bg-surface shadow-pop p-3 flex flex-col gap-2.5"
+          data-scope-popover=""
+          className={`absolute z-40 left-0 w-[min(460px,calc(100vw-40px))] rounded-[18px] border border-border bg-surface shadow-pop p-3 flex flex-col gap-2.5 ${
+            placement === "above" ? "bottom-[calc(100%+8px)]" : "top-[calc(100%+8px)]"
+          }`}
         >
           <div className="flex gap-0.5 rounded-ctl border border-border bg-base p-[3px]" role="tablist" aria-label="Scope">
             <button type="button" role="tab" aria-selected={tab === "spaces"} className={tabCls(tab === "spaces")} onClick={() => setTab("spaces")}>
@@ -292,7 +365,7 @@ export default function ScopePicker({
             <span className={`text-caption ${scope.kind === "sources" && !scope.ids.length ? "text-warning" : "text-muted"}`} aria-live="polite">
               {summary.footer}
             </span>
-            <span className="flex items-center gap-3">
+            <span className="flex items-center gap-3 ml-auto">
               <Link to="/data" className="text-caption text-muted hover:text-text">+ Connect a source</Link>
               <button
                 type="button"
