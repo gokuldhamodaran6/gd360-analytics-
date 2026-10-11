@@ -15,7 +15,7 @@
 // you" shows a Guided step waiting for this person's check.
 // ?source=<id>[&connected=1] starts both on one source - where "Try it now"
 // lands right after connecting data.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
 import TopNav from "../components/TopNav";
@@ -25,9 +25,10 @@ import { projectsApi, ProjectSource } from "../api/projects";
 import { timeAgo, autoRunPreference } from "../project/format";
 import { useAuth } from "../api/AuthContext";
 import { Space, spacesApi } from "../api/spaces";
-import ScopePicker, { Scope, loadScope, saveScope, scopeSummary, startersFor } from "../spaces/ScopePicker";
+import ScopePicker, { Scope, loadScope, saveScope, scopeSummary } from "../spaces/ScopePicker";
 import { conversationHref, conversationKind, dashboardHref, KindPill, KindTile } from "../lib/kinds";
 import { ArrowUpIcon, AskMode, BoltIcon, MODE_HINT, ModeSwitch, Spinner, StepsIcon, useAutoGrow } from "../thread/parts";
+import { ListeningStrip, MicButton, useDictation } from "../thread/Dictation";
 
 // 2026-10-10: Home greets in the person's own time of day (their browser's
 // time zone) - plain and professional: "Good morning, Gokul." with a short,
@@ -87,6 +88,20 @@ function useNow(): Date {
 type Tab = "recent" | "pinned" | "shared";
 
 const GUIDED_DEFAULT = "Give me an overview of this data: the headline numbers, how they change over time, and the biggest segments.";
+
+/** True on a phone-width screen (the box's controls get more compact). */
+function useNarrow(): boolean {
+  const query = "(max-width: 639px)";
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && !!window.matchMedia?.(query).matches);
+  useEffect(() => {
+    const m = window.matchMedia?.(query);
+    if (!m) return;
+    const on = () => setNarrow(m.matches);
+    m.addEventListener?.("change", on);
+    return () => m.removeEventListener?.("change", on);
+  }, []);
+  return narrow;
+}
 
 function errorText(e: any, fallback: string): string {
   const d = e?.response?.data?.detail;
@@ -235,9 +250,24 @@ export default function Home() {
   const firstName = (user?.full_name || "").split(" ")[0];
   const noSources = sources !== null && sources.length === 0;
   const sourceCount = summary.count;
-  const starters = useMemo(() => startersFor(chosenSpace), [chosenSpace]);
   const needsYou = useMemo(() => (projects || []).filter((c) => c.needs_you && c.kind === "guided").slice(0, 2), [projects]);
-  const canSend = !busy && (mode === "guided" || question.trim().length >= 2);
+  // 2026-10-11: speak instead of typing - the words land in the box, the
+  // person reads them and presses Enter (nothing is sent by itself).
+  const questionRef = useRef(question);
+  questionRef.current = question;
+  const voice = useDictation({
+    getText: useCallback(() => questionRef.current, []),
+    setText: setQuestion,
+    onDone: useCallback(() => window.setTimeout(() => {
+      const el = boxRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+      }
+    }, 0), []),
+  });
+  const narrow = useNarrow();
+  const canSend = !busy && !voice.listening && (mode === "guided" || question.trim().length >= 2);
   const now = useNow();
   const hello = useMemo(() => greeting(firstName, now), [firstName, now.getHours(), now.toDateString()]); // eslint-disable-line react-hooks/exhaustive-deps
   const place = useMemo(() => timeZoneCity(), []);
@@ -313,7 +343,10 @@ export default function Home() {
                   ref={boxRef}
                   rows={3}
                   value={question}
-                  onChange={(e) => setQuestion(e.target.value)}
+                  onChange={(e) => {
+                    if (voice.listening) voice.stop();
+                    setQuestion(e.target.value);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
@@ -321,7 +354,9 @@ export default function Home() {
                     }
                   }}
                   placeholder={
-                    mode === "quick"
+                    voice.listening
+                      ? "Listening…"
+                      : mode === "quick"
                       ? `Ask anything about ${chosenSpace ? chosenSpace.name : "your business"}…`
                       : "What do you want to work out, step by step?"
                   }
@@ -329,31 +364,54 @@ export default function Home() {
                   disabled={busy}
                 />
                 <div className="flex items-center gap-2.5 flex-wrap">
-                  <Link
-                    to="/data"
-                    aria-label="Add data: connect a source or upload a file"
-                    title="Connect a source or upload a file"
-                    className="ui-focus w-11 h-11 rounded-full border border-border-strong grid place-items-center text-secondary hover:text-text hover:bg-subtle/60 shrink-0"
-                    data-home-add=""
-                  >
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-                  </Link>
-                  <ScopePicker scope={scope} onChange={setScope} sources={sources} spaces={spaces} variant="composer" disabled={busy} />
-                  <span className="flex-1" />
-                  <ModeSwitch mode={mode} onChange={setMode} disabled={busy} />
-                  <button
-                    type="submit"
-                    aria-label={mode === "quick" ? "Ask for a quick answer" : "Start a guided analysis"}
-                    disabled={!canSend}
-                    className="ui-focus w-12 h-12 rounded-full bg-primary text-on-primary grid place-items-center shrink-0 transition-[opacity,transform] hover:scale-[1.04] active:scale-[0.97] disabled:opacity-35 disabled:hover:scale-100"
-                    data-home-send=""
-                  >
-                    {busy ? <Spinner /> : <ArrowUpIcon size={19} />}
-                  </button>
+                  {voice.listening ? (
+                    <ListeningStrip heard={voice.heard} onStop={voice.stop} />
+                  ) : (
+                    <>
+                      <Link
+                        to="/data"
+                        aria-label="Add data: connect a source or upload a file"
+                        title="Connect a source or upload a file"
+                        className="ui-focus w-11 h-11 rounded-full border border-border-strong grid place-items-center text-secondary hover:text-text hover:bg-subtle/60 shrink-0"
+                        data-home-add=""
+                      >
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                      </Link>
+                      <ScopePicker scope={scope} onChange={setScope} sources={sources} spaces={spaces} variant="composer" disabled={busy} />
+                      <span className="flex-1" />
+                    </>
+                  )}
+                  {/* Mode, mic and send stay together - on a phone they share one row */}
+                  <div className="flex items-center gap-2.5 ml-auto">
+                    {!voice.listening && (
+                      <ModeSwitch mode={mode} onChange={setMode} disabled={busy} size={narrow ? "sm" : "lg"} />
+                    )}
+                    {voice.supported && (
+                      <MicButton
+                        listening={voice.listening}
+                        disabled={busy}
+                        onClick={() => {
+                          setError("");
+                          voice.clearError();
+                          voice.toggle();
+                        }}
+                      />
+                    )}
+                    <button
+                      type="submit"
+                      aria-label={mode === "quick" ? "Ask for a quick answer" : "Start a guided analysis"}
+                      disabled={!canSend}
+                      className="ui-focus w-12 h-12 rounded-full bg-primary text-on-primary grid place-items-center shrink-0 transition-[opacity,transform] hover:scale-[1.04] active:scale-[0.97] disabled:opacity-35 disabled:hover:scale-100"
+                      data-home-send=""
+                    >
+                      {busy ? <Spinner /> : <ArrowUpIcon size={19} />}
+                    </button>
+                  </div>
                 </div>
               </form>
             )}
             {error && <div role="alert" className="text-ui text-danger -mt-2">{error}</div>}
+            {!error && voice.error && <div role="alert" className="text-ui text-warning -mt-2" data-voice-error="">{voice.error}</div>}
             {!noSources && (
               <div className="flex flex-col items-center gap-2 -mt-1 text-[14px]" data-home-hints="">
                 <span className={`inline-flex items-center gap-2 transition-colors ${mode === "quick" ? "text-secondary" : "text-faint"}`}>
@@ -362,23 +420,6 @@ export default function Home() {
                 <span className={`inline-flex items-center gap-2 transition-colors ${mode === "guided" ? "text-secondary" : "text-faint"}`}>
                   <StepsIcon size={14} className="text-kind-analysis" /> {MODE_HINT.guided} — then keep asking
                 </span>
-              </div>
-            )}
-            {!noSources && sources !== null && (
-              <div className="flex gap-2 flex-wrap justify-center" data-home-starters="">
-                {starters.map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    onClick={() => {
-                      setQuestion(t);
-                      window.setTimeout(() => boxRef.current?.focus(), 0);
-                    }}
-                    className="ui-focus h-[34px] px-3.5 rounded-full border border-border bg-surface/50 text-[13px] text-secondary hover:text-text hover:border-border-strong transition-colors"
-                  >
-                    {t}
-                  </button>
-                ))}
               </div>
             )}
           </div>
