@@ -21,7 +21,8 @@ import AppSidebar from "../components/AppSidebar";
 import TopNav from "../components/TopNav";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { conversationApi, ConversationSummary, dashboardApi, DashboardSummary } from "../api/client";
-import { projectsApi, ProjectSource } from "../api/projects";
+import { projectsApi, ProjectSource, type QuestionCheck, type RunBrief } from "../api/projects";
+import QuestionCheckCard, { type CheckGo } from "../components/QuestionCheck";
 import { timeAgo, autoRunPreference } from "../project/format";
 import { useAuth } from "../api/AuthContext";
 import { Space, spacesApi } from "../api/spaces";
@@ -132,6 +133,8 @@ export default function Home() {
   const [dashboards, setDashboards] = useState<DashboardSummary[] | null>(null);
   const [tab, setTab] = useState<Tab>("recent");
   const [busy, setBusy] = useState(false);
+  // 2026-10-11 (round 24): the read-back card, when the question needs the person first
+  const [check, setCheck] = useState<QuestionCheck | null>(null);
   const [error, setError] = useState("");
   const boxRef = useRef<HTMLTextAreaElement>(null);
   useAutoGrow(boxRef, question, 260);
@@ -221,6 +224,54 @@ export default function Home() {
   // One box, two ways: a Quick answer (/p/:id) or a Guided Analysis
   // (/g/:id) - both asked across the SAME chosen scope. A Space sends
   // space_id, picked sources send source_ids - never both.
+  const scopeParams = () => {
+    const all = (sources || []).length;
+    return {
+      space_id: scope.kind === "space" && chosenSpace ? chosenSpace.id : undefined,
+      source_ids: scope.kind === "sources" && scope.ids.length < all ? scope.ids : undefined,
+    };
+  };
+
+  const start = async (q: string, picked?: { source_ids?: string[]; brief?: RunBrief }) => {
+    setBusy(true);
+    setError("");
+    try {
+      const sc = scopeParams();
+      const out = await projectsApi.create({
+        question: q,
+        space_id: picked?.source_ids ? undefined : sc.space_id,
+        source_ids: picked?.source_ids || sc.source_ids,
+        workspace_id: activeWorkspaceId || undefined,
+        auto_run: mode === "quick" ? autoRunPreference() : undefined,
+        mode: mode === "guided" ? "guided" : undefined,
+        brief: picked?.brief,
+      });
+      navigate(mode === "guided" ? `/g/${out.project_id}` : `/p/${out.project_id}?run=${out.run_id}`);
+    } catch (e: any) {
+      setError(errorText(e, mode === "guided" ? "Couldn't start the analysis. Please try again." : "Couldn't start that question. Please try again."));
+      setBusy(false);
+    }
+  };
+
+  /** Reads the question back first; runs at once when nothing needs the person. */
+  const runCheck = async (q: string) => {
+    setBusy(true);
+    setError("");
+    let c: QuestionCheck | null = null;
+    try {
+      c = await projectsApi.check({ question: q, ...scopeParams(), workspace_id: activeWorkspaceId || undefined });
+    } catch {
+      c = null; // the check never blocks a question
+    }
+    if (c && !c.ready && c.issues.length) {
+      setCheck(c);
+      setBusy(false);
+      return;
+    }
+    setCheck(null);
+    await start(q, c?.period ? { brief: { period: c.period, restated: c.restated } } : undefined);
+  };
+
   const submit = async () => {
     const typed = question.trim();
     const q = mode === "guided" && typed.length < 2 ? GUIDED_DEFAULT : typed;
@@ -229,23 +280,13 @@ export default function Home() {
       setError(chosenSpace ? `${chosenSpace.name} has no sources you can use yet.` : "Pick at least one source to ask about.");
       return;
     }
-    setBusy(true);
-    setError("");
-    try {
-      const all = (sources || []).length;
-      const out = await projectsApi.create({
-        question: q,
-        space_id: scope.kind === "space" && chosenSpace ? chosenSpace.id : undefined,
-        source_ids: scope.kind === "sources" && scope.ids.length < all ? scope.ids : undefined,
-        workspace_id: activeWorkspaceId || undefined,
-        auto_run: mode === "quick" ? autoRunPreference() : undefined,
-        mode: mode === "guided" ? "guided" : undefined,
-      });
-      navigate(mode === "guided" ? `/g/${out.project_id}` : `/p/${out.project_id}?run=${out.run_id}`);
-    } catch (e: any) {
-      setError(errorText(e, mode === "guided" ? "Couldn't start the analysis. Please try again." : "Couldn't start that question. Please try again."));
-      setBusy(false);
-    }
+    if (mode === "guided" && typed.length < 2) return start(q);
+    await runCheck(q);
+  };
+
+  const goFromCheck = (g: CheckGo) => {
+    setCheck(null);
+    void start(g.question, { source_ids: g.source_ids, brief: g.brief });
   };
 
   const firstName = (user?.full_name || "").split(" ")[0];
@@ -346,6 +387,7 @@ export default function Home() {
                   value={question}
                   onChange={(e) => {
                     if (voice.listening) voice.stop();
+                    if (check) setCheck(null); // the read-back was for the old wording
                     setQuestion(e.target.value);
                   }}
                   onKeyDown={(e) => {
@@ -414,7 +456,23 @@ export default function Home() {
             )}
             {error && <div role="alert" className="text-ui text-danger -mt-2">{error}</div>}
             {!error && voice.error && <div role="alert" className="text-ui text-warning -mt-2" data-voice-error="">{voice.error}</div>}
-            {!noSources && (
+            {check && (
+              <QuestionCheckCard
+                check={check}
+                workspaceId={activeWorkspaceId || undefined}
+                busy={busy}
+                onGo={goFromCheck}
+                onEdit={() => {
+                  setCheck(null);
+                  window.setTimeout(() => boxRef.current?.focus(), 0);
+                }}
+                onFixDate={(fixed) => {
+                  setQuestion(fixed);
+                  void runCheck(fixed);
+                }}
+              />
+            )}
+            {!noSources && !check && (
               <div className="flex flex-col items-center gap-2 -mt-1 text-[14px]" data-home-hints="">
                 <span className={`inline-flex items-center gap-2 transition-colors ${mode === "quick" ? "text-secondary" : "text-faint"}`}>
                   <BoltIcon size={14} className="text-kind-answer" /> {MODE_HINT.quick}
@@ -499,7 +557,7 @@ export default function Home() {
                         <span className="text-body text-text truncate">{c.title}</span>
                         <span className="text-caption text-muted truncate">
                           <KindPill kind={kind} className="h-[18px] px-1.5 text-[10.5px] mr-1.5 align-[1px]" />
-                          {c.datasource_name || "No source"}
+                          {c.datasource_name || (c.kind === "voice" ? "Talk with Euliv" : "No source")}
                           {(c.question_count || 0) > 1 ? ` · ${c.question_count} questions` : ""}
                           {n > 0 ? ` · ${n} dashboard${n === 1 ? "" : "s"}` : ""}
                         </span>

@@ -15,7 +15,7 @@ import { conversationKind, KindIcon, KindTile } from "../lib/kinds";
 // Answer (a question asked on Home) and every Analysis (hands-on work in
 // Studio), each labelled, filterable by kind with ?type=answer|analysis.
 // Dashboards live on their own page.
-type TypeFilter = "all" | "answer" | "analysis";
+type TypeFilter = "all" | "answer" | "analysis" | "talk";
 
 type SortKey = "newest" | "oldest" | "title";
 // A folder's real id, or one of the two built-in tabs:
@@ -524,7 +524,7 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const typeParam = searchParams.get("type");
-  const typeFilter: TypeFilter = typeParam === "answer" || typeParam === "analysis" ? typeParam : "all";
+  const typeFilter: TypeFilter = typeParam === "answer" || typeParam === "analysis" || typeParam === "talk" ? typeParam : "all";
   const setTypeFilter = (t: TypeFilter) => {
     const p = new URLSearchParams(searchParams);
     if (t === "all") p.delete("type");
@@ -655,6 +655,7 @@ export default function Dashboard() {
     // 2026-10-08 (round 11): a multi-source Project opens its own page
     if (c.kind === "project") return navigate(`/p/${c.id}`);
     if (c.kind === "guided") return navigate(`/g/${c.id}`);
+    if (c.kind === "voice") return navigate(`/v/${c.id}`);
     if (!c.datasource_id) return;
     navigate(`/workspace/${c.datasource_id}?conversation=${c.id}`);
   };
@@ -737,7 +738,8 @@ export default function Dashboard() {
   const hasFiltersApplied = search.trim() !== "" || pinnedOnly || folderFilter !== "all" || typeFilter !== "all";
   const clearFilters = () => { setSearch(""); setPinnedOnly(false); setFolderFilter("all"); setTypeFilter("all"); };
   const answerCount = useMemo(() => conversations.filter((c) => conversationKind(c) === "answer").length, [conversations]);
-  const analysisCount = conversations.length - answerCount;
+  const talkCount = useMemo(() => conversations.filter((c) => conversationKind(c) === "talk").length, [conversations]);
+  const analysisCount = conversations.length - answerCount - talkCount;
 
   // Pagination - PAGE_SIZE=12, same precedent as DataSources.tsx's own
   // pager, applied to whichever scope is currently showing (unfiled-only in
@@ -1118,6 +1120,7 @@ export default function Dashboard() {
                     ["all", "All", conversations.length],
                     ["answer", "Answers", answerCount],
                     ["analysis", "Analyses", analysisCount],
+                    ...(talkCount ? [["talk", "Talks", talkCount]] : []),
                   ] as [TypeFilter, string, number][]).map(([t, label, n]) => (
                     <button
                       key={t}
@@ -1242,7 +1245,7 @@ export default function Dashboard() {
                 : activeFolder
                 ? `Nothing in "${activeFolder.name}" yet.`
                 : typeFilter !== "all" && !search.trim() && !pinnedOnly
-                ? `No ${typeFilter === "answer" ? "answers" : "analyses"} here yet.`
+                ? `No ${typeFilter === "answer" ? "answers" : typeFilter === "talk" ? "talks" : "analyses"} here yet.`
                 : "Nothing matches your filters."}{" "}
               {hasFiltersApplied && (
                 <button className="text-primary font-medium hover:underline" onClick={clearFilters}>
@@ -1322,7 +1325,7 @@ export default function Dashboard() {
                     key={c.id}
                     conversation={c}
                     kind={conversationKind(c)}
-                    subtitle={`${c.datasource_name || "Removed data source"} · ${timeAgo(c.updated_at)}${c.dashboard_count ? ` · ${c.dashboard_count} dashboard${c.dashboard_count === 1 ? "" : "s"}` : ""}`}
+                    subtitle={`${c.datasource_name || (c.kind === "voice" ? "Talk with Euliv" : "Removed data source")} · ${timeAgo(c.updated_at)}${c.dashboard_count ? ` · ${c.dashboard_count} dashboard${c.dashboard_count === 1 ? "" : "s"}` : ""}`}
                     onOpen={() => openConversation(c)}
                     onRenamed={renameConversation}
                     onPinned={pinConversation}
