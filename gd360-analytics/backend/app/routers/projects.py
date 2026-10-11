@@ -113,6 +113,8 @@ class AskRequest(BaseModel):
     # else the thread's latest answer) without a new run.
     route: bool = False
     context_run_id: str | None = None
+    # round 26: a follow-up agreed with Euliv carries its read-back (period) like a new question does
+    brief: dict | None = None
     explain_target: dict | None = None
 
 
@@ -649,7 +651,7 @@ def ask(project_id: str, payload: AskRequest, db: Session = Depends(get_db), use
     # A Guided Analysis follow-up continues the same analysis: planned step
     # by step (mode "guided"), or run straight through to the answer ("answer").
     auto = (payload.mode == "answer") if conv.kind == "guided" else payload.auto_run
-    run = _new_run(db, conv, user, payload.question, auto)
+    run = _new_run(db, conv, user, payload.question, auto, brief=_clean_brief(payload.brief))
     executor.start_planning(run.id)
     return {"project_id": conv.id, "kind": "run", "run_id": run.id, "source_ids": conv.source_ids or [], **_space_ref(db, conv, user)}
 

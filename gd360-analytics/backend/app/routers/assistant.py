@@ -169,13 +169,13 @@ def _start(db: Session, user: models.User, question: str, source_ids: list[str] 
 
 
 def _follow_up(db: Session, user: models.User, question: str, state: TurnState,
-               source_ids: list[str] | None = None) -> dict | None:
+               source_ids: list[str] | None = None, brief: dict | None = None) -> dict | None:
     """A follow-up in the conversation's project; None when it should be a new question."""
     try:
         out = projects.ask(
             state.project_id,
             projects.AskRequest(question=question, route=True, context_run_id=state.last_run_id,
-                                source_ids=source_ids or None),
+                                source_ids=source_ids or None, brief=brief),
             db=db, user=user,
         )
     except HTTPException as e:
@@ -243,10 +243,12 @@ def _all_options(db: Session, user: models.User, ws: str | None, first: list[dic
 
 def _restated(b: dict) -> str:
     picked = [o for o in b.get("options") or [] if o["id"] in set(b.get("selected") or [])]
-    if b.get("mode") == "follow":
+    if b.get("mode") == "follow" and not b.get("same_data"):
         names = eu.names_text(picked, limit=4)
         return f"Your follow-up, answered from {names or 'the same data'}" + (
             f" for {b['period']['text']}" if b.get("period") else "") + "."
+    if b.get("mode") == "follow":
+        return qc._restate(b.get("what") or "the answer", b.get("period"), picked, bool(b.get("needs_time")))  # noqa: SLF001
     s = qc._restate(b.get("what") or "the answer", b.get("period"), picked, bool(b.get("needs_time")))  # noqa: SLF001
     if not picked and not b.get("needs_pick"):
         s = s.rstrip(".") + ", looking across all your data."
@@ -377,26 +379,59 @@ def _new_question(db: Session, user: models.User, q: str, ws: str | None, state:
     except Exception as e:  # noqa: BLE001 - never stand between a person and an answer
         logger.warning("[assistant] question check skipped: %s", e)
         c = {"ready": True, "issues": [], "candidates": [], "picked": [], "what": "the answer", "period": None}
-    named = any(x.get("named") for x in c.get("candidates") or [])
-    if _is_follow_up(q, state, c.get("topic"), named):
-        # round 25: a follow-up is read back too - same data as the answer before - and runs on "go ahead"
-        return _follow_plan(db, user, q, state, lead)
+    cands = c.get("candidates") or []
+    named_ids = {x["id"] for x in cands if x.get("named")}
+    named = bool(named_ids)
+    # a date that can't be right is asked about first - for a follow-up too
+    date_issue = next((i for i in c.get("issues") or [] if i["kind"] in ("year_typo", "month_typo", "future_year")), None)
+    if date_issue:
+        st = _keep(state, topic=c.get("topic") or state.topic, awaiting="fix_date", pending_question=q,
+                   brief={"issue": date_issue, "question": q, "accepted": list(accepted or [])})
+        return _reply((lead + " " if lead else "") + date_issue["text"], "fix_date", st, issue=date_issue)
+
+    # round 26: carrying on the conversation. The data behind the last answer is used again when it can
+    # answer this too - no asking which data, like a person would. Only when it can't is other data offered.
+    conv_ids = _conv_source_ids(db, user, state) if state.project_id and state.last_run_id else []
+    if conv_ids and (not named or named_ids <= set(conv_ids)):
+        if _is_follow_up(q, state, c.get("topic"), named):
+            return _follow_plan(db, user, q, state, lead)  # "why?", "and last year?" - about the answer itself
+        good = [x for x in cands if x.get("fit") == "good"]
+        same = [x for x in good if x["id"] in conv_ids]
+        top = max((x.get("score") or 0 for x in good), default=0)
+        if same and eu.questionish(q) and max(x.get("score") or 0 for x in same) >= top * 0.5:
+            return _follow_plan(db, user, q, state, lead, c=c, same=[x["id"] for x in same])
+        if eu.questionish(q) and len(q.split()) >= 3:
+            names = _names_of(db, conv_ids)
+            lead = (lead + " " if lead else "") + (
+                f"That needs different data from your last answer - {names} doesn't have it." if names else "")
+            lead = lead.strip()
+
     # a short remark with nothing to look up ("hmm okay", "great stuff"): don't build an analysis out of it
     words = q.split()
     if (len(words) <= 4 and not eu.questionish(q) and not c.get("period") and not named
-            and not any(x.get("score", 0) >= 4 for x in c.get("candidates") or [])):
+            and not any(x.get("score", 0) >= 4 for x in cands)):
         return _reply("I'm not sure what you'd like me to look at. Ask me about your data - like 'sales last month' - "
                       "or say 'bye' to finish.", "chat", _keep(state))
     st = _keep(state, topic=c.get("topic") or state.topic)
-    date_issue = next((i for i in c.get("issues") or [] if i["kind"] in ("year_typo", "month_typo", "future_year")), None)
-    if date_issue:
-        st = st.model_copy(update={"awaiting": "fix_date", "pending_question": q,
-                                   "brief": {"issue": date_issue, "question": q, "accepted": list(accepted or [])}})
-        return _reply((lead + " " if lead else "") + date_issue["text"], "fix_date", st, issue=date_issue)
     return _plan_from_check(db, user, q, c, st, ws, lead)
 
 
-def _follow_plan(db: Session, user: models.User, q: str, state: TurnState, lead: str = "") -> dict:
+def _conv_source_ids(db: Session, user: models.User, state: TurnState) -> list[str]:
+    """The data behind the conversation's last answer - only from a project this person can open."""
+    try:
+        conv = projects._project(db, state.project_id, user)  # noqa: SLF001 - same access rules as the thread page
+    except HTTPException:
+        return []
+    return list(conv.source_ids or [])
+
+
+def _names_of(db: Session, ids: list[str]) -> str:
+    rows = db.query(models.DataSource).filter(models.DataSource.id.in_(ids)).all() if ids else []
+    return eu.names_text([{"name": r.name} for r in rows], limit=3)
+
+
+def _follow_plan(db: Session, user: models.User, q: str, state: TurnState, lead: str = "", c: dict | None = None,
+                 same: list[str] | None = None) -> dict:
     conv = None
     if state.project_id:
         try:
@@ -413,7 +448,26 @@ def _follow_plan(db: Session, user: models.User, q: str, state: TurnState, lead:
     b = {"question": q, "what": f"“{q}”", "period": None, "period_options": [], "needs_time": False, "topic": state.topic,
          "connect": [], "options": opts, "selected": [o["id"] for o in opts], "needs_pick": False, "mode": "follow",
          "orig_selected": [o["id"] for o in opts]}
-    say = (lead + " " if lead else "") + f"You asked: “{q}”. I'll answer it from the same data as before. Shall I go ahead?"
+    lead = (lead + " ") if lead else ""
+    if c is None:
+        # about the answer itself ("why?"): read the question back, same data
+        say = lead + f"You asked: “{q}”. I'll answer it from the same data as before. Shall I go ahead?"
+        return _plan_reply(say, state, b)
+    # round 26: a new question on the same subject - the same data, said back with what was understood
+    by_id = {x["id"]: x for x in c.get("candidates") or []}
+    keep = [i for i in ids if i in (same or ids)] or ids
+    for o in opts:
+        x = by_id.get(o["id"])
+        if x:
+            o.update({k: v for k, v in _opt(x).items() if k in ("why", "fit", "says")})
+    extra = [_opt(x) for x in c.get("candidates") or [] if x.get("fit") == "good" and x["id"] not in ids][:3]
+    b.update(what=c.get("what") or b["what"], period=c.get("period"), period_options=c.get("period_options") or [],
+             needs_time=bool(c.get("needs_time")), topic=c.get("topic") or state.topic, options=opts + extra,
+             selected=keep, orig_selected=keep, same_data=True)
+    names = eu.names_text([o for o in opts if o["id"] in set(keep)], limit=3)
+    r = _restated(b)
+    r = ("your " + r[5:]) if r.startswith("Your ") else r[:1].lower() + r[1:]
+    say = lead + f"I'll stay with {names}, the data from your last answer. So: {r} Shall I go ahead, or change anything?"
     return _plan_reply(say, state, b)
 
 
@@ -421,8 +475,15 @@ def _run_plan(db: Session, user: models.User, state: TurnState, b: dict, ws: str
     if b.get("mode") == "follow":
         sel = b.get("selected") or []
         changed = sorted(sel) != sorted(b.get("orig_selected") or [])
-        out = _follow_up(db, user, b["question"], _keep(state), sel if changed and sel else None)
+        out = _follow_up(db, user, b["question"], _keep(state), sel if changed and sel else None,
+                         brief={"period": b.get("period"), "restated": _restated(b)} if b.get("same_data") else None)
         if out:
+            picked = [o for o in b.get("options") or [] if o["id"] in set(sel)]
+            if out.get("action") == "run" and picked:
+                out["say"] = f"On it - looking at {eu.names_text(picked, limit=3)}" + (
+                    f" for {b['period']['text']}." if b.get("period") else ".")
+                out["speak"] = eu.speakable(out["say"])
+                out["sources"] = [{"id": o["id"], "name": o["name"]} for o in picked]
             return out
         return _new_question(db, user, b["question"], ws, _keep(state, project_id=None, last_run_id=None))
     sel = b.get("selected") or []
@@ -521,7 +582,12 @@ def _plan_turn(db: Session, user: models.User, text: str, state: TurnState, ws: 
             return _plan_reply("Okay, nothing picked yet. Which should I use? Say a number or a name.", state, b)
         fits = [o for o in picked if o.get("fit") in ("no_dates", "out_of_range")]
         warn = f" Heads up: {fits[0]['name']} has {fits[0]['note']}." if fits and fits[0].get("note") else ""
-        say = f"Got it: {eu.names_text(picked, limit=4)}.{warn} Anything to add, or shall I go ahead?"
+        # round 26: the data is settled - now the question itself, read back once more, so the person can
+        # carry on with it or change it before anything runs
+        r = _restated(b)
+        r = ("your " + r[5:]) if r.startswith("Your ") else r[:1].lower() + r[1:]
+        say = (f"Got it: {eu.names_text(picked, limit=4)}.{warn} Just to confirm - you asked “{b.get('question')}”, "
+               f"so I'll look at {r} Shall I go ahead, or would you like to change the question?")
         return _plan_reply(say, state, b)
     if op == "more":
         b["options"] = _all_options(db, user, ws, opts)
