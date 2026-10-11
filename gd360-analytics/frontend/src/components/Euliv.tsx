@@ -190,7 +190,13 @@ function listenOnce(o: {
 
 type Barge = { stop: () => void; hearing: () => boolean; heard: Promise<string | null> };
 
-function bargeListen(o: { echoOf: () => string[]; onStart: () => void; onInterim: (t: string) => void }): Barge | null {
+/** Round 31: on speakers Euliv can't tell its own voice from yours in a full sentence, so - like
+ *  "Hey Siri" - it listens while it talks only for a short interrupt: its name, "wait", "stop", "no",
+ *  "yes", "change it", a number... Anything longer, or anything it is saying itself, is ignored. */
+const INTERRUPT = /\b(euliv|eliv|olive|stop|wait|hold on|hang on|pause|cancel|enough|quiet|no|nope|yes|yeah|yep|okay|ok|go ahead|proceed|change|edit|wrong|one|two|three|four|five|first|second|third|all|both|none|repeat|again|sorry|excuse me|hey)\b/i;
+export const isInterrupt = (t: string) => t.trim().split(/\s+/).length <= 5 && INTERRUPT.test(t);
+
+function bargeListen(o: { echoOf: () => string[]; onStart: () => void; onInterim: (t: string) => void; gate?: (t: string) => boolean }): Barge | null {
   const Cls = recognitionClass();
   if (!Cls) return null;
   let r: Rec | null = null;
@@ -236,6 +242,8 @@ function bargeListen(o: { echoOf: () => string[]; onStart: () => void; onInterim
         const tr = String(e.results[i][0]?.transcript || "").trim();
         // Euliv's own voice through the speakers is not the person (round 27: checked on every result, final too)
         if (!tr || heardEuliv(tr, o.echoOf(), true)) continue;
+        // speakers: only a short interrupt counts until the person has the floor
+        if (!started && o.gate && !o.gate(tr)) continue;
         last = tr;
         if (!started) {
           started = true;
@@ -598,8 +606,10 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
     // round 26: the person can talk over Euliv - it stops and listens
     // round 28: on speakers Euliv does NOT listen while it talks - its own voice would come back as "you".
     // Interrupt with a tap / Space; with headphones (or "talk over Euliv" on) just talk.
-    const barge = settingsRef.current.handsFree && canListen && !micTrouble.current && talkOver()
+    // round 31: speakers too - but only for a short interrupt ("wait", "Euliv", "no", "change it"), like "Hey Siri"
+    const barge = settingsRef.current.handsFree && canListen && !micTrouble.current
       ? bargeListen({
+          gate: talkOver() ? undefined : isInterrupt,
           // everything Euliv is saying now, and said in the last few seconds - its echo isn't the person
           echoOf: () => recentEuliv(4000),
           onStart: () => {
@@ -836,7 +846,8 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
       }
       case "question": {
         // round 29: the question first, tidied - "Your question: “…” Is that right?"
-        const ok = await say(out.say, out.speak, { type: "question", question: out.question || "", said: out.said || "", notes: out.notes || [], live: true });
+        // round 31: the card shows the question - the line above it doesn't repeat it; the voice still says it all
+        const ok = await say(out.show || out.say, out.speak, { type: "question", question: out.question || "", said: out.said || "", notes: out.notes || [], live: true });
         return afterReply(ok);
       }
       case "rephrase": {
@@ -1056,7 +1067,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
   };
 
   const orbScale = phase === "listening" ? 1 + Math.min(0.28, level * 0.9) : 1;
-  const status = phase === "listening" && caption ? "" : phase === "speaking" && !(settings.handsFree && canListen && (settings.talkOver || headset)) ? "Speaking - tap to interrupt" : PHASE_TEXT[phase];
+  const status = phase === "listening" && caption ? "" : phase === "speaking" && !(settings.handsFree && canListen && (settings.talkOver || headset)) ? (settings.handsFree && canListen ? "Speaking - say “wait” or tap to interrupt" : "Speaking - tap to interrupt") : PHASE_TEXT[phase];
 
   return (
     <div className="fixed inset-0 z-[90] flex items-stretch sm:items-center justify-center bg-[rgb(var(--color-base)/0.78)] backdrop-blur-md" role="dialog" aria-modal="true" aria-label="Euliv" data-euliv="" data-phase={phase}>
