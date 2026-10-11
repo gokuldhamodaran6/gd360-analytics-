@@ -27,7 +27,7 @@ import { periodWords } from "./QuestionCheck";
 import { ACTIVE_WORKSPACE_KEY } from "../lib/useWorkspaceNav";
 import { deviceText, LevelBars } from "../thread/Dictation";
 import {
-  cancelSpeech, claimMic, heardEuliv, isSpeaking, isTouchDevice, loadSettings, loadVoices, meterUseful, MIC_HELP, MicMonitor, type MicProblem, micOwner, onMicOwner,
+  cancelSpeech, claimMic, headphonesOn, heardEuliv, isSpeaking, isTouchDevice, loadSettings, loadVoices, meterUseful, MIC_HELP, MicMonitor, type MicProblem, micOwner, onMicOwner,
   onSettings, type Rec, recognitionClass, releaseMic, saveSettings, SOUND_LEVEL, speak, speechInputSupported,
   speechLang, speechOutputSupported, wakeInAny, type EulivSettings,
 } from "../thread/voice";
@@ -513,6 +513,17 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
   const session = useRef(0);
   const control = useRef<{ finish?: () => void }>({});
   const proven = useRef(false); // the mic has heard this person in this conversation
+  // round 28: talking over Euliv only when its voice can't reach the mic (headphones), or when turned on
+  const [headset, setHeadset] = useState(false);
+  const headsetRef = useRef(false);
+  useEffect(() => {
+    const check = () => void headphonesOn().then((v) => { headsetRef.current = v; setHeadset(v); });
+    check();
+    const md = navigator.mediaDevices;
+    md?.addEventListener?.("devicechange", check);
+    return () => md?.removeEventListener?.("devicechange", check);
+  }, []);
+  const talkOver = () => Boolean(settingsRef.current.talkOver || headsetRef.current);
   const unclear = useRef(0);
   const micTrouble = useRef(false); // the last listen hit a mic problem - don't re-listen by itself (typing still works)
   const idSeq = useRef(0);
@@ -560,7 +571,9 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
     const entry = { text: `${text} ${words}`, ended: null as number | null };
     spokenLog.current = [...spokenLog.current.slice(-5), entry];
     // round 26: the person can talk over Euliv - it stops and listens
-    const barge = settingsRef.current.handsFree && canListen && !micTrouble.current
+    // round 28: on speakers Euliv does NOT listen while it talks - its own voice would come back as "you".
+    // Interrupt with a tap / Space; with headphones (or "talk over Euliv" on) just talk.
+    const barge = settingsRef.current.handsFree && canListen && !micTrouble.current && talkOver()
       ? bargeListen({
           // everything Euliv is saying now, and said in the last few seconds - its echo isn't the person
           echoOf: () => recentEuliv(4000),
@@ -860,6 +873,8 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
       out = await assistantApi.turn({
         text, state: state.current, workspace_id: workspaceId(), event, run_id: runId,
         save: settingsRef.current.keep !== false, greeting: greeting.current || undefined,
+        // round 28: what Euliv just said - the server drops a "you" that is only Euliv's own voice coming back
+        last_said: recentEuliv(20000).join(" | ").slice(-3000) || undefined,
       });
     } catch (e) {
       if (s !== session.current) return;
@@ -1005,7 +1020,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
   };
 
   const orbScale = phase === "listening" ? 1 + Math.min(0.28, level * 0.9) : 1;
-  const status = phase === "listening" && caption ? "" : phase === "speaking" && !(settings.handsFree && canListen) ? "Speaking - tap to interrupt" : PHASE_TEXT[phase];
+  const status = phase === "listening" && caption ? "" : phase === "speaking" && !(settings.handsFree && canListen && (settings.talkOver || headset)) ? "Speaking - tap to interrupt" : PHASE_TEXT[phase];
 
   return (
     <div className="fixed inset-0 z-[90] flex items-stretch sm:items-center justify-center bg-[rgb(var(--color-base)/0.78)] backdrop-blur-md" role="dialog" aria-modal="true" aria-label="Euliv" data-euliv="" data-phase={phase}>
@@ -1216,6 +1231,8 @@ function EulivSettingsPanel({ settings, wakeProblem, onDone }: { settings: Euliv
       {wakeProblem && <span className="text-[12.5px] text-warning -mt-3 pl-8">{wakeProblem}</span>}
       <Toggle id="euliv-speak" on={settings.speak} disabled={!speechOutputSupported()} onChange={(v) => saveSettings({ speak: v })} label="Speak answers out loud" help="Off: Euliv writes its answers only." />
       <Toggle id="euliv-hands" on={settings.handsFree} onChange={(v) => saveSettings({ handsFree: v })} label="Keep the conversation going" help="After each answer Euliv listens for your next question - no tap needed." />
+      <Toggle id="euliv-talkover" on={!!settings.talkOver} onChange={(v) => saveSettings({ talkOver: v })} label="Talk over Euliv"
+        help="Interrupt just by talking while Euliv speaks. Best with headphones - on speakers Euliv could hear its own voice. With headphones this is on by itself." />
       <Toggle id="euliv-keep" on={settings.keep !== false} onChange={(v) => saveSettings({ keep: v })} label="Keep a written record" help="Each talk is saved in Library under “Talks”, so you can read it again or carry on. Words only - never audio." />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
