@@ -60,6 +60,10 @@ export default {
         "kind-dashboard": "rgb(var(--color-kind-dashboard) / <alpha-value>)",
         "kind-dashboard-fill": "rgb(var(--color-kind-dashboard-fill) / <alpha-value>)",
         "kind-dashboard-border": "rgb(var(--color-kind-dashboard-border) / <alpha-value>)",
+        // 2026-10-11: alerts (anything that watches a number) - violet.
+        "kind-alert": "rgb(var(--color-kind-alert) / <alpha-value>)",
+        "kind-alert-fill": "rgb(var(--color-kind-alert-fill) / <alpha-value>)",
+        "kind-alert-border": "rgb(var(--color-kind-alert-border) / <alpha-value>)",
       },
       fontFamily: {
         sans: ["Geist", "system-ui", "sans-serif"],
