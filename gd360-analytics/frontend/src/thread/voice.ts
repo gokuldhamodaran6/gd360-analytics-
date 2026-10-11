@@ -310,6 +310,22 @@ export function pickVoice(voices = voicesCache): SpeechSynthesisVoice | null {
   return pool.find((v) => v.localService) || pool[0] || voices[0] || null;
 }
 
+/**
+ * Round 26: is what the mic heard just Euliv's own voice coming back (speakers, no headset)?
+ * `speaking` = the sentence being said right now. A run of its words, or nearly all of them, is echo;
+ * "one", "go ahead", "stop" said over a different sentence is the person.
+ */
+export function isEcho(heard: string, speaking: string): boolean {
+  const norm = (s: string) => ` ${(s || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim()} `;
+  const h = norm(heard).trim();
+  if (!h) return true;
+  const sp = norm(speaking);
+  if (sp.includes(` ${h} `)) return true;
+  const hw = h.split(" ");
+  const sw = new Set(sp.trim().split(" "));
+  return hw.length >= 3 && hw.filter((w) => sw.has(w)).length / hw.length >= 0.8;
+}
+
 /** Split for speaking: one sentence (or a short group) at a time - Chrome stops long utterances around 15 s. */
 export function chunks(text: string): string[] {
   const parts = (text || "").replace(/\s+/g, " ").trim().match(/[^.!?]+[.!?]*\s*/g) || [];
