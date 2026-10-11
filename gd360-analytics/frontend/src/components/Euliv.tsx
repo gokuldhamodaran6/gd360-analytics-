@@ -1,0 +1,1113 @@
+// 2026-10-11: Euliv - talk to GD360.
+//
+// "Talk to Euliv" (Home, and the orb in the top bar), or - when switched on
+// in Euliv's settings - just say "Hi Euliv" / "Euliv" while a GD360 tab is
+// open. Euliv greets you ("Hi Gokul, how can I help you?"), listens, and
+// answers out loud from your data:
+//   - more than one source fits?  it asks which ("Google Ads, Meta Ads, or both?")
+//     and remembers the choice for that topic;
+//   - nothing connected for it?   it offers to connect it, opens the connect
+//     page in a new tab and carries on by itself once it's connected;
+//   - the answer:                 the same engine as typed questions - said in
+//     a sentence or two, with the numbers on a card and a link to the full answer;
+//   - follow-ups ("why?")         are explained from the same numbers.
+// It keeps the conversation going hands-free (listen -> answer -> listen),
+// can be interrupted any time (tap the orb, or Space), and says plainly when
+// it can't hear you and why (blocked / no mic / muted / busy / silence).
+//
+// The brain is backend routers/assistant.py; speech in and out is the
+// browser's (thread/voice.ts). Only words reach GD360 - never audio.
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useLocation } from "react-router-dom";
+import { useAuth } from "../api/AuthContext";
+import { assistantApi, type EulivAnswer, type EulivConnect, type EulivMemory, type EulivSource, type EulivState, type EulivTurn } from "../api/assistant";
+import { ACTIVE_WORKSPACE_KEY } from "../lib/useWorkspaceNav";
+import { deviceText, LevelBars } from "../thread/Dictation";
+import {
+  cancelSpeech, claimMic, isTouchDevice, loadSettings, loadVoices, meterUseful, MIC_HELP, MicMonitor, type MicProblem, micOwner, onMicOwner,
+  onSettings, type Rec, recognitionClass, releaseMic, saveSettings, SOUND_LEVEL, speak, speechInputSupported,
+  speechLang, speechOutputSupported, wakeIn, type EulivSettings,
+} from "../thread/voice";
+
+const HIDDEN_ON = ["/admin", "/pricing", "/about", "/start", "/register", "/login", "/admin-login", "/help", "/public", "/d/", "/invite", "/privacy", "/connect/", "/e/", "/w/", "/a/", "/r/"];
+const OPEN_EVENT = "gd360:euliv";
+
+/** Opens Euliv from anywhere (Home, the top bar, the command palette ...). */
+export function openEuliv(first?: string) {
+  window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: { first } }));
+}
+
+export const eulivAvailable = () => speechInputSupported() || speechOutputSupported();
+
+function workspaceId(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_WORKSPACE_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+function errText(e: any): string {
+  if (!e?.response) return "I can't reach GD360 right now - check your internet connection and try again.";
+  const d = e.response?.data?.detail;
+  return typeof d === "string" ? d : "Something went wrong on my side. Please try again.";
+}
+
+// ---- listening once -----------------------------------------------------------------
+
+type Heard = { text: string; reason: "ok" | "silent" | "unclear" | "stopped" | "network" | "unsupported" | MicProblem; label: string };
+
+function listenOnce(o: {
+  onInterim: (t: string) => void;
+  onLevel: (l: number) => void;
+  control: { current: { finish?: () => void } };
+  silentMs: number;
+  unclearMs: number;
+}): Promise<Heard> {
+  return new Promise((resolve) => {
+    const Cls = recognitionClass();
+    if (!Cls) return resolve({ text: "", reason: "unsupported", label: "" });
+    let finals = "";
+    let interim = "";
+    let settled = false;
+    let gotWords = false;
+    let meterProblem: MicProblem | null = null; // the meter's finding - used to explain silence
+    const t0 = Date.now();
+    const t: { silence?: number; tick?: number; cap?: number } = {};
+    const mon = new MicMonitor((p) => (meterProblem = p));
+    let r: Rec;
+    const said = () => `${finals} ${interim}`.replace(/\s+/g, " ").trim();
+    function end(reason: Heard["reason"]) {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(t.silence);
+      window.clearInterval(t.tick);
+      window.clearTimeout(t.cap);
+      mon.stop();
+      try {
+        r?.abort();
+      } catch {
+        /* ignore */
+      }
+      releaseMic("euliv");
+      o.onLevel(0);
+      const text = said();
+      const explained = meterProblem && meterProblem !== "failed" && meterProblem !== "unsupported" ? meterProblem : null;
+      const why = text ? "ok" : (reason === "silent" || reason === "unclear") && explained ? explained : reason;
+      resolve({ text, reason: why, label: mon.label });
+    }
+    o.control.current = { finish: () => end("stopped") };
+    try {
+      r = new Cls();
+    } catch {
+      return resolve({ text: "", reason: "unsupported", label: "" });
+    }
+    if (!claimMic("euliv", () => end("stopped"), 3)) return resolve({ text: "", reason: "in-use", label: "" });
+    r.lang = speechLang();
+    r.continuous = true;
+    r.interimResults = true;
+    r.maxAlternatives = 1;
+    r.onresult = (e: any) => {
+      let f = "";
+      let i2 = "";
+      for (let i = 0; i < e.results.length; i++) {
+        const tr = e.results[i][0]?.transcript || "";
+        if (e.results[i].isFinal) f += tr;
+        else i2 += tr;
+      }
+      finals = f;
+      interim = i2;
+      if (said()) gotWords = true;
+      o.onInterim(said());
+      window.clearTimeout(t.silence);
+      // a pause after words finishes the turn (a little longer mid-sentence)
+      t.silence = window.setTimeout(() => end("ok"), i2 ? 1700 : 1150);
+    };
+    r.onerror = (e: any) => {
+      const c = e?.error;
+      if (c === "aborted") return;
+      if (c === "not-allowed" || c === "service-not-allowed") return end("blocked");
+      if (c === "audio-capture") return end("no-device");
+      if (c === "network") return end("network");
+      if (c === "no-speech") return end(mon.measuring && mon.loudest >= SOUND_LEVEL ? "unclear" : "silent");
+      end("unclear");
+    };
+    r.onend = () => end(mon.measuring && mon.loudest >= SOUND_LEVEL ? "unclear" : "silent");
+    try {
+      r.start();
+    } catch {
+      releaseMic("euliv");
+      settled = true;
+      return resolve({ text: "", reason: "failed", label: "" });
+    }
+    t.cap = window.setTimeout(() => end("ok"), 30000);
+    if (!meterUseful()) return;
+    mon.start().then((problem) => {
+      if (settled) return mon.stop();
+      if (problem) meterProblem = problem;
+      if (!mon.measuring) return;
+      t.tick = window.setInterval(() => {
+        o.onLevel(mon.level());
+        if (gotWords) return;
+        const ms = Date.now() - t0;
+        if (mon.loudest < SOUND_LEVEL && ms > o.silentMs) end("silent");
+        else if (mon.loudest >= SOUND_LEVEL && ms > o.unclearMs) end("unclear");
+      }, 90);
+    });
+  });
+}
+
+// ---- "Hi Euliv" ----------------------------------------------------------------------------
+
+/** Listens for the name while switched on, the tab is visible, and nobody else has the mic. */
+function useWakeWord(on: boolean, onWake: (rest: string) => void) {
+  const [active, setActive] = useState(false);
+  const [problem, setProblem] = useState<string>("");
+  const wakeRef = useRef(onWake);
+  wakeRef.current = onWake;
+
+  useEffect(() => {
+    if (!on) {
+      setActive(false);
+      return;
+    }
+    const Cls = recognitionClass();
+    if (!Cls) return;
+    let r: Rec | null = null;
+    let alive = true;
+    let backoff = 400;
+    let restartT: number | undefined;
+    let pending: { at: number; rest: string } | null = null;
+    let pendingT: number | undefined;
+
+    const fire = (rest: string) => {
+      pending = null;
+      window.clearTimeout(pendingT);
+      stopRec();
+      wakeRef.current(rest);
+    };
+    const stopRec = () => {
+      const cur = r;
+      r = null;
+      setActive(false);
+      if (cur) {
+        cur.onend = null;
+        try {
+          cur.abort();
+        } catch {
+          /* ignore */
+        }
+      }
+      releaseMic("wake");
+    };
+    const schedule = (ms: number) => {
+      window.clearTimeout(restartT);
+      restartT = window.setTimeout(startRec, ms);
+    };
+    function startRec() {
+      if (!alive || r || document.visibilityState !== "visible" || micOwner()) return;
+      let rec: Rec;
+      try {
+        rec = new Cls!();
+      } catch {
+        return;
+      }
+      if (!claimMic("wake", () => stopRec(), 0)) return;
+      rec.lang = speechLang();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.maxAlternatives = 1;
+      rec.onresult = (e: any) => {
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const tr = e.results[i][0]?.transcript || "";
+          const w = wakeIn(tr);
+          if (!w.woke) continue;
+          if (e.results[i].isFinal) return fire(w.rest);
+          // heard the name mid-sentence: wait for the end of what they're saying
+          pending = { at: Date.now(), rest: w.rest };
+          window.clearTimeout(pendingT);
+          pendingT = window.setTimeout(() => pending && fire(pending.rest), 2200);
+        }
+      };
+      rec.onerror = (e: any) => {
+        const c = e?.error;
+        if (c === "not-allowed" || c === "service-not-allowed") {
+          setProblem(MIC_HELP.blocked);
+          saveSettings({ wake: false });
+          alive = false;
+        } else if (c === "network") backoff = Math.min(60000, backoff * 3);
+        else if (c === "audio-capture") {
+          setProblem(MIC_HELP["no-device"]);
+          backoff = 30000;
+        }
+      };
+      rec.onend = () => {
+        r = null;
+        setActive(false);
+        releaseMic("wake");
+        if (pending) return fire(pending.rest);
+        if (alive) schedule(backoff);
+        backoff = Math.min(backoff, 5000);
+      };
+      r = rec;
+      try {
+        rec.start();
+        setActive(true);
+        setProblem("");
+        backoff = 400;
+      } catch {
+        r = null;
+        releaseMic("wake");
+        schedule(3000);
+      }
+    }
+    const onVis = () => (document.visibilityState === "visible" ? schedule(300) : stopRec());
+    const offOwner = onMicOwner((id) => {
+      if (id === null) schedule(600);
+    });
+    document.addEventListener("visibilitychange", onVis);
+    schedule(500);
+    return () => {
+      alive = false;
+      window.clearTimeout(restartT);
+      window.clearTimeout(pendingT);
+      document.removeEventListener("visibilitychange", onVis);
+      offOwner();
+      stopRec();
+    };
+  }, [on]);
+
+  return { active, problem };
+}
+
+// ---- pieces ----------------------------------------------------------------------------------
+
+export function OrbGlyph({ size = 18 }: { size?: number }) {
+  return <span className="gd-orb rounded-full shrink-0 inline-block" style={{ width: size, height: size }} aria-hidden="true" />;
+}
+
+function WaveIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" aria-hidden="true">
+      <path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4" />
+    </svg>
+  );
+}
+
+/** "Talk to Euliv": `icon` (top bar), `round` (Home composer, next to the mic). */
+export function TalkButton({ variant = "round", className = "" }: { variant?: "round" | "icon"; className?: string }) {
+  if (!eulivAvailable()) return null;
+  if (variant === "icon") {
+    return (
+      <button
+        type="button"
+        onClick={() => openEuliv()}
+        aria-label="Talk to Euliv"
+        title="Talk to Euliv"
+        className={`ui-focus w-9 h-9 rounded-full grid place-items-center hover:bg-subtle/70 transition-colors ${className}`}
+        data-euliv-open="topbar"
+      >
+        <OrbGlyph size={18} />
+      </button>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => openEuliv()}
+      aria-label="Talk to Euliv"
+      title="Talk to Euliv - a conversation, out loud"
+      className={`ui-focus relative w-12 h-12 rounded-full grid place-items-center shrink-0 text-[rgb(var(--color-base))] gd-orb transition-transform hover:scale-[1.05] active:scale-[0.96] ${className}`}
+      data-euliv-open="home"
+    >
+      <WaveIcon size={19} />
+    </button>
+  );
+}
+
+type Card =
+  | { type: "choose"; candidates: EulivSource[] }
+  | { type: "connect"; connect: EulivConnect; opened: boolean; done?: boolean }
+  | { type: "answer"; data: EulivAnswer }
+  | { type: "explain"; data: NonNullable<EulivTurn["explain"]> }
+  | { type: "mic"; reason: string; label: string };
+
+type Msg = { id: number; who: "you" | "euliv"; text: string; card?: Card; working?: string };
+type Phase = "idle" | "listening" | "thinking" | "working" | "speaking";
+
+const PHASE_TEXT: Record<Phase, string> = {
+  idle: "Tap to talk",
+  listening: "Listening…",
+  thinking: "Thinking…",
+  working: "Working it out…",
+  speaking: "Speaking - tap to interrupt",
+};
+
+// ---- the conversation ---------------------------------------------------------------------------
+
+export default function EulivProvider() {
+  const { user } = useAuth();
+  const loc = useLocation();
+  const hiddenRoute = !user || HIDDEN_ON.some((p) => loc.pathname.startsWith(p));
+  const [open, setOpen] = useState(false);
+  const [settings, setSettings] = useState<EulivSettings>(loadSettings);
+  const firstRef = useRef<string | undefined>(undefined);
+  const [openSeq, setOpenSeq] = useState(0);
+
+  useEffect(() => onSettings(setSettings), []);
+  useEffect(() => {
+    const on = (e: Event) => {
+      firstRef.current = (e as CustomEvent).detail?.first || undefined;
+      setOpen(true);
+      setOpenSeq((n) => n + 1);
+    };
+    window.addEventListener(OPEN_EVENT, on);
+    return () => window.removeEventListener(OPEN_EVENT, on);
+  }, []);
+  useEffect(() => {
+    if (hiddenRoute) setOpen(false);
+  }, [hiddenRoute]);
+
+  const wakeOn = !!settings.wake && !hiddenRoute && !open && !isTouchDevice() && speechInputSupported();
+  const wake = useWakeWord(wakeOn, (rest) => openEuliv(rest || undefined));
+
+  if (hiddenRoute) return null;
+  return (
+    <>
+      {wake.active && !open && (
+        <button
+          type="button"
+          onClick={() => openEuliv()}
+          className="hidden sm:inline-flex fixed left-4 bottom-4 z-[60] items-center gap-2 h-8 pl-2 pr-3 rounded-full border border-border bg-surface/90 backdrop-blur text-[12px] text-secondary hover:text-text shadow-[0_10px_30px_-12px_rgb(0_0_0/0.6)]"
+          title="Euliv is listening for its name in this tab. Turn this off in Euliv's settings."
+          data-euliv-wake=""
+        >
+          <OrbGlyph size={14} /> Say “Hi Euliv”
+        </button>
+      )}
+      {open && <EulivPanel key={openSeq} first={firstRef.current} settings={settings} wakeProblem={wake.problem} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+function EulivPanel({ first, settings, wakeProblem, onClose }: { first?: string; settings: EulivSettings; wakeProblem: string; onClose: () => void }) {
+  const [msgs, setMsgs] = useState<Msg[]>([]);
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [level, setLevel] = useState(0);
+  const [caption, setCaption] = useState("");
+  const [typed, setTyped] = useState("");
+  const [showSettings, setShowSettings] = useState(false);
+  const [topicLine, setTopicLine] = useState("");
+  const state = useRef<EulivState>({});
+  const alive = useRef(true);
+  const session = useRef(0);
+  const control = useRef<{ finish?: () => void }>({});
+  const proven = useRef(false); // the mic has heard this person in this conversation
+  const unclear = useRef(0);
+  const micTrouble = useRef(false); // the last listen hit a mic problem - don't re-listen by itself (typing still works)
+  const idSeq = useRef(0);
+  const scroller = useRef<HTMLDivElement>(null);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const canListen = speechInputSupported();
+
+  const push = useCallback((m: Omit<Msg, "id">) => {
+    const id = ++idSeq.current;
+    // one connect card at a time: a newer one replaces the older
+    const strip = m.card?.type === "connect";
+    setMsgs((cur) => [...cur.slice(-40).map((x) => (strip && x.card?.type === "connect" ? { ...x, card: undefined } : x)), { ...m, id }]);
+    return id;
+  }, []);
+  const patch = useCallback((id: number, p: Partial<Msg>) => setMsgs((cur) => cur.map((m) => (m.id === id ? { ...m, ...p } : m))), []);
+
+  useEffect(() => {
+    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
+  }, [msgs, caption]);
+
+  /** Euliv says something: on screen always, out loud when speaking is on.
+   *  true = said; false = couldn't speak (the words are on screen); null =
+   *  interrupted or closed - the caller stops, something newer has taken over. */
+  const say = useCallback(async (text: string, spoken?: string, card?: Card): Promise<boolean | null> => {
+    const s = session.current;
+    push({ who: "euliv", text, card });
+    if (!settingsRef.current.speak || !speechOutputSupported()) return true;
+    setPhase("speaking");
+    const r = await speak(spoken || text);
+    if (s !== session.current || !alive.current || r === "cancelled") return null;
+    return true; // "failed" (no voice available) still carries on - the words are on screen
+  }, [push]);
+
+  const listen = useCallback(async (): Promise<void> => {
+    const s = session.current;
+    if (!canListen) {
+      setPhase("idle");
+      return;
+    }
+    setPhase("listening");
+    setCaption("");
+    const heard = await listenOnce({
+      onInterim: (t) => s === session.current && setCaption(t),
+      onLevel: (l) => s === session.current && setLevel(l),
+      control,
+      silentMs: proven.current ? 9000 : 6000,
+      unclearMs: 9000,
+    });
+    if (s !== session.current || !alive.current) return;
+    setCaption("");
+    if (heard.text) {
+      proven.current = true;
+      micTrouble.current = false;
+      unclear.current = 0;
+      return handle(heard.text);
+    }
+    if (heard.reason === "stopped") {
+      setPhase("idle");
+      return;
+    }
+    if (heard.reason === "silent" && proven.current) {
+      setPhase("idle"); // they've finished - no need to nag
+      return;
+    }
+    if (heard.reason === "unclear") {
+      if (unclear.current++ < 1) {
+        const ok = await say("Sorry, I didn't catch that. Could you say it again?");
+        if (ok === null) return;
+        return listen();
+      }
+      unclear.current = 0;
+      if ((await say("I'm having trouble understanding. Try again a little closer to your microphone - or type below.")) === null) return;
+      setPhase("idle");
+      return;
+    }
+    // can't hear you: say exactly why
+    micTrouble.current = true;
+    const label = deviceText(heard.label);
+    const text =
+      heard.reason === "silent"
+        ? `I can't hear you. Please check your microphone is connected and not muted${label}.`
+        : heard.reason === "network"
+        ? "I can't reach the speech service - check your internet connection. You can type below meanwhile."
+        : heard.reason === "unsupported"
+        ? "This browser can't listen. Try Chrome, Edge or Safari - or type below."
+        : MIC_HELP[heard.reason as MicProblem] || MIC_HELP.failed;
+    if ((await say(text, undefined, { type: "mic", reason: heard.reason, label: heard.label })) === null) return;
+    setPhase("idle");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canListen, say]);
+
+  const afterReply = useCallback(async (spokeOk: boolean | null) => {
+    if (!alive.current || spokeOk === null) return;
+    if (spokeOk && settingsRef.current.handsFree && canListen && !micTrouble.current) return listen();
+    setPhase("idle");
+  }, [canListen, listen]);
+
+  /** Waits for an answer. It keeps going if the person talks meanwhile; the
+   *  answer is then added quietly instead of spoken over them. */
+  const pollAnswer = useCallback(async (runId: string, msgId: number, intro?: Promise<unknown>) => {
+    const s = session.current;
+    const t0 = Date.now();
+    let lastStage = "";
+    let failures = 0;
+    const deliver = async (text: string, spoken: string | undefined, card?: Card) => {
+      if (intro) await intro; // let "Okay, looking at …" finish first
+      setMsgs((cur) => cur.filter((m) => m.id !== msgId)); // the "working" line makes way for the answer
+      if (s !== session.current) {
+        push({ who: "euliv", text, card }); // they've moved on - show it, don't talk over them
+        return;
+      }
+      const ok = await say(text, spoken, card);
+      if (card?.type === "answer" && card.data.status === "done") return afterReply(ok);
+      if (ok !== null) setPhase("idle");
+    };
+    while (alive.current && Date.now() - t0 < 5 * 60000) {
+      await new Promise((r) => window.setTimeout(r, 1200));
+      if (!alive.current) return;
+      let a: EulivAnswer;
+      try {
+        a = await assistantApi.answer(runId);
+        failures = 0;
+      } catch (e) {
+        if (++failures >= 4) return deliver(errText(e), undefined);
+        continue;
+      }
+      if (a.status === "working") {
+        if (a.stage && a.stage !== lastStage) {
+          lastStage = a.stage;
+          patch(msgId, { working: a.stage });
+        }
+        continue;
+      }
+      return deliver(a.say || (a.status === "done" ? "Here's what I found." : "That didn't finish."), a.speak, { type: "answer", data: a });
+    }
+    if (alive.current) await deliver("This one is taking longer than usual. It keeps running - open it from your Library when it's ready.", undefined);
+  }, [patch, push, say, afterReply]);
+
+  const watching = useRef(false);
+  /** Waits (up to 15 min) for the source Euliv offered to be connected - in
+   *  the other tab - then carries on with the question that needed it. */
+  const watchConnect = useCallback(async (c: EulivConnect) => {
+    if (watching.current) return;
+    watching.current = true;
+    const t0 = Date.now();
+    let focusHit = false;
+    const onFocus = () => (focusHit = true);
+    window.addEventListener("focus", onFocus);
+    try {
+      while (alive.current && Date.now() - t0 < 15 * 60000) {
+        await new Promise((r) => window.setTimeout(r, focusHit ? 400 : 3000));
+        focusHit = false;
+        if (!alive.current || state.current.awaiting !== "connecting") return;
+        try {
+          const st = await assistantApi.connected(c.kind, workspaceId());
+          if (st.connected) {
+            setMsgs((cur) => cur.map((m) => (m.card?.type === "connect" ? { ...m, card: { ...m.card, done: true } } : m)));
+            interrupt();
+            return turnWith("", "connected");
+          }
+        } catch {
+          /* try again */
+        }
+      }
+    } finally {
+      watching.current = false;
+      window.removeEventListener("focus", onFocus);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** The connect button was tapped (it opens the tab itself): wait for the source, then carry on. */
+  const connectTapped = (c: EulivConnect) => {
+    interrupt();
+    setPhase("idle");
+    if (state.current.awaiting !== "connecting") {
+      state.current = { ...state.current, awaiting: "connecting", connect: c };
+      void watchConnect(c);
+    }
+  };
+
+  const react = useCallback(async (out: EulivTurn) => {
+    state.current = out.state || {};
+    if (out.state?.topic) setTopicLine(out.state.topic);
+    switch (out.action) {
+      case "run": {
+        if (out.sources?.length) setTopicLine(out.sources.map((x) => x.name).join(" · "));
+        // "Okay, looking at Google Ads" is said while the work starts - no waiting for it
+        const s = session.current;
+        const intro = say(out.say, out.speak);
+        const id = push({ who: "euliv", text: "", working: "Working out which data to use" });
+        void intro.then((r) => r !== null && s === session.current && setPhase("working"));
+        if (!settingsRef.current.speak || !speechOutputSupported()) setPhase("working");
+        return pollAnswer(out.run_id!, id, intro);
+      }
+      case "choose": {
+        const ok = await say(out.say, out.speak, { type: "choose", candidates: out.candidates || [] });
+        return afterReply(ok);
+      }
+      case "connect_offer": {
+        const ok = await say(out.say, out.speak, out.connect ? { type: "connect", connect: out.connect, opened: false } : undefined);
+        return afterReply(ok);
+      }
+      case "connect": {
+        const c = out.connect!;
+        // browsers only open a tab from a tap - after a spoken "yes" it would be
+        // blocked, so Euliv asks for one tap on the button and waits
+        void watchConnect(c);
+        const ok = await say(
+          `Tap “Connect ${c.label}” to open it in a new tab. Connect it there and come back - I'll carry on by myself.`,
+          undefined,
+          { type: "connect", connect: c, opened: false },
+        );
+        if (ok !== null) setPhase("idle");
+        return;
+      }
+      case "explain": {
+        const ok = await say(out.say, out.speak, out.explain ? { type: "explain", data: out.explain } : undefined);
+        return afterReply(ok);
+      }
+      case "end": {
+        if ((await say(out.say, out.speak)) === null) return;
+        if (alive.current) onClose();
+        return;
+      }
+      default: {
+        const ok = await say(out.say, out.speak);
+        return afterReply(ok);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [say, push, pollAnswer, afterReply, watchConnect, onClose]);
+
+  const turnWith = useCallback(async (text: string, event?: string) => {
+    setPhase("thinking");
+    let out: EulivTurn;
+    const s = session.current;
+    try {
+      out = await assistantApi.turn({ text, state: state.current, workspace_id: workspaceId(), event });
+    } catch (e) {
+      if (s !== session.current) return;
+      if ((await say(errText(e))) === null) return;
+      setPhase("idle");
+      return;
+    }
+    if (s !== session.current || !alive.current) return;
+    return react(out);
+  }, [say, afterReply, react]);
+
+  const handle = useCallback(async (text: string) => {
+    push({ who: "you", text });
+    return turnWith(text);
+  }, [push, turnWith]);
+
+  /** Stop whatever is happening (speech, listening, a wait) - a new step follows. */
+  const interrupt = useCallback(() => {
+    session.current++;
+    cancelSpeech();
+    control.current.finish?.();
+  }, []);
+
+  // start: the greeting, or straight to the question said with the name
+  useEffect(() => {
+    alive.current = true;
+    void loadVoices();
+    (async () => {
+      if (first) return handle(first);
+      let hello = "Hi, how can I help you?";
+      try {
+        hello = (await assistantApi.hello()).say;
+      } catch {
+        /* the greeting still works offline */
+      }
+      if (!alive.current) return;
+      const ok = await say(hello);
+      afterReply(ok);
+    })();
+    return () => {
+      alive.current = false;
+      session.current++;
+      cancelSpeech();
+      control.current.finish?.();
+      releaseMic("euliv");
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const tapOrb = useCallback(() => {
+    if (phase === "listening") {
+      control.current.finish?.(); // done talking - use what was heard
+      return;
+    }
+    if (phase === "thinking" || phase === "working") return;
+    interrupt();
+    unclear.current = 0;
+    micTrouble.current = false;
+    void listen();
+  }, [phase, interrupt, listen]);
+
+  // keys: Esc closes, Space talks / interrupts (outside the text box)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        if (showSettings) setShowSettings(false);
+        else onClose();
+        return;
+      }
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (e.key === " " && tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT" && tag !== "BUTTON") {
+        e.preventDefault();
+        tapOrb();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [tapOrb, onClose, showSettings]);
+
+  const sendTyped = (text: string) => {
+    const t = text.trim();
+    if (!t || phase === "thinking") return;
+    interrupt();
+    setTyped("");
+    void handle(t);
+  };
+
+  const pick = (text: string) => {
+    if (phase === "thinking") return;
+    interrupt();
+    void handle(text);
+  };
+
+  const orbScale = phase === "listening" ? 1 + Math.min(0.28, level * 0.9) : 1;
+  const status = phase === "listening" && caption ? "" : PHASE_TEXT[phase];
+
+  return (
+    <div className="fixed inset-0 z-[90] flex items-stretch sm:items-center justify-center bg-[rgb(var(--color-base)/0.78)] backdrop-blur-md" role="dialog" aria-modal="true" aria-label="Euliv" data-euliv="" data-phase={phase}>
+      <div className="gd-euliv-in relative w-full sm:w-[min(760px,calc(100vw-48px))] h-full sm:h-[min(800px,calc(100vh-48px))] sm:rounded-[28px] sm:border border-border bg-surface flex flex-col overflow-hidden shadow-[0_40px_120px_-40px_rgb(0_0_0/0.9)]">
+        <header className="flex items-center gap-3 px-4 sm:px-6 h-16 border-b border-border shrink-0">
+          <OrbGlyph size={28} />
+          <div className="flex-1 min-w-0 flex flex-col">
+            <b className="text-[15px] text-text leading-tight">Euliv</b>
+            <span className="text-[12px] text-muted truncate" data-euliv-topic="">{topicLine || "Your data, out loud"}</span>
+          </div>
+          <button type="button" onClick={() => { if (!showSettings) { interrupt(); setPhase("idle"); } setShowSettings((v) => !v); }} aria-label="Euliv settings" aria-expanded={showSettings} className="ui-focus w-10 h-10 rounded-full grid place-items-center text-secondary hover:text-text hover:bg-subtle/70" data-euliv-settings-open="">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0" /><circle cx="16" cy="6" r="2" /><circle cx="10" cy="12" r="2" /><circle cx="18" cy="18" r="2" /></svg>
+          </button>
+          <button type="button" onClick={onClose} aria-label="Close Euliv (Esc)" className="ui-focus w-10 h-10 rounded-full grid place-items-center text-secondary hover:text-text hover:bg-subtle/70" data-euliv-close="">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+          </button>
+        </header>
+
+        {showSettings ? (
+          <EulivSettingsPanel settings={settings} wakeProblem={wakeProblem} onDone={() => setShowSettings(false)} />
+        ) : (
+          <div ref={scroller} className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-8 py-6 flex flex-col gap-5" aria-live="polite" data-euliv-log="">
+            {msgs.map((m) =>
+              m.who === "you" ? (
+                <div key={m.id} className="self-end max-w-[85%] rounded-[18px] rounded-br-[6px] bg-subtle px-4 py-2.5 text-[15px] leading-snug text-text" data-euliv-you="">
+                  {m.text}
+                </div>
+              ) : (
+                <div key={m.id} className="flex flex-col gap-3 max-w-full" data-euliv-says="">
+                  {m.text && <p className="m-0 text-[18px] sm:text-[20px] leading-[1.45] font-medium text-text text-pretty">{m.text}</p>}
+                  {m.working && (
+                    <span className="inline-flex items-center gap-2.5 text-ui text-secondary" data-euliv-working="">
+                      <span className="w-4 h-4 rounded-full gd-orb-ring" aria-hidden="true" /> {m.working}…
+                    </span>
+                  )}
+                  {m.card && <CardView card={m.card} onPick={pick} onConnect={connectTapped} onClose={onClose} />}
+                </div>
+              ),
+            )}
+            {caption && (
+              <div className="self-end max-w-[85%] rounded-[18px] rounded-br-[6px] border border-dashed border-border-strong px-4 py-2.5 text-[15px] leading-snug text-secondary" data-euliv-caption="">
+                {caption}
+              </div>
+            )}
+          </div>
+        )}
+
+        <footer className="shrink-0 border-t border-border px-4 sm:px-8 pt-5 pb-[max(16px,env(safe-area-inset-bottom))] flex flex-col items-center gap-3">
+          <div className="relative w-[88px] h-[88px] grid place-items-center">
+            {phase === "listening" && <span className="absolute inset-[-18px] rounded-full gd-orb-glow transition-transform duration-100" style={{ transform: `scale(${0.9 + level * 1.4})` }} aria-hidden="true" />}
+            {(phase === "thinking" || phase === "working") && <span className="absolute inset-[-6px] rounded-full gd-orb-ring" aria-hidden="true" />}
+            <button
+              type="button"
+              onClick={tapOrb}
+              disabled={!canListen && phase === "idle"}
+              aria-label={phase === "listening" ? "Done talking" : phase === "speaking" ? "Interrupt and talk" : "Talk to Euliv"}
+              className={`ui-focus relative w-[76px] h-[76px] rounded-full gd-orb grid place-items-center text-[rgb(var(--color-base))] transition-transform duration-100 disabled:opacity-50 ${
+                phase === "speaking" ? "gd-orb-speaking" : phase === "thinking" || phase === "working" ? "gd-orb-thinking" : phase === "idle" ? "gd-orb-idle" : ""
+              }`}
+              style={phase === "listening" ? { transform: `scale(${orbScale})` } : undefined}
+              data-euliv-orb=""
+            >
+              {phase === "listening" ? <LevelBars level={level} live className="bg-[rgb(var(--color-base))]" /> : phase === "idle" ? <MicGlyph /> : null}
+            </button>
+          </div>
+          <span className="text-[13px] text-secondary min-h-[18px]" data-euliv-status="">{status}</span>
+          <form
+            className="w-full max-w-[560px] flex items-center gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              sendTyped(typed);
+            }}
+          >
+            <input
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              onFocus={() => phase === "listening" && interrupt()}
+              placeholder={canListen ? "Or type to Euliv…" : "Type to Euliv…"}
+              aria-label="Type to Euliv"
+              className="flex-1 min-w-0 h-11 rounded-full border border-border bg-base/60 px-4 text-[15px] text-text placeholder:text-faint outline-none focus:border-kind-answer-border"
+              data-euliv-input=""
+            />
+            <button type="submit" disabled={!typed.trim()} className="ui-focus h-11 px-4 rounded-full bg-primary text-on-primary text-ui font-medium disabled:opacity-35">
+              Send
+            </button>
+          </form>
+          <span className="text-[11px] text-faint text-center leading-snug max-w-[520px]">
+            Euliv answers from the sources you can open. GD360 never records audio - your browser turns speech into words.
+          </span>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function MicGlyph() {
+  return (
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+    </svg>
+  );
+}
+
+function CardView({ card, onPick, onConnect, onClose }: { card: Card; onPick: (t: string) => void; onConnect: (c: EulivConnect) => void; onClose: () => void }) {
+  if (card.type === "choose") {
+    return (
+      <div className="flex flex-wrap gap-2" data-euliv-choose="">
+        {card.candidates.map((c) => (
+          <button key={c.id} type="button" onClick={() => onPick(c.name)} className="ui-focus h-10 px-4 rounded-full border border-border-strong bg-base/40 text-ui text-text hover:border-kind-answer-border hover:bg-kind-answer-fill/60 inline-flex items-center gap-2">
+            {c.name}
+            {c.label && c.label !== c.name && <span className="text-[11px] text-muted">{c.label}</span>}
+          </button>
+        ))}
+        {card.candidates.length > 1 && (
+          <button type="button" onClick={() => onPick(card.candidates.length === 2 ? "both" : "all of them")} className="ui-focus h-10 px-4 rounded-full bg-kind-answer-fill text-kind-answer text-ui font-medium hover:brightness-110">
+            {card.candidates.length === 2 ? "Both" : "All of them"}
+          </button>
+        )}
+      </div>
+    );
+  }
+  if (card.type === "connect") {
+    const c = card.connect;
+    return (
+      <div className="rounded-[18px] border border-border bg-base/40 p-4 flex flex-wrap items-center gap-3" data-euliv-connect={c.kind || ""}>
+        <span className="flex-1 min-w-[180px] text-ui text-secondary leading-snug">
+          {card.done ? (
+            <><b className="text-kind-answer">{c.label} is connected.</b> Carrying on with your question…</>
+          ) : (
+            <>Connect <b className="text-text">{c.label}</b> - it opens in a new tab, and Euliv picks up here when it's done.</>
+          )}
+        </span>
+        {!card.done && (
+          <>
+            <a
+              href={c.url}
+              target="_blank"
+              rel="noopener"
+              onClick={() => onConnect(c)}
+              className="ui-focus h-10 px-4 rounded-full bg-primary text-on-primary text-ui font-medium inline-flex items-center"
+              data-euliv-connect-open=""
+            >
+              Connect {c.label}
+            </a>
+            <button type="button" onClick={() => onPick("use what's connected")} className="ui-focus h-10 px-3 rounded-full text-ui text-secondary hover:text-text hover:bg-subtle/60">
+              Use what's connected
+            </button>
+          </>
+        )}
+      </div>
+    );
+  }
+  if (card.type === "mic") {
+    return (
+      <div className="rounded-[18px] border border-warning/40 bg-warning/10 p-4 flex flex-col gap-2 text-ui text-secondary" data-euliv-mic={card.reason}>
+        <b className="text-warning">Microphone check</b>
+        <ul className="m-0 pl-4 flex flex-col gap-1 leading-snug list-disc">
+          {card.reason === "blocked" ? (
+            <>
+              <li>Click the lock (or mic) icon at the left of the address bar.</li>
+              <li>Set Microphone to <b className="text-text">Allow</b>, then tap the orb again.</li>
+            </>
+          ) : card.reason === "in-use" ? (
+            <>
+              <li>Close Zoom, Teams, Meet or any other app using the microphone.</li>
+              <li>Then tap the orb again.</li>
+            </>
+          ) : (
+            <>
+              <li>Is the microphone plugged in (or your headset connected)?</li>
+              <li>Is it muted - a switch on the headset, or in your computer's sound settings?</li>
+              <li>Is the right microphone chosen in your browser's site settings?</li>
+            </>
+          )}
+        </ul>
+        {card.label && card.reason !== "silent" && <span className="text-[12px] text-muted">Listening to: {card.label.replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/i, "")}</span>}
+        <span className="text-[12px] text-muted">Euliv settings › Test microphone shows whether it can hear you.</span>
+      </div>
+    );
+  }
+  if (card.type === "explain") {
+    const d = card.data;
+    return (
+      <div className="rounded-[18px] border border-border bg-base/40 p-4 flex flex-col gap-2.5" data-euliv-explain="">
+        {d.points.length > 0 && (
+          <ul className="m-0 pl-4 flex flex-col gap-1.5 text-ui text-secondary leading-snug list-disc">
+            {d.points.map((p, i) => <li key={i}>{p.text}</li>)}
+          </ul>
+        )}
+        {d.takeaway && <span className="text-ui text-text">{d.takeaway}</span>}
+        <div className="flex flex-wrap gap-2">
+          {d.followups.map((q) => (
+            <button key={q} type="button" onClick={() => onPick(q)} className="ui-focus h-9 px-3 rounded-full border border-border text-[13px] text-secondary hover:text-text hover:border-border-strong">{q}</button>
+          ))}
+          <Link to={d.link} onClick={onClose} className="ui-focus h-9 px-3 rounded-full text-[13px] text-kind-analysis hover:underline inline-flex items-center">Open the answer →</Link>
+        </div>
+      </div>
+    );
+  }
+  const a = card.data;
+  if (a.status !== "done" || !a.card) {
+    return (
+      <Link to={a.link} onClick={onClose} className="text-ui text-kind-analysis hover:underline" data-euliv-failed="">
+        Open it to see what happened →
+      </Link>
+    );
+  }
+  const c = a.card;
+  return (
+    <div className="flex flex-col gap-3" data-euliv-answer="">
+      {c.kpis.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {c.kpis.map((k, i) => (
+            <div key={i} className="rounded-[14px] border border-border bg-base/40 p-3 flex flex-col gap-0.5 min-w-0">
+              <span className="text-[10.5px] uppercase tracking-[0.08em] text-muted truncate">{k.label}</span>
+              <span className="text-[20px] font-semibold font-mono tabular-nums text-text truncate">{k.display}</span>
+              {k.delta && <span className={`text-[12px] ${k.dir === "up" ? "text-good" : k.dir === "down" ? "text-danger" : "text-secondary"}`}>{k.delta}{k.note ? ` ${k.note}` : ""}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+      {c.answer && c.answer !== c.headline && !(a.say || "").includes(c.answer.slice(0, 120)) && <p className="m-0 text-ui text-secondary leading-relaxed line-clamp-4">{c.answer}</p>}
+      <div className="flex flex-wrap items-center gap-2">
+        <Link to={a.link} onClick={onClose} className="ui-focus h-9 px-4 rounded-full border border-border-strong text-[13px] text-text hover:bg-subtle/60 inline-flex items-center" data-euliv-open-answer="">
+          See the full answer
+        </Link>
+        {c.next_questions.map((q) => (
+          <button key={q} type="button" onClick={() => onPick(q)} className="ui-focus h-9 px-3 rounded-full border border-border text-[13px] text-secondary hover:text-text hover:border-border-strong">{q}</button>
+        ))}
+      </div>
+      {c.sources_used.length > 0 && <span className="text-[12px] text-muted">From {c.sources_used.join(", ")}</span>}
+    </div>
+  );
+}
+
+// ---- settings -------------------------------------------------------------------------------------
+
+function Toggle({ on, onChange, label, help, disabled, id }: { on: boolean; onChange: (v: boolean) => void; label: string; help: string; disabled?: boolean; id: string }) {
+  return (
+    <label className={`flex items-start gap-3 ${disabled ? "opacity-50" : "cursor-pointer"}`} htmlFor={id}>
+      <input id={id} type="checkbox" checked={on} disabled={disabled} onChange={(e) => onChange(e.target.checked)} className="mt-1 w-[18px] h-[18px] accent-[rgb(var(--color-kind-answer))] shrink-0" />
+      <span className="flex flex-col gap-0.5">
+        <b className="text-[14px] text-text font-semibold">{label}</b>
+        <span className="text-[12.5px] text-secondary leading-snug">{help}</span>
+      </span>
+    </label>
+  );
+}
+
+function EulivSettingsPanel({ settings, wakeProblem, onDone }: { settings: EulivSettings; wakeProblem: string; onDone: () => void }) {
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [memory, setMemory] = useState<EulivMemory[] | null>(null);
+  const [test, setTest] = useState<{ level: number; peak: number; label: string; problem: string; running: boolean } | null>(null);
+  const monRef = useRef<MicMonitor | null>(null);
+  const touch = isTouchDevice();
+
+  useEffect(() => {
+    void loadVoices().then((v) => setVoices(v));
+    assistantApi.memory().then(setMemory).catch(() => setMemory([]));
+    return () => monRef.current?.stop();
+  }, []);
+
+  const lang = speechLang().toLowerCase().split("-")[0];
+  const shown = voices.filter((v) => v.lang.toLowerCase().startsWith(lang)).slice(0, 40);
+
+  const runTest = async () => {
+    monRef.current?.stop();
+    const m = new MicMonitor();
+    monRef.current = m;
+    setTest({ level: 0, peak: 0, label: "", problem: "", running: true });
+    const problem = await m.start();
+    if (problem && problem !== "muted") {
+      setTest({ level: 0, peak: 0, label: m.label, problem: MIC_HELP[problem], running: false });
+      m.stop();
+      return;
+    }
+    const t0 = Date.now();
+    const tick = window.setInterval(() => {
+      if (monRef.current !== m) return window.clearInterval(tick);
+      const l = m.level();
+      setTest({ level: l, peak: m.loudest, label: m.label, problem: problem === "muted" ? MIC_HELP.muted : "", running: true });
+      if (Date.now() - t0 > 6000) {
+        window.clearInterval(tick);
+        setTest({ level: 0, peak: m.loudest, label: m.label, problem: m.loudest < SOUND_LEVEL ? (problem === "muted" ? MIC_HELP.muted : "Silence - nothing reached the microphone. Check it's connected, not muted, and the right one is chosen.") : "", running: false });
+        m.stop();
+      }
+    }, 80);
+  };
+
+  return (
+    <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-8 py-6 flex flex-col gap-5" data-euliv-settings="">
+      <Toggle
+        id="euliv-wake"
+        on={settings.wake && !touch}
+        disabled={touch || !speechInputSupported()}
+        onChange={(v) => saveSettings({ wake: v })}
+        label="Listen for “Hi Euliv”"
+        help={
+          touch
+            ? "On phones and tablets Euliv listens only while you tap the orb."
+            : "Say “Hi Euliv” or just “Euliv” while a GD360 tab is open and in front. A small pill shows while it's listening; nothing is sent until you say the name."
+        }
+      />
+      {wakeProblem && <span className="text-[12.5px] text-warning -mt-3 pl-8">{wakeProblem}</span>}
+      <Toggle id="euliv-speak" on={settings.speak} disabled={!speechOutputSupported()} onChange={(v) => saveSettings({ speak: v })} label="Speak answers out loud" help="Off: Euliv writes its answers only." />
+      <Toggle id="euliv-hands" on={settings.handsFree} onChange={(v) => saveSettings({ handsFree: v })} label="Keep the conversation going" help="After each answer Euliv listens for your next question - no tap needed." />
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label className="flex flex-col gap-1.5 text-[12.5px] text-secondary">
+          Voice
+          <select value={settings.voice || ""} onChange={(e) => saveSettings({ voice: e.target.value || null })} className="h-10 rounded-[10px] border border-border-strong bg-base px-2.5 text-[14px] text-text">
+            <option value="">Automatic (most natural)</option>
+            {shown.map((v) => <option key={v.voiceURI} value={v.voiceURI}>{v.name}</option>)}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1.5 text-[12.5px] text-secondary">
+          Speed
+          <select value={String(settings.rate)} onChange={(e) => saveSettings({ rate: Number(e.target.value) })} className="h-10 rounded-[10px] border border-border-strong bg-base px-2.5 text-[14px] text-text">
+            {[0.9, 1, 1.1, 1.25].map((r) => <option key={r} value={r}>{r === 1 ? "Normal" : `${r}×`}</option>)}
+          </select>
+        </label>
+      </div>
+      <button type="button" onClick={() => speak("Hi, I'm Euliv. This is how I sound.")} className="self-start ui-focus h-9 px-3 rounded-full border border-border text-[13px] text-secondary hover:text-text">
+        Hear this voice
+      </button>
+
+      <div className="flex flex-col gap-2 rounded-[16px] border border-border p-4" data-euliv-mictest="">
+        <div className="flex items-center gap-3">
+          <b className="text-[14px] text-text flex-1">Test microphone</b>
+          <button type="button" onClick={runTest} disabled={test?.running} className="ui-focus h-9 px-3 rounded-full bg-subtle text-[13px] text-text disabled:opacity-50">
+            {test?.running ? "Say something…" : test ? "Test again" : "Start test"}
+          </button>
+        </div>
+        {test && (
+          <>
+            <div className="h-2 rounded-full bg-subtle overflow-hidden" aria-hidden="true">
+              <div className="h-full bg-kind-answer transition-[width] duration-75" style={{ width: `${Math.round(Math.min(1, (test.running ? test.level : test.peak) * 2.2) * 100)}%` }} />
+            </div>
+            {test.label && <span className="text-[12px] text-muted">Listening to: {test.label}</span>}
+            {test.problem ? (
+              <span className="text-[12.5px] text-warning">{test.problem}</span>
+            ) : !test.running && test.peak >= SOUND_LEVEL ? (
+              <span className="text-[12.5px] text-good">Your microphone works - Euliv can hear you.</span>
+            ) : null}
+          </>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <b className="text-[14px] text-text">What your words mean</b>
+        <span className="text-[12.5px] text-secondary">Euliv remembers the sources you pick for a topic, so it doesn't ask again.</span>
+        {memory === null ? null : memory.length === 0 ? (
+          <span className="text-[12.5px] text-muted">Nothing yet.</span>
+        ) : (
+          memory.map((m) => (
+            <div key={m.topic} className="flex items-center gap-3 rounded-[12px] border border-border px-3 py-2.5 text-[13px]">
+              <span className="flex-1 min-w-0 truncate text-text">“{m.label}” → {m.sources.map((s) => s.name).join(", ")}</span>
+              <button type="button" onClick={() => assistantApi.forget(m.topic).then(() => setMemory((cur) => (cur || []).filter((x) => x.topic !== m.topic)))} className="ui-focus h-8 px-2.5 rounded-[8px] border border-border text-[12px] text-secondary hover:text-text">
+                Forget
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="rounded-[14px] border border-kind-answer-border bg-kind-answer-fill/60 p-3.5 text-[12.5px] leading-snug text-secondary">
+        <b className="text-text">Privacy.</b> GD360 never records or stores audio. Your browser's speech service turns speech into words; only the words reach GD360, and Euliv only sees the sources you can already open.
+      </div>
+      <button type="button" onClick={onDone} className="self-start ui-focus h-10 px-4 rounded-full bg-primary text-on-primary text-ui font-medium">Done</button>
+    </div>
+  );
+}

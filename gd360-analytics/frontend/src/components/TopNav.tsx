@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
 import ThemeToggle from "./ThemeToggle";
 import { NotificationBell } from "./NotificationCenter";
+import { TalkButton } from "./Euliv";
 import {
   Avatar, Button, ChevronDownIcon, CreditCardIcon, LogoutIcon, Popover, SettingsIcon, ShieldIcon,
   TopBar, TopBarSearch, Breadcrumb as KitBreadcrumb, type BreadcrumbItem,
@@ -187,6 +188,7 @@ export default function TopNav({
               + Connect data
             </Button>
           )}
+          <TalkButton variant="icon" />
           <NotificationBell />
           <ThemeToggle />
         </>
