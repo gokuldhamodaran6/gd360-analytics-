@@ -428,10 +428,11 @@ export type EulivSettings = {
   rate: number;
   lang: string | null;
   handsFree: boolean; // listen again after each reply
+  keep: boolean; // keep a written record of each talk in Library (round 24)
 };
 
 const KEY = "gd360.euliv";
-const DEFAULTS: EulivSettings = { wake: false, speak: true, voice: null, rate: 1, lang: null, handsFree: true };
+const DEFAULTS: EulivSettings = { wake: false, speak: true, voice: null, rate: 1, lang: null, handsFree: true, keep: true };
 const settingsListeners = new Set<(s: EulivSettings) => void>();
 let settingsCache: EulivSettings | null = null;
 
