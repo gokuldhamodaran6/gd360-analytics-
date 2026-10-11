@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
 import ThemeToggle from "./ThemeToggle";
+import { NotificationBell } from "./NotificationCenter";
 import {
   Avatar, Button, ChevronDownIcon, CreditCardIcon, LogoutIcon, Popover, SettingsIcon, ShieldIcon,
   TopBar, TopBarSearch, Breadcrumb as KitBreadcrumb, type BreadcrumbItem,
@@ -186,6 +187,7 @@ export default function TopNav({
               + Connect data
             </Button>
           )}
+          <NotificationBell />
           <ThemeToggle />
         </>
       }
