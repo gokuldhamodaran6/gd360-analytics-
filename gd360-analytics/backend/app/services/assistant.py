@@ -190,6 +190,52 @@ _OWN_PHRASES = [
 ]
 
 
+_OWN_PHRASES += ["would you like to change the question", "so i ll look at", "i ll stay with", "anything to add"]
+_STOP = {"the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are", "was", "it", "i", "you", "your", "my", "me", "that",
+         "this", "can", "could", "would", "should", "do", "did", "be", "with", "from", "at", "by", "so", "s", "t", "ll", "ve", "what",
+         "which", "how", "shall", "will", "just", "here", "have", "has", "if", "as", "all", "there", "m", "d", "re"}
+_ANSWER = {"yes", "yeah", "yep", "yup", "sure", "okay", "ok", "correct", "perfect", "stop", "wait", "no", "nope", "cancel", "first",
+           "second", "third", "fourth", "number", "both", "none", "instead", "great", "exactly", "right", "actually"}
+_ASK_START = re.compile(r"^(?:no|yes|yeah|ok|okay|actually|wait|and|also|now|so)?\s*(?:what|whats|how|why|which|who|when|where|show|give|"
+                        r"tell|compare|list|can|could|break|split|pull|find)\b")
+
+
+def _wds(s: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", (s or "").lower())).strip()
+
+
+def _vocab(s: str) -> set[str]:
+    ws = _wds(s).split()
+    return set(ws) | {ws[i] + ws[i + 1] for i in range(len(ws) - 1)}
+
+
+def heard_euliv(heard: str, said: str | None) -> bool:
+    """Round 28 (same rules as thread/voice.ts heardEuliv, after Euliv finished speaking): is `heard` just
+    Euliv's own last words (`said`) coming back through the mic? The person's quoted question is kept apart
+    from Euliv's own framing words, so a person refining their question is never mistaken for echo."""
+    h = _wds(heard)
+    if not h or not said:
+        return False
+    unq = re.sub(r"[“\"][^“”\"]*[”\"]", " ", said)
+    q = " ".join(re.findall(r"[“\"][^“”\"]*[”\"]", said))
+    full, frame = f" {_wds(said)} ", f" {_wds(unq)} "
+    hw = h.split()
+    if len(hw) >= 3 and f" {h} " in full:
+        return True
+    mine_all, mine_frame, quote = _vocab(said), _vocab(unq), _vocab(q)
+    # 4 of Euliv's own words in a row - not the person's own question words it repeated back
+    for i in range(len(hw) - 3):
+        gram = hw[i:i + 4]
+        if f" {' '.join(gram)} " in frame and any(w not in quote and w not in _STOP for w in gram):
+            return True
+    cw = [w for w in hw if w not in _STOP]
+    if not cw or _ASK_START.match(h) or any(w in _ANSWER and w not in mine_frame for w in cw):
+        return False
+    novel = sum(1 for w in cw if w not in mine_all and w not in quote)
+    framing = sum(1 for w in cw if w in mine_frame) / len(cw)
+    return len(cw) >= 4 and novel <= (1 if len(cw) >= 8 else 0) and framing >= 0.5
+
+
 def is_own_words(text: str) -> bool:
     """Euliv hearing itself (speakers, no headset): its own stock phrases in what came back."""
     h = " " + re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower())).strip() + " "
