@@ -153,7 +153,14 @@ def plan_run(db: Session, run_id: str) -> None:
         # a re-plan: the plan this run replaces is kept on the run itself
         previous = (run.plan or {}).get("replaced_plan") or run.plan
     try:
-        plan = planner.make_plan(run.question, catalog, _history(db, run), note=run.note, previous=previous, guided=guided)
+        # 2026-10-11 (round 24): what the person agreed before planning (the
+        # period in dates, the read-back) travels with the question
+        from ..question_check import planner_context
+        brief = (run.plan or {}).get("brief") if isinstance(run.plan, dict) else None
+        plan = planner.make_plan(run.question + planner_context(brief), catalog, _history(db, run), note=run.note,
+                                 previous=previous, guided=guided)
+        if brief:
+            plan["brief"] = brief
     except planner.PlanningError as e:
         run.status = "failed"
         run.error_message = str(e)
