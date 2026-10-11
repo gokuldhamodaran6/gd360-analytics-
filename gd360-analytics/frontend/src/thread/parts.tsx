@@ -2,7 +2,8 @@
 // Quick answer | Guided switch, the follow-up box, the GD360 mark and the
 // small icons they use. One look, one behaviour, everywhere a question is
 // asked (GD360 Ask Journey canvas: A1, B1-B3).
-import { ReactNode, RefObject, useEffect, useRef } from "react";
+import { ReactNode, RefObject, useCallback, useEffect, useRef } from "react";
+import { ListeningStrip, MicButton, useDictation } from "./Dictation";
 
 export type AskMode = "quick" | "guided";
 
@@ -184,7 +185,15 @@ export function ThreadComposer({
   const own = useRef<HTMLTextAreaElement>(null);
   const ref = inputRef || own;
   useAutoGrow(ref, value, 180);
-  const can = value.trim().length >= 2 && !busy && !locked;
+  // 2026-10-11: speak a follow-up instead of typing it (thread/Dictation.tsx)
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const voice = useDictation({
+    getText: useCallback(() => valueRef.current, []),
+    setText: onChange,
+    onDone: useCallback(() => window.setTimeout(() => ref.current?.focus(), 0), [ref]),
+  });
+  const can = value.trim().length >= 2 && !busy && !locked && !voice.listening;
   const ring = mode === "guided" ? "focus-within:border-kind-analysis-border" : "focus-within:border-kind-answer-border";
   return (
     <form
@@ -196,28 +205,41 @@ export function ThreadComposer({
       data-thread-composer=""
     >
       {error && <div role="alert" className="text-ui text-danger mb-2 px-1">{error}</div>}
+      {!error && voice.error && <div role="alert" className="text-ui text-warning mb-2 px-1" data-voice-error="">{voice.error}</div>}
       <div className={`rounded-[18px] border border-border-strong bg-surface transition-colors ${ring} shadow-[0_16px_40px_-28px_rgb(0_0_0/0.9)]`}>
-        {context && <div className="px-2.5 pt-2.5">{context}</div>}
+        {context && !voice.listening && <div className="px-2.5 pt-2.5">{context}</div>}
         <label className="sr-only" htmlFor="thread-follow-up">Ask a follow-up</label>
         <textarea
           id="thread-follow-up"
           ref={ref}
           rows={1}
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            if (voice.listening) voice.stop();
+            onChange(e.target.value);
+          }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               if (can) onSubmit();
             }
           }}
-          placeholder={locked ? "GD360 is working on the last question…" : placeholder}
+          placeholder={locked ? "GD360 is working on the last question…" : voice.listening ? "Listening…" : placeholder}
           disabled={busy}
           className="block w-full min-h-[48px] resize-none bg-transparent border-0 outline-none px-3.5 pt-3 pb-1 text-[15px] leading-[22px] text-text placeholder:text-faint"
         />
         <div className="flex items-center gap-2 px-2.5 pb-2.5 pt-1">
-          <div className="min-w-0 flex-1 flex items-center">{picker}</div>
-          {mode && onMode && <ModeSwitch mode={mode} onChange={onMode} size="sm" disabled={busy} />}
+          {voice.listening ? (
+            <ListeningStrip size="sm" heard={voice.heard} onStop={voice.stop} />
+          ) : (
+            <>
+              <div className="min-w-0 flex-1 flex items-center">{picker}</div>
+              {mode && onMode && <ModeSwitch mode={mode} onChange={onMode} size="sm" disabled={busy} />}
+            </>
+          )}
+          {voice.supported && (
+            <MicButton size="sm" listening={voice.listening} disabled={busy || locked} onClick={() => { voice.clearError(); voice.toggle(); }} />
+          )}
           <button
             type="submit"
             aria-label="Send"
