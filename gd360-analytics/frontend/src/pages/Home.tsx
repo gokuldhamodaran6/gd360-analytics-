@@ -254,12 +254,14 @@ export default function Home() {
   };
 
   /** Reads the question back first; runs at once when nothing needs the person. */
+  // round 25b: what the person chose to keep as written ("Keep 2027 - it's a forecast") - never asked twice
+  const accepted = useRef<string[]>([]);
   const runCheck = async (q: string) => {
     setBusy(true);
     setError("");
     let c: QuestionCheck | null = null;
     try {
-      c = await projectsApi.check({ question: q, ...scopeParams(), workspace_id: activeWorkspaceId || undefined });
+      c = await projectsApi.check({ question: q, ...scopeParams(), workspace_id: activeWorkspaceId || undefined, accepted: accepted.current.length ? accepted.current : undefined });
     } catch {
       c = null; // the check never blocks a question
     }
@@ -281,6 +283,7 @@ export default function Home() {
       return;
     }
     if (mode === "guided" && typed.length < 2) return start(q);
+    accepted.current = [];
     await runCheck(q);
   };
 
@@ -466,7 +469,8 @@ export default function Home() {
                   setCheck(null);
                   window.setTimeout(() => boxRef.current?.focus(), 0);
                 }}
-                onFixDate={(fixed) => {
+                onFixDate={(fixed, kept) => {
+                  if (kept) accepted.current = [...accepted.current, kept];
                   setQuestion(fixed);
                   void runCheck(fixed);
                 }}
