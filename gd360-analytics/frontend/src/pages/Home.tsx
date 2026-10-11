@@ -9,6 +9,10 @@
 //   Guided Analysis  -> work step by step on one or more sources, seeing and
 //                       changing every step (/workspace/:id?extra=&draft=)
 // ?intent=guided preselects Guided Analysis (?intent=analyze still works).
+// 2026-10-11 (Ask Journey, canvas A1/A2): ONE box for both. The sources are
+// chosen the same way for Quick answer and Guided (spaces/ScopePicker - a
+// Space, or ticked sources), and the mode sits right beside Send. "Needs
+// you" shows a Guided step waiting for this person's check.
 // ?source=<id>[&connected=1] starts both on one source - where "Try it now"
 // lands right after connecting data.
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -21,8 +25,9 @@ import { projectsApi, ProjectSource } from "../api/projects";
 import { timeAgo, autoRunPreference } from "../project/format";
 import { useAuth } from "../api/AuthContext";
 import { Space, spacesApi } from "../api/spaces";
-import ScopePicker, { Scope, loadScope, saveScope, scopeSummary } from "../spaces/ScopePicker";
-import { conversationHref, conversationKind, dashboardHref, Kind, KindIcon, KindPill, KindTile } from "../lib/kinds";
+import ScopePicker, { Scope, loadScope, saveScope, scopeSummary, startersFor } from "../spaces/ScopePicker";
+import { conversationHref, conversationKind, dashboardHref, KindPill, KindTile } from "../lib/kinds";
+import { ArrowUpIcon, AskMode, BoltIcon, MODE_HINT, ModeSwitch, Spinner, StepsIcon, useAutoGrow } from "../thread/parts";
 
 // 2026-10-10: Home greets in the person's own time of day (their browser's
 // time zone) - plain and professional: "Good morning, Gokul." with a short,
@@ -80,39 +85,12 @@ function useNow(): Date {
 }
 
 type Tab = "recent" | "pinned" | "shared";
-type Intent = "instant" | "guided";
-
-const INTENTS: { id: Intent; kind: Kind; title: string; sub: string }[] = [
-  { id: "instant", kind: "answer", title: "Instant Answers", sub: "Answered in seconds, with the evidence" },
-  { id: "guided", kind: "analysis", title: "Guided Analysis", sub: "Step by step — you check every step" },
-];
 
 const GUIDED_DEFAULT = "Give me an overview of this data: the headline numbers, how they change over time, and the biggest segments.";
-
-// Sources people analyze first: warehouses, databases and files before apps.
-const CORE_KINDS = new Set(["bigquery", "snowflake", "postgres", "mysql", "redshift", "sqlserver", "databricks", "supabase", "csv", "excel", "file"]);
 
 function errorText(e: any, fallback: string): string {
   const d = e?.response?.data?.detail;
   return typeof d === "string" && d.trim() ? d : fallback;
-}
-
-const lastSourceKey = (ws: string) => `gd360_home_source:${ws}`;
-
-function loadLastSource(ws: string): string | null {
-  try {
-    return localStorage.getItem(lastSourceKey(ws));
-  } catch {
-    return null;
-  }
-}
-
-function saveLastSource(ws: string, id: string) {
-  try {
-    localStorage.setItem(lastSourceKey(ws), id);
-  } catch {
-    /* per-browser convenience only */
-  }
 }
 
 type RecentItem =
@@ -129,10 +107,8 @@ export default function Home() {
   const justConnected = searchParams.get("connected") === "1";
   const intentParam = searchParams.get("intent");
   const qParam = searchParams.get("q");
-  const intent: Intent = intentParam === "guided" || intentParam === "analyze" ? "guided" : "instant";
+  const mode: AskMode = intentParam === "guided" || intentParam === "analyze" ? "guided" : "quick";
   const [question, setQuestion] = useState(() => (qParam || "").slice(0, 2000));
-  const [instruction, setInstruction] = useState("");
-  const [guidedIds, setGuidedIds] = useState<string[]>([]);
   const [sources, setSources] = useState<ProjectSource[] | null>(null);
   const [spaces, setSpaces] = useState<Space[] | null>(null);
   const [scope, setScopeState] = useState<Scope>({ kind: "all" });
@@ -142,13 +118,15 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const boxRef = useRef<HTMLTextAreaElement>(null);
+  useAutoGrow(boxRef, question, 260);
 
-  const setIntent = (next: Intent) => {
+  const setMode = (next: AskMode) => {
     const p = new URLSearchParams(searchParams);
-    if (next === "instant") p.delete("intent");
-    else p.set("intent", next);
+    if (next === "quick") p.delete("intent");
+    else p.set("intent", "guided");
     setSearchParams(p, { replace: true });
     setError("");
+    window.setTimeout(() => boxRef.current?.focus(), 0);
   };
 
   // 2026-10-09: the first question picked on the public "Get started" page
@@ -202,30 +180,6 @@ export default function Home() {
     }
   }, [sources, spaces, scope]);
 
-  const orderedSources = useMemo(() => {
-    const list = [...(sources || [])];
-    list.sort((a, b) => Number(CORE_KINDS.has(b.kind)) - Number(CORE_KINDS.has(a.kind)));
-    return list;
-  }, [sources]);
-  // Guided Analysis starts on: the just-connected source, else the last one
-  // used here, else the first warehouse, database or file.
-  useEffect(() => {
-    if (!activeWorkspaceId || !orderedSources.length) return;
-    const known = new Set(orderedSources.map((s) => s.id));
-    setGuidedIds((cur) => {
-      if (sourceParam && known.has(sourceParam)) return [sourceParam];
-      const kept = cur.filter((id) => known.has(id));
-      if (kept.length) return kept;
-      const last = loadLastSource(activeWorkspaceId);
-      if (last && known.has(last)) return [last];
-      return [orderedSources[0].id];
-    });
-  }, [activeWorkspaceId, orderedSources, sourceParam]);
-  const setGuided = (ids: string[]) => {
-    setGuidedIds(ids);
-    if (activeWorkspaceId && ids[0]) saveLastSource(activeWorkspaceId, ids[0]);
-  };
-
   const chosenSpace = scope.kind === "space" ? (spaces || []).find((s) => s.id === scope.spaceId) || null : null;
   const summary = scopeSummary(scope, sources, spaces);
   const connectedSource = sourceParam ? (sources || []).find((s) => s.id === sourceParam) || null : null;
@@ -248,8 +202,12 @@ export default function Home() {
     return items.slice(0, 6);
   }, [projects, dashboards, tab]);
 
-  const ask = async (text?: string) => {
-    const q = (text ?? question).trim();
+  // One box, two ways: a Quick answer (/p/:id) or a Guided Analysis
+  // (/g/:id) - both asked across the SAME chosen scope. A Space sends
+  // space_id, picked sources send source_ids - never both.
+  const submit = async () => {
+    const typed = question.trim();
+    const q = mode === "guided" && typed.length < 2 ? GUIDED_DEFAULT : typed;
     if (q.length < 2 || busy) return;
     if (!summary.count) {
       setError(chosenSpace ? `${chosenSpace.name} has no sources you can use yet.` : "Pick at least one source to ask about.");
@@ -258,51 +216,35 @@ export default function Home() {
     setBusy(true);
     setError("");
     try {
-      // A Space sends space_id, picked sources send source_ids - never both.
       const all = (sources || []).length;
       const out = await projectsApi.create({
         question: q,
         space_id: scope.kind === "space" && chosenSpace ? chosenSpace.id : undefined,
         source_ids: scope.kind === "sources" && scope.ids.length < all ? scope.ids : undefined,
         workspace_id: activeWorkspaceId || undefined,
-        auto_run: autoRunPreference(),
+        auto_run: mode === "quick" ? autoRunPreference() : undefined,
+        mode: mode === "guided" ? "guided" : undefined,
       });
-      navigate(`/p/${out.project_id}?run=${out.run_id}`);
+      navigate(mode === "guided" ? `/g/${out.project_id}` : `/p/${out.project_id}?run=${out.run_id}`);
     } catch (e: any) {
-      setError(errorText(e, "Couldn't start that question. Please try again."));
-      setBusy(false);
-    }
-  };
-
-  // A Guided Analysis is the Instant Answers engine run one step at a time,
-  // on every source picked here (pages/GuidedAnalysis.tsx).
-  const startGuided = async () => {
-    if (!guidedIds.length) {
-      setError("Pick at least one source to analyze.");
-      return;
-    }
-    if (busy) return;
-    const q = instruction.trim().length >= 2 ? instruction.trim() : GUIDED_DEFAULT;
-    setBusy(true);
-    setError("");
-    try {
-      const out = await projectsApi.create({
-        question: q, source_ids: guidedIds, workspace_id: activeWorkspaceId || undefined, mode: "guided",
-      });
-      navigate(`/g/${out.project_id}`);
-    } catch (e: any) {
-      setError(errorText(e, "Couldn't start the analysis. Please try again."));
+      setError(errorText(e, mode === "guided" ? "Couldn't start the analysis. Please try again." : "Couldn't start that question. Please try again."));
       setBusy(false);
     }
   };
 
   const firstName = (user?.full_name || "").split(" ")[0];
   const noSources = sources !== null && sources.length === 0;
-  const submit = () => (intent === "instant" ? ask() : startGuided());
+  const sourceCount = summary.count;
+  const starters = useMemo(() => startersFor(chosenSpace), [chosenSpace]);
+  const needsYou = useMemo(() => (projects || []).filter((c) => c.needs_you && c.kind === "guided").slice(0, 2), [projects]);
+  const canSend = !busy && (mode === "guided" || question.trim().length >= 2);
   const now = useNow();
   const hello = useMemo(() => greeting(firstName, now), [firstName, now.getHours(), now.toDateString()]); // eslint-disable-line react-hooks/exhaustive-deps
   const place = useMemo(() => timeZoneCity(), []);
   const night = now.getHours() < 6 || now.getHours() >= 19;
+  const subline = sources === null || noSources
+    ? hello.line
+    : `Ask anything about ${chosenSpace ? chosenSpace.name : "your business"}. GD360 checks ${sourceCount} connected source${sourceCount === 1 ? "" : "s"} and shows its working.`;
 
   return (
     <div className="dash-shell flex min-h-screen">
@@ -315,7 +257,7 @@ export default function Home() {
       <div className="flex-1 min-w-0">
         <TopNav hideLogo />
         <main className="flex flex-col items-center px-4 sm:px-8 pt-14 sm:pt-[12vh] pb-16 gap-12">
-          <div className="w-full max-w-[760px] flex flex-col items-center gap-7 text-center">
+          <div className="w-full max-w-[880px] flex flex-col items-center gap-7 text-center">
             {justConnected && connectedSource && (
               <div role="status" data-connected-banner="" className="w-full rounded-card border border-kind-answer-border bg-kind-answer-fill px-4 py-3 flex items-center gap-3 text-left">
                 <span className="w-7 h-7 rounded-full bg-kind-answer text-[rgb(var(--color-base))] grid place-items-center shrink-0" aria-hidden="true">
@@ -337,7 +279,7 @@ export default function Home() {
                 {place ? ` · ${place}` : ""}
               </span>
               <h1 className="m-0 text-[34px] sm:text-[46px] leading-[1.08] font-semibold tracking-[-0.03em] text-text text-balance">{hello.title}</h1>
-              <p className="m-0 text-[16px] sm:text-[17px] text-muted text-balance">{hello.line}</p>
+              <p className="m-0 text-[16px] sm:text-[18px] leading-relaxed text-secondary text-balance max-w-[620px]" data-home-subline="">{subline}</p>
             </div>
 
             {noSources ? (
@@ -351,92 +293,122 @@ export default function Home() {
                 <Link to="/data" className="btn-primary text-sm shrink-0">Connect data</Link>
               </div>
             ) : (
-              <div
-                className={`w-full text-left rounded-[22px] border bg-surface shadow-pop p-3 sm:p-3.5 flex flex-col gap-2 transition-colors ${
-                  intent === "instant" ? "border-border focus-within:border-kind-answer-border" : "border-border focus-within:border-kind-analysis-border"
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  submit();
+                }}
+                className={`w-full text-left rounded-[26px] border bg-surface p-4 sm:p-5 sm:pl-6 flex flex-col gap-3 transition-[border-color,box-shadow] duration-200 shadow-[0_30px_80px_-40px_rgb(0_0_0/0.85)] ${
+                  mode === "quick"
+                    ? "border-border-strong focus-within:border-kind-answer-border focus-within:shadow-[0_0_0_4px_rgb(var(--color-kind-answer)/0.07),0_30px_80px_-40px_rgb(0_0_0/0.85)]"
+                    : "border-kind-analysis-border/70 focus-within:border-kind-analysis-border focus-within:shadow-[0_0_0_4px_rgb(var(--color-kind-analysis)/0.08),0_30px_80px_-40px_rgb(0_0_0/0.85)]"
                 }`}
-                data-home-composer={intent}
+                data-home-composer={mode === "quick" ? "instant" : "guided"}
               >
-                <div className="flex items-center justify-between gap-3 flex-wrap px-1 pt-0.5">
-                  <div role="tablist" aria-label="How do you want to work" className="inline-flex p-[3px] rounded-full border border-border bg-base" data-home-intents="">
-                    {INTENTS.map((it) => {
-                      const on = it.id === intent;
-                      return (
-                        <button
-                          key={it.id}
-                          type="button"
-                          role="tab"
-                          aria-selected={on}
-                          data-intent={it.id}
-                          onClick={() => setIntent(it.id)}
-                          className={`ui-focus inline-flex items-center gap-1.5 h-8 px-3.5 rounded-full text-ui font-medium transition-colors ${
-                            on
-                              ? it.kind === "answer" ? "bg-kind-answer-fill text-kind-answer" : "bg-kind-analysis-fill text-kind-analysis"
-                              : "text-muted hover:text-text"
-                          }`}
-                        >
-                          <KindIcon kind={it.kind} size={14} />
-                          {it.title}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <span className="hidden sm:inline text-caption text-muted pr-1">{INTENTS.find((i) => i.id === intent)?.sub}</span>
-                </div>
                 <label htmlFor="home-box" className="sr-only">
-                  {intent === "instant" ? "Your question" : "What do you want to find out"}
+                  {mode === "quick" ? "Your question" : "What do you want to work out"}
                 </label>
                 <textarea
                   id="home-box"
                   ref={boxRef}
-                  rows={2}
-                  value={intent === "instant" ? question : instruction}
-                  onChange={(e) => (intent === "instant" ? setQuestion : setInstruction)(e.target.value)}
+                  rows={3}
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       submit();
                     }
                   }}
-                  placeholder={intent === "instant" ? "Ask anything about your business…" : "What do you want to work out, step by step?"}
-                  className="w-full min-h-[64px] resize-none bg-transparent border-0 outline-none px-2 pt-2 text-[18px] leading-relaxed text-text placeholder:text-faint"
+                  placeholder={
+                    mode === "quick"
+                      ? `Ask anything about ${chosenSpace ? chosenSpace.name : "your business"}…`
+                      : "What do you want to work out, step by step?"
+                  }
+                  className="w-full min-h-[84px] resize-none bg-transparent border-0 outline-none pt-1 text-[19px] sm:text-[20px] leading-[1.5] text-text placeholder:text-faint"
                   disabled={busy}
                 />
-                <div className="flex items-center justify-between gap-3 flex-wrap px-1 pb-0.5">
-                  {intent === "instant" ? (
-                    <ScopePicker scope={scope} onChange={setScope} sources={sources} spaces={spaces} />
-                  ) : (
-                    <SourceMultiSelect sources={orderedSources} value={guidedIds} onChange={setGuided} />
-                  )}
-                  {intent === "instant" ? (
-                    <button
-                      type="button"
-                      aria-label="Ask"
-                      onClick={() => ask()}
-                      disabled={busy || question.trim().length < 2}
-                      className="ui-focus w-11 h-11 rounded-[14px] bg-primary text-on-primary grid place-items-center disabled:opacity-40"
-                    >
-                      {busy ? (
-                        <span className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
-                      ) : (
-                        <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 13V3M4 7l4-4 4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                      )}
-                    </button>
-                  ) : (
-                    <button type="button" onClick={startGuided} disabled={!guidedIds.length || busy} className="btn-primary text-sm inline-flex items-center gap-2 h-11" data-open-studio="">
-                      {busy ? (
-                        <span className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" aria-hidden="true" />
-                      ) : (
-                        <KindIcon kind="analysis" size={15} />
-                      )}
-                      {busy ? "Planning…" : "Start"}
-                    </button>
-                  )}
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  <Link
+                    to="/data"
+                    aria-label="Add data: connect a source or upload a file"
+                    title="Connect a source or upload a file"
+                    className="ui-focus w-11 h-11 rounded-full border border-border-strong grid place-items-center text-secondary hover:text-text hover:bg-subtle/60 shrink-0"
+                    data-home-add=""
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                  </Link>
+                  <ScopePicker scope={scope} onChange={setScope} sources={sources} spaces={spaces} variant="composer" disabled={busy} />
+                  <span className="flex-1" />
+                  <ModeSwitch mode={mode} onChange={setMode} disabled={busy} />
+                  <button
+                    type="submit"
+                    aria-label={mode === "quick" ? "Ask for a quick answer" : "Start a guided analysis"}
+                    disabled={!canSend}
+                    className="ui-focus w-12 h-12 rounded-full bg-primary text-on-primary grid place-items-center shrink-0 transition-[opacity,transform] hover:scale-[1.04] active:scale-[0.97] disabled:opacity-35 disabled:hover:scale-100"
+                    data-home-send=""
+                  >
+                    {busy ? <Spinner /> : <ArrowUpIcon size={19} />}
+                  </button>
                 </div>
+              </form>
+            )}
+            {error && <div role="alert" className="text-ui text-danger -mt-2">{error}</div>}
+            {!noSources && (
+              <div className="flex flex-col items-center gap-2 -mt-1 text-[14px]" data-home-hints="">
+                <span className={`inline-flex items-center gap-2 transition-colors ${mode === "quick" ? "text-secondary" : "text-faint"}`}>
+                  <BoltIcon size={14} className="text-kind-answer" /> {MODE_HINT.quick}
+                </span>
+                <span className={`inline-flex items-center gap-2 transition-colors ${mode === "guided" ? "text-secondary" : "text-faint"}`}>
+                  <StepsIcon size={14} className="text-kind-analysis" /> {MODE_HINT.guided} — then keep asking
+                </span>
               </div>
             )}
-            {error && <div role="alert" className="text-ui text-danger">{error}</div>}
+            {!noSources && sources !== null && (
+              <div className="flex gap-2 flex-wrap justify-center" data-home-starters="">
+                {starters.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => {
+                      setQuestion(t);
+                      window.setTimeout(() => boxRef.current?.focus(), 0);
+                    }}
+                    className="ui-focus h-[34px] px-3.5 rounded-full border border-border bg-surface/50 text-[13px] text-secondary hover:text-text hover:border-border-strong transition-colors"
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
+
+          {needsYou.length > 0 && (
+            <section aria-label="Needs you" className="w-full max-w-[880px] flex flex-col gap-3 -mb-4" data-home-needs-you="">
+              <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">Needs you · {needsYou.length}</span>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {needsYou.map((c) => {
+                  const n = c.needs_you!;
+                  return (
+                    <Link
+                      key={c.id}
+                      to={`/g/${c.id}?run=${n.run_id}`}
+                      className="group rounded-[18px] border border-kind-analysis-border bg-surface p-4 flex flex-col gap-2.5 text-left hover:shadow-[0_0_0_4px_rgb(var(--color-kind-analysis)/0.07)] transition-shadow"
+                    >
+                      <span className="self-start inline-flex items-center gap-1.5 h-[22px] px-2 rounded-full bg-kind-analysis-fill text-kind-analysis text-[11.5px] font-semibold">
+                        <StepsIcon size={12} /> Guided · step {n.step} of {n.steps}
+                      </span>
+                      <span className="text-[15px] font-semibold text-text leading-snug truncate">{c.title}</span>
+                      <span className="text-ui text-secondary leading-snug line-clamp-2">
+                        “{n.step_title || `Step ${n.step}`}” is ready for you to check and approve.
+                      </span>
+                      <span className="text-ui text-kind-analysis group-hover:underline">Review step {n.step} →</span>
+                    </Link>
+                  );
+                })}
+              </div>
+            </section>
+          )}
 
           <section aria-label="Pick up where you left off" className="w-full max-w-[880px] flex flex-col gap-3">
             <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -480,6 +452,7 @@ export default function Home() {
                         <span className="text-caption text-muted truncate">
                           <KindPill kind={kind} className="h-[18px] px-1.5 text-[10.5px] mr-1.5 align-[1px]" />
                           {c.datasource_name || "No source"}
+                          {(c.question_count || 0) > 1 ? ` · ${c.question_count} questions` : ""}
                           {n > 0 ? ` · ${n} dashboard${n === 1 ? "" : "s"}` : ""}
                         </span>
                       </span>
@@ -506,89 +479,6 @@ export default function Home() {
           </section>
         </main>
       </div>
-    </div>
-  );
-}
-
-// The sources Guided Analysis works on: the first one is the main table,
-// the rest are joined in. A chip per source and an "Add source" menu.
-function SourceMultiSelect({ sources, value, onChange }: { sources: ProjectSource[]; value: string[]; onChange: (ids: string[]) => void }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: MouseEvent | KeyboardEvent) => {
-      if (e instanceof KeyboardEvent) {
-        if (e.key === "Escape") setOpen(false);
-        return;
-      }
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", close);
-    return () => {
-      document.removeEventListener("mousedown", close);
-      document.removeEventListener("keydown", close);
-    };
-  }, [open]);
-  const byId = new Map(sources.map((s) => [s.id, s]));
-  const toggle = (id: string) => {
-    if (value.includes(id)) {
-      const next = value.filter((x) => x !== id);
-      onChange(next.length ? next : value);
-    } else onChange([...value, id]);
-  };
-  return (
-    <div className="relative flex items-center gap-1.5 flex-wrap" ref={ref} data-source-multi="">
-      {value.map((id) => {
-        const s = byId.get(id);
-        if (!s) return null;
-        return (
-          <span key={id} className="inline-flex items-center gap-1.5 h-8 pl-3 pr-1.5 rounded-full border border-border-strong bg-base text-ui font-medium text-text max-w-[260px]">
-            <span className="truncate">{s.name}</span>
-            <span className="text-caption text-muted shrink-0">{s.label}</span>
-            {value.length > 1 && (
-              <button type="button" onClick={() => toggle(id)} aria-label={`Remove ${s.name}`} className="ui-focus w-5 h-5 grid place-items-center rounded-full text-muted hover:text-text hover:bg-subtle">
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12" /></svg>
-              </button>
-            )}
-          </span>
-        );
-      })}
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        data-add-source=""
-        className="ui-focus inline-flex items-center gap-1 h-8 px-3 rounded-full border border-dashed border-border-strong text-ui text-muted hover:text-text"
-      >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-        {value.length ? "Add source" : "Pick sources"}
-      </button>
-      {open && (
-        <div role="menu" className="absolute left-0 top-[calc(100%+6px)] z-30 w-[320px] max-w-[calc(100vw-48px)] max-h-[320px] overflow-y-auto rounded-card border border-border bg-surface shadow-pop p-1.5">
-          {sources.map((s) => {
-            const on = value.includes(s.id);
-            return (
-              <button
-                key={s.id}
-                type="button"
-                role="menuitemcheckbox"
-                aria-checked={on}
-                onClick={() => toggle(s.id)}
-                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-ctl text-left hover:bg-subtle"
-              >
-                <span className={`w-4 h-4 rounded-[5px] border grid place-items-center shrink-0 ${on ? "bg-kind-analysis border-kind-analysis text-[rgb(var(--color-base))]" : "border-border-strong"}`} aria-hidden="true">
-                  {on && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 7" /></svg>}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-ui text-text">{s.name}</span>
-                <span className="text-caption text-muted shrink-0">{s.label}</span>
-              </button>
-            );
-          })}
-          <p className="m-0 px-3 pt-2 pb-1 text-caption text-muted">GD360 plans across every source you pick and joins them where they match.</p>
-        </div>
-      )}
     </div>
   );
 }

@@ -3,6 +3,10 @@
 // steps are explicit: go deeper on one table in Studio, or create the one
 // kind of dashboard (components/CreateDashboardSheet.tsx). ?create=1 opens
 // that sheet straight away (Dashboards -> "From an answer").
+// 2026-10-11 (Ask Journey): the follow-up box asks across the same picker
+// as Home (a Space or chosen sources), and GD360 asks before it builds a
+// dashboard - a page per question, everything on one page, or "add this as
+// page 2" when an earlier answer is already on one (thread/DashboardFlow.tsx).
 // 2026-10-08 (round 11): a multi-source Project. Left: the conversation -
 // every question and GD360's reply, live while it plans and runs. Right:
 // the selected question's Plan, Sources (each query as it runs), Results
@@ -12,10 +16,17 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { ChartThemeProvider } from "../dashboard/theme/ChartThemeContext";
-import { projectsApi, Project, ProjectRun } from "../api/projects";
+import { projectsApi, Project, ProjectRun, ProjectSource } from "../api/projects";
+import { Space, spacesApi } from "../api/spaces";
+import ScopePicker, { Scope } from "../spaces/ScopePicker";
+import { ThreadComposer } from "../thread/parts";
+import {
+  AddToDashboardCard, AddToDashboardDialog, CombineNudgeCard, CreateFromThreadDialog, isAnswered, PlacementToast,
+  primaryDashboard, threadPrompt, useDashboardFlow,
+} from "../thread/DashboardFlow";
 import { EvidenceTab, PlanTab, ResultsTab, SourcesTab } from "../project/RunPanels";
 import { autoRunPreference, timeAgo } from "../project/format";
-import CreateDashboardSheet, { answerSources } from "../components/CreateDashboardSheet";
+import { answerSources } from "../components/CreateDashboardSheet";
 import { dashboardHref, KindIcon, KindPill } from "../lib/kinds";
 
 type TabId = "plan" | "sources" | "results" | "evidence";
@@ -46,6 +57,12 @@ export default function ProjectWorkspace() {
   const [error, setError] = useState("");
   const [notFound, setNotFound] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [createFocus, setCreateFocus] = useState<string | null>(null);
+  const [createLayout, setCreateLayout] = useState<"pages" | "merge" | "latest" | undefined>(undefined);
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [scope, setScope] = useState<Scope | null>(null);
+  const [allSources, setAllSources] = useState<ProjectSource[] | null>(null);
+  const [spaces, setSpaces] = useState<Space[] | null>(null);
   const [dashMenuOpen, setDashMenuOpen] = useState(false);
   const dashMenuRef = useRef<HTMLDivElement>(null);
   const [shareOpen, setShareOpen] = useState(false);
@@ -178,16 +195,47 @@ export default function ProjectWorkspace() {
     setTab(null);
   };
 
+  // the follow-up box asks across the thread's sources (the same picker as Home)
+  const pickerLoaded = useRef(false);
+  useEffect(() => {
+    if (!project) return;
+    setScope((cur) => cur || (project.space_id ? { kind: "space", spaceId: project.space_id } : { kind: "sources", ids: project.source_ids }));
+    if (pickerLoaded.current) return;
+    pickerLoaded.current = true;
+    projectsApi.sources(project.workspace_id || undefined).then(setAllSources).catch(() => setAllSources(project.sources));
+    if (project.workspace_id) spacesApi.list(project.workspace_id).then(setSpaces).catch(() => setSpaces([]));
+    else setSpaces([]);
+  }, [project]);
+
+  /** What the picker changed about the thread's sources - nothing when it didn't. */
+  const scopeChange = (): { source_ids?: string[]; space_id?: string } | null => {
+    if (!project || !scope) return {};
+    const same = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
+    if (scope.kind === "space") return scope.spaceId !== project.space_id ? { space_id: scope.spaceId } : {};
+    if (scope.kind === "sources") {
+      if (!scope.ids.length) return null;
+      return project.space_id || !same(scope.ids, project.source_ids) ? { source_ids: scope.ids } : {};
+    }
+    const all = (allSources || []).map((x) => x.id);
+    return all.length && !same(all, project.source_ids) ? { source_ids: all } : {};
+  };
+
   const ask = async (text: string, autoRun = autoRunPreference()) => {
     const q = text.trim();
     if (q.length < 2 || busy || activeRun) return;
+    const change = scopeChange();
+    if (change === null) {
+      setError("Pick at least one source.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
-      const out = await projectsApi.ask(projectId, q, autoRun);
+      const out = await projectsApi.ask(projectId, q, autoRun, change);
       setFollowUp("");
       const r = await loadRun(out.run_id);
-      await loadProject();
+      const p = await loadProject();
+      if (p && (change.space_id || change.source_ids)) setScope(p.space_id ? { kind: "space", spaceId: p.space_id } : { kind: "sources", ids: p.source_ids });
       if (r) select(r.id);
     } catch (e: any) {
       setError(errorText(e, "Couldn't ask that. Please try again."));
@@ -271,6 +319,27 @@ export default function ProjectWorkspace() {
   }, [canCreate]);
 
   const dashboards = project?.dashboards || [];
+  const flow = useDashboardFlow(projectId, project, loadProject);
+  const answered = ordered.filter(isAnswered);
+  const numberOf = (id: string) => ordered.findIndex((r) => r.id === id) + 1;
+  const prompt = threadPrompt(project, ordered, !!project?.can_edit);
+  const primary = primaryDashboard(project);
+  const placedRuns = new Set((project?.placements || []).flatMap((p) => p.run_ids || []));
+  const openCreate = (focusId?: string | null, layout?: "pages" | "merge" | "latest") => {
+    setCreateFocus(focusId || null);
+    setCreateLayout(layout);
+    setCreateOpen(true);
+  };
+  // "Create dashboard": add to the thread's dashboard when it already holds
+  // an earlier answer, else GD360 asks how to build a new one.
+  const createDashboard = () => {
+    if (!current || !isAnswered(current)) {
+      if (answered.length) openCreate(answered[answered.length - 1].id);
+      return;
+    }
+    if (primary && !placedRuns.has(current.id)) setAddDialogOpen(true);
+    else openCreate(current.id);
+  };
 
   if (notFound) {
     return (
@@ -285,13 +354,31 @@ export default function ProjectWorkspace() {
 
   return (
     <ChartThemeProvider localScope={`project:${projectId}`}>
-      <CreateDashboardSheet
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        projectId={projectId}
-        run={current}
-        sources={project?.sources || []}
-      />
+      {project && (
+        <>
+          <CreateFromThreadDialog
+            open={createOpen}
+            onClose={() => setCreateOpen(false)}
+            projectId={projectId}
+            project={project}
+            answered={answered}
+            numberOf={numberOf}
+            focusRunId={createFocus || current?.id}
+            startLayout={createLayout}
+          />
+          <AddToDashboardDialog
+            open={addDialogOpen}
+            onClose={() => setAddDialogOpen(false)}
+            project={project}
+            run={current}
+            dashboard={primary}
+            flow={flow}
+            numberOf={numberOf}
+            onNew={() => openCreate(current?.id, "latest")}
+          />
+        </>
+      )}
+      <PlacementToast flow={flow} />
       <div className="dash-shell flex min-h-screen">
         <AppSidebar
           workspaces={workspaces}
@@ -371,12 +458,12 @@ export default function ProjectWorkspace() {
                   <button
                     type="button"
                     className="btn-primary text-sm inline-flex items-center gap-1.5"
-                    onClick={() => setCreateOpen(true)}
+                    onClick={createDashboard}
                     disabled={!canCreate}
                     data-answer-create-dashboard=""
                     title={current?.status === "done" ? "A live dashboard with filters, made from this answer" : "Available once the answer is ready"}
                   >
-                    <KindIcon kind="dashboard" size={15} /> Create dashboard
+                    <KindIcon kind="dashboard" size={15} /> {primary && current && isAnswered(current) && !placedRuns.has(current.id) ? "Add to dashboard" : "Create dashboard"}
                   </button>
                 </>
               )}
@@ -396,8 +483,8 @@ export default function ProjectWorkspace() {
               <div ref={threadPane} className="flex-1 overflow-auto px-5 py-6 flex flex-col gap-6">
                 {!project && <div className="text-ui text-muted">Loading…</div>}
                 {ordered.map((r) => (
+                  <div key={r.id} className="flex flex-col gap-3.5">
                   <ThreadItem
-                    key={r.id}
                     run={r}
                     selected={current?.id === r.id}
                     onSelect={() => select(r.id)}
@@ -413,36 +500,35 @@ export default function ProjectWorkspace() {
                     busy={busy || !!activeRun}
                     next={
                       current?.id === r.id && r.status === "done" && project?.can_edit ? (
-                        <WhatNext studioHref={studioHref} studioSource={project?.sources.length && project.sources.length > 1 ? `${project.sources.length} sources` : deeperSource?.name || null} onGuided={startGuided} guiding={guiding} onCreate={() => setCreateOpen(true)} />
+                        <WhatNext studioHref={studioHref} studioSource={project?.sources.length && project.sources.length > 1 ? `${project.sources.length} sources` : deeperSource?.name || null} onGuided={startGuided} guiding={guiding} onCreate={createDashboard} />
                       ) : null
                     }
                   />
+                  {prompt && prompt.run.id === r.id && project && prompt.kind === "add" && (
+                    <AddToDashboardCard project={project} run={r} dashboard={prompt.dashboard} flow={flow} onNew={() => openCreate(r.id, "latest")} />
+                  )}
+                  {prompt && prompt.run.id === r.id && prompt.kind === "combine" && (
+                    <CombineNudgeCard count={prompt.runs.length} onSetup={() => openCreate(r.id, "pages")} onDismiss={() => flow.dismiss(prompt.runs.map((x) => x.id))} />
+                  )}
+                  </div>
                 ))}
                 <div ref={threadEnd} />
               </div>
               {project?.can_edit && (
-                <form
-                  className="p-3.5 border-t border-border"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    ask(followUp);
-                  }}
-                >
-                  {error && <div role="alert" className="text-ui text-danger mb-2">{error}</div>}
-                  <label className="flex items-center gap-2.5 bg-surface border border-border rounded-card px-3 py-2.5">
-                    <span className="sr-only">Ask a follow-up</span>
-                    <input
-                      value={followUp}
-                      onChange={(e) => setFollowUp(e.target.value)}
-                      placeholder={activeRun ? "GD360 is working on the last question…" : "Ask a follow-up…"}
-                      disabled={busy || !!activeRun}
-                      className="flex-1 bg-transparent border-0 outline-none text-body text-text placeholder:text-faint"
-                    />
-                    <button type="submit" disabled={busy || !!activeRun || followUp.trim().length < 2} className="text-caption font-mono text-muted disabled:opacity-40" aria-label="Send">
-                      ↵
-                    </button>
-                  </label>
-                </form>
+                <ThreadComposer
+                  value={followUp}
+                  onChange={setFollowUp}
+                  onSubmit={() => ask(followUp)}
+                  busy={busy}
+                  locked={!!activeRun}
+                  error={error}
+                  placeholder="Ask a follow-up…"
+                  picker={
+                    scope && (
+                      <ScopePicker scope={scope} onChange={setScope} sources={allSources} spaces={spaces} variant="compact" placement="above" disabled={busy} />
+                    )
+                  }
+                />
               )}
             </section>
 
