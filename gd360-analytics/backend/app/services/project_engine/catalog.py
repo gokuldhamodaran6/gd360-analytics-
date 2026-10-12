@@ -53,6 +53,7 @@ KIND_LABELS = {
     "instagram": "Instagram", "facebook_pages": "Facebook Pages", "linkedin_pages": "LinkedIn Pages",
     "youtube": "YouTube", "search_console": "Google Search Console", "woocommerce": "WooCommerce",
     "stripe": "Stripe", "hubspot": "HubSpot", "klaviyo": "Klaviyo",
+    "whatsapp_business": "WhatsApp Business",
 }
 
 MAX_TABLES_PER_SOURCE = 40
