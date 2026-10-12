@@ -83,8 +83,12 @@ from .data_loader import load_dataframe
 
 logger = logging.getLogger("gd360.scheduler")
 
+# 2026-10-12 (round 35b): 5m and 30m added. "realtime" has NO server schedule - the open page
+# re-runs every minute while someone is looking (no warehouse bill for an empty room).
 _REFRESH_INTERVAL_DELTAS = {
+    "5m": timedelta(minutes=5),
     "15m": timedelta(minutes=15),
+    "30m": timedelta(minutes=30),
     "1h": timedelta(hours=1),
     "6h": timedelta(hours=6),
     "daily": timedelta(days=1),
@@ -149,8 +153,11 @@ def refresh_dashboard(db: Session, dashboard: models.Dashboard, job_type: str) -
         # live view uses (services/dashboard_engine.run_page), with the
         # result cache bypassed so the refresh is real. The pandas path
         # below is only ever reached for a FILE source.
-        if dashboard_engine.is_warehouse_native(ds):
+        # round 35b: a merged dashboard can hold pages on other sources - each page refreshes on its
+        # own source (warehouse pages here; file-computed pages below)
+        if dashboard_engine.is_warehouse_native(ds) or any(p.datasource_id for p in dashboard.pages):
             _refresh_warehouse_dashboard(db, dashboard, ds)
+            _refresh_file_pages(db, dashboard, ds)
             dashboard.last_refreshed_at = datetime.utcnow()
             dashboard.next_refresh_at = compute_next_refresh_at(dashboard.refresh_interval, dashboard.last_refreshed_at)
             job.status = "success"
@@ -263,6 +270,40 @@ def refresh_dashboard(db: Session, dashboard: models.Dashboard, job_type: str) -
     return job
 
 
+def _refresh_file_pages(db: Session, dashboard: models.Dashboard, ds: models.DataSource | None) -> None:
+    """Round 35b: the pages of a mixed dashboard whose source GD360 computes itself (a live sheet,
+    an API, a stream - an uploaded file has nothing new to read, so it is skipped): every
+    recipe block recomputed from that page's source."""
+    from ..routers.dashboard_builder import _dashboard_datasource, _run_manual_recipe
+    from .data_freshness import is_live
+    frames: dict = {}
+    for page in dashboard.pages:
+        pds = _dashboard_datasource(db, dashboard, page)
+        if pds is None or dashboard_engine.is_warehouse_native(pds) or not is_live(pds.kind):
+            continue
+        if pds.id not in frames:
+            try:
+                frames[pds.id] = load_dataframe(pds, table=None, version="original", db=db)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[scheduler] page %s source %s didn't load: %s", page.id, pds.id, e)
+                frames[pds.id] = None
+        df = frames[pds.id]
+        if df is None:
+            continue
+        for block in page.blocks:
+            recipe = (block.config or {}).get("recipe")
+            if not recipe:
+                continue
+            try:
+                accent = (block.config or {}).get("accent_color")
+                block.type, block.config, _t = _run_manual_recipe(df, recipe, existing_title=block.title)
+                if accent:
+                    block.config["accent_color"] = accent
+                block.data_updated_at = datetime.utcnow()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[scheduler] block %s on dashboard %s failed to refresh: %s", block.id, dashboard.id, e)
+
+
 def _refresh_warehouse_dashboard(db: Session, dashboard: models.Dashboard, ds: models.DataSource) -> dict:
     """Every page of a warehouse dashboard through dashboard_engine.
     run_page with force_refresh (the cache is what the live view reads
@@ -270,22 +311,27 @@ def _refresh_warehouse_dashboard(db: Session, dashboard: models.Dashboard, ds: m
     warms it), persisting each block's last_run and data_updated_at. A
     page whose cells form a loop is logged and skipped - never a failed
     run for the whole dashboard. Returns {page_id: run result}."""
-    from ..routers.dashboard_builder import _dashboard_primary_table, _warehouse_page_blocks
+    from .. import schemas
+    from ..routers.dashboard_builder import _dashboard_datasource, _run_page_for, _warehouse_page_blocks
 
     out: dict = {}
-    versions = dashboard_engine.load_versions(db, ds)
     for page in dashboard.pages:
+        pds = _dashboard_datasource(db, dashboard, page) or ds
+        if pds is None or not dashboard_engine.is_warehouse_native(pds):
+            continue
         runnable, _skipped = _warehouse_page_blocks(page, None)
         if not runnable:
             continue
+        # round 35b: the same complete, unfiltered run the page itself makes - which also saves the
+        # owner's snapshot, so the next person to open it sees these fresh numbers at once
         try:
-            result = dashboard_engine.run_page(
-                db, ds, runnable, user_id=dashboard.owner_id, date_column=dashboard.date_column, versions=versions,
-                force_refresh=True, count_table=_dashboard_primary_table(dashboard, ds),
-                default_period=dashboard.default_period,
-                dashboard_parameters=dashboard.parameters if isinstance(dashboard.parameters, list) else [],
-            )
+            run = _run_page_for(db, dashboard, page, pds, schemas.RunPageRequest(force_refresh=True), dashboard.owner_id,
+                                persist_last_run=True)
+            result = {"blocks": run.blocks}
         except dashboard_engine.DependencyCycleError as e:
+            logger.warning("[scheduler] page %s on dashboard %s skipped: %s", page.id, dashboard.id, e)
+            continue
+        except Exception as e:  # noqa: BLE001 - _run_page_for raises HTTPException on a loop
             logger.warning("[scheduler] page %s on dashboard %s skipped: %s", page.id, dashboard.id, e)
             continue
         out[page.id] = result
@@ -335,6 +381,11 @@ def _tick() -> None:
             .all()
         )
         for dashboard in due:
+            # round 35b: nobody has opened it for 7 days - pause (opening it resumes the schedule)
+            if dashboard.last_viewed_at and (now - dashboard.last_viewed_at).days >= 7:
+                dashboard.next_refresh_at = None
+                db.commit()
+                continue
             try:
                 refresh_dashboard(db, dashboard, job_type="scheduled_refresh")
             except Exception as e:

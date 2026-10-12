@@ -396,6 +396,19 @@ If the person's question cannot be answered from this material, set needs_new_da
 need in new_question (and still explain what the material does show)."""
 
 
+_FALL_WORDS = r"dip|dips|dipped|drop|drops|dropped|decline|declines|declined|decrease|decreased|fall|falls|fell|down|lower|loss|shrank|shrink|slip|slipped|contraction|contracted"
+_DOUBLE_NEG = re.compile(rf"\b({_FALL_WORDS})(\s+(?:of|by))?\s+[-−](?=[$€£₹¥]?\d)", re.I)
+_DOUBLE_POS = re.compile(r"\b(up|rose|rise|rises|grew|growth|gain|gained|increase|increased|higher)(\s+(?:of|by))?\s+\+(?=[$€£₹¥]?\d)", re.I)
+
+
+def tidy_signs(text: str) -> str:
+    """Round 35: "a slight dip of -1.5%" reads "a slight dip of 1.5%", "down −$2M" reads "down $2M",
+    "up +3%" reads "up 3%" - the word already carries the direction."""
+    if not text:
+        return text
+    return _DOUBLE_POS.sub(lambda m: f"{m.group(1)}{m.group(2) or ''} ", _DOUBLE_NEG.sub(lambda m: f"{m.group(1)}{m.group(2) or ''} ", text))
+
+
 def _clean_points(raw: dict, allowed: Allowed, problems: list | None = None) -> dict | None:
     if not isinstance(raw, dict):
         return None
@@ -412,9 +425,9 @@ def _clean_points(raw: dict, allowed: Allowed, problems: list | None = None) -> 
                 problems.extend(bad[:8])
         return None
     return {
-        "headline": head[:300],
-        "points": [{"text": str(p["text"]).strip()[:500], "ref": (str(p.get("ref"))[:80] if p.get("ref") else None)} for p in pts],
-        "takeaway": take[:300] if take else None,
+        "headline": tidy_signs(head)[:300],
+        "points": [{"text": tidy_signs(str(p["text"]).strip())[:500], "ref": (str(p.get("ref"))[:80] if p.get("ref") else None)} for p in pts],
+        "takeaway": tidy_signs(take)[:300] if take else None,
         "followups": [str(f).strip()[:140] for f in raw.get("followups") or [] if str(f).strip()][:3],
         "needs_new_data": bool(raw.get("needs_new_data")),
         "new_question": (str(raw.get("new_question")).strip()[:300] if raw.get("new_question") else None),
