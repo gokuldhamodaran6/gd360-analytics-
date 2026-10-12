@@ -56,6 +56,11 @@ const periodLabel = (p: string, grain: ForecastVisual["grain"]) => {
   return `${d} ${MON[m - 1]} ${y}`;
 };
 
+/** An axis tick without trailing zeros: "$5.00M" -> "$5M", "$2.50M" -> "$2.5M". */
+function axisFmt(s: string): string {
+  return s.replace(/(\d)\.(\d*?)0+(?=\D*$)/, (_m, d, keep) => (keep ? `${d}.${keep}` : d));
+}
+
 type Tip = { x: number; y: number; title: string; lines: { k: string; v: string; tone?: "actual" | "forecast" | "muted" }[] };
 
 export default function ForecastChart({ visual }: { visual: ForecastVisual }) {
@@ -66,19 +71,24 @@ export default function ForecastChart({ visual }: { visual: ForecastVisual }) {
     const a = parse(v.target.start), b = parse(v.target.end);
     return (b.y - a.y) * 12 + b.m - a.m + 1;
   }, [v.target.start, v.target.end]);
-  const initial: View = !fineGrain || v.target.multi_year || spanMonths >= 12 ? "years" : "months";
+  // round 33: "by month" questions open on the months
+  const initial: View = fineGrain && v.view === "months" ? "months" : !fineGrain || v.target.multi_year || spanMonths >= 12 ? "years" : "months";
   const [view, setView] = useState<View>(initial);
   const [ref, width] = useWidth<HTMLDivElement>();
   const [tip, setTip] = useState<Tip | null>(null);
   const uid = useId().replace(/:/g, "");
   const h = v.headline;
   const vs = h.vs;
-  const up = vs ? vs.pct > 0.05 : null;
-  const down = vs ? vs.pct < -0.05 : null;
+  // round 33: under 1% either way is level, not growth - no green arrow for +0.3%
+  const up = vs ? vs.pct >= 1 : null;
+  const down = vs ? vs.pct <= -1 : null;
   const certainty = v.method.certainty;
+  const errGrain = v.error_grain || v.grain;
+  const errUnit = errGrain === "month" ? "Monthly" : errGrain === "quarter" ? "Quarterly" : errGrain === "week" ? "Weekly" : errGrain === "day" ? "Daily" : "Yearly";
+  // the backtest scores single months (the model's grain) - said so, never read as the error of the year's total
   const certaintyText =
     certainty === "tested" && v.method.mape != null
-      ? `Tested · typically within ±${v.method.mape.toFixed(1)}%`
+      ? `${errUnit} error in testing ±${v.method.mape.toFixed(1)}%`
       : certainty === "long-range"
         ? "Long-range projection"
         : certainty === "rough"
@@ -100,7 +110,7 @@ export default function ForecastChart({ visual }: { visual: ForecastVisual }) {
             <span className="w-[7px] h-[7px] rounded-full bg-kind-answer" aria-hidden="true" />
             Forecast · {h.label}
           </span>
-          <span className="font-mono text-[40px] sm:text-[46px] leading-none tracking-tight text-text tabular-nums" data-forecast-value="">
+          <span className="text-[42px] sm:text-[50px] font-semibold leading-none tracking-[-0.025em] text-text tabular-nums" data-forecast-value="">
             {h.display}
           </span>
           <span className="text-[14px] text-secondary">
@@ -116,7 +126,11 @@ export default function ForecastChart({ visual }: { visual: ForecastVisual }) {
               }`}
               data-forecast-vs=""
             >
-              {up ? "▲" : down ? "▼" : "■"} {vs.pct_display || "—"} <span className="font-normal opacity-80">vs {vs.label} ({vs.display})</span>
+              {up || down ? (
+                <>{up ? "▲" : "▼"} {vs.pct_display || "—"} <span className="font-normal opacity-80">vs {vs.label} ({vs.display})</span></>
+              ) : (
+                <>Level with {vs.label} <span className="font-normal opacity-80">({vs.pct_display || "—"} · {vs.display})</span></>
+              )}
             </span>
           )}
           {h.total_display && (
@@ -263,7 +277,7 @@ function YearBars({ v, width, fmt, uid, onTip }: { v: ForecastVisual; width: num
       {tk.map((t) => (
         <g key={t}>
           <line x1={PAD.left} x2={W - PAD.right} y1={yv(t)} y2={yv(t)} stroke="rgb(var(--chart-grid))" strokeWidth="1" />
-          <text x={PAD.left - 10} y={yv(t)} dy="0.32em" textAnchor="end" fontSize="11" fill="rgb(var(--color-muted))" className="tabular-nums">{fmt(t)}</text>
+          <text x={PAD.left - 10} y={yv(t)} dy="0.32em" textAnchor="end" fontSize="11" fill="rgb(var(--color-muted))" className="tabular-nums">{axisFmt(fmt(t))}</text>
         </g>
       ))}
       {firstFc > 0 && (
@@ -396,7 +410,7 @@ function MonthLine({ v, width, fmt, uid, onTip }: { v: ForecastVisual; width: nu
       {tk.map((t) => (
         <g key={t}>
           <line x1={PAD.left} x2={W - PAD.right} y1={yv(t)} y2={yv(t)} stroke="rgb(var(--chart-grid))" />
-          <text x={PAD.left - 10} y={yv(t)} dy="0.32em" textAnchor="end" fontSize="11" fill="rgb(var(--color-muted))" className="tabular-nums">{fmt(t)}</text>
+          <text x={PAD.left - 10} y={yv(t)} dy="0.32em" textAnchor="end" fontSize="11" fill="rgb(var(--color-muted))" className="tabular-nums">{axisFmt(fmt(t))}</text>
         </g>
       ))}
       {janTicks.filter((_t, k) => k % step === 0).map(({ p, i }) => (
@@ -431,7 +445,37 @@ function MonthLine({ v, width, fmt, uid, onTip }: { v: ForecastVisual; width: nu
 // ---- the table: every year, actual and forecast, with both ranges ---------------------------
 
 function ForecastTable({ v, fmt }: { v: ForecastVisual; fmt: (x?: number | null) => string }) {
+  // round 33: the asked period month by month (or by quarter / week) above the years
+  const inTarget = v.grain !== "year"
+    ? v.points.filter((p) => p.kind === "forecast" && p.period.slice(0, 10) >= v.target.start && p.period.slice(0, 10) <= v.target.end)
+    : [];
+  const showPeriods = inTarget.length >= 2 && inTarget.length <= 36;
   return (
+    <div className="flex flex-col gap-5">
+    {showPeriods && (
+      <div className="overflow-x-auto -mx-1" data-forecast-period-table="">
+        <table className="w-full border-collapse text-ui tabular-nums">
+          <caption className="text-left px-3 pb-2 text-caption font-semibold uppercase tracking-[0.08em] text-muted">{v.target.label} by {v.grain}</caption>
+          <thead>
+            <tr>
+              {[v.grain === "quarter" ? "Quarter" : v.grain === "week" ? "Week" : v.grain === "day" ? "Day" : "Month", `Forecast ${v.metric}`, "Likely (80%)", "Wide (95%)"].map((c, i) => (
+                <th key={i} scope="col" className={`px-3 py-2 text-caption font-medium text-muted border-b border-border whitespace-nowrap ${i >= 1 ? "text-right" : "text-left"}`}>{c}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {inTarget.map((p) => (
+              <tr key={p.period} className="border-b border-border last:border-0 hover:bg-subtle/60">
+                <td className="px-3 py-2 text-text font-medium">{periodLabel(p.period, v.grain)}</td>
+                <td className="px-3 py-2 text-right font-mono text-[13px] text-text">{fmt(p.value)}</td>
+                <td className="px-3 py-2 text-right font-mono text-[13px] text-secondary">{p.lo80 != null ? `${fmt(p.lo80)} – ${fmt(p.hi80)}` : "—"}</td>
+                <td className="px-3 py-2 text-right font-mono text-[13px] text-muted">{p.lo95 != null ? `${fmt(p.lo95)} – ${fmt(p.hi95)}` : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
     <div className="overflow-x-auto -mx-1" data-forecast-table="">
       <table className="w-full border-collapse text-ui tabular-nums">
         <thead>
@@ -457,6 +501,7 @@ function ForecastTable({ v, fmt }: { v: ForecastVisual; fmt: (x?: number | null)
           ))}
         </tbody>
       </table>
+    </div>
     </div>
   );
 }

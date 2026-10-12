@@ -216,6 +216,18 @@ export function VisualCard({
         />
       )}
       {visual.type === "chart" && visual.note && <p className="m-0 text-caption text-muted">{visual.note}</p>}
+      {(visual.type === "chart" || visual.type === "waterfall") && visual.details && visual.details.rows.length > 0 && (
+        // round 33: the result had more than the chart draws (orders, AOV, customers...) - every column, one tap away
+        <details className="group rounded-[12px] border border-border bg-base/30 px-3.5 py-2.5" data-visual-details="">
+          <summary className="cursor-pointer list-none flex items-center justify-between gap-3 text-[13px] text-muted hover:text-text">
+            <span>All {visual.details.columns.length} columns · {visual.details.rows.length} rows</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="transition-transform group-open:rotate-180" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+          </summary>
+          <div className="mt-2.5">
+            <DataTable visual={{ type: "chart", title: visual.title, columns: visual.details.columns, rows: visual.details.rows }} />
+          </div>
+        </details>
+      )}
       {footer}
     </section>
   );
