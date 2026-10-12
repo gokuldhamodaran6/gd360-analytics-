@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { dashboardProposalApi, datasourceApi, type DataSourceSummary, type ProposalTemplate } from "../api/client";
+import { conversationApi, datasourceApi, type DataSourceSummary } from "../api/client";
 import AppSidebar from "../components/AppSidebar";
 import TopNav from "../components/TopNav";
 import { Composer, ComputeFooter, ProposalPreview, PublishDialog, RefineBar, StepRail, useProposalFlow } from "../dashboard/builder";
@@ -24,15 +24,24 @@ export default function NewDashboard() {
   const [params] = useSearchParams();
   const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
   const flow = useProposalFlow();
+  // 2026-10-12 (round 35b): this describe-it page is now only the landing for a chat's "Build with
+  // AI" (it arrives with ?datasource / ?goal / ?conversation). Opened on its own, it goes to the
+  // Dashboards page's New dashboard sheet - the one way to start a dashboard there.
+  useEffect(() => {
+    if (!params.get("datasource") && !params.get("goal") && !params.get("conversation")) navigate("/dashboards?new=1", { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [sources, setSources] = useState<DataSourceSummary[] | null>(null);
   const [sourcesError, setSourcesError] = useState<string | null>(null);
-  const [templates, setTemplates] = useState<ProposalTemplate[] | null>(null);
   const [sourceId, setSourceId] = useState<string>(params.get("datasource") || "");
   const [goal, setGoal] = useState<string>(params.get("goal") || "");
-  const [templateId, setTemplateId] = useState<string | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
-  const conversationId = params.get("conversation");
+  // round 35: the chat this page was opened from is the dashboard's "Made from" - shown, removable,
+  // and dropped by itself when the person moves to a different source than that chat's
+  const [conversationId, setConversationId] = useState<string | null>(params.get("conversation"));
+  const [chatTitle, setChatTitle] = useState<string | null>(null);
+  const chatSource = useRef<string | null>(params.get("datasource"));
 
   useEffect(() => {
     let cancelled = false;
@@ -47,10 +56,12 @@ export default function NewDashboard() {
         });
       })
       .catch(() => { if (!cancelled) { setSources([]); setSourcesError("Couldn't load your data sources. Refresh to try again."); } });
-    dashboardProposalApi
-      .templates()
-      .then((t) => { if (!cancelled) setTemplates(t); })
-      .catch(() => { if (!cancelled) setTemplates([]); });
+    if (conversationId) {
+      conversationApi
+        .getMessages(conversationId)
+        .then((c) => { if (!cancelled) setChatTitle(c.title || "the chat you came from"); })
+        .catch(() => { if (!cancelled) setChatTitle("the chat you came from"); });
+    }
     return () => { cancelled = true; };
   }, []);
 
@@ -60,7 +71,7 @@ export default function NewDashboard() {
 
   const propose = () => {
     if (!sourceId) return;
-    flow.propose({ datasource_id: sourceId, goal: goal.trim(), template_id: templateId, conversation_id: conversationId });
+    flow.propose({ datasource_id: sourceId, goal: goal.trim(), template_id: null, conversation_id: conversationId });
   };
 
   // 2026-10-10 (Clarity Blueprint): Home's "Build a dashboard" and Studio's
@@ -101,17 +112,22 @@ export default function NewDashboard() {
             <StepRail step={flow.step} />
           </div>
 
-          <div className="grid min-w-0 grid-cols-1 items-start gap-6 min-[1100px]:grid-cols-[380px_minmax(0,1fr)]" data-builder-columns="">
+          <div className="grid min-w-0 grid-cols-1 items-start gap-6 min-[1100px]:grid-cols-[420px_minmax(0,1fr)]" data-builder-columns="">
             <Composer
               sources={sources}
               sourcesError={sourcesError}
               sourceId={sourceId}
-              onSourceChange={(id) => { setSourceId(id); flow.clearError(); }}
+              onSourceChange={(id) => {
+                setSourceId(id);
+                flow.clearError();
+                if (conversationId && chatSource.current && id !== chatSource.current) setConversationId(null);
+              }}
               goal={goal}
               onGoalChange={setGoal}
-              templates={templates}
-              templateId={templateId}
-              onTemplateChange={setTemplateId}
+              templates={null}
+              templateId={null}
+              onTemplateChange={() => undefined}
+              linkedChat={conversationId && chatTitle ? { title: chatTitle, onUnlink: () => setConversationId(null) } : null}
               onSubmit={propose}
               busy={flow.loading}
               error={flow.step === "describe" ? flow.error : null}
@@ -133,13 +149,16 @@ export default function NewDashboard() {
             </Button>
             <div className="flex flex-wrap items-center gap-4">
               {hasProposal ? (
-                <ComputeFooter proposal={flow.proposal} kept={kept} />
+                <>
+                  <ComputeFooter proposal={flow.proposal} kept={kept} />
+                  <Button variant="primary" size="lg" data-publish-open="" disabled={!canPublish} onClick={() => setPublishOpen(true)} trailingIcon={<ArrowRightIcon size={15} />}>
+                    Publish dashboard
+                  </Button>
+                </>
               ) : (
-                <span className="text-caption text-muted">Nothing is created until you publish.</span>
+                // round 35: no greyed-out Publish before there is anything to publish
+                <span className="text-caption text-muted" data-builder-footer-note="">Nothing is created until you publish.</span>
               )}
-              <Button variant="primary" size="lg" data-publish-open="" disabled={!canPublish} onClick={() => setPublishOpen(true)} trailingIcon={<ArrowRightIcon size={15} />}>
-                Publish dashboard
-              </Button>
             </div>
           </div>
         </div>

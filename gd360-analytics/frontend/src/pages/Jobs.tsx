@@ -41,13 +41,18 @@ import {
 // before - this only changes layout, not what's real or how it's
 // computed.
 
+// round 35b: dashboards also take Real-time / 5 / 30 minutes; chains (pipelines) keep the original five
 const REFRESH_LABELS: Record<RefreshInterval, string> = {
   off: "Off",
+  realtime: "Real-time (while open)",
+  "5m": "Every 5 minutes",
   "15m": "Every 15 minutes",
+  "30m": "Every 30 minutes",
   "1h": "Every hour",
   "6h": "Every 6 hours",
   daily: "Once a day",
 };
+const CHAIN_INTERVALS: RefreshInterval[] = ["off", "15m", "1h", "6h", "daily"];
 
 const STEP_TYPE_LABELS: Record<PipelineStepType, string> = {
   refresh_datasource: "Refresh a data source",
@@ -753,7 +758,7 @@ export default function Jobs() {
                         value={builder.schedule_interval}
                         onChange={(e) => setBuilder({ ...builder, schedule_interval: e.target.value as RefreshInterval })}
                       >
-                        {(Object.keys(REFRESH_LABELS) as RefreshInterval[]).map((k) => (
+                        {CHAIN_INTERVALS.map((k) => (
                           <option key={k} value={k}>{REFRESH_LABELS[k]}</option>
                         ))}
                       </select>
@@ -870,7 +875,7 @@ export default function Jobs() {
                             disabled={!p.can_edit || savingSchedule === p.id}
                             onChange={(e) => changeChainSchedule(p, e.target.value as RefreshInterval)}
                           >
-                            {(Object.keys(REFRESH_LABELS) as RefreshInterval[]).map((k) => (
+                            {CHAIN_INTERVALS.map((k) => (
                               <option key={k} value={k}>{REFRESH_LABELS[k]}</option>
                             ))}
                           </select>

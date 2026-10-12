@@ -301,7 +301,8 @@ function ViewerDashboard({
   notice: string; onDismiss: () => void; subBusy: boolean; onToggleSub?: () => void;
 }) {
   const page = dash.pages[pageIndex];
-  const warehouse = Boolean(dash.warehouse_native);
+  // round 35b: a merged dashboard can mix sources - the page on screen decides
+  const warehouse = page?.warehouse_native ?? Boolean(dash.warehouse_native);
   const source = useMemo<RunSource>(
     () =>
       warehouse

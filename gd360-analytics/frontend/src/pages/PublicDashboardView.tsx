@@ -377,7 +377,8 @@ function PublicDashboardBody({
   resolverKey: string;
   viewerToken: string | undefined;
 }) {
-  const warehouse = Boolean(dash.warehouse_native);
+  // round 35b: a merged dashboard can mix sources - the page on screen decides
+  const warehouse = activePage?.warehouse_native ?? Boolean(dash.warehouse_native);
   // The slug-keyed and hostname-keyed public twins of run / options /
   // preview-filtered (backend public_router / public_domains_router). The
   // public filter-options endpoint (a file dashboard's distinct values,

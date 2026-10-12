@@ -7,6 +7,7 @@
 // re-runs the answer's checked queries in every source on Refresh (no AI
 // involved), and can be arranged: rename, hide, reorder, resize and change
 // the chart of any tile.
+import { DataFreshness, dataModeOf } from "../dashboard/DataFreshness";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
@@ -205,7 +206,6 @@ export default function ProjectDashboard() {
                           {s.name} · {s.freshness}
                         </span>
                       ))}
-                      {dash.snapshot_at && <span>· numbers from {timeAgo(dash.snapshot_at)}</span>}
                     </div>
                   </div>
                   <div className="flex gap-2 flex-wrap">
@@ -217,9 +217,16 @@ export default function ProjectDashboard() {
                     ) : (
                       <>
                         {dash.can_edit && <button type="button" className="btn-secondary text-sm" onClick={startEdit}>Edit</button>}
-                        <button type="button" className="btn-secondary text-sm" onClick={refresh} disabled={refreshing}>
-                          {refreshing ? "Refreshing…" : "Refresh"}
-                        </button>
+                        {/* round 35: Refresh only where there is something live to refresh; an
+                            answer made only from uploaded files says "as of" instead */}
+                        <DataFreshness
+                          mode={dataModeOf(dash.sources.map((s) => s.kind))}
+                          sources={dash.sources.map((s) => ({ name: s.name, kind: s.kind }))}
+                          asOf={dash.snapshot_at || null}
+                          working={refreshing}
+                          onRefresh={refresh}
+                          error={null}
+                        />
                         {dash.can_edit && (
                           <Link to={`/automations/new?dashboard=${dash.id}`} className="btn-secondary text-sm">
                             Deliver on a schedule…

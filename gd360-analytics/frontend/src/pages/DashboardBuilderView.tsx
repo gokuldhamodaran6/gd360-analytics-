@@ -3,11 +3,13 @@ import { MadeFromLink, sourceHref } from "../lib/kinds";
 import { Link, useParams } from "react-router-dom";
 import { DomainPublishRow, PublishToDomainSheet } from "../components/PublishToDomain";
 import {
-  dashboardBuilderApi, DashboardBlock, DashboardBuilderDetail, DashboardBuilderPage, DashboardBlockType, datasourceApi, WorkspaceSummary, qualityChecksApi,
+  dashboardBuilderApi, DashboardBlock, DashboardBuilderDetail, DashboardBuilderPage, DashboardBlockType, datasourceApi, WorkspaceSummary, qualityChecksApi, jobsApi,
+  type RefreshInterval,
 } from "../api/client";
+import { EmptyPageStart } from "../dashboard/EmptyPageStart";
+import { isLiveKind } from "../dashboard/DataFreshness";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
-import { DataFreshnessBadge } from "../components/DashboardBlocks";
 import {
   DashboardShell, isEmptyBlock, readEditFromUrl, useComments, useDashboardEditor, useDashboardRun, useDashboardViewMode, useEditMode, type CanvasOwnerActions, type RunSource,
 } from "../dashboard";
@@ -1172,10 +1174,10 @@ function DashboardBuilderViewBody({
   // dashboard reads dash.tables instead.
   const [editorColumns, setEditorColumns] = useState<{ name: string; dtype: string }[] | undefined>(undefined);
   useEffect(() => {
-    if (!dash.datasource_id || dash.warehouse_native || !dash.can_edit) return;
+    if (!pageDsId || warehouse || !dash.can_edit) return;
     let cancelled = false;
     datasourceApi
-      .preview(dash.datasource_id, null, 1, 0)
+      .preview(pageDsId, null, 1, 0)
       .then((p) => {
         if (!cancelled) setEditorColumns(p.columns.map((name: string) => ({ name, dtype: p.dtypes?.[name] || "" })));
       })
@@ -1236,27 +1238,38 @@ function DashboardBuilderViewBody({
   // 2026-10-07 (dashboard edit mode): the engine STAYS ON while editing -
   // the editor shows the same live numbers as the view and re-runs just
   // the block that changed.
-  const warehouse = Boolean(dash.warehouse_native);
+  // 2026-10-12 (round 35b): a page reads its own source when it has one (a merged dashboard can
+  // hold a BigQuery page next to an uploaded-file page) - everything below follows the page on screen
+  const pageDsId = activePage?.datasource_id || dash.datasource_id;
+  const pageDsName = activePage?.datasource_name || dash.datasource_name;
+  const pageDsKind = activePage?.datasource_kind || dash.datasource_kind;
+  const warehouse = activePage?.warehouse_native ?? Boolean(dash.warehouse_native);
+  const shellDash = useMemo(
+    () => ({ ...dash, datasource_id: pageDsId, datasource_name: pageDsName, datasource_kind: pageDsKind, warehouse_native: warehouse }),
+    [dash, pageDsId, pageDsName, pageDsKind, warehouse]
+  );
   const source = useMemo<RunSource>(
     () =>
       warehouse
         ? {
             kind: "warehouse",
             run: (pageId, req, signal) => dashboardBuilderApi.runPage(dash.id, pageId, req, signal),
+            // round 35: open on the last complete run at once; refresh quietly when it's over 15 min old
+            snapshot: (pageId, signal) => dashboardBuilderApi.pageSnapshot(dash.id, pageId, signal),
             options: (paramId, opts, signal) => dashboardBuilderApi.parameterOptions(dash.id, paramId, opts, signal),
           }
         : {
             kind: "file",
-            datasourceId: dash.datasource_id,
+            datasourceId: pageDsId,
             // What a file block's subtitle calls its table ("... · Bookings export").
-            name: dash.datasource_name,
+            name: pageDsName,
             preview: (pageId, filters, blockFilters) => dashboardBuilderApi.previewFiltered(dash.id, pageId, filters, blockFilters),
-            distinctValues: dash.datasource_id
+            distinctValues: pageDsId
               ? (column, search) =>
-                  datasourceApi.getColumnDistinctValues(dash.datasource_id as string, column, null, { search, limit: 200 }).then((r) => ({ values: r.values }))
+                  datasourceApi.getColumnDistinctValues(pageDsId as string, column, null, { search, limit: 200 }).then((r) => ({ values: r.values }))
               : undefined,
           },
-    [warehouse, dash.id, dash.datasource_id, dash.datasource_name]
+    [warehouse, dash.id, pageDsId, pageDsName]
   );
   const persistSavedViews = useCallback(
     async (views: Parameters<typeof dashboardBuilderApi.updateSavedViews>[1]) => {
@@ -1272,6 +1285,83 @@ function DashboardBuilderViewBody({
     source,
     persistSavedViews: dash.can_edit ? persistSavedViews : undefined,
   });
+  // 2026-10-12 (round 35): a live source GD360 computes itself (Google Sheets, an API, a stream):
+  // Refresh reloads it and recomputes every block - the same job a scheduled refresh runs - then
+  // the page reloads with the new numbers.
+  const [fileRefreshing, setFileRefreshing] = useState(false);
+  const [fileRefreshError, setFileRefreshError] = useState<string | null>(null);
+  const refreshFileData = useCallback(async () => {
+    setFileRefreshing(true);
+    setFileRefreshError(null);
+    try {
+      const job = await jobsApi.runNow(dash.id);
+      if (job.status === "failed") setFileRefreshError(job.error_message || "Couldn't refresh from the source just now.");
+      setDash(await dashboardBuilderApi.get(dash.id));
+    } catch (e: any) {
+      setFileRefreshError(e?.response?.data?.detail || "Couldn't refresh from the source just now.");
+    } finally {
+      setFileRefreshing(false);
+    }
+  }, [dash.id, setDash]);
+  // 2026-10-12 (round 35b): auto-refresh. The schedule itself runs on the server (and keeps the
+  // snapshot fresh); the open page picks those numbers up - or, on Real-time, re-runs every minute
+  // while the tab is visible. Nothing runs while editing.
+  const [savingSchedule, setSavingSchedule] = useState(false);
+  const interval = (dash.refresh_interval || "off") as RefreshInterval;
+  const setScheduleInterval = useCallback(async (next: RefreshInterval) => {
+    setSavingSchedule(true);
+    try {
+      const out = await jobsApi.updateSchedule(dash.id, next);
+      setDash({ ...dash, refresh_interval: out.refresh_interval, next_refresh_at: out.next_refresh_at, refresh_paused: false });
+    } catch {
+      // the panel keeps the old choice
+    } finally {
+      setSavingSchedule(false);
+    }
+  }, [dash, setDash]);
+  const runRef = useRef(run);
+  runRef.current = run;
+  const refreshFileRef = useRef(refreshFileData);
+  refreshFileRef.current = refreshFileData;
+  useEffect(() => {
+    if (interval === "off" || isEditing) return;
+    const realtime = interval === "realtime";
+    const every = realtime || ["5m", "15m", "30m"].includes(interval) ? 60_000 : 300_000;
+    const tick = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      if (warehouse) {
+        if (realtime) runRef.current.revalidate();
+        else runRef.current.reloadSnapshot();
+      } else if (realtime && dash.can_edit && isLiveKind(pageDsKind)) {
+        refreshFileRef.current();
+      } else if (!realtime) {
+        dashboardBuilderApi.get(dash.id).then((d) => setDash(d)).catch(() => undefined);
+      }
+    };
+    const id = window.setInterval(tick, every);
+    const onVisible = () => { if (document.visibilityState === "visible") tick(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { window.clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interval, isEditing, warehouse, activePage?.id, dash.id]);
+  const freshness = useMemo(() => {
+    let bytes = 0;
+    let queries = 0;
+    for (const p of dash.pages) {
+      for (const b of p.blocks) {
+        const lr = (b.last_run || null) as { bytes_scanned?: number | null } | null;
+        if (lr) { queries += 1; bytes += Number(lr.bytes_scanned || 0); }
+      }
+    }
+    return {
+      sources: (dash.sources || []).map((s) => ({ name: s.name, kind: s.kind })),
+      schedule: {
+        interval, canEdit: dash.can_edit, onChange: setScheduleInterval, saving: savingSchedule,
+        nextAt: dash.next_refresh_at || null, paused: Boolean(dash.refresh_paused),
+        bytesPerRefresh: bytes || null, queriesPerRefresh: queries || null,
+      },
+    };
+  }, [dash, interval, setScheduleInterval, savingSchedule]);
   const columnsFor = useCallback(
     (block: DashboardBlock) => {
       const table = block.config?.spec?.table as string | undefined;
@@ -1399,7 +1489,7 @@ function DashboardBuilderViewBody({
         />
       )}
       <DashboardShell
-        dashboard={dash}
+        dashboard={shellDash}
         page={activePage}
         run={run}
         source={source}
@@ -1415,6 +1505,23 @@ function DashboardBuilderViewBody({
         editing={isEditing ? { editor, onDone: done, onRename: renameDashboard } : null}
         onPinColor={appearance.pin}
         onOpenAppearance={openAppearance}
+        freshness={freshness}
+        emptyPage={isEditing && dash.can_edit && activePage ? (
+          <EmptyPageStart
+            key={activePage.id}
+            dash={dash}
+            page={activePage}
+            columns={warehouse ? Object.values(dash.tables || {}).flat().map((c) => ({ name: c.name, dtype: String(c.type || "") })) : editorColumns}
+            onChange={(d, focusPageId) => { setDash(d); if (focusPageId) setActivePageId(focusPageId); }}
+          />
+        ) : undefined}
+        dataRefresh={warehouse ? null : {
+          // a file page of a merged live + file dashboard: Refresh updates the live pages (server side)
+          onRefresh: dash.can_edit && (isLiveKind(pageDsKind) || (dash.sources || []).some((x) => x.live)) ? refreshFileData : undefined,
+          working: fileRefreshing,
+          error: fileRefreshError,
+          note: dash.can_edit ? null : "Only people who can edit this dashboard can refresh it.",
+        }}
         subtitleExtra={
           // 2026-10-10 (one kind of dashboard): "Made from answer / analysis"
           // - the way back to what this dashboard was made from.
@@ -1466,7 +1573,7 @@ function DashboardBuilderViewBody({
                   only when a block's QUERY was last saved, so this badge sat
                   next to it saying "Data updated 10 minutes ago" (and would
                   say "3 days ago" next week) about live numbers. */}
-              {activePage && !dash.warehouse_native && <DataFreshnessBadge blocks={activePage.blocks} />}
+              {/* round 35: freshness moved into the header's DataFreshness control */}
             </>
           ),
           tabs,
