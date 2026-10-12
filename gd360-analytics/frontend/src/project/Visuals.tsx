@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import type { DashKpi, Visual } from "../api/projects";
 import { formatCell, formatValue, isYearColumn } from "./format";
 import ChartWithControls from "./ChartControls";
+import ForecastChart from "./ForecastChart";
 
 /** A round number at or below v, on the scale of `span` (for an axis start). */
 function niceFloor(v: number, span: number): number {
@@ -149,7 +150,7 @@ export function SourceTags({ names }: { names?: string[] | null }) {
   return (
     <span className="inline-flex gap-1.5 flex-wrap justify-end shrink-0">
       {names.slice(0, 3).map((n) => (
-        <span key={n} className="inline-flex items-center h-[22px] px-2 rounded-md bg-subtle text-[11px] text-secondary whitespace-nowrap">{n}</span>
+        <span key={n} title={n} className="inline-block leading-[22px] h-[22px] px-2 rounded-md bg-subtle text-[11px] text-secondary whitespace-nowrap max-w-[180px] truncate">{n}</span>
       ))}
       {names.length > 3 && <span className="text-[11px] text-muted self-center">+{names.length - 3}</span>}
     </span>
@@ -194,14 +195,15 @@ export function VisualCard({
   }
   return (
     <section data-explain-anchor={anchor} className="rounded-card border border-border bg-surface p-4 sm:p-5 flex flex-col gap-3 min-w-0 [&>div.card]:border-0 [&>div.card]:bg-transparent [&>div.card]:p-0 [&>div.card]:shadow-none [&>div.card]:rounded-none [&>div.card:hover]:shadow-none">
-      <div className="flex items-start justify-between gap-3">
-        <h3 className="m-0 text-section font-semibold text-text leading-snug">{visual.title}</h3>
-        <div className="flex items-center gap-2 shrink-0">
+      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+        <h3 className="m-0 text-section font-semibold text-text leading-snug min-w-0">{visual.title}</h3>
+        <div className="flex items-center gap-2 shrink-0 ml-auto max-w-full">
           <SourceTags names={visual.sources} />
           {actions}
         </div>
       </div>
       {visual.type === "waterfall" && <WaterfallChart visual={visual} />}
+      {visual.type === "forecast" && <ForecastChart visual={visual} />}
       {visual.type === "diverging" && <DivergingBars visual={visual} />}
       {visual.type === "chart" && (
         <ChartWithControls

@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import type { DashKpi, EvidenceTable, ProjectRun, RunStep } from "../api/projects";
 import { KpiRow, VisualCard } from "./Visuals";
+import WaysForward from "./WaysForward";
 import { ExplainButton, ExplainPanel, useExplain } from "../thread/Explain";
 import { autoRunPreference, bytes, ms, MODE_LABEL, setAutoRunPreference } from "./format";
 
@@ -321,12 +322,7 @@ export function ResultsTab({ run }: { run: ProjectRun }) {
   const res = run.result;
   if (!res || run.status !== "done") {
     if (run.status === "needs_input" && res?.answer) {
-      return (
-        <div className="rounded-card border border-warning-border bg-warning-fill p-5">
-          <div className="text-section font-semibold text-text">{res.answer.headline}</div>
-          <p className="text-ui text-secondary mt-2 mb-0">{res.answer.answer}</p>
-        </div>
-      );
+      return <WaysForward answer={res.answer} />;
     }
     return <Empty text={run.status === "running" || run.status === "planning" ? "The answer appears here when every source has replied." : "No results for this question."} spinner={run.status === "running"} />;
   }
@@ -353,8 +349,9 @@ export function ResultsTab({ run }: { run: ProjectRun }) {
       />
     );
   };
-  const lead = visuals.filter((v) => v.type === "waterfall");
-  const rest = visuals.filter((v) => v.type !== "waterfall");
+  // round 32: a forecast leads the answer, like the waterfall of a change does
+  const lead = visuals.filter((v) => v.type === "waterfall" || v.type === "forecast");
+  const rest = visuals.filter((v) => v.type !== "waterfall" && v.type !== "forecast");
   const overall = (res.summary as any)?.direction as string | undefined;
   const changeWord = overall === "up" ? "rise" : overall === "down" ? "drop" : "change";
   let causeNo = 0;
@@ -434,7 +431,8 @@ export function ResultsTab({ run }: { run: ProjectRun }) {
           </div>
         </section>
       )}
-      {lead.length > 0 && kpis.length > 0 && <KpiRow items={kpis} />}
+      {/* a forecast's hero already states its numbers - no second row of the same */}
+      {lead.length > 0 && kpis.length > 0 && !lead.some((v) => v.type === "forecast") && <KpiRow items={kpis} />}
       {rest.map((v, i) => card(v, `v${i}`, `${run.id}:${i}`))}
       {(res.warnings || []).length > 0 && (
         <div className="rounded-card border border-warning-border bg-warning-fill p-3.5 text-ui text-warning flex flex-col gap-1">
