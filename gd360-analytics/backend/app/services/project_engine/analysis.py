@@ -482,6 +482,43 @@ def _lookup(spec: dict, tables: dict, facts: _Facts) -> dict:
     return {"summary": {"rows": int(len(df))}, "visuals": visuals, "warnings": []}
 
 
+_X100_RE = re.compile(r"\*\s*100(?:\.0*)?\b|\b100(?:\.0*)?\s*\*")
+
+
+def reconcile_format(spec: dict, tables: dict[str, pd.DataFrame], sql_by_table: dict[str, str] | None = None) -> str | None:
+    """2026-10-12 (round 36): the unit a rate is REALLY in, from the numbers themselves.
+
+    The planner names a format ("percent": 24.3 means 24.3%; "ratio": 0.243 means 24.3%) before any
+    data exists. When its SQL computes engaged_sessions / sessions it returns 0.243, and the plan's
+    "percent" then printed it as "0.2%" - in the headline tile and the answer - while the chart, which
+    reads the values, drew 24.3%. Here the values decide: a "percent" whose every value lies in 0..1,
+    with no x100 in the SQL that made it and no pct/percent in its name, is a ratio; a "ratio" with
+    values above 1.5 is in percentage points."""
+    from . import present
+    fmt = (spec or {}).get("format")
+    if fmt not in ("percent", "ratio"):
+        return fmt
+    df = tables.get((spec or {}).get("table")) if spec.get("table") else None
+    if df is None or not len(df):
+        return fmt
+    names = [spec.get("value_column")] + list(spec.get("value_columns") or [])
+    cols = [c for c in (_col(df, n) for n in names if n) if c]
+    if not cols:
+        cols = [c for c in df.columns if present._PERCENT_NAME.search(str(c)) and not present._NOT_PERCENT.search(str(c))]
+    if not cols:
+        return fmt
+    vals = pd.concat([pd.to_numeric(df[c], errors="coerce") for c in cols]).dropna()
+    if not len(vals):
+        return fmt
+    sql = (sql_by_table or {}).get(spec.get("table")) or ""
+    named_pct = any(re.search(r"pct|percent", str(c), re.I) for c in cols)
+    if fmt == "percent" and bool(((vals >= 0) & (vals <= 1)).all()) and not _X100_RE.search(sql) and not named_pct:
+        return "ratio"
+    if fmt == "ratio" and bool((vals.abs() > 1.5).any()):
+        return "percent"
+    return fmt
+
+
 def run_analysis(spec: dict, tables: dict[str, pd.DataFrame]) -> dict:
     kind = (spec or {}).get("format") or "number"
     if kind not in ("currency", "number", "integer", "percent", "ratio"):

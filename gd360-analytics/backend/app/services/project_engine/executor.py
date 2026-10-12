@@ -516,6 +516,14 @@ def analyse(plan: dict, tables: dict, steps: list[dict], question: str = "") -> 
         spec["rank"] = present.question_rank(question)
     warnings: list[str] = []
     try:
+        # round 36: a rate's unit comes from its values, not the plan's guess (24.3%, never "0.2%")
+        from .analysis import reconcile_format
+        fixed = reconcile_format(spec, tables, {s.get("id"): s.get("sql") or "" for s in steps or []})
+        if fixed and fixed != spec.get("format"):
+            spec["format"] = fixed
+    except Exception as e:  # noqa: BLE001 - never fails an answer
+        print(f"[project_engine] format reconcile skipped: {e}")
+    try:
         analysis = run_analysis(spec, tables)
     except (AnalysisError, KeyError, ValueError, TypeError) as e:
         warnings.append(f"The planned analysis could not be completed ({e}); showing the results as they are.")
