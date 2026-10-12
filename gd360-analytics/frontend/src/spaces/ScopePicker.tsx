@@ -113,6 +113,7 @@ export function scopeChipLabel(scope: Scope, sources: ProjectSource[] | null, sp
   }
   if (scope.kind === "sources") {
     const n = scope.ids.length;
+    if (n === 0) return "Choose sources"; // round 35b: never "0 sources"
     if (n === 1) return all.find((s) => s.id === scope.ids[0])?.name || "1 source";
     return `${n} sources`;
   }
