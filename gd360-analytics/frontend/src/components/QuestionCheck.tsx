@@ -130,10 +130,28 @@ export function periodWords(period: CheckPeriod): string {
     const [a, b] = period.parts;
     return `, comparing ${partWords(a)} with ${partWords(b)}${a.future || b.future ? " (part of it is a forecast - it hasn't happened yet)" : ""}`;
   }
-  return ` for ${partWords(period)}${period.future ? " (a forecast - it hasn't happened yet)" : ""}`;
+  return ` for ${partWords(period)}${period.forecast ? " (a forecast, built from the history)" : period.future ? " (a forecast - it hasn't happened yet)" : ""}`;
+}
+
+/** Round 32: the kinds of "did you mean?" about a date - asked before anything else. */
+export const DATE_ISSUE_KINDS = ["year_typo", "month_typo", "future_year", "forecast_year"];
+
+/** The question after a tap on a date option: the year swapped in, a different question
+ *  ("Show 2021–2025 instead"), or - kept as written - the word that is never asked about again. */
+export function fixQuestion(question: string, issue: CheckIssue, o: CheckOption): { question: string; kept?: string } {
+  if (o.question) return { question: o.question };
+  const from = issue.fix?.from || issue.said || "";
+  if (!from || o.value.toLowerCase() === from.toLowerCase()) return { question, kept: from || undefined };
+  return { question: question.replace(new RegExp(`\\b${from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i"), o.value) };
 }
 
 function restate(check: Check, period: CheckPeriod | null, chosen: ChoiceRow[]): string {
+  if (period?.forecast && !period.parts) {
+    // round 32: "A forecast of your sales for 2026, built from the history in Ecommerce_Data."
+    const names = chosen.map((c) => c.name);
+    const from = names.length ? ` in ${names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`}` : "";
+    return `A forecast of ${check.what || "your numbers"} for ${partWords(period)}, built from the history${from}.`;
+  }
   const what = (check.what || "the answer").replace(/^./, (c) => c.toUpperCase());
   let s = what;
   if (period) s += periodWords(period);
@@ -162,7 +180,7 @@ export default function QuestionCheckCard({
   /** `kept`: the word the person chose to keep as written - not asked about again */
   onFixDate: (fixedQuestion: string, kept?: string) => void;
 }) {
-  const dateIssue = check.issues.find((i) => i.kind === "year_typo" || i.kind === "month_typo" || i.kind === "future_year");
+  const dateIssue = check.issues.find((i) => DATE_ISSUE_KINDS.includes(i.kind));
   const dataIssue = check.issues.find((i) => ["choose", "swap", "confirm_pick", "cant_answer"].includes(i.kind));
   const byId = useMemo(() => new Map(check.candidates.map((c) => [c.id, c])), [check.candidates]);
 
@@ -294,11 +312,10 @@ export default function QuestionCheckCard({
       </div>
 
       <div className="px-5 sm:px-6 py-5 flex flex-col gap-6">
-        {dateIssue && <DateFix issue={dateIssue} chosen={year} busy={busy} onPick={(v) => {
-          setYear(v);
-          const from = dateIssue.fix?.from || dateIssue.said || "";
-          if (!from || v.toLowerCase() === from.toLowerCase()) onFixDate(check.question, from || undefined);
-          else onFixDate(check.question.replace(new RegExp(`\\b${from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i"), v));
+        {dateIssue && <DateFix issue={dateIssue} chosen={year} busy={busy} onPick={(o) => {
+          setYear(o.value);
+          const f = fixQuestion(check.question, dateIssue, o);
+          onFixDate(f.question, f.kept);
         }} />}
 
         {!dateIssue && (check.period_options || []).length > 1 && (
@@ -382,11 +399,13 @@ export default function QuestionCheckCard({
   );
 }
 
-function DateFix({ issue, chosen, busy, onPick }: { issue: CheckIssue; chosen: string | null; busy?: boolean; onPick: (v: string) => void }) {
+export function DateFix({ issue, chosen, busy, onPick }: { issue: CheckIssue; chosen: string | null; busy?: boolean; onPick: (o: CheckOption) => void }) {
+  // round 32: a forecast's "did you mean?" is a suggestion, not a warning - it reads calm
+  const calm = issue.kind === "forecast_year";
   return (
-    <section className="flex flex-col gap-3 rounded-[16px] border border-warning-border bg-warning-fill/60 p-4" aria-label="Check the date" data-check-date={issue.kind}>
+    <section className={`flex flex-col gap-3 rounded-[16px] border p-4 ${calm ? "border-kind-answer-border bg-kind-answer-fill/50" : "border-warning-border bg-warning-fill/60"}`} aria-label="Check the date" data-check-date={issue.kind}>
       <div className="flex items-start gap-3">
-        <span className="mt-0.5 w-7 h-7 rounded-full bg-warning/15 text-warning grid place-items-center shrink-0" aria-hidden="true">
+        <span className={`mt-0.5 w-7 h-7 rounded-full grid place-items-center shrink-0 ${calm ? "bg-kind-answer/15 text-kind-answer" : "bg-warning/15 text-warning"}`} aria-hidden="true">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="5" width="18" height="16" rx="2.5" /><path d="M3 10h18M8 3v4M16 3v4" /></svg>
         </span>
         <span className="flex flex-col gap-0.5">
@@ -396,8 +415,8 @@ function DateFix({ issue, chosen, busy, onPick }: { issue: CheckIssue; chosen: s
       </div>
       <div className="flex flex-wrap gap-2 pl-10">
         {issue.options.map((o: CheckOption) => (
-          <button key={o.id} type="button" disabled={busy} onClick={() => onPick(o.value)} aria-pressed={chosen === o.value}
-            className={`ui-focus h-10 px-4 rounded-full border text-[14px] font-medium inline-flex items-center gap-2 ${chosen === o.value ? "border-kind-answer bg-kind-answer text-[rgb(var(--color-base))]" : "border-border-strong bg-surface text-text hover:border-kind-answer-border"}`}
+          <button key={o.id} type="button" disabled={busy} onClick={() => onPick(o)} aria-pressed={chosen === o.value}
+            className={`ui-focus h-10 px-4 rounded-full border text-[14px] font-medium inline-flex items-center gap-2 ${chosen === o.value || (calm && o.recommended && chosen == null) ? "border-kind-answer bg-kind-answer text-[rgb(var(--color-base))]" : "border-border-strong bg-surface text-text hover:border-kind-answer-border"}`}
             data-check-year={o.value}>
             {busy && chosen === o.value ? <Spinner className="w-3.5 h-3.5" /> : null}
             {o.label}
@@ -444,6 +463,35 @@ export function QuestionEditor({ question, onSave, onCancel, autoFocus = false }
         {onCancel && <button type="button" onClick={onCancel} className="ui-focus h-9 px-3 rounded-full text-[13px] text-secondary hover:text-text">Keep it</button>}
         <span className="ml-auto text-[11.5px] text-faint">Enter to check · nothing runs until you say go</span>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Round 32: the same "did you mean?" for a follow-up in a thread - only a date
+ * that can't be right is asked about (the thread's data is already chosen).
+ * "2016 forcast in sales" with data to 2025 -> Forecast 2026 · Show 2021–2025
+ * instead · I really mean 2016. One tap asks the fixed question.
+ */
+export function FollowupCheck({ check, busy, onPick, onClose }: {
+  check: Check; busy?: boolean; onPick: (question: string, kept?: string) => void; onClose: () => void;
+}) {
+  const [chosen, setChosen] = useState<string | null>(null);
+  const issue = check.issues.find((i) => DATE_ISSUE_KINDS.includes(i.kind));
+  if (!issue) return null;
+  return (
+    <div className="gd-euliv-in flex flex-col gap-2.5" role="region" aria-label="Before I start" data-followup-check={issue.kind}>
+      <div className="flex items-center justify-between gap-3 px-1">
+        <span className="min-w-0 truncate font-mono text-[11px] uppercase tracking-[0.14em] text-muted">Before I start · “{check.question}”</span>
+        <button type="button" onClick={onClose} aria-label="Dismiss" className="ui-focus w-7 h-7 rounded-full grid place-items-center text-muted hover:text-text hover:bg-subtle/60 shrink-0" data-followup-check-close="">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+        </button>
+      </div>
+      <DateFix issue={issue} chosen={chosen} busy={busy} onPick={(o) => {
+        setChosen(o.value);
+        const f = fixQuestion(check.question, issue, o);
+        onPick(f.question, f.kept);
+      }} />
     </div>
   );
 }
