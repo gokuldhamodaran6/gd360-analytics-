@@ -120,6 +120,8 @@ export default function GuidedAnalysis() {
   const stepRefs = useRef<Record<string, HTMLElement | null>>({});
   const threadPane = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  // round 33: the open question's tab is always in view (Q8 sat cut off at the strip's edge)
+  const switcherRef = useRef<HTMLDivElement>(null);
 
   const loadProject = useCallback(async () => {
     try {
@@ -186,6 +188,15 @@ export default function GuidedAnalysis() {
   const numberOf = useCallback((id: string) => ordered.findIndex((r) => r.id === id) + 1, [ordered]);
 
   const run = (selected && runs[selected]) || ordered[ordered.length - 1] || null;
+  useEffect(() => {
+    const strip = switcherRef.current;
+    const tab = strip?.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (!strip || !tab) return;
+    const left = tab.offsetLeft - strip.offsetLeft;
+    if (left < strip.scrollLeft || left + tab.offsetWidth > strip.scrollLeft + strip.clientWidth) {
+      strip.scrollTo({ left: Math.max(0, left - (strip.clientWidth - tab.offsetWidth) / 2), behavior: "smooth" });
+    }
+  }, [run?.id, ordered.length]);
   const currentView: View = view || defaultView(run);
 
   useEffect(() => {
@@ -630,7 +641,7 @@ export default function GuidedAnalysis() {
             <section aria-label="Work" className="flex-[999_1_560px] min-w-0 flex flex-col lg:h-full lg:overflow-auto" data-guided-work="">
               <div className="sticky top-0 z-10 shrink-0 bg-base/95 backdrop-blur border-b border-border px-5 sm:px-7 flex items-center gap-4 min-h-[56px] flex-wrap py-2">
                 {ordered.length > 1 && (
-                  <div role="tablist" aria-label="Questions in this thread" className="flex items-center gap-1 p-[3px] rounded-[12px] border border-border bg-surface max-w-full overflow-x-auto" data-question-switcher="">
+                  <div ref={switcherRef} role="tablist" aria-label="Questions in this thread" className="flex items-center gap-1 p-[3px] rounded-[12px] border border-border bg-surface max-w-full overflow-x-auto" data-question-switcher="">
                     {ordered.map((r, i) => {
                       const on = run?.id === r.id;
                       const done = isAnswered(r);
