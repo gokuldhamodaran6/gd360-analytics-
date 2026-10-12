@@ -4,13 +4,15 @@ import { api } from "./client";
 
 export type AppNotification = {
   id: string;
-  kind: "alert" | "reminder" | "info" | "failed";
+  kind: "alert" | "reminder" | "info" | "failed" | "mention" | "comment";
   title: string;
   body: string | null;
   link: string | null;
   data: {
     automation_id?: string | null; link?: string | null; why?: string | null; value?: string | null; line?: string | null;
     dashboard_id?: string | null; page_id?: string | null; block_id?: string | null; reminder?: boolean; source?: string | null;
+    // round 38: a teammate's comment / @mention
+    comment_id?: string | null; thread_id?: string | null; author?: string | null; initials?: string | null;
   };
   automation_id: string | null;
   read: boolean;

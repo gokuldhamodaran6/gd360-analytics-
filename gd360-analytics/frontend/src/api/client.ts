@@ -750,7 +750,7 @@ export const datasourceApi = {
     id: string,
     column: string,
     versionId: string | null,
-    opts: { table?: string | null; search?: string; limit?: number } = {}
+    opts: { table?: string | null; search?: string; limit?: number; weight?: string | null } = {}
   ) =>
     api
       .get<ColumnDistinctValues>(`/datasources/${id}/columns/${encodeURIComponent(column)}/distinct-values`, {
@@ -759,6 +759,8 @@ export const datasourceApi = {
           table: versionId ? undefined : opts.table || undefined,
           search: opts.search || undefined,
           limit: opts.limit || undefined,
+          // round 37: count each value in the dashboard's own measure (sessions), not in rows
+          weight: opts.weight || undefined,
         },
       })
       .then((r) => r.data),
@@ -2073,7 +2075,9 @@ export type DashboardBuilderDetail = DashboardBranding & {
   datasource_name: string | null;
   pages: DashboardBuilderPage[];
   // 2026-10-12 (round 35b): every source its pages read, and its auto-refresh
-  sources?: { id: string; name: string; kind: string; live: boolean }[];
+  sources?: { id: string; name: string; kind: string; live: boolean; synced?: boolean; synced_at?: string | null }[];
+  // round 37: {parameter id: block ids it filters} on a multi-table file / app source
+  parameter_scope?: Record<string, string[]>;
   refresh_interval?: RefreshInterval;
   next_refresh_at?: string | null;
   last_refreshed_at?: string | null;
@@ -2588,11 +2592,11 @@ export const dashboardBuilderApi = {
   // typed and guarded matchedRows as `number | null` with a `!== null`
   // check; only this raw response type was still (incorrectly) claiming
   // matched_rows could never be anything but a number.
-  previewFiltered: (dashboardId: string, pageId: string, filters: FilterCriterion[], blockFilters?: Record<string, FilterCriterion[]>) =>
+  previewFiltered: (dashboardId: string, pageId: string, filters: FilterCriterion[], blockFilters?: Record<string, FilterCriterion[]>, opts?: { period?: string | null; compare?: boolean }) =>
     api
       .post<{ blocks: FilteredBlock[]; matched_rows: number | null; date_bounds?: Record<string, { min: string; max: string }>; colors?: ColorRegistry | null }>(
         `/dashboard-builder/${dashboardId}/pages/${pageId}/preview-filtered`,
-        { filters, block_filters: blockFilters || {} }
+        { filters, block_filters: blockFilters || {}, ...(opts?.period ? { period: opts.period } : {}), ...(opts?.compare === false ? { compare: false } : {}) }
       )
       .then((r) => ({ blocks: r.data.blocks, matchedRows: r.data.matched_rows, dateBounds: r.data.date_bounds || null, colors: r.data.colors || null })),
 
@@ -2941,17 +2945,44 @@ export type DashboardComment = {
   body: string;
   anchor: CommentAnchor | null;
   mentions: string[];
+  // round 38: who the @mentions resolved to (people who can open the dashboard).
+  mentioned?: CommentAuthor[];
   resolved_at: string | null;
   created_at: string;
   updated_at: string;
+  edited?: boolean;
   // What the CALLER may do with this comment.
   can_edit: boolean;
   can_resolve: boolean;
   can_delete: boolean;
 };
-export type CommentThread = DashboardComment & { replies: DashboardComment[]; reply_count: number; resolved: boolean };
+// round 38: GD360's offer on a thread - never applied until a person accepts.
+export type CommentSuggestion = {
+  kind: "one_off" | string;
+  key: string;
+  label: string;
+  text: string;
+  applied: boolean;
+  applied_by: string | null;
+  applied_at: string | null;
+  can_apply: boolean;
+};
+export type CommentThread = DashboardComment & {
+  replies: DashboardComment[];
+  reply_count: number;
+  resolved: boolean;
+  resolved_by?: string | null;
+  block_title?: string | null;
+  block_type?: string | null;
+  participants?: CommentAuthor[];
+  involves_me?: boolean;
+  mentions_me?: boolean;
+  suggestion?: CommentSuggestion | null;
+};
 export type CommentCounts = Record<string, { open: number; total: number }>;
-export type CommentsResponse = { threads: CommentThread[]; counts: CommentCounts; total: number; open: number };
+export type CommentsResponse = { threads: CommentThread[]; counts: CommentCounts; total: number; open: number; me?: string | null; can_edit_dashboard?: boolean };
+export type CommentPerson = { id: string; name: string; initials: string; email: string | null; role: string; is_me: boolean };
+export type CommentPeople = { people: CommentPerson[]; shared: boolean; workspace_name: string | null };
 
 export const dashboardCommentsApi = {
   // Threads for one block (block_id), one page's page-level threads
@@ -2966,12 +2997,17 @@ export const dashboardCommentsApi = {
       .then((r) => r.data),
   // A new thread (block_id / page_id / neither, optional anchor) or a reply
   // (parent_id). Returns the whole thread the comment belongs to.
-  create: (dashboardId: string, payload: { body: string; block_id?: string | null; page_id?: string | null; parent_id?: string | null; anchor?: CommentAnchor | null }) =>
+  create: (dashboardId: string, payload: { body: string; block_id?: string | null; page_id?: string | null; parent_id?: string | null; anchor?: CommentAnchor | null; mention_ids?: string[] }) =>
     api.post<CommentThread>(`/dashboard-builder/${dashboardId}/comments`, payload).then((r) => r.data),
   // body: the author only. resolved: the author or an editor (applies to
   // the thread). Returns the thread.
-  update: (dashboardId: string, commentId: string, payload: { body?: string; resolved?: boolean }) =>
+  update: (dashboardId: string, commentId: string, payload: { body?: string; resolved?: boolean; mention_ids?: string[] }) =>
     api.patch<CommentThread>(`/dashboard-builder/${dashboardId}/comments/${commentId}`, payload).then((r) => r.data),
+  // round 38: everyone who can open the dashboard - the @ list.
+  people: (dashboardId: string) => api.get<CommentPeople>(`/dashboard-builder/${dashboardId}/comments/people`).then((r) => r.data),
+  // round 38: accept (apply) or undo GD360's suggestion on a thread. Needs edit access.
+  suggestion: (dashboardId: string, commentId: string, apply: boolean) =>
+    api.post<CommentThread>(`/dashboard-builder/${dashboardId}/comments/${commentId}/suggestion`, { apply }).then((r) => r.data),
   // The author or the dashboard owner; a root takes its replies with it.
   // Returns the remaining threads for the same block/page.
   remove: (dashboardId: string, commentId: string) =>
