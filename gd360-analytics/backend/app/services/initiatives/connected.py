@@ -34,6 +34,8 @@ SOURCES = {
     "hubspot": ("CRM", {"pipeline_value", "revenue", "opportunities"},
                 ["Deals created in the last 30 days by source and stage", "Pipeline value by deal stage"]),
     "klaviyo": ("Email", {"open_rate", "click_rate"}, ["Open and click rate by campaign for the last 30 days"]),
+    "whatsapp_business": ("WhatsApp", set(), ["Messages delivered and read rate by template for the last 30 days",
+                                              "WhatsApp cost by category for the last 30 days"]),
     "shopify": ("Sales", {"revenue"}, ["Revenue by day for the last 30 days"]),
     "woocommerce": ("Sales", {"revenue"}, ["Revenue by day for the last 30 days"]),
     "stripe": ("Revenue", {"revenue"}, ["New revenue by customer for the last 30 days"]),
@@ -43,7 +45,8 @@ SOURCES = {
 RELEVANT = {
     "event": ("ga4", "linkedin_pages", "google_ads", "meta_ads", "hubspot", "instagram", "facebook_pages", "klaviyo"),
     "webinar": ("ga4", "linkedin_pages", "google_ads", "meta_ads", "hubspot", "youtube", "klaviyo"),
-    "campaign": ("ga4", "google_ads", "meta_ads", "linkedin_pages", "klaviyo", "hubspot", "instagram", "facebook_pages", "search_console"),
+    "campaign": ("ga4", "google_ads", "meta_ads", "linkedin_pages", "klaviyo", "hubspot", "instagram", "facebook_pages", "search_console",
+                 "whatsapp_business"),
     "abm": ("ga4", "hubspot", "linkedin_pages", "google_ads", "meta_ads", "search_console"),
     "product": ("ga4", "stripe", "shopify", "woocommerce", "search_console"),
     "hiring": ("linkedin_pages",),
