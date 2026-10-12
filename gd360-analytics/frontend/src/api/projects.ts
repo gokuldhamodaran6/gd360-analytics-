@@ -58,11 +58,14 @@ export type Fact = { id: string; label: string; value: number | null; kind: stri
 type VisualBase = { sources?: string[] };
 export type Visual = VisualBase &
   (
-    | { type: "waterfall"; title: string; items: { label: string; value: number; kind: "total" | "up" | "down" }[]; format: string; currency?: string | null }
+    | { type: "waterfall"; title: string; items: { label: string; value: number; kind: "total" | "up" | "down" }[]; format: string; currency?: string | null;
+        details?: { columns: ResultColumn[]; rows: Record<string, unknown>[] } | null }
     | { type: "diverging"; title: string; items: { label: string; value: number; share: number | null }[]; format: string; currency?: string | null }
     | { type: "chart"; title: string; chart_type?: string | null; columns: ResultColumn[]; rows: Record<string, unknown>[]; truncated?: boolean;
         // round 14: "table" = a formatted detail table; a note under the chart
-        display?: "table" | null; note?: string | null; time_column?: string | null }
+        display?: "table" | null; note?: string | null; time_column?: string | null;
+        // round 33: every column the result returned, when the chart draws one of them
+        details?: { columns: ResultColumn[]; rows: Record<string, unknown>[] } | null }
     | { type: "kpis"; items: { label: string; display: string; fact_id: string }[] }
     | ForecastVisual
   );
@@ -95,6 +98,8 @@ export type ForecastVisual = {
     mape?: number | null; baseline_mape?: number | null; baseline?: string | null; long_range_from?: number | null; notes: string[];
   };
   columns: ResultColumn[]; rows: Record<string, unknown>[];
+  // round 33: open on the months when asked "by month"; the grain the test error is measured at
+  view?: "months" | null; error_grain?: string | null;
 };
 
 export type Cause = {

@@ -44,7 +44,11 @@ export type BlockSnapshot = {
   columns: { name: string; type?: string }[] | string[];
   rows: Record<string, unknown>[];
   dimensions?: string[];
-  kpi?: { value: unknown; display: string; delta?: string | null; delta_caption?: string | null; sparkline?: number[] } | null;
+  kpi?: {
+    value: unknown; display: string; delta?: string | null; delta_caption?: string | null; sparkline?: number[];
+    // round 33: the number's format and the trend line's grain and periods
+    format?: string | null; grain?: string | null; spark_periods?: string[];
+  } | null;
   currency?: string | null;
   filters_text?: string | null;
 };
