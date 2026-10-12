@@ -1266,10 +1266,16 @@ function DashboardBuilderViewBody({
             preview: (pageId, filters, blockFilters) => dashboardBuilderApi.previewFiltered(dash.id, pageId, filters, blockFilters),
             distinctValues: pageDsId
               ? (column, search) =>
-                  datasourceApi.getColumnDistinctValues(pageDsId as string, column, null, { search, limit: 200 }).then((r) => ({ values: r.values }))
+                  // round 36: a filter on a multi-table source reads its options from the table that has the column
+                  datasourceApi
+                    .getColumnDistinctValues(pageDsId as string, column, null, {
+                      search, limit: 200,
+                      table: ((dash.parameters || []) as any[]).find((p) => p?.column === column)?.table ?? null,
+                    })
+                    .then((r) => ({ values: r.values }))
               : undefined,
           },
-    [warehouse, dash.id, pageDsId, pageDsName]
+    [warehouse, dash.id, pageDsId, pageDsName, dash.parameters]
   );
   const persistSavedViews = useCallback(
     async (views: Parameters<typeof dashboardBuilderApi.updateSavedViews>[1]) => {
