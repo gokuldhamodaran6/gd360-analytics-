@@ -154,7 +154,7 @@ def nice(v, kind: str = "number", currency: str | None = "USD") -> str:
         elif a >= 1e6:
             body = f"{a / 1e6:.2f}M" if a < 1e7 else f"{a / 1e6:.1f}M"
         elif a >= 1e4:
-            body = f"{a / 1e3:.1f}k"
+            body = f"{a / 1e3:.1f}K"  # round 35: "K", like every chart label
         elif a >= 100:
             body = f"{a:,.0f}"
         else:

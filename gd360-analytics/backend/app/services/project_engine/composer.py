@@ -140,9 +140,12 @@ def _clean(d: dict, facts_by_id: dict) -> dict:
         for r in (d.get("ruled_out") or [])[:6] if isinstance(r, dict) and r.get("title")
     ]
     nxt = [str(q)[:140] for q in (d.get("next_questions") or [])[:3] if str(q).strip()]
-    headline = str(d.get("headline") or "")[:300]
+    from ..explain import tidy_signs  # round 35: "a dip of -1.5%" -> "a dip of 1.5%"
+    headline = tidy_signs(str(d.get("headline") or ""))[:300]
+    for c in causes:
+        c["title"], c["detail"] = tidy_signs(c["title"]), tidy_signs(c["detail"])
     return {
-        "headline": headline, "answer": without_headline(str(d.get("answer") or ""), headline)[:1500],
+        "headline": headline, "answer": tidy_signs(without_headline(str(d.get("answer") or ""), headline))[:1500],
         "causes": causes, "ruled_out": ruled, "next_questions": nxt,
     }
 
