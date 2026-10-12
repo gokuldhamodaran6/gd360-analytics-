@@ -309,6 +309,8 @@ _NEW_COLUMNS = [
     ("automations", "approval_note", "TEXT"),
     ("dashboard_shares", "view_count", "INTEGER DEFAULT 0"),
     ("folders", "kind", "TEXT"),
+    ("dashboard_pages", "datasource_id", "TEXT"),
+    ("dashboards", "last_viewed_at", "TIMESTAMP"),
     ("dashboard_shares", "last_viewed_at", "TIMESTAMP"),
 ]
 

@@ -889,6 +889,9 @@ class Dashboard(Base):
     project_spec = Column(JSON, nullable=True)
     project_snapshot = Column(JSON, nullable=True)
     snapshot_at = Column(DateTime, nullable=True)
+    # 2026-10-12 (round 35b): when someone last opened it - an auto-refresh schedule pauses itself
+    # after 7 days with no viewers (no warehouse bill for a dashboard nobody reads)
+    last_viewed_at = Column(DateTime, nullable=True)
 
     owner = relationship("User", back_populates="dashboards")
     charts = relationship("SavedChart", back_populates="dashboard", cascade="all, delete-orphan")
@@ -940,6 +943,10 @@ class DashboardPage(Base):
     position = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     background_color = Column(String, nullable=True)
+    # 2026-10-12 (round 35b): the source THIS page reads, when it isn't the dashboard's own - a
+    # dashboard merged from others, or made on several sources, keeps each page on its own source
+    # (NULL = the dashboard's source). Plain string, no FK - same reasoning as Dashboard.datasource_id.
+    datasource_id = Column(String, nullable=True)
 
     dashboard = relationship("Dashboard", back_populates="pages")
     blocks = relationship(
@@ -3299,3 +3306,21 @@ class DomainSubscription(Base):
     last_sent_at = Column(DateTime, nullable=True)
     last_error = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class DashboardPageSnapshot(Base):
+    """2026-10-12 (round 35): the last complete, unfiltered run of one dashboard page, per viewer -
+    what the page draws the instant it opens (stale-while-revalidate), with its "as of" time, while a
+    live source refreshes behind it. Per user because a source's row-level access rules can make two
+    people's numbers differ. No foreign key on purpose: a page deleted later only leaves an orphan the
+    next write ignores, never a failed delete."""
+    __tablename__ = "dashboard_page_snapshots"
+    __table_args__ = (UniqueConstraint("page_id", "user_id", name="uq_dashboard_page_snapshot"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    page_id = Column(String, nullable=False, index=True)
+    dashboard_id = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=False)
+    period = Column(String, nullable=True)
+    payload = Column(JSON, nullable=False)
+    computed_at = Column(DateTime, default=datetime.utcnow, nullable=False)

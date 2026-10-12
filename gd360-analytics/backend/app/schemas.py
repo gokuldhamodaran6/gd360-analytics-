@@ -642,6 +642,24 @@ class DashboardOut(BaseModel):
     source_title: Optional[str] = None
     source_id: Optional[str] = None
     source_datasource_id: Optional[str] = None
+    # 2026-10-12 (round 35): everything the Dashboards list shows, in this one call (the page used to
+    # load every dashboard in full, one request per card, just to draw its badge):
+    #   sources    - [{id, name, kind, live}] it reads from
+    #   data_mode  - "live" | "file" | "mixed" | None (services/data_freshness)
+    #   published  - has a published link
+    #   data_at    - when its numbers were last computed (latest block run / page snapshot)
+    #   updated_at - the latest of created / data_at
+    #   preview    - its first page's tiles [{t, x, y, w, h, c}] for a to-scale thumbnail
+    sources: list[dict] = []
+    data_mode: Optional[str] = None
+    published: bool = False
+    data_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    page_count: int = 0
+    block_count: int = 0
+    preview: list[dict] = []
+    # round 35b: its auto-refresh ("off" | "realtime" | "5m" | ... | "daily")
+    refresh_interval: str = "off"
 
 
 class SavedChartOut(BaseModel):
@@ -700,6 +718,22 @@ class CreateBlankDashboardRequest(BaseModel):
     conversation_id: Optional[str] = None
     datasource_id: Optional[str] = None
     name: Optional[str] = Field(default=None, max_length=120)
+    # 2026-10-12 (round 35b): "New dashboard → Your data" picks sources the way Home does - one page
+    # per source when there are several (each page reads its own source)
+    datasource_ids: Optional[list[str]] = Field(default=None, max_length=12)
+
+
+class DraftIntoPageRequest(BaseModel):
+    # round 35b: "What should it show?" on an empty dashboard - GD360 drafts the blocks onto it
+    goal: str = Field(min_length=3, max_length=2000)
+
+
+class MergeDashboardsRequest(BaseModel):
+    # round 35b: "New dashboard → Merge existing dashboards" (2+, in page order) and "Merge a
+    # dashboard in" on an existing one
+    dashboard_ids: list[str] = Field(min_length=1, max_length=12)
+    name: Optional[str] = Field(default=None, max_length=120)
+    keep_originals: bool = True
 
 
 # 2026-09-25 (Round 5, template gallery): the third choice in
@@ -799,6 +833,12 @@ class DashboardPageOut(BaseModel):
     # override, or None to inherit the parent dashboard's background - see
     # models.DashboardPage's own docstring.
     background_color: Optional[str] = None
+    # 2026-10-12 (round 35b): the source this page reads (its own, or the dashboard's) - a merged
+    # dashboard can hold a BigQuery page next to an uploaded-file page
+    datasource_id: Optional[str] = None
+    datasource_name: Optional[str] = None
+    datasource_kind: Optional[str] = None
+    warehouse_native: Optional[bool] = None
 
 
 # ---------- Dashboard Builder Phase 3 (2026-09-24): page management +
@@ -950,6 +990,14 @@ class DashboardBuilderOut(BaseModel):
     # columns ({table: [{name, type}]}) - what the filter-rail/spec editors
     # need to populate selects. Empty for a file source.
     tables: dict[str, list[dict]] = {}
+    # 2026-10-12 (round 35b): every source its pages read ([{id, name, kind, live}]) and its
+    # auto-refresh: the interval ("off" | "realtime" | "5m" | "15m" | "30m" | "1h" | "6h" | "daily"),
+    # when it last/next runs, and whether it has paused itself (nobody opened it for 7 days)
+    sources: list[dict] = []
+    refresh_interval: str = "off"
+    next_refresh_at: Optional[datetime] = None
+    last_refreshed_at: Optional[datetime] = None
+    refresh_paused: bool = False
     # 2026-10-07 (comments round): {block_id: {"open": n, "total": n}} for
     # every block that has at least one comment thread, so the canvas can
     # show "2 replies" without a second request. Page-level threads are
@@ -1782,7 +1830,8 @@ class BulkMoveConversationsRequest(BaseModel):
 # own docstring for why), executed by reusing the exact same
 # ask_ai_block/build_manual_block recompute logic the manual, on-demand
 # block editor already uses - never a second implementation of it.
-REFRESH_INTERVALS = ("off", "15m", "1h", "6h", "daily")
+# round 35b: "realtime" (the open page re-runs every minute; no server schedule), 5m and 30m added
+REFRESH_INTERVALS = ("off", "realtime", "5m", "15m", "30m", "1h", "6h", "daily")
 
 
 class DashboardScheduleOut(BaseModel):
