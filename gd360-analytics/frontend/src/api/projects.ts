@@ -64,7 +64,38 @@ export type Visual = VisualBase &
         // round 14: "table" = a formatted detail table; a note under the chart
         display?: "table" | null; note?: string | null; time_column?: string | null }
     | { type: "kpis"; items: { label: string; display: string; fact_id: string }[] }
+    | ForecastVisual
   );
+
+// 2026-10-12 (round 32): a forecast inside an answer - the history, the
+// forecast for exactly the period asked, and its 80% / 95% ranges
+// (backend project_engine/forecasting.py).
+export type ForecastPoint = {
+  period: string; value: number; kind: "actual" | "partial" | "forecast";
+  lo80?: number; hi80?: number; lo95?: number; hi95?: number; source?: "model" | "long";
+};
+export type ForecastYear = {
+  period: string; value: number; kind: "actual" | "forecast" | "mixed";
+  lo80?: number; hi80?: number; lo95?: number; hi95?: number; actual_part?: number | null; long_range?: boolean;
+};
+export type ForecastVisual = {
+  type: "forecast"; title: string; metric: string; format: string; currency?: string | null;
+  grain: "day" | "week" | "month" | "quarter" | "year";
+  target: { label: string; start: string; end: string; multi_year: boolean; headline_label: string };
+  headline: {
+    label: string; value: number; lo80: number; hi80: number; lo95: number; hi95: number;
+    display: string; range_display: string; wide_display: string;
+    vs?: { label: string; display: string; pct_display?: string | null; pct: number } | null;
+    total_display?: string | null; cagr_display?: string | null;
+  };
+  years: ForecastYear[];
+  points: ForecastPoint[];
+  method: {
+    label: string; history: string; certainty: "tested" | "long-range" | "rough" | "untested";
+    mape?: number | null; baseline_mape?: number | null; baseline?: string | null; long_range_from?: number | null; notes: string[];
+  };
+  columns: ResultColumn[]; rows: Record<string, unknown>[];
+};
 
 export type Cause = {
   title: string;
@@ -86,7 +117,11 @@ export type Answer = {
   ruled_out: { title: string; detail: string }[];
   next_questions: string[];
   written_by?: "model" | "template";
+  // round 32: when the data can't answer it - the closest things it can, one tap each
+  options?: WayForward[];
 };
+
+export type WayForward = { id: string; label: string; kind: "ask" | "connect"; question?: string; href?: string };
 
 export type EvidenceTable = {
   id: string;
@@ -215,6 +250,8 @@ export type Explanation = {
 
 export type AskResult =
   | { kind?: "run"; project_id: string; run_id: string; source_ids?: string[] }
+  // round 32: a follow-up whose date can't be right comes back as a "did you mean?" first
+  | { kind: "check"; project_id: string; check: QuestionCheck; run_id?: undefined; source_ids?: string[] }
   | { kind: "explain"; project_id: string; explain: Explanation; route?: string; run_id?: undefined; source_ids?: string[] };
 
 export type LiveInfo = { kind: "domain" | "link"; label: string; url: string; views: number };
@@ -293,15 +330,17 @@ export type ProjectDashboard = {
 
 // 2026-10-11 (round 24, Understand before answering): the read-back of a
 // question before it runs (backend services/question_check.py).
-export type CheckPeriod = { start: string; end: string; label: string; text: string; assumed?: boolean; key?: string; future?: boolean; parts?: CheckPeriod[] };
+export type CheckPeriod = { start: string; end: string; label: string; text: string; assumed?: boolean; key?: string; future?: boolean; parts?: CheckPeriod[]; forecast?: boolean };
 export type CheckOption = {
   id: string; label: string; value: string; detail?: string; recommended?: boolean;
   fit?: string; why?: string; action?: "connect" | "upload" | "more"; period?: CheckPeriod;
+  // round 32: an option that asks a different question ("Show 2021–2025 instead")
+  question?: string;
 };
 export type CheckIssue = {
   id: string;
-  kind: "year_typo" | "month_typo" | "future_year" | "choose" | "swap" | "confirm_pick" | "cant_answer";
-  title: string; text: string; options: CheckOption[]; multi?: boolean; said?: string; fix?: { from: string };
+  kind: "year_typo" | "month_typo" | "future_year" | "forecast_year" | "choose" | "swap" | "confirm_pick" | "cant_answer";
+  title: string; text: string; options: CheckOption[]; multi?: boolean; said?: string; fix?: { from: string }; suggested?: string;
 };
 export type CheckCandidate = {
   id: string; name: string; kind: string; label: string; freshness?: string; fit: string; why: string; says?: string;
@@ -313,8 +352,9 @@ export type QuestionCheck = {
   period_options?: CheckPeriod[]; needs_time?: boolean; issues: CheckIssue[]; candidates: CheckCandidate[];
   picked: string[]; picked_sources?: { id: string; name: string; label: string }[]; restated: string | null;
   connect?: { kind: string; label: string; url: string }[]; sources_considered?: number; skipped?: boolean;
+  forecast?: boolean;
 };
-export type RunBrief = { period?: CheckPeriod | null; restated?: string | null; notes?: string[] };
+export type RunBrief = { period?: CheckPeriod | null; restated?: string | null; notes?: string[]; forecast?: boolean };
 
 export const projectsApi = {
   check: (payload: { question: string; source_ids?: string[]; space_id?: string; workspace_id?: string; accepted?: string[] }) =>
@@ -341,9 +381,12 @@ export const projectsApi = {
       // 2026-10-11 (Explain & Alerts): read the follow-up first - "explain
       // this" is answered from the answer on screen without a new run
       route?: boolean; context_run_id?: string; explain_target?: ExplainTarget;
+      // round 32: read the follow-up's dates first (a "did you mean?" comes back as kind "check");
+      // `accepted`: years the person chose to keep as written
+      understand?: boolean; accepted?: string[];
     },
   ) =>
-    api.post<AskResult>(`/projects/${id}/ask`, { question, auto_run: autoRun, ...(extra || {}) }, { timeout: 90000 }).then((r) => r.data),
+    api.post<AskResult>(`/projects/${id}/ask`, { question, auto_run: autoRun, ...(extra || {}), ...(extra?.understand ? { today: localToday() } : {}) }, { timeout: 90000 }).then((r) => r.data),
   explain: (runId: string, target: ExplainTarget, question?: string) =>
     api.post<Explanation>(`/projects/runs/${runId}/explain`, { target, question: question || undefined }, { timeout: 60000 }).then((r) => r.data),
   run: (runId: string) => api.get<ProjectRun>(`/projects/runs/${runId}`).then((r) => r.data),
