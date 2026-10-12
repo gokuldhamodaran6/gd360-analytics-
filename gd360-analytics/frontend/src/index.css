@@ -1144,6 +1144,13 @@ input[type="radio"] {
    so it is never cut. Every tile of a strip is the same width, so they all
    switch together. */
 .ui-kpi { container-type: inline-size; }
+/* round 37: a wide tile carries a bigger number - 28 px in a 420 px tile read small */
+@container (min-width: 260px) {
+  .ui-kpi-value { font-size: 32px; }
+}
+@container (min-width: 360px) {
+  .ui-kpi-value { font-size: 36px; letter-spacing: -0.02em; }
+}
 .ui-kpi-cap-short { display: none; }
 @container (max-width: 214px) {
   .ui-kpi-cap-long { display: none; }
@@ -1293,4 +1300,116 @@ input[type="radio"] {
 @keyframes gd-just-changed {
   0% { box-shadow: 0 0 0 0 rgb(var(--color-good) / 0.7); }
   100% { box-shadow: 0 0 0 2px rgb(var(--color-good) / 0.55); }
+}
+
+/* 2026-10-12 (round 38, team comments) ------------------------------------
+   A comment pinned to a data point: a speech bubble whose tail sits on the
+   mark (the chart places the button AT the mark's edge), the author's
+   initials inside, a count when a point has more than one comment. */
+.gd-pin {
+  transform: translate(-50%, calc(-100% - 8px));
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  line-height: 1;
+}
+.gd-pin-face {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--pin, rgb(var(--color-primary)));
+  color: #07090A;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  box-shadow: 0 0 0 2.5px rgb(var(--color-surface)), 0 0 0 3.5px color-mix(in srgb, var(--pin, rgb(var(--color-primary))) 55%, transparent), 0 8px 20px -6px rgb(0 0 0 / 0.6);
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+/* the stem from the bubble to the point */
+.gd-pin::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 1.5px;
+  height: 6px;
+  transform: translateX(-50%);
+  background: color-mix(in srgb, var(--pin, rgb(var(--color-primary))) 70%, transparent);
+  border-radius: 1px;
+}
+.gd-pin:hover .gd-pin-face { transform: translateY(-1px) scale(1.06); }
+.gd-pin-count {
+  position: absolute;
+  top: -6px;
+  right: -8px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: rgb(var(--color-surface));
+  color: rgb(var(--color-text));
+  border: 1px solid rgb(var(--color-border-strong));
+  font-size: 9px;
+  font-weight: 650;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+.gd-pin-resolved .gd-pin-face {
+  background: rgb(var(--color-subtle));
+  color: rgb(var(--color-muted));
+  box-shadow: 0 0 0 2.5px rgb(var(--color-surface)), 0 0 0 3.5px rgb(var(--color-border-strong));
+}
+.gd-pin-active .gd-pin-face {
+  box-shadow: 0 0 0 2.5px rgb(var(--color-surface)), 0 0 0 6px color-mix(in srgb, var(--pin, rgb(var(--color-primary))) 45%, transparent), 0 8px 20px -6px rgb(0 0 0 / 0.6);
+  transform: scale(1.08);
+}
+.gd-pin-pending .gd-pin-face {
+  outline: 1.5px dashed var(--pin, rgb(var(--color-primary)));
+  outline-offset: 4px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .gd-pin-active .gd-pin-face { animation: gd-pin-pulse 1.6s ease-out 2; }
+}
+@keyframes gd-pin-pulse {
+  0% { box-shadow: 0 0 0 2.5px rgb(var(--color-surface)), 0 0 0 2px color-mix(in srgb, var(--pin, rgb(var(--color-primary))) 70%, transparent); }
+  100% { box-shadow: 0 0 0 2.5px rgb(var(--color-surface)), 0 0 0 14px color-mix(in srgb, var(--pin, rgb(var(--color-primary))) 0%, transparent); }
+}
+
+/* An @mention that resolved to a person */
+.gd-mention {
+  color: rgb(var(--color-brand-ink));
+  background: rgb(var(--color-tint) / 0.7);
+  border-radius: 5px;
+  padding: 0 3px;
+  font-weight: 550;
+}
+
+/* "Show on chart": the chart (or the thread card) the reader was sent to */
+[data-comment-flash] {
+  border-radius: var(--radius-card, 14px);
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-comment-flash] { animation: gd-comment-flash 1.6s ease-out 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-comment-flash] { box-shadow: 0 0 0 2px rgb(var(--color-primary) / 0.6); }
+}
+@keyframes gd-comment-flash {
+  0% { box-shadow: 0 0 0 0 rgb(var(--color-primary) / 0); }
+  20% { box-shadow: 0 0 0 3px rgb(var(--color-primary) / 0.7); }
+  100% { box-shadow: 0 0 0 3px rgb(var(--color-primary) / 0); }
+}
+
+/* Comment mode: every chart says it can take a comment */
+[data-pinnable] { cursor: crosshair; }
+[data-pinnable]:hover {
+  outline: 1.5px dashed rgb(var(--color-primary) / 0.65);
+  outline-offset: 3px;
+  border-radius: var(--radius-ctl, 10px);
 }
