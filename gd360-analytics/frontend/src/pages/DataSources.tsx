@@ -10,6 +10,7 @@ import SourcesPanel from "../data/SourcesPanel";
 import SpacesPanel from "../data/SpacesPanel";
 import SpaceEditor from "../data/SpaceEditor";
 import { errorText, ErrorNote, Skeleton } from "../data/shared";
+import { SyncReportSheet } from "../data/SyncReport";
 
 // 2026-09-23 (sidebar redesign round): the dedicated home for browsing every
 // connected data source. Rounds two and three (Gokul's feedback) made "see
@@ -166,6 +167,11 @@ export default function DataSources() {
       />
       <div className="flex-1 min-w-0">
         <TopNav hideLogo />
+        {/* round 38c: an answer's "See what … sent at the last sync" opens here */}
+        <SyncReportSheet
+          sourceId={params.get("report")}
+          onClose={() => { const next = new URLSearchParams(params); next.delete("report"); setParams(next, { replace: true }); }}
+        />
 
         <main className="max-w-[1240px] mx-auto px-4 sm:px-8 lg:px-10 pt-8 pb-16 flex flex-col gap-6">
           <header className="flex justify-between items-end gap-5 flex-wrap">

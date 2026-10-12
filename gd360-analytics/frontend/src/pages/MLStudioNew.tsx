@@ -28,6 +28,15 @@ import { Space, spacesApi } from "../api/spaces";
 import AdjustPanel from "../ml/AdjustPanel";
 import { candKey, CheckJoin, ChooseTables, MAX_JOINS, Stepper } from "../ml/JoinFlow";
 import { joinsSentence } from "../ml/ResultSections";
+import DataStep from "../ml/DataStep";
+import { PrepCheck } from "../api/mlStudio";
+import { CodeIcon } from "../ui";
+
+/** round 39: the label column a data step most likely made */
+function guessTarget(cols: { name: string }[]): string | null {
+  const names = cols.map((c) => c.name);
+  return names.find((n) => /(churn|label|target|outcome|stopped|converted|bought_again|will_|^is_|^has_|left|cancel)/i.test(n)) || null;
+}
 
 const understoodAs = (t: string) => (TYPE_LABEL[t] || t).toLowerCase();
 
@@ -48,6 +57,8 @@ export default function MLStudioNew() {
   const [adjust, setAdjust] = useState(false);
   const [learnFrom, setLearnFrom] = useState(params.get("source") ? `${params.get("source")}::${params.get("table") || ""}` : "");
   const asked = useRef(false);
+  // round 39: the data step (SQL) editor
+  const [prepOpen, setPrepOpen] = useState(false);
 
   // round 15: several tables joined
   const [joinMode, setJoinMode] = useState(params.get("join") === "1");
@@ -201,8 +212,20 @@ export default function MLStudioNew() {
     setStep(1);
   };
 
+  const applyPrep = (r: PrepCheck) => {
+    if (!spec) return;
+    const target = spec.target && r.columns?.some((c) => c.name === spec.target) ? spec.target : guessTarget(r.columns || []);
+    setPrepOpen(false);
+    makePlan({ ...spec, prep_sql: r.sql, target, positive_value: target === spec.target ? spec.positive_value : null, exclude: null });
+  };
+
+  const removePrep = () => {
+    if (!spec) return;
+    makePlan({ ...spec, prep_sql: null, target: null, positive_value: null });
+  };
+
   const start = async () => {
-    if (!spec || !plan) return;
+    if (!spec || !plan || plan.needs_prep) return;
     setBusy("start");
     setError("");
     try {
@@ -406,7 +429,30 @@ export default function MLStudioNew() {
                   </div>
                 )}
                 {error && <div role="alert" className="rounded-ctl border border-danger-border bg-danger-fill px-3 py-2.5 text-ui text-text">{error}</div>}
-                {plan && busy !== "understand" && busy !== "plan" && (
+                {plan?.needs_prep && busy === "" && (
+                  <div className="rounded-ctl border px-3.5 py-3 flex flex-col gap-2.5" style={{ borderColor: "rgb(var(--auto-tell) / 0.5)", background: "rgb(var(--auto-tell) / 0.08)" }} data-ml-needs-prep="">
+                    <span className="text-ui font-semibold text-text">One row per {plan.needs_prep.noun} first</span>
+                    <span className="text-caption text-secondary leading-snug">{plan.needs_prep.text} A data step builds that table - and the outcome to predict - with SQL you can read and edit.</span>
+                    <button type="button" className="btn-primary text-sm self-start inline-flex items-center gap-1.5" onClick={() => setPrepOpen(true)}>
+                      <CodeIcon size={14} /> Shape the data
+                    </button>
+                  </div>
+                )}
+                {plan && !plan.needs_prep && plan.prep_hint && !spec?.prep_sql && busy === "" && (
+                  <div className="rounded-ctl border border-border px-3 py-2.5 flex flex-col gap-2" data-ml-prep-hint="">
+                    <span className="text-caption text-secondary leading-snug">{plan.prep_hint.text}</span>
+                    <button type="button" className="btn-secondary text-sm self-start" onClick={() => setPrepOpen(true)}>Shape one row per {plan.prep_hint.noun}</button>
+                  </div>
+                )}
+                {spec?.prep_sql && busy === "" && (
+                  <div className="rounded-ctl border border-border px-3 py-2.5 flex items-center gap-2 flex-wrap" data-ml-has-prep="">
+                    <CodeIcon size={14} />
+                    <span className="text-caption text-text flex-1 min-w-[120px]">Learns from your data step (SQL)</span>
+                    <button type="button" className="text-caption text-secondary underline hover:text-text" onClick={() => setPrepOpen(true)}>Edit</button>
+                    <button type="button" className="text-caption text-muted underline hover:text-text" onClick={removePrep}>Remove</button>
+                  </div>
+                )}
+                {plan && !plan.needs_prep && busy !== "understand" && busy !== "plan" && (
                   <>
                     <h2 className="m-0 text-[19px] font-bold leading-snug text-text text-balance">{plan.title}</h2>
                     {planJoinsLine && <p className="m-0 text-caption text-secondary">{planJoinsLine}</p>}
@@ -450,14 +496,26 @@ export default function MLStudioNew() {
                         Adjust plan
                       </button>
                     )}
-                    <button type="button" className="btn-primary text-sm" onClick={start} disabled={!plan || !!busy || adjust}>
+                    <button type="button" className="btn-primary text-sm" onClick={start} disabled={!plan || !!plan.needs_prep || !!busy || adjust}>
                       {busy === "start" ? "Starting…" : "Start training →"}
                     </button>
                   </div>
                 )}
               </aside>
 
-              <div className="flex flex-col gap-4 min-w-0 lg:col-start-1 lg:row-start-2" aria-label="Kinds of project">
+              {prepOpen && spec && (
+                <div className="min-w-0 lg:col-start-1 lg:row-start-2" data-ml-prep-editor="">
+                  <DataStep
+                    spec={spec}
+                    hint={plan?.needs_prep || plan?.prep_hint || null}
+                    initialSql={spec.prep_sql || ""}
+                    onApply={applyPrep}
+                    onCancel={() => setPrepOpen(false)}
+                  />
+                </div>
+              )}
+
+              <div className={`flex flex-col gap-4 min-w-0 lg:col-start-1 ${prepOpen ? "lg:row-start-3" : "lg:row-start-2"}`} aria-label="Kinds of project">
                 <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">Or choose what to build · {types.length || 21} kinds</span>
                 {FAMILIES.map((fam) => {
                   const list = types.filter((t) => t.family === fam);

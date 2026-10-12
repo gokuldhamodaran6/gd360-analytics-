@@ -674,7 +674,7 @@ function crumb(active: ProjectRun | null, current: ProjectRun | null): string {
   if (!current) return "New";
   if (current.status === "done") return current.duration_seconds ? `Done in ${Math.max(1, Math.round(current.duration_seconds))} s` : "Done";
   if (current.status === "planned") return "Plan ready";
-  if (current.status === "needs_input") return "Needs a source";
+  if (current.status === "needs_input") return (current.result as any)?.no_data ? "No data for this yet" : "Needs a source";
   if (current.status === "failed") return "Could not finish";
   if (current.status === "stopped") return "Stopped";
   return "Project";

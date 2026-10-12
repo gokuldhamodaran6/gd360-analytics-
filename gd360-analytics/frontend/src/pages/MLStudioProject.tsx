@@ -1,17 +1,528 @@
-// 2026-10-08 (round 13): one ML Studio project - live while it trains
-// (stages, leaderboard against the baseline, best score by trial, leak
-// check, the resources this run uses) and its results when done.
-// 2026-10-09 (round 15): every kind's results (headline, KPI tiles and
-// sections, drawn by ml/ResultSections), the tables a model was joined from,
-// and no "Score every row" for kinds whose result is a report.
-import { useEffect, useState } from "react";
+// 2026-10-08 (round 13): one ML Studio project - live while it trains and its results when done.
+// 2026-10-09 (round 15): every kind's results, the tables a model was joined from.
+// 2026-10-12 (round 39): rebuilt on ML engine v2. The run reads as a story -
+// where it stands (queued, training, ready), how much data it really used and
+// why, then every step of the run with three views: Visual (charts of what
+// the step did - the default), Code (the real SQL and Python that ran, the
+// data step editable) and Rows (what the step produced). Scoring every row
+// runs on the ML worker with live progress; the whole run exports as a
+// notebook.
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
 import TopNav from "../components/TopNav";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
-import { BoardRow, errorText, FAMILY_COLOR, FAMILY_OF, LEGACY_RESULTS, mlStudioApi, NOT_SCORABLE, Progress, StudioProject, TYPE_LABEL } from "../api/mlStudio";
+import {
+  BoardRow,
+  Engine,
+  errorText,
+  FAMILY_COLOR,
+  FAMILY_OF,
+  LEGACY_RESULTS,
+  mlStudioApi,
+  NOT_SCORABLE,
+  Progress,
+  RunData,
+  Stage,
+  StudioProject,
+  TYPE_LABEL,
+} from "../api/mlStudio";
 import { timeAgo } from "../project/format";
 import ResultSections, { Headline, joinsSentence } from "../ml/ResultSections";
+import StageVisuals, { compact, RowsPreview } from "../ml/StageVisuals";
+import CodeBlock from "../ml/CodeBlock";
+import DataStep from "../ml/DataStep";
+import { CodeIcon, DatabaseIcon, DownloadIcon, ShieldCheckIcon, SegmentedControl, TableIcon, ChartIcon } from "../ui";
+
+type Tab = "visual" | "code" | "rows";
+
+const STRATEGY_WORDS: Record<string, string> = {
+  all: "every row",
+  stratified: "stratified sample",
+  recent: "most recent rows",
+  groups: "whole groups",
+  uniform: "random sample",
+  daily: "every row, summed per day",
+  warehouse: "sampled by the warehouse",
+};
+
+function defaultStage(stages: Stage[], status?: string): string | null {
+  if (!stages.length) return null;
+  const running = stages.find((s) => s.status === "running");
+  if (running) return running.id;
+  if (status === "ready") {
+    const pref = ["explain", "test", "train"].find((id) => stages.some((s) => s.id === id && (s.visual?.length || id === "train")));
+    if (pref) return pref;
+  }
+  const lastDone = [...stages].reverse().find((s) => s.status === "done");
+  return (lastDone || stages[0]).id;
+}
+
+function storyFor(p: StudioProject, kind: string, data?: RunData): string {
+  const res = p.results || {};
+  const used = data?.rows_used ?? res.train_rows;
+  const total = data?.rows_total;
+  const rowsBit = total
+    ? used && used < total && data?.sample?.strategy !== "daily"
+      ? `Learned from ${compact(used)} of ${compact(total)} rows (${STRATEGY_WORDS[data?.sample?.strategy || ""] || "a fair sample"})`
+      : `Learned from all ${Number(total).toLocaleString()} rows`
+    : "";
+  if (res.headline && !LEGACY_RESULTS.has(p.problem_type || "")) return [res.headline, rowsBit].filter(Boolean).join(" · ");
+  if (kind === "binary" || kind === "multiclass" || kind === "number") {
+    const [m1] = METRIC[kind] || ["Score"];
+    const beat = res.beats_baseline ? "beats the baseline" : "does not beat the baseline";
+    return [rowsBit, `${res.winner}: ${m1} ${fmt(kind, res.test_score)} on held-out rows - ${beat} (${fmt(kind, res.baseline?.score)})`].filter(Boolean).join(" · ");
+  }
+  return [res.headline, rowsBit].filter(Boolean).join(" · ") || "Ready.";
+}
+
+export default function MLStudioProject() {
+  const { id = "" } = useParams();
+  const navigate = useNavigate();
+  const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
+  const [p, setP] = useState<StudioProject | null>(null);
+  const [error, setError] = useState("");
+  const [notFound, setNotFound] = useState(false);
+  const [sel, setSel] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("visual");
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState("");
+  const [engine, setEngine] = useState<Engine | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const picked = useRef(false);
+
+  const load = () =>
+    mlStudioApi
+      .get(id)
+      .then(setP)
+      .catch((e) => (e?.response?.status === 404 ? setNotFound(true) : setError(errorText(e, "Couldn't load this project."))));
+
+  useEffect(() => {
+    picked.current = false;
+    setSel(null);
+    load();
+    mlStudioApi.engine().then(setEngine).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  const scoring = p?.progress?.scoring;
+  const live = p?.status === "training" || scoring?.state === "queued" || scoring?.state === "running";
+  useEffect(() => {
+    if (!live) return;
+    const t = setInterval(load, 1500);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live]);
+
+  const prog: Progress | null = (p?.progress as Progress) || null;
+  const stages = useMemo(() => prog?.stages || [], [prog]);
+  const training = p?.status === "training";
+  const queued = training && p?.queue?.state === "queued";
+  const res = p?.results;
+  const kind: string = res?.kind || kindOf(p?.problem_type);
+  const ptype = p?.problem_type || "";
+  const legacy = !ptype || LEGACY_RESULTS.has(ptype);
+  const data: RunData | undefined = (res?.data as RunData) || prog?.data;
+  const scorable = !!ptype && !NOT_SCORABLE.has(ptype) && kind !== "forecast";
+  const canTry = ["yes_no", "number", "drivers", "which_category"].includes(ptype);
+  const joinsUsed = (res?.joins && res.joins.length ? res.joins : prog?.joins) || [];
+  const joinLine = joinsSentence(joinsUsed, training ? "Learning from" : "Learned from");
+
+  const shownId = (picked.current && sel) || (training ? defaultStage(stages, p?.status) : sel || defaultStage(stages, p?.status));
+  const stage = stages.find((s) => s.id === shownId) || null;
+  const shownIdx = stages.findIndex((s) => s.id === shownId);
+  const hasVisual = !!stage && ((stage.visual && stage.visual.length > 0) || (stage.id === "train" && (prog?.leaderboard.length || 0) > 0));
+  const hasCode = !!stage?.code?.length;
+  const hasRows = !!stage?.preview?.rows?.length;
+  const tabs = [
+    { value: "visual" as Tab, label: <span className="inline-flex items-center gap-1.5"><ChartIcon size={13} />Visual</span>, disabled: !hasVisual },
+    { value: "code" as Tab, label: <span className="inline-flex items-center gap-1.5"><CodeIcon size={13} />Code</span>, disabled: !hasCode },
+    { value: "rows" as Tab, label: <span className="inline-flex items-center gap-1.5"><TableIcon size={13} />Rows</span>, disabled: !hasRows },
+  ];
+  const shownTab: Tab = tabs.find((t) => t.value === tab && !t.disabled)?.value || tabs.find((t) => !t.disabled)?.value || "visual";
+  const spec = p?.plan?.spec;
+
+  const pick = (sid: string) => {
+    picked.current = true;
+    setSel(sid);
+    setEditing(false);
+  };
+
+  const act = async (what: string, fn: () => Promise<unknown>, fallback: string) => {
+    setBusy(what);
+    setError("");
+    try {
+      await fn();
+      await load();
+    } catch (e) {
+      setError(errorText(e, fallback));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const downloadNotebook = async () => {
+    setBusy("notebook");
+    try {
+      const blob = await mlStudioApi.notebook(id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${(p?.name || "ml_project").replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 60)}.ipynb`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(errorText(e, "Couldn't export the notebook."));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  if (notFound) {
+    return (
+      <div className="min-h-screen grid place-items-center bg-base px-6">
+        <div className="text-center">
+          <div className="text-section font-semibold text-text">This model doesn't exist or isn't shared with you.</div>
+          <Link to="/ml-models" className="btn-primary text-sm mt-4 inline-flex">ML Studio</Link>
+        </div>
+      </div>
+    );
+  }
+
+  const ahead = (p?.queue?.position || 0) + (p?.queue?.running || 0);
+  const statusPill = !p
+    ? null
+    : queued
+      ? { text: ahead ? `Queued · ${ahead} ahead` : "Starting…", color: "rgb(var(--auto-tell))", pulse: true }
+      : training
+        ? { text: `Training · ${stages.find((s) => s.status === "running")?.title || "starting"}`, color: "rgb(var(--auto-tell))", pulse: true }
+        : p.status === "ready"
+          ? { text: `Ready${p.trained_at ? ` · trained ${timeAgo(p.trained_at)}` : ""}`, color: "rgb(var(--auto-do))", pulse: false }
+          : { text: "Didn't finish", color: "rgb(var(--color-danger))", pulse: false };
+  const story = !p
+    ? ""
+    : queued
+      ? `Waiting for the ML worker${ahead ? ` - ${ahead} run${ahead === 1 ? "" : "s"} ahead` : ""}. It starts on its own; you can leave this page.`
+      : training
+        ? prog?.message || "Working…"
+        : p.status === "ready"
+          ? storyFor(p, kind, data)
+          : p.error || "It stopped before it finished.";
+  const scorePct = scoring?.total ? Math.min(100, ((scoring.done || 0) / scoring.total) * 100) : 0;
+  const srcRows = data?.prep ? data?.source?.rows ?? data?.rows_total : data?.rows_total;
+
+  return (
+    <div className="dash-shell flex min-h-screen">
+      <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
+      <div className="flex-1 min-w-0">
+        <TopNav hideLogo />
+        <main className="px-4 sm:px-8 lg:px-10 py-7 max-w-[1360px] mx-auto flex flex-col gap-6">
+          {!p && !error && <div className="text-ui text-muted">Loading…</div>}
+          {error && <div role="alert" className="rounded-card border border-danger-border bg-danger-fill px-4 py-3 text-ui text-text">{error}</div>}
+          {p && (
+            <>
+              <header className="flex items-start justify-between gap-4 flex-wrap" data-ml-header="">
+                <div className="flex flex-col gap-2 min-w-0 flex-[1_1_480px]">
+                  <span className="font-mono text-caption text-muted uppercase tracking-[0.06em] truncate">
+                    <Link to="/ml-models" className="hover:text-text">← ML Studio</Link> / {TYPE_LABEL[ptype] || "Model"}
+                  </span>
+                  <h1 className="m-0 text-[24px] sm:text-[30px] font-semibold tracking-tight text-text text-balance leading-tight">{p.name}</h1>
+                  <div className="flex items-center gap-x-3 gap-y-1.5 flex-wrap text-ui text-secondary">
+                    {statusPill && (
+                      <span className="inline-flex items-center gap-2 h-7 px-2.5 rounded-full border border-border bg-surface text-text text-caption font-medium" data-ml-status={queued ? "queued" : p.status}>
+                        <span className={`w-2 h-2 rounded-full ${statusPill.pulse ? "animate-pulse" : ""}`} style={{ background: statusPill.color }} aria-hidden="true" />
+                        {statusPill.text}
+                      </span>
+                    )}
+                    {ptype && (
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="inline-block w-2 h-2 rounded-[3px]" style={{ background: FAMILY_COLOR[FAMILY_OF[ptype] || "Predict"] }} aria-hidden="true" />
+                        {TYPE_LABEL[ptype] || ptype}
+                      </span>
+                    )}
+                    <span className="inline-flex items-center gap-1.5 min-w-0">
+                      <DatabaseIcon size={13} />
+                      <span className="truncate">{p.source}{p.table ? ` · ${p.table}` : ""}</span>
+                    </span>
+                    {p.elapsed != null && !queued && <span className="font-mono text-caption text-muted">{dur(p.elapsed)}</span>}
+                  </div>
+                </div>
+                <div className="flex gap-2 flex-wrap items-center">
+                  {training ? (
+                    <>
+                      <button type="button" className="btn-secondary text-sm" onClick={() => navigate("/ml-models")}>Run in background</button>
+                      {p.can_edit && (
+                        <button type="button" className="btn-secondary text-sm" disabled={!!busy} onClick={() => act("stop", () => mlStudioApi.stop(id), "Couldn't stop it.")}>
+                          {queued ? "Cancel" : "Stop"}
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      {p.status === "ready" && (
+                        <button type="button" className="btn-secondary text-sm inline-flex items-center gap-1.5" onClick={downloadNotebook} disabled={!!busy} data-ml-notebook="">
+                          <DownloadIcon size={14} /> {busy === "notebook" ? "Exporting…" : "Notebook"}
+                        </button>
+                      )}
+                      {p.can_edit && (
+                        <button type="button" className="btn-secondary text-sm" disabled={!!busy} onClick={() => act("retrain", () => mlStudioApi.retrain(id), "Couldn't start it.")}>
+                          Train again
+                        </button>
+                      )}
+                      {p.status === "ready" && canTry && <Link to={`/ml-models/${id}`} className="btn-secondary text-sm">Try a prediction</Link>}
+                      {p.status === "ready" && scorable && scoring?.state !== "running" && scoring?.state !== "queued" && (
+                        <button type="button" className="btn-primary text-sm" disabled={!!busy} onClick={() => act("score", () => mlStudioApi.scoreJob(id), "Couldn't start scoring.")} data-ml-score="">
+                          Score every row
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              </header>
+
+              <section
+                className="rounded-card border px-4 sm:px-5 py-4 flex items-start gap-3"
+                style={{ borderColor: p.status === "failed" && !training ? "rgb(var(--color-danger-border))" : "rgb(var(--auto-do-border))", background: p.status === "failed" && !training ? "rgb(var(--color-danger-fill))" : "rgb(var(--auto-do-fill) / 0.35)" }}
+                aria-live="polite"
+                data-ml-story=""
+              >
+                <span className="mt-1 w-2.5 h-2.5 rounded-full shrink-0" style={{ background: statusPill?.color }} aria-hidden="true" />
+                <div className="flex flex-col gap-1 min-w-0">
+                  <span className="text-[15.5px] sm:text-[16.5px] leading-snug text-text text-pretty">{story}</span>
+                  {prog?.retry_note && <span className="text-caption text-warning">{prog.retry_note}</span>}
+                  {joinLine && <span className="text-caption text-secondary">{joinLine}</span>}
+                </div>
+              </section>
+
+              {(scoring && scoring.state !== "cancelled") && (
+                <section className="rounded-card border border-border bg-surface px-4 py-3 flex items-center gap-4 flex-wrap" data-ml-scoring={scoring.state}>
+                  <span className="text-ui font-medium text-text">
+                    {scoring.state === "done"
+                      ? `Scored ${Number(scoring.rows || 0).toLocaleString()} rows in ${scoring.seconds} s`
+                      : scoring.state === "failed"
+                        ? "Scoring stopped"
+                        : scoring.state === "queued"
+                          ? "Scoring is queued on the ML worker"
+                          : `Scoring every row · ${Number(scoring.done || 0).toLocaleString()} of ${Number(scoring.total || 0).toLocaleString()}`}
+                  </span>
+                  {(scoring.state === "running" || scoring.state === "queued") && (
+                    <>
+                      <span className="flex-1 min-w-[160px] h-[6px] rounded-full bg-subtle overflow-hidden">
+                        <span className="block h-full rounded-full transition-[width] duration-500" style={{ width: `${Math.max(2, scorePct)}%`, background: "rgb(var(--auto-do))" }} />
+                      </span>
+                      <button type="button" className="text-caption text-muted underline hover:text-text" onClick={() => act("scorestop", () => mlStudioApi.scoreStop(id), "Couldn't stop scoring.")}>Stop</button>
+                    </>
+                  )}
+                  {scoring.state === "done" && (
+                    <Link to={`/workspace/${p.source_id}`} className="text-ui underline" style={{ color: "rgb(var(--auto-do))" }}>
+                      Open “{scoring.version_name}” →
+                    </Link>
+                  )}
+                  {scoring.state === "failed" && <span className="text-caption text-danger">{scoring.error}</span>}
+                </section>
+              )}
+
+              <section className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }} aria-label="How much data" data-ml-scale="">
+                <ScaleTile
+                  label="Rows in the source"
+                  value={srcRows != null ? compact(srcRows) : "—"}
+                  exact={srcRows}
+                  note={data?.prep && data.rows_total != null ? `shaped to ${compact(data.rows_total)} rows by your data step` : data?.source?.how}
+                />
+                <ScaleTile
+                  label="Learns from"
+                  value={data?.rows_used != null ? compact(data.sample?.strategy === "daily" ? data.rows_total : data.rows_used) : "—"}
+                  exact={data?.rows_used}
+                  note={data?.sample ? STRATEGY_WORDS[data.sample.strategy] || data.sample.strategy : training ? "worked out from the memory free" : undefined}
+                  tone="do"
+                />
+                <ScaleTile
+                  label="Row budget"
+                  value={data?.budget ? compact(data.budget.rows) : "—"}
+                  exact={data?.budget?.rows}
+                  note={data?.budget ? `${data.budget.free_mb.toLocaleString()} MB free · ${engine?.mode === "external" ? "ML worker" : "this server"}` : undefined}
+                  hint={data?.budget?.reason}
+                />
+                <ScaleTile
+                  label="Scored"
+                  value={scoring?.state === "done" ? compact(scoring.rows) : scoring?.state === "running" ? `${Math.round(scorePct)}%` : "Not yet"}
+                  exact={scoring?.rows}
+                  note={scoring?.state === "done" ? "saved as a table" : scorable ? "every row, on the worker" : "this kind reports, not scores"}
+                />
+              </section>
+
+              {stages.length > 0 && (
+                <section className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)] items-start" aria-label="The run" data-ml-run="">
+                  <ol className="m-0 p-0 list-none flex flex-col gap-1.5 lg:sticky lg:top-4" aria-label="Steps">
+                    <li className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted px-1 pb-1">The run · {stages.length} steps</li>
+                    {stages.map((s, i) => (
+                      <li key={s.id}>
+                        <StepRow s={s} i={i} on={s.id === shownId} failed={p.status === "failed" && !training} onPick={() => pick(s.id)} />
+                      </li>
+                    ))}
+                  </ol>
+
+                  <div className="rounded-card border border-border bg-surface/60 flex flex-col min-w-0" data-ml-panel={stage?.id || ""}>
+                    {stage && (
+                      <>
+                        <div className="px-4 sm:px-5 pt-4 pb-3 flex flex-col gap-2 border-b border-border">
+                          <div className="flex items-center gap-3 flex-wrap">
+                            <span className="font-mono text-caption text-muted">{String(shownIdx + 1).padStart(2, "0")}</span>
+                            <h2 className="m-0 text-[18px] font-semibold text-text">{stage.title}</h2>
+                            {stage.seconds != null && <span className="font-mono text-caption text-muted">{stage.seconds} s</span>}
+                            <span className="flex-1" />
+                            <SegmentedControl size="sm" options={tabs} value={shownTab} onChange={(v) => setTab(v)} ariaLabel="View" />
+                          </div>
+                          {stage.note && <p className="m-0 text-ui text-secondary leading-snug">{stage.note}</p>}
+                          {hasCode && (
+                            <div className="flex gap-1.5 flex-wrap">
+                              {Array.from(new Set((stage.code || []).map((c) => c.engine).filter(Boolean))).map((e) => (
+                                <span key={e} className="text-[11px] px-2 py-0.5 rounded-full border border-border text-secondary">{e}</span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <div className="p-4 sm:p-5 flex flex-col gap-3 min-w-0">
+                          {shownTab === "visual" && (
+                            <>
+                              {stage.id === "train" && prog && prog.leaderboard.length > 0 && <Leaderboard prog={prog} kind={kind} done={!training} />}
+                              <StageVisuals visuals={stage.visual} />
+                              {!hasVisual && (
+                                <p className="m-0 text-ui text-muted">
+                                  {stage.status === "pending" ? (p.status === "failed" ? "This step didn't run." : "This step hasn't started yet.") : stage.status === "running" ? "Working on it…" : "Nothing to draw for this step - see its code."}
+                                </p>
+                              )}
+                            </>
+                          )}
+                          {shownTab === "code" && (
+                            <>
+                              {(stage.code || []).map((c, k) => (
+                                <CodeBlock key={k} entry={c} onEdit={p.can_edit && !training ? () => setEditing(true) : undefined} />
+                              ))}
+                              {stage.id === "data" && p.can_edit && !training && !spec?.prep_sql && !editing && (
+                                <button type="button" className="self-start btn-secondary text-sm inline-flex items-center gap-1.5" onClick={() => setEditing(true)}>
+                                  <CodeIcon size={14} /> Add a data step (SQL)
+                                </button>
+                              )}
+                            </>
+                          )}
+                          {shownTab === "rows" && <RowsPreview preview={stage.preview} note={stage.id === "data" ? "First rows the model learned from" : undefined} />}
+                          {editing && spec && (
+                            <DataStep
+                              spec={spec}
+                              initialSql={spec.prep_sql || ""}
+                              applyLabel="Train again with this data step"
+                              onCancel={() => setEditing(false)}
+                              onApply={(r) =>
+                                act("retrain", async () => {
+                                  await mlStudioApi.retrain(id, r.sql);
+                                  setEditing(false);
+                                  picked.current = false;
+                                }, "Couldn't train again with that data step.")
+                              }
+                            />
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {p.status === "ready" && res && (
+                <section className="flex flex-col gap-4" aria-label="Results" data-ml-results="">
+                  <h2 className="m-0 text-[20px] font-semibold text-text">Results</h2>
+                  {legacy ? <Results kind={kind} res={res} /> : <GenericResults res={res} />}
+                </section>
+              )}
+
+              <section className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }} aria-label="How this run is governed" data-ml-trust="">
+                <TrustCard title="Where it ran" lines={[
+                  engine?.mode === "external" ? "A dedicated ML worker with its own memory" : "The ML worker inside this server, one run at a time",
+                  engine ? `${engine.memory_free_mb.toLocaleString()} MB free now · ${engine.queued} queued · ${engine.running} running` : "",
+                ]} />
+                <TrustCard title="Reproducible" lines={[
+                  `Fair samples use a fixed seed (${engine?.seed ?? 42}); the data is read from a snapshot of this exact version.`,
+                  p.status === "ready" ? "Export the run as a notebook to replay it." : "",
+                ]} />
+                <TrustCard icon title="Governed" lines={[
+                  "Your access rules are applied in the SQL, so the model never sees rows you can't.",
+                  "SQL runs read-only in a sandbox; every step's code is kept with the run.",
+                ]} />
+              </section>
+
+              {!training && p.can_delete && (
+                <div className="flex gap-2">
+                  {confirmDelete ? (
+                    <>
+                      <button type="button" className="btn-secondary text-sm !text-danger" onClick={() => mlStudioApi.remove(id).then(() => navigate("/ml-models"))}>Delete for good</button>
+                      <button type="button" className="btn-secondary text-sm" onClick={() => setConfirmDelete(false)}>Keep it</button>
+                    </>
+                  ) : (
+                    <button type="button" className="text-caption text-muted underline hover:text-danger" onClick={() => setConfirmDelete(true)}>Delete this model</button>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function ScaleTile({ label, value, exact, note, tone, hint }: { label: string; value: string; exact?: number | null; note?: string; tone?: "do"; hint?: string }) {
+  return (
+    <div className="rounded-card border border-border bg-surface px-4 py-3.5 flex flex-col gap-1 min-w-0" title={hint || undefined}>
+      <span className="text-caption text-muted">{label}</span>
+      <span className="font-mono text-[24px] leading-tight tabular-nums text-text" style={tone === "do" ? { color: "rgb(var(--auto-do))" } : undefined} title={exact != null ? Number(exact).toLocaleString() : undefined}>
+        {value}
+      </span>
+      {note && <span className="text-[12px] text-muted leading-snug line-clamp-2" title={note}>{note}</span>}
+    </div>
+  );
+}
+
+function StepRow({ s, i, on, failed, onPick }: { s: Stage; i: number; on: boolean; failed: boolean; onPick: () => void }) {
+  const status = failed && s.status === "running" ? "failed" : s.status;
+  return (
+    <button
+      type="button"
+      onClick={onPick}
+      aria-current={on ? "step" : undefined}
+      className={`w-full text-left rounded-card border px-3 py-2.5 flex items-start gap-3 transition-colors ${on ? "" : "border-border bg-surface hover:border-border-strong"}`}
+      style={on ? { borderColor: "rgb(var(--auto-tell) / 0.7)", background: "rgb(var(--auto-tell) / 0.08)" } : undefined}
+      data-ml-step={s.id}
+    >
+      <span className="font-mono text-[11.5px] mt-[3px] w-5 shrink-0" style={{ color: status === "done" ? "rgb(var(--auto-do))" : status === "running" ? "rgb(var(--auto-tell))" : "rgb(var(--color-muted))" }}>
+        {String(i + 1).padStart(2, "0")}
+      </span>
+      <span className="flex flex-col gap-0.5 min-w-0 flex-1">
+        <span className={`text-ui font-medium ${status === "pending" ? "text-muted" : "text-text"}`}>{s.title}</span>
+        {s.note && <span className="text-[12px] text-muted leading-snug line-clamp-2">{s.note}</span>}
+        {!s.note && status === "pending" && <span className="text-[12px] text-faint">{failed ? "not run" : "waiting"}</span>}
+      </span>
+      <span className="shrink-0 mt-[2px] text-[11px] font-mono">
+        {status === "done" && <span style={{ color: "rgb(var(--auto-do))" }}>{s.seconds != null ? `${s.seconds}s` : "✓"}</span>}
+        {status === "running" && <span className="inline-flex items-center gap-1" style={{ color: "rgb(var(--auto-tell))" }}><span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "rgb(var(--auto-tell))" }} />now</span>}
+        {status === "failed" && <span className="text-danger">stopped</span>}
+      </span>
+    </button>
+  );
+}
+
+function TrustCard({ title, lines, icon }: { title: string; lines: string[]; icon?: boolean }) {
+  return (
+    <div className="rounded-card border border-border bg-surface px-4 py-3.5 flex flex-col gap-1.5 min-w-0">
+      <span className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.12em] text-muted">
+        {icon && <ShieldCheckIcon size={13} />} {title}
+      </span>
+      {lines.filter(Boolean).map((l) => (
+        <span key={l} className="text-caption text-secondary leading-snug">{l}</span>
+      ))}
+    </div>
+  );
+}
 
 /** The leaderboard's metric family while training (before results exist). */
 function kindOf(problemType: string | null | undefined): string {
@@ -54,214 +565,6 @@ const METRIC: Record<string, [string, string]> = {
   recommendations: ["Found in top 5", ""],
   text_tag: ["Accuracy", "Macro F1"],
 };
-
-export default function MLStudioProject() {
-  const { id = "" } = useParams();
-  const navigate = useNavigate();
-  const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
-  const [p, setP] = useState<StudioProject | null>(null);
-  const [error, setError] = useState("");
-  const [notFound, setNotFound] = useState(false);
-  const [scoring, setScoring] = useState<string>("");
-  const [confirmDelete, setConfirmDelete] = useState(false);
-
-  const load = () =>
-    mlStudioApi
-      .get(id)
-      .then(setP)
-      .catch((e) => (e?.response?.status === 404 ? setNotFound(true) : setError(errorText(e, "Couldn't load this project."))));
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
-
-  useEffect(() => {
-    if (p?.status !== "training") return;
-    const t = setInterval(load, 1200);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [p?.status]);
-
-  if (notFound) {
-    return (
-      <div className="min-h-screen grid place-items-center bg-base px-6">
-        <div className="text-center">
-          <div className="text-section font-semibold text-text">This model doesn't exist or isn't shared with you.</div>
-          <Link to="/ml-models" className="btn-primary text-sm mt-4 inline-flex">ML Studio</Link>
-        </div>
-      </div>
-    );
-  }
-
-  const prog: Progress | null = (p?.progress as Progress) || null;
-  const training = p?.status === "training";
-  const res = p?.results;
-  const kind: string = res?.kind || kindOf(p?.problem_type);
-  const ptype = p?.problem_type || "";
-  const legacy = !ptype || LEGACY_RESULTS.has(ptype);
-  const joinsUsed = (res?.joins && res.joins.length ? res.joins : prog?.joins) || [];
-  const joinLine = joinsSentence(joinsUsed, training ? "Learning from" : "Learned from");
-  const scorable = !!ptype && !NOT_SCORABLE.has(ptype) && kind !== "forecast";
-  const canTry = ["yes_no", "number", "drivers", "which_category"].includes(ptype) || (!ptype && (kind === "binary" || kind === "multiclass" || kind === "number"));
-  const rows = prog?.resources?.rows_used;
-
-  const score = async () => {
-    setScoring("…");
-    try {
-      const out = await mlStudioApi.score(id);
-      setScoring(`Saved “${out.new_version_name}” · ${out.row_count.toLocaleString()} rows - open it from the data source's saved tables.`);
-      load();
-    } catch (e: any) {
-      setScoring(errorText(e, "Couldn't score the table."));
-    }
-  };
-
-  return (
-    <div className="dash-shell flex min-h-screen">
-      <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
-      <div className="flex-1 min-w-0">
-        <TopNav hideLogo />
-        <main className="px-4 sm:px-8 lg:px-10 py-7 max-w-[1320px] mx-auto flex flex-col gap-6">
-          {!p && !error && <div className="text-ui text-muted">Loading…</div>}
-          {error && <div role="alert" className="rounded-card border border-danger-border bg-danger-fill px-4 py-3 text-ui text-text">{error}</div>}
-          {p && (
-            <>
-              <div className="flex items-end justify-between gap-4 flex-wrap">
-                <div className="flex flex-col gap-1.5 min-w-0 flex-[1_1_420px]">
-                  <span className="font-mono text-caption text-muted uppercase tracking-[0.06em] truncate">
-                    <Link to="/ml-models" className="hover:text-text">← ML Studio</Link> / {p.name}
-                  </span>
-                  <h1 className="m-0 text-[24px] sm:text-[30px] font-bold tracking-tight text-text text-balance">
-                    {training
-                      ? `Training on ${rows ? `all ${rows.toLocaleString()} rows` : "every row"} — ${dur(p.elapsed)}`
-                      : p.status === "failed"
-                        ? `${p.name} — didn't finish`
-                        : p.name}
-                  </h1>
-                  {ptype && (
-                    <span className="inline-flex items-center gap-2 text-caption text-secondary">
-                      <span className="inline-block w-2 h-2 rounded-[3px]" style={{ background: FAMILY_COLOR[FAMILY_OF[ptype] || "Predict"] }} aria-hidden="true" />
-                      {TYPE_LABEL[ptype] || ptype}
-                    </span>
-                  )}
-                  <span className="text-ui text-muted">
-                    {p.source}
-                    {p.table ? ` · ${p.table}` : ""}
-                    {p.status === "ready" && p.trained_at ? ` · trained ${timeAgo(p.trained_at)} in ${dur(p.elapsed)}` : ""}
-                    {training && prog?.message ? ` · ${prog.message}` : ""}
-                  </span>
-                  {joinLine && (
-                    <span className="inline-flex items-start gap-2 text-ui text-secondary">
-                      <span className="mt-[7px] inline-block w-1.5 h-1.5 rounded-full shrink-0" style={{ background: "rgb(var(--auto-do))" }} aria-hidden="true" />
-                      {joinLine}
-                    </span>
-                  )}
-                </div>
-                <div className="flex gap-2 flex-wrap">
-                  {training ? (
-                    <>
-                      <button type="button" className="btn-secondary text-sm" onClick={() => navigate("/ml-models")}>Run in background</button>
-                      {p.can_edit && (
-                        <button type="button" className="btn-secondary text-sm" onClick={() => mlStudioApi.stop(id).then(load).catch((e) => setError(errorText(e, "Couldn't stop it.")))}>
-                          Stop
-                        </button>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      {p.can_edit && <button type="button" className="btn-secondary text-sm" onClick={() => mlStudioApi.retrain(id).then(load).catch((e) => setError(errorText(e, "Couldn't start it.")))}>Train again</button>}
-                      {p.status === "ready" && canTry && (
-                        <Link to={`/ml-models/${id}`} className="btn-secondary text-sm">Try a prediction</Link>
-                      )}
-                      {p.status === "ready" && scorable && (
-                        <button type="button" className="btn-primary text-sm" onClick={score} disabled={scoring === "…"}>
-                          {scoring === "…" ? "Scoring…" : "Score every row"}
-                        </button>
-                      )}
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {scoring && scoring !== "…" && <div role="status" className="rounded-card border border-tint-border bg-tint/40 px-4 py-3 text-ui text-text">{scoring}</div>}
-              {p.status === "failed" && <div role="alert" className="rounded-card border border-danger-border bg-danger-fill px-4 py-3 text-ui text-text">{p.error}</div>}
-
-              {prog && <StageRow stages={prog.stages} failed={p.status === "failed"} />}
-
-              <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px] items-start">
-                <div className="flex flex-col gap-5 min-w-0">
-                  {p.status === "ready" && res && (legacy ? <Results kind={kind} res={res} /> : <GenericResults res={res} />)}
-                  {prog && prog.leaderboard.length > 0 && <Leaderboard prog={prog} kind={kind} done={!training} />}
-                </div>
-                <aside className="flex flex-col gap-4">
-                  <SizeTiers rows={rows} />
-                  {prog && <ThisRun prog={prog} elapsed={p.elapsed} />}
-                  {prog && (prog.leaks || []).length > 0 && (
-                    <section className="rounded-card border border-border bg-surface p-4 flex flex-col gap-3" aria-label="Leak check">
-                      <h3 className="m-0 font-mono text-[11px] uppercase tracking-[0.12em] text-warning font-medium">Leak check · {prog.leaks.length} removed</h3>
-                      {prog.leaks.map((l) => (
-                        <div key={l.column} className="flex flex-col gap-0.5 border-t border-border pt-2.5 first:border-t-0 first:pt-0">
-                          <span className="font-mono text-ui text-text">{l.column}</span>
-                          <span className="text-caption text-muted leading-snug">{l.reason}</span>
-                        </div>
-                      ))}
-                    </section>
-                  )}
-                  {!training && p.can_delete && (
-                    <div className="flex gap-2">
-                      {confirmDelete ? (
-                        <>
-                          <button type="button" className="btn-secondary text-sm !text-danger" onClick={() => mlStudioApi.remove(id).then(() => navigate("/ml-models"))}>Delete for good</button>
-                          <button type="button" className="btn-secondary text-sm" onClick={() => setConfirmDelete(false)}>Keep it</button>
-                        </>
-                      ) : (
-                        <button type="button" className="text-caption text-muted underline hover:text-danger" onClick={() => setConfirmDelete(true)}>Delete this model</button>
-                      )}
-                    </div>
-                  )}
-                </aside>
-              </div>
-            </>
-          )}
-        </main>
-      </div>
-    </div>
-  );
-}
-
-function StageRow({ stages: raw, failed = false }: { stages: Progress["stages"]; failed?: boolean }) {
-  // round 15: a run that stopped shows the step it stopped at as stopped, not running
-  const stages = failed ? raw.map((s) => (s.status === "running" ? { ...s, status: "failed" as typeof s.status } : s)) : raw;
-  return (
-    <ol className="m-0 p-0 list-none grid gap-2.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }} aria-label="Stages">
-      {stages.map((s, i) => (
-        <li
-          key={s.id}
-          className="rounded-card border p-3.5 flex flex-col gap-1 min-w-0"
-          style={
-            s.status === "running"
-              ? { borderColor: "rgb(var(--auto-tell-border))", background: "rgb(var(--auto-tell-fill))" }
-              : (s.status as string) === "failed"
-              ? { borderColor: "rgb(var(--color-danger-border))", background: "rgb(var(--color-surface))" }
-              : { borderColor: "rgb(var(--color-border))", background: "rgb(var(--color-surface))" }
-          }
-        >
-          <span className="flex items-center justify-between font-mono text-[11px]">
-            <span style={{ color: s.status === "pending" ? "rgb(var(--color-muted))" : s.status === "running" ? "rgb(var(--auto-tell))" : "rgb(var(--auto-do))" }}>
-              {String(i + 1).padStart(2, "0")}
-            </span>
-            {s.status === "done" && <span style={{ color: "rgb(var(--auto-do))" }}>✓</span>}
-            {s.status === "running" && <span style={{ color: "rgb(var(--auto-tell))" }}>● running</span>}
-            {(s.status as string) === "failed" && <span className="text-danger">✕ stopped here</span>}
-          </span>
-          <span className={`text-ui font-semibold ${s.status === "pending" ? "text-muted" : "text-text"}`}>{s.title}</span>
-          <span className="text-caption text-muted leading-snug">{s.note || (s.status === "pending" ? (failed ? "not run" : "waiting") : "")}</span>
-        </li>
-      ))}
-    </ol>
-  );
-}
 
 function fmt(kind: string, v: number | null | undefined, second = false): string {
   if (v == null || Number.isNaN(v)) return "—";
@@ -368,67 +671,6 @@ function Curve({ prog, kind }: { prog: Progress; kind: string }) {
         {last && <circle cx={x(last.trial)} cy={y(last.best as number)} r="4.5" fill="rgb(var(--auto-do))" />}
       </svg>
     </figure>
-  );
-}
-
-function SizeTiers({ rows }: { rows?: number }) {
-  return (
-    <section className="rounded-card border border-border bg-surface p-4 flex flex-col gap-2.5" aria-label="Built for any data size">
-      <h3 className="m-0 font-mono text-[11px] uppercase tracking-[0.12em] text-muted font-medium">How data size is handled</h3>
-      <div className="rounded-ctl border p-3 flex flex-col gap-1" style={{ borderColor: "rgb(var(--auto-do-border))", background: "rgb(var(--auto-do-fill) / 0.4)" }}>
-        <span className="flex justify-between gap-2 text-ui font-semibold text-text">
-          In memory on this server
-          {rows != null && <span className="font-mono text-[10px] uppercase" style={{ color: "rgb(var(--auto-do))" }}>this run · {rows.toLocaleString()}</span>}
-        </span>
-        <span className="text-caption text-muted leading-snug">Every row up to the server's limit, seconds to minutes. A bigger table trains on its first rows and says so.</span>
-      </div>
-      <div className="rounded-ctl border border-border p-3 flex flex-col gap-1">
-        <span className="flex justify-between gap-2 text-ui font-semibold text-text">Larger tables <span className="font-mono text-[10px] uppercase text-muted">next</span></span>
-        <span className="text-caption text-muted leading-snug">Features built inside your warehouse; training streamed in chunks across workers.</span>
-      </div>
-      <div className="rounded-ctl border border-border p-3 flex flex-col gap-1">
-        <span className="flex justify-between gap-2 text-ui font-semibold text-text">Hundreds of millions of rows <span className="font-mono text-[10px] uppercase text-muted">next</span></span>
-        <span className="text-caption text-muted leading-snug">Training runs inside the warehouse (BigQuery ML, Snowflake ML). Data stays where it is.</span>
-      </div>
-      <p className="m-0 text-caption text-muted leading-snug">Data is never sampled without telling you.</p>
-    </section>
-  );
-}
-
-function Bar({ label, value, pct, tone = "tell" }: { label: string; value: string; pct: number; tone?: "do" | "tell" }) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex justify-between text-ui">
-        <span className="text-text">{label}</span>
-        <span className="font-mono text-secondary">{value}</span>
-      </div>
-      <span className="h-[5px] rounded-full bg-subtle overflow-hidden">
-        <span className="block h-full rounded-full" style={{ width: `${Math.max(2, Math.min(100, pct))}%`, background: `rgb(var(--auto-${tone}))` }} />
-      </span>
-    </div>
-  );
-}
-
-function ThisRun({ prog, elapsed }: { prog: Progress; elapsed: number | null }) {
-  const r = prog.resources || {};
-  return (
-    <section className="rounded-card border border-border bg-surface p-4 flex flex-col gap-3" aria-label="This run">
-      <h3 className="m-0 font-mono text-[11px] uppercase tracking-[0.12em] text-muted font-medium">This run</h3>
-      {r.rows_used != null && (
-        <Bar
-          label="Rows used"
-          value={`${r.rows_used.toLocaleString()} of ${r.rows_total?.toLocaleString()}${r.capped ? "+" : ""}`}
-          pct={r.rows_total ? (r.rows_used / r.rows_total) * 100 : 100}
-          tone="do"
-        />
-      )}
-      {r.capped && <span className="text-caption text-warning -mt-1">The table is bigger than this server's row limit - it trained on the first rows.</span>}
-      {prog.memory_note && <span className="text-caption text-warning -mt-1">{prog.memory_note}</span>}
-      {r.workers != null && <Bar label="Workers" value={`${r.workers} CPU`} pct={100} />}
-      {r.memory_mb != null && r.memory_mb > 0 && <Bar label="Peak memory" value={`${r.memory_mb.toLocaleString()} MB`} pct={Math.min(100, (r.memory_mb / 1024) * 100)} />}
-      {prog.trials_total ? <Bar label="Trials" value={`${prog.trials_done} of ${prog.trials_total}`} pct={(prog.trials_done / prog.trials_total) * 100} /> : null}
-      {elapsed != null && <Bar label="Time" value={dur(elapsed)} pct={100} />}
-    </section>
   );
 }
 
