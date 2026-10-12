@@ -3577,6 +3577,119 @@ def _metric_glossary(metrics: list) -> str:
     return "\n".join(lines)
 
 
+def _computed_numbers(config: dict) -> list[float]:
+    """Every number a computed file block shows (its KPI value, its rows' measures, its items)."""
+    out: list[float] = []
+    def add(v):
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v:
+            out.append(float(v))
+    add(config.get("value"))
+    for it in config.get("items") or []:
+        if isinstance(it, dict):
+            add(it.get("value"))
+    cols = config.get("result_columns") or []
+    rows = config.get("result_rows") if config.get("result_rows") is not None else config.get("rows")
+    if isinstance(rows, list):
+        measure_names = [c.get("name") for c in cols if isinstance(c, dict) and c.get("role") == "measure"]
+        for r in rows[:500]:
+            if isinstance(r, dict):
+                for k, v in r.items():
+                    if not measure_names or k in measure_names:
+                        add(v)
+            elif isinstance(r, (list, tuple)):
+                for v in r:
+                    add(v)
+    return out
+
+
+def _computed_is_empty(config: dict) -> str | None:
+    """Why a computed block would be empty (no rows / every number 0), else None."""
+    rows = config.get("result_rows") if config.get("result_rows") is not None else config.get("rows")
+    has_value = isinstance(config.get("value"), (int, float)) and not isinstance(config.get("value"), bool)
+    if isinstance(rows, list) and not rows and not has_value and not config.get("items"):
+        return "There are no rows for this in your data, so it would be an empty chart."
+    nums = _computed_numbers(config)
+    if nums and all(abs(n) < 1e-12 for n in nums):
+        return "Every value is 0 in your data, so it would show nothing but zeros."
+    return None
+
+
+def _computed_summary(config: dict) -> dict:
+    """A small fingerprint of a computed block - its value, or its largest numbers - used to check
+    it against the answer it came from."""
+    nums = _computed_numbers(config)
+    out: dict = {}
+    if isinstance(config.get("value"), (int, float)) and not isinstance(config.get("value"), bool):
+        out["value"] = float(config["value"])
+    if nums:
+        out["top"] = sorted(set(round(n, 6) for n in nums), reverse=True)[:12]
+    return out
+
+
+# round 36: what a block keeps when its data is recomputed (a refresh, a filter): where it came
+# from, which table it reads, its colour. _run_manual_recipe returns a fresh config without them.
+_CARRIED_BLOCK_KEYS = ("origin", "source_table", "accent_color")
+
+
+def carry_block_meta(old_config: dict | None, new_config: dict) -> dict:
+    old_config = old_config or {}
+    for k in _CARRIED_BLOCK_KEYS:
+        if old_config.get(k) is not None and new_config.get(k) is None:
+            new_config[k] = old_config[k]
+    return new_config
+
+
+class _TableFrames:
+    """2026-10-12 (round 36): a file or app source's rows, ONE FRAME PER TABLE, each loaded once per
+    request with the person's access rules applied. Every block computes on the table its own spec
+    names (recipe["table"]); a block with no table, or a single-table source, reads the source's
+    main table. Before this, every block of a multi-table source was computed on whichever table a
+    "no table" load happened to return - the GA4 dashboard that came out with one block."""
+
+    def __init__(self, db: Session, ds: models.DataSource, user: models.User | None):
+        self.db, self.ds, self.user = db, ds, user
+        self._frames: dict[str, pd.DataFrame | None] = {}
+        self.errors: dict[str, str] = {}
+        from ..services.synced_sources import SYNCED_KINDS
+        self.synced = ds.kind in SYNCED_KINDS
+        cache = ds.schema_cache if isinstance(ds.schema_cache, dict) else {}
+        self.multi = self.synced or default_table_for_preview(ds) is not None
+        self.tables = [str(k) for k, v in cache.items() if isinstance(v, list)] if self.multi else []
+
+    def default_table(self) -> str | None:
+        if not self.multi:
+            return None
+        if self.synced:
+            from ..services import synced_sources
+            return synced_sources.primary_table(self.db, self.ds.id) or (self.tables[0] if self.tables else None)
+        return default_table_for_preview(self.ds)
+
+    def resolve(self, table: str | None) -> str | None:
+        """The real table a block's `table` means here (None: single-table source)."""
+        if not self.multi:
+            return None
+        if table and table in self.tables:
+            return table
+        return self.default_table()
+
+    def get(self, table: str | None = None) -> pd.DataFrame | None:
+        real = self.resolve(table)
+        key = real or "__single__"
+        if key not in self._frames:
+            try:
+                df = load_dataframe(self.ds, table=real, version="original", db=self.db)
+                if self.user is not None:
+                    df = data_access_rules.filter_dataframe_for_role(self.db, df, self.ds, self.user)
+                self._frames[key] = df
+            except Exception as e:  # noqa: BLE001 - the caller decides what a missing table means
+                self.errors[key] = str(e)
+                self._frames[key] = None
+        return self._frames[key]
+
+    def for_recipe(self, recipe: dict | None) -> pd.DataFrame | None:
+        return self.get((recipe or {}).get("table"))
+
+
 def _file_schema(db: Session, ds: models.DataSource, user: models.User) -> tuple[dict, pd.DataFrame | None]:
     """({table: [{name, type}]}, df) for a FILE source: the cached schema
     when it has one, else derived from the loaded data (which is complete
@@ -3639,6 +3752,9 @@ def _spec_to_recipe(spec: dict) -> dict | None:
         recipe["order_by"] = order
     if spec.get("limit") and group:
         recipe["limit"] = spec["limit"]
+    if spec.get("table"):
+        # round 36: the table this block computes on (multi-table file/app sources)
+        recipe["table"] = spec["table"]
     return recipe
 
 
@@ -3745,17 +3861,19 @@ def _fallback_proposal(goal: str, schema: dict, period: str) -> dict:
 def _build_proposal(
     db: Session, user: models.User, ds: models.DataSource, goal: str, pages="auto", period: str | None = None,
     template: dict | None = None, conversation_id: str | None = None, current: dict | None = None,
-    instruction: str | None = None,
+    instruction: str | None = None, raw_override: dict | None = None, max_pages: int = 2,
 ) -> dict:
     """The proposal dict _PROPOSALS stores and ProposalOut is built from.
     ONE model call (ai_engine.propose_dashboard), then every block is
-    validated for real - see the section comment above."""
+    validated for real - see the section comment above. raw_override
+    (round 36) validates a given plan instead of asking the model - the
+    deterministic top-up of a thread dashboard."""
     started = time.perf_counter()
     native = dashboard_engine.is_warehouse_native(ds)
     period = dashboard_engine.normalize_period(period, template.get("period") if template else None)
     versions = dashboard_engine.load_versions(db, ds) if native else []
     file_df = None
-    file_df_failed = False
+    frames: "_TableFrames | None" = None
     if native:
         schema, _ = query_builder.with_version_aliases(ds.schema_cache, versions)
         schema_text = _warehouse_schema_text(ds, None, versions)
@@ -3773,7 +3891,7 @@ def _build_proposal(
         effective_goal = template["goal"]
     if template:
         pages = template.get("pages") or pages
-    raw = ai_engine.propose_dashboard(
+    raw = raw_override if raw_override is not None else ai_engine.propose_dashboard(
         effective_goal, schema_text, _metric_glossary(metrics), ds.kind, pages=pages, period=period,
         template=template, current_proposal=current, instruction=instruction,
     )
@@ -3787,6 +3905,11 @@ def _build_proposal(
             warning = "The model did not answer, so this is a plain starting point built from the schema alone - revise it or describe the goal again."
 
     primary_table = next(iter(schema.keys()), None)
+    if not native:
+        # round 36: a synced app's main table (GA4 traffic_daily), never the first by name
+        _main = _TableFrames(db, ds, user).default_table()
+        if _main in schema:
+            primary_table = _main
     date_column = raw.get("date_column") if isinstance(raw.get("date_column"), str) else None
     if date_column and not any(c["name"] == date_column for t in schema for c in (query_builder.table_columns(schema, t) or [])):
         date_column = None
@@ -3803,7 +3926,7 @@ def _build_proposal(
     if pages in (1, "1") and len(raw_pages) > 1:
         merged = {"title": raw_pages[0].get("title") or "Overview", "blocks": [b for p in raw_pages for b in (p.get("blocks") or [])]}
         raw_pages = [merged]
-    for pi, page in enumerate(raw_pages[:2]):
+    for pi, page in enumerate(raw_pages[:max(1, max_pages)]):
         blocks_out: list[dict] = []
         raw_blocks = [b for b in (page.get("blocks") or []) if isinstance(b, dict)]
         # Saved metrics named in the goal that the model did not already
@@ -3829,6 +3952,15 @@ def _build_proposal(
                 "text": None, "from_metric_id": None, "from_metric_name": None, "status": "ok", "error": None,
                 "sql": None, "columns": [],
             }
+            # round 36: where a thread dashboard's block comes from - one of the answers ("Q2") or
+            # added by GD360 ("suggested") - and the one-line reason it is there
+            origin = str(rb.get("origin") or "").strip()
+            if re.fullmatch(r"[Qq]\d{1,2}", origin):
+                block["origin"] = origin.upper()
+            elif origin.lower() in ("suggested", "you"):
+                block["origin"] = origin.lower()
+            if isinstance(rb.get("why"), str) and rb["why"].strip():
+                block["why"] = rb["why"].strip()[:160]
             if btype == "text":
                 block["text"] = str(rb.get("text") or "").strip()[:2000] or title
                 blocks_out.append(block)
@@ -3909,16 +4041,14 @@ def _build_proposal(
                 # own rows (complete inside the app), so a block that cannot
                 # be computed says why HERE instead of silently missing from
                 # the published dashboard.
-                if file_df is None and not file_df_failed:
+                if frames is None:
+                    frames = _TableFrames(db, ds, user)
+                block_df = frames.for_recipe(recipe)
+                if block_df is None:
+                    print(f"[dashboard_builder] proposal: table {recipe.get('table')!r} could not be loaded to check its blocks (non-fatal): {frames.errors}")
+                if block_df is not None:
                     try:
-                        file_df = load_dataframe(ds, table=None, version="original", db=db)
-                        file_df = data_access_rules.filter_dataframe_for_role(db, file_df, ds, user)
-                    except Exception as e:
-                        print(f"[dashboard_builder] proposal: the file could not be loaded to check its blocks (non-fatal): {e}")
-                        file_df, file_df_failed = None, True
-                if file_df is not None:
-                    try:
-                        _run_manual_recipe(file_df, dict(recipe), existing_title=title)
+                        _rt, computed, _t = _run_manual_recipe(block_df, dict(recipe), existing_title=title)
                     except ValueError as e:
                         block["status"], block["error"] = "invalid", str(e)
                         blocks_out.append(block)
@@ -3927,6 +4057,18 @@ def _build_proposal(
                         block["status"], block["error"] = "invalid", f"This block could not be computed on the file: {e}"
                         blocks_out.append(block)
                         continue
+                    # round 36: a block whose every number is 0 (GA4 purchase_revenue with no
+                    # e-commerce) would be an empty chart - skipped, and said so
+                    empty = _computed_is_empty(computed)
+                    if empty:
+                        cols = [m.get("column") for m in public.get("measures") or [] if m.get("column")]
+                        where = str(public.get("table") or "your data").replace("_", " ")
+                        if cols and "0" in empty:
+                            empty = (f"{', '.join(cols)} is 0 in every row of {where}, so it would be an empty chart.")
+                        block["status"], block["error"] = "skipped", empty
+                        blocks_out.append(block)
+                        continue
+                    block["computed"] = _computed_summary(computed)
                 block["recipe"] = recipe
             if block["type"] == "chart" and not block["chart_type"]:
                 block["chart_type"] = "line" if public.get("time") else "bar"
@@ -4116,11 +4258,13 @@ def _commit_proposal(
     column and the default period come from the proposal."""
     keep_set = set(keep) if keep else None
     native = proposal["warehouse_native"]
-    file_df = None
+    frames = None
     format_schema = None
     if not native:
-        file_df = load_dataframe(ds, table=None, version="original", db=db)
-        file_df = data_access_rules.filter_dataframe_for_role(db, file_df, ds, user)
+        # round 36: each block computes on its own table (see _TableFrames)
+        frames = _TableFrames(db, ds, user)
+        if frames.get(None) is None and not frames.multi:
+            raise HTTPException(400, f"Could not load {ds.name}: {next(iter(frames.errors.values()), 'unknown error')}")
         # Column types for infer_number_format, the same way the proposal saw them.
         format_schema, _ = _file_schema(db, ds, user)
     else:
@@ -4190,6 +4334,10 @@ def _commit_proposal(
                 query_sql = b.get("sql")
             else:
                 recipe = dict(b.get("recipe") or {})
+                file_df = frames.for_recipe(recipe)
+                if file_df is None:
+                    print(f"[dashboard_builder] proposal block {b['client_id']!r}: its table could not be loaded on commit: {frames.errors}")
+                    continue
                 if recipe.get("block_type") == "kpi" and proposal.get("date_column") and proposal["date_column"] in file_df.columns:
                     # The tile's sparkline: the same number per period over
                     # the dashboard's date column (see _kpi_trend).
@@ -4220,6 +4368,9 @@ def _commit_proposal(
                         config["good_direction_inferred"] = True
                 if b.get("from_metric_id"):
                     config["metric_id"] = b["from_metric_id"]
+            if b.get("origin"):
+                # round 36: where the block came from - one of the thread's answers, or suggested
+                config = {**config, "origin": b["origin"]}
             db.add(models.DashboardBlock(
                 page_id=page.id, type=btype, title=b["title"], x=int(layout.get("x", 0)), y=int(layout.get("y", 0)),
                 w=int(layout.get("w", 6)), h=int(layout.get("h", 6)), config=config, position=bpos, query_sql=query_sql,
@@ -4281,6 +4432,229 @@ def _move_pages(db: Session, source: models.Dashboard, target: models.Dashboard,
         target.default_period = source.default_period
     db.flush()
     return moved
+
+
+# ===================================================================== round 36: thread dashboards
+# "Create a dashboard from this thread": the answers come along (each block tagged with the answer it
+# shows), GD360 adds what they miss, every block is computed on ITS OWN table, an empty block is
+# left out with its reason, and the plan never ends below its minimum: a repair pass, then a
+# deterministic top-up from the schema. A one-block dashboard (the GA4 bug) cannot come out of it.
+
+THREAD_MIN_BLOCKS = {"auto": 6, "arrange": 6, "answers": 2}
+_TEXT_TYPES = ("string", "object", "text", "char", "category", "varchar")
+_NUM_TYPES = ("int", "float", "numeric", "decimal", "double", "real", "number")
+_ID_NAME = re.compile(r"(^|_)(id|uuid|key|hash|code|zip|postal|phone|email|url|path|page_location|campaign_id)$", re.I)
+_DATE_NAME = re.compile(r"(^|_)(date|day|dt|created_at|updated_at|timestamp|time)$", re.I)
+
+
+def _spec_signature(spec: dict | None) -> tuple | None:
+    if not isinstance(spec, dict):
+        return None
+    meas = tuple(sorted((str(m.get("agg")), str(m.get("column") or m.get("expr") or "")) for m in spec.get("measures") or []))
+    t = spec.get("time") or {}
+    return (spec.get("table"), tuple(spec.get("group_by") or []), t.get("column"), meas)
+
+
+def _topup_raw(schema: dict, primary: str | None, period: str) -> dict:
+    """A plain, checkable plan from the schema alone - KPIs of the main table's measures, its trend,
+    its breakdowns, then one breakdown per other table. Every block is still validated and computed;
+    empty or all-zero ones are left out, so only real blocks reach the dashboard."""
+    tables = ([primary] if primary in schema else []) + [t for t in schema if t != primary]
+    blocks: list[dict] = []
+    for ti, table in enumerate(tables[:4]):
+        cols = query_builder.table_columns(schema, table) or []
+        typ = {c["name"]: str(c.get("type") or "").lower() for c in cols}
+        date_col = next((n for n, t in typ.items() if "date" in t or "time" in t), None) or \
+            next((n for n in typ if _DATE_NAME.search(n)), None)
+        nums = [n for n, t in typ.items() if any(k in t for k in _NUM_TYPES) and not _ID_NAME.search(n) and n != date_col]
+        texts = [n for n, t in typ.items() if any(k in t for k in _TEXT_TYPES) and n != date_col and not _ID_NAME.search(n)]
+        if not nums:
+            continue
+        lead = nums[0]
+        if ti == 0:
+            for n in nums[:5]:
+                blocks.append({"type": "kpi", "title": n.replace("_", " ").capitalize(), "intent": f"KPI · {n}", "origin": "suggested",
+                               "spec": {"table": table, "measures": [{"alias": n, "agg": "sum", "column": n}],
+                                        "compare_prior_period": True, "sparkline": True}})
+            if date_col:
+                blocks.append({"type": "chart", "title": f"{lead.replace('_', ' ').capitalize()} over time", "intent": f"Trend · {lead}",
+                               "chart_type": "line", "origin": "suggested",
+                               "spec": {"table": table, "time": {"column": date_col, "grain": "day" if period in ("day", "week") else period},
+                                        "measures": [{"alias": lead, "agg": "sum", "column": lead}],
+                                        "order_by": [{"by": "period", "dir": "asc"}], "limit": 500}})
+        for t in texts[: (4 if ti == 0 else 1)]:
+            blocks.append({"type": "chart", "title": f"{lead.replace('_', ' ').capitalize()} by {t.replace('_', ' ')}",
+                           "intent": f"Breakdown · {t}", "chart_type": "horizontal_bar", "origin": "suggested",
+                           "spec": {"table": table, "group_by": [t], "measures": [{"alias": lead, "agg": "sum", "column": lead}],
+                                    "order_by": [{"by": lead, "dir": "desc"}], "limit": 10}})
+    return {"title": "Top-up", "pages": [{"title": "Overview", "blocks": blocks[:_PROPOSAL_MAX_BLOCKS]}], "suggestions": []}
+
+
+def _origin_by_title(title: str, answers: list[dict]) -> str | None:
+    words = set(re.findall(r"[a-z0-9]+", title.lower())) - {"by", "the", "of", "and", "per", "total", "a"}
+    best, score = None, 0.0
+    for a in answers:
+        for view in a.get("views") or []:
+            vw = set(re.findall(r"[a-z0-9]+", str(view).lower())) - {"by", "the", "of", "and", "per", "total", "a"}
+            if not vw or not words:
+                continue
+            j = len(words & vw) / len(words | vw)
+            if j > score:
+                best, score = a["label"], j
+    return best if score >= 0.6 else None
+
+
+def _ok_blocks(proposal: dict) -> list[dict]:
+    return [b for pg in proposal["pages"] for b in pg["blocks"] if b["status"] == "ok"]
+
+
+def plan_thread_dashboard(
+    db: Session, user: models.User, ds: models.DataSource, goal: str, *, mode: str, answers: list[dict],
+    conversation_id: str | None = None,
+) -> dict:
+    """The checked plan for a thread dashboard (stored like any proposal, 30 minutes)."""
+    minimum = THREAD_MIN_BLOCKS.get(mode, 6)
+    proposal = _build_proposal(db, user, ds, goal, pages="auto" if mode != "answers" else 1, conversation_id=conversation_id)
+    notes: list[str] = []
+    # 1) one repair pass: the blocks that failed are rebuilt on the right tables
+    failed = [b for pg in proposal["pages"] for b in pg["blocks"] if b["status"] == "invalid"]
+    if failed and proposal.get("warning") is None:
+        reasons = "; ".join(f'"{b["title"]}": {b["error"]}' for b in failed[:6])
+        try:
+            repaired = _build_proposal(
+                db, user, ds, goal, pages="auto" if mode != "answers" else 1, conversation_id=conversation_id,
+                current={k: proposal[k] for k in ("proposal_id", "title", "pages", "revision")},
+                instruction=(f"These blocks could not be built: {reasons}. Replace each with a block that works - every "
+                             f"column must be in that block's own table. Keep every working block as it is; "
+                             f"{minimum} or more blocks in total."),
+            )
+            if repaired["valid_blocks"] > proposal["valid_blocks"]:
+                proposal = repaired
+                notes.append("repaired")
+        except Exception as e:  # noqa: BLE001 - the top-up below still guarantees the minimum
+            print(f"[thread-dashboard] repair pass skipped: {e}")
+    # 2) dedupe: the same numbers twice is one block
+    seen: set = set()
+    for pg in proposal["pages"]:
+        kept = []
+        for b in pg["blocks"]:
+            sig = _spec_signature(b.get("spec")) if b["status"] == "ok" else None
+            if sig is not None and sig in seen:
+                continue
+            if sig is not None:
+                seen.add(sig)
+            kept.append(b)
+        pg["blocks"] = kept
+    # 3) deterministic top-up to the minimum (never for "only my answers" beyond what they hold)
+    ok = _ok_blocks(proposal)
+    if len(ok) < minimum and mode != "answers":
+        schema, _ = (_file_schema(db, ds, user) if not dashboard_engine.is_warehouse_native(ds)
+                     else (query_builder.with_version_aliases(ds.schema_cache, dashboard_engine.load_versions(db, ds))[0], None))
+        primary = None
+        if not dashboard_engine.is_warehouse_native(ds):
+            primary = _TableFrames(db, ds, user).default_table()
+        primary = primary or next(iter(schema.keys()), None)
+        extra = _build_proposal(db, user, ds, goal, conversation_id=conversation_id,
+                                raw_override=_topup_raw(schema, primary, proposal.get("period") or "month"), max_pages=1)
+        target = proposal["pages"][-1] if proposal["pages"] else None
+        if target is None:
+            proposal["pages"] = [{"title": "Overview", "blocks": []}]
+            target = proposal["pages"][0]
+        n = sum(len(pg["blocks"]) for pg in proposal["pages"])
+        for b in _ok_blocks(extra):
+            if len(_ok_blocks(proposal)) >= max(minimum, 6):
+                break
+            sig = _spec_signature(b.get("spec"))
+            if sig in seen:
+                continue
+            seen.add(sig)
+            n += 1
+            b["client_id"] = f"t{n}"
+            b["origin"] = "suggested"
+            (proposal["pages"][0] if b["type"] in ("kpi", "sparkline") else target)["blocks"].append(b)
+        notes.append("topped_up")
+        for p in extra.get("parameters") or []:
+            if p.get("column") not in {x.get("column") for x in proposal.get("parameters") or []}:
+                proposal.setdefault("parameters", []).append(p)
+        if not proposal.get("date_column") and extra.get("date_column"):
+            proposal["date_column"] = extra["date_column"]
+    # 4) every ok block says where it comes from
+    for b in _ok_blocks(proposal):
+        if not b.get("origin"):
+            b["origin"] = _origin_by_title(b["title"], answers) or "suggested"
+        elif b["origin"].startswith("Q") and b["origin"] not in {a["label"] for a in answers}:
+            b["origin"] = "suggested"
+    for pg in proposal["pages"]:
+        _layout_proposal_page([b for b in pg["blocks"] if b["status"] == "ok"])
+    proposal["pages"] = [pg for pg in proposal["pages"] if pg["blocks"]] or [{"title": "Overview", "blocks": []}]
+    proposal["valid_blocks"] = len(_ok_blocks(proposal))
+    proposal["thread"] = {"mode": mode, "answers": answers, "notes": notes, "minimum": minimum}
+    _PROPOSALS.put(proposal["proposal_id"], proposal)
+    return proposal
+
+
+def add_to_thread_plan(db: Session, user: models.User, ds: models.DataSource, proposal: dict, text: str, page_index: int) -> list[dict]:
+    """"Add a block to this page": the request is planned and checked like every other block; only
+    blocks that are new (not already on the plan) and computed for real are added."""
+    current = {k: proposal[k] for k in ("proposal_id", "title", "pages", "revision")}
+    revised = _build_proposal(
+        db, user, ds, proposal.get("goal") or "", pages="auto", conversation_id=proposal.get("conversation_id"),
+        current=current, instruction=f'Add ONE block for: "{text.strip()[:300]}". Keep every other block exactly as it is.',
+    )
+    have = {_spec_signature(b.get("spec")) for pg in proposal["pages"] for b in pg["blocks"]}
+    added: list[dict] = []
+    failed: list[dict] = []
+    n = sum(len(pg["blocks"]) for pg in proposal["pages"]) + 1
+    for b in [b for pg in revised["pages"] for b in pg["blocks"]]:
+        sig = _spec_signature(b.get("spec"))
+        if sig in have:
+            continue
+        if b["status"] != "ok":
+            failed.append(b)
+            continue
+        b["client_id"] = f"u{n}_{secrets.token_hex(2)}"
+        b["origin"] = "you"
+        added.append(b)
+        n += 1
+        if len(added) >= 2:
+            break
+    if not added:
+        why = failed[0]["error"] if failed else "GD360 could not find that in this data."
+        raise HTTPException(400, f'Couldn\'t add "{text.strip()[:80]}": {why}')
+    pages = proposal["pages"]
+    target = pages[min(max(page_index, 0), len(pages) - 1)] if pages else None
+    if target is None:
+        proposal["pages"] = [{"title": "Overview", "blocks": []}]
+        target = proposal["pages"][0]
+    target["blocks"].extend(added)
+    for p in revised.get("parameters") or []:
+        if p.get("column") not in {x.get("column") for x in proposal.get("parameters") or []}:
+            proposal.setdefault("parameters", []).append(p)
+    proposal["valid_blocks"] = len(_ok_blocks(proposal))
+    _PROPOSALS.put(proposal["proposal_id"], proposal)
+    return added
+
+
+def arrange_thread_plan(proposal: dict, arrangement: list[dict] | None) -> dict:
+    """The person's arrangement - pages in order, each with its name and its blocks in order -
+    applied to a copy of the plan. Unknown or invalid blocks are ignored; empty pages are dropped."""
+    if not arrangement:
+        return proposal
+    by_id = {b["client_id"]: b for pg in proposal["pages"] for b in pg["blocks"] if b["status"] == "ok"}
+    pages: list[dict] = []
+    used: set = set()
+    for i, pg in enumerate(arrangement[:12]):
+        ids = [str(x) for x in (pg.get("block_ids") or []) if str(x) in by_id and str(x) not in used]
+        if not ids:
+            continue
+        used.update(ids)
+        blocks = [dict(by_id[x]) for x in ids]
+        _layout_proposal_page(blocks)
+        title = str(pg.get("title") or "").strip()[:80] or f"Page {len(pages) + 1}"
+        pages.append({"title": title, "blocks": blocks})
+    if not pages:
+        raise HTTPException(400, "Keep at least one block on the dashboard.")
+    return {**proposal, "pages": pages}
 
 
 def build_dashboard_from_goal(
@@ -4991,14 +5365,18 @@ def _fill_forecast_template(db: Session, user: models.User, d: models.Dashboard,
     if ds is None:
         return
     try:
-        df = load_dataframe(ds, table=None, version="original", db=db)
-        df = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
+        frames = _TableFrames(db, ds, user)
+        df = frames.get(None)
+        if df is None:
+            return
         date_col = d.date_column if d.date_column in df.columns else next(
             (c for c in df.columns if pd.api.types.is_datetime64_any_dtype(df[c])), None)
         if not date_col:
             return
         recipe = {"block_type": "chart", "chart_type": "line", "group_by_column": date_col, "time_grain": grain, "agg": "count",
                   "count_rows": True, "metric_column": date_col, "alias": "rows"}
+        if frames.resolve(None):
+            recipe["table"] = frames.resolve(None)
         _btype, config, _title = _run_manual_recipe(df, recipe, existing_title=f"Rows by {grain} - forecast")
         block.config = {**config, "forecast": options, "template": "forecast", "chart_type": "line"}
         if not block.title:
@@ -5929,14 +6307,13 @@ def preview_filtered_blocks(
     if ds and dashboard_engine.is_warehouse_native(ds):
         return _filter_page_blocks_warehouse(db, d, page, ds, payload, user.id)
     df = None
+    frames = None
     if ds:
-        try:
-            df = load_dataframe(ds, table=None, version="original", db=db)
-            df = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
-        except Exception:
-            df = None
+        # round 36: one frame per table - each block recomputes on the table its recipe names
+        frames = _TableFrames(db, ds, user)
+        df = frames.get(None)
 
-    out = _filter_page_blocks(db, page, df, ds, payload, dashboard=d)
+    out = _filter_page_blocks(db, page, df, ds, payload, dashboard=d, frames=frames)
     return _with_file_colors(db, d, page, out, payload, anonymous=False)
 
 
@@ -6028,11 +6405,27 @@ def _filter_page_blocks(
     ds: models.DataSource | None,
     payload: schemas.ApplyFiltersRequest,
     dashboard: models.Dashboard | None = None,
+    frames: "_TableFrames | None" = None,
 ) -> schemas.FilteredBlocksOut:
     active_filters = payload.filters[:_MAX_FILTERS_PER_REQUEST]
     date_bounds = _file_date_bounds(dashboard, ds, df)
     if df is not None:
         df = _apply_filters(df, active_filters)
+    # round 36: a multi-table source's blocks each read their own table, filtered the same way
+    filtered_by_table: dict[str, pd.DataFrame | None] = {}
+
+    def _table_df(block) -> pd.DataFrame | None:
+        recipe_ = (block.config or {}).get("recipe") or {}
+        if frames is None or not frames.multi:
+            return df
+        table = recipe_.get("table") or (block.config or {}).get("source_table")
+        real = frames.resolve(table)
+        if real == frames.resolve(None):
+            return df
+        if real not in filtered_by_table:
+            raw = frames.get(real)
+            filtered_by_table[real] = _apply_filters(raw, active_filters) if raw is not None else None
+        return filtered_by_table[real]
 
     # Per-chart filters - capped defensively (a real dashboard page has
     # nowhere near this many blocks or per-block criteria; see
@@ -6046,7 +6439,8 @@ def _filter_page_blocks(
     for block in page.blocks:
         own_filters = block_filters.get(block.id) or []
         recipe = (block.config or {}).get("recipe")
-        if recipe and df is None:
+        tdf = _table_df(block) if recipe else df
+        if recipe and tdf is None:
             # 2026-10-02 fix: the live datasource couldn't be loaded this
             # request - a recipe-based block has no other source of truth
             # to recompute from, so it's left out exactly like any other
@@ -6076,7 +6470,7 @@ def _filter_page_blocks(
         # currently recompute: left out of the response, the frontend's
         # existing content for it stays put (see this function's own
         # docstring above).
-        base_df = df
+        base_df = tdf
         if recipe and recipe.get("transform_id"):
             transform = (
                 db.query(models.DataTransform)
@@ -6085,7 +6479,7 @@ def _filter_page_blocks(
             )
             if not transform:
                 continue
-            base_df, transform_error = apply_transform_steps(df, transform.steps or [])
+            base_df, transform_error = apply_transform_steps(tdf, transform.steps or [])
             if transform_error:
                 continue
 
@@ -6111,6 +6505,7 @@ def _filter_page_blocks(
             try:
                 block_df = _apply_filters(base_df, own_filters)
                 actual_type, config, _default_title = _run_manual_recipe(block_df, recipe, existing_title=block.title)
+                config = carry_block_meta(block.config, config)
             except Exception:
                 continue
             out.append(schemas.FilteredBlockOut(id=block.id, type=actual_type, config=config))

@@ -145,6 +145,32 @@ class UpdateProjectRequest(BaseModel):
     source_ids: list[str] | None = None
 
 
+class ThreadPlanRequest(BaseModel):
+    """Round 36: "Create a dashboard from this thread" - the answers it starts from, anything else it
+    should show, and how: GD360 builds it ("auto"), the person arranges it ("arrange"), or only the
+    answers ("answers")."""
+    run_ids: list[str] = Field(default_factory=list, max_length=8)
+    purpose: str | None = Field(default=None, max_length=600)
+    mode: str = "auto"
+    datasource_id: str | None = None
+
+
+class ThreadAddRequest(BaseModel):
+    text: str = Field(min_length=3, max_length=300)
+    page_index: int = 0
+
+
+class ThreadPageArrangement(BaseModel):
+    title: str = Field(default="", max_length=80)
+    block_ids: list[str] = Field(default_factory=list, max_length=24)
+
+
+class ThreadBuildRequest(BaseModel):
+    plan_id: str
+    pages: list[ThreadPageArrangement] | None = Field(default=None, max_length=12)
+    name: str | None = Field(default=None, max_length=120)
+
+
 class DashboardRequest(BaseModel):
     run_id: str | None = None
     # 2026-10-11 (Ask Journey): several answers on ONE page ("merge"); the
@@ -1137,3 +1163,199 @@ def update_project_dashboard(dashboard_id: str, payload: UpdateProjectDashboardR
         flag_modified(d, "project_spec")
     db.commit()
     return _dashboard_out(db, d, user)
+
+
+
+# ===================================================================== round 36: dashboard from a thread
+def _thread_runs(db: Session, conv: models.Conversation, run_ids: list[str]) -> list[models.ProjectRun]:
+    q = db.query(models.ProjectRun).filter(models.ProjectRun.conversation_id == conv.id, models.ProjectRun.status == "done")
+    if run_ids:
+        wanted = list(dict.fromkeys(str(r) for r in run_ids))[:8]
+        runs = q.filter(models.ProjectRun.id.in_(wanted)).order_by(models.ProjectRun.created_at.asc()).all()
+        if len(runs) != len(wanted):
+            raise HTTPException(400, "Every answer you pick has to be finished first.")
+    else:
+        runs = q.order_by(models.ProjectRun.created_at.asc()).all()[-8:]
+    if not runs:
+        raise HTTPException(400, "Ask a question and let it finish first - the dashboard is built from its answers.")
+    return runs
+
+
+def _thread_source(db: Session, conv: models.Conversation, user: models.User, runs, datasource_id: str | None):
+    ds_id = datasource_id or _primary_source_for(runs, conv)
+    if not ds_id or ds_id not in (conv.source_ids or []):
+        raise HTTPException(400, "Pick one of the sources these answers used.")
+    ds = db.get(models.DataSource, ds_id)
+    if not ds or not workspace_access.can_access_datasource(db, ds, user):
+        raise HTTPException(404, "That data source could not be found.")
+    if not workspace_access.can_edit_datasource(db, ds, user):
+        raise HTTPException(403, f"You have view-only access to {ds.name}, so a dashboard can't be built on it.")
+    return ds
+
+
+def _thread_answers(runs: list[models.ProjectRun]) -> list[dict]:
+    out = []
+    for i, run in enumerate(runs, start=1):
+        result = run.result or {}
+        kpis = [str(k.get("label")) for k in (result.get("kpis") or []) if isinstance(k, dict) and k.get("label")]
+        numbers = [f'{k.get("label")} = {k.get("display")}' for k in (result.get("kpis") or [])
+                   if isinstance(k, dict) and k.get("label") and k.get("display")][:4]
+        out.append({"label": f"Q{i}", "run_id": run.id, "question": (run.question or "").strip()[:200],
+                    "headline": ((result.get("answer") or {}).get("headline") or "")[:240],
+                    "views": _views_of(run)[:6] + kpis[:4], "numbers": numbers})
+    return out
+
+
+def _thread_goal(answers: list[dict], purpose: str | None, mode: str) -> str:
+    purpose = (purpose or "").strip()
+    if mode == "answers":
+        head = ("A live dashboard that shows ONLY these answers from a conversation: one block for each view they "
+                "drew and their headline numbers as KPI tiles. Add nothing else.")
+    else:
+        head = (f"A live dashboard for: {purpose or 'a complete overview of what these answers are about'}. It must show "
+                "these answers from the conversation, then add what they do not show yet - the trend over time, the "
+                "main breakdowns and the quality measures - so it answers that purpose completely. 8 to 10 blocks; "
+                "two pages when it splits naturally (an overview, then the detail).")
+        if purpose:
+            head += f' The person also asked for: "{purpose}".'
+    parts = [head]
+    for a in answers:
+        bit = f'{a["label"]}) "{a["question"]}"'
+        if a["headline"]:
+            bit += f" - found: {a['headline']}"
+        if a["views"]:
+            bit += " - views: " + "; ".join(a["views"])
+        if a["numbers"]:
+            bit += " - numbers: " + "; ".join(a["numbers"])
+        parts.append(bit + ".")
+    return " ".join(parts)[:3500]
+
+
+_VIS_HOW = {"map": "Map + top 10", "line": "Line over time", "area": "Area over time", "bar": "Bars",
+            "horizontal_bar": "Ranked bars", "stacked_bar": "Stacked bars", "stacked_bar_100": "100% bars",
+            "heatmap": "Heatmap", "scatter": "Scatter", "histogram": "Histogram"}
+
+
+def _plan_block_view(b: dict) -> dict:
+    spec = b.get("spec") or {}
+    if b["type"] in ("kpi", "sparkline"):
+        how = "KPI with trend" if spec.get("sparkline") or spec.get("compare_prior_period") else "KPI"
+        visual = "kpi"
+    elif b["type"] == "donut" or b.get("chart_type") in ("pie", "donut"):
+        how, visual = "Donut", "donut"
+    elif b["type"] == "table":
+        how, visual = "Table", "table"
+    else:
+        ct = b.get("chart_type") or ("line" if spec.get("time") else "bar")
+        how = _VIS_HOW.get(ct, "Chart")
+        visual = "map" if ct == "map" else "trend" if spec.get("time") else "split" if ct in ("stacked_bar", "stacked_bar_100", "heatmap") \
+            else "bars"
+    if spec.get("group_by") and b["type"] not in ("kpi", "sparkline"):
+        how += " · " + ", ".join(str(g).replace("_", " ") for g in spec["group_by"][:2])
+    if spec.get("table"):
+        how += f" · {str(spec['table']).replace('_', ' ')}"
+    return {"id": b["client_id"], "title": b["title"], "type": b["type"], "chart_type": b.get("chart_type"),
+            "visual": visual, "how": how, "origin": b.get("origin") or "suggested", "why": b.get("why"),
+            "table": spec.get("table")}
+
+
+def _plan_out(p: dict) -> dict:
+    pages, skipped = [], []
+    for pg in p["pages"]:
+        blocks = []
+        for b in pg["blocks"]:
+            if b["status"] == "ok":
+                blocks.append(_plan_block_view(b))
+            else:
+                skipped.append({"title": b["title"], "reason": b.get("error") or "It could not be built on this data."})
+        if blocks:
+            pages.append({"title": pg["title"], "blocks": blocks})
+    t = p.get("thread") or {}
+    return {"plan_id": p["proposal_id"], "title": p["title"], "datasource_id": p["datasource_id"],
+            "datasource_name": p["datasource_name"], "mode": t.get("mode"), "pages": pages, "skipped": skipped[:8],
+            "answers": [{"label": a["label"], "question": a["question"], "run_id": a["run_id"]} for a in t.get("answers") or []],
+            "total": sum(len(pg["blocks"]) for pg in pages)}
+
+
+@router.post("/{project_id}/dashboard/plan")
+def plan_thread_dashboard(project_id: str, payload: ThreadPlanRequest, db: Session = Depends(get_db),
+                          user: models.User = Depends(get_current_user)):
+    """Round 36: the checked plan of a dashboard from this thread - blocks from the answers (tagged
+    Q1, Q2 ...) plus what they miss, each computed on its own table; empty ones listed with why."""
+    from .dashboard_builder import plan_thread_dashboard as _plan
+    _rate_limit(user.id)
+    mode = payload.mode if payload.mode in ("auto", "arrange", "answers") else "auto"
+    conv = _project(db, project_id, user, edit=True)
+    runs = _thread_runs(db, conv, payload.run_ids)
+    ds = _thread_source(db, conv, user, runs, payload.datasource_id)
+    answers = _thread_answers(runs)
+    proposal = _plan(db, user, ds, _thread_goal(answers, payload.purpose, mode), mode=mode, answers=answers,
+                     conversation_id=conv.id)
+    if proposal["valid_blocks"] == 0:
+        reasons = [f'"{b["title"]}": {b["error"]}' for pg in proposal["pages"] for b in pg["blocks"] if b.get("error")]
+        raise HTTPException(400, f"GD360 couldn't build a dashboard from this on {ds.name}."
+                            + (" Specifically: " + "; ".join(reasons[:3]) if reasons else ""))
+    proposal["thread"]["run_ids"] = [r.id for r in runs]
+    proposal["thread"]["project_id"] = conv.id
+    return _plan_out(proposal)
+
+
+def _thread_plan(plan_id: str, conv: models.Conversation, user: models.User) -> dict:
+    from .dashboard_builder import _get_proposal
+    p = _get_proposal(plan_id, user)
+    if (p.get("thread") or {}).get("project_id") != conv.id:
+        raise HTTPException(404, "That plan has expired - plan the dashboard again.")
+    return p
+
+
+@router.post("/{project_id}/dashboard/plan/{plan_id}/add")
+def add_to_thread_plan(project_id: str, plan_id: str, payload: ThreadAddRequest, db: Session = Depends(get_db),
+                       user: models.User = Depends(get_current_user)):
+    """Round 36: "Add a block to this page" - planned and checked like the rest; returns the new blocks."""
+    from .dashboard_builder import add_to_thread_plan as _add
+    _rate_limit(user.id)
+    conv = _project(db, project_id, user, edit=True)
+    p = _thread_plan(plan_id, conv, user)
+    ds = db.get(models.DataSource, p["datasource_id"])
+    if ds is None:
+        raise HTTPException(404, "That data source could not be found.")
+    added = _add(db, user, ds, p, payload.text, payload.page_index)
+    return {"blocks": [_plan_block_view(b) for b in added], "plan": _plan_out(p)}
+
+
+@router.post("/{project_id}/dashboard/build", status_code=201)
+def build_thread_dashboard(project_id: str, payload: ThreadBuildRequest, db: Session = Depends(get_db),
+                           user: models.User = Depends(get_current_user)):
+    """Round 36: builds the plan - as GD360 arranged it, or as the person arranged it (pages in order,
+    renamed, blocks moved). Every block is computed on its own table; nothing empty is created."""
+    import uuid
+    from .dashboard_builder import _commit_proposal, arrange_thread_plan
+    conv = _project(db, project_id, user, edit=True)
+    p = _thread_plan(payload.plan_id, conv, user)
+    ds = db.get(models.DataSource, p["datasource_id"])
+    if ds is None or not workspace_access.can_edit_datasource(db, ds, user):
+        raise HTTPException(404, "That data source could not be found.")
+    arranged = arrange_thread_plan(p, [pg.model_dump() for pg in payload.pages] if payload.pages else None)
+    dash = _commit_proposal(db, user, ds, arranged, None, (payload.name or "").strip() or None, "private",
+                            source_conversation_id=conv.id)
+    n_blocks = sum(1 for pg in dash.pages for b in pg.blocks if b.type not in ("filter", "date_filter"))
+    action_id = uuid.uuid4().hex[:12]
+    meta = _meta(conv)
+    placements = dict(meta.get("placements") or {})
+    run_ids = list((p.get("thread") or {}).get("run_ids") or [])
+    placements[action_id] = {
+        "dashboard_id": dash.id, "dashboard_name": dash.name, "mode": "new", "run_ids": run_ids,
+        "page_ids": [pg.id for pg in dash.pages], "block_ids": [], "page_id": dash.pages[0].id if dash.pages else None,
+        "at": datetime.utcnow().isoformat() + "Z", "by": user.id,
+    }
+    if len(placements) > 100:
+        for k in sorted(placements, key=lambda k: placements[k].get("at") or "")[: len(placements) - 100]:
+            placements.pop(k, None)
+    meta["placements"] = placements
+    _save_meta(conv, meta)
+    db.commit()
+    db.refresh(dash)
+    return {"dashboard_id": dash.id, "name": dash.name, "layout_version": dash.layout_version,
+            "page_ids": [pg.id for pg in dash.pages], "blocks": n_blocks, "datasource_id": ds.id,
+            "datasource_name": ds.name, "action_id": action_id, "mode": "new", "run_ids": run_ids,
+            "live": _live_info(db, dash)}
