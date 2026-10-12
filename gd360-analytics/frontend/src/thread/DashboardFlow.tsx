@@ -441,6 +441,8 @@ export function CreateFromThreadDialog({
   const [layout, setLayout] = useState<Layout>("pages");
   const [picked, setPicked] = useState<string[]>([]);
   const [name, setName] = useState("");
+  // round 33: the name follows what goes on the dashboard until the person types their own
+  const [nameTouched, setNameTouched] = useState(false);
   const [sourceId, setSourceId] = useState("");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ i: number; n: number } | null>(null);
@@ -455,8 +457,7 @@ export function CreateFromThreadDialog({
     if (!open) return;
     setLayout(several ? startLayout || "pages" : "latest");
     setPicked(answered.slice(-6).map((r) => r.id));
-    const first = answered[several ? Math.max(0, answered.length - 6) : answered.length - 1];
-    setName((first ? shortTitle(first) : project.title || "").slice(0, 120));
+    setNameTouched(false);
     setBusy(false);
     setProgress(null);
     setError("");
@@ -477,6 +478,13 @@ export function CreateFromThreadDialog({
     return answered.filter((r) => picked.includes(r.id));
   }, [layout, answered, picked, focus]);
   const candidates = useMemo(() => sourcesOf(chosen, project.sources), [chosen, project.sources]);
+  // round 33: a dashboard of ONE answer is named after that answer, several after the thread - never after
+  // the thread's first question when it holds only the latest answer ("Sales CAGR…" over website tiles)
+  useEffect(() => {
+    if (!open || nameTouched) return;
+    const auto = chosen.length === 1 ? shortTitle(chosen[0]) : project.title || (chosen[0] ? shortTitle(chosen[0]) : "");
+    setName(auto.slice(0, 120));
+  }, [open, nameTouched, chosen, project.title]);
   useEffect(() => {
     if (!candidates.some((c) => c.source.id === sourceId)) setSourceId(candidates[0]?.source.id || "");
   }, [candidates, sourceId]);
@@ -611,7 +619,7 @@ export function CreateFromThreadDialog({
       <div className="px-6 sm:px-7 pt-5 grid gap-4 sm:grid-cols-2">
         <label className="flex flex-col gap-2 text-caption font-medium text-secondary">
           Name
-          <input ref={nameRef} className="input h-11 text-[15px]" value={name} onChange={(e) => setName(e.target.value)} maxLength={120} disabled={busy} placeholder="e.g. Sales CAGR & channel drop" />
+          <input ref={nameRef} className="input h-11 text-[15px]" value={name} onChange={(e) => { setNameTouched(true); setName(e.target.value); }} maxLength={120} disabled={busy} placeholder="e.g. Sales CAGR & channel drop" />
         </label>
         <label className="flex flex-col gap-2 text-caption font-medium text-secondary">
           Computes live on
