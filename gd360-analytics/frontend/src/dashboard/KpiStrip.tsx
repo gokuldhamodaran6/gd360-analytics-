@@ -207,9 +207,9 @@ function KpiBlockTile({ block: b, result: r, run, labelNode, wording = PRIOR_PER
         sparklineLabel={spark.length > 1 ? `${label} trend` : undefined}
         sparklineColor={theme.tokens ? undefined : theme.primary}
         caption={forecastLine ? <span data-kpi-forecast="" title={forecastLine}>{forecastLine}</span> : undefined}
-        className={cn("h-full", run.loading && "opacity-80")}
+        className={cn("h-full", run.loading && !run.quiet && "opacity-80")}
       />
-      {run.loading && <div aria-hidden="true" className="ui-shimmer pointer-events-none absolute inset-0 rounded-card opacity-30" />}
+      {run.loading && !run.quiet && <div aria-hidden="true" className="ui-shimmer pointer-events-none absolute inset-0 rounded-card opacity-30" />}
     </>
   );
 }

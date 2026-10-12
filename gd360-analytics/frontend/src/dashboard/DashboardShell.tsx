@@ -13,7 +13,8 @@ import { CONTEXT_ROW_CLASS, EditToolbar } from "./edit/EditToolbar";
 import type { DashboardEditor } from "./edit/useDashboardEditor";
 import { FilterRailPanel } from "./FilterRailPanel";
 import { KpiStrip } from "./KpiStrip";
-import { PERIOD_LABEL, PERIODS, relativeTime } from "./runState";
+import { PERIOD_LABEL, PERIODS } from "./runState";
+import { DataFreshness, dataModeOf, type FreshnessSchedule } from "./DataFreshness";
 import type { DashboardRun, RunSource } from "./useDashboardRun";
 import { CanvasView } from "./canvas/CanvasView";
 import type { CanvasOwnerActions } from "./canvas/cells";
@@ -100,6 +101,15 @@ export type DashboardShellProps = {
   onPinColor?: ChartTheme["pin"];
   // The edit toolbar's "Appearance" button.
   onOpenAppearance?: () => void;
+  // 2026-10-12 (round 35): refreshing a live source that GD360 computes itself (Google Sheets, an
+  // API, a stream - mode "file" but live): reload it and recompute. A warehouse page refreshes
+  // through its own run; an uploaded file has nothing to refresh.
+  dataRefresh?: { onRefresh?: () => void; working?: boolean; note?: string | null; error?: string | null } | null;
+  // 2026-10-12 (round 35b): every source the dashboard's pages read (a merged dashboard can be live
+  // + file) and its auto-refresh schedule, for the freshness control
+  freshness?: { sources?: { name: string | null; kind: string | null }[]; schedule?: FreshnessSchedule | null } | null;
+  // round 35b: what an empty page offers in the editor besides quick-add (draft with AI, merge in)
+  emptyPage?: ReactNode;
 };
 
 // The dashboard name while editing: click it (or press Enter on it) to
@@ -356,8 +366,19 @@ export function DashboardShell(props: DashboardShellProps) {
 
 function ShellBody({
   dashboard, page, run, source, mode, parameters, owner, fetchSql, onEditDashboard, headerExtra, onUpgradeBlocks, beforeContent, afterContent, hideRail = false, className, style,
-  view = "dashboard", onViewChange, canvasOwner = null, comments = null, contextRow, subtitleExtra, editing = null, appearance, onOpenAppearance,
+  view = "dashboard", onViewChange, canvasOwner = null, comments = null, contextRow, subtitleExtra, editing = null, appearance, onOpenAppearance, dataRefresh = null,
+  freshness: freshnessProps = null, emptyPage,
 }: DashboardShellProps & { appearance: DashboardAppearance }) {
+  // round 35b: an automatic refresh that changed numbers rings those tiles for a moment and says so
+  useEffect(() => {
+    if (!run.changed) return;
+    const els = run.changed.ids.flatMap((id) => Array.from(document.querySelectorAll<HTMLElement>(`[data-kpi-block="${id}"], #block-${CSS.escape(id)}`)));
+    els.forEach((el) => el.setAttribute("data-just-changed", ""));
+    const t = window.setTimeout(() => { els.forEach((el) => el.removeAttribute("data-just-changed")); }, 6000);
+    const t2 = window.setTimeout(() => run.clearChanged(), 9000);
+    return () => { window.clearTimeout(t); window.clearTimeout(t2); els.forEach((el) => el.removeAttribute("data-just-changed")); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run.changed]);
   const scope = useDashboardScope(appearance);
   const canvas = view === "canvas";
   const narrow = useIsNarrow();
@@ -428,15 +449,41 @@ function ShellBody({
 
   const legacyCount = useMemo(() => (mode === "warehouse" ? (page?.blocks || []).filter(isLegacyBlock).length : 0), [mode, page]);
   const provider = dashboard.datasource_kind ? providerDisplayName(dashboard.datasource_kind) : mode === "file" ? "GD360" : null;
-  const refreshed = relativeTime(run.lastRunAt, new Date(tick).getTime());
+  void tick;
   const totalRows = run.totalRows ?? (mode === "file" && run.activeFilterCount === 0 ? run.matchedRows : null);
   const subtitleParts: ReactNode[] = [];
   if (dashboard.datasource_name) subtitleParts.push(dashboard.datasource_name);
   if (dashboard.datasource_kind) subtitleParts.push(<ProviderBadge provider={dashboard.datasource_kind} />);
   else if (provider) subtitleParts.push(provider);
-  if (refreshed) subtitleParts.push(`refreshed ${refreshed}`);
-  else if (run.loading) subtitleParts.push("refreshing…");
   if (typeof totalRows === "number") subtitleParts.push(`${totalRows.toLocaleString()} rows`);
+  // 2026-10-12 (round 35): freshness lives in one control (DataFreshness) - live sources say when
+  // and offer Refresh; an uploaded file says "as of" and offers nothing to refresh.
+  const freshSources = freshnessProps?.sources?.length ? freshnessProps.sources : [{ name: dashboard.datasource_name || null, kind: dashboard.datasource_kind || (mode === "file" ? "file" : null) }];
+  const freshMode = dataModeOf(freshSources.map((s) => s.kind));
+  const fileAsOf = useMemo(() => {
+    let latest = 0;
+    for (const b of page?.blocks || []) {
+      const t = b.data_updated_at ? new Date(b.data_updated_at).getTime() : 0;
+      if (Number.isFinite(t) && t > latest) latest = t;
+    }
+    return latest ? new Date(latest).toISOString() : null;
+  }, [page]);
+  const freshness = (
+    <DataFreshness
+      mode={freshMode}
+      sources={freshSources}
+      schedule={freshnessProps?.schedule ?? null}
+      asOf={mode === "warehouse" ? run.asOf : fileAsOf}
+      working={mode === "warehouse" ? run.loading : Boolean(dataRefresh?.working)}
+      onRefresh={mode === "warehouse" ? run.refresh : dataRefresh?.onRefresh}
+      refreshNote={mode === "warehouse" ? null : dataRefresh?.note ?? "Only people who can edit this dashboard can refresh it."}
+      computedIn={run.computedIn || dashboard.datasource_kind || null}
+      durationMs={run.totalDurationMs}
+      fromSnapshot={run.fromSnapshot}
+      error={mode === "warehouse" ? null : dataRefresh?.error ?? null}
+      size="sm"
+    />
+  );
 
   const hasRail = !hideRail && !canvas;
   const showRail = hasRail && !narrow;
@@ -458,7 +505,7 @@ function ShellBody({
   // The page's own actions (owner): Publish and Edit dashboard, or More,
   // Publish and Done while editing. A viewer has none.
   const pageActions = headerExtra || editing || onEditDashboard ? (
-    <div className="flex shrink-0 flex-wrap items-center gap-2 print:hidden" data-dashboard-page-actions="">
+    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 print:hidden" data-dashboard-page-actions="">
               {headerExtra}
               {editing ? (
                 <Button variant="primary" icon={<CheckIcon size={15} />} onClick={editing.onDone} data-edit-done="">
@@ -532,11 +579,6 @@ function ShellBody({
             />
           )}
           <ExportMenu page={page} run={run} exportApis={exportApis} mode={mode} onPdf={downloadPdf} pdfBusy={pdfStage !== null} />
-          {mode === "warehouse" && (
-            <Button variant="ghost" iconOnly aria-label="Recompute every block" title="Recompute every block" icon={<RefreshIcon size={15} />} onClick={run.refresh} loading={run.loading && !run.ready}>
-              Refresh
-            </Button>
-          )}
         </div>
   );
 
@@ -560,7 +602,10 @@ function ShellBody({
             ) : (
               <h1 className="truncate text-title font-semibold text-text">{dashboard.name}</h1>
             )}
-            <div ref={subtitleRef} className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-ui text-muted" data-dashboard-subtitle="">
+            {/* round 35: what it's built on, then how fresh it is - right under the name, where a
+                reader looks for "is this current?" */}
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <div ref={subtitleRef} className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-ui text-muted" data-dashboard-subtitle="">
               {subtitleParts.map((p, i) => (
                 <span key={i} className="inline-flex items-center gap-1.5">
                   {i > 0 && <span aria-hidden="true">·</span>}
@@ -578,6 +623,8 @@ function ShellBody({
                   <WarningIcon size={13} /> {run.error}
                 </span>
               )}
+            </div>
+            {freshness}
             </div>
           </div>
           {pageActions ?? headerControls}
@@ -603,6 +650,25 @@ function ShellBody({
               {pdfStage === "theme" ? "Switching the theme for the PDF…" : pdfStage === "write" ? "Writing the PDF…" : "Capturing the dashboard…"}
             </>
           )}
+        </div>
+      )}
+
+      {run.changed && (
+        <div role="status" data-changed-toast="" className="fixed bottom-5 right-5 z-50 inline-flex items-center gap-2.5 rounded-card border border-tint-border bg-surface px-3.5 py-2.5 text-ui text-text shadow-pop print:hidden">
+          <span aria-hidden="true" className="h-2 w-2 rounded-full bg-good" />
+          Updated just now · {run.changed.ids.length} {run.changed.ids.length === 1 ? "number" : "numbers"} changed
+          <button
+            type="button"
+            className="ui-focus rounded font-medium text-brand-ink hover:underline"
+            onClick={() => {
+              const id = run.changed?.ids[0];
+              const el = id ? document.querySelector(`[data-kpi-block="${id}"], #block-${CSS.escape(id)}`) : null;
+              el?.scrollIntoView({ behavior: "smooth", block: "center" });
+            }}
+          >
+            Show
+          </button>
+          <button type="button" aria-label="Dismiss" className="ui-focus rounded px-1 text-muted hover:text-text" onClick={run.clearChanged}>×</button>
         </div>
       )}
 
@@ -673,7 +739,7 @@ function ShellBody({
           ) : page ? (
             <>
               <KpiStrip blocks={page.blocks} run={run} mode={mode} className="mb-4" editor={editor} canEdit={Boolean(owner)} onEdit={owner?.onEdit ? () => owner.onEdit!() : undefined} sourceName={source.name} />
-              <BlockGrid page={page} run={run} source={source} mode={mode} parameters={parameters ?? run.parameters} owner={ownerWithComments} fetchSql={fetchSql} onExportApi={onExportApi} editor={editor} />
+              <BlockGrid page={page} run={run} source={source} mode={mode} parameters={parameters ?? run.parameters} owner={ownerWithComments} fetchSql={fetchSql} onExportApi={onExportApi} editor={editor} emptyPage={emptyPage} />
             </>
           ) : (
             <div className="py-10 text-center text-ui text-muted">This dashboard has no pages yet.</div>

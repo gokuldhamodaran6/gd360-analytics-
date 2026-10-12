@@ -44,6 +44,11 @@ export type RunSource = {
   // The published view: no SQL is ever shown ("Show SQL", a SQL cell's
   // statement) - and none is in the public endpoints' responses either.
   hideSql?: boolean;
+  // 2026-10-12 (round 35): warehouse only - the viewer's last complete run of the page. When the
+  // page opens unfiltered it is drawn at once ("as of 3:32 PM"); a live source older than
+  // `staleAfterMs` (default 15 min) then refreshes quietly behind it.
+  snapshot?: (pageId: string, signal: AbortSignal) => Promise<{ computed_at: string | null; period: string | null; run: RunPageResponse | null }>;
+  staleAfterMs?: number;
 };
 
 export type DateBounds = { min: string; max: string };
@@ -95,6 +100,19 @@ export type DashboardRun = {
   computedIn: string | null;
   totalDurationMs: number | null;
   lastRunAt: string | null;
+  // 2026-10-12 (round 35): when the numbers on screen were computed - the snapshot's time until a
+  // run lands, then the run's - and whether the run in flight is a quiet background refresh
+  // (the page keeps its numbers; only the freshness control says "Updating…").
+  asOf: string | null;
+  quiet: boolean;
+  fromSnapshot: boolean;
+  // 2026-10-12 (round 35b): auto-refresh. `revalidate` re-runs quietly (Real-time, every minute
+  // while open); `reloadSnapshot` picks up numbers a scheduled refresh computed on the server. A
+  // quiet update reports the blocks whose numbers changed ("2 numbers changed").
+  revalidate: () => void;
+  reloadSnapshot: () => void;
+  changed: { ids: string[]; at: number } | null;
+  clearChanged: () => void;
   skippedBlockIds: string[];
   // 2026-10-07 (dashboard edit mode): blocks the run reported as created
   // but never built (RunPageOut.empty_block_ids; [] on an older backend).
@@ -179,6 +197,11 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
   const [computedIn, setComputedIn] = useState<string | null>(null);
   const [totalDurationMs, setTotalDurationMs] = useState<number | null>(null);
   const [lastRunAt, setLastRunAt] = useState<string | null>(null);
+  const [quiet, setQuiet] = useState(false);
+  const [fromSnapshot, setFromSnapshot] = useState(false);
+  const [changed, setChanged] = useState<{ ids: string[]; at: number } | null>(null);
+  const resultsRef = useRef<Record<string, BlockResult>>({});
+  resultsRef.current = results;
   const [skippedBlockIds, setSkipped] = useState<string[]>([]);
   const [emptyBlockIds, setEmptyIds] = useState<string[]>([]);
   const [missingParameters, setMissing] = useState<string[]>([]);
@@ -218,8 +241,42 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
   // ---- the run ----
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
+  // One response (a run, or a snapshot of one) onto the page. `track`: say which blocks' numbers
+  // changed against what was on screen (a quiet, automatic update).
+  const applyResponse = useCallback((res: RunPageResponse, blockIds?: string[], track = false) => {
+    if (track) {
+      const before = resultsRef.current;
+      const ids = Object.keys(res.blocks || {}).filter((id) => {
+        const a = before[id] as any, b = (res.blocks as any)[id];
+        return a && b && a.status === "ok" && b.status === "ok" && JSON.stringify(a.rows) !== JSON.stringify(b.rows);
+      });
+      if (ids.length) setChanged({ ids, at: Date.now() });
+    }
+    // Before the results: the charts they draw are coloured in the same paint.
+    applyColors(res.colors);
+    setResults((prev) => (blockIds ? { ...prev, ...res.blocks } : res.blocks));
+    setMatchedRows(res.matched_rows);
+    setTotalRows(res.total_rows);
+    setComputedIn(res.computed_in);
+    setTotalDurationMs(res.total_duration_ms);
+    setSkipped(res.skipped_block_ids || []);
+    // A partial run only speaks for the blocks it was asked about.
+    setEmptyIds((prev) => {
+      const next = res.empty_block_ids || [];
+      const merged = blockIds ? [...prev.filter((id) => !blockIds.includes(id)), ...next] : next;
+      return merged.length === prev.length && merged.every((id, i) => id === prev[i]) ? prev : merged;
+    });
+    setMissing(res.missing_parameters || []);
+    // A partial run (block_ids) reports only the graph it touched;
+    // keep the rest of the page's edges from the last full run.
+    setDependencies((prev) => (blockIds ? { ...prev, ...(res.dependencies || {}) } : res.dependencies || {}));
+    setOrder((prev) => (blockIds ? prev : res.order || []));
+    setParametersUsed(res.parameters_used || {});
+    applyBounds(res.date_bounds);
+  }, [applyBounds, applyColors]);
+
   const execute = useCallback(
-    (opts: { force?: boolean; blockIds?: string[] } = {}) => {
+    (opts: { force?: boolean; blockIds?: string[]; quiet?: boolean } = {}) => {
       const p = pageRef.current;
       if (!p || !enabledRef.current) return;
       const s = stateRef.current;
@@ -228,6 +285,7 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
       const controller = new AbortController();
       abortRef.current = controller;
       setLoading(true);
+      setQuiet(Boolean(opts.quiet));
       setError(null);
       const pageFilters = buildPageFilters(parameters, s, filterBlocks);
       const activeBlockFilters: Record<string, FilterCriterion[]> = {};
@@ -236,6 +294,7 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
       const finish = () => {
         if (seq !== seqRef.current) return;
         setLoading(false);
+        setQuiet(false);
         setReady(true);
       };
 
@@ -281,27 +340,8 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
         .run(p.id, req, controller.signal)
         .then((res) => {
           if (seq !== seqRef.current) return;
-          // Before the results: the charts they draw are coloured in the same paint.
-          applyColors(res.colors);
-          setResults((prev) => (opts.blockIds ? { ...prev, ...res.blocks } : res.blocks));
-          setMatchedRows(res.matched_rows);
-          setTotalRows(res.total_rows);
-          setComputedIn(res.computed_in);
-          setTotalDurationMs(res.total_duration_ms);
-          setSkipped(res.skipped_block_ids || []);
-          // A partial run only speaks for the blocks it was asked about.
-          setEmptyIds((prev) => {
-            const next = res.empty_block_ids || [];
-            const merged = opts.blockIds ? [...prev.filter((id) => !opts.blockIds!.includes(id)), ...next] : next;
-            return merged.length === prev.length && merged.every((id, i) => id === prev[i]) ? prev : merged;
-          });
-          setMissing(res.missing_parameters || []);
-          // A partial run (block_ids) reports only the graph it touched;
-          // keep the rest of the page's edges from the last full run.
-          setDependencies((prev) => (opts.blockIds ? { ...prev, ...(res.dependencies || {}) } : res.dependencies || {}));
-          setOrder((prev) => (opts.blockIds ? prev : res.order || []));
-          setParametersUsed(res.parameters_used || {});
-          applyBounds(res.date_bounds);
+          applyResponse(res, opts.blockIds, Boolean(opts.quiet));
+          setFromSnapshot(false);
           setLastRunAt(new Date().toISOString());
         })
         .catch((e: any) => {
@@ -309,13 +349,14 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
           if (e?.name === "CanceledError" || e?.name === "AbortError" || e?.code === "ERR_CANCELED") return;
           const status = e?.response?.status;
           const detail = e?.response?.data?.detail;
+          // A quiet refresh that fails keeps the snapshot on screen - and says the numbers are older
           setError(
-            status === 429 ? "Too many runs in a minute - please wait a moment and try again." : typeof detail === "string" ? detail : "This page couldn't be computed right now."
+            status === 429 ? "Too many runs in a minute - please wait a moment and try again." : typeof detail === "string" ? detail : opts.quiet ? "Couldn't update just now - showing the last saved numbers." : "This page couldn't be computed right now."
           );
         })
         .finally(finish);
     },
-    [parameters, filterBlocks, source, applyBounds, applyColors]
+    [parameters, filterBlocks, source, applyBounds, applyColors, applyResponse]
   );
 
   const schedule = useCallback(() => {
@@ -327,6 +368,9 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
   }, [execute, debounceMs]);
 
   // First load of a page: immediate (no debounce), nothing stale to keep.
+  // 2026-10-12 (round 35): a warehouse page opened unfiltered draws this viewer's last complete run
+  // at once (stale-while-revalidate) - no 10-second skeleton - then a live source older than
+  // staleAfterMs refreshes quietly behind it. Any filter, or no snapshot, runs as before.
   const pageId = page?.id;
   useEffect(() => {
     setResults({});
@@ -334,10 +378,42 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
     setEmptyIds([]);
     setReady(false);
     setError(null);
+    setFromSnapshot(false);
+    setLastRunAt(null);
     if (timerRef.current) clearTimeout(timerRef.current);
     if (!pageId) return;
-    execute();
+    const s = stateRef.current;
+    const unfiltered = buildPageFilters(parameters, s, filterBlocks).length === 0
+      && Object.values(s.blockFilters).every((c) => !c.length)
+      && !s.dateRange.from && !s.dateRange.to
+      && Object.values(buildParameterValues(parameters, s.paramValues)).every((v) => v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length));
+    if (source.kind !== "warehouse" || !source.snapshot || !unfiltered || !enabledRef.current) {
+      execute();
+      return () => { abortRef.current?.abort(); };
+    }
+    const seq = seqRef.current;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setLoading(true);
+    source.snapshot(pageId, controller.signal)
+      .then((snap) => {
+        if (seq !== seqRef.current) return; // the person already changed something - that run wins
+        const usable = snap.run && snap.computed_at && (!snap.period || snap.period === stateRef.current.period);
+        if (!usable) { execute(); return; }
+        applyResponse(snap.run!);
+        setFromSnapshot(true);
+        setLastRunAt(snap.computed_at);
+        setReady(true);
+        setLoading(false);
+        const age = Date.now() - new Date(snap.computed_at!).getTime();
+        if (!(age >= 0 && age < (source.staleAfterMs ?? 15 * 60 * 1000))) execute({ quiet: true });
+      })
+      .catch((e: any) => {
+        if (e?.name === "CanceledError" || e?.name === "AbortError" || e?.code === "ERR_CANCELED") return;
+        if (seq === seqRef.current) execute();
+      });
     return () => {
+      controller.abort();
       abortRef.current?.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -406,6 +482,29 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
   }, [update]);
 
   const refresh = useCallback(() => execute({ force: true }), [execute]);
+  const revalidate = useCallback(() => execute({ force: true, quiet: true }), [execute]);
+  const lastRunRef = useRef(lastRunAt);
+  lastRunRef.current = lastRunAt;
+  const reloadSnapshot = useCallback(() => {
+    const p = pageRef.current;
+    if (!p || source.kind !== "warehouse" || !source.snapshot || !enabledRef.current) return;
+    const s = stateRef.current;
+    const unfiltered = buildPageFilters(parameters, s, filterBlocks).length === 0 && !s.dateRange.from && !s.dateRange.to
+      && Object.values(s.blockFilters).every((c) => !c.length);
+    if (!unfiltered) return;
+    const seq = seqRef.current;
+    const controller = new AbortController();
+    source.snapshot(p.id, controller.signal).then((snap) => {
+      if (seq !== seqRef.current || !snap.run || !snap.computed_at) return;
+      if (snap.period && snap.period !== stateRef.current.period) return;
+      const cur = lastRunRef.current ? new Date(lastRunRef.current).getTime() : 0;
+      if (new Date(snap.computed_at).getTime() <= cur) return;
+      applyResponse(snap.run, undefined, true);
+      setLastRunAt(snap.computed_at);
+      setFromSnapshot(true);
+    }).catch(() => undefined);
+  }, [source, parameters, filterBlocks, applyResponse]);
+  const clearChanged = useCallback(() => setChanged(null), []);
   const rerun = useCallback(() => execute(), [execute]);
   const rerunBlock = useCallback((blockId: string) => execute({ force: true, blockIds: [blockId] }), [execute]);
   const rerunBlocks = useCallback((blockIds: string[], o: { force?: boolean } = {}) => {
@@ -524,6 +623,13 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
     computedIn,
     totalDurationMs,
     lastRunAt,
+    asOf: lastRunAt,
+    quiet: loading && quiet,
+    fromSnapshot,
+    revalidate,
+    reloadSnapshot,
+    changed,
+    clearChanged,
     skippedBlockIds,
     emptyBlockIds,
     missingParameters,

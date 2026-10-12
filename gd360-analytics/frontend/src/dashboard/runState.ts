@@ -323,3 +323,18 @@ export function relativeTime(iso: string | null | undefined, nowMs = Date.now())
   if (day < 30) return `${day} d ago`;
   return new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
+
+// 2026-10-12 (round 35 - "I changed Month to Year but the chart still says Monthly"): a time
+// chart's title follows the grain it is drawn at. "Monthly Website Net Sales Trend" reads
+// "Yearly Website Net Sales Trend" under Year; "Sales by month" reads "Sales by year". Only the
+// grain words change - the stored title is untouched, and switching back restores it exactly.
+const GRAIN_ADJ: Record<string, string> = { day: "Daily", week: "Weekly", month: "Monthly", quarter: "Quarterly", year: "Yearly" };
+export function titleForPeriod(title: string, period: string | null | undefined): string {
+  const adj = period ? GRAIN_ADJ[period] : undefined;
+  if (!title || !adj) return title;
+  return title
+    .replace(/\b(DAILY|WEEKLY|MONTHLY|QUARTERLY|YEARLY)\b/g, adj.toUpperCase())
+    .replace(/\b(Daily|Weekly|Monthly|Quarterly|Yearly)\b/g, adj)
+    .replace(/\b(daily|weekly|monthly|quarterly|yearly)\b/g, adj.toLowerCase())
+    .replace(/\b(by|per|each|every) (day|week|month|quarter|year)\b/gi, (_m, p: string) => `${p} ${period}`);
+}

@@ -3,7 +3,7 @@ import type { BlockResult, DashboardBlock, DashboardBlockType, DashboardParamete
 import type { ChartExportApi } from "../components/ChartCanvas";
 import { BlockFilterButton, useIsNarrow } from "../components/DashboardBlocks";
 import {
-  BarChartIcon, Button, ChartCard, CommentIcon, ConfirmDialog, CopyIcon, DownloadIcon, EditIcon, GripIcon, HashIcon, IconButton, MoreIcon, Popover, RefreshIcon, Sheet, SqlIcon, TableIcon, TrashIcon, cn,
+  BarChartIcon, Button, ChartCard, CommentIcon, TextIcon, ConfirmDialog, CopyIcon, DownloadIcon, EditIcon, GripIcon, HashIcon, IconButton, MoreIcon, Popover, RefreshIcon, Sheet, SqlIcon, TableIcon, TrashIcon, cn,
 } from "../ui";
 import { crossFilterColumn, downloadText, isDataBlock, isEmptyBlock, isLegacyBlock, markNoun, resultOk, rowsToCsv, safeFilename } from "./blockData";
 import { effectiveChartType } from "./charts/recommend";
@@ -17,7 +17,7 @@ import type { DashboardEditor } from "./edit/useDashboardEditor";
 import { MenuRow, SwapChips } from "./menu";
 import { fileBlockSpec } from "./fileData";
 import { describeSpecShort } from "./format";
-import { type CrossFilter, describeSpec, type ParamValue } from "./runState";
+import { type CrossFilter, describeSpec, type ParamValue, titleForPeriod } from "./runState";
 import type { DashboardRun, RunSource } from "./useDashboardRun";
 
 // 2026-10-07 (Option A dashboard view): the 12-column block grid under
@@ -70,6 +70,8 @@ export type BlockGridProps = {
   className?: string;
   // The page is being edited (see the note at the top of this file).
   editor?: DashboardEditor | null;
+  // round 35b: what an empty page offers besides the quick-add buttons (draft with AI, merge in)
+  emptyPage?: ReactNode;
 };
 
 // A data block (or a SQL cell) that was added but never built.
@@ -514,7 +516,9 @@ export function BlockCard({
     );
   }
 
-  const titleText = block.title || (spec ? describeSpecShort(spec) : block.type === "sql" && block.config?.name ? String(block.config.name) : "Untitled block");
+  const rawTitle = block.title || (spec ? describeSpecShort(spec) : block.type === "sql" && block.config?.name ? String(block.config.name) : "Untitled block");
+  // round 35: a time chart's title follows the grain on screen (never while renaming it)
+  const titleText = !editor && resultOk(result) && result.time_column && result.period ? titleForPeriod(rawTitle, result.period) : rawTitle;
   const showEmptyState = empty && Boolean(editor);
 
   return (
@@ -570,7 +574,7 @@ export function BlockCard({
               viewAsTable={asTable}
             />
           )}
-          {run.loading && run.ready && !firstLoad && (
+          {run.loading && !run.quiet && run.ready && !firstLoad && (
             <div aria-hidden="true" data-refilter-shimmer="" className="ui-shimmer pointer-events-none absolute inset-0 rounded-ctl opacity-30" />
           )}
         </div>
@@ -593,7 +597,7 @@ export function compactLayout(blocks: DashboardBlock[]): { block: DashboardBlock
 }
 
 // What the page's grid area says when it has nothing to lay out.
-function EmptyGrid({ editor, owner, hasKpis }: { editor: DashboardEditor | null; owner?: BlockOwnerActions | null; hasKpis: boolean }) {
+function EmptyGrid({ editor, owner, hasKpis, extra }: { editor: DashboardEditor | null; owner?: BlockOwnerActions | null; hasKpis: boolean; extra?: ReactNode }) {
   if (!editor) {
     return (
       <div className="py-10 text-center text-ui text-muted">
@@ -611,7 +615,27 @@ function EmptyGrid({ editor, owner, hasKpis }: { editor: DashboardEditor | null;
     ...(hasKpis ? [] : [{ type: "kpi" as DashboardBlockType, label: "KPI", icon: <HashIcon size={15} /> }]),
     { type: "chart", label: "Chart", icon: <BarChartIcon size={15} /> },
     { type: "table", label: "Table", icon: <TableIcon size={15} /> },
+    { type: "text", label: "Text", icon: <TextIcon size={15} /> },
   ];
+  if (extra) {
+    // round 35b: an empty page - draft it with AI, add blocks yourself, or merge a dashboard in
+    return (
+      <div data-empty-page="" className="flex flex-col items-center gap-5 rounded-card border border-dashed border-border-strong px-6 py-12 text-center">
+        <div className="flex flex-col items-center gap-1.5">
+          <div className="text-section font-semibold text-text">An empty page - start it any way you like</div>
+          <div className="max-w-[520px] text-ui text-muted">Say what it should show and GD360 drafts checked blocks from this page's data, add blocks yourself, or bring in pages from a dashboard you already have.</div>
+        </div>
+        {extra}
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          {quick.map((q) => (
+            <Button key={q.type} variant="secondary" icon={q.icon} disabled={editor.adding} onClick={() => editor.addBlock(q.type)} data-quick-add={q.type}>
+              {q.label}
+            </Button>
+          ))}
+        </div>
+      </div>
+    );
+  }
   return (
     <div data-empty-page="" className="flex flex-col items-center gap-3 rounded-card border border-dashed border-border-strong px-6 py-12 text-center">
       <div className="text-section font-semibold text-text">{hasKpis ? "Add a chart or a table under the numbers" : "Start with a block"}</div>
@@ -627,7 +651,7 @@ function EmptyGrid({ editor, owner, hasKpis }: { editor: DashboardEditor | null;
   );
 }
 
-export function BlockGrid({ page, run, source, mode, parameters, owner, fetchSql, onExportApi, className, editor = null }: BlockGridProps) {
+export function BlockGrid({ page, run, source, mode, parameters, owner, fetchSql, onExportApi, className, editor = null, emptyPage }: BlockGridProps) {
   const narrow = useIsNarrow();
   // Row height and gap for the dashboard's density - the editor's grid
   // (EditGrid) reads the same two numbers.
@@ -650,7 +674,7 @@ export function BlockGrid({ page, run, source, mode, parameters, owner, fetchSql
   useEffect(() => () => { blocks.forEach((b) => onExportApi?.(b.id, null)); }, [blocks, onExportApi]);
 
   if (blocks.length === 0) {
-    return <EmptyGrid editor={editor} owner={owner} hasKpis={page.blocks.some((b) => b.type === "kpi")} />;
+    return <EmptyGrid editor={editor} owner={owner} hasKpis={page.blocks.some((b) => b.type === "kpi")} extra={emptyPage} />;
   }
 
   const card = (block: DashboardBlock, heightPx: number, stacked: boolean) =>
