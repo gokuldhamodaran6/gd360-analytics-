@@ -2,14 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
-  conversationApi, ConversationSummary, datasourceApi, DataSourceSummary, folderApi, FolderSummary, WorkspaceSummary,
+  conversationApi, ConversationSummary, datasourceApi, DataSourceSummary, folderApi, FolderSummary, LibraryKind, WorkspaceSummary,
 } from "../api/client";
 import TopNav from "../components/TopNav";
 import AppSidebar from "../components/AppSidebar";
 import ConversationRow from "../components/ConversationRow";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import ViewToggle, { ViewMode, useViewMode } from "../components/ViewToggle";
-import { conversationKind, KindIcon, KindTile } from "../lib/kinds";
+import { conversationKind, kindClasses, KindIcon, KindTile, LIBRARY_LABEL } from "../lib/kinds";
 
 // 2026-10-10 (Clarity Blueprint, Option 1): this page is Library - every
 // Answer (a question asked on Home) and every Analysis (hands-on work in
@@ -48,6 +48,34 @@ const FOLDER_PAGE_SIZE = 6;
 // any other string - one specific folder's own id: just that folder's
 // Projects.
 type FolderFilter = "all" | "files" | "folders" | string;
+
+// 2026-10-12 (round 34 - Gokul: "i created that folder in analysis, it has to only show there"):
+// a folder belongs to the Library tab it was made in (FolderSummary.kind, stored by the backend; an
+// older folder takes the one kind it holds). The "All" tab shows every folder; a kind's tab shows
+// that kind's folders, plus a general folder only when it holds something of that kind.
+const LIB_KINDS: LibraryKind[] = ["answer", "analysis", "talk"];
+function folderShowsIn(f: FolderSummary, t: TypeFilter): boolean {
+  if (t === "all") return true;
+  if (f.kind) return f.kind === t;
+  return (f.counts?.[t] || 0) > 0;
+}
+/** Whether an item of this kind may be filed in the folder (the backend refuses the rest). */
+function folderTakes(f: FolderSummary, k: LibraryKind): boolean {
+  return !f.kind || f.kind === k;
+}
+function kindCount(n: number, k: LibraryKind): string {
+  const l = LIBRARY_LABEL[k];
+  return `${n} ${(n === 1 ? l.one : l.many).toLowerCase()}`;
+}
+/** "38 analyses" under a kind's tab; "3 quick answers · 2 analyses" under All. */
+function folderMeta(f: FolderSummary, t: TypeFilter): string {
+  const c = f.counts;
+  if (!c) return `${f.project_count} item${f.project_count === 1 ? "" : "s"}`;
+  if (t !== "all") return kindCount(c[t] || 0, t);
+  const held = LIB_KINDS.filter((k) => (c[k] || 0) > 0);
+  if (!held.length) return f.kind ? `Empty · for ${LIBRARY_LABEL[f.kind].many.toLowerCase()}` : "Empty";
+  return held.map((k) => kindCount(c[k] || 0, k)).join(" · ");
+}
 
 function PlusIcon({ className = "w-4 h-4" }: { className?: string }) {
   return (
@@ -282,15 +310,18 @@ function MoveToFolderMenu({
             No folder <span className="text-muted text-xs">(unfile)</span>
           </button>
           {folders.length > 0 && <div className="my-1 border-t border-border" />}
-          <div className="max-h-56 overflow-y-auto">
+          {folders.length === 0 && <div className="px-3 py-1.5 text-xs text-muted">No folder for this kind yet.</div>}
+          <div className="max-h-56 overflow-y-auto" data-move-menu="">
             {folders.map((f) => (
               <button
                 key={f.id}
                 type="button"
                 className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-left hover:bg-surface2 rounded-lg transition truncate"
                 onClick={() => { onMove(f.id); setOpen(false); }}
+                data-move-folder={f.name}
+                title={f.name}
               >
-                <FolderIcon className="w-3.5 h-3.5 text-muted shrink-0" />
+                <FolderIcon className={`w-3.5 h-3.5 shrink-0 ${f.kind === "answer" ? "text-kind-answer" : f.kind ? "text-kind-analysis" : "text-muted"}`} />
                 <span className="truncate">{f.name}</span>
               </button>
             ))}
@@ -322,6 +353,7 @@ function MoveToFolderMenu({
 function FolderCard({
   folder,
   variant,
+  typeFilter,
   canEdit,
   onOpen,
   onRenamed,
@@ -329,6 +361,7 @@ function FolderCard({
 }: {
   folder: FolderSummary;
   variant: "card" | "row";
+  typeFilter: TypeFilter;
   canEdit: boolean;
   onOpen: () => void;
   onRenamed: (id: string, name: string) => void;
@@ -466,12 +499,14 @@ function FolderCard({
       maxLength={80}
     />
   ) : (
-    <span className={variant === "card" ? "text-sm font-semibold truncate block" : "text-sm font-medium truncate block"}>
+    <span title={folder.name} className={variant === "card" ? "text-sm font-semibold truncate block" : "text-sm font-medium truncate block"}>
       {folder.name}
     </span>
   );
 
-  const meta = `${folder.project_count} item${folder.project_count === 1 ? "" : "s"}`;
+  const meta = folderMeta(folder, typeFilter);
+  // the folder wears its kind's colour - mint for quick answers, periwinkle for analyses
+  const tile = folder.kind ? `border ${kindClasses(folder.kind)}` : "bg-primary/10 text-primary";
   const handleClick = () => { if (!renaming) onOpen(); };
 
   if (variant === "row") {
@@ -481,14 +516,16 @@ function FolderCard({
           menuOpen ? "z-30" : "z-0"
         }`}
         onClick={handleClick}
+        data-folder-card={folder.name}
+        data-folder-kind={folder.kind || ""}
       >
         <div className="flex items-center gap-2.5 min-w-0 flex-1">
-          <span className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+          <span className={`w-8 h-8 rounded-lg ${tile} flex items-center justify-center shrink-0`}>
             <FolderIcon className="w-4 h-4" />
           </span>
           <div className="min-w-0">
             {nameBlock}
-            <div className="text-xs text-muted mt-0.5">{meta}</div>
+            <div className="text-xs text-muted mt-0.5" data-folder-meta="">{meta}</div>
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
@@ -507,15 +544,17 @@ function FolderCard({
         menuOpen ? "z-30" : "z-0"
       }`}
       onClick={handleClick}
+      data-folder-card={folder.name}
+      data-folder-kind={folder.kind || ""}
     >
       <div className="flex items-start justify-between gap-2">
-        <span className="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+        <span className={`w-9 h-9 rounded-lg ${tile} flex items-center justify-center shrink-0`}>
           <FolderIcon className="w-4 h-4" />
         </span>
         {menu}
       </div>
       {nameBlock}
-      <span className="text-[11px] text-muted mt-auto">{meta}</span>
+      <span className="text-[11px] text-muted mt-auto" data-folder-meta="">{meta}</span>
     </div>
   );
 }
@@ -582,6 +621,11 @@ export default function Dashboard() {
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
+  // round 34: which tab the new folder belongs to (null = every tab), and whether it was opened from
+  // "Move to folder → New folder" - then the selection is filed into it as soon as it exists
+  const [newFolderKind, setNewFolderKind] = useState<LibraryKind | null>(null);
+  const [moveIntoNewFolder, setMoveIntoNewFolder] = useState(false);
+  const [folderError, setFolderError] = useState("");
 
   // Inline rename/delete for whichever folder tab is currently active -
   // kept to just the active one rather than a menu on every chip, so
@@ -629,6 +673,9 @@ export default function Dashboard() {
   // same reasoning as DataSources.tsx's own pager - never leave it pointed
   // at a page that just emptied out from under it.
   useEffect(() => { setPage(1); setFolderPage(1); }, [search, pinnedOnly, folderFilter, sortBy, typeFilter]);
+  // round 34: a selection never outlives the view it was made in - items that scrolled out of a tab
+  // must not be moved by a later "Move to folder"
+  useEffect(() => { setSelectedIds(new Set()); }, [folderFilter, typeFilter]);
 
   const resetPageState = () => {
     setSearch("");
@@ -738,6 +785,9 @@ export default function Dashboard() {
   const hasFiltersApplied = search.trim() !== "" || pinnedOnly || folderFilter !== "all" || typeFilter !== "all";
   const clearFilters = () => { setSearch(""); setPinnedOnly(false); setFolderFilter("all"); setTypeFilter("all"); };
   const answerCount = useMemo(() => conversations.filter((c) => conversationKind(c) === "answer").length, [conversations]);
+  // round 34: the folders this tab shows (see folderShowsIn) - the index, its pager, the Folders chip
+  // count and the move menus all read this one list
+  const visibleFolders = useMemo(() => folders.filter((f) => folderShowsIn(f, typeFilter)), [folders, typeFilter]);
   const talkCount = useMemo(() => conversations.filter((c) => conversationKind(c) === "talk").length, [conversations]);
   const analysisCount = conversations.length - answerCount - talkCount;
 
@@ -769,20 +819,29 @@ export default function Dashboard() {
   // (folders only, nothing else - see the chip row's own comment). Neither
   // renders inside "Files" (which deliberately skips folders) or inside one
   // specific folder (already just showing that folder's own contents).
-  const showFolderIndex = (folderFilter === "all" || folderFilter === "folders") && folders.length > 0;
+  const showFolderIndex = (folderFilter === "all" || folderFilter === "folders") && visibleFolders.length > 0;
   // The Projects grid only ever belongs in "All"/"Files"/a specific folder -
   // "Folders" is a pure navigation view with nothing of its own to list.
   const showFilesSection = folderFilter !== "folders";
-  const unfiledCount = useMemo(() => conversations.filter((c) => c.folder_id == null).length, [conversations]);
+  const unfiledCount = useMemo(
+    () => conversations.filter((c) => c.folder_id == null && (typeFilter === "all" || conversationKind(c) === typeFilter)).length,
+    [conversations, typeFilter]
+  );
+  // Switching to a tab the open folder doesn't belong to goes back to that tab's root, not to an
+  // empty folder from another tab
+  useEffect(() => {
+    if (activeFolder && !folderShowsIn(activeFolder, typeFilter)) setFolderFilter("all");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typeFilter]);
 
   // Folder pagination (2026-09-23, round thirteen) - same capped-rows-plus-
   // page-numbers pattern as the Projects grid below, just independently
   // paged since the two sections can both be on screen at once in "All".
-  const folderTotalPages = Math.max(1, Math.ceil(folders.length / FOLDER_PAGE_SIZE));
+  const folderTotalPages = Math.max(1, Math.ceil(visibleFolders.length / FOLDER_PAGE_SIZE));
   const folderCurrentPage = Math.min(folderPage, folderTotalPages);
   const folderPageSlice = useMemo(
-    () => folders.slice((folderCurrentPage - 1) * FOLDER_PAGE_SIZE, folderCurrentPage * FOLDER_PAGE_SIZE),
-    [folders, folderCurrentPage]
+    () => visibleFolders.slice((folderCurrentPage - 1) * FOLDER_PAGE_SIZE, folderCurrentPage * FOLDER_PAGE_SIZE),
+    [visibleFolders, folderCurrentPage]
   );
 
   // ---- Select-all / bulk-move ----
@@ -807,20 +866,37 @@ export default function Dashboard() {
     setSelectedIds(allVisibleSelected ? new Set() : new Set(visibleIds));
   };
 
-  const moveSelectedTo = async (folderId: string | null) => {
-    if (selectedIds.size === 0 || !activeWorkspaceId) return;
+  // The kinds in the selection decide which folders the bulk move offers
+  const selectedKinds = useMemo(() => {
+    const ks = new Set<LibraryKind>();
+    conversations.forEach((c) => { if (selectedIds.has(c.id)) ks.add(conversationKind(c) as LibraryKind); });
+    return ks;
+  }, [conversations, selectedIds]);
+  const bulkFolders = useMemo(() => {
+    const ks = Array.from(selectedKinds);
+    if (!ks.length) return typeFilter === "all" ? folders : folders.filter((f) => folderTakes(f, typeFilter));
+    return folders.filter((f) => ks.every((k) => folderTakes(f, k)));
+  }, [folders, selectedKinds, typeFilter]);
+
+  const moveSelectedTo = async (folderId: string | null, ids0?: string[]) => {
+    const pick = ids0 || Array.from(selectedIds);
+    if (pick.length === 0 || !activeWorkspaceId) return;
     setMoving(true);
     try {
-      const ids = Array.from(selectedIds);
+      const ids = pick;
       const res = await conversationApi.bulkMove(ids, folderId);
       const movedSet = new Set(res.moved);
       setConversations((cs) => cs.map((c) => (movedSet.has(c.id) ? { ...c, folder_id: folderId } : c)));
       folderApi.list(activeWorkspaceId).then(setFolders).catch(() => {});
       setSelectedIds(new Set());
       setSelectMode(false);
+      const wrongKind = res.wrong_kind?.length || 0;
+      const noRights = res.skipped.length - wrongKind;
       setMoveMsg(
         res.skipped.length > 0
-          ? `Moved ${res.moved.length}, skipped ${res.skipped.length} (no permission).`
+          ? `Moved ${res.moved.length}` +
+              (wrongKind ? `, ${wrongKind} not moved (that folder is for another kind)` : "") +
+              (noRights ? `, ${noRights} skipped (no permission)` : "") + "."
           : `Moved ${res.moved.length} item${res.moved.length === 1 ? "" : "s"}.`
       );
     } catch {
@@ -836,17 +912,35 @@ export default function Dashboard() {
     const name = newFolderName.trim();
     if (!name || !activeWorkspaceId) return;
     setCreatingFolder(true);
+    setFolderError("");
     try {
-      const f = await folderApi.create(activeWorkspaceId, name);
+      const f = await folderApi.create(activeWorkspaceId, name, newFolderKind);
+      const moving = moveIntoNewFolder ? Array.from(selectedIds) : [];
       setFolders((fs) => [...fs, f]);
-      setFolderFilter(f.id);
       setShowNewFolder(false);
       setNewFolderName("");
+      setMoveIntoNewFolder(false);
+      // A folder made for another tab than the one on screen: go to its tab, so it is where it was made
+      if (f.kind && typeFilter !== "all" && f.kind !== typeFilter) setTypeFilter(f.kind);
+      // "Move to folder → New folder": file the selection straight into it
+      if (moving.length) await moveSelectedTo(f.id, moving);
+      setFolderFilter(f.id);
     } catch {
       // Modal stays open with what they typed so they can just try again.
+      setFolderError("Couldn't create that folder - try again.");
     } finally {
       setCreatingFolder(false);
     }
+  };
+
+  // Opens "New folder" for the tab on screen (or the selection's one kind, from the move menu)
+  const openNewFolder = (fromMove = false) => {
+    const ks = Array.from(selectedKinds);
+    setNewFolderName("");
+    setFolderError("");
+    setNewFolderKind(fromMove && ks.length === 1 ? ks[0] : typeFilter === "all" ? null : typeFilter);
+    setMoveIntoNewFolder(fromMove && selectedIds.size > 0);
+    setShowNewFolder(true);
   };
 
   const startRenameFolder = () => {
@@ -961,8 +1055,9 @@ export default function Dashboard() {
                   the outline-vs-filled weight does. */}
               <button
                 className="btn-secondary text-sm px-4 py-2.5 inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
-                onClick={() => { setNewFolderName(""); setShowNewFolder(true); }}
+                onClick={() => openNewFolder(false)}
                 disabled={isViewerHere}
+                data-library-new-folder=""
                 title={isViewerHere ? "You have view-only access to this workspace." : undefined}
               >
                 <NewFolderIcon className="w-4 h-4" /> New Folder
@@ -983,7 +1078,7 @@ export default function Dashboard() {
                   <div role="menu" className="absolute right-0 top-full mt-1.5 z-30 w-72 rounded-card border border-border bg-surface shadow-pop p-1.5">
                     <button type="button" role="menuitem" className="w-full flex items-start gap-3 px-3 py-2.5 rounded-ctl text-left hover:bg-subtle" onClick={() => navigate("/")}>
                       <KindTile kind="answer" size={32} />
-                      <span className="flex flex-col"><span className="text-ui font-semibold text-text">Instant Answers</span><span className="text-caption text-muted">Ask anything, answered in seconds across your sources</span></span>
+                      <span className="flex flex-col"><span className="text-ui font-semibold text-text">Quick answer</span><span className="text-caption text-muted">Ask anything, answered in seconds across your sources</span></span>
                     </button>
                     <button type="button" role="menuitem" className="w-full flex items-start gap-3 px-3 py-2.5 rounded-ctl text-left hover:bg-subtle" onClick={() => navigate("/?intent=guided")}>
                       <KindTile kind="analysis" size={32} />
@@ -1009,7 +1104,7 @@ export default function Dashboard() {
               "+ New Folder" button above is already the entry point to
               create the first one). */}
           {!loading && folders.length > 0 && (
-            <div className="mb-4 rounded-xl border border-border bg-surface/60 px-3 py-2.5">
+            <div className="mb-4 rounded-xl border border-border bg-surface/60 px-3 py-2.5" data-library-chips="">
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   type="button"
@@ -1017,8 +1112,11 @@ export default function Dashboard() {
                   className={`text-xs font-medium px-3 py-1.5 rounded-full border transition ${
                     folderFilter === "all" ? "bg-primary text-on-primary border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
                   }`}
+                  title="Folders, then everything not in a folder"
+                  data-chip="everything"
                 >
-                  All
+                  {/* round 34: was a second "All" right above the type tabs' own "All" */}
+                  Everything
                 </button>
                 <button
                   type="button"
@@ -1027,6 +1125,7 @@ export default function Dashboard() {
                     folderFilter === "files" ? "bg-primary text-on-primary border-primary" : "border-border text-muted hover:text-text hover:bg-surface2"
                   }`}
                   title="Only items not filed into any folder"
+                  data-chip="files"
                 >
                   Files
                   <span className={folderFilter === "files" ? "text-white/80" : "text-muted"}>{unfiledCount}</span>
@@ -1039,10 +1138,11 @@ export default function Dashboard() {
                       ? "bg-primary text-on-primary border-primary"
                       : "border-border text-muted hover:text-text hover:bg-surface2"
                   }`}
-                  title="Browse every folder"
+                  title={typeFilter === "all" ? "Browse every folder" : `Browse folders for ${LIBRARY_LABEL[typeFilter].many.toLowerCase()}`}
+                  data-chip="folders"
                 >
                   <FolderIcon className="w-3 h-3" /> Folders
-                  <span className={folderFilter === "folders" || !!activeFolder ? "text-white/80" : "text-muted"}>{folders.length}</span>
+                  <span className={folderFilter === "folders" || !!activeFolder ? "text-white/80" : "text-muted"}>{visibleFolders.length}</span>
                 </button>
               </div>
 
@@ -1060,8 +1160,8 @@ export default function Dashboard() {
                     <ChevronLeftIcon className="w-3 h-3" /> All folders
                   </button>
                   <span className="text-border">/</span>
-                  <span className="text-text font-medium inline-flex items-center gap-1 truncate">
-                    <FolderIcon className="w-3 h-3 text-muted shrink-0" /> {activeFolder.name}
+                  <span className="text-text font-medium inline-flex items-center gap-1 truncate min-w-0" title={activeFolder.name} data-folder-crumb="">
+                    <FolderIcon className="w-3 h-3 text-muted shrink-0" /> <span className="truncate">{activeFolder.name}</span>
                   </span>
 
                   {!isViewerHere && (
@@ -1115,12 +1215,12 @@ export default function Dashboard() {
           {hasAnyProjects && (
             <div className="flex flex-col lg:flex-row lg:items-center gap-2.5 lg:gap-2 mb-3 p-2 rounded-xl border border-border bg-surface/60">
               <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 flex-1 min-w-0">
-                <div role="tablist" aria-label="Show" className="flex gap-0.5 rounded-ctl border border-border bg-base p-[3px] shrink-0 self-start sm:self-auto" data-library-types="">
+                <div role="tablist" aria-label="Show" className="flex gap-0.5 rounded-ctl border border-border bg-base p-[3px] shrink-0 self-start sm:self-auto max-w-full overflow-x-auto" data-library-types="">
                   {([
                     ["all", "All", conversations.length],
-                    ["answer", "Answers", answerCount],
-                    ["analysis", "Analyses", analysisCount],
-                    ...(talkCount ? [["talk", "Talks", talkCount]] : []),
+                    ["answer", LIBRARY_LABEL.answer.many, answerCount],
+                    ["analysis", LIBRARY_LABEL.analysis.many, analysisCount],
+                    ...(talkCount ? [["talk", LIBRARY_LABEL.talk.many, talkCount]] : []),
                   ] as [TypeFilter, string, number][]).map(([t, label, n]) => (
                     <button
                       key={t}
@@ -1128,7 +1228,8 @@ export default function Dashboard() {
                       role="tab"
                       aria-selected={typeFilter === t}
                       onClick={() => setTypeFilter(t)}
-                      className={`h-[34px] px-3 rounded-[7px] text-sm inline-flex items-center gap-1.5 ${typeFilter === t ? "bg-subtle text-text" : "text-muted hover:text-text"}`}
+                      data-type-tab={t}
+                      className={`h-[34px] px-3 max-sm:px-2.5 rounded-[7px] text-sm inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 ${typeFilter === t ? "bg-subtle text-text" : "text-muted hover:text-text"}`}
                     >
                       {t !== "all" && <KindIcon kind={t} size={13} className={t === "answer" ? "text-kind-answer" : "text-kind-analysis"} />}
                       {label}
@@ -1140,7 +1241,7 @@ export default function Dashboard() {
                   <SearchIcon className="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     className="input input-icon h-10 text-sm w-full"
-                    placeholder="Search answers and analyses…"
+                    placeholder="Search your library…"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                   />
@@ -1199,11 +1300,11 @@ export default function Dashboard() {
               <div className="ml-auto flex items-center gap-2">
                 {moveMsg && <span className="text-xs text-accent">{moveMsg}</span>}
                 <MoveToFolderMenu
-                  folders={folders}
+                  folders={bulkFolders}
                   disabled={selectedIds.size === 0}
                   busy={moving}
                   onMove={moveSelectedTo}
-                  onNewFolder={() => { setNewFolderName(""); setShowNewFolder(true); }}
+                  onNewFolder={() => openNewFolder(true)}
                 />
               </div>
             </div>
@@ -1216,12 +1317,12 @@ export default function Dashboard() {
               <p className="text-sm text-muted max-w-md mx-auto leading-relaxed mb-5">
                 {isViewerHere
                   ? "Nothing's been shared into this workspace yet. You have view-only access here, so ask the workspace owner to add a data source."
-                  : "Every Instant Answer and every Guided Analysis you run lands here, ready to reopen, share or turn into a dashboard."}
+                  : "Every Quick answer and every Guided Analysis you run lands here, ready to reopen, share or turn into a dashboard."}
               </p>
               {!isViewerHere && (
                 <div className="flex items-center justify-center gap-2.5 flex-wrap">
                   <button className="btn-primary text-sm px-4 py-2.5 inline-flex items-center gap-1.5" onClick={() => navigate("/")}>
-                    <KindIcon kind="answer" size={15} /> Instant Answers
+                    <KindIcon kind="answer" size={15} /> Quick answer
                   </button>
                   <button className="btn-secondary text-sm px-4 py-2.5 inline-flex items-center gap-1.5" onClick={() => navigate("/?intent=guided")}>
                     <KindIcon kind="analysis" size={15} /> Guided Analysis
@@ -1245,7 +1346,7 @@ export default function Dashboard() {
                 : activeFolder
                 ? `Nothing in "${activeFolder.name}" yet.`
                 : typeFilter !== "all" && !search.trim() && !pinnedOnly
-                ? `No ${typeFilter === "answer" ? "answers" : typeFilter === "talk" ? "talks" : "analyses"} here yet.`
+                ? `No ${LIBRARY_LABEL[typeFilter].many.toLowerCase()} here yet.`
                 : "Nothing matches your filters."}{" "}
               {hasFiltersApplied && (
                 <button className="text-primary font-medium hover:underline" onClick={clearFilters}>
@@ -1278,6 +1379,7 @@ export default function Dashboard() {
                       key={f.id}
                       folder={f}
                       variant="card"
+                      typeFilter={typeFilter}
                       canEdit={f.can_edit && !isViewerHere}
                       onOpen={() => setFolderFilter(f.id)}
                       onRenamed={folderRenamedInline}
@@ -1292,6 +1394,7 @@ export default function Dashboard() {
                       key={f.id}
                       folder={f}
                       variant="row"
+                      typeFilter={typeFilter}
                       canEdit={f.can_edit && !isViewerHere}
                       onOpen={() => setFolderFilter(f.id)}
                       onRenamed={folderRenamedInline}
@@ -1308,8 +1411,13 @@ export default function Dashboard() {
               this is its empty state (unreachable in practice since the
               chip itself is hidden with zero folders, but a stale filter
               from the back/forward buttons is cheap to guard). */}
-          {!loading && folderFilter === "folders" && folders.length === 0 && (
-            <div className="card p-10 text-center text-sm text-muted">No folders yet.</div>
+          {!loading && folderFilter === "folders" && visibleFolders.length === 0 && (
+            <div className="card p-10 text-center text-sm text-muted" data-folders-empty="">
+              {typeFilter === "all" ? "No folders yet." : `No folders for ${LIBRARY_LABEL[typeFilter].many.toLowerCase()} yet.`}{" "}
+              {!isViewerHere && (
+                <button className="text-primary font-medium hover:underline" onClick={() => openNewFolder(false)}>New folder</button>
+              )}
+            </div>
           )}
 
           {showFilesSection && filteredProjects.length > 0 && (
@@ -1330,7 +1438,7 @@ export default function Dashboard() {
                     onRenamed={renameConversation}
                     onPinned={pinConversation}
                     onDeleted={deleteConversation}
-                    folders={folders}
+                    folders={folders.filter((f) => folderTakes(f, conversationKind(c) as LibraryKind))}
                     onMoved={singleMoved}
                     selectMode={selectMode}
                     selected={selectedIds.has(c.id)}
@@ -1392,13 +1500,49 @@ export default function Dashboard() {
                 onKeyDown={(e) => { if (e.key === "Enter") createFolder(); }}
                 maxLength={80}
               />
+              {/* round 34: the tab it lives in - preset to the tab on screen */}
+              <div className="mb-4">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-1.5">Shows under</div>
+                <div role="radiogroup" aria-label="Shows under" className="flex flex-wrap gap-1.5" data-new-folder-kind="">
+                  {([
+                    ["answer", LIBRARY_LABEL.answer.many],
+                    ["analysis", LIBRARY_LABEL.analysis.many],
+                    ...(talkCount ? [["talk", LIBRARY_LABEL.talk.many]] : []),
+                    [null, "Every tab"],
+                  ] as [LibraryKind | null, string][]).filter(([k]) => !k || !moveIntoNewFolder || selectedKinds.size === 0 || (selectedKinds.size === 1 && selectedKinds.has(k))).map(([k, label]) => {
+                    const on = newFolderKind === k;
+                    return (
+                      <button
+                        key={label}
+                        type="button"
+                        role="radio"
+                        aria-checked={on}
+                        data-kind={k || "any"}
+                        onClick={() => setNewFolderKind(k)}
+                        className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-full border text-xs font-medium transition ${
+                          on ? (k ? kindClasses(k) : "bg-subtle text-text border-border-strong") : "border-border text-muted hover:text-text"
+                        }`}
+                      >
+                        {k && <KindIcon kind={k} size={12} />}
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] text-muted mt-1.5">
+                  {newFolderKind
+                    ? `Only shows under ${LIBRARY_LABEL[newFolderKind].many} - and only takes ${LIBRARY_LABEL[newFolderKind].many.toLowerCase()}.`
+                    : "Shows under All, and under each tab it holds something for."}
+                </p>
+              </div>
+              {folderError && <div className="text-xs text-red-400 mb-3">{folderError}</div>}
               <button
                 type="button"
                 className="btn-primary w-full text-sm px-4 py-2.5 disabled:opacity-50 disabled:cursor-not-allowed"
                 onClick={createFolder}
                 disabled={!newFolderName.trim() || creatingFolder}
               >
-                {creatingFolder ? "Creating…" : "Create folder"}
+                {creatingFolder ? "Creating…" : moveIntoNewFolder ? `Create and move ${selectedIds.size}` : "Create folder"}
               </button>
             </div>
           </div>,

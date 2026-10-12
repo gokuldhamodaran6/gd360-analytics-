@@ -972,7 +972,7 @@ function AnswerBar({
               ? "Writing the answer from your steps…"
               : stale
                 ? "A step changed after the answer was written - rewrite it to include the change."
-                : "Written from the steps that ran - the same checked numbers as an Instant Answer."}
+                : "Written from the steps that ran - the same checked numbers as a Quick answer."}
         </span>
       </div>
       <div className="flex gap-2 flex-wrap">

@@ -27,7 +27,7 @@ import { timeAgo, autoRunPreference } from "../project/format";
 import { useAuth } from "../api/AuthContext";
 import { Space, spacesApi } from "../api/spaces";
 import ScopePicker, { Scope, loadScope, saveScope, scopeSummary } from "../spaces/ScopePicker";
-import { conversationHref, conversationKind, dashboardHref, KindPill, KindTile } from "../lib/kinds";
+import { conversationHref, conversationKind, conversationLabel, dashboardHref, KindPill, KindTile } from "../lib/kinds";
 import { ArrowUpIcon, AskMode, BoltIcon, MODE_HINT, ModeSwitch, Spinner, StepsIcon, useAutoGrow } from "../thread/parts";
 import { ListeningStrip, MicButton, useDictation } from "../thread/Dictation";
 import { eulivAvailable, openEuliv, OrbGlyph, TalkButton } from "../components/Euliv";
@@ -558,9 +558,9 @@ export default function Home() {
                     <Link key={`c-${c.id}`} to={to} data-recent-kind={kind} className="grid grid-cols-[36px_minmax(0,1fr)_auto] gap-3.5 items-center px-4 py-3 border-t first:border-t-0 border-border hover:bg-subtle">
                       <KindTile kind={kind} />
                       <span className="min-w-0 flex flex-col gap-0.5">
-                        <span className="text-body text-text truncate">{c.title}</span>
+                        <span className="text-body text-text truncate" title={c.title}>{c.title}</span>
                         <span className="text-caption text-muted truncate">
-                          <KindPill kind={kind} className="h-[18px] px-1.5 text-[10.5px] mr-1.5 align-[1px]" />
+                          <KindPill kind={kind} className="h-[18px] px-1.5 text-[10.5px] mr-1.5 align-[1px]">{conversationLabel(c)}</KindPill>
                           {c.datasource_name || (c.kind === "voice" ? "Talk with Euliv" : "No source")}
                           {(c.question_count || 0) > 1 ? ` · ${c.question_count} questions` : ""}
                           {n > 0 ? ` · ${n} dashboard${n === 1 ? "" : "s"}` : ""}

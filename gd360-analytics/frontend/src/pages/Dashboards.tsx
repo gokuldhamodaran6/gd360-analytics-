@@ -376,7 +376,7 @@ function StartDialog({
                 <div className="p-4 text-ui text-muted">
                   {items.length === 0
                     ? kind === "answer"
-                      ? <>No answers yet. <Link to="/" className="text-text underline">Get an Instant Answer</Link> first.</>
+                      ? <>No answers yet. <Link to="/" className="text-text underline">Get a quick answer</Link> first.</>
                       : <>No analyses yet. <Link to="/?intent=guided" className="text-text underline">Start a Guided Analysis</Link> first.</>
                     : "Nothing matches."}
                 </div>
