@@ -1565,6 +1565,16 @@ export type DashboardSummary = {
   source_title?: string | null;
   source_id?: string | null;
   source_datasource_id?: string | null;
+  // 2026-10-12 (round 35): what its card shows, from the one list call
+  sources?: { id: string; name: string; kind: string; live: boolean }[];
+  data_mode?: "live" | "file" | "mixed" | null;
+  published?: boolean;
+  data_at?: string | null;
+  updated_at?: string | null;
+  page_count?: number;
+  block_count?: number;
+  preview?: { t: string; x: number; y: number; w: number; h: number; c?: string | null }[];
+  refresh_interval?: RefreshInterval;
 };
 
 export type SavedChart = {
@@ -1589,6 +1599,11 @@ export const dashboardApi = {
   setWorkspace: (id: string, workspaceId: string | null) =>
     api.patch<DashboardSummary>(`/dashboards/${id}/workspace`, { workspace_id: workspaceId }).then((r) => r.data),
   remove: (id: string) => api.delete(`/dashboards/${id}`).then(() => undefined),
+  // round 35: a full copy (pages, blocks, look, rail) owned by the person copying it
+  duplicate: (id: string) => api.post<DashboardSummary>(`/dashboards/${id}/duplicate`).then((r) => r.data),
+  // round 35b: one new dashboard from 2+ existing ones (pages in this order, each on its own source)
+  merge: (dashboardIds: string[], name?: string, keepOriginals = true) =>
+    api.post<DashboardSummary>("/dashboards/merge", { dashboard_ids: dashboardIds, name: name || undefined, keep_originals: keepOriginals }).then((r) => r.data),
   saveChart: (payload: {
     title: string;
     chart_spec: any;
@@ -1980,6 +1995,12 @@ export type DashboardBuilderPage = {
   // override, or null to inherit the parent dashboard's background - see
   // backend models.DashboardPage's own docstring.
   background_color: string | null;
+  // 2026-10-12 (round 35b): the source THIS page reads - a merged dashboard can hold a BigQuery
+  // page next to an uploaded-file page; absent on an older backend (= the dashboard's)
+  datasource_id?: string | null;
+  datasource_name?: string | null;
+  datasource_kind?: string | null;
+  warehouse_native?: boolean | null;
 };
 
 // 2026-09-25 (Round 4, branding/customization): the shape shared by
@@ -2051,6 +2072,12 @@ export type DashboardBuilderDetail = DashboardBranding & {
   datasource_id: string | null;
   datasource_name: string | null;
   pages: DashboardBuilderPage[];
+  // 2026-10-12 (round 35b): every source its pages read, and its auto-refresh
+  sources?: { id: string; name: string; kind: string; live: boolean }[];
+  refresh_interval?: RefreshInterval;
+  next_refresh_at?: string | null;
+  last_refreshed_at?: string | null;
+  refresh_paused?: boolean;
   can_edit: boolean;
   is_published: boolean;
   public_slug: string | null;
@@ -2258,6 +2285,17 @@ export const dashboardBuilderApi = {
     api
       .post<DashboardBuilderDetail>("/dashboard-builder/create-blank", { datasource_id: datasourceId, name: name || undefined })
       .then((r) => r.data),
+  // round 35b: "New dashboard → Your data" - one page per source when there are several
+  createBlankOnSources: (datasourceIds: string[], name?: string) =>
+    api
+      .post<DashboardBuilderDetail>("/dashboard-builder/create-blank", { datasource_ids: datasourceIds, name: name || undefined })
+      .then((r) => r.data),
+  // round 35b: "What should it show?" on an empty page - checked blocks drafted onto this dashboard
+  draftIntoPage: (dashboardId: string, pageId: string, goal: string) =>
+    api.post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/pages/${pageId}/draft`, { goal }).then((r) => r.data),
+  // round 35b: "Merge a dashboard in" - their pages (each on its own source) added to this one
+  mergeIn: (dashboardId: string, dashboardIds: string[]) =>
+    api.post<DashboardBuilderDetail>(`/dashboard-builder/${dashboardId}/merge-in`, { dashboard_ids: dashboardIds }).then((r) => r.data),
   // 2026-09-25 (Round 5, template gallery): the catalog behind
   // BuildDashboardModal.tsx's "Start from a template" step - see
   // DashboardTemplate above for the shape and backend list_templates for
@@ -2675,6 +2713,12 @@ export const dashboardBuilderApi = {
   // access only. 400 for a file-source dashboard (use previewFiltered).
   // `signal` lets the engine hook cancel an in-flight run when the filters
   // change again before it lands.
+  // 2026-10-12 (round 35): this viewer's last complete, unfiltered run of the page (null when none,
+  // or the page changed since) - drawn at once while a live source refreshes behind it.
+  pageSnapshot: (dashboardId: string, pageId: string, signal?: AbortSignal) =>
+    api
+      .get<{ computed_at: string | null; period: string | null; run: RunPageResponse | null }>(`/dashboard-builder/${dashboardId}/pages/${pageId}/snapshot`, { signal })
+      .then((r) => r.data),
   runPage: (dashboardId: string, pageId: string, req: RunPageRequest, signal?: AbortSignal) =>
     api
       .post<RunPageResponse>(`/dashboard-builder/${dashboardId}/pages/${pageId}/run`, {
@@ -3136,7 +3180,8 @@ export function publicRunBody(req: RunPageRequest) {
 // models.Dashboard's own docstring for why), backed by the exact same
 // recompute logic the manual "Ask AI"/"Build manually" block editor
 // already uses. ----
-export type RefreshInterval = "off" | "15m" | "1h" | "6h" | "daily";
+// round 35b: "realtime" = the open page re-runs every minute (no server schedule); 5m / 30m added
+export type RefreshInterval = "off" | "realtime" | "5m" | "15m" | "30m" | "1h" | "6h" | "daily";
 
 export type DashboardSchedule = {
   dashboard_id: string;
