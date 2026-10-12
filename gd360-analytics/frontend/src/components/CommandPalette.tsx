@@ -208,7 +208,7 @@ export default function CommandPalette() {
 
   const allItems = useMemo<Item[]>(() => {
     const quickActions: Item[] = [
-      { id: "qa-ask", section: "Quick actions", label: "Instant Answers", subtitle: "Ask anything - answered in seconds across your sources", icon: <PlusIcon />, run: () => navigate("/") },
+      { id: "qa-ask", section: "Quick actions", label: "Quick answer", subtitle: "Ask anything - answered in seconds across your sources", icon: <PlusIcon />, run: () => navigate("/") },
       { id: "qa-analyze", section: "Quick actions", label: "Guided Analysis", subtitle: "Work step by step on one or more sources", icon: <PlusIcon />, run: () => navigate("/?intent=guided") },
       { id: "qa-build", section: "Quick actions", label: "New dashboard", subtitle: "From an answer, an analysis, or a description", icon: <PlusIcon />, run: () => navigate("/dashboards?start=1") },
       { id: "qa-new-dashboard", section: "Quick actions", label: "New dashboard", subtitle: "Describe it, or start from an answer or analysis", icon: <PlusIcon />, run: () => navigate("/dashboards?start=1") },

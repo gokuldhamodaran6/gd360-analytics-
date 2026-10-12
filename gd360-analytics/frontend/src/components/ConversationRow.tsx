@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Kind, KindPill, KindTile } from "../lib/kinds";
+import { conversationLabel, Kind, KindPill, KindTile } from "../lib/kinds";
 import { conversationApi, ConversationSummary, FolderSummary } from "../api/client";
 
 function MoreIcon({ className }: { className?: string }) {
@@ -354,8 +354,9 @@ export default function ConversationRow({
   const moveToFolder = async (folderId: string | null) => {
     setMenuBusy(true);
     try {
-      await conversationApi.bulkMove([conversation.id], folderId);
-      onMoved?.(conversation.id, folderId);
+      const res = await conversationApi.bulkMove([conversation.id], folderId);
+      // only reflect a move that happened (a folder for another kind, or no edit rights, skips it)
+      if (res.moved.includes(conversation.id)) onMoved?.(conversation.id, folderId);
       setMenuOpen(false);
     } catch {
       // Leaves the menu open (non-busy) so the person can try again.
@@ -444,7 +445,7 @@ export default function ConversationRow({
       {conversation.pinned && (
         <PinIcon filled className="w-3 h-3 text-accent shrink-0 rotate-[20deg]" />
       )}
-      <span className={`truncate ${variant === "card" ? "font-medium text-sm" : "text-sm"} ${active ? "text-text font-semibold" : ""}`}>
+      <span title={conversation.title} className={`truncate ${variant === "card" ? "font-medium text-sm" : "text-sm"} ${active ? "text-text font-semibold" : ""}`}>
         {conversation.title}
       </span>
       {/* Attribution (2026-09-23, roles & attribution round): only shown
@@ -534,7 +535,7 @@ export default function ConversationRow({
           {titleBlock}
           {kind ? (
             <div className="mt-1 flex items-center gap-1.5 min-w-0">
-              <KindPill kind={kind} className="h-[18px] px-1.5 text-[10.5px] shrink-0" />
+              <KindPill kind={kind} className="h-[18px] px-1.5 text-[10.5px] shrink-0">{conversationLabel(conversation)}</KindPill>
               {subtitle && <span className="text-xs text-muted truncate">{subtitle}</span>}
             </div>
           ) : (
