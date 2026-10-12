@@ -9,6 +9,7 @@ import { EmptyBlockBody, EmptyBlockPlaceholder } from "./edit/EmptyBlock";
 import type { DashboardEditor } from "./edit/useDashboardEditor";
 import { adaptFileBlock } from "./fileData";
 import { humanize } from "./format";
+import { IconTile, kpiIconOf, OriginChip } from "./blockIcons";
 import { useChartTheme, useGridMetrics } from "./theme/ChartThemeContext";
 import type { DashboardRun } from "./useDashboardRun";
 
@@ -173,12 +174,20 @@ export type KpiStripProps = {
 // adapted one - the tile does not know which.
 function KpiBlockTile({ block: b, result: r, run, labelNode, wording = PRIOR_PERIOD_WORDING }: { block: DashboardBlock; result: BlockResult | undefined; run: DashboardRun; labelNode?: ReactNode; wording?: KpiDeltaWording }) {
   const label = b.title || humanize(b.config?.label || r?.measures?.[0]) || "Value";
+  // round 36: every tile leads with an icon badge for what it counts
+  const labelWithIcon = (
+    <span className="inline-flex min-w-0 max-w-full items-center gap-2" title={label}>
+      <IconTile name={kpiIconOf(label)} size={22} iconSize={12} />
+      <span className="min-w-0 truncate">{labelNode ?? label}</span>
+    </span>
+  );
+  const origin = b.config?.origin as string | undefined;
   // A KPI's sparkline is the palette's primary - never an identity colour.
   const theme = useChartTheme();
   if (!r || !resultOk(r)) {
     return (
       <KpiTile
-        label={labelNode ?? label}
+        label={labelWithIcon}
         value={<span className="text-section font-medium text-danger">{r?.error ? "Couldn't compute" : "No result"}</span>}
         caption={r?.error || (run.skippedBlockIds.includes(b.id) ? "Not built for the warehouse yet" : undefined)}
         className={labelNode ? "h-full" : undefined}
@@ -198,7 +207,7 @@ function KpiBlockTile({ block: b, result: r, run, labelNode, wording = PRIOR_PER
   return (
     <>
       <KpiTile
-        label={labelNode ?? label}
+        label={labelWithIcon}
         value={kpi.value}
         unit={b.config?.unit}
         delta={kpi.delta ?? undefined}
@@ -206,7 +215,7 @@ function KpiBlockTile({ block: b, result: r, run, labelNode, wording = PRIOR_PER
         sparkline={spark.length > 1 ? spark : undefined}
         sparklineLabel={spark.length > 1 ? `${label} trend` : undefined}
         sparklineColor={theme.tokens ? undefined : theme.primary}
-        caption={forecastLine ? <span data-kpi-forecast="" title={forecastLine}>{forecastLine}</span> : undefined}
+        caption={forecastLine ? <span data-kpi-forecast="" title={forecastLine}>{forecastLine}</span> : origin ? <OriginChip origin={origin} /> : undefined}
         className={cn("h-full", run.loading && !run.quiet && "opacity-80")}
       />
       {run.loading && !run.quiet && <div aria-hidden="true" className="ui-shimmer pointer-events-none absolute inset-0 rounded-card opacity-30" />}

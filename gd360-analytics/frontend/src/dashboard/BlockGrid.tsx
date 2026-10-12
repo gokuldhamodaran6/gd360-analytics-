@@ -15,7 +15,8 @@ import { blockHeightPx, isGridBlock, viewLayout } from "./edit/layout";
 import { useGridMetrics } from "./theme/ChartThemeContext";
 import type { DashboardEditor } from "./edit/useDashboardEditor";
 import { MenuRow, SwapChips } from "./menu";
-import { fileBlockSpec } from "./fileData";
+import { adaptFileBlock, fileBlockSpec } from "./fileData";
+import { OriginChip, storyOf, visualOf, withIcon } from "./blockIcons";
 import { describeSpecShort } from "./format";
 import { type CrossFilter, describeSpec, type ParamValue, titleForPeriod } from "./runState";
 import type { DashboardRun, RunSource } from "./useDashboardRun";
@@ -277,8 +278,20 @@ export function BlockCard({
     // or make two cards in a row start their plots at different heights);
     // the full text is the tooltip.
     const text = parts.join(" · ");
+    const origin = block.config?.origin as string | undefined;
+    if (origin) {
+      // round 36: a block made from a thread says where it came from, and what it shows in one line
+      const shown = mode === "file" ? (() => { const a = adaptFileBlock(block, override, { sourceName: source.name }); return a.kind === "result" ? a.result : null; })() : (resultOk(result) ? result : null);
+      const story = storyOf(block, shown);
+      return (
+        <span data-block-subtitle="" className="flex min-w-0 items-center gap-2" title={exact && exact !== base ? `${text}\n${exact}` : text}>
+          <OriginChip origin={origin} />
+          <span className="min-w-0 truncate" data-block-story={story ? "" : undefined}>{story || text}</span>
+        </span>
+      );
+    }
     return <span data-block-subtitle="" className="block truncate" title={exact && exact !== base ? `${text}\n${exact}` : text}>{text}</span>;
-  }, [layoutOnly, selected, mode, block, spec, legacy, canCrossFilter, filtered, run, crossColumn, result, fileSpec, noun]);
+  }, [layoutOnly, selected, mode, block, spec, legacy, canCrossFilter, filtered, run, crossColumn, result, fileSpec, noun, override, source.name]);
 
   const openSql = async () => {
     setSqlOpen(true);
@@ -536,7 +549,7 @@ export function BlockCard({
               onCommit={(v) => { setRenaming(false); editor.renameBlock(block, v); }}
             />
           ) : (
-            titleText
+            withIcon(visualOf(block, resultOk(result) ? effectiveChartType(block.config, result, block.type).chartType : null, resultOk(result) ? Boolean(result.time_column) : Boolean(spec?.time)), titleText)
           )
         }
         subtitle={showEmptyState ? undefined : subtitle}
