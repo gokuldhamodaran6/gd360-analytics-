@@ -227,7 +227,7 @@ function ColoursSection({ controller, samples, mode, narrow }: { controller: App
         <dl className="m-0 flex flex-col gap-1 text-caption" data-color-mode-help="">
           <div className={cn("flex gap-1.5", a.color_mode === "by_value" ? "text-secondary" : "text-muted")}>
             <dt className="shrink-0 font-medium">By value</dt>
-            <dd className="m-0">Each value keeps its own colour on every chart and page - City Hotel is the same colour everywhere.</dd>
+            <dd className="m-0">Each value keeps its own colour on every chart and page - the same region or product is the same colour everywhere.</dd>
           </div>
           <div className={cn("flex gap-1.5", a.color_mode === "single" ? "text-secondary" : "text-muted")}>
             <dt className="shrink-0 font-medium">Single colour</dt>
@@ -460,7 +460,7 @@ function PublicSection({ controller }: { controller: AppearanceController }) {
             aria-label="Footer note"
             maxLength={160}
             disabled={disabled}
-            placeholder="Confidential - Acme Hotels"
+            placeholder="Confidential - Acme Inc."
             value={note}
             onChange={(e) => { typed.current = true; setNote(e.target.value); controller.patch({ footer_note: e.target.value }); }}
             data-footer-note-input=""
