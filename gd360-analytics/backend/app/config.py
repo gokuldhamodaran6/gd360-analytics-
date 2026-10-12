@@ -452,7 +452,10 @@ class Settings(BaseSettings):
     # Rows one training run loads into this server's memory. A table with
     # more rows trains on the first ML_MAX_TRAIN_ROWS and the run says so
     # plainly - never a silent sample. Raise it on a bigger instance.
-    ML_MAX_TRAIN_ROWS: int = 50_000
+    # 2026-10-12 (round 39): a CEILING now, not the usual size - every run
+    # works out its own row budget from the memory it really has (see
+    # services/ml_data.py) and samples fairly in SQL when the table is bigger.
+    ML_MAX_TRAIN_ROWS: int = 2_000_000
     # Hyper-parameter trials across all algorithms, and the time budget for
     # the train-and-tune stage (it stops early at whichever comes first).
     ML_TRIALS: int = 24
@@ -463,6 +466,31 @@ class Settings(BaseSettings):
     # (cgroup). Training checks how much is free before it starts and uses
     # fewer rows - saying so - rather than run the server out of memory.
     ML_MEMORY_LIMIT_MB: int = 0
+    # --- 2026-10-12 (round 39): ML engine v2 (services/ml_data.py, ml_queue.py,
+    # ml_worker.py). Where read-only snapshots of each source table live (one
+    # DuckDB file per table version, rebuilt when the data changes); empty =
+    # the system temp folder.
+    ML_CACHE_DIR: str = ""
+    # Snapshots kept on disk before the oldest are removed (MB).
+    ML_CACHE_MAX_MB: int = 4096
+    # "inline": runs are queued and trained by a worker thread inside this
+    # web process (one at a time). "external": this process only queues;
+    # a separate worker service (`python -m app.ml_worker`) trains - the way
+    # to give ML its own memory and CPU. "off": nothing trains here.
+    ML_WORKER_MODE: str = "inline"
+    # Memory kept free for the rest of the web app while an inline run trains.
+    ML_RESERVE_MB: int = 80
+    # DuckDB's own working memory for one run (0 = a share of what is free);
+    # anything bigger spills to disk instead of failing.
+    ML_DUCKDB_MEMORY_MB: int = 0
+    # Above this many rows a run trains on a fair sample (and says so); the
+    # real limit is usually memory, worked out per run.
+    ML_SAMPLE_SEED: int = 42
+    # A run whose worker stops reporting for this long is picked up again.
+    ML_HEARTBEAT_STALE_SECONDS: int = 180
+    # CSV uploads bigger than this are read straight into the snapshot by
+    # DuckDB, streaming, instead of through pandas (MB).
+    ML_FAST_CSV_MB: int = 8
 
 
 @lru_cache

@@ -9,7 +9,7 @@ from sqlalchemy import (
     Column, String, DateTime, ForeignKey, Text, JSON, Boolean, Integer, LargeBinary, BigInteger,
     Float, UniqueConstraint, Index,
 )
-from sqlalchemy.orm import backref, relationship
+from sqlalchemy.orm import backref, deferred, relationship
 
 from .database import Base
 
@@ -159,8 +159,10 @@ class DataSource(Base):
     connection_info = Column(JSON, default=dict)
     encrypted_secret = Column(Text, nullable=True)
     file_path = Column(String, nullable=True)  # legacy, no longer written to
-    file_data = Column(LargeBinary, nullable=True)  # uploaded csv/excel bytes, stored here so they survive redeploys
-    cleaned_data = Column(LargeBinary, nullable=True)  # latest AI-prepared/cleaned snapshot, stored as CSV bytes
+    # 2026-10-12 (round 39): the big byte columns are deferred - loaded only when
+    # read - so listing sources never pulls every uploaded file into memory.
+    file_data = deferred(Column(LargeBinary, nullable=True))  # uploaded csv/excel bytes, stored here so they survive redeploys
+    cleaned_data = deferred(Column(LargeBinary, nullable=True))  # latest AI-prepared/cleaned snapshot, stored as CSV bytes
     cleaning_log = Column(JSON, nullable=True)  # list of {prompt, summary, rows_before, rows_after, nulls_before, nulls_after, created_at}
     cleaned_updated_at = Column(DateTime, nullable=True)
     read_only = Column(Boolean, default=True)
@@ -298,7 +300,7 @@ class DatasetVersion(Base):
     name = Column(String, nullable=False)
     parent_version_id = Column(String, nullable=True)  # first/primary source, kept for simple display
     parent_version_ids = Column(JSON, nullable=True)  # every source table this was built from (can be several)
-    data = Column(LargeBinary, nullable=False)  # CSV bytes for this snapshot
+    data = deferred(Column(LargeBinary, nullable=False))  # CSV bytes for this snapshot
     cleaning_log = Column(JSON, nullable=True)
     position = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -1854,7 +1856,7 @@ class MLModel(Base):
     feature_columns = Column(JSON, nullable=True)  # list[str] actually used, set at training time
     excluded_columns = Column(JSON, nullable=True)  # list[{"column": str, "reason": str}]
     algorithm = Column(String, nullable=True)  # e.g. "random_forest_classifier", set once training completes
-    model_artifact = Column(LargeBinary, nullable=True)  # joblib-serialized fitted sklearn Pipeline
+    model_artifact = deferred(Column(LargeBinary, nullable=True))  # joblib-serialized fitted sklearn Pipeline
     metrics = Column(JSON, nullable=True)
     # See this model's own docstring above - global, never per-prediction.
     feature_importance = Column(JSON, nullable=True)
@@ -1896,6 +1898,33 @@ class MLModel(Base):
         "MLModelVersion", back_populates="ml_model", cascade="all, delete-orphan",
         order_by="MLModelVersion.version_number.desc()",
     )
+
+
+class MLJob(Base):
+    """2026-10-12 (round 39): one unit of ML Studio work in the queue - a
+    training run or a "score every row" run. Workers claim the oldest queued
+    job (FOR UPDATE SKIP LOCKED on Postgres), report a heartbeat while they
+    work, and a job whose worker went quiet is picked up again (with half the
+    row budget when it looks like memory ran out) or failed after its second
+    try. The model row keeps status "training" from queued to finished, so
+    every older page keeps working."""
+
+    __tablename__ = "ml_jobs"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    kind = Column(String, nullable=False, default="train")  # "train" | "score"
+    model_id = Column(String, ForeignKey("ml_models.id", ondelete="CASCADE"), nullable=False, index=True)
+    owner_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    state = Column(String, nullable=False, default="queued", index=True)  # queued|running|done|failed|cancelled
+    payload = Column(JSON, nullable=True)
+    result = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    worker_id = Column(String, nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    heartbeat_at = Column(DateTime, nullable=True)
 
 
 class MLModelVersion(Base):
@@ -1940,7 +1969,7 @@ class MLModelVersion(Base):
     algorithm = Column(String, nullable=True)
     feature_columns = Column(JSON, nullable=True)
     excluded_columns = Column(JSON, nullable=True)
-    model_artifact = Column(LargeBinary, nullable=True)
+    model_artifact = deferred(Column(LargeBinary, nullable=True))
     metrics = Column(JSON, nullable=True)
     feature_importance = Column(JSON, nullable=True)
     # See MLModel.quality_warnings's own docstring - a version snapshot's
@@ -2315,7 +2344,7 @@ class SyncedTable(Base):
     id = Column(String, primary_key=True, default=gen_uuid)
     datasource_id = Column(String, ForeignKey("datasources.id", ondelete="CASCADE"), nullable=False, index=True)
     table_name = Column(String, nullable=False)
-    parquet_data = Column(LargeBinary, nullable=False)
+    parquet_data = deferred(Column(LargeBinary, nullable=False))
     row_count = Column(Integer, nullable=False, default=0)
     columns = Column(JSON, nullable=False, default=list)  # [{name, type}]
     synced_at = Column(DateTime, default=datetime.utcnow, nullable=False)

@@ -334,6 +334,11 @@ def on_startup():
     recover_automation_runs()
     from .services.ml_studio import recover_interrupted as recover_ml_jobs
     recover_ml_jobs()
+    # 2026-10-12 (round 39): ML Studio runs go through a queue. Inline mode (the
+    # default) trains them in a worker thread here; external mode leaves that to
+    # the worker service (`python -m app.ml_worker`) and only reaps stale runs.
+    from .services import ml_worker
+    ml_worker.start_inline()
 
 
 @app.get("/health")
