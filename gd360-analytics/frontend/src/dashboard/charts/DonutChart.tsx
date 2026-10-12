@@ -67,10 +67,12 @@ export function donutSlices(items: DonutItem[], scope?: string | null, coloring?
   });
 }
 
-export function shareText(share: number): string {
+export function shareText(share: number, decimals?: number): string {
   const pct = share * 100;
   if (pct > 0 && pct < 0.1) return "<0.1%";
-  return `${pct.toLocaleString(undefined, { maximumFractionDigits: pct >= 10 ? 0 : 1 })}%`;
+  // round 37: one precision per chart ("90.3%" beside "9.7%", never "90%" beside "9.7%")
+  const d = decimals ?? (pct >= 10 ? 0 : 1);
+  return `${pct.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}%`;
 }
 
 function polar(cx: number, cy: number, r: number, deg: number): [number, number] {
@@ -170,6 +172,8 @@ export function DonutChart({ items, format = PLAIN_FORMAT, scope, column = null,
   const family = useMemo(() => (root && typeof getComputedStyle === "function" ? getComputedStyle(root).fontFamily || undefined : undefined), [root]);
   const measure = useMemo(() => makeMeasure(family), [family]);
   const total = slices.reduce((s, it) => s + it.value, 0);
+  const shareDecimals = slices.some((s) => s.share > 0 && s.share < 0.1) ? 1 : 0;
+  const pctOf = (share: number) => shareText(share, shareDecimals);
 
   if (!slices.length) {
     return <div className="flex h-full min-h-[96px] items-center justify-center text-caption text-muted" style={{ minHeight }}>No data yet.</div>;
@@ -190,14 +194,16 @@ export function DonutChart({ items, format = PLAIN_FORMAT, scope, column = null,
   const labelled = r >= 38;
   if (!labelled) r = Math.max(24, Math.min(areaH / 2 - 6, areaW / 2 - 6));
   const inner = pie ? 0 : r * 0.62;
-  const labels = labelled ? ringLabels(slices, cx, cy, r, areaW, areaH, measure) : [];
+  // round 37: with the legend beside a ring of a few slices, the ring needs no callouts (they only
+  // collided with the ring's edge and repeated the legend)
+  const labels = labelled && !(side && slices.length <= 4) ? ringLabels(slices, cx, cy, r, areaW, areaH, measure) : [];
   const totalText = [formatValue(total, format, "auto"), formatValue(total, format, "compact")].find((t) => measure(t, 18, 600) <= inner * 2 - 14);
   const showTotal = !pie && format.format !== "percent" && inner >= 30 && Boolean(totalText);
   const faded = (label: string) => (selectedLabel ? selectedLabel !== label : hover !== null && hover !== label);
 
   return (
     <div ref={setRoot} data-chart="donut" data-color-by={column || undefined} className={`relative flex h-full w-full ${side ? "flex-row items-center gap-3" : "flex-col gap-2"}`} data-donut-layout={side ? "side" : "stacked"} style={{ minHeight }}>
-      <svg width={areaW} height={areaH} viewBox={`0 0 ${areaW} ${areaH}`} role="img" aria-label={`${title || "Breakdown"}: ${slices.map((s) => `${s.label} ${shareText(s.share)}`).join(", ")}`} className="block shrink-0" style={{ fontFamily: "inherit", fontVariantNumeric: "tabular-nums" }}>
+      <svg width={areaW} height={areaH} viewBox={`0 0 ${areaW} ${areaH}`} role="img" aria-label={`${title || "Breakdown"}: ${slices.map((s) => `${s.label} ${pctOf(s.share)}`).join(", ")}`} className="block shrink-0" style={{ fontFamily: "inherit", fontVariantNumeric: "tabular-nums" }}>
         {slices.map((s) => {
           const clickable = Boolean(onItemClick) && !s.other;
           return (
@@ -209,14 +215,14 @@ export function DonutChart({ items, format = PLAIN_FORMAT, scope, column = null,
               strokeLinejoin="round"
               role={clickable ? "button" : undefined}
               tabIndex={clickable ? 0 : undefined}
-              aria-label={clickable ? `${s.label}: ${shareText(s.share)}` : undefined}
+              aria-label={clickable ? `${s.label}: ${pctOf(s.share)}` : undefined}
               style={{ fill: s.color, stroke: "rgb(var(--color-surface))", opacity: faded(s.label) ? 0.35 : 1, cursor: clickable ? "pointer" : undefined, outlineOffset: 2 }}
               onMouseEnter={() => setHover(s.label)}
               onMouseLeave={() => setHover(null)}
               onClick={clickable ? () => onItemClick!(s.label) : undefined}
               onKeyDown={clickable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onItemClick!(s.label); } } : undefined}
             >
-              <title>{`${s.label}: ${formatValue(s.value, format, "full")} (${shareText(s.share)})`}</title>
+              <title>{`${s.label}: ${formatValue(s.value, format, "full")} (${pctOf(s.share)})`}</title>
             </path>
           );
         })}
@@ -239,7 +245,7 @@ export function DonutChart({ items, format = PLAIN_FORMAT, scope, column = null,
       </svg>
       <ul
         data-donut-legend=""
-        className={`m-0 min-h-0 min-w-0 list-none overflow-y-auto p-0 ${side ? "max-h-full flex-1 self-center" : "grid w-full flex-1 content-start gap-x-3"}`}
+        className={`m-0 min-h-0 min-w-0 list-none overflow-y-auto p-0 ${side ? "max-h-full max-w-[320px] flex-1 self-center" : "grid w-full flex-1 content-start gap-x-3"}`}
         style={side ? undefined : { gridTemplateColumns: `repeat(${legendCols}, minmax(0, 1fr))`, gridAutoFlow: legendCols > 1 ? "column" : undefined, gridTemplateRows: legendCols > 1 ? `repeat(${legendRows}, ${LEGEND_ROW}px)` : undefined }}
       >
         {slices.map((s) => {
@@ -253,7 +259,7 @@ export function DonutChart({ items, format = PLAIN_FORMAT, scope, column = null,
               {!pinnable && key}
               <span className="min-w-0 flex-1 truncate text-left text-secondary" title={s.label}>{s.label}</span>
               <span className="shrink-0 font-medium tabular-nums text-text">{formatValue(s.value, format, size.w < 300 ? "compact" : "full")}</span>
-              <span className="w-[38px] shrink-0 text-right tabular-nums text-muted">{shareText(s.share)}</span>
+              <span className="w-[38px] shrink-0 text-right tabular-nums text-muted">{pctOf(s.share)}</span>
             </>
           );
           const cls = `flex h-[22px] min-w-0 flex-1 items-center gap-1.5 rounded-[6px] px-1 text-caption`;
@@ -261,9 +267,9 @@ export function DonutChart({ items, format = PLAIN_FORMAT, scope, column = null,
             <li key={s.label} data-donut-legend-item={s.label} className={`flex items-center ${faded(s.label) ? "opacity-50" : ""}`} onMouseEnter={() => setHover(s.label)} onMouseLeave={() => setHover(null)}>
               {pinnable && <ColorSwatch column={s.identity!.column} value={s.identity!.value} label={s.label} color={s.color} />}
               {clickable ? (
-                <button type="button" className={`ui-focus ${cls} hover:bg-subtle`} aria-label={`${s.label}: ${formatValue(s.value, format, "full")}, ${shareText(s.share)}`} aria-pressed={selectedLabel === s.label} onClick={() => onItemClick!(s.label)}>{row}</button>
+                <button type="button" className={`ui-focus ${cls} hover:bg-subtle`} aria-label={`${s.label}: ${formatValue(s.value, format, "full")}, ${pctOf(s.share)}`} aria-pressed={selectedLabel === s.label} onClick={() => onItemClick!(s.label)}>{row}</button>
               ) : (
-                <div className={cls} role="group" aria-label={`${s.label}: ${formatValue(s.value, format, "full")}, ${shareText(s.share)}`}>{row}</div>
+                <div className={cls} role="group" aria-label={`${s.label}: ${formatValue(s.value, format, "full")}, ${pctOf(s.share)}`}>{row}</div>
               )}
             </li>
           );

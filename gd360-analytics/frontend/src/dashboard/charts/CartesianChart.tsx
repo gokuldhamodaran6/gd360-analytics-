@@ -56,19 +56,90 @@ const AXIS = "rgb(var(--chart-axis))";
 
 const DEFAULT_SIZE = { w: 560, h: 260 };
 
+// 2026-10-12 (round 38, team comments): a comment thread pinned to one
+// category of this chart (a bar, a day on a line). It is drawn as a small
+// avatar bubble over that category's mark - on the DATA, so it follows
+// the category when the chart is resized or re-sorted, and it is simply
+// not drawn when a filter leaves the category out (the card says so).
+export type ChartPin = {
+  key: string;
+  label: string;
+  initials: string;
+  count: number;
+  open: boolean;
+  active?: boolean;
+  title: string;
+  onClick: () => void;
+  // round 38: the author's colour; a comment still being written
+  color?: string;
+  pending?: boolean;
+};
+// A period the team marked as a one-off (an accepted comment suggestion):
+// a thin dashed rule with a "One-off" tag; the forecast leaves it out.
+export type ChartNote = { key: string; label: string };
+
+// Category values and pin keys are compared as text; a date matches on its
+// day (a pin stored as "2026-10-03" sits on "2026-10-03T00:00:00").
+export function sameKey(a: unknown, b: unknown): boolean {
+  const x = a === null || a === undefined ? "" : String(a), y = b === null || b === undefined ? "" : String(b);
+  if (x === y) return true;
+  return /^\d{4}-\d{2}-\d{2}/.test(x) && /^\d{4}-\d{2}-\d{2}/.test(y) && x.slice(0, 10) === y.slice(0, 10);
+}
+
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}/;
+const dayNum = (v: unknown): number | null => {
+  const t = v === null || v === undefined ? "" : String(v);
+  if (!ISO_DAY.test(t)) return null;
+  const ms = Date.parse(t.slice(0, 10) + "T00:00:00Z");
+  return Number.isFinite(ms) ? Math.round(ms / 86400000) : null;
+};
+
+// round 38: which of these values a comment pinned to `key` belongs to.
+// The exact value first; for dates, the bucket holding that day - a
+// comment on 27 Sep stays on the chart when it is drawn by week or month
+// (it sits on "Sep 2026"), and only goes "hidden" when the day really is
+// outside what is drawn.
+export function matchBucket(values: unknown[], key: unknown): number {
+  for (let i = 0; i < values.length; i++) if (sameKey(values[i], key)) return i;
+  const k = dayNum(key);
+  if (k === null) return -1;
+  const days: { i: number; d: number }[] = [];
+  for (let i = 0; i < values.length; i++) {
+    const d = dayNum(values[i]);
+    if (d === null) return -1;
+    days.push({ i, d });
+  }
+  if (days.length < 2) return -1;
+  days.sort((a, b) => a.d - b.d);
+  const gaps = days.slice(1).map((x, j) => x.d - days[j].d).filter((g) => g > 0).sort((a, b) => a - b);
+  const step = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 1;
+  if (step <= 1) return -1; // a daily chart: the day itself, or nothing
+  for (let j = days.length - 1; j >= 0; j--) {
+    if (days[j].d > k) continue;
+    const end = j + 1 < days.length ? days[j + 1].d : days[j].d + step;
+    return k < end ? days[j].i : -1;
+  }
+  return -1;
+}
+
 export type CartesianChartProps = {
   model: ChartModel;
   // The category the page is filtered to (the others dim), if any.
   selectedValue?: unknown;
   hasSelection?: boolean;
-  // A click (or Enter) on a category: cross-filtering.
-  onPick?: (value: unknown) => void;
+  // A click (or Enter) on a category: cross-filtering - or, while a
+  // comment is being placed, pinning it (then time categories count too).
+  onPick?: (value: unknown, label?: string) => void;
   title?: string;
   onExportApi?: (api: ChartExportApi | null) => void;
   minHeight?: number;
+  pins?: ChartPin[];
+  notes?: ChartNote[];
+  // While placing a comment: a crosshair cursor and the hover says so.
+  pinning?: boolean;
 };
 
-export function CartesianChart({ model, selectedValue, hasSelection = false, onPick, title, onExportApi, minHeight }: CartesianChartProps) {
+export function CartesianChart({ model, selectedValue, hasSelection = false, onPick, title, onExportApi, minHeight, pins, notes, pinning = false }: CartesianChartProps) {
   const [setRoot, root, size] = useBox(DEFAULT_SIZE);
   const theme = useChartTheme();
   const svgRef = useRef<SVGSVGElement>(null);
@@ -141,7 +212,7 @@ export function CartesianChart({ model, selectedValue, hasSelection = false, onP
       setActive((a) => (a === null ? (e.key === next ? 0 : scene.shown - 1) : Math.min(scene.shown - 1, Math.max(0, a + (e.key === next ? 1 : -1)))));
     } else if ((e.key === "Enter" || e.key === " ") && active !== null && onPick) {
       e.preventDefault();
-      onPick(model.categories[active].value);
+      onPick(model.categories[active].value, model.categories[active].label);
     } else if (e.key === "Escape" && active !== null) {
       setActive(null);
     }
@@ -206,6 +277,33 @@ export function CartesianChart({ model, selectedValue, hasSelection = false, onP
     tipY = Math.min(Math.max(anchorY - tipSize.h / 2, 0), Math.max(0, scene.height - tipSize.h));
   }
 
+  // Where each pinned thread and one-off sits (only categories drawn).
+  const indexOfKey = (key: string) => matchBucket(model.categories.slice(0, Math.min(scene.shown, model.categories.length)).map((c) => c.value), key);
+  const markEdge = (i: number): number | null => {
+    let edge: number | null = null;
+    for (const p of scene.panels) for (const ys of p.points) {
+      const v = ys[i];
+      if (v === null || v === undefined) continue;
+      edge = edge === null ? v : vertical ? Math.min(edge, v) : Math.max(edge, v);
+    }
+    return edge;
+  };
+  const placedPins = (pins || []).map((pin) => {
+    const i = indexOfKey(pin.key);
+    if (i < 0) return null;
+    const at = scene.positions[i];
+    const edge = markEdge(i);
+    const area = scene.area;
+    const x = vertical ? at : Math.min(scene.width - 14, Math.max(area.x + 14, (edge ?? area.x + area.w) + 16));
+    // the bubble hangs above the mark, kept inside the plot (never over the legend)
+    const y = vertical ? Math.max(area.y + 28, Math.min(area.y + area.h - 12, (edge ?? area.y + 20) - 6)) : at;
+    return { pin, x, y };
+  }).filter(Boolean) as { pin: ChartPin; x: number; y: number }[];
+  const placedNotes = vertical ? (notes || []).map((n) => {
+    const i = indexOfKey(n.key);
+    return i < 0 ? null : { note: n, x: scene.positions[i] };
+  }).filter(Boolean) as { note: ChartNote; x: number }[] : [];
+
   return (
     <div
       ref={setRoot}
@@ -225,14 +323,14 @@ export function CartesianChart({ model, selectedValue, hasSelection = false, onP
         role="img"
         aria-label={`${title ? `${title}. ` : ""}${model.summary}. ${scene.shown} ${model.time ? "periods" : "categories"}.`}
         tabIndex={0}
-        className={`ui-focus absolute left-0 top-0 block select-none rounded-[6px] ${onPick ? "cursor-pointer" : "cursor-default"}`}
+        className={`ui-focus absolute left-0 top-0 block select-none rounded-[6px] ${pinning ? "cursor-crosshair" : onPick ? "cursor-pointer" : "cursor-default"}`}
         style={{ fontFamily: "inherit", fontVariantNumeric: "tabular-nums", touchAction: "pan-y" }}
         onPointerMove={onMove}
         onPointerLeave={() => { setActive(null); setPointer(null); }}
         onClick={onPick ? (e) => {
           const box = e.currentTarget.getBoundingClientRect();
           const i = indexAt(e.clientX - box.left, e.clientY - box.top);
-          if (i !== null && !model.categories[i].future) onPick(model.categories[i].value);
+          if (i !== null && !model.categories[i].future) onPick(model.categories[i].value, model.categories[i].label);
         } : undefined}
         onKeyDown={onKey}
         onBlur={() => { setActive(null); setPointer(null); }}
@@ -331,6 +429,12 @@ export function CartesianChart({ model, selectedValue, hasSelection = false, onP
             {scene.divider.label && <text x={scene.divider.label.x} y={scene.divider.label.y} textAnchor={scene.divider.label.anchor} fontSize={TICK_SIZE} style={{ fill: SECONDARY }}>{scene.divider.label.text}</text>}
           </g>
         )}
+        {placedNotes.map(({ note, x }) => (
+          <g key={`note-${note.key}`} data-one-off={note.key}>
+            <line x1={x} y1={scene.area.y} x2={x} y2={scene.area.y + scene.area.h} strokeWidth={1} strokeDasharray="2 3" style={{ stroke: "rgb(var(--color-warning))" }} />
+            <text x={x + 4} y={scene.area.y + scene.area.h - 5} fontSize={TICK_SIZE} fontWeight={600} style={{ fill: "rgb(var(--color-warning))" }}>One-off<title>{`${note.label}: marked as a one-off by the team, left out of the forecast`}</title></text>
+          </g>
+        ))}
         {scene.captions.map((c, i) => (
           <text key={i} x={c.x} y={c.y} fontSize={TICK_SIZE} data-chart-caption="" style={{ fill: MUTED }}>
             {c.text}
@@ -345,6 +449,24 @@ export function CartesianChart({ model, selectedValue, hasSelection = false, onP
         <span key={`pin-${it.name}`} className="absolute z-[1] flex" style={{ left: it.x - 4, top: it.y - 1 }} data-no-drag="">
           <ColorSwatch column={it.identity!.column} value={it.identity!.value} label={it.name} color={it.color!} ghost />
         </span>
+      ))}
+      {placedPins.map(({ pin, x, y }) => (
+        <button
+          key={`pin-${pin.key}`}
+          type="button"
+          data-comment-pin={pin.key}
+          data-pin-active={pin.active ? "" : undefined}
+          data-no-drag=""
+          title={pin.title}
+          aria-label={pin.title}
+          onClick={(e) => { e.stopPropagation(); pin.onClick(); }}
+          data-pin-pending={pin.pending ? "" : undefined}
+          className={`gd-pin ui-focus absolute z-[3] ${pin.open ? "" : "gd-pin-resolved"} ${pin.active ? "gd-pin-active" : ""} ${pin.pending ? "gd-pin-pending" : ""}`}
+          style={{ left: x, top: y, ["--pin" as any]: pin.color || undefined }}
+        >
+          <span className="gd-pin-face">{pin.initials}</span>
+          {pin.count > 1 && <span className="gd-pin-count">{pin.count}</span>}
+        </button>
       ))}
       {active !== null && pos !== null && (
         <div
@@ -373,6 +495,7 @@ export function CartesianChart({ model, selectedValue, hasSelection = false, onP
             </div>
           ))}
           {tipNote && <div className="mt-1 max-w-[240px] whitespace-normal text-muted" data-tip-note="">{tipNote}</div>}
+          {pinning && <div className="mt-1 border-t border-subtle pt-1 font-medium text-brand-ink" data-tip-pin="">Click to comment on {model.categories[active].label}</div>}
         </div>
       )}
     </div>
