@@ -71,6 +71,8 @@ export type Spec = {
   conversion_column?: string | null;
   conversion_value?: string | null;
   text_column?: string | null;
+  /** round 39: the SQL data step the model learns from */
+  prep_sql?: string | null;
   label_column?: string | null;
   tags?: string[] | null;
   fields?: string[] | null;
@@ -112,6 +114,12 @@ export type Plan = {
   joins?: PlanJoin[];
   target?: string;
   label?: { classes?: string[]; positive?: string; [k: string]: unknown };
+  // round 39
+  train_rows?: number;
+  checked_rows?: number;
+  data?: { how?: string; budget?: RunData["budget"]; prep?: RunData["prep"]; sample?: RunData["sample"] };
+  needs_prep?: PrepHint | null;
+  prep_hint?: PrepHint | null;
 };
 
 export type JoinCandidate = {
@@ -152,7 +160,76 @@ export type JoinPreview = {
   text: string;
 };
 
-export type Stage = { id: string; title: string; status: "pending" | "running" | "done"; note: string };
+// ---- round 39: what each stage carries for the run page ----
+
+export type CodeEntry = { title: string; lang: "sql" | "python" | "json"; engine?: string; code: string; rows?: number | null; seconds?: number | null; editable?: boolean };
+
+export type VisualItem = { label: string; value?: number | string | null; values?: (number | null)[]; note?: string; tone?: "good" | "bad" };
+
+export type Visual =
+  | { type: "funnel"; title?: string; items: VisualItem[]; note?: string }
+  | { type: "kpis"; title?: string; items: VisualItem[] }
+  | { type: "bars"; title?: string; items: VisualItem[]; series?: string[]; unit?: string; format?: "score" | "share" }
+  | { type: "columns"; title?: string; items: VisualItem[] }
+  | { type: "split"; title?: string; items: VisualItem[] }
+  | { type: "histogram"; title?: string; bins: { x0: number; x1: number; count: number }[] }
+  | { type: "table"; title?: string; columns: string[]; rows: (string | number | null)[][] }
+  | { type: "note"; title?: string; text: string };
+
+export type StagePreview = { columns: string[]; rows: unknown[][]; total_columns: number };
+
+export type Stage = {
+  id: string;
+  title: string;
+  status: "pending" | "running" | "done";
+  note: string;
+  code?: CodeEntry[];
+  visual?: Visual[];
+  preview?: StagePreview;
+  seconds?: number;
+  started?: number;
+};
+
+export type RunData = {
+  source?: { name: string; table: string; kind: string; mode: "snapshot" | "live"; how: string; reused: boolean; build_seconds: number; rows: number };
+  rows_total?: number;
+  rows_used?: number;
+  columns?: number;
+  sample?: { strategy: string; text: string; balance?: { value: string; total: number; used: number }[] | null };
+  budget?: { rows: number; free_mb: number; bytes_per_row: number; reason: string; factor: number };
+  prep?: { rows: number; columns: string[] } | null;
+  seconds?: number;
+};
+
+export type Scoring = {
+  state: "queued" | "running" | "done" | "failed" | "cancelled";
+  done?: number;
+  total?: number | null;
+  rows?: number;
+  version_id?: string;
+  version_name?: string;
+  seconds?: number;
+  error?: string;
+};
+
+export type QueueInfo = { state: string; position: number; running?: number; mode?: string; attempts?: number; note?: string | null };
+
+export type PrepCheck = {
+  ok: boolean;
+  sql: string;
+  error?: string;
+  rows?: number;
+  source_rows?: number;
+  columns?: { name: string; type: string }[];
+  preview?: StagePreview;
+  explain?: string;
+  attempts?: { sql: string; ok: boolean; error?: string | null }[];
+  healed?: boolean;
+};
+
+export type PrepHint = { entity: string; noun: string; rows: number; entities: number; per: number; text: string; request: string };
+
+export type Engine = { mode: string; queued: number; running: number; memory_free_mb: number; process_mb: number; max_rows: number; seed: number };
 
 export type BoardRow = {
   algorithm: string;
@@ -182,6 +259,9 @@ export type Progress = {
   current?: string | null;
   split?: string;
   joins?: (Partial<JoinInfo> & { table: string; match_rate: number })[];
+  data?: RunData;
+  scoring?: Scoring;
+  retry_note?: string;
 };
 
 // ---- generic results (round 15) ----
@@ -252,9 +332,10 @@ export type StudioProject = {
   results?: any;
   features?: string[] | null;
   excluded?: { column: string; reason: string }[] | null;
+  queue?: QueueInfo | null;
 };
 
-export type Limits = { max_rows: number; trials: number; tune_seconds: number; workers: number };
+export type Limits = { max_rows: number; trials: number; tune_seconds: number; workers: number; mode?: string };
 
 export const mlStudioApi = {
   types: (spaceId?: string | null) =>
@@ -294,8 +375,17 @@ export const mlStudioApi = {
   list: () => api.get<{ projects: StudioProject[] }>("/ml-studio/projects").then((r) => r.data.projects),
   get: (id: string) => api.get<StudioProject>(`/ml-studio/projects/${id}`).then((r) => r.data),
   stop: (id: string) => api.post(`/ml-studio/projects/${id}/stop`).then((r) => r.data),
-  retrain: (id: string) => api.post(`/ml-studio/projects/${id}/retrain`).then((r) => r.data),
+  retrain: (id: string, prep_sql?: string | null) =>
+    api.post(`/ml-studio/projects/${id}/retrain`, prep_sql === undefined ? {} : { prep_sql: prep_sql ?? "" }, { timeout: 120000 }).then((r) => r.data),
   score: (id: string) => api.post<{ new_version_id: string; new_version_name: string; row_count: number }>(`/ml-models/${id}/score`, {}).then((r) => r.data),
+  // round 39: score every row on the ML worker (progress lands on the project)
+  scoreJob: (id: string) => api.post<{ id: string; job_id: string; state: string }>(`/ml-studio/projects/${id}/score`, {}).then((r) => r.data),
+  scoreStop: (id: string) => api.post(`/ml-studio/projects/${id}/score/stop`).then((r) => r.data),
+  prepareCheck: (spec: Spec, sql: string) => api.post<PrepCheck>("/ml-studio/prepare/check", { spec, sql }, { timeout: 180000 }).then((r) => r.data),
+  prepareSuggest: (spec: Spec, request: string) =>
+    api.post<PrepCheck>("/ml-studio/prepare/suggest", { spec, request }, { timeout: 240000 }).then((r) => r.data),
+  notebook: (id: string) => api.get(`/ml-studio/projects/${id}/notebook`, { responseType: "blob" }).then((r) => r.data as Blob),
+  engine: () => api.get<Engine>("/ml-studio/engine").then((r) => r.data),
   remove: (id: string) => api.delete(`/ml-models/${id}`),
 };
 
@@ -371,7 +461,7 @@ function pct(v: unknown, digits = 0): string {
 
 export function metricLine(p: StudioProject): string {
   const m = p.metrics || {};
-  if (p.status === "training") return "Training…";
+  if (p.status === "training") return p.queue?.state === "queued" ? `Queued · ${(p.queue.position || 0) + 1} in line` : "Training…";
   if (p.status === "failed") return p.error || "Couldn't train";
   // round 15: the presented first KPI, when the project carries results
   const k0 = p.results?.kpis?.[0];

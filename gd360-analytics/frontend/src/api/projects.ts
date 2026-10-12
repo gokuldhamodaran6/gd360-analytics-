@@ -370,13 +370,16 @@ export type CheckOption = {
 };
 export type CheckIssue = {
   id: string;
-  kind: "year_typo" | "month_typo" | "future_year" | "forecast_year" | "choose" | "swap" | "confirm_pick" | "cant_answer";
+  kind: "year_typo" | "month_typo" | "future_year" | "forecast_year" | "choose" | "swap" | "confirm_pick" | "cant_answer" | "account";
   title: string; text: string; options: CheckOption[]; multi?: boolean; said?: string; fix?: { from: string }; suggested?: string;
+  source_id?: string; source_name?: string; noun?: string;
 };
 export type CheckCandidate = {
   id: string; name: string; kind: string; label: string; freshness?: string; fit: string; why: string; says?: string;
   coverage?: { start: string; end: string; text: string } | null; date_column?: string | null; measures?: string[];
   table?: string | null; named?: boolean; score: number;
+  /** round 38c: a synced app that only sent its page / account list - no posts, no daily numbers */
+  empty?: boolean; holds?: string;
 };
 export type QuestionCheck = {
   question: string; ready: boolean; what?: string; topic?: string | null; period: CheckPeriod | null;
@@ -385,7 +388,11 @@ export type QuestionCheck = {
   connect?: { kind: string; label: string; url: string }[]; sources_considered?: number; skipped?: boolean;
   forecast?: boolean;
 };
-export type RunBrief = { period?: CheckPeriod | null; restated?: string | null; notes?: string[]; forecast?: boolean };
+export type RunBrief = {
+  period?: CheckPeriod | null; restated?: string | null; notes?: string[]; forecast?: boolean;
+  // round 38c: the pages / accounts the person picked ("" values = every account, side by side)
+  accounts?: { source_id: string; source_name?: string; values: string[] } | null;
+};
 
 export const projectsApi = {
   check: (payload: { question: string; source_ids?: string[]; space_id?: string; workspace_id?: string; accepted?: string[] }) =>
@@ -495,7 +502,14 @@ export type AppStatus = {
   sync_error: string | null;
   syncing: boolean;
   tables: { name: string; rows: number; synced_at: string }[];
+  // round 38c: what came back at the last sync and what the app refused, per account
+  sync_report?: SyncReport | null;
 };
+export type SyncReportAccount = {
+  id: string; name: string | null; followers: number | null; posts: number | null; lifetime_posts: number | null;
+  latest_post: string | null; ok: string[]; missing: { what: string; why: string }[]; note?: string;
+};
+export type SyncReport = { at: string; headline: string; accounts: SyncReportAccount[]; problems: string[] };
 
 export const appsApi = {
   list: () => api.get<AppInfo[]>("/apps").then((r) => r.data),
