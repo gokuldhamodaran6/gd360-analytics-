@@ -203,6 +203,7 @@ export const KIND_TILE: Record<string, { m: string; c: string; t: string }> = {
   stripe: { m: "St", c: "#635BFF", t: "#FFFFFF" },
   hubspot: { m: "Hs", c: "#FF5C35", t: "#FFFFFF" },
   klaviyo: { m: "Kl", c: "#1F1F1F", t: "#FFFFFF" },
+  whatsapp_business: { m: "Wa", c: "#1FA855", t: "#FFFFFF" },
   shopify: { m: "Sh", c: "#5E8E3E", t: "#FFFFFF" },
   ga4: { m: "G4", c: "#E8710A", t: "#FFFFFF" },
   meta_ads: { m: "Ma", c: "#1668E3", t: "#FFFFFF" },
