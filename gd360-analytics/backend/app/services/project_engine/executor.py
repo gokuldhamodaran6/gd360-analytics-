@@ -157,10 +157,17 @@ def plan_run(db: Session, run_id: str) -> None:
         # period in dates, the read-back) travels with the question
         from ..question_check import planner_context
         brief = (run.plan or {}).get("brief") if isinstance(run.plan, dict) else None
-        plan = planner.make_plan(run.question + planner_context(brief), catalog, _history(db, run), note=run.note,
+        # round 32: slipped words read as meant ("forcast" -> forecast), and a forecast of a year that has
+        # already gone ("2016 forcast") read as the coming one when nothing was agreed before planning
+        asked, read_as = _read_question(run.question, brief)
+        if read_as.get("brief"):
+            brief = read_as["brief"]
+        plan = planner.make_plan(asked + planner_context(brief), catalog, _history(db, run), note=run.note,
                                  previous=previous, guided=guided)
         if brief:
             plan["brief"] = brief
+        if read_as.get("assumptions"):
+            plan["assumptions"] = read_as["assumptions"] + list(plan.get("assumptions") or [])
     except planner.PlanningError as e:
         run.status = "failed"
         run.error_message = str(e)
@@ -175,11 +182,13 @@ def plan_run(db: Session, run_id: str) -> None:
     run.plan = plan
     run.steps = initial_steps(plan)
     if not plan.get("can_answer", True):
+        # round 32: never a dead end - what the data CAN answer that comes closest, as one-tap choices
         run.status = "needs_input"
         run.result = {"answer": {
-            "headline": "These sources can't answer that yet.",
+            "headline": "I can't answer that from this data yet.",
             "answer": plan.get("missing") or "The data needed for this question is not in the project's sources.",
             "causes": [], "ruled_out": [], "next_questions": [],
+            "options": ways_forward(plan, run.question),
         }}
         run.finished_at = datetime.utcnow()
         _assistant_message(db, run, run.result["answer"])
@@ -210,6 +219,46 @@ def plan_run(db: Session, run_id: str) -> None:
         return
     if run.auto_run:
         execute_run(db, run_id)
+
+
+def _read_question(question: str, brief: dict | None) -> tuple[str, dict]:
+    """The question as the planner reads it (round 32): intent words with an obvious slip read as meant,
+    and - only when nothing was agreed before planning - a forecast for a year already gone read as the
+    coming one ("2016 forcast in sales" -> 2026), said in the plan's assumptions."""
+    from datetime import date as _date
+    from .. import question_check as qc
+    fixed, fixes = qc.read_typos(question)
+    out: dict = {}
+    notes = [f"Read “{a}” as “{b}”." for a, b in list(fixes.items())[:2]]
+    if not (brief or {}).get("period") and qc.wants_forecast(fixed):
+        today = _date.today()
+        period, _ = qc.parse_period(fixed, today)
+        said = qc._said_year(fixed, period) if period and not period.get("parts") else None  # noqa: SLF001
+        if said:
+            issue = qc._forecast_year_issue(said, qc.forecast_span(period, today), [], today, set(), "")  # noqa: SLF001
+            if issue:
+                meant = issue["suggested"]
+                fixed = re.sub(rf"\b{said}\b", meant, fixed)
+                p2, _ = qc.parse_period(fixed, today)
+                if p2:
+                    out["brief"] = {"period": qc.forecast_span(p2, today), "forecast": True}
+                notes.append(f"Read {said} as {meant}: a forecast looks ahead, and {said} has already happened.")
+    if notes:
+        out["assumptions"] = notes
+    return fixed, out
+
+
+def ways_forward(plan: dict, question: str) -> list[dict]:
+    """The closest questions the sources CAN answer (round 32) - from the planner's own alternatives,
+    plus connecting data that has what's missing."""
+    out: list[dict] = []
+    for q in plan.get("alternatives") or []:
+        q = re.sub(r"\s+", " ", str(q or "")).strip()
+        if 4 <= len(q) <= 140 and q.lower() != (question or "").strip().lower() and q not in [o["question"] for o in out]:
+            out.append({"id": f"alt{len(out) + 1}", "label": q, "question": q, "kind": "ask"})
+    out = out[:3]
+    out.append({"id": "connect", "label": "Connect data that has it", "href": "/data?tab=catalog", "kind": "connect"})
+    return out
 
 
 # ---- loading data for DuckDB sources -----------------------------------------
@@ -473,6 +522,14 @@ def analyse(plan: dict, tables: dict, steps: list[dict], question: str = "") -> 
         last = (plan.get("combine") or plan.get("steps") or [{}])[-1].get("id")
         fallback_table = last if last in tables else next(iter(tables))
         analysis = run_analysis({"type": "lookup", "table": fallback_table}, tables)
+    # 2026-10-12 (round 32): a question about the future gets a forecast - from the history the plan
+    # fetched, for exactly the period asked - never the history alone (project_engine/forecasting.py)
+    try:
+        from . import forecasting
+        forecasting.attach(analysis, plan, tables, question)
+    except Exception as e:  # noqa: BLE001 - the forecast never fails an answer
+        print(f"[project_engine] forecast skipped: {e}")
+        analysis.setdefault("warnings", []).append("The forecast could not be computed this time; showing the history.")
     warnings += analysis.get("warnings") or []
     currency = spec.get("currency") if spec.get("format") == "currency" else (spec.get("currency") or "USD")
     try:

@@ -42,6 +42,16 @@ Rules:
   (4,122), rates with one decimal (41.7%). Never copy a long decimal from a table.
 - A cause's fact_ids are only the facts whose numbers that cause states.
 - When the question asks for the lowest / worst / weakest, lead with the lowest.
+- FORECASTS: when ANALYSIS SUMMARY has "forecast" with status "ok", the person asked about
+  the future. Lead with the forecast for the asked period and its likely range (the 80%
+  facts) and say plainly it is a forecast built from the history ("history" says which).
+  Compare it with the last actual period when a fact gives that. Say how sure it is in
+  one short clause: certainty "tested" -> the model's typical error from the facts;
+  "long-range" -> a long-range projection whose range widens every year; "rough" -> a
+  rough straight-line trend; "untested" -> too little history to test it. Never answer
+  a forecast question with history alone. If "forecast" has status "refused", say why
+  in one sentence and what would make a forecast possible. Suggest follow-ups such as
+  the forecast by month, what drives it, or how sure it is.
 - Never mention SQL, tables, steps, facts or ids in the text.
 - Short sentences. No hedging filler.
 
@@ -122,6 +132,15 @@ def claim_problems(draft: dict, analysis: dict) -> list[str]:
     ranks lowest / highest. A breakdown knows its ranking; a headline that
     names another segment as the extreme is sent back."""
     s = analysis.get("summary") or {}
+    fs = s.get("forecast") or {}
+    if analysis.get("type") == "forecast" and fs.get("status") == "ok":
+        # round 32: the headline of a forecast answer states the forecast itself
+        main = next((f for f in analysis.get("facts") or [] if f["id"] == (fs.get("fact_ids") or {}).get("main")), None)
+        from .numbers import _matches, extract_numbers
+        if main and main.get("value") is not None and not any(
+                _matches(v, [main["value"]]) for _t, v, pct in extract_numbers(draft.get("headline") or "") if not pct):
+            return [f"the headline must state the forecast for {fs.get('target')}: {main['display']}"]
+        return []
     if analysis.get("type") not in ("breakdown", "comparison") or not s.get("segments"):
         return []
     names = [x["segment"] for x in s["segments"]] + [x["segment"] for x in s.get("per_year") or []]
@@ -204,6 +223,27 @@ def fallback_answer(question: str, analysis: dict) -> dict:
             if low and low.get("segment") != top.get("segment"):
                 lv, _ = said(low)
                 answer += f" The lowest is {low['segment']} at {lv}{per}."
+    elif atype == "forecast" and (s.get("forecast") or {}).get("status") == "ok":
+        fs = s["forecast"]
+        ids = fs.get("fact_ids") or {}
+        d = lambda k: (facts.get(ids.get(k)) or {}).get("display")  # noqa: E731
+        headline = f"{fs['metric']} is forecast at {d('main')} for {fs['target']} (likely {d('lo')} – {d('hi')})"
+        if ids.get("pct") and fs.get("vs"):
+            headline += f", {d('pct')} on {fs['vs']['label']}"
+        headline += "."
+        sure = {"tested": f" In testing on past periods it was typically within {d('mape')}." if ids.get("mape") else "",
+                "long-range": " The later years are a long-range projection, so their range widens every year.",
+                "rough": " There was too little pattern in the history for a full model, so this is a rough straight-line trend.",
+                "untested": " There was too little history to test it."}.get(fs.get("certainty"), "")
+        answer = f"{headline} Built from {fs.get('history')}.{sure}"
+        if ids.get("total"):
+            answer += f" Over the whole period that adds up to {d('total')}."
+        return {"headline": headline, "answer": answer, "causes": [], "ruled_out": [],
+                "next_questions": [f"Forecast {fs['target']} by month", f"What drives the {fs['metric'].lower()} forecast?",
+                                   "How sure is this forecast?"], "written_by": "template"}
+    elif (s.get("forecast") or {}).get("status") == "refused":
+        headline = f"I couldn't forecast this yet: {s['forecast']['reason']}"
+        answer = headline
     else:
         kpis = [f for f in analysis.get("facts") or []][:3]
         headline = "; ".join(f"{k['label']}: {k['display']}" for k in kpis) or "Here is the result."

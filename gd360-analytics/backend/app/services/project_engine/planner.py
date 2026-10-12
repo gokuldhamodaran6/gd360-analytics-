@@ -79,6 +79,15 @@ Months or weekdays compared across several years: return the year column too (or
 add years_covered = COUNT(DISTINCT year) per month), because the first and last
 year of data are often partial. Say in "assumptions" when they are.
 For "lowest / worst / weakest" questions set analysis.rank to "lowest".
+
+Forecasts and the future ("forecast 2026", "what will sales be next year", "the next
+10 years", a period the data doesn't reach yet): GD360 computes the forecast itself,
+with a statistical model, from the history you fetch. So fetch the metric's FULL history
+aggregated BY MONTH - every month in the data, never filtered to the future period (it has
+no rows yet) - as one step with a month column and one value column, and use analysis type
+"trend" with that month as time_column. Never estimate future values in SQL, and never set
+can_answer to false only because the future period has no rows. Read slips kindly:
+"forcast" means forecast, "trnd" means trend.
 Do not add helper sort columns (month_num, sort_order) to the analysis table -
 GD360 orders months and weekdays itself.
 
@@ -89,6 +98,7 @@ Answer with JSON only, in exactly this shape:
   "title": "short title for the project (max 60 characters)",
   "can_answer": true,
   "missing": "",
+  "alternatives": [],
   "understanding": {{"metric": "...", "window": "...", "method": "...", "scope": "..."}},
   "assumptions": ["each assumption you made, one sentence each"],
   "steps": [
@@ -120,7 +130,10 @@ Fields of "analysis" by type:
 - breakdown: table, dimension_column, value_column, metric_name, format, chart_type.
 - lookup / list: table, chart_type.
 If the sources cannot answer the question, set can_answer to false, explain in
-"missing" what data would be needed, and return empty steps.
+"missing" (one or two plain sentences) what data would be needed, return empty steps, and
+give "alternatives": up to 3 short questions these sources CAN answer that come closest
+(the same metric for a period the data has, the nearest column it does have, a forecast),
+each written the way the person would ask it.
 At most {MAX_STEPS} steps and {MAX_COMBINE} combine steps."""
 
 
@@ -210,6 +223,8 @@ def validate_plan(raw: dict, catalog: Catalog) -> tuple[dict, list[str]]:
         "title": str(raw.get("title") or "")[:80].strip(),
         "can_answer": raw.get("can_answer", True) is not False,
         "missing": str(raw.get("missing") or "").strip(),
+        # round 32: what the sources CAN answer instead, when they can't answer this
+        "alternatives": [str(a).strip()[:140] for a in (raw.get("alternatives") or []) if isinstance(a, str) and str(a).strip()][:3],
         "understanding": raw.get("understanding") if isinstance(raw.get("understanding"), dict) else {},
         "assumptions": [str(a).strip() for a in (raw.get("assumptions") or []) if str(a).strip()][:8],
         "steps": [],
