@@ -19,7 +19,22 @@ import { Link } from "react-router-dom";
 // (/v/:id). Its own look: the Euliv orb.
 export type Kind = "answer" | "analysis" | "dashboard" | "talk";
 
-export const KIND_LABEL: Record<Kind, string> = { answer: "Answer", analysis: "Analysis", dashboard: "Dashboard", talk: "Talk" };
+export const KIND_LABEL: Record<Kind, string> = { answer: "Quick answer", analysis: "Analysis", dashboard: "Dashboard", talk: "Talk" };
+
+/** What Library and Home call each kind - the words on Home's switch ("Quick answer", "Guided"). */
+export const LIBRARY_LABEL: Record<"answer" | "analysis" | "talk", { one: string; many: string }> = {
+  answer: { one: "Quick answer", many: "Quick answers" },
+  analysis: { one: "Analysis", many: "Analyses" },
+  talk: { one: "Talk", many: "Talks" },
+};
+
+/** The pill on a Library / Home row: "Quick answer", "Guided" (a Guided Analysis) or "Analysis" (an older one). */
+export function conversationLabel(c: { kind?: string | null }): string {
+  if (c.kind === "project") return "Quick answer";
+  if (c.kind === "guided") return "Guided";
+  if (c.kind === "voice") return "Talk";
+  return "Analysis";
+}
 
 // Full class strings (never assembled) so Tailwind's scanner keeps them.
 const PILL: Record<Kind, string> = {
@@ -83,20 +98,21 @@ export function KindIcon({ kind, size = 16, className = "" }: { kind: Kind; size
     "aria-hidden": true,
     className,
   };
+  // 2026-10-12 (round 34): the same marks as Home's "Quick answer | Guided" switch (thread/parts
+  // BoltIcon / StepsIcon), so a thing looks the same where it is asked and where it is kept
   if (kind === "answer") {
     return (
       <svg {...common}>
-        <circle cx="12" cy="12" r="9" />
-        <path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3" />
-        <path d="M12 17h.01" />
+        <path d="M13 2 4 14h7l-1 8 9-12h-7z" />
       </svg>
     );
   }
   if (kind === "analysis") {
     return (
       <svg {...common}>
-        <path d="M4 20h16" />
-        <path d="M6 16l4-6 4 3 4-7" />
+        <circle cx="5" cy="6" r="2" />
+        <circle cx="5" cy="18" r="2" />
+        <path d="M5 8v8M10 6h10M10 12h7M10 18h10" />
       </svg>
     );
   }
