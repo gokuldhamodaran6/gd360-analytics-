@@ -1240,6 +1240,8 @@ def _plan_block_view(b: dict) -> dict:
     spec = b.get("spec") or {}
     if b["type"] in ("kpi", "sparkline"):
         how = "KPI with trend" if spec.get("sparkline") or spec.get("compare_prior_period") else "KPI"
+        if (b.get("recipe") or {}).get("agg") == "ratio":
+            how = f"Rate · {b.get('why') or ''}".rstrip(" ·")
         visual = "kpi"
     elif b["type"] == "donut" or b.get("chart_type") in ("pie", "donut"):
         how, visual = "Donut", "donut"
@@ -1266,6 +1268,8 @@ def _plan_out(p: dict) -> dict:
         for b in pg["blocks"]:
             if b["status"] == "ok":
                 blocks.append(_plan_block_view(b))
+                for d in b.get("dropped") or []:
+                    skipped.append({"title": f'{d["measure"]} (from "{b["title"]}")', "reason": d["reason"][:1].upper() + d["reason"][1:] + "."})
             else:
                 skipped.append({"title": b["title"], "reason": b.get("error") or "It could not be built on this data."})
         if blocks:

@@ -913,6 +913,37 @@ def _kpi_trend(df: pd.DataFrame, recipe: dict, metric_column: str | None, agg_fu
     return points if len(points) > 1 else None
 
 
+def _run_ratio_kpi(df: pd.DataFrame, recipe: dict, block_type: str) -> tuple[str, dict, str]:
+    """2026-10-12 (round 37): a rate KPI - SUM(numerator) / SUM(denominator) over the rows in view
+    (GA4 engagement rate = engaged_sessions / sessions). Never an average of per-row rates, which
+    weighs a day with 2 sessions like a day with 2,000. The value is a fraction (0.237 = 23.7%)."""
+    num, den = recipe.get("metric_column"), recipe.get("denominator_column")
+    for c in (num, den):
+        if not c or c not in df.columns:
+            raise ValueError(f'Column "{c}" was not found in this data.')
+    n = pd.to_numeric(df[num], errors="coerce").sum()
+    d = pd.to_numeric(df[den], errors="coerce").sum()
+    value = float(n / d) if d else None
+    label = str(recipe.get("label") or f"{num} / {den}")
+    shaped = _kpi_or_gauge_config(value, block_type, label, recipe, recipe.get("target_value"), recipe.get("max_value"))
+    shaped[1]["format"] = "percent"
+    if block_type == "kpi" and recipe.get("trend_column") in df.columns:
+        try:
+            bucketed = _bucket_dates(df[recipe["trend_column"]], recipe.get("trend_grain") or "month")
+            if bucketed is not None:
+                g = df.groupby(bucketed, sort=True)
+                sums_n = g[num].sum()
+                sums_d = g[den].sum()
+                pts = [float(a / b) for a, b in zip(sums_n.tolist(), sums_d.tolist()) if b]
+                pts = pts[-_KPI_SPARKLINE_MAX_POINTS:]
+                if len(pts) > 1:
+                    shaped[1]["sparkline"] = pts
+                    shaped[1]["sparkline_grain"] = str(recipe.get("trend_grain") or "month")
+        except Exception as e:  # noqa: BLE001
+            print(f"[dashboard_builder] ratio KPI trend skipped: {e}")
+    return shaped
+
+
 def _run_histogram_recipe(df: pd.DataFrame, recipe: dict) -> tuple[str, dict, str]:
     """A histogram of one numeric column of a FILE - the same round bin
     edges a warehouse block gets (query_builder.histogram_edges, from the
@@ -1007,6 +1038,8 @@ def _run_manual_recipe(df: pd.DataFrame, recipe: dict, existing_title: str | Non
     if block_type in ("table", "chart") and (recipe.get("measures") or len(recipe.get("group_by") or []) > 1):
         return _run_grouped_measures(df, recipe, existing_title)
 
+    if agg == "ratio" and block_type in ("kpi", "gauge"):
+        return _run_ratio_kpi(df, recipe, block_type)
     if agg not in _MANUAL_AGG_FUNCS:
         raise ValueError("Unknown aggregation.")
     # `count_rows`: a count with no column of its own (a proposal's
@@ -2390,7 +2423,7 @@ def _decorate_file_time_series(block_type: str, config):
         out = dict(config)
         if partial.get("first") or partial.get("last"):
             out["partial"] = partial
-        options = forecast_svc.normalize_options(config.get("forecast"), grain) if config.get("forecast") else None
+        options = forecast_svc.normalize_options(forecast_svc.with_one_offs(config.get("forecast"), config), grain) if config.get("forecast") else None
         if options:
             key = forecast_svc.fingerprint("file", rows, layout, options, config.get("time_bounds"))
             cached = dashboard_engine._forecast_cache.get(key)
@@ -2615,10 +2648,25 @@ def _annotate_pages(db: Session, d: models.Dashboard, pages_out: list, base_ds) 
         if pds is not None:
             po.datasource_id, po.datasource_name, po.datasource_kind = pds.id, pds.name, pds.kind
             po.warehouse_native = dashboard_engine.is_warehouse_native(pds)
-            seen.setdefault(pds.id, {"id": pds.id, "name": pds.name, "kind": pds.kind, "live": is_live(pds.kind)})
+            seen.setdefault(pds.id, {"id": pds.id, "name": pds.name, "kind": pds.kind, "live": is_live(pds.kind),
+                                     "synced_at": _synced_at(pds), "synced": _is_synced(pds)})
     if base_ds is not None and base_ds.id not in seen and not pages_out:
-        seen[base_ds.id] = {"id": base_ds.id, "name": base_ds.name, "kind": base_ds.kind, "live": is_live(base_ds.kind)}
+        seen[base_ds.id] = {"id": base_ds.id, "name": base_ds.name, "kind": base_ds.kind, "live": is_live(base_ds.kind),
+                            "synced_at": _synced_at(base_ds), "synced": _is_synced(base_ds)}
     return list(seen.values())
+
+
+def _is_synced(ds) -> bool:
+    from ..services.synced_sources import SYNCED_KINDS
+    return getattr(ds, "kind", None) in SYNCED_KINDS
+
+
+def _synced_at(ds) -> str | None:
+    """Round 37: when a synced app's tables were last brought in (its numbers are as of then)."""
+    from ..services.synced_sources import SYNCED_KINDS
+    if getattr(ds, "kind", None) in SYNCED_KINDS and getattr(ds, "last_synced_at", None):
+        return ds.last_synced_at.isoformat() + "Z"
+    return None
 
 
 def _refresh_fields(d: models.Dashboard) -> dict:
@@ -2634,6 +2682,16 @@ def _builder_out(db: Session, d: models.Dashboard, user: models.User) -> schemas
     share = d.share
     ds = _dashboard_datasource(db, d)
     sources = _annotate_pages(db, d, pages, ds)
+    # round 37: per-day users said for what they are; zero / duplicate measures hidden
+    if ds is not None and not dashboard_engine.is_warehouse_native(ds):
+        for po in pages:
+            if getattr(po, "datasource_id", None) and po.datasource_id != ds.id:
+                continue
+            for b in po.blocks:
+                extra = _view_semantics(ds, b.type, b.config or {}, b.title)
+                if extra:
+                    b.config = {**(b.config or {}), **extra}
+    parameter_scope = _parameter_scope(ds, d, pages)
     # 2026-09-29 (design revamp): "from which project this dashboard
     # created" + "merge with other dashboards in the same project" - see
     # DashboardBuilderOut's own field comments for exactly what each of
@@ -2688,6 +2746,7 @@ def _builder_out(db: Session, d: models.Dashboard, user: models.User) -> schemas
         **_appearance_fields(db, d, ds),
         **_merged_tables(db, d, ds, pages),
         sources=sources,
+        parameter_scope=parameter_scope,
         **_refresh_fields(d),
     )
 
@@ -3628,7 +3687,7 @@ def _computed_summary(config: dict) -> dict:
 
 # round 36: what a block keeps when its data is recomputed (a refresh, a filter): where it came
 # from, which table it reads, its colour. _run_manual_recipe returns a fresh config without them.
-_CARRIED_BLOCK_KEYS = ("origin", "source_table", "accent_color")
+_CARRIED_BLOCK_KEYS = ("origin", "origin_question", "note", "source_table", "accent_color", "format")
 
 
 def carry_block_meta(old_config: dict | None, new_config: dict) -> dict:
@@ -3637,6 +3696,165 @@ def carry_block_meta(old_config: dict | None, new_config: dict) -> dict:
         if old_config.get(k) is not None and new_config.get(k) is None:
             new_config[k] = old_config[k]
     return new_config
+
+
+# ===================================================================== round 37: measure sense
+# A pre-aggregated app table (GA4 traffic_daily) holds users PER ROW (per day x channel x device x
+# country): summing them counts a returning visitor once per row, so the total reads like sessions.
+# Such a column is never summed silently - it is labelled, and left out of a chart next to a measure
+# that adds up properly.
+_NON_ADDITIVE_COL = re.compile(r"(^|_)(total_users|new_users|active_users|users|visitors|unique_[a-z_]+|returning_users)$", re.I)
+NON_ADDITIVE_NOTE = ("Users are counted per day in this data, so this adds up days: a visitor who came on 3 days "
+                     "counts 3 times. It is higher than the number of different people.")
+
+
+def _is_non_additive(ds, column: str | None, agg: str | None = "sum") -> bool:
+    if not column or (agg or "sum") != "sum":
+        return False
+    from ..services.synced_sources import SYNCED_KINDS
+    return getattr(ds, "kind", None) in SYNCED_KINDS and bool(_NON_ADDITIVE_COL.search(str(column)))
+
+
+def _humanize_col(name: str) -> str:
+    return str(name or "").replace("_", " ").strip().capitalize()
+
+
+def _measure_values(computed: dict, alias: str) -> list[float]:
+    rows = computed.get("result_rows") if computed.get("result_rows") is not None else computed.get("rows")
+    out = []
+    for r in rows or []:
+        if isinstance(r, dict):
+            v = r.get(alias)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v:
+                out.append(float(v))
+    return out
+
+
+def _prune_measures(ds, recipe: dict, public: dict, computed: dict, title: str) -> dict | None:
+    """Which measures of a multi-measure block should not be drawn, and the block without them:
+    a measure that is 0 everywhere (GA4 purchase_revenue with no e-commerce) next to real ones, a
+    per-row users count next to a measure that adds up, and a measure whose line would sit right on
+    top of another one's. Returns {recipe, public, title, dropped} or None when nothing changes."""
+    measures = [m for m in (recipe.get("measures") or []) if isinstance(m, dict)]
+    if len(measures) < 2:
+        return None
+    vals = {m["alias"]: _measure_values(computed, m["alias"]) for m in measures if m.get("alias")}
+    nonzero = {a for a, v in vals.items() if any(abs(x) > 1e-12 for x in v)}
+    dropped: list[dict] = []
+    keep = []
+    for m in measures:
+        a = m.get("alias")
+        if a not in nonzero and nonzero:
+            dropped.append({"measure": _humanize_col(m.get("column") or a), "reason": "it is 0 in every row"})
+            continue
+        keep.append(m)
+    additive = [m for m in keep if not _is_non_additive(ds, m.get("column"), m.get("agg"))]
+    if additive and len(additive) < len(keep):
+        for m in keep:
+            if m not in additive:
+                dropped.append({"measure": _humanize_col(m.get("column") or m.get("alias")),
+                                "reason": "users are counted per day here, so their sum overstates people and would read like sessions"})
+        keep = additive
+    # two lines that move together (within 3% at 90% of points): the second would hide the first
+    i = 0
+    while i < len(keep):
+        j = i + 1
+        while j < len(keep):
+            a, b = vals.get(keep[i].get("alias")) or [], vals.get(keep[j].get("alias")) or []
+            if a and len(a) == len(b):
+                close = sum(1 for x, y in zip(a, b) if abs(x - y) <= 0.03 * max(abs(x), abs(y), 1e-9))
+                if close >= 0.9 * len(a):
+                    dropped.append({"measure": _humanize_col(keep[j].get("column") or keep[j].get("alias")),
+                                    "reason": f"it moves with {_humanize_col(keep[i].get('column') or keep[i].get('alias')).lower()}, so its line would hide it"})
+                    keep.pop(j)
+                    continue
+            j += 1
+        i += 1
+    if not dropped or not keep:
+        return None
+    kept_alias = {m.get("alias") for m in keep}
+    first = keep[0]
+    new_recipe = {**recipe, "measures": keep, "alias": first.get("alias"), "metric_column": first.get("column"), "agg": first.get("agg")}
+    ob = [o for o in (recipe.get("order_by") or []) if isinstance(o, dict)]
+    new_recipe["order_by"] = [o if (o.get("by") in kept_alias or o.get("by") == "period" or o.get("by") in (recipe.get("group_by") or [])) else {**o, "by": first.get("alias")} for o in ob]
+    new_public = {**public, "measures": [m for m in (public.get("measures") or []) if m.get("alias") in kept_alias]}
+    new_public["order_by"] = new_recipe["order_by"] or public.get("order_by")
+    low = (title or "").lower()
+    names_dropped = [d["measure"].lower() for d in dropped]
+    if any(n and n in low for n in names_dropped):
+        what = " and ".join(_humanize_col(m.get("column") or m.get("alias")) for m in keep[:2])
+        group = [g for g in (public.get("group_by") or recipe.get("group_by") or [recipe.get("group_by_column")]) if g]
+        if public.get("time") or recipe.get("time_grain"):
+            title = f"{what} over time"
+        elif group:
+            title = f"{what} by {_humanize_col(group[0]).lower()}"
+        else:
+            title = what
+    return {"recipe": new_recipe, "public": new_public, "title": title[:120], "dropped": dropped}
+
+
+# round 37: rates GD360 adds to an app dashboard's KPI row when its main table has both columns -
+# SUM(numerator) / SUM(denominator), never an average of row rates
+_RATE_KPIS = [
+    ("engaged_sessions", "sessions", "Engagement rate"),
+    ("key_events", "sessions", "Key event rate"),
+    ("transactions", "sessions", "Conversion rate"),
+    ("clicks", "impressions", "Click-through rate"),
+]
+
+
+def _view_semantics(ds, btype: str, config: dict, title: str | None) -> dict:
+    """Round 37: what a stored block should not show as-is - a per-day users total (a note), and in a
+    multi-measure block a measure that is 0 everywhere / users summed per row / a line hidden under
+    another (hidden, with why, and a title that names what is left). Computed when the block is read,
+    so dashboards built before this round read right too."""
+    extra: dict = {}
+    if not isinstance(config, dict) or ds is None:
+        return extra
+    recipe = config.get("recipe") if isinstance(config.get("recipe"), dict) else {}
+    if btype == "kpi" and not config.get("note") and _is_non_additive(ds, recipe.get("metric_column"), recipe.get("agg")):
+        extra["note"] = NON_ADDITIVE_NOTE
+    if len(recipe.get("measures") or []) >= 2:
+        try:
+            pr = _prune_measures(ds, recipe, config.get("spec") or {}, config, title or "")
+        except Exception:  # noqa: BLE001
+            pr = None
+        if pr:
+            kept = {m.get("alias") for m in pr["recipe"]["measures"]}
+            extra["hidden_measures"] = [m.get("alias") for m in recipe["measures"] if m.get("alias") not in kept]
+            extra["hidden_notes"] = pr["dropped"]
+            if pr["title"] and pr["title"] != title:
+                extra["view_title"] = pr["title"]
+    return extra
+
+
+def _parameter_scope(ds, d: models.Dashboard, pages_out: list) -> dict:
+    """Round 37: on a multi-table file / app source, the blocks each filter reaches."""
+    if ds is None or dashboard_engine.is_warehouse_native(ds):
+        return {}
+    cache = ds.schema_cache if isinstance(ds.schema_cache, dict) else {}
+    tables = {str(t): {c.get("name") for c in cols if isinstance(c, dict)} for t, cols in cache.items() if isinstance(cols, list)}
+    if len(tables) < 2:
+        return {}
+    default = default_table_for_preview(ds)
+    out: dict = {}
+    for prm in d.parameters or []:
+        if not isinstance(prm, dict) or not prm.get("id") or not prm.get("column"):
+            continue
+        hits = []
+        for po in pages_out:
+            if getattr(po, "datasource_id", None) and po.datasource_id != ds.id:
+                continue
+            for b in po.blocks:
+                cfg = b.config or {}
+                r = cfg.get("recipe") if isinstance(cfg.get("recipe"), dict) else None
+                if not r:
+                    continue
+                t = r.get("table") or cfg.get("source_table") or default
+                if prm["column"] in tables.get(t, set()):
+                    hits.append(b.id)
+        out[prm["id"]] = hits
+    return out
 
 
 class _TableFrames:
@@ -3792,7 +4010,8 @@ def _layout_proposal_page(blocks: list[dict]) -> None:
     row: list[dict] = []
 
     def close_row() -> None:
-        if len(row) == 1 and row[0].get("chart_type") == "map":
+        # round 37: a chart alone in its row takes the whole width (no half-empty rows)
+        if len(row) == 1:
             row[0]["layout"]["w"] = _GRID_COLUMNS
 
     for b in others:
@@ -3879,8 +4098,13 @@ def _build_proposal(
         schema_text = _warehouse_schema_text(ds, None, versions)
     else:
         schema, file_df = _file_schema(db, ds, user)
+        # round 37: an app's per-row user counts are flagged, so the plan never sums them as people
         schema_text = "\n".join(
-            f"Table `{t}`:\n" + "\n".join(f"  - {c.get('name')} ({c.get('type')})" for c in cols)
+            f"Table `{t}`:\n" + "\n".join(
+                f"  - {c.get('name')} ({c.get('type')})"
+                + (" - users counted per row (day x dimensions): a SUM over rows overcounts people; prefer sessions"
+                   if _is_non_additive(ds, c.get("name")) else "")
+                for c in cols)
             for t, cols in schema.items()
         )
     metrics = db.query(models.MetricDefinition).filter(models.MetricDefinition.datasource_id == ds.id).all()
@@ -4049,6 +4273,12 @@ def _build_proposal(
                 if block_df is not None:
                     try:
                         _rt, computed, _t = _run_manual_recipe(block_df, dict(recipe), existing_title=title)
+                        # round 37: no zero / per-day-users / hidden-line measures beside real ones
+                        pruned = _prune_measures(ds, recipe, public, computed, title)
+                        if pruned:
+                            recipe, public, title = pruned["recipe"], pruned["public"], pruned["title"]
+                            block["title"], block["spec"], block["dropped"] = title, public, pruned["dropped"]
+                            _rt, computed, _t = _run_manual_recipe(block_df, dict(recipe), existing_title=title)
                     except ValueError as e:
                         block["status"], block["error"] = "invalid", str(e)
                         blocks_out.append(block)
@@ -4057,6 +4287,11 @@ def _build_proposal(
                         block["status"], block["error"] = "invalid", f"This block could not be computed on the file: {e}"
                         blocks_out.append(block)
                         continue
+                    # a single per-day users total is said for what it is
+                    if recipe.get("block_type") == "kpi" and _is_non_additive(ds, recipe.get("metric_column"), recipe.get("agg")):
+                        block["note"] = NON_ADDITIVE_NOTE
+                        if "daily" not in title.lower():
+                            title = block["title"] = f"{title} (daily total)"[:120]
                     # round 36: a block whose every number is 0 (GA4 purchase_revenue with no
                     # e-commerce) would be an empty chart - skipped, and said so
                     empty = _computed_is_empty(computed)
@@ -4371,6 +4606,10 @@ def _commit_proposal(
             if b.get("origin"):
                 # round 36: where the block came from - one of the thread's answers, or suggested
                 config = {**config, "origin": b["origin"]}
+            if b.get("note"):
+                config = {**config, "note": b["note"]}
+            if b.get("origin_question"):
+                config = {**config, "origin_question": b["origin_question"]}
             db.add(models.DashboardBlock(
                 page_id=page.id, type=btype, title=b["title"], x=int(layout.get("x", 0)), y=int(layout.get("y", 0)),
                 w=int(layout.get("w", 6)), h=int(layout.get("h", 6)), config=config, position=bpos, query_sql=query_sql,
@@ -4584,6 +4823,17 @@ def plan_thread_dashboard(
             b["origin"] = _origin_by_title(b["title"], answers) or "suggested"
         elif b["origin"].startswith("Q") and b["origin"] not in {a["label"] for a in answers}:
             b["origin"] = "suggested"
+    # 5) round 37: the rate a reader looks for first (GA4 engagement rate), as SUM / SUM
+    if mode != "answers" and not dashboard_engine.is_warehouse_native(ds) and proposal["pages"]:
+        try:
+            _add_rate_kpi(db, user, ds, proposal)
+        except Exception as e:  # noqa: BLE001 - a nicety, never a failure
+            print(f"[thread-dashboard] rate KPI skipped: {e}")
+    # every answer's question rides along, for the "Made from" line
+    by_label = {a["label"]: a.get("question") for a in answers}
+    for b in _ok_blocks(proposal):
+        if b.get("origin") in by_label and by_label[b["origin"]]:
+            b["origin_question"] = by_label[b["origin"]]
     for pg in proposal["pages"]:
         _layout_proposal_page([b for b in pg["blocks"] if b["status"] == "ok"])
     proposal["pages"] = [pg for pg in proposal["pages"] if pg["blocks"]] or [{"title": "Overview", "blocks": []}]
@@ -4591,6 +4841,34 @@ def plan_thread_dashboard(
     proposal["thread"] = {"mode": mode, "answers": answers, "notes": notes, "minimum": minimum}
     _PROPOSALS.put(proposal["proposal_id"], proposal)
     return proposal
+
+
+def _add_rate_kpi(db: Session, user: models.User, ds: models.DataSource, proposal: dict) -> None:
+    frames = _TableFrames(db, ds, user)
+    table = frames.default_table()
+    df = frames.get(table)
+    if df is None:
+        return
+    titles = " | ".join(b["title"].lower() for b in _ok_blocks(proposal))
+    for num, den, label in _RATE_KPIS:
+        if num not in df.columns or den not in df.columns or label.lower() in titles:
+            continue
+        recipe = {"block_type": "kpi", "agg": "ratio", "metric_column": num, "denominator_column": den, "label": label,
+                  "alias": re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")}
+        if table:
+            recipe["table"] = table
+        _t, cfg, _x = _run_manual_recipe(df, dict(recipe))
+        v = cfg.get("value")
+        if not isinstance(v, (int, float)) or v <= 0:
+            continue
+        page = proposal["pages"][0]
+        kpis = [i for i, b in enumerate(page["blocks"]) if b["type"] in ("kpi", "sparkline")]
+        block = {"client_id": f"r{secrets.token_hex(2)}", "type": "kpi", "title": label, "intent": f"KPI · {label}", "spec": None,
+                 "recipe": recipe, "chart_type": None, "text": None, "from_metric_id": None, "from_metric_name": None,
+                 "status": "ok", "error": None, "sql": None, "columns": [], "origin": "suggested",
+                 "why": f"{_humanize_col(num)} ÷ {_humanize_col(den).lower()}", "computed": {"value": float(v)}}
+        page["blocks"].insert((kpis[-1] + 1) if kpis else 0, block)
+        return
 
 
 def add_to_thread_plan(db: Session, user: models.User, ds: models.DataSource, proposal: dict, text: str, page_index: int) -> list[dict]:
@@ -6409,8 +6687,58 @@ def _filter_page_blocks(
 ) -> schemas.FilteredBlocksOut:
     active_filters = payload.filters[:_MAX_FILTERS_PER_REQUEST]
     date_bounds = _file_date_bounds(dashboard, ds, df)
+    raw_df = df
     if df is not None:
         df = _apply_filters(df, active_filters)
+    # round 37: the header's period, and the period just before the date range (KPI deltas)
+    period = payload.period if getattr(payload, "period", None) in ("day", "week", "month", "quarter", "year") else None
+    date_col = getattr(dashboard, "date_column", None) if dashboard is not None else None
+    prior_filters = None
+    prior_label = None
+    window_days = None
+    date_crit = next((f for f in active_filters if f.column == date_col and isinstance(f.spec, dict)
+                      and f.spec.get("type") == "date" and f.spec.get("from") and f.spec.get("to")), None) if date_col else None
+    if date_crit is not None:
+        try:
+            from datetime import date as _date, timedelta as _td
+            f0 = _date.fromisoformat(str(date_crit.spec["from"])[:10])
+            t0 = _date.fromisoformat(str(date_crit.spec["to"])[:10])
+            window_days = (t0 - f0).days + 1
+            if getattr(payload, "compare", True) and window_days > 0:
+                pt = f0 - _td(days=1)
+                pf = pt - _td(days=window_days - 1)
+                prior_filters = [f for f in active_filters if f is not date_crit] + [
+                    {"column": date_col, "spec": {"type": "date", "from": pf.isoformat(), "to": pt.isoformat()}}]
+                prior_label = f"vs previous {window_days} days"
+        except Exception as e:  # noqa: BLE001
+            print(f"[dashboard_builder] prior period skipped: {e}")
+    prior_by_table: dict = {}
+
+    def _prior_df(block) -> pd.DataFrame | None:
+        if prior_filters is None:
+            return None
+        recipe_ = (block.config or {}).get("recipe") or {}
+        if frames is not None and frames.multi:
+            real = frames.resolve(recipe_.get("table") or (block.config or {}).get("source_table"))
+            base = frames.get(real)
+        else:
+            real, base = "__single__", raw_df
+        if base is None:
+            return None
+        if real not in prior_by_table:
+            prior_by_table[real] = _apply_filters(base, prior_filters)
+        return prior_by_table[real]
+
+    def _with_period(recipe_: dict) -> dict:
+        r = dict(recipe_)
+        if period and r.get("time_grain"):
+            r["time_grain"] = period
+        if r.get("block_type") == "kpi" and r.get("trend_column"):
+            if window_days is not None and window_days <= 62:
+                r["trend_grain"] = "day"
+            elif period:
+                r["trend_grain"] = period
+        return r
     # round 36: a multi-table source's blocks each read their own table, filtered the same way
     filtered_by_table: dict[str, pd.DataFrame | None] = {}
 
@@ -6504,8 +6832,20 @@ def _filter_page_blocks(
         if recipe:
             try:
                 block_df = _apply_filters(base_df, own_filters)
-                actual_type, config, _default_title = _run_manual_recipe(block_df, recipe, existing_title=block.title)
+                run_recipe = _with_period(recipe)
+                actual_type, config, _default_title = _run_manual_recipe(block_df, run_recipe, existing_title=block.title)
                 config = carry_block_meta(block.config, config)
+                config.update(_view_semantics(ds, actual_type, config, block.title))
+                if actual_type == "kpi" and prior_filters is not None and not recipe.get("transform_id"):
+                    pdf = _prior_df(block)
+                    if pdf is not None:
+                        _pt, pcfg, _px = _run_manual_recipe(_apply_filters(pdf, own_filters), run_recipe, existing_title=block.title)
+                        cur, prev = config.get("value"), pcfg.get("value")
+                        if isinstance(cur, (int, float)) and isinstance(prev, (int, float)) and not isinstance(cur, bool):
+                            pct = ((cur - prev) / abs(prev) * 100.0) if prev else None
+                            config["delta"] = {"current": cur, "prior": prev, "abs": cur - prev,
+                                               "pct": round(pct, 2) if pct is not None else None}
+                            config["delta_label"] = prior_label
             except Exception:
                 continue
             out.append(schemas.FilteredBlockOut(id=block.id, type=actual_type, config=config))
@@ -6677,7 +7017,7 @@ def _warehouse_page_blocks(page: models.DashboardPage, block_ids: list[str] | No
             # 2026-10-07 (chart-types round): a block with config.forecast
             # gets its forecast (and anomalies) computed with its result.
             if isinstance(config.get("forecast"), dict) and (block.type in ("chart", "kpi", "sparkline")):
-                entry["forecast"] = config["forecast"]
+                entry["forecast"] = forecast_svc.with_one_offs(config["forecast"], config)
                 first = (spec.get("measures") or [{}])[0].get("alias")
                 if first and config.get("format"):
                     entry["formats"] = {first: config.get("format")}

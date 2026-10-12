@@ -2328,6 +2328,7 @@ def get_column_distinct_values(
     table: str | None = None,
     search: str | None = None,
     limit: int = 200,
+    weight: str | None = None,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
@@ -2375,6 +2376,15 @@ def get_column_distinct_values(
         series = series[series.astype(str).str.contains(str(search), case=False, na=False, regex=False)]
 
     counts = series.value_counts(dropna=True)
+    # 2026-10-12 (round 37): `weight` - a dashboard filter's numbers in the dashboard's own measure
+    # (GA4 rows are already per day x channel x device: "Direct 984 rows" said nothing; "Direct 1,820
+    # sessions" matches the chart). Sorted by that measure.
+    weighted_by = None
+    if weight and weight in df.columns and weight != column and pd.api.types.is_numeric_dtype(df[weight]):
+        w = pd.to_numeric(df.loc[series.index, weight], errors="coerce").fillna(0)
+        counts = w.groupby(series).sum().sort_values(ascending=False)
+        counts = counts.round().astype("int64")
+        weighted_by = weight
     limit = max(1, min(limit, 1000))
     truncated = bool(len(counts) > limit)
     top = counts.iloc[:limit]
@@ -2387,6 +2397,7 @@ def get_column_distinct_values(
         "null_count": null_count,
         "distinct_total": int(counts.shape[0]),
         "truncated": truncated,
+        "weighted_by": weighted_by,
     }
 
 
