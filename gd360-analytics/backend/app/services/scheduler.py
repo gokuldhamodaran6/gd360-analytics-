@@ -147,6 +147,17 @@ def refresh_dashboard(db: Session, dashboard: models.Dashboard, job_type: str) -
     try:
         if not ds:
             raise RuntimeError("This dashboard has no data source to refresh from yet.")
+        # 2026-10-12 (round 37): Refresh on an app dashboard (GA4, Shopify ...) first brings in the
+        # app's newest records - recomputing last night's copy is not a refresh. At most every
+        # 15 minutes, so an auto-refreshing dashboard never hammers the app's API.
+        try:
+            from .synced_sources import SYNCED_KINDS, sync_datasource
+            if ds.kind in SYNCED_KINDS and (ds.last_synced_at is None or datetime.utcnow() - ds.last_synced_at > timedelta(minutes=15)):
+                sync_datasource(db, ds, reason="dashboard refresh")
+                db.refresh(ds)
+        except Exception as e:  # noqa: BLE001 - the copy already there still refreshes the numbers
+            logger.warning("[scheduler] sync before refresh skipped for %s: %s", ds.id, e)
+            db.rollback()
         # 2026-10-07 (analyst canvas round): a WAREHOUSE dashboard never
         # loads rows into the app - every spec block, SQL cell and bound
         # chart is recomputed inside the warehouse by the same engine the

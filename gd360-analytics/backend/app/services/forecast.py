@@ -841,7 +841,45 @@ def normalize_options(raw, grain: str = "month") -> dict | None:
     interval = str(raw.get("interval") or "both")
     if interval not in INTERVALS:
         interval = "both"
-    return {"horizon": horizon, "interval": interval, "anomalies": bool(raw.get("anomalies", False))}
+    out = {"horizon": horizon, "interval": interval, "anomalies": bool(raw.get("anomalies", False))}
+    # round 38: periods the team marked as one-offs (a comment's accepted
+    # suggestion) - bridged over before fitting; see forecast_result.
+    one_offs = sorted({str(k)[:10] for k in (raw.get("one_offs") or []) if k})
+    if one_offs:
+        out["one_offs"] = one_offs
+    return out
+
+
+def with_one_offs(raw, config: dict | None):
+    """config.forecast with the block's accepted one-offs (config.one_offs,
+    set from a comment thread - routers/dashboard_comments.py) folded in as
+    "one_offs": [day, ...]. Unchanged when there are none."""
+    keys = sorted({str(o.get("key"))[:10] for o in ((config or {}).get("one_offs") or []) if isinstance(o, dict) and o.get("key")})
+    if not keys or not raw:
+        return raw
+    base = {} if raw is True else raw
+    if not isinstance(base, dict):
+        return raw
+    return {**base, "one_offs": keys}
+
+
+def _bridge_one_offs(periods: list[str], values: list, skip: set[str]) -> tuple[list, int]:
+    """Each value at a one-off period replaced by the mean of its nearest
+    kept neighbours on either side (the one side at an edge) - the fit then
+    learns the usual level, not the spike. Returns (values, how many)."""
+    out = list(values)
+    n = 0
+    kept = [i for i, p in enumerate(periods) if str(p)[:10] not in skip and values[i] is not None]
+    for i, p in enumerate(periods):
+        if str(p)[:10] not in skip:
+            continue
+        before = [j for j in kept if j < i]
+        after = [j for j in kept if j > i]
+        near = ([values[before[-1]]] if before else []) + ([values[after[0]]] if after else [])
+        if near:
+            out[i] = sum(float(v) for v in near) / len(near)
+            n += 1
+    return out, n
 
 
 def fingerprint(*parts) -> str:
@@ -899,13 +937,19 @@ def forecast_result(
             # An additive series spans the chart's whole range from its own first period on.
             first_own = min(by_period)
             own = [p for p in periods if p >= first_own]
+        own_values = [by_period.get(p) for p in own]
+        bridged = 0
+        if options.get("one_offs"):
+            own_values, bridged = _bridge_one_offs(own, own_values, set(options["one_offs"]))
         f = forecast_series(
-            own, [by_period.get(p) for p in own], grain=grain, horizon=options["horizon"], interval=options["interval"],
+            own, own_values, grain=grain, horizon=options["horizon"], interval=options["interval"],
             additive=bool(m.get("additive", True)), lower=0.0 if m.get("rate") else None, upper=1.0 if m.get("rate") else None,
             partial=partial, want_anomalies=bool(options.get("anomalies")),
         )
         for a in f.pop("anomalies", []) or []:
             anomalies.append({**a, "series": key, "measure": m["alias"]})
+        if bridged and f.get("status") == "ok":
+            f["notes"] = [f"{bridged} {grain_word(grain, bridged)} your team marked as one-off {'is' if bridged == 1 else 'are'} left out of the fit.", *(f.get("notes") or [])]
         series_out.append({"key": key, "measure": m["alias"], **f})
     ok = [s for s in series_out if s["status"] == "ok"]
     head = ok[0] if ok else series_out[0]
