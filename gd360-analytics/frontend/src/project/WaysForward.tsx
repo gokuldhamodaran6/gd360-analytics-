@@ -48,8 +48,12 @@ export default function WaysForward({ answer, onAsk, busy, compact = false }: {
             </button>
           ))}
           {connect && (
-            <Link to={connect.href as string} onClick={(e) => e.stopPropagation()} className="ui-focus self-start mt-1 h-9 px-3 rounded-full text-[13px] text-secondary hover:text-text hover:bg-subtle/60 inline-flex items-center gap-2" data-way-forward="connect">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            <Link to={connect.href as string} onClick={(e) => e.stopPropagation()} className="ui-focus self-start mt-1 h-9 px-3 rounded-full text-[13px] text-secondary hover:text-text hover:bg-subtle/60 inline-flex items-center gap-2" data-way-forward={/report=/.test(connect.href as string) ? "report" : "connect"}>
+              {/report=/.test(connect.href as string) ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 4h6l1 2h3v14H5V6h3Z" /><path d="M9 12h6M9 16h4" /></svg>
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+              )}
               {connect.label}
             </Link>
           )}
