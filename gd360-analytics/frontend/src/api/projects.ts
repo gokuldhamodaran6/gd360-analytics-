@@ -284,6 +284,32 @@ export type Placement = {
   at?: string;
 };
 
+// round 36: "Create a dashboard from this thread" - a checked plan, arranged by GD360 or by the person
+export type ThreadPlanMode = "auto" | "arrange" | "answers";
+export type ThreadPlanBlock = {
+  id: string;
+  title: string;
+  type: string;
+  chart_type: string | null;
+  visual: "kpi" | "trend" | "bars" | "map" | "donut" | "split" | "table";
+  how: string;
+  origin: string; // "Q1".. | "suggested" | "you"
+  why?: string | null;
+  table?: string | null;
+};
+export type ThreadPlan = {
+  plan_id: string;
+  title: string;
+  datasource_id: string;
+  datasource_name: string;
+  mode: ThreadPlanMode;
+  pages: { title: string; blocks: ThreadPlanBlock[] }[];
+  skipped: { title: string; reason: string }[];
+  answers: { label: string; question: string; run_id: string }[];
+  total: number;
+};
+export type ThreadBuildResult = MakeDashboardResult & { blocks: number };
+
 export type MakeDashboardResult = {
   dashboard_id: string;
   name: string;
@@ -410,6 +436,12 @@ export const projectsApi = {
       run_ids?: string[]; pages?: 1 | 2; page_name?: string; merge_into_page_id?: string;
     },
   ) => api.post<MakeDashboardResult>(`/projects/${id}/dashboard`, payload, { timeout: 240000 }).then((r) => r.data),
+  planThreadDashboard: (id: string, payload: { run_ids: string[]; purpose?: string; mode: ThreadPlanMode; datasource_id?: string }) =>
+    api.post<ThreadPlan>(`/projects/${id}/dashboard/plan`, payload, { timeout: 240000 }).then((r) => r.data),
+  addToThreadPlan: (id: string, planId: string, payload: { text: string; page_index: number }) =>
+    api.post<{ blocks: ThreadPlanBlock[]; plan: ThreadPlan }>(`/projects/${id}/dashboard/plan/${planId}/add`, payload, { timeout: 180000 }).then((r) => r.data),
+  buildThreadDashboard: (id: string, payload: { plan_id: string; pages?: { title: string; block_ids: string[] }[]; name?: string }) =>
+    api.post<ThreadBuildResult>(`/projects/${id}/dashboard/build`, payload, { timeout: 240000 }).then((r) => r.data),
   undoPlacement: (id: string, actionId: string) =>
     api.post<{ ok: boolean; dashboard_id: string }>(`/projects/${id}/dashboard/undo`, { action_id: actionId }).then((r) => r.data),
   dismissDashboardPrompt: (id: string, runIds: string[]) =>
