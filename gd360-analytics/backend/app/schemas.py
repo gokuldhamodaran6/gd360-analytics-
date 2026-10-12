@@ -994,6 +994,9 @@ class DashboardBuilderOut(BaseModel):
     # auto-refresh: the interval ("off" | "realtime" | "5m" | "15m" | "30m" | "1h" | "6h" | "daily"),
     # when it last/next runs, and whether it has paused itself (nobody opened it for 7 days)
     sources: list[dict] = []
+    # round 37: {parameter id: [block ids it filters]} on a multi-table file / app source - the rail
+    # shows a page only the filters that reach one of its blocks.
+    parameter_scope: dict = {}
     refresh_interval: str = "off"
     next_refresh_at: Optional[datetime] = None
     last_refreshed_at: Optional[datetime] = None
@@ -1415,6 +1418,10 @@ class ApplyFiltersRequest(BaseModel):
     # page has nowhere near enough blocks or per-block filters to hit
     # either cap, so this is purely an abuse guard.
     block_filters: dict[str, list[FilterCriterion]] = Field(default_factory=dict)
+    # 2026-10-12 (round 37): a file / app dashboard's header controls - the time grain its charts
+    # are drawn at, and whether KPIs compare with the period just before the date range.
+    period: Optional[str] = None
+    compare: bool = True
 
 
 class FilteredBlockOut(BaseModel):
@@ -1628,6 +1635,9 @@ class CommentCreateRequest(BaseModel):
     # The chart element it is pinned to - {kind: "bar"|"point"|"cell",
     # key: <value>, ...}, stored as given.
     anchor: Optional[dict] = None
+    # round 38: the people picked from the @ list (user ids). Each must be
+    # able to open the dashboard; @tokens typed by hand are also matched.
+    mention_ids: list[str] = []
 
 
 class CommentUpdateRequest(BaseModel):
@@ -1635,6 +1645,40 @@ class CommentUpdateRequest(BaseModel):
     # to the whole thread (set on the root).
     body: Optional[str] = Field(default=None, min_length=1, max_length=5000)
     resolved: Optional[bool] = None
+    mention_ids: Optional[list[str]] = None
+
+
+class CommentPersonOut(BaseModel):
+    """round 38: someone who can be @mentioned on a dashboard - that is,
+    someone who can open it."""
+    id: str
+    name: str
+    initials: str
+    email: Optional[str] = None
+    role: str = "member"  # "owner" | "admin" | "member" | "viewer"
+    is_me: bool = False
+
+
+class CommentPeopleOut(BaseModel):
+    people: list[CommentPersonOut]
+    # Why someone may be missing from the list (a private dashboard has
+    # only its owner).
+    shared: bool = False
+    workspace_name: Optional[str] = None
+
+
+class CommentSuggestionOut(BaseModel):
+    """round 38: what GD360 offers to DO about a comment - never done
+    without a person accepting it. kind "one_off": leave one period out of
+    this chart's forecast and mark it on the chart."""
+    kind: str
+    key: str
+    label: str
+    text: str
+    applied: bool = False
+    applied_by: Optional[str] = None
+    applied_at: Optional[datetime] = None
+    can_apply: bool = False
 
 
 class CommentAuthorOut(BaseModel):
@@ -1654,9 +1698,12 @@ class CommentOut(BaseModel):
     body: str
     anchor: Optional[dict] = None
     mentions: list[str] = []
+    # round 38: who the @mentions resolved to (people who can open it).
+    mentioned: list[CommentAuthorOut] = []
     resolved_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    edited: bool = False
     # What the CALLER may do with this comment.
     can_edit: bool = False
     can_resolve: bool = False
@@ -1667,6 +1714,17 @@ class CommentThreadOut(CommentOut):
     replies: list[CommentOut] = []
     reply_count: int = 0
     resolved: bool = False
+    resolved_by: Optional[str] = None
+    # round 38: the block's title, so a list of every thread on the
+    # dashboard can say which chart each one is on.
+    block_title: Optional[str] = None
+    block_type: Optional[str] = None
+    # Everyone in the thread, root author first (the avatar stack).
+    participants: list[CommentAuthorOut] = []
+    # True when the caller wrote it, was mentioned in it, or replied in it.
+    involves_me: bool = False
+    mentions_me: bool = False
+    suggestion: Optional[CommentSuggestionOut] = None
 
 
 class CommentsOut(BaseModel):
@@ -1676,6 +1734,11 @@ class CommentsOut(BaseModel):
     counts: dict[str, dict] = {}
     total: int = 0
     open: int = 0
+    # round 38: the caller's id (the panel's "For you" filter) and whether
+    # they may edit the dashboard (accepting a GD360 suggestion changes a
+    # chart, so it needs edit rights).
+    me: Optional[str] = None
+    can_edit_dashboard: bool = False
 
 
 # ---------- Dashboard from prompt (2026-10-07) - propose / revise / commit.

@@ -1193,7 +1193,15 @@ class DashboardComment(Base):
     body = Column(Text, nullable=False)
     anchor = Column(JSON, nullable=True)
     mentions = Column(JSON, nullable=True)
+    # 2026-10-12 (round 38, team comments): the people an @mention resolved
+    # to - user ids, each one checked to be able to open the dashboard at
+    # write time. `mentions` keeps the raw @tokens as typed.
+    mention_user_ids = Column(JSON, nullable=True)
     resolved_at = Column(DateTime, nullable=True)
+    # round 38: who resolved the thread (set on the root with resolved_at).
+    resolved_by_id = Column(String, nullable=True)
+    # round 38: when the author last changed the body ("edited").
+    edited_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

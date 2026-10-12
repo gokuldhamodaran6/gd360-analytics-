@@ -312,6 +312,10 @@ _NEW_COLUMNS = [
     ("dashboard_pages", "datasource_id", "TEXT"),
     ("dashboards", "last_viewed_at", "TIMESTAMP"),
     ("dashboard_shares", "last_viewed_at", "TIMESTAMP"),
+    # 2026-10-12 (round 38, team comments): see models.DashboardComment.
+    ("dashboard_comments", "mention_user_ids", "JSON"),
+    ("dashboard_comments", "resolved_by_id", "TEXT"),
+    ("dashboard_comments", "edited_at", "TIMESTAMP"),
 ]
 
 
