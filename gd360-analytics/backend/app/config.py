@@ -389,6 +389,7 @@ class Settings(BaseSettings):
     # version in Render's environment - no code change, no redeploy of code.
     SHOPIFY_API_VERSION: str = "2026-07"
     META_GRAPH_VERSION: str = "v26.0"
+    META_GRAPH_HOST: str = ""  # tests only: a stand-in Graph API host (default https://graph.facebook.com)
     GOOGLE_ADS_API_VERSION: str = "v24"
     # Google Ads requires a developer token issued to the company that calls
     # the API (Google Ads > Tools > API Center). Set it here once for every
@@ -402,6 +403,14 @@ class Settings(BaseSettings):
     # Google reuses GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET above.
     META_APP_ID: str = ""            # Meta for Developers > your app > App settings > Basic
     META_APP_SECRET: str = ""        # same page; used for Instagram, Facebook Pages and Meta Ads
+    # round 38b: a Business-type Meta app signs people in with "Facebook Login for Business": its
+    # permissions live in a saved configuration (Facebook Login for Business > Configurations) whose
+    # ID replaces the scope list. Leave empty for a classic Facebook Login app.
+    META_LOGIN_CONFIG_ID: str = ""
+    # round 38b: "Continue with Instagram" (Instagram API with Instagram Login) - no Facebook Page needed.
+    # Meta app > Instagram > API setup with Instagram login > Business login settings: Instagram app ID / secret.
+    INSTAGRAM_APP_ID: str = ""
+    INSTAGRAM_APP_SECRET: str = ""
     LINKEDIN_CLIENT_ID: str = ""     # LinkedIn Developers > your app > Auth (needs Community Management API)
     LINKEDIN_CLIENT_SECRET: str = ""
     HUBSPOT_CLIENT_ID: str = ""      # HubSpot developer account > your public app > Auth
