@@ -223,6 +223,7 @@ _CATALOG = [
     ("commerce", "bigcommerce", "BigCommerce", "Bc", "#34313F", _W, "Orders, products, customers", None, None),
     ("crm", "hubspot", "HubSpot", "Hs", "#FF5C35", _W, "Contacts, deals, emails, forms", "app:hubspot", None),
     ("crm", "salesforce", "Salesforce", "Sf", "#0D9DDA", _W, "Accounts, opportunities, cases", None, None),
+    ("crm", "whatsapp_business", "WhatsApp Business", "Wa", "#1FA855", _W, "Messages sent and delivered, cost by category, template reads and clicks", "app:whatsapp_business", None),
     ("crm", "klaviyo", "Klaviyo", "Kl", "#1F1F1F", _W, "Email and SMS campaigns, flows, revenue", "app:klaviyo", _D),
     ("crm", "mailchimp", "Mailchimp", "Mc", "#FFE01B", _K, "Audiences, campaigns, opens, clicks", None, None),
     ("crm", "zoho_crm", "Zoho CRM", "Zo", "#E42527", _W, "Leads, deals, activities", None, None),
@@ -279,6 +280,10 @@ def _new_help() -> dict:
 
 
 def _oauth_provider(kind: str) -> str | None:
+    return app_oauth.effective_provider(kind, _declared_oauth_provider(kind))
+
+
+def _declared_oauth_provider(kind: str) -> str | None:
     """The provider an app signs in through - only when its connector reads the
     token that sign-in produces, so a "Sign in" button is never offered for an
     app that would then ignore it (GA4 reads a service-account key today)."""
