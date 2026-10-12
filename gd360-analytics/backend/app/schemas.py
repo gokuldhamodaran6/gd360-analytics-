@@ -1750,6 +1750,8 @@ class SwapBlockRequest(BaseModel):
 class FolderCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     workspace_id: str
+    # round 34: the Library tab it was made in ("answer" | "analysis" | "talk"); None = every tab
+    kind: str | None = Field(default=None, max_length=20)
 
 
 class FolderRenameRequest(BaseModel):

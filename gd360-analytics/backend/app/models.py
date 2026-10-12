@@ -443,6 +443,9 @@ class Folder(Base):
     workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False)
     name = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # 2026-10-12 (round 34): which Library tab the folder belongs to - "answer", "analysis" or "talk" -
+    # set from the tab it was created in; NULL = a general folder (shown in every tab it has items for)
+    kind = Column(String, nullable=True)
 
 
 class Conversation(Base):

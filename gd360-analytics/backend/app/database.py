@@ -308,6 +308,7 @@ _NEW_COLUMNS = [
     ("automations", "approved_recipients", "JSON"),
     ("automations", "approval_note", "TEXT"),
     ("dashboard_shares", "view_count", "INTEGER DEFAULT 0"),
+    ("folders", "kind", "TEXT"),
     ("dashboard_shares", "last_viewed_at", "TIMESTAMP"),
 ]
 
