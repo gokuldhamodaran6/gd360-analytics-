@@ -30,6 +30,7 @@ export type DateRangePreset = { id: string; label: string; range: (anchor: YMD) 
 
 export const DEFAULT_PRESETS: DateRangePreset[] = [
   { id: "7d", label: "Last 7 days", dataLabel: "Last 7 days of data", range: (t) => ({ from: toISO(addDays(t, -6)), to: toISO(t) }) },
+  { id: "28d", label: "Last 28 days", dataLabel: "Last 28 days of data", range: (t) => ({ from: toISO(addDays(t, -27)), to: toISO(t) }) },
   { id: "30d", label: "Last 30 days", dataLabel: "Last 30 days of data", range: (t) => ({ from: toISO(addDays(t, -29)), to: toISO(t) }) },
   { id: "12m", label: "Last 12 months", dataLabel: "Last 12 months of data", range: (t) => ({ from: toISO(addDays(addMonths(t, -12), 1)), to: toISO(t) }) },
   { id: "ytd", label: "This year", dataLabel: (t) => `Latest year (${t.y})`, range: (t) => ({ from: toISO({ y: t.y, m: 1, d: 1 }), to: toISO(t) }) },
@@ -195,7 +196,12 @@ export function DateRangePicker({
     return formatRange(draft.from, draft.to);
   })();
 
-  const chipText = formatRange(value.from, value.to, { monthsOnly: format === "months", separator: "–" });
+  // round 37: a range that is one of the presets reads as its name ("Last 28 days"), the dates in the tooltip
+  const valuePreset = (value.from || value.to) ? presets.find((p) => p.id !== "all" && (() => {
+    const r = presetRange(p), raw = p.range(preset.anchor);
+    return (r.from === value.from && r.to === value.to) || (raw.from === value.from && raw.to === value.to);
+  })()) : undefined;
+  const chipText = valuePreset ? presetLabel(valuePreset).replace(/ of data$/, "") : formatRange(value.from, value.to, { monthsOnly: format === "months", separator: "–" });
 
   return (
     <Popover

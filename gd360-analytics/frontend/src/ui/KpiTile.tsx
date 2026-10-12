@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { cn } from "./cn";
 import { ArrowDownIcon, ArrowRightIcon, ArrowUpIcon } from "./Icons";
 import { Sparkline } from "./Sparkline";
@@ -113,6 +113,26 @@ export function DeltaPill({ delta, className }: { delta: KpiDelta; className?: s
   );
 }
 
+/** round 37: the tile's trend runs the tile's full width as a soft area - a 120 px squiggle in a
+ *  400 px tile read as an afterthought. */
+function FluidSparkline({ data, label, color }: { data: number[]; label?: string; color?: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [w, setW] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => setW(Math.floor(entries[0]?.contentRect.width || 0)));
+    ro.observe(el);
+    setW(Math.floor(el.getBoundingClientRect().width));
+    return () => ro.disconnect();
+  }, []);
+  return (
+    <div ref={ref} className="w-full" data-kpi-sparkline="">
+      {w > 0 && <Sparkline data={data} width={Math.max(80, w)} height={38} area label={label} color={color} />}
+    </div>
+  );
+}
+
 export function KpiTile({ label, value, unit, delta, caption, sparkline, sparklineLabel, sparklineColor, footnote, loading = false, reserveDeltaRow = false, className, onClick, selected = false }: KpiTileProps) {
   const Tag = onClick ? "button" : "div";
   const hasSparkline = Boolean(sparkline && sparkline.length > 1 && !loading);
@@ -163,8 +183,8 @@ export function KpiTile({ label, value, unit, delta, caption, sparkline, sparkli
         </>
       )}
       {(hasSparkline || reserveDeltaRow) && (
-        <div data-kpi-sparkline-row="" className="mt-auto flex h-[34px] items-end pt-0.5">
-          {hasSparkline && <Sparkline data={sparkline!} width={120} height={32} label={sparklineLabel} color={sparklineColor} />}
+        <div data-kpi-sparkline-row="" className="mt-auto flex h-[40px] items-end pt-0.5">
+          {hasSparkline && <FluidSparkline data={sparkline!} label={sparklineLabel} color={sparklineColor} />}
         </div>
       )}
       {(caption || footnote) && (

@@ -472,3 +472,17 @@ export const ResizeIcon = (p: IconProps) => (
     <path d="M14 20h6v-6M10 4H4v6M20 20l-7-7M4 4l7 7" />
   </Base>
 );
+
+// round 38: show / hide the team's comments on the charts
+export const EyeIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" />
+    <circle cx="12" cy="12" r="3" />
+  </Base>
+);
+export const EyeOffIcon = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M9.9 5.2A9.7 9.7 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.2M6.6 6.6C3.9 8.3 2 12 2 12s3.6 7 10 7a9.5 9.5 0 0 0 5.4-1.6" />
+    <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M3 3l18 18" />
+  </Base>
+);
