@@ -66,7 +66,13 @@ function ParameterControl({ param, value, onChange, source }: { param: Dashboard
               value={o.label}
               onClick={() => onChange(active ? selected.filter((v) => v !== o.value) : [...selected, o.value])}
             >
-              {typeof o.count === "number" && <span className="text-caption font-normal text-muted tabular-nums">{o.count.toLocaleString()}</span>}
+              {typeof o.count === "number" && (
+                // round 33: say what the number counts - rows in the data with this value, before any
+                // tile's own filters (a "Website" tile's numbers are a part of it)
+                <span className="text-caption font-normal text-muted tabular-nums" title={`${o.count.toLocaleString()} rows in the data have ${o.label}`} aria-label={`${o.count.toLocaleString()} rows`}>
+                  {o.count.toLocaleString()}
+                </span>
+              )}
             </FilterChip>
           );
         })}

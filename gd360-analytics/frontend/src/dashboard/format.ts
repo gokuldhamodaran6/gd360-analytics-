@@ -248,12 +248,36 @@ export function isFlagColumn(column: string | null | undefined): boolean {
   return /^(is|has)_/i.test(column) || /_flag$/i.test(column);
 }
 
-/** Conservative, and only ever "percent": the measure is an AVERAGE, every
- *  value that came back sits in [0, 1], and the source column is flag-named
- *  (is_*, has_*, *_flag) or the alias / title reads as a rate. Anything
+// 2026-10-12 (round 33): money is written as money. A sum / average / min /
+// max of a column NAMED as money (net_sales, revenue, avg_order_value,
+// profit...) is a currency - in the dashboard's own currency - so a tile
+// reads "$61.9M" like the answer it was made from, not "61.9M". Never for
+// counts, quantities or rates ("sales_count", "units_sold", "margin_pct").
+const MONEY_WORDS = new Set(["revenue", "revenues", "sales", "amount", "price", "prices", "cost", "costs", "spend", "spent", "profit", "profits",
+  "income", "gmv", "aov", "arpu", "ltv", "cac", "cpc", "cpa", "cpm", "fee", "fees", "payment", "payments", "payout", "refund", "refunds",
+  "budget", "turnover", "earnings", "adr", "revpar", "mrr", "arr", "salary", "wage", "wages", "invoice", "billing"]);
+const NOT_MONEY_WORDS = new Set(["count", "counts", "number", "num", "qty", "quantity", "units", "unit", "volume", "orders", "order_count",
+  "rate", "ratio", "pct", "percent", "percentage", "share", "margin_pct", "rank", "id", "days", "items", "customers", "users", "sessions"]);
+export function looksLikeMoneyName(name: string | null | undefined): boolean {
+  if (!name) return false;
+  const words = name.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (!words.length || words.some((w) => NOT_MONEY_WORDS.has(w))) return false;
+  if (/order_?value|basket_?value|cart_?value/.test(name.toLowerCase().replace(/\s+/g, "_"))) return true;
+  return words.some((w) => MONEY_WORDS.has(w));
+}
+
+/** Conservative: "percent" when the measure is an AVERAGE, every value
+ *  that came back sits in [0, 1], and the source column is flag-named
+ *  (is_*, has_*, *_flag) or the alias / title reads as a rate; "currency"
+ *  (round 33) when a sum / avg / min / max is named as money. Anything
  *  else stays a plain number - a wrong "%" is worse than a missing one. */
 export function inferFormat(measure: Pick<BlockSpecMeasure, "agg" | "column" | "alias"> | null | undefined, values: unknown[], title?: string | null): NumberFormat | null {
-  if (!measure || String(measure.agg || "").toLowerCase() !== "avg") return null;
+  if (!measure) return null;
+  const agg = String(measure.agg || "").toLowerCase();
+  if (agg !== "avg") {
+    const named = looksLikeMoneyName(measure.alias) || (!measure.alias && looksLikeMoneyName(measure.column));
+    return ["sum", "min", "max"].includes(agg) && named && !looksLikeRateName(measure.alias) ? "currency" : null;
+  }
   let seen = 0;
   for (const v of values) {
     if (v === null || v === undefined || v === "") continue;
@@ -263,6 +287,16 @@ export function inferFormat(measure: Pick<BlockSpecMeasure, "agg" | "column" | "
   }
   if (!seen) return null;
   if (isFlagColumn(measure.column) || looksLikeRateName(measure.alias) || looksLikeRateName(title)) return "percent";
+  return null;
+}
+
+/** inferFormat, then money for an average of a money column (avg order value) - kept apart so the
+ *  [0, 1] percent test above stays exactly as it was. */
+export function inferMeasureFormat(measure: Pick<BlockSpecMeasure, "agg" | "column" | "alias"> | null | undefined, values: unknown[], title?: string | null): NumberFormat | null {
+  const f = inferFormat(measure, values, title);
+  if (f) return f;
+  if (measure && String(measure.agg || "").toLowerCase() === "avg" && !looksLikeRateName(measure.alias)
+      && (looksLikeMoneyName(measure.alias) || looksLikeMoneyName(measure.column))) return "currency";
   return null;
 }
 
@@ -301,7 +335,7 @@ export function measureFormats(block: Pick<DashboardBlock, "config" | "title"> |
     for (const row of result?.rows || []) values.push(row[alias]);
     for (const row of result?.sparkline?.rows || []) values.push(row[alias]);
     for (const row of result?.prior?.rows || []) values.push(row[alias]);
-    const inferred = inferFormat(m, values, aliases.length === 1 ? block?.title : null);
+    const inferred = inferMeasureFormat(m, values, aliases.length === 1 ? block?.title : null);
     out[alias] = { format: inferred ?? "number", decimals: i === 0 ? decimals : null, inferred: Boolean(inferred), currency };
   });
   return out;
