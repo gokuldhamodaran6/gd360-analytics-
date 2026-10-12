@@ -335,6 +335,7 @@ const SYNCED_APP_META: Record<string, { label: string; color: string }> = {
   stripe: { label: "Stripe", color: "#635bff" },
   hubspot: { label: "HubSpot", color: "#ff5c35" },
   klaviyo: { label: "Klaviyo", color: "#8a8f98" },
+  whatsapp_business: { label: "WhatsApp Business", color: "#1fa855" },
 };
 
 export function SyncedAppIcon({ className = "w-4 h-4" }: { className?: string }) {
