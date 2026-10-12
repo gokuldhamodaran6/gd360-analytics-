@@ -101,6 +101,12 @@ def metric_lower(metric: str) -> str:
     return " ".join(w if (w.isupper() and len(w) > 1) else w.lower() for w in words)
 
 
+def in_sentence(metric: str) -> str:
+    """'Net Sales' -> 'net sales' mid-sentence (acronyms kept: 'AOV', 'ADR'); no 'total' added (round 33)."""
+    words = (metric or "").strip().split(" ")
+    return " ".join(w if (w.isupper() and len(w) > 1) else w.lower() for w in words if w)
+
+
 # ---- formats -----------------------------------------------------------------
 
 def _numbers(values) -> list[float]:
@@ -374,6 +380,54 @@ def focus_visuals(spec: dict, df: pd.DataFrame, title: str | None, currency: str
     return out
 
 
+_TIME_FILTER = re.compile(r"\bwhere\b[\s\S]*?\b(\w*date\w*|\w*_at|\w*time\w*|year|month|day|week|quarter|period|between|"
+                          r"interval|current_date|now\s*\(|timestamp)\b", re.I)
+
+
+def data_span(tables: dict) -> str | None:
+    """'2021–2025': the years the dated results cover (round 33), or None."""
+    from .forecasting import _time_of
+    lo = hi = None
+    for df in (tables or {}).values():
+        if df is None or not len(df):
+            continue
+        try:
+            got = _time_of(df, None)
+        except Exception:  # noqa: BLE001
+            got = None
+        if not got:
+            continue
+        years = pd.to_datetime(got[0], errors="coerce").dt.year.dropna()
+        if years.empty:
+            continue
+        lo = int(years.min()) if lo is None else min(lo, int(years.min()))
+        hi = int(years.max()) if hi is None else max(hi, int(years.max()))
+    if lo is None:
+        return None
+    return str(lo) if lo == hi else f"{lo}–{hi}"
+
+
+def scope_suffix(sql: str | None, plan: dict, span: str | None) -> str:
+    """What period a total covers, said in its title (round 33): an all-time total read under a 2026
+    forecast must not look like a year. ' · 2021–2025 total', ' · Q1 2025', or '' when unknown."""
+    brief = (plan.get("brief") or {}).get("period") if isinstance(plan.get("brief"), dict) else None
+    filtered = bool(_TIME_FILTER.search(sql or ""))
+    if not filtered:
+        return f" · {span} total" if span and "–" in span else (f" · {span}" if span else "")
+    if brief and brief.get("text") and not brief.get("forecast") and not brief.get("parts"):
+        return f" · {brief['text']}"
+    return ""
+
+
+def honest_title(step_title: str, measure: str, dim: str | None, others: list[str]) -> str:
+    """The step's own title when the chart shows what it promises; otherwise what is really drawn
+    ("Net sales by customer segment", not "Segment performance and order economics" over net sales alone)."""
+    if not others:
+        return step_title
+    mw = humanize(measure)
+    return f"{mw} by {humanize(dim).lower()}" if dim else mw
+
+
 def supporting_visuals(plan: dict, tables: dict, used: set, currency: str | None, focus_dim: str | None = None,
                        limit: int = 4) -> list[dict]:
     """One chart for each other step that answers another part of the
@@ -383,6 +437,8 @@ def supporting_visuals(plan: dict, tables: dict, used: set, currency: str | None
     raw-row results are left to the Evidence tab."""
     from .analysis import table_payload
     titles = {s.get("id"): s.get("title") for s in (plan.get("steps") or []) + (plan.get("combine") or [])}
+    sqls = {s.get("id"): s.get("sql") for s in plan.get("steps") or []}
+    span = data_span(tables)
     # a step a shown combine was built from is already on the page
     for cb in plan.get("combine") or []:
         if cb.get("id") in used:
@@ -427,13 +483,19 @@ def supporting_visuals(plan: dict, tables: dict, used: set, currency: str | None
                 for c in payload["columns"]:
                     if c["name"] == "period":
                         c["dtype"], c["role"], c["label"] = "date", "dimension", "Month"
-                out.append({"type": "chart", "title": title, "chart_type": "line", "tables": [tid], "time_column": "period",
-                            **payload})
+                others = [m for m in measures if m != measure and m not in (year, month)]
+                vis = {"type": "chart", "title": honest_title(title, measure, "month", others), "chart_type": "line",
+                       "tables": [tid], "time_column": "period", **payload}
+                if others and len(df) <= 120:
+                    vis["details"] = details_payload(df, currency, limit=120)
+                out.append(vis)
                 continue
             nominal = [d for d in dims if d != focus_dim and 1 < df[d].nunique() <= 40]
             if not nominal and dims and len(df) <= 12:
                 payload = details_payload(df, currency)
-                out.append({"type": "chart", "title": title, "chart_type": "table", "display": "table", "tables": [tid], **payload})
+                suffix = scope_suffix(sqls.get(tid), plan, span) if tid in sqls and not _year_col(df) else ""
+                out.append({"type": "chart", "title": title + suffix, "chart_type": "table", "display": "table", "tables": [tid],
+                            **payload})
                 continue
             if not nominal or not measure:
                 continue
@@ -451,8 +513,13 @@ def supporting_visuals(plan: dict, tables: dict, used: set, currency: str | None
                 continue
             seen_shapes.add(shape)
             payload, chart_type, note = chart_payload(df, dim, measure, series, currency)
-            out.append({"type": "chart", "title": title, "chart_type": chart_type, "tables": [tid], **payload,
-                        **({"note": note} if note else {})})
+            others = [m for m in measures if m != measure]
+            suffix = scope_suffix(sqls.get(tid), plan, span) if tid in sqls and not _year_col(df) else ""
+            vis = {"type": "chart", "title": honest_title(title, measure, dim, others) + suffix, "chart_type": chart_type,
+                   "tables": [tid], **payload, **({"note": note} if note else {})}
+            if others and len(df) <= 60:
+                vis["details"] = details_payload(df, currency)
+            out.append(vis)
         except Exception as e:  # noqa: BLE001 - a supporting chart is never worth a failed answer
             print(f"[present] supporting visual for {tid} skipped: {e}")
     return out

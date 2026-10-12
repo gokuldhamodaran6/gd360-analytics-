@@ -675,7 +675,11 @@ def attach(analysis: dict, plan: dict, tables: dict, question: str, today: date 
         analysis.setdefault("summary", {})["forecast"] = {"status": "refused", "reason": res["reason"]}
         analysis.setdefault("warnings", []).append(res["reason"])
         return res
-    _write(analysis, res, metric, kind, currency, target)
+    _write(analysis, res, metric, kind, currency, target, question)
+    try:
+        _by_dimension(analysis, spec, tables, series, res, metric, kind, currency, question, today)
+    except Exception as e:  # noqa: BLE001 - a per-segment forecast never fails the answer
+        print(f"[forecasting] per-segment forecast skipped: {e}")
     return res
 
 
@@ -708,7 +712,14 @@ def _actual_period(res: dict, a: date, b: date, grain: str) -> float | None:
     return float(np.sum(vals)) if res["additive"] else float(np.mean(vals))
 
 
-def _write(analysis: dict, res: dict, metric: str, kind: str, currency: str | None, asked: dict | None) -> None:
+BY_PERIOD = re.compile(r"\b(?:by|per|each|every|for\s+each)\s+(?:the\s+)?(month|quarter|week)s?\b|\b(monthly|quarterly|weekly)\b|"
+                       r"\bmonth[\s-]+(?:by|on)[\s-]+month\b", re.I)
+DRIVERS_ASKED = re.compile(r"\b(drive|drives|driving|driven|driver|drivers|why|because|reason|reasons|behind|factor|factors|"
+                           r"contribut\w*|explain\w*|cause[sd]?)\b", re.I)
+
+
+def _write(analysis: dict, res: dict, metric: str, kind: str, currency: str | None, asked: dict | None,
+           question: str = "") -> None:
     facts = analysis.setdefault("facts", [])
     cur = currency if kind == "currency" else None
 
@@ -805,6 +816,30 @@ def _write(analysis: dict, res: dict, metric: str, kind: str, currency: str | No
         ids["mape"] = add(f"Forecast model's typical error when tested on past {fc.grain_word(grain, 2)} (%)",
                           bt["mape"] * 100, "percent")["id"]
 
+    # round 33: the asked period month by month (peak, low; every month when asked "by month") and
+    # how concentrated it is - so "Forecast 2026 by month" is answered in words, not only on the chart
+    tgt_pts = [p for p in res["points"] if ts <= date.fromisoformat(p["period"]) <= te]
+    by_period: list[dict] = []
+    peak_label = low_label = None
+    wants_periods = bool(BY_PERIOD.search(question or ""))
+    if grain in ("month", "quarter", "week") and 3 <= len(tgt_pts) and not multi_year:
+        pk = max(tgt_pts, key=lambda p: p["value"])
+        lw = min(tgt_pts, key=lambda p: p["value"])
+        peak_label, low_label = _label(date.fromisoformat(pk["period"]), grain), _label(date.fromisoformat(lw["period"]), grain)
+        ids["peak"] = add(f"Highest forecast {grain}: {peak_label}", pk["value"])["id"]
+        ids["low"] = add(f"Lowest forecast {grain}: {low_label}", lw["value"])["id"]
+        if res["additive"] and main_v > 0 and len(tgt_pts) >= 6 and DRIVERS_ASKED.search(question or ""):
+            top2 = sorted(tgt_pts, key=lambda p: -p["value"])[:2]
+            names = " and ".join(_label(date.fromisoformat(p["period"]), grain).split(" ")[0] for p in
+                                 sorted(top2, key=lambda p: p["period"]))
+            ids["top2"] = add(f"Share of the {label} forecast in {names} (%)", sum(p["value"] for p in top2) / main_v * 100,
+                              "percent")["id"]
+        if wants_periods and len(tgt_pts) <= 24:
+            for p in tgt_pts:
+                pl = _label(date.fromisoformat(p["period"]), grain)
+                f = add(f"Forecast {metric}, {pl}", p["value"])
+                by_period.append({"label": pl, "fact_id": f["id"]})
+
     hist_start, hist_end = date.fromisoformat(res["first"]), date.fromisoformat(res["last_full"])
     history_text = (f"{res['history_points']} {fc.grain_word(grain, res['history_points'])} of history, "
                     f"{span_text(hist_start, fc.period_end(hist_end, grain))}")
@@ -818,6 +853,9 @@ def _write(analysis: dict, res: dict, metric: str, kind: str, currency: str | No
         "multi_year": multi_year, "method": res["method"], "history": history_text, "certainty": sure,
         "long_range_from": res.get("long_range_from"), "fact_ids": ids, "notes": res["notes"][:4],
         "vs": vs and {"label": vs["label"], "pct": vs["pct"]}, "history_growth_pct": hist_growth,
+        "peak_label": peak_label, "low_label": low_label, "by_period": by_period,
+        # the backtest scores months (or the series' own grain), never the yearly total
+        "error_grain": grain,
     }
     analysis.setdefault("summary", {})["forecast"] = summary
     analysis["type"] = "forecast"
@@ -847,6 +885,9 @@ def _write(analysis: dict, res: dict, metric: str, kind: str, currency: str | No
                      "cagr_display": by_id[ids["cagr_ahead"]]["display"] if ids.get("cagr_ahead") else None},
         "years": res["years"],
         "points": [{"period": h["period"], "value": h["value"], "kind": h["kind"]} for h in hist_pts] + res["points"],
+        # round 33: open on the months when the question asked for them
+        "view": "months" if wants_periods and grain != "year" else None,
+        "error_grain": grain,
         "method": {"label": res["method"], "history": history_text, "certainty": sure,
                    "mape": (bt.get("mape") * 100) if bt.get("mape") is not None else None,
                    "baseline_mape": ((bt.get("baseline") or {}).get("mape") or 0) * 100 if (bt.get("baseline") or {}).get("mape") is not None else None,
@@ -891,3 +932,124 @@ def _kpis(by_id: dict, ids: dict, metric: str, label: str, vs: dict | None, sure
         out.append({"key": "error", "label": "Typical error in testing", "display": f"±{e['display']}", "value": e["value"],
                     "kind": "percent", "sources": [], "note": "on past periods it didn't see"})
     return out
+
+
+# ---- one forecast per segment (round 33) ------------------------------------------------------
+
+_DIM_ASKED = re.compile(r"\b(?:by|per|for\s+each|each|across|split\s+by|broken\s+down\s+by)\s+((?:[a-z]+\s+){0,2}[a-z]+)", re.I)
+MAX_SEGMENTS = 8
+
+
+def _asked_dimension(question: str, df: pd.DataFrame, skip: list[str]) -> str | None:
+    """The text column a "by customer segment" / "per channel" question names, in a dated table."""
+    words = set()
+    for m in _DIM_ASKED.finditer(question or ""):
+        words |= {w.lower().rstrip("s") for w in m.group(1).split() if w.lower() not in ("the", "a", "each", "year", "month",
+                                                                                          "quarter", "week", "day")}
+    if not words:
+        return None
+    best, score = None, 0
+    for c in df.columns:
+        if c in skip or pd.api.types.is_numeric_dtype(df[c]):
+            continue
+        n = df[c].nunique(dropna=True)
+        if not (2 <= n <= 40):
+            continue
+        cw = {w.rstrip("s") for w in re.findall(r"[a-z]+", str(c).lower())}
+        hit = len(cw & words)
+        if hit > score:
+            best, score = c, hit
+    return best
+
+
+def _by_dimension(analysis: dict, spec: dict, tables: dict, series: dict, total: dict, metric: str, kind: str,
+                  currency: str | None, question: str, today: date) -> None:
+    if not _DIM_ASKED.search(question or ""):
+        return
+    target = total["target"]
+    ts, te = date.fromisoformat(total["target_start"]), date.fromisoformat(total["target_end"])
+    vcol_name = series["value_column"]
+    for name, df in tables.items():
+        if df is None or len(df) < 6:
+            continue
+        got = _time_of(df, None)
+        if not got:
+            continue
+        when, tcols = got
+        dim = _asked_dimension(question, df, tcols)
+        if not dim:
+            continue
+        vcol = vcol_name if vcol_name in df.columns else _value_col(df, tcols + [dim], [], metric)
+        if not vcol:
+            continue
+        work = df.assign(__t=when)
+        totals = work.groupby(dim)[vcol].apply(lambda x: pd.to_numeric(x, errors="coerce").sum()).sort_values(ascending=False)
+        items = []
+        for seg in list(totals.index)[:MAX_SEGMENTS]:
+            sub = work[work[dim] == seg].drop(columns="__t")
+            sseries = find_series({"table": name, "time_column": tcols[0], "value_columns": [vcol]}, {name: sub}, metric)
+            if not sseries:
+                continue
+            r = forecast(sseries, target, today)
+            if r.get("status") != "ok":
+                continue
+            agg = _sum_period(r, ts, te)
+            if not agg:
+                continue
+            pa, pb = date(ts.year - 1, ts.month, 1), date(te.year - 1, te.month, min(te.day, 28))
+            prev = _actual_period(r, pa, fc.period_end(_bucket(pb, r["grain"]), r["grain"]), r["grain"]) \
+                if not (te.year > ts.year) else None
+            items.append({"name": str(seg), **agg, "prev": prev})
+        if len(items) < 2:
+            continue
+        facts = analysis.setdefault("facts", [])
+        cur = currency if kind == "currency" else None
+        label = (analysis.get("summary") or {}).get("forecast", {}).get("asked") or target.get("text") or span_text(ts, te)
+        from .present import humanize
+        dim_h = humanize(dim).lower()
+        out_items = []
+        for it in items:
+            f = {"id": f"f{len(facts) + 1}", "label": f"Forecast {metric}, {label}: {it['name']}", "value": it["value"], "kind": kind,
+                 "display": fmt(it["value"], kind, cur), "table": name}
+            facts.append(f)
+            entry = {"name": it["name"], "fact_id": f["id"]}
+            pc = pct_change(it["value"], it["prev"]) if it.get("prev") else None
+            if pc is not None:
+                g = {"id": f"f{len(facts) + 1}", "label": f"Forecast change for {it['name']} vs a year earlier (%)", "value": pc,
+                     "kind": "percent", "display": fmt(pc, "percent", None, signed=True), "table": name}
+                facts.append(g)
+                entry["pct_fact_id"] = g["id"]
+            out_items.append(entry)
+        prev_label = span_text(date(ts.year - 1, ts.month, 1), date(te.year - 1, te.month, te.day)) if te.year == ts.year else None
+        rows, details = [], []
+        for it in items:
+            row = {dim: it["name"]}
+            if prev_label and it.get("prev") is not None:
+                row[f"actual_{prev_label}"] = round(it["prev"], 2)
+            row[f"forecast_{label}"] = round(it["value"], 2)
+            rows.append(row)
+            details.append({dim: it["name"], "forecast": round(it["value"], 2), "likely_low": round(it["lo80"], 2),
+                            "likely_high": round(it["hi80"], 2), **({"actual_last_year": round(it["prev"], 2)} if it.get("prev") is not None else {})})
+        cols = [{"name": dim, "dtype": "string", "role": "dimension", "label": dim_h.capitalize()}]
+        if prev_label and any(f"actual_{prev_label}" in r for r in rows):
+            cols.append({"name": f"actual_{prev_label}", "dtype": "number", "role": "measure", "label": f"{prev_label} actual", "format": kind,
+                         **({"currency": cur} if cur else {})})
+        cols.append({"name": f"forecast_{label}", "dtype": "number", "role": "measure", "label": f"{label} forecast", "format": kind,
+                     **({"currency": cur} if cur else {})})
+        dcols = [{"name": dim, "dtype": "string", "role": "dimension", "label": dim_h.capitalize()},
+                 {"name": "forecast", "dtype": "number", "role": "measure", "label": f"{label} forecast", "format": kind},
+                 {"name": "likely_low", "dtype": "number", "role": "measure", "label": "Likely low (80%)", "format": kind},
+                 {"name": "likely_high", "dtype": "number", "role": "measure", "label": "Likely high (80%)", "format": kind}]
+        if any("actual_last_year" in d for d in details):
+            dcols.append({"name": "actual_last_year", "dtype": "number", "role": "measure", "label": f"{prev_label} actual", "format": kind})
+        together = sum(it["value"] for it in items) if total.get("additive") else None
+        note = (f"Each {dim_h} is forecast from its own history" +
+                (f"; together they come to {fmt(together, kind, cur)}." if together is not None else ".") +
+                (f" Showing the {MAX_SEGMENTS} largest." if len(totals) > MAX_SEGMENTS else ""))
+        visual = {"type": "chart", "title": f"{metric}: {label} forecast by {dim_h}", "chart_type": "grouped_bar" if len(cols) > 2 else "bar",
+                  "columns": cols, "rows": rows, "tables": [name], "note": note,
+                  "details": {"columns": dcols, "rows": details}}
+        vis = analysis.setdefault("visuals", [])
+        vis.insert(1 if vis and vis[0].get("type") == "forecast" else 0, visual)
+        analysis.setdefault("summary", {}).setdefault("forecast", {})["by_dimension"] = {"dimension": dim_h, "items": out_items}
+        return

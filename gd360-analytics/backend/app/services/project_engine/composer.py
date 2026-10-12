@@ -52,6 +52,15 @@ Rules:
   a forecast question with history alone. If "forecast" has status "refused", say why
   in one sentence and what would make a forecast possible. Suggest follow-ups such as
   the forecast by month, what drives it, or how sure it is.
+- When the question asks for a forecast BY MONTH (or quarter): give the total, then the
+  peak and the lowest month from the facts, and say every month is in the chart - do not
+  list all twelve. When it asks BY a dimension (segment, channel...): give each one's
+  forecast from the facts, largest first.
+- DRIVERS: when ANALYSIS SUMMARY has "drivers", answer "what drives / why" with them -
+  how much of the change came from the number of orders (or customers) and how much
+  from the value of each order, each with its fact - and, for a forecast, the trend and
+  the seasonal peak that shape it. Never leave a "why" or "what drives" part unanswered.
+- The "answer" adds to the headline; never repeat the headline sentence in it.
 - Never mention SQL, tables, steps, facts or ids in the text.
 - Short sentences. No hedging filler.
 
@@ -101,6 +110,20 @@ def _draft(question: str, plan: dict, analysis: dict, tables: list[dict], proble
     return ai_engine._plan_with_retry(messages, max_tokens=4000)
 
 
+def without_headline(answer: str, headline: str) -> str:
+    """The answer minus a repeat of the headline at its start (round 33): the page shows both, one under
+    the other, so "X is forecast at $35.2M…" twice reads like a fault."""
+    a, h = (answer or "").strip(), (headline or "").strip()
+    if not a or not h:
+        return a
+    norm = lambda t: re.sub(r"[\s.]+$", "", re.sub(r"\s+", " ", t)).lower()  # noqa: E731
+    if norm(a) == norm(h):
+        return ""
+    if a.lower().startswith(h.lower()):
+        return a[len(h):].lstrip(" .;:-–—").strip()
+    return a
+
+
 def _clean(d: dict, facts_by_id: dict) -> dict:
     causes = []
     for c in (d.get("causes") or [])[:5]:
@@ -117,8 +140,9 @@ def _clean(d: dict, facts_by_id: dict) -> dict:
         for r in (d.get("ruled_out") or [])[:6] if isinstance(r, dict) and r.get("title")
     ]
     nxt = [str(q)[:140] for q in (d.get("next_questions") or [])[:3] if str(q).strip()]
+    headline = str(d.get("headline") or "")[:300]
     return {
-        "headline": str(d.get("headline") or "")[:300], "answer": str(d.get("answer") or "")[:1500],
+        "headline": headline, "answer": without_headline(str(d.get("answer") or ""), headline)[:1500],
         "causes": causes, "ruled_out": ruled, "next_questions": nxt,
     }
 
@@ -163,6 +187,39 @@ def claim_problems(draft: dict, analysis: dict) -> list[str]:
     return out
 
 
+def summary_text(analysis: dict) -> str:
+    """The sentences GD360 computed itself (never model text): forecast history / notes / labels,
+    driver sentences, coverage notes."""
+    s = analysis.get("summary") or {}
+    bits: list[str] = []
+    fs = s.get("forecast") or {}
+    for k in ("history", "target", "asked", "method", "reason", "peak_label", "low_label"):
+        if isinstance(fs.get(k), str):
+            bits.append(fs[k])
+    bits += [str(n) for n in fs.get("notes") or []]
+    dr = s.get("drivers") or {}
+    for k in ("sentence", "from_label", "to_label"):
+        if isinstance(dr.get(k), str):
+            bits.append(dr[k])
+    bits += [str(n) for n in (analysis.get("coverage") or {}).get("notes") or []]
+    for k in ("current_label", "previous_label"):  # a change's own windows ("1–28 Sep 2026")
+        if isinstance(s.get(k), str):
+            bits.append(s[k])
+    return " ".join(bits)
+
+
+def plan_text(plan: dict) -> str:
+    """Whole numbers from what was agreed / assumed before the numbers came back ("the last 28 days",
+    "orders over 5 items"), and the agreed period - counts and dates only, never an amount or a rate."""
+    bits = []
+    for a in plan.get("assumptions") or []:
+        bits += re.findall(r"(?<![\d.,$€£₹%])\b\d{1,4}\b(?![.,]\d|\s?%|\s?[kKmMbB]\b)", str(a))
+    p = (plan.get("brief") or {}).get("period") if isinstance(plan.get("brief"), dict) else None
+    if isinstance(p, dict):
+        bits.append(str(p.get("text") or ""))
+    return " ".join(bits)
+
+
 def _all_text(a: dict) -> str:
     bits = [a["headline"], a["answer"]]
     for c in a["causes"]:
@@ -197,12 +254,12 @@ def fallback_answer(question: str, analysis: dict) -> dict:
                                "direction": "down" if seg["change"] < 0 else "up"})
             elif d["segments"]:
                 ruled.append({"title": d["label"], "detail": f"The change is spread across {d['label'].lower()} values rather than coming from one."})
-        answer = headline
+        answer = ""
     elif atype == "trend" and s.get("series"):
         se = s["series"][0]
         ids = se["fact_ids"]
         headline = f"{se['name']} went from {facts[ids[0]]['display']} to {facts[ids[1]]['display']}."
-        answer = headline + (f" Highest: {facts[ids[4]]['label'].split('(')[-1].rstrip(')')} at {facts[ids[4]]['display']}." if len(ids) > 4 else "")
+        answer = (f"Highest: {facts[ids[4]]['label'].split('(')[-1].rstrip(')')} at {facts[ids[4]]['display']}." if len(ids) > 4 else "")
     elif atype in ("breakdown", "comparison") and s.get("segments"):
         def said(seg: dict) -> tuple[str, str | None]:
             ids = seg.get("fact_ids") or []
@@ -215,39 +272,54 @@ def fallback_answer(question: str, analysis: dict) -> dict:
             v, share = said(low)
             headline = f"{low['segment']} is the lowest at {v}{per}" + (f" ({share} of the total)." if share else ".")
             tv, _ = said(top)
-            answer = headline + f" The highest is {top['segment']} at {tv}{per}."
+            answer = f"The highest is {top['segment']} at {tv}{per}."
         else:
             v, share = said(top)
             headline = f"{top['segment']} leads with {v}{per}" + (f" ({share} of the total)." if share else ".")
-            answer = headline
+            answer = ""
             if low and low.get("segment") != top.get("segment"):
                 lv, _ = said(low)
-                answer += f" The lowest is {low['segment']} at {lv}{per}."
+                answer = f"The lowest is {low['segment']} at {lv}{per}."
     elif atype == "forecast" and (s.get("forecast") or {}).get("status") == "ok":
         fs = s["forecast"]
         ids = fs.get("fact_ids") or {}
         d = lambda k: (facts.get(ids.get(k)) or {}).get("display")  # noqa: E731
-        headline = f"{fs['metric']} is forecast at {d('main')} for {fs['target']} (likely {d('lo')} – {d('hi')})"
+        from .present import in_sentence
+        headline = f"The {fs['target']} forecast for {in_sentence(fs['metric'])} is {d('main')} (likely {d('lo')} – {d('hi')})"
         if ids.get("pct") and fs.get("vs"):
-            headline += f", {d('pct')} on {fs['vs']['label']}"
+            flat = abs((facts.get(ids["pct"]) or {}).get("value") or 0) < 1
+            headline += (f", about level with {fs['vs']['label']} ({d('pct')})" if flat else f", {d('pct')} on {fs['vs']['label']}")
         headline += "."
-        sure = {"tested": f" In testing on past periods it was typically within {d('mape')}." if ids.get("mape") else "",
+        sure = {"tested": f" Tested on past months it hadn't seen, it was typically within {d('mape')} a month." if ids.get("mape") else "",
                 "long-range": " The later years are a long-range projection, so their range widens every year.",
                 "rough": " There was too little pattern in the history for a full model, so this is a rough straight-line trend.",
                 "untested": " There was too little history to test it."}.get(fs.get("certainty"), "")
-        answer = f"{headline} Built from {fs.get('history')}.{sure}"
+        answer = f"Built from {fs.get('history')}.{sure}"
         if ids.get("total"):
             answer += f" Over the whole period that adds up to {d('total')}."
+        if ids.get("peak") and ids.get("low"):
+            answer += (f" It peaks in {fs.get('peak_label')} at {d('peak')} and is lowest in {fs.get('low_label')} at {d('low')}"
+                       + (" - every month is in the chart." if fs.get("by_period") else "."))
+        for seg in (fs.get("by_dimension") or {}).get("items", [])[:4]:
+            sd = (facts.get(seg.get("fact_id")) or {}).get("display")
+            if sd:
+                answer += f" {seg['name']}: {sd}."
+        dr = s.get("drivers") or {}
+        if dr.get("sentence"):
+            answer += " " + dr["sentence"]
         return {"headline": headline, "answer": answer, "causes": [], "ruled_out": [],
                 "next_questions": [f"Forecast {fs['target']} by month", f"What drives the {fs['metric'].lower()} forecast?",
                                    "How sure is this forecast?"], "written_by": "template"}
     elif (s.get("forecast") or {}).get("status") == "refused":
         headline = f"I couldn't forecast this yet: {s['forecast']['reason']}"
-        answer = headline
+        answer = ""
     else:
         kpis = [f for f in analysis.get("facts") or []][:3]
         headline = "; ".join(f"{k['label']}: {k['display']}" for k in kpis) or "Here is the result."
-        answer = headline
+        answer = ""
+    dr = s.get("drivers") or {}
+    if dr.get("sentence") and atype != "forecast":
+        answer = (answer + " " + dr["sentence"]).strip()
     return {"headline": headline, "answer": answer, "causes": causes[:4], "ruled_out": ruled[:4], "next_questions": [],
             "written_by": "template"}
 
@@ -255,7 +327,9 @@ def fallback_answer(question: str, analysis: dict) -> dict:
 def compose(question: str, plan: dict, analysis: dict, tables: list[dict]) -> dict:
     facts = analysis.get("facts") or []
     facts_by_id = {f["id"]: f for f in facts}
-    allowed = allowed_values(facts, tables, extra_text=question)
+    # round 33: numbers GD360 itself wrote into the summary ("60 months of history, 2021 – 2025") and the
+    # coverage notes are as checked as the facts - a draft that repeats them is not rejected for it
+    allowed = allowed_values(facts, tables, extra_text=" ".join([question, summary_text(analysis), plan_text(plan)]))
     problems = None
     for _attempt in range(2):
         try:

@@ -530,6 +530,14 @@ def analyse(plan: dict, tables: dict, steps: list[dict], question: str = "") -> 
     except Exception as e:  # noqa: BLE001 - the forecast never fails an answer
         print(f"[project_engine] forecast skipped: {e}")
         analysis.setdefault("warnings", []).append("The forecast could not be computed this time; showing the history.")
+    # 2026-10-12 (round 33): "why / what drives" is answered from what the plan fetched - the change split
+    # into the number of orders vs the value of each (project_engine/drivers.py)
+    if analysis.get("type") != "explain_change":
+        try:
+            from . import drivers
+            drivers.attach(analysis, plan, tables, question)
+        except Exception as e:  # noqa: BLE001 - never fails an answer
+            print(f"[project_engine] drivers skipped: {e}")
     warnings += analysis.get("warnings") or []
     currency = spec.get("currency") if spec.get("format") == "currency" else (spec.get("currency") or "USD")
     try:
