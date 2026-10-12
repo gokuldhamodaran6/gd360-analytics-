@@ -86,10 +86,19 @@ export function PreviewSkeleton() {
 
 export function PreviewEmpty() {
   return (
-    <div data-preview-empty="" className="flex min-h-[320px] flex-col items-center justify-center gap-2 rounded-card border border-dashed border-border-strong bg-surface/60 px-6 py-10 text-center">
-      <SparkleIcon size={20} className="text-brand-ink" />
-      <div className="text-body font-medium text-text">Your proposal appears here</div>
-      <div className="max-w-[44ch] text-ui text-muted">Describe who the dashboard is for and what matters; GD360 proposes the KPIs, charts and tables from your real columns and saved metrics. Nothing is created until you publish.</div>
+    <div data-preview-empty="" className="relative flex min-h-[460px] flex-col overflow-hidden rounded-card border border-border bg-surface/60">
+      {/* round 35: the shape of what is coming - a faint dashboard - instead of a dashed empty box */}
+      <div aria-hidden="true" className="grid grid-cols-12 gap-3 p-5 opacity-[0.35]">
+        {[0, 1, 2, 3].map((i) => <div key={i} className="col-span-3 h-[68px] rounded-ctl bg-subtle" />)}
+        <div className="col-span-8 h-[190px] rounded-ctl bg-subtle" />
+        <div className="col-span-4 h-[190px] rounded-ctl bg-subtle" />
+        <div className="col-span-12 h-[96px] rounded-ctl bg-subtle" />
+      </div>
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center">
+        <span className="grid h-10 w-10 place-items-center rounded-[12px] border border-tint-border bg-tint"><SparkleIcon size={18} className="text-brand-ink" /></span>
+        <div className="text-body font-semibold text-text">Your draft appears here</div>
+        <div className="max-w-[46ch] text-ui text-muted">Pick a source and say what matters. GD360 drafts the KPIs, charts and tables from your real columns and saved metrics - you keep, swap or remove each one.</div>
+      </div>
     </div>
   );
 }

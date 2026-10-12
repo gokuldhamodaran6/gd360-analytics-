@@ -6,6 +6,7 @@ import {
   Button, CheckIcon, DatabaseIcon, ProviderBadge, Select, Skeleton, SparkleIcon, TableIcon, Textarea, WarningIcon, cn, providerDisplayName,
 } from "../../ui";
 import { kindLabel, proposalSupport, schemaSummary, type SourceSupport } from "./sourceSupport";
+import { SourcePicker } from "./SourcePicker";
 
 // Builder.dc.html's left column: "Describe". The source picker (name,
 // provider badge, "119,386 rows · 32 columns" when the schema cache / file
@@ -17,12 +18,49 @@ import { kindLabel, proposalSupport, schemaSummary, type SourceSupport } from ".
 export const GOAL_MAX = 2000;
 export const GOAL_MIN = 3;
 
+// round 35: starting points written from the chosen source's OWN columns ("Net sales by marketing
+// channel and customer segment") - before, four fixed sentences about revenue and cancellations sat
+// here for every source, next to a second set of "templates" saying the same thing.
 export const EXAMPLE_GOALS = [
-  "Weekly performance for the leadership team: revenue, volume, cancellations, where it comes from",
-  "Operations today vs. yesterday: throughput, failure rate, backlog by team",
-  "Where our customers come from, by country and segment, with a detail table",
-  "Monthly finance review: revenue, cost and margin by category",
+  "A weekly overview of the key numbers for leadership, and how they trend",
+  "Where the results come from, by the main categories, with a detail table",
+  "The main measure over time, with filters for each segment",
 ];
+
+const MONEY = /(revenue|sales|amount|price|profit|cost|gmv|income|spend|margin|adr|value|fee|payment)/i;
+const NOT_MEASURE = /(^id$|_id$|^id_|zip|postal|code$|phone|^year$|_year$|_month$|_week|_day|number$|latitude|longitude|^lat$|^lon|^lng$|^(is|has|was|flag)_|^(is|has)[A-Z])/i;
+const GOOD_DIM = /(channel|segment|category|region|country|city|state|product|type|status|source|campaign|department|market|brand|store|hotel|team|plan|tier|device|platform)/i;
+const DATE_NAME = /(date|month|time|period|_at$|^day$|week)/i;
+const ACRONYMS = new Set(["adr", "aov", "gmv", "roi", "cac", "ltv", "arr", "mrr", "kpi", "ctr", "cpc", "cpm", "nps", "roas", "sku", "id"]);
+const human = (c: string) => c.replace(/[_\s]+/g, " ").trim().toLowerCase().replace(/^(total|sum|count) (of )?/, "")
+  .split(" ").map((w) => (ACRONYMS.has(w) ? w.toUpperCase() : w)).join(" ");
+
+export function suggestGoals(ds: DataSourceSummary | null): string[] {
+  if (!ds) return [];
+  const tables = getTableEntries(ds.kind, ds.schema_cache, ds.name) || [];
+  const t = [...tables].sort((a, b) => (b.columns?.length || 0) - (a.columns?.length || 0))[0];
+  return suggestFromColumns((t?.columns || []).map((c: any) => ({ name: String(c.name || ""), type: String(c.type || "") })));
+}
+
+/** Round 35b: the same starting points from a plain column list (an empty dashboard page). */
+export function suggestFromColumns(columns: { name: string; type?: string; dtype?: string }[]): string[] {
+  const cols = columns.map((c) => ({ name: String(c.name || ""), type: String(c.type || c.dtype || "").toLowerCase() })).filter((c) => c.name);
+  if (!cols.length) return EXAMPLE_GOALS;
+  const numeric = cols.filter((c) => /(int|float|double|numeric|decimal|number|real|money|bigint)/.test(c.type) && !NOT_MEASURE.test(c.name));
+  const measures = [...numeric.filter((c) => MONEY.test(c.name)), ...numeric.filter((c) => !MONEY.test(c.name))].map((c) => human(c.name));
+  const textual = cols.filter((c) => /(str|text|char|object|varchar|category|bool)/.test(c.type) || !c.type);
+  const dims = [...textual.filter((c) => GOOD_DIM.test(c.name)), ...textual.filter((c) => !GOOD_DIM.test(c.name) && !/(name|email|description|comment|note|url|address|id$)/i.test(c.name))].map((c) => human(c.name));
+  const hasDate = cols.some((c) => /(date|time|timestamp)/.test(c.type) || DATE_NAME.test(c.name));
+  const [m1, m2] = measures;
+  const [d1, d2] = dims;
+  if (!m1) return EXAMPLE_GOALS;
+  const out: string[] = [];
+  out.push(`Leadership overview: ${m1}${m2 ? ` and ${m2}` : ""}${hasDate ? ", and how they trend month by month" : ""}`);
+  if (d1) out.push(`Where ${m1} comes from: by ${d1}${d2 ? ` and ${d2}` : ""}, with a detail table`);
+  if (hasDate && d1) out.push(`${m1.charAt(0).toUpperCase()}${m1.slice(1)} over time, with filters for ${d2 || d1}`);
+  else if (m2 && d1) out.push(`Compare ${m1} and ${m2} across ${d1}`);
+  return out.slice(0, 3);
+}
 
 export function isSubmitShortcut(e: KeyboardEvent): boolean {
   return e.key === "Enter" && (e.metaKey || e.ctrlKey);
@@ -84,6 +122,9 @@ export type ComposerProps = {
   proposal?: DashboardProposal | null;
   onDescribeAgain?: () => void;
   className?: string;
+  // round 35: the chat this page was opened from - its "Made from" link, shown and removable, so a
+  // dashboard is never stamped "Made from <a chat>" it has nothing to do with
+  linkedChat?: { title: string; onUnlink: () => void } | null;
 };
 
 function SupportNote({ support, ds }: { support: SourceSupport; ds: DataSourceSummary }) {
@@ -125,7 +166,7 @@ function UsedList({ proposal }: { proposal: DashboardProposal }) {
 }
 
 export function Composer({
-  sources, sourcesError, sourceId, onSourceChange, goal, onGoalChange, templates, templateId, onTemplateChange, onSubmit, busy = false, error, proposal, onDescribeAgain, className,
+  sources, sourcesError, sourceId, onSourceChange, goal, onGoalChange, templateId, onTemplateChange, onSubmit, busy = false, error, proposal, onDescribeAgain, className, linkedChat,
 }: ComposerProps) {
   const ds = useMemo(() => (sources || []).find((d) => d.id === sourceId) || null, [sources, sourceId]);
   const support = ds ? proposalSupport(ds.kind) : null;
@@ -146,14 +187,8 @@ export function Composer({
     onSubmit();
   };
 
-  const pickTemplate = (t: ProposalTemplate) => {
-    if (templateId === t.id) {
-      onTemplateChange(null);
-      return;
-    }
-    onTemplateChange(t.id);
-    if (!trimmed) onGoalChange(t.goal);
-  };
+  void templateId; void onTemplateChange;
+  const suggestions = useMemo(() => suggestGoals(ds), [ds]);
 
   const statsText = sourceStatsText(stats);
   const tableEntries = ds ? getTableEntries(ds.kind, ds.schema_cache, ds.name) : [];
@@ -162,12 +197,10 @@ export function Composer({
     <section data-composer="" aria-label="Describe the dashboard" className={cn("flex min-w-0 flex-col rounded-card border border-border bg-surface shadow-card", className)}>
       <header className="flex items-center justify-between gap-2.5 border-b border-border px-[18px] py-3.5">
         <h2 className="text-[15px] font-semibold text-text">Describe</h2>
-        {ds && (
+        {ds && proposal && (
           <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-border bg-base px-2.5 py-[3px] text-caption text-secondary" title={ds.name}>
             <span aria-hidden="true" className="h-[7px] w-[7px] shrink-0 rounded-full bg-primary" />
-            <span className="truncate font-mono">{ds.name}</span>
-            <span aria-hidden="true">·</span>
-            <span className="shrink-0">{kindLabel(ds.kind)}</span>
+            <span className="truncate">{ds.name}</span>
           </span>
         )}
       </header>
@@ -222,21 +255,10 @@ export function Composer({
                   No data connected yet. <Link to="/data" className="font-medium text-brand-ink hover:underline">Connect a data source</Link> first.
                 </div>
               ) : (
-                <Select
-                  id="builder-source"
-                  data-source-picker=""
-                  value={sourceId}
-                  onChange={(e) => onSourceChange(e.target.value)}
-                  disabled={busy}
-                  options={[
-                    ...(sourceId ? [] : [{ value: "", label: "Choose a data source", disabled: true }]),
-                    ...(sources || []).map((d) => ({ value: d.id, label: `${d.name} · ${kindLabel(d.kind)}` })),
-                  ]}
-                />
+                <SourcePicker sources={sources || []} value={sourceId} onChange={onSourceChange} disabled={busy} />
               )}
               {ds && (
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-caption text-muted" data-source-stats="">
-                  <ProviderBadge provider={ds.kind} />
                   {stats.loading && !statsText ? <span className="ui-shimmer h-3 w-28" aria-busy="true" /> : statsText ? <span className="tabular-nums">{statsText}</span> : tableEntries.length === 0 ? <span>Schema not cached yet</span> : null}
                 </div>
               )}
@@ -254,7 +276,7 @@ export function Composer({
                 maxLength={GOAL_MAX}
                 disabled={busy || support?.level === "unsupported"}
                 invalid={touched && goalTooShort}
-                placeholder="Who is it for and what matters most - e.g. weekly hotel performance for leadership: revenue, bookings, cancellations, where bookings come from."
+                placeholder={suggestions[0] ? `Who is it for and what matters most - e.g. ${suggestions[0].charAt(0).toLowerCase()}${suggestions[0].slice(1)}.` : "Who is it for and what matters most - the numbers, the breakdowns, the filters."}
                 onChange={(e) => onGoalChange(e.target.value)}
                 onKeyDown={(e) => { if (isSubmitShortcut(e)) { e.preventDefault(); submit(); } }}
                 aria-describedby="builder-goal-hint"
@@ -269,13 +291,22 @@ export function Composer({
               </div>
             </div>
 
-            <div className="flex flex-wrap gap-1.5" aria-label="Examples" data-example-chips="">
-              {EXAMPLE_GOALS.map((g) => (
+            {linkedChat && (
+              <div className="flex items-center gap-2 rounded-ctl border border-border bg-base px-2.5 py-2 text-caption text-secondary" data-linked-chat="">
+                <span className="min-w-0 flex-1 truncate" title={linkedChat.title}>Made from <span className="font-medium text-text">“{linkedChat.title}”</span></span>
+                <button type="button" onClick={linkedChat.onUnlink} className="ui-focus shrink-0 rounded font-medium text-muted hover:text-text" data-unlink-chat="">Unlink</button>
+              </div>
+            )}
+
+            {suggestions.length > 0 && <div className="text-[11.5px] font-semibold uppercase tracking-caps text-muted">Start from</div>}
+            <div className="flex flex-col gap-1.5" aria-label="Suggestions from this source" data-example-chips="">
+              {suggestions.map((g) => (
                 <button
                   key={g}
                   type="button"
                   disabled={busy}
-                  className="ui-focus rounded-ctl border border-border bg-surface px-2.5 py-[6px] text-left text-[12.5px] font-medium text-text hover:border-border-strong hover:bg-subtle disabled:text-faint"
+                  className="ui-focus rounded-ctl border border-border bg-surface px-3 py-2 text-left text-[12.5px] leading-snug text-secondary hover:border-border-strong hover:bg-subtle hover:text-text disabled:text-faint"
+                  data-suggestion="" 
                   onClick={() => { onGoalChange(g); textareaRef.current?.focus(); }}
                 >
                   {g}
@@ -298,41 +329,6 @@ export function Composer({
           <Button variant="primary" size="lg" data-propose-submit="" loading={busy} disabled={!canSubmit && !busy} icon={<SparkleIcon size={15} />} onClick={submit} className="w-full">
             {busy ? "Proposing…" : "Propose a dashboard"}
           </Button>
-          <div className="flex flex-col gap-2" data-template-row="">
-            <span className="text-[12.5px] font-medium text-brand-ink">Start from a template</span>
-            {templates === null ? (
-              <div className="flex gap-1.5"><Skeleton height={26} width={110} /><Skeleton height={26} width={96} /><Skeleton height={26} width={104} /></div>
-            ) : templates.length === 0 ? (
-              <span className="text-caption text-muted">No templates available.</span>
-            ) : (
-              <div className="flex flex-wrap gap-1.5" role="group" aria-label="Templates">
-                {templates.map((t) => {
-                  const active = templateId === t.id;
-                  return (
-                    <button
-                      key={t.id}
-                      type="button"
-                      data-template={t.id}
-                      aria-pressed={active}
-                      disabled={busy}
-                      title={t.description}
-                      className={cn(
-                        "ui-focus inline-flex items-center gap-1.5 rounded-full border px-2.5 py-[5px] text-caption font-medium transition-colors",
-                        active ? "border-tint-border bg-tint text-brand-ink" : "border-border bg-base text-secondary hover:border-border-strong hover:text-text"
-                      )}
-                      onClick={() => pickTemplate(t)}
-                    >
-                      {active && <CheckIcon size={11} strokeWidth={2.6} />}
-                      {t.name}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-            {templateId && templates && (
-              <span className="text-caption text-muted">{templates.find((t) => t.id === templateId)?.description}</span>
-            )}
-          </div>
           {ds && support?.level !== "unsupported" && (
             <div className="inline-flex items-center gap-1.5 text-caption text-muted">
               <DatabaseIcon size={13} className="text-brand-ink" /> Every block carries its own query - see it before you publish.

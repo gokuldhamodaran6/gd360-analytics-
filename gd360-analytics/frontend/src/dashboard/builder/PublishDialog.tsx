@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { dashboardApi } from "../../api/client";
 import { useNavigate } from "react-router-dom";
 import { Button, Field, Input, Select, Sheet, WarningIcon } from "../../ui";
 import { isSubmitShortcut } from "./Composer";
@@ -15,7 +16,9 @@ import type { ProposalFlow } from "./useProposalFlow";
 export function defaultTitle(flow: ProposalFlow, goal: string): string {
   const t = flow.proposal?.title?.trim();
   if (t) return t.slice(0, 120);
-  return goal.trim().slice(0, 60) || "New dashboard";
+  // round 35: never the raw prompt as a title - its first clause, capitalised
+  const g = goal.trim().split(/[:.;\n]/)[0].split(/,\s/)[0].trim().slice(0, 60);
+  return g ? g.charAt(0).toUpperCase() + g.slice(1) : "New dashboard";
 }
 
 export function PublishDialog({ open, onClose, flow, goal }: { open: boolean; onClose: () => void; flow: ProposalFlow; goal: string }) {
@@ -23,13 +26,23 @@ export function PublishDialog({ open, onClose, flow, goal }: { open: boolean; on
   const [name, setName] = useState(() => defaultTitle(flow, goal));
   const [visibility, setVisibility] = useState<"private" | "workspace">("private");
   const [error, setError] = useState<string | null>(null);
+  // round 35: a second "Employee Age Demographics Overview" is flagged before it is made
+  const [taken, setTaken] = useState<Set<string>>(new Set());
   useEffect(() => {
     if (open) {
       setName(defaultTitle(flow, goal));
       setError(null);
+      dashboardApi.list().then((ds) => setTaken(new Set(ds.filter((d) => d.is_own).map((d) => d.name.trim().toLowerCase())))).catch(() => undefined);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+  const clash = taken.has(name.trim().toLowerCase());
+  const freeName = useMemo(() => {
+    const base = name.trim();
+    let i = 2;
+    while (taken.has(`${base} (${i})`.toLowerCase())) i += 1;
+    return `${base} (${i})`;
+  }, [name, taken]);
 
   const kept = flow.blocks.filter(flow.isKept);
   const pages = flow.proposal?.pages.filter((p) => p.blocks.some((b) => kept.includes(b))).length || 0;
@@ -70,7 +83,16 @@ export function PublishDialog({ open, onClose, flow, goal }: { open: boolean; on
       }
     >
       <form className="flex flex-col gap-4" data-publish-dialog="" onSubmit={(e) => { e.preventDefault(); publish(); }}>
-        <Field label="Title" id="publish-title">
+        <Field
+          label="Title"
+          id="publish-title"
+          hint={clash ? (
+            <span data-publish-clash="" className="text-warning">
+              You already have a dashboard with this name.{" "}
+              <button type="button" className="ui-focus rounded font-medium underline underline-offset-2" onClick={() => setName(freeName)}>Use “{freeName}”</button>
+            </span>
+          ) : undefined}
+        >
           <Input
             data-publish-title=""
             autoFocus

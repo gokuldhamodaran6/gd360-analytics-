@@ -61,7 +61,7 @@ export function RefineBar({ flow, className }: { flow: ProposalFlow; className?:
         <Input
           data-refine-input=""
           aria-label="Change anything"
-          placeholder="Change anything… e.g. group the trend by hotel, add a cancellation KPI"
+          placeholder="Change anything… e.g. split the trend by region, add a KPI for orders"
           value={text}
           maxLength={1000}
           disabled={busy}
