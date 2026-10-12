@@ -26,6 +26,7 @@ const FIT_TEXT: Record<string, string> = {
   out_of_range: "Outside your dates",
   weak: "Missing a column",
   none: "Nothing readable",
+  empty: "Nothing synced yet",
 };
 
 export function FitBadge({ fit, covered }: { fit?: string; covered?: boolean }) {
@@ -119,7 +120,9 @@ export function SourceChoiceList({
 }
 
 function rowOf(c: CheckCandidate, recommended = false): ChoiceRow {
-  return { id: c.id, name: c.name, label: c.label, says: c.says || c.why, fit: c.fit, recommended };
+  // round 38c: a synced app that only sent its page list "fits" on paper - say what it really holds
+  const fit = c.empty && c.fit === "good" ? "empty" : c.fit;
+  return { id: c.id, name: c.name, label: c.label, says: c.says || c.why, fit, recommended };
 }
 
 const partWords = (p: CheckPeriod) => `${p.label}${p.label !== p.text ? ` (${p.text})` : ""}`;
@@ -165,6 +168,54 @@ function restate(check: Check, period: CheckPeriod | null, chosen: ChoiceRow[]):
 
 export type CheckGo = { question: string; source_ids?: string[]; brief?: RunBrief };
 
+/** Round 38c: "Which page?" - one tap per page / account, or every one side by side (the default). */
+export function AccountPick({ issue, picks, onChange, busy }: {
+  issue: CheckIssue; picks: string[]; onChange: (next: string[]) => void; busy?: boolean;
+}) {
+  const toggle = (v: string) => {
+    if (v === "__all__") return onChange(["__all__"]);
+    const cur = picks.filter((x) => x !== "__all__");
+    const next = cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v];
+    onChange(next.length ? next : ["__all__"]);
+  };
+  return (
+    <section className="flex flex-col gap-2.5" aria-label={issue.title} data-check-account="">
+      <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-muted">{issue.title}</span>
+      <p className="m-0 text-[14px] leading-relaxed text-secondary">{issue.text}</p>
+      <div className="flex flex-col gap-2">
+        {issue.options.map((o) => {
+          const on = picks.includes(o.value);
+          return (
+            <button key={o.id} type="button" disabled={busy} onClick={() => toggle(o.value)} aria-pressed={on}
+              className={`ui-focus w-full text-left flex items-center gap-3 rounded-[14px] border px-3.5 py-2.5 transition-colors ${on ? "border-kind-answer-border bg-kind-answer-fill/60" : "border-border hover:border-border-strong"}`}
+              data-account-option={o.value}>
+              <span className={`w-[20px] h-[20px] rounded-[6px] grid place-items-center border shrink-0 ${on ? "bg-kind-answer border-kind-answer text-[rgb(var(--color-base))]" : "border-border-strong"}`} aria-hidden="true">
+                {on && <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 5 5 9-10" /></svg>}
+              </span>
+              <span className="flex flex-col min-w-0">
+                <span className="text-[14.5px] font-semibold text-text truncate">{o.label}</span>
+                {o.detail && <span className="text-[12.5px] text-secondary">{o.detail}</span>}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+export function accountsBrief(issue: CheckIssue | undefined, picks: string[]): RunBrief["accounts"] {
+  if (!issue) return null;
+  return { source_id: issue.source_id || "", source_name: issue.source_name, values: picks.filter((x) => x !== "__all__") };
+}
+
+function accountWords(issue: CheckIssue | undefined, picks: string[]): string {
+  if (!issue) return "";
+  const vals = picks.filter((x) => x !== "__all__");
+  if (!vals.length) return ` Every ${issue.noun || "account"} side by side.`;
+  return ` Only ${vals.length === 1 ? vals[0] : `${vals.slice(0, -1).join(", ")} and ${vals[vals.length - 1]}`}.`;
+}
+
 /**
  * The card. `onFixDate` re-checks the question with a corrected year
  * (the data's fit depends on the dates); `onGo` runs it.
@@ -183,6 +234,8 @@ export default function QuestionCheckCard({
   const dateIssue = check.issues.find((i) => DATE_ISSUE_KINDS.includes(i.kind));
   const dataIssue = check.issues.find((i) => ["choose", "swap", "confirm_pick", "cant_answer"].includes(i.kind));
   const byId = useMemo(() => new Map(check.candidates.map((c) => [c.id, c])), [check.candidates]);
+  const acctAsked = check.issues.find((i) => i.kind === "account");
+  const [acctPicks, setAcctPicks] = useState<string[]>(["__all__"]);
 
   // the rows: the issue's sources in its order, then the other candidates
   const baseRows = useMemo<ChoiceRow[]>(() => {
@@ -222,6 +275,7 @@ export default function QuestionCheckCard({
     setExtra([]);
     setShowingAll(false);
     setYear(null);
+    setAcctPicks(["__all__"]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [check]);
 
@@ -231,6 +285,8 @@ export default function QuestionCheckCard({
   }, [check]);
 
   const effectivePeriod = shift && useShift ? shift.period || period : period;
+  // "Which page?" belongs to one source - it only applies while that source is picked
+  const acctIssue = acctAsked && !(shift && useShift) && selected.includes(acctAsked.source_id || "") ? acctAsked : undefined;
   const chosen = rows.filter((r) => selected.includes(r.id));
   const needsPick = Boolean(dataIssue && dataIssue.kind === "cant_answer" && !useShift);
   const canGo = !dateIssue && !busy && (!needsPick || chosen.length > 0);
@@ -262,7 +318,11 @@ export default function QuestionCheckCard({
     onGo({
       question: check.question,
       source_ids: ids.length ? ids : undefined,
-      brief: { period: effectivePeriod, restated: restate(check, effectivePeriod, rows.filter((r) => ids.includes(r.id))) },
+      brief: {
+        period: effectivePeriod,
+        restated: restate(check, effectivePeriod, rows.filter((r) => ids.includes(r.id))) + accountWords(acctIssue, acctPicks),
+        accounts: accountsBrief(acctIssue, acctPicks),
+      },
     });
   };
 
@@ -294,7 +354,7 @@ export default function QuestionCheckCard({
           Before I start · here's what I understood
         </span>
         <p className="m-0 text-[17px] sm:text-[18px] leading-[1.45] font-medium text-text text-pretty" data-check-restated="">
-          {dateIssue ? <>“{check.question}”</> : restate(check, effectivePeriod, chosen)}
+          {dateIssue ? <>“{check.question}”</> : restate(check, effectivePeriod, chosen) + accountWords(acctIssue, acctPicks)}
         </p>
         {editingQ ? (
           <div className="pt-2"><QuestionEditor question={check.question} autoFocus onSave={(t) => { setEditingQ(false); onFixDate(t); }} onCancel={() => setEditingQ(false)} /></div>
@@ -380,6 +440,8 @@ export default function QuestionCheckCard({
             )}
           </section>
         )}
+
+        {!dateIssue && acctIssue && <AccountPick issue={acctIssue} picks={acctPicks} onChange={setAcctPicks} busy={busy} />}
       </div>
 
       <div className="px-5 sm:px-6 py-4 border-t border-border bg-base/30 flex items-center gap-3 flex-wrap">
@@ -477,7 +539,27 @@ export function FollowupCheck({ check, busy, onPick, onClose }: {
   check: Check; busy?: boolean; onPick: (question: string, kept?: string) => void; onClose: () => void;
 }) {
   const [chosen, setChosen] = useState<string | null>(null);
+  const [picks, setPicks] = useState<string[]>(["__all__"]);
   const issue = check.issues.find((i) => DATE_ISSUE_KINDS.includes(i.kind));
+  const acct = check.issues.find((i) => i.kind === "account");
+  if (!issue && acct) {
+    // round 38c: "Which page?" for a follow-up - asked once per thread, then remembered
+    return (
+      <div className="gd-euliv-in flex flex-col gap-3 rounded-[16px] border border-border-strong bg-surface p-4" role="region" aria-label="Before I start" data-followup-check="account">
+        <div className="flex items-center justify-between gap-3">
+          <span className="min-w-0 truncate font-mono text-[11px] uppercase tracking-[0.14em] text-muted">Before I start · “{check.question}”</span>
+          <button type="button" onClick={onClose} aria-label="Dismiss" className="ui-focus w-7 h-7 rounded-full grid place-items-center text-muted hover:text-text hover:bg-subtle/60 shrink-0">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+        <AccountPick issue={acct} picks={picks} onChange={setPicks} busy={busy} />
+        <button type="button" disabled={busy} onClick={() => onPick(check.question, "accounts:" + JSON.stringify(accountsBrief(acct, picks)))}
+          className="ui-focus self-start h-10 px-4 rounded-full bg-primary text-on-primary text-[14px] font-semibold disabled:opacity-50" data-account-go="">
+          Go ahead
+        </button>
+      </div>
+    );
+  }
   if (!issue) return null;
   return (
     <div className="gd-euliv-in flex flex-col gap-2.5" role="region" aria-label="Before I start" data-followup-check={issue.kind}>

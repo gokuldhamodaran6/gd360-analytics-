@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { AppInfo, appsApi, AppStatus, INTERVAL_LABELS } from "../api/projects";
+import { SyncReportSheet } from "../data/SyncReport";
 import { connectionKindMeta } from "./DataSourceForm";
 import type { DataSourceSummary } from "../api/client";
 import { timeAgo } from "../project/format";
@@ -165,6 +166,7 @@ export function ConnectAppSheet({
 
 export function SyncControl({ ds, onChanged }: { ds: DataSourceSummary; onChanged?: (s: AppStatus) => void }) {
   const [status, setStatus] = useState<AppStatus | null>(null);
+  const [reportOpen, setReportOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const syncing = busy || !!status?.syncing;
   useEffect(() => {
@@ -206,6 +208,16 @@ export function SyncControl({ ds, onChanged }: { ds: DataSourceSummary; onChange
       >
         Sync now
       </button>
+      {/* round 38c: what each account sent, and why anything is missing */}
+      <button
+        type="button"
+        className="text-muted hover:text-text hover:underline"
+        onClick={(e) => { e.stopPropagation(); setReportOpen(true); }}
+        data-sync-details=""
+      >
+        What came back
+      </button>
+      {reportOpen && <SyncReportSheet sourceId={ds.id} onClose={() => setReportOpen(false)} />}
     </span>
   );
 }
