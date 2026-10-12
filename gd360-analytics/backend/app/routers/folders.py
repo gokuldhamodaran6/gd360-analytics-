@@ -63,19 +63,43 @@ def _get_viewable(db: Session, user: models.User, folder_id: str) -> models.Fold
     return f
 
 
+LIBRARY_KINDS = ("answer", "analysis", "talk")
+
+
+def library_kind(conversation_kind: str | None) -> str:
+    """The Library tab a conversation lives in - the same rule as the frontend's lib/kinds.conversationKind."""
+    if conversation_kind == "project":
+        return "answer"
+    if conversation_kind == "voice":
+        return "talk"
+    return "analysis"
+
+
 def _folder_out(db: Session, folder: models.Folder, user: models.User) -> dict:
-    count = (
-        db.query(func.count(models.Conversation.id))
+    rows = (
+        db.query(models.Conversation.kind, func.count(models.Conversation.id))
         .filter(models.Conversation.folder_id == folder.id)
-        .scalar()
-        or 0
+        .group_by(models.Conversation.kind)
+        .all()
     )
+    counts = {k: 0 for k in LIBRARY_KINDS}
+    for k, n in rows:
+        counts[library_kind(k)] += int(n or 0)
+    count = sum(counts.values())
+    # round 34: a folder belongs to the tab it was made in; an older folder (no kind stored) belongs to the
+    # one kind it holds, when it holds only one - so "Sample testing" (38 analyses) lives under Analyses
+    kind = folder.kind if folder.kind in LIBRARY_KINDS else None
+    held = [k for k, n in counts.items() if n]
+    inferred = kind is None and len(held) == 1
     return {
         "id": folder.id,
         "name": folder.name,
         "workspace_id": folder.workspace_id,
         "created_at": folder.created_at,
         "project_count": count,
+        "counts": counts,
+        "kind": kind or (held[0] if inferred else None),
+        "kind_inferred": inferred,
         "can_edit": _can_edit(db, folder, user),
     }
 
@@ -115,6 +139,7 @@ def create_folder(
         owner_id=user.id,
         workspace_id=payload.workspace_id,
         name=payload.name.strip()[:80] or "New folder",
+        kind=payload.kind if payload.kind in LIBRARY_KINDS else None,
     )
     db.add(folder)
     db.commit()

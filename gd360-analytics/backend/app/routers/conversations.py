@@ -395,6 +395,10 @@ def bulk_move_conversations(
 
     moved: list[str] = []
     skipped: list[str] = []
+    # round 34: a folder made under one Library tab only takes that tab's kind - an answer is never
+    # filed into an analyses folder (it would vanish from the tab it was looked for in)
+    from .folders import library_kind
+    wrong_kind: list[str] = []
     conversations = (
         db.query(models.Conversation)
         .filter(models.Conversation.id.in_(payload.conversation_ids))
@@ -406,10 +410,15 @@ def bulk_move_conversations(
         if not conv or not workspace_access.can_edit_conversation(db, conv, user):
             skipped.append(conv_id)
             continue
+        if target_folder is not None and target_folder.kind and library_kind(conv.kind) != target_folder.kind:
+            skipped.append(conv_id)
+            wrong_kind.append(conv_id)
+            continue
         conv.folder_id = target_folder.id if target_folder else None
         moved.append(conv_id)
     db.commit()
-    return {"moved": moved, "skipped": skipped, "folder_id": target_folder.id if target_folder else None}
+    return {"moved": moved, "skipped": skipped, "wrong_kind": wrong_kind,
+            "folder_id": target_folder.id if target_folder else None}
 
 
 @router.patch("/{conversation_id}")
