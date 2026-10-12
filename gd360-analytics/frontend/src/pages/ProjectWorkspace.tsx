@@ -19,7 +19,9 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { ChartThemeProvider } from "../dashboard/theme/ChartThemeContext";
-import { Explanation, projectsApi, Project, ProjectRun, ProjectSource } from "../api/projects";
+import { Explanation, projectsApi, Project, ProjectRun, ProjectSource, QuestionCheck } from "../api/projects";
+import { FollowupCheck } from "../components/QuestionCheck";
+import WaysForward, { AskContext } from "../project/WaysForward";
 import { Space, spacesApi } from "../api/spaces";
 import ScopePicker, { Scope } from "../spaces/ScopePicker";
 import { ThreadComposer } from "../thread/parts";
@@ -60,6 +62,9 @@ export default function ProjectWorkspace() {
   const [followUp, setFollowUp] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // round 32: a follow-up whose date can't be right ("2016 forcast") - asked about before it runs
+  const [followCheck, setFollowCheck] = useState<QuestionCheck | null>(null);
+  const keptWords = useRef<string[]>([]);
   const [notFound, setNotFound] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [createFocus, setCreateFocus] = useState<string | null>(null);
@@ -269,6 +274,7 @@ export default function ProjectWorkspace() {
     }
     setBusy(true);
     setError("");
+    setFollowCheck(null);
     try {
       // 2026-10-11: on the same sources, "explain this" is answered from the
       // answer on screen - no new question; anything needing new data runs.
@@ -277,7 +283,11 @@ export default function ProjectWorkspace() {
       const routing = !noRoute && !change.space_id && !change.source_ids && contextRun
         ? { route: true, context_run_id: contextRun, explain_target: about?.target }
         : {};
-      const out = await projectsApi.ask(projectId, q, autoRun, { ...change, ...routing });
+      const out = await projectsApi.ask(projectId, q, autoRun, { ...change, ...routing, understand: true, accepted: keptWords.current });
+      if (out.kind === "check") {
+        setFollowCheck(out.check);
+        return;
+      }
       setFollowUp("");
       setAbout(null);
       if (out.kind === "explain") {
@@ -405,6 +415,7 @@ export default function ProjectWorkspace() {
 
   return (
     <ChartThemeProvider localScope={`project:${projectId}`}>
+    <AskContext.Provider value={project?.can_edit ? (q: string) => void ask(q) : null}>
       {project && (
         <>
           <CreateFromThreadDialog
@@ -584,13 +595,26 @@ export default function ProjectWorkspace() {
                 <ThreadComposer
                   value={followUp}
                   onChange={setFollowUp}
-                  onSubmit={() => ask(followUp)}
+                  onSubmit={() => { keptWords.current = []; void ask(followUp); }}
                   inputRef={composerRef}
                   busy={busy}
                   locked={!!activeRun}
                   error={error}
                   placeholder="Ask a follow-up…"
-                  context={about ? <AboutChipView chip={about} onClear={() => setAbout(null)} /> : undefined}
+                  context={
+                    followCheck ? (
+                      <FollowupCheck
+                        check={followCheck}
+                        busy={busy}
+                        onClose={() => setFollowCheck(null)}
+                        onPick={(q, kept) => {
+                          if (kept) keptWords.current = [...keptWords.current, kept];
+                          setFollowUp(q);
+                          void ask(q);
+                        }}
+                      />
+                    ) : about ? <AboutChipView chip={about} onClear={() => setAbout(null)} /> : undefined
+                  }
                   picker={
                     scope && (
                       <ScopePicker scope={scope} onChange={setScope} sources={allSources} spaces={spaces} variant="compact" placement="above" disabled={busy} />
@@ -632,6 +656,7 @@ export default function ProjectWorkspace() {
           </div>
         </div>
       </div>
+    </AskContext.Provider>
     </ChartThemeProvider>
   );
 }
@@ -823,12 +848,7 @@ function ThreadItem({
           </>
         )}
 
-        {run.status === "needs_input" && ans && (
-          <div className="rounded-ctl border border-warning-border bg-warning-fill p-3 text-ui text-text">
-            <div className="font-medium">{ans.headline}</div>
-            <div className="text-secondary mt-1">{ans.answer}</div>
-          </div>
-        )}
+        {run.status === "needs_input" && ans && <WaysForward answer={ans} compact onAsk={canEdit ? onAsk : null} busy={busy} />}
 
         {run.status === "failed" && (
           <div className="flex flex-col gap-2">

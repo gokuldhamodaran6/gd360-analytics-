@@ -37,7 +37,9 @@ import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { ChartThemeProvider, useChartTheme } from "../dashboard/theme/ChartThemeContext";
 import { resolveWorkspaceChart } from "../lib/workspaceChart";
-import { Explanation, guidedApi, Project, ProjectRun, ProjectSource, projectsApi, RunStep } from "../api/projects";
+import { Explanation, guidedApi, Project, ProjectRun, ProjectSource, projectsApi, QuestionCheck, RunStep } from "../api/projects";
+import { FollowupCheck } from "../components/QuestionCheck";
+import WaysForward, { AskContext } from "../project/WaysForward";
 import { Space, spacesApi } from "../api/spaces";
 import { EvidenceTab, layoutSql, ResultsTab } from "../project/RunPanels";
 import { DataTable } from "../project/Visuals";
@@ -100,6 +102,9 @@ export default function GuidedAnalysis() {
   const [mode, setMode] = useState<AskMode>("guided");
   const [asking, setAsking] = useState(false);
   const [askError, setAskError] = useState("");
+  // round 32: a follow-up whose date can't be right ("2016 forcast") - asked about before it runs
+  const [followCheck, setFollowCheck] = useState<QuestionCheck | null>(null);
+  const keptWords = useRef<string[]>([]);
   const [scope, setScope] = useState<Scope | null>(null);
   const [allSources, setAllSources] = useState<ProjectSource[] | null>(null);
   const [spaces, setSpaces] = useState<Space[] | null>(null);
@@ -319,7 +324,11 @@ export default function GuidedAnalysis() {
     setAsking(true);
     setAskError("");
     try {
-      const out = await projectsApi.ask(projectId, q, mode === "quick", { mode: mode === "quick" ? "answer" : "guided" });
+      const out = await projectsApi.ask(projectId, q, mode === "quick", { mode: mode === "quick" ? "answer" : "guided", understand: true, accepted: keptWords.current });
+      if (out.kind === "check") {
+        setFollowCheck(out.check);
+        return;
+      }
       if (out.kind === "explain" || !out.run_id) return;
       await loadRun(out.run_id);
       await loadProject();
@@ -331,11 +340,13 @@ export default function GuidedAnalysis() {
     }
   };
 
-  const ask = async () => {
-    const q = followUp.trim();
+  const ask = async (text?: string) => {
+    const q = (text ?? followUp).trim();
     if (q.length < 2 || asking || threadBusy || !project || !scope) return;
+    if (text === undefined) keptWords.current = []; // a newly typed question starts with nothing kept
     setAsking(true);
     setAskError("");
+    setFollowCheck(null);
     try {
       // the thread's sources change only when the picker changed them
       const all = (allSources || []).map((s) => s.id);
@@ -354,7 +365,13 @@ export default function GuidedAnalysis() {
       const sameSources = extra.space_id === undefined && extra.source_ids === undefined;
       const contextRun = about?.runId || (run && isAnswered(run) ? run.id : answered[answered.length - 1]?.id);
       const routing = sameSources && contextRun ? { route: true, context_run_id: contextRun, explain_target: about?.target } : {};
-      const out = await projectsApi.ask(projectId, q, mode === "quick", { mode: mode === "quick" ? "answer" : "guided", ...extra, ...routing });
+      const out = await projectsApi.ask(projectId, q, mode === "quick", {
+        mode: mode === "quick" ? "answer" : "guided", ...extra, ...routing, understand: true, accepted: keptWords.current,
+      });
+      if (out.kind === "check") {
+        setFollowCheck(out.check);
+        return;
+      }
       setFollowUp("");
       setAbout(null);
       if (out.kind === "explain") {
@@ -411,6 +428,7 @@ export default function GuidedAnalysis() {
 
   return (
     <ChartThemeProvider localScope={`guided:${projectId}`}>
+    <AskContext.Provider value={canEdit ? (q: string) => void askAsRun(q) : null}>
       {project && (
         <>
           <CreateFromThreadDialog
@@ -568,7 +586,7 @@ export default function GuidedAnalysis() {
                 <ThreadComposer
                   value={followUp}
                   onChange={setFollowUp}
-                  onSubmit={ask}
+                  onSubmit={() => ask()}
                   inputRef={composerRef}
                   busy={asking}
                   locked={threadBusy}
@@ -582,7 +600,18 @@ export default function GuidedAnalysis() {
                     )
                   }
                   context={
-                    about ? (
+                    followCheck ? (
+                      <FollowupCheck
+                        check={followCheck}
+                        busy={asking}
+                        onClose={() => setFollowCheck(null)}
+                        onPick={(q, kept) => {
+                          if (kept) keptWords.current = [...keptWords.current, kept];
+                          setFollowUp(q);
+                          void ask(q);
+                        }}
+                      />
+                    ) : about ? (
                       <AboutChipView chip={about} onClear={() => setAbout(null)} />
                     ) : answered.length > 0 && followUp.trim().length > 0 ? (
                       <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-[10px] bg-kind-analysis-fill/60 text-[12px] leading-snug text-kind-analysis" data-continue-strip="">
@@ -680,10 +709,7 @@ export default function GuidedAnalysis() {
                       </div>
                     )}
                     {run.status === "needs_input" && run.result?.answer && (
-                      <div className="rounded-card border border-warning-border bg-warning-fill p-5">
-                        <div className="text-section font-semibold text-text">{run.result.answer.headline}</div>
-                        <p className="m-0 mt-1.5 text-ui text-secondary">{run.result.answer.answer}</p>
-                      </div>
+                      <WaysForward answer={run.result.answer} onAsk={canEdit ? (q) => void askAsRun(q) : null} busy={asking || threadBusy} />
                     )}
                     {(run.plan?.assumptions || []).length > 0 && steps.length > 0 && (
                       <details className="rounded-card border border-border bg-surface px-4 py-3 text-ui text-secondary">
@@ -739,6 +765,7 @@ export default function GuidedAnalysis() {
           </div>
         </div>
       </div>
+    </AskContext.Provider>
     </ChartThemeProvider>
   );
 }
@@ -854,12 +881,7 @@ function Turn({
           </>
         )}
 
-        {run.status === "needs_input" && ans && (
-          <div className="rounded-ctl border border-warning-border bg-warning-fill p-3 text-ui text-text">
-            <div className="font-medium">{ans.headline}</div>
-            <div className="text-secondary mt-1">{ans.answer}</div>
-          </div>
-        )}
+        {run.status === "needs_input" && ans && <WaysForward answer={ans} compact />}
 
         {run.status === "failed" && (
           <div className="flex flex-col gap-2">
