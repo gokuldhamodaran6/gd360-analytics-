@@ -116,6 +116,11 @@ class AskRequest(BaseModel):
     # round 26: a follow-up agreed with Euliv carries its read-back (period) like a new question does
     brief: dict | None = None
     explain_target: dict | None = None
+    # round 32: read the follow-up first, like a question on Home - a year that can't be right
+    # ("2016 forcast" with data to 2025) comes back as a "did you mean?" (kind "check") before any run
+    understand: bool = False
+    accepted: list[str] = Field(default_factory=list, max_length=10)
+    today: str | None = Field(default=None, max_length=10)
 
 
 class ExplainRequest(BaseModel):
@@ -309,6 +314,8 @@ def _clean_period(p) -> dict | None:
     out = {k: str(p.get(k) or "")[:80] for k in ("text", "label")} | {"start": a.isoformat(), "end": b.isoformat()}
     if p.get("future") or a > date.today():
         out["future"] = True
+    if p.get("forecast"):
+        out["forecast"] = True  # round 32: the whole period is a forecast target
     return out
 
 
@@ -327,6 +334,8 @@ def _clean_brief(brief: dict | None) -> dict | None:
     notes = [str(n)[:200] for n in (brief.get("notes") or [])[:4]]
     if notes:
         out["notes"] = notes
+    if brief.get("forecast") and out.get("period"):
+        out["forecast"] = True
     return out or None
 
 
@@ -623,17 +632,29 @@ def ask(project_id: str, payload: AskRequest, db: Session = Depends(get_db), use
     )
     if busy:
         raise HTTPException(409, "GD360 is still working on the last question in this thread.")
+    # round 32: read the follow-up first (on the thread's data) - a date that can't be right is asked
+    # about before anything runs or is explained
+    understood = None
+    same_sources = not (payload.space_id or payload.source_ids)
+    if payload.understand and not payload.brief and same_sources:
+        understood = _understand_followup(db, user, conv, payload)
+        if understood and understood.get("check"):
+            return {"project_id": conv.id, "kind": "check", "check": understood["check"],
+                    "source_ids": conv.source_ids or [], **_space_ref(db, conv, user)}
     # 2026-10-11 (Explain & Alerts): "explain this chart" is answered from the
     # answer on screen - no new run - unless the sources are changing.
-    if payload.route and not (payload.space_id or payload.source_ids):
+    if payload.route and same_sources:
         done = _explain_context(db, conv, payload.context_run_id)
         if done is not None:
             from ..services import explain as explain_svc
             ctx, _ = explain_svc.run_context(done.result or {}, _currency_of(done))
-            decision = (
-                {"route": "explain", "target": payload.explain_target, "by": "button"} if payload.explain_target
-                else explain_svc.route(payload.question, ctx)
-            )
+            if payload.explain_target:
+                decision = {"route": "explain", "target": payload.explain_target, "by": "button"}
+            elif (understood or {}).get("dated") and not explain_svc.route_heuristic(payload.question):
+                # round 32: a forecast, or a period named in the follow-up, needs data - never just the screen
+                decision = {"route": "analyze", "target": None, "by": "rule"}
+            else:
+                decision = explain_svc.route(payload.question, ctx)
             if decision["route"] == "explain":
                 ex = explain_svc.explain_run(done.result or {}, decision.get("target"), payload.question, _currency_of(done))
                 if not ex.get("needs_new_data"):
@@ -651,9 +672,44 @@ def ask(project_id: str, payload: AskRequest, db: Session = Depends(get_db), use
     # A Guided Analysis follow-up continues the same analysis: planned step
     # by step (mode "guided"), or run straight through to the answer ("answer").
     auto = (payload.mode == "answer") if conv.kind == "guided" else payload.auto_run
-    run = _new_run(db, conv, user, payload.question, auto, brief=_clean_brief(payload.brief))
+    brief = _clean_brief(payload.brief)
+    if payload.understand and not brief and not same_sources:
+        understood = _understand_followup(db, user, conv, payload)
+        if understood and understood.get("check"):
+            return {"project_id": conv.id, "kind": "check", "check": understood["check"],
+                    "source_ids": conv.source_ids or [], **_space_ref(db, conv, user)}
+    if not brief and understood:
+        brief = understood.get("brief")
+    run = _new_run(db, conv, user, payload.question, auto, brief=brief)
     executor.start_planning(run.id)
     return {"project_id": conv.id, "kind": "run", "run_id": run.id, "source_ids": conv.source_ids or [], **_space_ref(db, conv, user)}
+
+
+_DATE_ISSUES = ("year_typo", "month_typo", "future_year", "forecast_year")
+
+
+def _understand_followup(db: Session, user: models.User, conv: models.Conversation, payload: AskRequest) -> dict | None:
+    """Round 32: the same "understand" step as Home, for a follow-up in a thread - only the dates matter here
+    (the thread's data is already chosen). A date that can't be right is asked about; a forecast's period,
+    in dates, travels with the question to the planner."""
+    from ..services import question_check
+    try:
+        c = question_check.check(db, user, payload.question, source_ids=list(conv.source_ids or []),
+                                 accepted=payload.accepted, today=_local_today(payload.today))
+    except Exception as e:  # noqa: BLE001 - the check never stands between a person and an answer
+        print(f"[projects] follow-up check skipped: {e}")
+        return None
+    from ..services.question_check import wants_forecast
+    dated = bool(c.get("period")) or wants_forecast(payload.question)
+    issue = next((i for i in c.get("issues") or [] if i.get("kind") in _DATE_ISSUES), None)
+    if issue:
+        keep = ("question", "what", "period", "needs_time", "forecast", "restated")
+        return {"check": {k: c.get(k) for k in keep} | {"ready": False, "issues": [issue], "candidates": [],
+                                                         "picked": [], "period_options": []}}
+    # only a forecast's period travels: a follow-up's other dates often lean on the answer before it
+    # ("compare with last year"), which the planner reads from the thread
+    p = c.get("period")
+    return {"dated": dated, "brief": _clean_brief({"period": p, "forecast": True}) if p and p.get("forecast") else None}
 
 
 MAX_EXPLAINS = 60

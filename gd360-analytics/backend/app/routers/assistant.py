@@ -546,11 +546,15 @@ def _new_question(db: Session, user: models.User, q: str, ws: str | None, state:
     named_ids = {x["id"] for x in cands if x.get("named")}
     named = bool(named_ids)
     # a date that can't be right is asked about first - for a follow-up too
-    date_issue = next((i for i in c.get("issues") or [] if i["kind"] in ("year_typo", "month_typo", "future_year")), None)
+    date_issue = next((i for i in c.get("issues") or []
+                       if i["kind"] in ("year_typo", "month_typo", "future_year", "forecast_year")), None)
     if date_issue:
         st = _keep(state, topic=c.get("topic") or state.topic, awaiting="fix_date", pending_question=q,
                    brief={"issue": date_issue, "question": q, "accepted": list(accepted or [])})
-        return _reply((lead + " " if lead else "") + date_issue["text"], "fix_date", st, issue=date_issue)
+        said = date_issue["text"]
+        if date_issue["kind"] == "forecast_year":
+            said += f" Shall I forecast {date_issue.get('suggested')}?"  # round 32: "2016 forcast" -> 2026
+        return _reply((lead + " " if lead else "") + said, "fix_date", st, issue=date_issue)
 
     # round 26: carrying on the conversation. The data behind the last answer is used again when it can
     # answer this too - no asking which data, like a person would. Only when it can't is other data offered.
@@ -808,6 +812,11 @@ def _fix_date_turn(db: Session, user: models.User, text: str, state: TurnState, 
     m = re.search(r"\b(19\d\d|20\d\d)\b", text)
     mo = re.search(rf"\b{qc.MONTH_RE}\b", text.lower()) if issue.get("kind") == "month_typo" else None
     said = text.strip().strip(".!?").lower()
+    # round 32: "show the history instead" - the history question the card offers
+    hist = next((o for o in issue.get("options") or [] if o.get("id") == "history" and o.get("question")), None)
+    if hist and issue.get("kind") == "forecast_year" and re.search(r"\b(history|instead|actual|past|so far|show)\b", said) \
+            and not re.search(rf"\b{re.escape(raw)}\b", said):
+        return _new_question(db, user, hist["question"], ws, _keep(state), "Sure - the history.", accepted=list(b.get("accepted") or []))
     if raw and (said == raw.lower() or re.search(r"\b(keep (?:it|that|as)|as (?:i )?(?:wrote|said) it|as written)\b", said)):
         value = raw  # "Keep as written" / "Keep 2027 - it's a forecast"
     elif mo:
