@@ -90,10 +90,16 @@ function columnsOf(raw: unknown): Column[] {
 /** The rows-and-columns table a config carries, whichever keys it uses. */
 export function storedTable(cfg: any): Table | null {
   if (!cfg || typeof cfg !== "object") return null;
+  // round 37: measures the backend says not to draw (0 everywhere, users summed per day, a line
+  // that would sit on top of another) - hidden, with the reason in the card's note
+  const hidden = new Set<string>(Array.isArray(cfg.hidden_measures) ? cfg.hidden_measures.map(String) : []);
   const pairs: [unknown, unknown][] = [[cfg.result_columns, cfg.result_rows], [cfg.columns, cfg.rows]];
   for (const [cols, rows] of pairs) {
-    const columns = columnsOf(cols);
-    if (columns.length && Array.isArray(rows)) return { columns, rows: rows.filter((r) => r && typeof r === "object") as Record<string, any>[] };
+    const columns = columnsOf(cols).filter((c) => !hidden.has(c.name));
+    if (columns.length && Array.isArray(rows)) {
+      const keep = rows.filter((r) => r && typeof r === "object") as Record<string, any>[];
+      return { columns, rows: hidden.size ? keep.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !hidden.has(k)))) : keep };
+    }
   }
   return null;
 }
@@ -405,10 +411,14 @@ function valueResult(block: DashboardBlock, cfg: any, override: FilteredBlock | 
   const series: unknown[] = Array.isArray(cfg?.sparkline) ? cfg.sparkline : Array.isArray(cfg?.sparkline_series) ? cfg.sparkline_series : [];
   const points = series.filter(isNum);
   if (points.length > 1) result.sparkline = { columns: [{ name: alias }], rows: points.map((v) => ({ [alias]: v })), grain: typeof cfg?.sparkline_grain === "string" ? cfg.sparkline_grain : undefined };
-  // Filtered: how the number moved against the unfiltered one this block
-  // stores. Nothing is compared when there is no such number, or it is 0.
+  // round 37: under a date range the backend compares with the period just before it - the
+  // delta every analytics tool shows. Otherwise (a filter, no dates) how the number moved against
+  // the unfiltered one this block stores. Nothing is compared when there is no such number, or it is 0.
   const base = own.value;
-  if (override && isNum(value) && isNum(base) && base !== 0) {
+  const pd = cfg?.delta;
+  if (override && pd && typeof pd === "object" && isNum(pd.current) && isNum(pd.prior)) {
+    result.delta = { [alias]: { current: pd.current, prior: pd.prior, abs: isNum(pd.abs) ? pd.abs : pd.current - pd.prior, pct: isNum(pd.pct) ? pd.pct : null } };
+  } else if (override && isNum(value) && isNum(base) && base !== 0) {
     const pct = ((value - base) / Math.abs(base)) * 100;
     const flat = Math.abs(pct) < 0.05;
     result.delta = { [alias]: { current: value, prior: base, abs: flat ? 0 : value - base, pct: flat ? 0 : Number(pct.toFixed(2)) } };

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { BlockResult, DashboardBlock, DashboardParameter, FilteredBlock } from "../api/client";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { BlockResult, CommentAnchor, DashboardBlock, DashboardParameter, FilteredBlock } from "../api/client";
 import ChartCanvas, { type ChartExportApi } from "../components/ChartCanvas";
 import { AvatarListBlock, DividerBlock, HeadingBlock, SparklineBlock, TextBlock } from "../components/DashboardBlocks";
 import { KpiTile, TableFooter, TableFrame, type DataTableColumn } from "../ui";
@@ -8,7 +8,7 @@ import {
 } from "./blockData";
 import { adaptFileBlock } from "./fileData";
 import { GaugeChart, gaugeColors } from "./charts/BulletChart";
-import { CartesianChart } from "./charts/CartesianChart";
+import { CartesianChart, matchBucket, type ChartNote, type ChartPin } from "./charts/CartesianChart";
 import { DonutChart } from "./charts/DonutChart";
 import { normalizeGrain, parseDateParts, periodLabel } from "./charts/geometry";
 import { kpiForecastLine, planChart } from "./charts/model";
@@ -89,6 +89,16 @@ export type BlockRendererProps = {
   // 2026-10-07 (chart-types round): draw the result as its table instead
   // of its chart (the card's "View as table" toggle).
   viewAsTable?: boolean;
+  // 2026-10-12 (round 38, team comments): the threads pinned to this
+  // block's marks (drawn on the chart; any the current filters hide are
+  // counted under it), and - while a comment is being placed - where a
+  // click on a mark goes instead of cross-filtering the page.
+  pins?: ChartPin[];
+  onAnchor?: (anchor: CommentAnchor) => void;
+  onHiddenPins?: () => void;
+  // Periods marked as one-offs (block.config.one_offs) - read from the
+  // stored block by BlockRenderer itself.
+  oneOffs?: ChartNote[];
 };
 
 // The block types "View as table" applies to.
@@ -277,10 +287,73 @@ export function BlockRenderer(props: BlockRendererProps) {
     return <ParameterField param={param} value={paramValue} onChange={(v) => onParamChange(param.id, v)} source={source} bounds={props.dateBounds?.[param.column]} />;
   }
 
-  if (mode === "file") return <FileBlockBody {...props} />;
+  const oneOffs: ChartNote[] | undefined = Array.isArray(block.config?.one_offs)
+    ? block.config!.one_offs.filter((o: any) => o && o.key).map((o: any) => ({ key: String(o.key), label: String(o.label || o.key) }))
+    : undefined;
+  const withComments = { ...props, oneOffs: props.oneOffs ?? oneOffs };
+
+  if (mode === "file") return <FileBlockBody {...withComments} />;
 
   if (!result) return null;
-  return <ResultBody {...props} result={result} />;
+  return <ResultBody {...withComments} result={result} />;
+}
+
+// round 38: a comment on one day reads the way people say it - "3 Oct"
+// ("3 Oct 2025" in another year). A week or month keeps the chart's label.
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function dayLabel(key: unknown, label?: string): string | null {
+  if (typeof key !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(key)) return null;
+  if (label && !/^[A-Za-z]{3,9}\.? \d{1,2},? \d{4}$|^\d{4}-\d{2}-\d{2}/.test(label.trim())) return null;
+  const [y, m, d] = key.slice(0, 10).split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return `${d} ${MON[m - 1]}${y !== new Date().getFullYear() ? ` ${y}` : ""}`;
+}
+
+// round 38: the threads pinned to values this result does not hold (a
+// filter or the date range left them out) - said under the chart, never
+// silently dropped.
+function hiddenPins(pins: ChartPin[] | undefined, result: BlockResult, columns: (string | null | undefined)[]): ChartPin[] {
+  if (!pins?.length) return [];
+  const cols = columns.filter(Boolean) as string[];
+  if (!cols.length) return [];
+  const rows = result.rows || [];
+  const values = cols.map((c) => Array.from(new Set(rows.map((r) => r[c]))));
+  return pins.filter((p) => !values.some((vs) => matchBucket(vs, p.key) >= 0));
+}
+
+export function PinNote({ hidden, onShow }: { hidden: ChartPin[]; onShow?: () => void }) {
+  if (!hidden.length) return null;
+  const names = hidden.slice(0, 2).map((p) => p.label).join(", ") + (hidden.length > 2 ? ` and ${hidden.length - 2} more` : "");
+  return (
+    <div
+      data-hidden-pins={hidden.length}
+      title={`${hidden.length === 1 ? "1 comment is" : `${hidden.length} comments are`} on ${names}, hidden by the current filters.`}
+      className="mt-1 inline-flex h-[22px] max-w-full shrink-0 items-center gap-1.5 self-start rounded-full border border-border bg-surface py-0.5 pl-2 pr-1 text-[11.5px] text-muted"
+    >
+      <span aria-hidden="true" className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+      <span className="truncate">{hidden.length === 1 ? "1 comment" : `${hidden.length} comments`} hidden by your filters</span>
+      <span className="sr-only">: on {names}, hidden by the current filters.</span>
+      {onShow && <button type="button" className="ui-focus shrink-0 rounded-full px-1.5 font-medium text-brand-ink hover:bg-subtle" onClick={onShow}>Show</button>}
+    </div>
+  );
+}
+
+// round 38: pins on a chart that draws no category axis of its own (a
+// donut, a map, a table...): a row of the same bubbles under it.
+function PinStrip({ pins }: { pins: ChartPin[] }) {
+  if (!pins.length) return null;
+  return (
+    <div data-pin-strip="" className="flex flex-wrap items-center gap-1.5 px-1 pt-1.5">
+      {pins.map((p) => (
+        <button key={p.key} type="button" data-comment-pin={p.key} data-pin-active={p.active ? "" : undefined} title={p.title} aria-label={p.title} onClick={p.onClick}
+          className={`ui-focus inline-flex h-6 items-center gap-1.5 rounded-full border pl-0.5 pr-2 text-caption ${p.active ? "border-primary bg-tint text-text" : "border-border bg-surface text-secondary hover:border-border-strong"} ${p.open ? "" : "opacity-60"}`}>
+          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-semibold text-[#07090A]" style={{ background: p.color || "rgb(var(--color-primary))" }}>{p.initials}</span>
+          <span className="max-w-[140px] truncate">{p.label}</span>
+          {p.count > 1 && <span className="tabular-nums text-muted">{p.count}</span>}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 // One block's body from its result - the warehouse run's, or a file
@@ -315,6 +388,23 @@ function ResultBody(props: BlockRendererProps & { result: BlockResult; capped?: 
   const pick = (value: unknown) => {
     if (column && onCrossFilter) onCrossFilter({ column, value: (value === undefined ? null : value) as CrossFilter["value"], blockId: block.id });
   };
+  // round 38: placing a comment - a click on a mark pins it there instead.
+  const { pins, onAnchor, onHiddenPins, oneOffs } = props;
+  const anchorColumn = result.time_column || column || firstDimension(result) || null;
+  const anchorTo = (kind: string) => (value: unknown, label?: string) => {
+    const key = value === undefined ? null : (value as CommentAnchor["key"]);
+    onAnchor?.({ kind, key, label: dayLabel(key, label) ?? label ?? (key === null ? "(Blanks)" : String(key)), column: anchorColumn });
+  };
+  const hidden = hiddenPins(pins, result, [result.time_column, column, firstDimension(result)]);
+  const shownPins = (pins || []).filter((p) => !hidden.includes(p));
+  const withPins = (body: ReactNode, strip = true) =>
+    pins?.length || onAnchor ? (
+      <div className="relative flex h-full min-h-0 flex-col" data-pinnable={onAnchor ? "" : undefined}>
+        <div className="min-h-0 flex-1">{body}</div>
+        {strip && <PinStrip pins={shownPins} />}
+        <PinNote hidden={hidden} onShow={onHiddenPins} />
+      </div>
+    ) : body;
 
   if (type === "kpi") {
     const kpi = kpiDisplay(result, block, mode === "file" ? ALL_ROWS_WORDING : PRIOR_PERIOD_WORDING);
@@ -332,20 +422,24 @@ function ResultBody(props: BlockRendererProps & { result: BlockResult; capped?: 
     );
   }
   if (type === "table" || type === "sql" || (viewAsTable && hasTableView(type))) {
-    return (
+    return withPins(
       <div className="h-full min-h-0" data-view-as-table={viewAsTable && hasTableView(type) ? "" : undefined}>
-        <ResultTable result={result} selected={selected} column={column} onCrossFilter={onCrossFilter} block={block} capped={capped} />
+        <ResultTable result={result} selected={selected} column={column} onCrossFilter={onAnchor ? (column ? (cf) => anchorTo("row")(cf.value) : undefined) : onCrossFilter} block={block} capped={capped} />
       </div>
     );
   }
   if (type === "chart") {
     const plan = planChart(result, block, theme);
-    const base = bodyHeight ? Math.max(120, bodyHeight - 8) : 160;
+    // round 38: the hidden-comment note and the pin strip take their line
+    // from the plot, so the card never overflows
+    const noteRoom = hidden.length ? 26 : 0, stripRoom = shownPins.length ? 32 : 0;
+    const base = bodyHeight ? Math.max(120, bodyHeight - 8 - noteRoom) : 160;
+    const baseStrip = bodyHeight ? Math.max(120, bodyHeight - 8 - noteRoom - stripRoom) : 160;
     if (plan.kind === "special") {
       // The map and the scatter want a little more height where the card
       // sizes to its content (a stacked, narrow page).
       const tall = plan.type === "map" || plan.type === "treemap" || plan.type === "heatmap";
-      return (
+      return withPins(
         <SpecialChart
           type={plan.type}
           result={result}
@@ -353,9 +447,9 @@ function ResultBody(props: BlockRendererProps & { result: BlockResult; capped?: 
           crossColumn={column}
           selectedValue={selected?.value}
           hasSelection={Boolean(selected)}
-          onPick={column && onCrossFilter ? (value) => pick(value) : undefined}
+          onPick={onAnchor ? anchorTo(plan.type === "map" ? "area" : "bar") : column && onCrossFilter ? (value) => pick(value) : undefined}
           onExportApi={plan.type === "pivot" ? undefined : onExportApi}
-          minHeight={growToContent && tall ? Math.max(base, 300) : base}
+          minHeight={growToContent && tall ? Math.max(baseStrip, 300) : baseStrip}
         />
       );
     }
@@ -372,7 +466,7 @@ function ResultBody(props: BlockRendererProps & { result: BlockResult; capped?: 
       );
     }
     if (plan.kind === "donut") {
-      return (
+      return withPins(
         <DonutChart
           title={block.title}
           items={donutItems(result)}
@@ -381,8 +475,8 @@ function ResultBody(props: BlockRendererProps & { result: BlockResult; capped?: 
           column={firstDimension(result)}
           mono={mono}
           pie={plan.pie}
-          minHeight={base}
-          onItemClick={column && onCrossFilter ? (label) => pick(label === "(Blanks)" ? null : label) : undefined}
+          minHeight={baseStrip}
+          onItemClick={onAnchor ? (label) => anchorTo("slice")(label === "(Blanks)" ? null : label, label) : column && onCrossFilter ? (label) => pick(label === "(Blanks)" ? null : label) : undefined}
           selectedLabel={selected ? String(selected.value ?? "(Blanks)") : null}
         />
       );
@@ -403,7 +497,7 @@ function ResultBody(props: BlockRendererProps & { result: BlockResult; capped?: 
       );
     }
     const panels = plan.model.panels.length;
-    return (
+    return withPins(
       <CartesianChart
         model={plan.model}
         title={block.title || undefined}
@@ -412,13 +506,17 @@ function ResultBody(props: BlockRendererProps & { result: BlockResult; capped?: 
         minHeight={growToContent && panels > 1 ? Math.max(base, panels * 110 + 48) : base}
         hasSelection={Boolean(selected) && result.dimensions?.[0] !== undefined && !plan.model.time}
         selectedValue={selected?.value}
-        onPick={column && onCrossFilter && !plan.model.time ? (value) => pick(value) : undefined}
+        onPick={onAnchor ? anchorTo(plan.model.time ? "point" : "bar") : column && onCrossFilter && !plan.model.time ? (value) => pick(value) : undefined}
         onExportApi={onExportApi}
-      />
+        pins={shownPins}
+        notes={oneOffs}
+        pinning={Boolean(onAnchor)}
+      />,
+      false
     );
   }
   if (type === "donut") {
-    return (
+    return withPins(
       <DonutChart
         title={block.title}
         items={donutItems(result)}
@@ -426,7 +524,7 @@ function ResultBody(props: BlockRendererProps & { result: BlockResult; capped?: 
         scope={block.id}
         column={firstDimension(result)}
         mono={mono}
-        onItemClick={column && onCrossFilter ? (label) => pick(label === "(Blanks)" ? null : label) : undefined}
+        onItemClick={onAnchor ? (label) => anchorTo("slice")(label === "(Blanks)" ? null : label, label) : column && onCrossFilter ? (label) => pick(label === "(Blanks)" ? null : label) : undefined}
         selectedLabel={selected ? String(selected.value ?? "(Blanks)") : null}
       />
     );
@@ -473,12 +571,12 @@ function ResultBody(props: BlockRendererProps & { result: BlockResult; capped?: 
   if (type === "avatar_list") {
     const items = avatarListItems(result);
     const format = columnFormat(blockFormat(block, result), items.map((it) => it.value));
-    return (
+    return withPins(
       <AvatarListBlock
         title={block.title}
         config={{ items: items.map((it) => ({ ...it, display: formatValue(it.value, format, "full") })) }}
         bare
-        onItemClick={column && onCrossFilter ? (name) => pick(name === "(Blanks)" ? null : name) : undefined}
+        onItemClick={onAnchor ? (name) => anchorTo("row")(name === "(Blanks)" ? null : name, name) : column && onCrossFilter ? (name) => pick(name === "(Blanks)" ? null : name) : undefined}
         selectedName={selected ? String(selected.value ?? "(Blanks)") : null}
       />
     );

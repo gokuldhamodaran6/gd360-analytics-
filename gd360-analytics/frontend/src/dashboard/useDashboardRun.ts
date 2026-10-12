@@ -4,7 +4,7 @@ import type {
   DashboardSavedView, FilterCriterion, FilteredBlock, ParameterOptions, RunPageRequest, RunPageResponse, WarehouseDashboardFields,
 } from "../api/client";
 import {
-  buildPageFilters, buildParameterValues, type CrossFilter, EMPTY_RANGE, emptyRunState, type ParamValue, parseRunState, type RunState,
+  buildPageFilters, buildParameterValues, type CrossFilter, EMPTY_RANGE, emptyRunState, normalizePeriod, type ParamValue, parseRunState, type RunState,
   sameFilters, serializeRunState, stateFromSavedView, URL_KEYS,
 } from "./runState";
 import type { ColorRegistry } from "./theme/appearance";
@@ -31,10 +31,12 @@ export type RunSource = {
   kind: "warehouse" | "file";
   run?: (pageId: string, req: RunPageRequest, signal: AbortSignal) => Promise<RunPageResponse>;
   options?: (paramId: string, opts: { search?: string; limit?: number }, signal: AbortSignal) => Promise<ParameterOptions>;
-  preview?: (pageId: string, filters: FilterCriterion[], blockFilters: Record<string, FilterCriterion[]>) => Promise<{ blocks: FilteredBlock[]; matchedRows: number | null; dateBounds?: Record<string, { min: string; max: string }> | null; colors?: ColorRegistry | null }>;
+  preview?: (pageId: string, filters: FilterCriterion[], blockFilters: Record<string, FilterCriterion[]>, opts?: { period?: string | null; compare?: boolean }) => Promise<{ blocks: FilteredBlock[]; matchedRows: number | null; dateBounds?: Record<string, { min: string; max: string }> | null; colors?: ColorRegistry | null }>;
   // File sources: a column's distinct values for the rail (owner: the live
   // datasource; public: the page's own materialised rows).
   distinctValues?: (column: string, search?: string) => Promise<{ values: ColumnDistinctValue[]; dtype?: string }>;
+  // round 37: what a filter value's number counts ("sessions"); rows when absent
+  countNoun?: string | null;
   // File sources, owner only: lets the rail's filter-block editor read a
   // column's real dtype from the live datasource (ColumnFilterSpecEditor).
   datasourceId?: string | null;
@@ -82,7 +84,16 @@ export type DashboardRunOptions = {
   // False while the view is not on screen (the owner's edit mode) - no
   // run is made until it becomes true again, then one runs at once.
   enabled?: boolean;
+  // round 37: an app dashboard (GA4, Shopify...) opens on the last N days, compared with the N
+  // before - the way the app itself does - instead of All time with nothing to compare against.
+  defaultRangeDays?: number;
 };
+
+const isoDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+function lastDays(n: number, end: Date): DashboardDateRange {
+  const from = new Date(end.getFullYear(), end.getMonth(), end.getDate() - (n - 1));
+  return { from: isoDay(from), to: isoDay(end) };
+}
 
 export type DashboardRun = {
   state: RunState;
@@ -168,7 +179,9 @@ function currentSearch(): string {
   return typeof window !== "undefined" ? window.location.search : "";
 }
 
-export function useDashboardRun({ dashboard, page, source, syncUrl = true, debounceMs = 250, persistSavedViews, enabled = true }: DashboardRunOptions): DashboardRun {
+export function useDashboardRun({ dashboard, page, source, syncUrl = true, debounceMs = 250, persistSavedViews, enabled = true, defaultRangeDays }: DashboardRunOptions): DashboardRun {
+  // the default window GD360 chose (not the person) - re-anchored on the data's last day once known
+  const defaultedRange = useRef<DashboardDateRange | null>(null);
   const parameters = useMemo(() => (Array.isArray(dashboard.parameters) ? dashboard.parameters : []), [dashboard.parameters]);
   const [savedViews, setSavedViews] = useState<DashboardSavedView[]>(Array.isArray(dashboard.saved_views) ? dashboard.saved_views : []);
   useEffect(() => {
@@ -183,6 +196,12 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
     if (fromUrl.viewId && !fromUrl.paramValues) {
       const v = (dashboard.saved_views || []).find((x) => x.id === fromUrl.viewId);
       if (v) merged = stateFromSavedView(parameters, v, merged);
+    }
+    if (defaultRangeDays && dashboard.date_column && !fromUrl.dateRange && !merged.viewId && !merged.dateRange.from && !merged.dateRange.to) {
+      merged = { ...merged, dateRange: lastDays(defaultRangeDays, new Date()) };
+      // a month-by-month chart of 4 weeks is two dots: a short window is drawn day by day
+      if (!new URLSearchParams(currentSearch()).has("period") && defaultRangeDays <= 62) merged = { ...merged, period: "day" };
+      defaultedRange.current = merged.dateRange;
     }
     return merged;
   });
@@ -222,7 +241,21 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
     const next = cleanBounds(raw);
     if (Object.keys(next).length === 0) return;
     setDateBounds((prev) => (sameBounds(prev, next) ? prev : next));
-  }, []);
+    // The default window ends today; data that stops earlier (a sync from yesterday, an old export)
+    // gets the same window ending on its last day, so it never opens on an empty page.
+    const def = defaultedRange.current;
+    const max = dashboard.date_column ? next[dashboard.date_column]?.max : undefined;
+    // (the same rule as the date picker's presets: only data that ended over 60 days ago moves the window)
+    const stale = max && def?.to ? (new Date(def.to).getTime() - new Date(max).getTime()) / 86400000 > 60 : false;
+    if (def && max && def.to && stale && defaultRangeDays) {
+      const [y, m, d] = max.split("-").map(Number);
+      const moved = lastDays(defaultRangeDays, new Date(y, m - 1, d));
+      defaultedRange.current = null;
+      setState((prev) => (prev.dateRange.from === def.from && prev.dateRange.to === def.to ? { ...prev, dateRange: moved } : prev));
+    } else if (def && max) {
+      defaultedRange.current = null;
+    }
+  }, [dashboard.date_column, defaultRangeDays]);
 
   const seqRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -303,13 +336,21 @@ export function useDashboardRun({ dashboard, page, source, syncUrl = true, debou
           finish();
           return;
         }
+        // round 37: the header's date range reads the dashboard's date column, and its period
+        // redraws the charts over time - the same controls a warehouse dashboard has
+        const fileFilters = [...pageFilters];
+        const dc = dashboard.date_column;
+        if (dc && (s.dateRange.from || s.dateRange.to) && !fileFilters.some((f) => f.column === dc)) {
+          fileFilters.push({ column: dc, spec: { type: "date", from: s.dateRange.from || null, to: s.dateRange.to || null } });
+        }
+        const periodChanged = s.period !== normalizePeriod(dashboard.default_period);
         source
-          .preview(p.id, pageFilters, activeBlockFilters)
+          .preview(p.id, fileFilters, activeBlockFilters, { period: s.period, compare: true })
           .then(({ blocks, matchedRows: mr, dateBounds: bounds, colors: registry }) => {
             if (seq !== seqRef.current) return;
             applyBounds(bounds);
             applyColors(registry);
-            const hasAny = pageFilters.length > 0 || Object.keys(activeBlockFilters).length > 0;
+            const hasAny = fileFilters.length > 0 || Object.keys(activeBlockFilters).length > 0 || periodChanged;
             const next: Record<string, FilteredBlock> = {};
             if (hasAny) for (const b of blocks) next[b.id] = b;
             setOverrides(next);

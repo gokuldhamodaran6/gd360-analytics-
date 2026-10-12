@@ -19,8 +19,9 @@ import type { DashboardRun, RunSource } from "./useDashboardRun";
 import { CanvasView } from "./canvas/CanvasView";
 import type { CanvasOwnerActions } from "./canvas/cells";
 import type { DashboardViewMode } from "./canvas/useViewMode";
-import { CommentsSheet } from "./comments/CommentThread";
 import type { CommentsApi } from "./comments/useComments";
+import { CommentsButton, CommentsPanel } from "./comments/CommentsPanel";
+import { CommentsUiProvider, useCommentsUi, type CommentBlockInfo } from "./comments/CommentsUi";
 import { completeAppearance, type DashboardAppearance } from "./theme/appearance";
 import { ChartThemeProvider, useDashboardScope } from "./theme/ChartThemeContext";
 import { useThemeMode, useTransientTheme } from "../api/ThemeContext";
@@ -110,6 +111,14 @@ export type DashboardShellProps = {
   freshness?: { sources?: { name: string | null; kind: string | null }[]; schedule?: FreshnessSchedule | null } | null;
   // round 35b: what an empty page offers in the editor besides quick-add (draft with AI, merge in)
   emptyPage?: ReactNode;
+  // round 38 (team comments): every page (so the Comments panel can name
+  // and reach a chart on another page), how to switch to one, the thread a
+  // notification linked to (?comment=<id>), and what to do after a
+  // suggestion changed a chart (reload it).
+  commentPages?: DashboardBuilderPage[];
+  onOpenPage?: (pageId: string) => void;
+  initialThreadId?: string | null;
+  onChartChanged?: (blockId: string) => void;
 };
 
 // The dashboard name while editing: click it (or press Enter on it) to
@@ -357,9 +366,25 @@ export function LegacyBlocksBanner({ count, onUpgrade }: { count: number; onUpgr
 
 export function DashboardShell(props: DashboardShellProps) {
   const appearance = useMemo(() => completeAppearance(props.dashboard.appearance), [props.dashboard.appearance]);
+  const body = <ShellBody {...props} appearance={appearance} />;
+  const blocks = useMemo<CommentBlockInfo[]>(
+    () => (props.commentPages?.length ? props.commentPages : props.page ? [props.page] : []).flatMap((p) => p.blocks.filter((b) => !["text", "heading", "divider", "filter", "input"].includes(b.type)).map((b) => ({ id: b.id, title: b.title || "Untitled", type: b.type, pageId: p.id, pageName: p.name }))),
+    [props.commentPages, props.page]
+  );
   return (
     <ChartThemeProvider appearance={appearance} registry={props.run.colors} onPin={props.editing ? props.onPinColor : undefined}>
-      <ShellBody {...props} appearance={appearance} />
+      {props.comments?.enabled ? (
+        <CommentsUiProvider
+          api={props.comments}
+          blocks={blocks}
+          activePageId={props.page?.id || null}
+          onOpenPage={props.onOpenPage}
+          onChartChanged={props.onChartChanged}
+          initialThreadId={props.initialThreadId}
+        >
+          {body}
+        </CommentsUiProvider>
+      ) : body}
     </ChartThemeProvider>
   );
 }
@@ -387,17 +412,17 @@ function ShellBody({
   const editor = editing && !canvas ? editing.editor : null;
   const [railOpen, setRailOpen] = useState(false);
   const [viewAction, setViewAction] = useState<{ kind: "rename" | "delete"; id: string; name: string } | null>(null);
-  // The grid's "N comments" menu row opens the same thread panel the
-  // canvas pins to a cell.
-  const [commentsFor, setCommentsFor] = useState<DashboardBlock | null>(null);
+  // The grid's "N comments" menu row opens the Comments panel on that
+  // chart (round 38: the panel replaced the per-block sheet).
+  const cui = useCommentsUi();
   const ownerWithComments = useMemo(() => {
     if (!owner) return owner;
-    if (!comments?.enabled) return owner;
+    if (!comments?.enabled || !cui) return owner;
     // Until the threads have loaded once, keep the counts the dashboard
     // payload already carried (comment_counts) so the badge never blinks.
     const counts = comments.loading && comments.threads.length === 0 ? owner.commentCounts : comments.counts;
-    return { ...owner, commentCounts: counts, onComments: (b: DashboardBlock) => setCommentsFor(b) };
-  }, [owner, comments]);
+    return { ...owner, commentCounts: counts, onComments: (b: DashboardBlock) => cui.openPanel({ blockId: b.id }) };
+  }, [owner, comments, cui]);
   const exportApis = useRef<Record<string, ChartExportApi | null>>({});
   // Download PDF: the content area below, captured as drawn on screen.
   const mainRef = useRef<HTMLElement>(null);
@@ -486,7 +511,11 @@ function ShellBody({
   );
 
   const hasRail = !hideRail && !canvas;
-  const showRail = hasRail && !narrow;
+  // round 38: with the Comments panel docked on a laptop-width screen the
+  // filters step into a sheet (the Filters button), so the charts keep
+  // their room.
+  const belowWide = useIsNarrow(1680);
+  const showRail = hasRail && !narrow && !(cui?.panelOpen && belowWide && !editing);
   const rail = (variant: "rail" | "embedded") => (
     <FilterRailPanel
       run={run}
@@ -499,6 +528,8 @@ function ShellBody({
       className={variant === "rail" ? cn("print:hidden", editor && "!top-[68px] !max-h-[calc(100vh-68px)]") : undefined}
       onEditFilters={editor ? () => { setRailOpen(false); editor.openSheet({ kind: "filters" }); } : undefined}
       onRemoveFilterBlock={editor ? (b) => editor.requestRemove(b) : undefined}
+      scope={(dashboard as any).parameter_scope || null}
+      dateColumn={mode === "file" ? dashboard.date_column || null : null}
     />
   );
 
@@ -523,7 +554,7 @@ function ShellBody({
   // The controls that drive the data.
   const headerControls = (
     <div className="flex max-w-full flex-wrap items-center gap-2 print:hidden" data-dashboard-actions="">
-          {hasRail && narrow && (
+          {hasRail && !showRail && (
             <span className="relative inline-flex">
               <IconButton variant="secondary" aria-label="Show filters" title="Show filters" icon={<FilterIcon size={15} />} onClick={() => setRailOpen(true)} data-open-rail="" />
               {run.activeFilterCount > 0 && (
@@ -531,7 +562,8 @@ function ShellBody({
               )}
             </span>
           )}
-          {(run.savedViews.length > 0 || run.canSaveViews) && (
+          {/* round 37: "View: Unsaved view" only means something once there are views, or filters to keep */}
+          {(run.savedViews.length > 0 || (run.canSaveViews && run.activeFilterCount > 0)) && (
             <SavedViewSelect
               views={run.savedViews.map((v) => ({ id: v.id, name: v.name }))}
               value={run.state.viewId}
@@ -544,7 +576,9 @@ function ShellBody({
               align="start"
             />
           )}
-          {mode === "warehouse" && (
+          {/* round 37: every dashboard with a date column gets the period and date range up here
+              (an app or file dashboard used to have them only as the last item of the rail) */}
+          {(mode === "warehouse" || Boolean(dashboard.date_column)) && (
             <SegmentedControl<DashboardPeriod>
               ariaLabel="Period"
               value={run.state.period}
@@ -552,7 +586,7 @@ function ShellBody({
               options={PERIODS.filter((p) => p !== "quarter" || run.state.period === "quarter").map((p) => ({ value: p, label: PERIOD_LABEL[p] }))}
             />
           )}
-          {mode === "warehouse" && (
+          {(mode === "warehouse" || Boolean(dashboard.date_column)) && (
             <DateRangePicker
               value={run.state.dateRange}
               onChange={run.setDateRange}
@@ -562,7 +596,7 @@ function ShellBody({
               // end-aligned panel opened off the left edge of the screen.
               portal
               ariaLabel={dashboard.date_column ? `Date range on ${dashboard.date_column}` : "Date range"}
-              label={dashboard.date_column || "Date range"}
+              label={dashboard.date_column && !/^(date|day|dt)$/i.test(dashboard.date_column) ? dashboard.date_column.replace(/_/g, " ") : "Date range"}
               disabled={!dashboard.date_column}
               // The column's real first and last date (the run carries
               // them): the calendar opens on the data, not on today.
@@ -579,6 +613,7 @@ function ShellBody({
             />
           )}
           <ExportMenu page={page} run={run} exportApis={exportApis} mode={mode} onPdf={downloadPdf} pdfBusy={pdfStage !== null} />
+          {!editing && <CommentsButton />}
         </div>
   );
 
@@ -593,6 +628,10 @@ function ShellBody({
       <header className="flex flex-col gap-3 px-4 pb-4 pt-5 sm:px-6 print:px-0">
         <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
           <div className="min-w-0 flex-[1_1_280px]">
+            {/* round 37: the way back sits above the name, like every breadcrumb */}
+            {!editor && contextRow?.left && (
+              <div className="mb-1.5 flex min-w-0 flex-wrap items-center gap-3 print:hidden" data-breadcrumb="">{contextRow.left}</div>
+            )}
             {editing ? (
               <div className="flex min-w-0 items-center gap-x-2.5">
                 <InlineTitle name={dashboard.name} onRename={editing.onRename} />
@@ -702,10 +741,12 @@ function ShellBody({
         <EditToolbar editor={editor} trailing={contextRow?.tabs} compact={narrow} className="mx-4 sm:mx-6" onAppearance={onOpenAppearance} />
       ) : (
         contextRow && (
-          <div className={cn(CONTEXT_ROW_CLASS, "justify-between px-4 sm:px-6 print:hidden")} data-context-row="">
-            <div className="flex min-w-0 flex-wrap items-center gap-3">{contextRow.left}</div>
-            {contextRow.tabs}
-          </div>
+          // round 37: the pages sit right under the name and controls, where the eye already is
+          contextRow.tabs ? (
+            <div className={cn(CONTEXT_ROW_CLASS, "justify-start px-4 sm:px-6 print:hidden")} data-context-row="">
+              {contextRow.tabs}
+            </div>
+          ) : null
         )
       )}
       <div className="flex min-h-0 flex-1 items-stretch">
@@ -751,11 +792,9 @@ function ShellBody({
             </footer>
           )}
         </main>
+        {!editing && <CommentsPanel />}
       </div>
-      {comments?.enabled && (
-        <CommentsSheet open={commentsFor !== null} onClose={() => setCommentsFor(null)} blockId={commentsFor?.id || null} title={commentsFor?.title || "Block"} comments={comments} />
-      )}
-      {hasRail && narrow && (
+      {hasRail && !showRail && (
         <Sheet open={railOpen} onClose={() => setRailOpen(false)} title="Filters" side="left" size="sm" id="filter-rail-sheet">
           {rail("embedded")}
         </Sheet>

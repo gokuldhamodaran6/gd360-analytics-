@@ -5,6 +5,8 @@ import { BlockFilterButton, useIsNarrow } from "../components/DashboardBlocks";
 import {
   BarChartIcon, Button, ChartCard, CommentIcon, TextIcon, ConfirmDialog, CopyIcon, DownloadIcon, EditIcon, GripIcon, HashIcon, IconButton, MoreIcon, Popover, RefreshIcon, Sheet, SqlIcon, TableIcon, TrashIcon, cn,
 } from "../ui";
+import { BlockCommentChip } from "./comments/CommentsPanel";
+import { anchorHandler, cardClickHandler, useCommentsUi } from "./comments/CommentsUi";
 import { crossFilterColumn, downloadText, isDataBlock, isEmptyBlock, isLegacyBlock, markNoun, resultOk, rowsToCsv, safeFilename } from "./blockData";
 import { effectiveChartType } from "./charts/recommend";
 import { BlockRenderer, hasTableView } from "./BlockRenderer";
@@ -16,7 +18,7 @@ import { useGridMetrics } from "./theme/ChartThemeContext";
 import type { DashboardEditor } from "./edit/useDashboardEditor";
 import { MenuRow, SwapChips } from "./menu";
 import { adaptFileBlock, fileBlockSpec } from "./fileData";
-import { OriginChip, storyOf, visualOf, withIcon } from "./blockIcons";
+import { OriginChip, storyOf, useShowOrigins, visualOf, withIcon } from "./blockIcons";
 import { describeSpecShort } from "./format";
 import { type CrossFilter, describeSpec, type ParamValue, titleForPeriod } from "./runState";
 import type { DashboardRun, RunSource } from "./useDashboardRun";
@@ -232,6 +234,10 @@ export function BlockCard({
   // table twin, one click away for anyone who can see the card (this
   // viewer's own choice; nothing is stored).
   const [asTable, setAsTable] = useState(false);
+  // round 38 (team comments): anyone who can open the dashboard can talk
+  // about this chart - pinned to a mark, or on the whole chart.
+  const cui = useCommentsUi();
+  const commentsOn = Boolean(cui?.api.enabled) && !editor;
 
   const layoutOnly = block.type === "text" || block.type === "heading" || block.type === "divider" || block.type === "input";
   const empty = isBlockEmpty(block, run);
@@ -251,6 +257,7 @@ export function BlockCard({
     [mode, layoutOnly, block, override, source.name]
   );
 
+  const showOrigins = useShowOrigins() || Boolean(editor);
   const subtitle: ReactNode = useMemo(() => {
     if (layoutOnly) return undefined;
     if (selected) {
@@ -278,20 +285,25 @@ export function BlockCard({
     // or make two cards in a row start their plots at different heights);
     // the full text is the tooltip.
     const text = parts.join(" · ");
+    const cfg = (override?.config ?? block.config) || {};
+    const hiddenNotes: { measure: string; reason: string }[] = Array.isArray(cfg.hidden_notes) ? cfg.hidden_notes : [];
+    const hiddenText = hiddenNotes.map((h) => `${h.measure} not shown: ${h.reason}.`).join("\n");
     const origin = block.config?.origin as string | undefined;
     if (origin) {
-      // round 36: a block made from a thread says where it came from, and what it shows in one line
+      // round 36: a block made from a thread says what it shows in one line (round 37: where it came
+      // from only when the reader asks for it, or while editing)
       const shown = mode === "file" ? (() => { const a = adaptFileBlock(block, override, { sourceName: source.name }); return a.kind === "result" ? a.result : null; })() : (resultOk(result) ? result : null);
       const story = storyOf(block, shown);
       return (
-        <span data-block-subtitle="" className="flex min-w-0 items-center gap-2" title={exact && exact !== base ? `${text}\n${exact}` : text}>
-          <OriginChip origin={origin} />
+        <span data-block-subtitle="" className="flex min-w-0 items-center gap-2" title={[exact && exact !== base ? `${text}\n${exact}` : text, hiddenText].filter(Boolean).join("\n")}>
+          {showOrigins && <OriginChip origin={origin} question={block.config?.origin_question as string | undefined} />}
           <span className="min-w-0 truncate" data-block-story={story ? "" : undefined}>{story || text}</span>
         </span>
       );
     }
-    return <span data-block-subtitle="" className="block truncate" title={exact && exact !== base ? `${text}\n${exact}` : text}>{text}</span>;
-  }, [layoutOnly, selected, mode, block, spec, legacy, canCrossFilter, filtered, run, crossColumn, result, fileSpec, noun, override, source.name]);
+    const full = hiddenNotes.length ? `${text}${text ? " · " : ""}${hiddenNotes.map((h) => h.measure).join(", ")} hidden` : text;
+    return <span data-block-subtitle="" className="block truncate" title={[exact && exact !== base ? `${text}\n${exact}` : text, hiddenText].filter(Boolean).join("\n")}>{full}</span>;
+  }, [layoutOnly, selected, mode, block, spec, legacy, canCrossFilter, filtered, run, crossColumn, result, fileSpec, noun, override, source.name, showOrigins]);
 
   const openSql = async () => {
     setSqlOpen(true);
@@ -374,6 +386,20 @@ export function BlockCard({
 
   const toolbar = layoutOnly ? undefined : empty && editor ? editMenu : (
     <>
+      {/* one comment control: who is talking (opens their threads), or - on a quiet chart - start one */}
+      {commentsOn && !empty && (cui!.showOnCharts && cui!.countFor(block.id).total > 0 ? (
+        <BlockCommentChip blockId={block.id} />
+      ) : (
+        <IconButton
+          size="sm"
+          aria-label="Comment on this chart"
+          title="Comment on this chart · or click a point to pin it"
+          icon={<CommentIcon size={15} />}
+          data-comment-on-block={block.id}
+          data-comment-control=""
+          onClick={() => cui!.startDraft(block.id, null, "chart")}
+        />
+      ))}
       {showFilterButton && !empty && (
         <span title="Filter this chart" className="inline-flex">
           <BlockFilterButton
@@ -410,7 +436,7 @@ export function BlockCard({
         trigger={(api) => (
           <span className="relative inline-flex">
             <IconButton size="sm" aria-label="More options" title="More options" icon={<MoreIcon size={15} />} data-popover-trigger="" {...api.props} />
-            {comments && comments.open > 0 && (
+            {comments && comments.open > 0 && !commentsOn && (
               <span className="pointer-events-none absolute -right-0.5 -top-0.5 inline-flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-primary px-1 text-[9.5px] font-semibold text-on-primary tabular-nums">
                 {comments.open}
               </span>
@@ -529,7 +555,10 @@ export function BlockCard({
     );
   }
 
-  const rawTitle = block.title || (spec ? describeSpecShort(spec) : block.type === "sql" && block.config?.name ? String(block.config.name) : "Untitled block");
+  // round 37: a block whose measure GD360 hid reads by what it still shows ("Sessions by channel",
+  // not "Purchase Revenue by Channel") - in view mode; the owner still renames the stored title
+  const viewTitle = !editor && typeof block.config?.view_title === "string" ? block.config.view_title : null;
+  const rawTitle = viewTitle || block.title || (spec ? describeSpecShort(spec) : block.type === "sql" && block.config?.name ? String(block.config.name) : "Untitled block");
   // round 35: a time chart's title follows the grain on screen (never while renaming it)
   const titleText = !editor && resultOk(result) && result.time_column && result.period ? titleForPeriod(rawTitle, result.period) : rawTitle;
   const showEmptyState = empty && Boolean(editor);
@@ -563,7 +592,13 @@ export function BlockCard({
         headerClassName={dragClass}
         bodyClassName="flex flex-col"
       >
-        <div ref={setBodyEl} className="relative min-h-0 flex-1" data-block-id={block.id} data-block-type={block.type}>
+        <div
+          ref={setBodyEl}
+          className="relative min-h-0 flex-1"
+          data-block-id={block.id}
+          data-block-type={block.type}
+          onClick={commentsOn ? cardClickHandler(cui, block.id) : undefined}
+        >
           {showEmptyState ? (
             <EmptyBlockBody editor={editor!} block={block} />
           ) : legacy ? (
@@ -585,6 +620,9 @@ export function BlockCard({
               bodyHeight={bodyHeight}
               growToContent={stacked}
               viewAsTable={asTable}
+              pins={commentsOn ? cui!.pinsFor(block.id) : undefined}
+              onAnchor={commentsOn ? anchorHandler(cui, block.id) : undefined}
+              onHiddenPins={commentsOn ? () => cui!.openPanel({ blockId: block.id }) : undefined}
             />
           )}
           {run.loading && !run.quiet && run.ready && !firstLoad && (

@@ -9,9 +9,11 @@ import { EmptyBlockBody, EmptyBlockPlaceholder } from "./edit/EmptyBlock";
 import type { DashboardEditor } from "./edit/useDashboardEditor";
 import { adaptFileBlock } from "./fileData";
 import { humanize } from "./format";
-import { IconTile, kpiIconOf, OriginChip } from "./blockIcons";
+import { IconTile, kpiIconOf, OriginChip, useShowOrigins } from "./blockIcons";
 import { useChartTheme, useGridMetrics } from "./theme/ChartThemeContext";
 import type { DashboardRun } from "./useDashboardRun";
+import { useCommentsUi } from "./comments/CommentsUi";
+import { PersonAvatar } from "./comments/people";
 
 // 2026-10-07 (Option A dashboard view): the KPI strip across the top of
 // the page (Main.dc.html: Revenue · Bookings · Cancellation rate · ...).
@@ -175,13 +177,19 @@ export type KpiStripProps = {
 function KpiBlockTile({ block: b, result: r, run, labelNode, wording = PRIOR_PERIOD_WORDING }: { block: DashboardBlock; result: BlockResult | undefined; run: DashboardRun; labelNode?: ReactNode; wording?: KpiDeltaWording }) {
   const label = b.title || humanize(b.config?.label || r?.measures?.[0]) || "Value";
   // round 36: every tile leads with an icon badge for what it counts
+  const showOrigins = useShowOrigins() || Boolean(labelNode);
+  const origin = showOrigins ? (b.config?.origin as string | undefined) : undefined;
+  // round 37: a number with a catch (users summed per day) says so, on hover of the (i)
+  const note = typeof b.config?.note === "string" ? b.config.note : null;
   const labelWithIcon = (
     <span className="inline-flex min-w-0 max-w-full items-center gap-2" title={label}>
       <IconTile name={kpiIconOf(label)} size={22} iconSize={12} />
       <span className="min-w-0 truncate">{labelNode ?? label}</span>
+      {note && (
+        <span data-kpi-note="" title={note} aria-label={note} role="img" className="inline-grid h-4 w-4 shrink-0 place-items-center rounded-full border border-border-strong text-[10px] font-semibold normal-case text-muted">i</span>
+      )}
     </span>
   );
-  const origin = b.config?.origin as string | undefined;
   // A KPI's sparkline is the palette's primary - never an identity colour.
   const theme = useChartTheme();
   if (!r || !resultOk(r)) {
@@ -215,7 +223,7 @@ function KpiBlockTile({ block: b, result: r, run, labelNode, wording = PRIOR_PER
         sparkline={spark.length > 1 ? spark : undefined}
         sparklineLabel={spark.length > 1 ? `${label} trend` : undefined}
         sparklineColor={theme.tokens ? undefined : theme.primary}
-        caption={forecastLine ? <span data-kpi-forecast="" title={forecastLine}>{forecastLine}</span> : origin ? <OriginChip origin={origin} /> : undefined}
+        caption={forecastLine ? <span data-kpi-forecast="" title={forecastLine}>{forecastLine}</span> : origin ? <OriginChip origin={origin} question={b.config?.origin_question} /> : undefined}
         className={cn("h-full", run.loading && !run.quiet && "opacity-80")}
       />
       {run.loading && !run.quiet && <div aria-hidden="true" className="ui-shimmer pointer-events-none absolute inset-0 rounded-card opacity-30" />}
@@ -230,7 +238,43 @@ function FileKpiTile({ block, run, labelNode, sourceName }: { block: DashboardBl
   if (adapted.kind !== "result") {
     return <KpiTile label={labelNode ?? (block.title || "Value")} value="—" reserveDeltaRow className="h-full" />;
   }
-  return <KpiBlockTile block={adapted.block} result={adapted.result} run={run} labelNode={labelNode} wording={ALL_ROWS_WORDING} />;
+  const cfg = override?.config;
+  const wording: KpiDeltaWording = cfg?.delta && typeof cfg.delta_label === "string"
+    ? { caption: cfg.delta_label, captionShort: "vs prev", qualify: true }
+    : ALL_ROWS_WORDING;
+  return <KpiBlockTile block={adapted.block} result={adapted.result} run={run} labelNode={labelNode} wording={wording} />;
+}
+
+// round 38 (team comments): a KPI is something people talk about too. In
+// comment mode a click on the tile starts a comment on it; a tile with
+// open comments wears a small badge that opens them.
+function KpiCommentWrap({ blockId, children }: { blockId: string; children: ReactNode }) {
+  const ui = useCommentsUi();
+  const on = Boolean(ui?.api.enabled);
+  const c = on && ui!.showOnCharts ? ui!.countFor(blockId) : null;
+  const picking = on && ui!.commentMode;
+  return (
+    <div
+      className="relative"
+      data-kpi-block={blockId}
+      data-pinnable={picking ? "" : undefined}
+      onClickCapture={picking ? (e) => { e.preventDefault(); e.stopPropagation(); ui!.startDraft(blockId, null, "chart"); } : undefined}
+    >
+      {children}
+      {c && c.open > 0 && (
+        <button
+          type="button"
+          className="ui-focus absolute right-2.5 top-2.5 z-[1] inline-flex h-6 items-center gap-1 rounded-full border border-border bg-surface pl-0.5 pr-2 text-[11px] font-semibold text-text shadow-card hover:border-border-strong"
+          onClick={() => { const t = ui!.api.threads.find((x) => x.block_id === blockId && !x.resolved); if (t) ui!.openThread(t.id); else ui!.openPanel({ blockId }); }}
+          aria-label={`${c.open} open comment${c.open === 1 ? "" : "s"} on this KPI`}
+          data-kpi-comment-badge={blockId}
+          data-comment-control=""
+        >
+          <PersonAvatar name={c.people[0]?.name} initials={c.people[0]?.initials} size="xs" /><span className="tabular-nums">{c.open}</span>
+        </button>
+      )}
+    </div>
+  );
 }
 
 export function KpiStrip({ blocks, run, mode, className, editor = null, onEdit, canEdit = false, sourceName = null }: KpiStripProps) {
@@ -252,18 +296,18 @@ export function KpiStrip({ blocks, run, mode, className, editor = null, onEdit, 
           if (isKpiEmpty(b, run)) return <EmptyBlockPlaceholder key={b.id} noun="KPI" onEdit={onEdit} className="min-h-[96px]" />;
           if (mode === "file") {
             return (
-              <div key={b.id} className="relative" data-kpi-block={b.id}>
+              <KpiCommentWrap key={b.id} blockId={b.id}>
                 <FileKpiTile block={b} run={run} sourceName={sourceName} />
-              </div>
+              </KpiCommentWrap>
             );
           }
           const r = run.results[b.id];
           if (!run.ready && !r) return <Skeleton key={b.id} variant="tile" />;
           if (!r || !resultOk(r)) return <KpiBlockTile key={b.id} block={b} result={r} run={run} />;
           return (
-            <div key={b.id} className="relative" data-kpi-block={b.id}>
+            <KpiCommentWrap key={b.id} blockId={b.id}>
               <KpiBlockTile block={b} result={r} run={run} />
-            </div>
+            </KpiCommentWrap>
           );
         })}
       </div>

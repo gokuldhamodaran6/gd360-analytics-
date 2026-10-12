@@ -1,7 +1,7 @@
 // 2026-10-12 (round 36): the small icon tiles on dashboard cards and KPI tiles, the origin chip of a
 // block made from a thread ("From Q2" / "Suggested" / "Added by you"), and the story line that
 // says what a chart shows in one sentence.
-import { ReactNode } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import type { BlockResult, DashboardBlock } from "../api/client";
 import { formatValue, humanizeLower, measureFormats } from "./format";
 
@@ -82,15 +82,48 @@ export function withIcon(name: string, title: ReactNode, size = 26): ReactNode {
   );
 }
 
-/** "From Q2" / "Suggested" / "Added by you" - where a thread dashboard's block came from. */
-export function OriginChip({ origin }: { origin?: string | null }) {
+// round 37: where a block came from is the builder's business - hidden in view mode unless the
+// reader turns it on (More > Show where blocks came from); always shown while editing.
+const ORIGINS_KEY = "gd360_show_origins";
+const ORIGINS_EVENT = "gd360:show-origins";
+function readShowOrigins(): boolean {
+  try {
+    return localStorage.getItem(ORIGINS_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+export function setShowOrigins(on: boolean): void {
+  try {
+    localStorage.setItem(ORIGINS_KEY, on ? "1" : "0");
+  } catch {
+    /* a per-browser convenience */
+  }
+  window.dispatchEvent(new CustomEvent(ORIGINS_EVENT));
+}
+export function useShowOrigins(): boolean {
+  const [on, setOn] = useState(readShowOrigins);
+  useEffect(() => {
+    const sync = () => setOn(readShowOrigins());
+    window.addEventListener(ORIGINS_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(ORIGINS_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+  return on;
+}
+
+/** "From your question" / "Suggested" / "Added by you" - where a thread dashboard's block came from. */
+export function OriginChip({ origin, question }: { origin?: string | null; question?: string | null }) {
   if (!origin) return null;
   const fromAnswer = /^Q\d+$/.test(origin);
   const color = fromAnswer ? "rgb(var(--color-kind-answer))" : origin === "you" ? "rgb(var(--color-kind-dashboard))" : "rgb(var(--color-series-1))";
-  const label = fromAnswer ? `From ${origin}` : origin === "you" ? "Added by you" : "Suggested";
+  const label = fromAnswer ? "From your question" : origin === "you" ? "Added by you" : "Suggested";
   return (
     <span data-origin-chip={origin} className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] font-medium" style={{ color }}
-      title={fromAnswer ? `This block shows answer ${origin} of the thread it was made from` : origin === "you" ? "You added this block" : "GD360 added this so the dashboard is complete"}>
+      title={fromAnswer ? (question ? `Made from your question “${question}”` : "Made from a question in the thread") : origin === "you" ? "You added this block" : "GD360 added this so the dashboard is complete"}>
       <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
       {label}
     </span>
@@ -98,6 +131,30 @@ export function OriginChip({ origin }: { origin?: string | null }) {
 }
 
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** A period as a reader says it at its grain: "12 Oct 2026", "week of 6 Oct", "Nov 2025", "Q4 2025", "2025". */
+export function periodLabel(raw: unknown, grain: string | null | undefined): string {
+  const t = String(raw ?? "");
+  const m = /^(\d{4})-(\d{2})(?:-(\d{2}))?/.exec(t);
+  if (!m) return t;
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3] || 1);
+  switch ((grain || "").toLowerCase()) {
+    case "year": return String(y);
+    case "quarter": return `Q${Math.floor((mo - 1) / 3) + 1} ${y}`;
+    case "month": return `${MONTHS[mo - 1]} ${y}`;
+    case "week": return `week of ${d} ${MONTHS[mo - 1]}`;
+    default: return `${d} ${MONTHS[mo - 1]} ${y}`;
+  }
+}
+
+/** A category as the start of a sentence: "Desktop", "Home (/)", "Page /about/". */
+function subject(v: unknown): string {
+  const t = String(v ?? "(blank)");
+  if (t === "/") return "Home (/)";
+  if (t.startsWith("/")) return `Page ${t}`;
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
 
 /** One sentence on what a chart shows, from its own rows ("United States leads with 583, 27% of the
  *  total."). Null when the rows don't make a clear sentence. Never invents a number. */
@@ -115,9 +172,11 @@ export function storyOf(block: Pick<DashboardBlock, "type" | "config" | "title">
   const word = humanizeLower(m);
   if (result.time_column) {
     const tc = result.time_column;
+    const grain = result.period || (block.config?.recipe?.time_grain as string | undefined) || null;
     const peak = rows.reduce((a, b) => (b[m] > a[m] ? b : a));
-    const label = String(peak[tc] ?? "").slice(0, 10);
-    return label ? `Peak ${word}: ${show(peak[m])} on ${label}.` : null;
+    const when = periodLabel(peak[tc], grain);
+    const prep = !grain || grain === "day" ? "on" : grain === "week" ? "in the" : "in";
+    return when ? `Peak ${word}: ${show(peak[m])} ${prep} ${when}.` : null;
   }
   const dims = result.dimensions?.length ? result.dimensions : result.columns.map((c) => c.name).filter((n) => !measures.includes(n));
   if (dims.length !== 1) return null;
@@ -127,8 +186,9 @@ export function storyOf(block: Pick<DashboardBlock, "type" | "config" | "title">
   const rate = fmt?.format === "percent";
   const total = rows.reduce((s, r) => s + r[m], 0);
   if (!rate && total > 0 && sorted.every((r) => r[m] >= 0)) {
-    const share = Math.round((top[m] / total) * 100);
-    return `${String(top[d])} leads with ${show(top[m])}, ${share}% of the total.`;
+    const sharePct = (top[m] / total) * 100;
+    const share = sharePct < 10 ? sharePct.toFixed(1) : String(Math.round(sharePct));
+    return `${subject(top[d])} leads with ${show(top[m])}, ${share}% of the total.`;
   }
-  return `${String(top[d])} is highest at ${show(top[m])}; ${String(sorted[sorted.length - 1][d])} is lowest at ${show(sorted[sorted.length - 1][m])}.`;
+  return `${subject(top[d])} is highest at ${show(top[m])}; ${String(sorted[sorted.length - 1][d])} is lowest at ${show(sorted[sorted.length - 1][m])}.`;
 }

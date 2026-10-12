@@ -27,11 +27,13 @@ import { useParameterOptions } from "./useParameterOptions";
 
 const SEGMENTED_MAX = 4;
 
-function ParameterControl({ param, value, onChange, source }: { param: DashboardParameter; value: ParamValue | undefined; onChange: (v: ParamValue) => void; source: RunSource }) {
+function ParameterControl({ param, value, onChange, source, colored = true }: { param: DashboardParameter; value: ParamValue | undefined; onChange: (v: ParamValue) => void; source: RunSource; colored?: boolean }) {
   const needsOptions = param.control !== "range" && param.control !== "date_range";
   const opts = useParameterOptions(source, param, needsOptions, param.control === "search" ? 50 : 200);
   const theme = useChartTheme();
-  const dotted = theme.colorMode === "by_value";
+  // round 37: a value carries its colour dot only where a chart on the page paints it in that colour
+  const dotted = theme.colorMode === "by_value" && colored;
+  const noun = source.countNoun || "rows";
   // The dot of a value that has a colour on the charts (undefined otherwise).
   const dot = (raw: unknown, inert = true) =>
     dotted && theme.hasColor(param.column, raw)
@@ -45,6 +47,24 @@ function ParameterControl({ param, value, onChange, source }: { param: Dashboard
   const rawOf = (token: string) => opts.values.find((v) => encodeValueToken(v.value) === token)?.value;
   const selected = isMultiControl(param.control) && Array.isArray(value) ? (value as string[]) : [];
 
+  if (param.control === "chips" && options.length > 8) {
+    // round 37: a long list (79 countries, every page of a site) is a search with the top values -
+    // never a wall of chips with a "+72 more" that cannot be opened
+    return (
+      <OptionSearch
+        options={options}
+        value={selected}
+        onChange={(v) => onChange(v)}
+        onSearch={opts.setSearch}
+        loading={opts.loading}
+        total={opts.truncated ? undefined : options.length}
+        limit={6}
+        placeholder={`Search ${(param.label || param.column).toLowerCase()}`}
+        ariaLabel={param.label}
+        emptyText={opts.error || "No matches"}
+      />
+    );
+  }
   if (param.control === "chips") {
     if (opts.loading && options.length === 0) return <div className="ui-shimmer h-8 w-full" aria-busy="true" />;
     if (opts.error) return <div className="text-caption text-danger">{opts.error}</div>;
@@ -69,7 +89,7 @@ function ParameterControl({ param, value, onChange, source }: { param: Dashboard
               {typeof o.count === "number" && (
                 // round 33: say what the number counts - rows in the data with this value, before any
                 // tile's own filters (a "Website" tile's numbers are a part of it)
-                <span className="text-caption font-normal text-muted tabular-nums" title={`${o.count.toLocaleString()} rows in the data have ${o.label}`} aria-label={`${o.count.toLocaleString()} rows`}>
+                <span className="text-caption font-normal text-muted tabular-nums" title={`${o.count.toLocaleString()} ${noun} with ${o.label}`} aria-label={`${o.count.toLocaleString()} ${noun}`}>
                   {o.count.toLocaleString()}
                 </span>
               )}
@@ -219,7 +239,7 @@ function DateRangeControl({ param, value, onChange, bounds }: { param: Dashboard
 // The right control for one parameter - the rail's sections and an
 // "input" cell on the canvas both render through this. `bounds`: a date
 // column's real first and last date (the run's date_bounds).
-export function ParameterField({ param, value, onChange, source, bounds }: { param: DashboardParameter; value: ParamValue | undefined; onChange: (v: ParamValue) => void; source: RunSource; bounds?: DateBounds | null }) {
+export function ParameterField({ param, value, onChange, source, bounds, colored }: { param: DashboardParameter; value: ParamValue | undefined; onChange: (v: ParamValue) => void; source: RunSource; bounds?: DateBounds | null; colored?: boolean }) {
   return (
     <div data-param-control={param.control} data-param-id={param.id}>
       {param.control === "range" ? (
@@ -227,7 +247,7 @@ export function ParameterField({ param, value, onChange, source, bounds }: { par
       ) : param.control === "date_range" ? (
         <DateRangeControl param={param} value={value} onChange={onChange} bounds={bounds} />
       ) : (
-        <ParameterControl param={param} value={value} onChange={onChange} source={source} />
+        <ParameterControl param={param} value={value} onChange={onChange} source={source} colored={colored} />
       )}
     </div>
   );
@@ -288,10 +308,47 @@ export type FilterRailPanelProps = {
   // filter block (file dashboards) can be removed from here.
   onEditFilters?: () => void;
   onRemoveFilterBlock?: (block: DashboardBlock) => void;
+  // round 37: {parameter id: block ids it reaches} and the date column the header's range owns
+  scope?: Record<string, string[]> | null;
+  dateColumn?: string | null;
 };
 
-export function FilterRailPanel({ run, source, page, onPinToUrl, pinned = false, className, width, variant = "rail", onEditFilters, onRemoveFilterBlock }: FilterRailPanelProps) {
+/** Round 37: the columns a chart on the page paints by value (a donut's slices, a stacked or split
+ *  chart's series) - only their filter values carry a colour dot. */
+function paintedColumns(blocks: DashboardBlock[]): Set<string> {
+  const out = new Set<string>();
+  for (const b of blocks) {
+    const r = b.config?.recipe || {};
+    const ct = String(b.config?.chart_type || r.chart_type || "");
+    const groups: string[] = (Array.isArray(r.group_by) ? r.group_by : [r.group_by_column]).filter(Boolean);
+    if (ct === "map") continue; // a map paints by amount, not by value
+    if (r.time_grain) {
+      if (groups.length >= 2) out.add(groups[1]); // a trend split by a column: one colour per series
+    } else if (b.type === "donut" || b.type === "chart") {
+      groups.forEach((g) => out.add(g)); // bars / slices coloured by value
+    }
+  }
+  return out;
+}
+
+export function FilterRailPanel({ run, source, page, onPinToUrl, pinned = false, className, width, variant = "rail", onEditFilters, onRemoveFilterBlock, scope, dateColumn }: FilterRailPanelProps) {
   const filterBlocks = (page?.blocks || []).filter((b) => b.type === "filter");
+  const pageBlocks = (page?.blocks || []).filter((b) => b.config?.recipe);
+  const painted = useMemo(() => paintedColumns(page?.blocks || []), [page?.blocks]);
+  // round 37: the header owns the dashboard's date range; the rail shows a page only the filters
+  // that reach one of its charts (a Page filter does nothing on a page of traffic charts)
+  const params = run.parameters.filter((p) => {
+    if (dateColumn && p.control === "date_range" && p.column === dateColumn) return false;
+    const reach = scope?.[p.id];
+    if (!reach || !pageBlocks.length) return true;
+    return pageBlocks.some((b) => reach.includes(b.id));
+  });
+  const partial = (id: string): number | null => {
+    const reach = scope?.[id];
+    if (!reach || !pageBlocks.length) return null;
+    const n = pageBlocks.filter((b) => reach.includes(b.id)).length;
+    return n < pageBlocks.length ? n : null;
+  };
   const shown = run.matchedRows;
   // 2026-10-07 (real end-to-end run): the backend's total_rows is null when
   // it has no count of the whole table. Substituting the matched count
@@ -310,18 +367,19 @@ export function FilterRailPanel({ run, source, page, onPinToUrl, pinned = false,
         ) : undefined
       }
       summary={
-        typeof shown === "number"
+        // an app's rows are already totals (a day x channel x device): "1,716 rows" says nothing there
+        typeof shown === "number" && !source.countNoun
           ? { shown, total: typeof total === "number" ? total : null, filterCount: run.activeFilterCount, onReset: run.activeFilterCount ? run.resetFilters : undefined, loading: run.loading }
           : undefined
       }
       footer={
-        typeof shown !== "number" && run.activeFilterCount > 0 ? (
+        (typeof shown !== "number" || source.countNoun) && run.activeFilterCount > 0 ? (
           <button type="button" onClick={run.resetFilters} className="ui-focus self-start rounded px-1 text-[12.5px] font-medium text-brand-ink hover:underline">Reset filters</button>
         ) : undefined
       }
       note={
         <span className="inline-flex flex-wrap items-center gap-x-1.5">
-          <span>Filters apply to every chart</span>
+          <span>{scope && Object.keys(scope).length ? "Each filter applies to the charts with its column" : "Filters apply to every chart"}</span>
           {onPinToUrl && (
             <>
               <span aria-hidden="true">·</span>
@@ -331,20 +389,22 @@ export function FilterRailPanel({ run, source, page, onPinToUrl, pinned = false,
         </span>
       }
     >
-      {run.parameters.length === 0 && filterBlocks.length === 0 && (
-        <div className="text-caption text-muted">No filters on this dashboard yet.</div>
+      {params.length === 0 && filterBlocks.length === 0 && (
+        <div className="text-caption text-muted">{run.parameters.length ? "No filters reach the charts on this page." : "No filters on this dashboard yet."}</div>
       )}
-      {run.parameters.map((param) => {
+      {params.map((param) => {
         const value = run.state.paramValues[param.id];
         const set = isParamValueSet(param, value);
         const onChange = (v: ParamValue) => run.setParamValue(param.id, v);
+        const n = partial(param.id);
         return (
           <FilterRailSection
             key={param.id}
             label={param.label || param.column}
-            trailing={set ? <button type="button" className="ui-focus rounded px-0.5 text-caption text-muted hover:text-text hover:underline" onClick={() => onChange(null)}>Clear</button> : undefined}
+            trailing={set ? <button type="button" className="ui-focus rounded px-0.5 text-caption text-muted hover:text-text hover:underline" onClick={() => onChange(null)}>Clear</button>
+              : n !== null ? <span className="text-[11.5px] text-faint" data-filter-reach={n} title={`Filters ${n} of the ${pageBlocks.length} charts on this page - the others have no ${param.column}`}>{n} of {pageBlocks.length} charts</span> : undefined}
           >
-            <ParameterField param={param} value={value} onChange={onChange} source={source} bounds={run.dateBounds?.[param.column]} />
+            <ParameterField param={param} value={value} onChange={onChange} source={source} bounds={run.dateBounds?.[param.column]} colored={painted.has(param.column)} />
           </FilterRailSection>
         );
       })}

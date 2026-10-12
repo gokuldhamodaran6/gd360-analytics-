@@ -85,7 +85,8 @@ function fullTime(iso: string | null | undefined): string | null {
 
 export type DataFreshnessProps = {
   mode: DataMode | null;
-  sources: { name: string | null; kind: string | null }[];
+  // round 37: a synced app (GA4, Shopify...) - its numbers are as of its last sync, not "live"
+  sources: { name: string | null; kind: string | null; synced?: boolean; syncedAt?: string | null }[];
   asOf: string | null;
   // A run in flight: "Updating…" in place of the time (the page keeps its numbers)
   working: boolean;
@@ -111,15 +112,20 @@ export function DataFreshness({ mode, sources, asOf, working, onRefresh, refresh
   }, []);
   if (!mode) return null;
   const live = mode !== "file";
+  const named = sources.filter((s) => s.name || s.kind);
+  const synced = named.length > 0 && named.every((s) => s.synced);
+  const syncedAt = synced ? named.map((s) => s.syncedAt).filter(Boolean).sort()[0] || null : null;
   const when = asOfText(asOf, now);
+  const syncedWhen = asOfText(syncedAt, now);
   const auto = mode !== "file" && schedule && schedule.interval !== "off" ? (schedule.paused ? "auto-refresh paused" : AUTO_SHORT[schedule.interval]) : null;
-  const label = working ? "Updating…" : mode === "file" ? (when ? `as of ${when}` : "fixed copy") : [auto, when ? `updated ${when}` : "not run yet"].filter(Boolean).join(" · ");
+  const label = working ? "Updating…" : synced ? (syncedWhen || "not yet")
+    : mode === "file" ? (when ? `as of ${when}` : "fixed copy") : [auto, when ? `updated ${when}` : "not run yet"].filter(Boolean).join(" · ");
   const opt = schedule ? AUTO_OPTIONS.find((o) => o.value === schedule.interval) : null;
   const dot = working ? (
     <span className="ui-spinner !h-3 !w-3 !border-[1.5px]" aria-hidden="true" />
   ) : (
     <span aria-hidden="true" className={cn("relative inline-flex h-2 w-2 shrink-0 rounded-full", error ? "bg-warning" : live ? "bg-good" : "bg-muted")}>
-      {live && !error && <span className="absolute inset-0 animate-ping rounded-full bg-good opacity-40 motion-reduce:hidden" />}
+      {live && !synced && !error && <span className="absolute inset-0 animate-ping rounded-full bg-good opacity-40 motion-reduce:hidden" />}
     </span>
   );
   const canRefresh = live && Boolean(onRefresh);
@@ -139,7 +145,7 @@ export function DataFreshness({ mode, sources, asOf, working, onRefresh, refresh
             title={fullTime(asOf) ? `Numbers as of ${fullTime(asOf)}` : undefined}
           >
             {dot}
-            <span className="font-medium text-text">{MODE_LABEL[mode]}</span>
+            <span className="font-medium text-text">{synced ? "Synced" : MODE_LABEL[mode]}</span>
             <span className="hidden text-muted sm:inline" data-freshness-label="">· {label}</span>
           </button>
         )}
@@ -148,19 +154,25 @@ export function DataFreshness({ mode, sources, asOf, working, onRefresh, refresh
           <div className="flex flex-col gap-3 p-3.5 text-ui" data-freshness-panel="">
             <div className="flex items-center gap-2">
               {dot}
-              <span className="font-semibold text-text">{mode === "live" ? "Live data" : mode === "file" ? "Uploaded file" : "Live data + an uploaded file"}</span>
+              <span className="font-semibold text-text">{synced ? "Synced from the app" : mode === "live" ? "Live data" : mode === "file" ? "Uploaded file" : "Live data + an uploaded file"}</span>
             </div>
             <div className="flex flex-col gap-1.5">
               {sources.filter((s) => s.name || s.kind).map((s, i) => (
                 <div key={i} className="flex min-w-0 items-center gap-2 text-caption">
                   {s.kind && <ProviderBadge provider={s.kind} />}
                   <span className="truncate text-secondary" title={s.name || undefined}>{s.name || providerDisplayName(s.kind)}</span>
-                  <span className="ml-auto shrink-0 text-faint">{isLiveKind(s.kind) ? "live" : "file"}</span>
+                  <span className="ml-auto shrink-0 text-faint">{s.synced ? "synced" : isLiveKind(s.kind) ? "live" : "file"}</span>
                 </div>
               ))}
             </div>
             <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-caption">
-              <dt className="text-muted">Numbers as of</dt>
+              {synced && (
+                <>
+                  <dt className="text-muted">Last sync</dt>
+                  <dd className="text-text tabular-nums" data-freshness-synced="">{fullTime(syncedAt) || "not yet"}</dd>
+                </>
+              )}
+              <dt className="text-muted">{synced ? "Computed" : "Numbers as of"}</dt>
               <dd className="text-text tabular-nums" data-freshness-asof="">{working ? "updating now…" : fullTime(asOf) || "—"}</dd>
               {live && schedule && schedule.interval !== "off" && schedule.interval !== "realtime" && (
                 <>
