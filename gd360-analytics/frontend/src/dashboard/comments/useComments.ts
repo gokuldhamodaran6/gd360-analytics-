@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { dashboardCommentsApi, type CommentAnchor, type CommentCounts, type CommentThread, type DashboardComment } from "../../api/client";
+import { dashboardCommentsApi, type CommentAnchor, type CommentCounts, type CommentPeople, type CommentPerson, type CommentThread, type DashboardComment } from "../../api/client";
 
 // 2026-10-07 (analyst canvas round): one hook per dashboard for every
 // comment thread on it (GET /dashboard-builder/{id}/comments, resolved
@@ -21,13 +21,20 @@ export type CommentsApi = {
   loading: boolean;
   error: string | null;
   enabled: boolean;
+  // round 38 (team comments): who is reading, whether they may change the
+  // dashboard's charts (accepting a suggestion), and who can be @mentioned.
+  me: string | null;
+  canEditDashboard: boolean;
+  people: CommentPeople | null;
+  loadPeople: () => Promise<CommentPerson[]>;
   threadsFor: (blockId: string, opts?: { includeResolved?: boolean }) => CommentThread[];
   countFor: (blockId: string) => { open: number; total: number };
-  addThread: (blockId: string, body: string, anchor?: CommentAnchor | null) => Promise<CommentThread | null>;
-  reply: (threadId: string, body: string) => Promise<void>;
+  addThread: (blockId: string, body: string, anchor?: CommentAnchor | null, mentionIds?: string[]) => Promise<CommentThread | null>;
+  reply: (threadId: string, body: string, mentionIds?: string[]) => Promise<void>;
   resolve: (threadId: string, resolved: boolean) => Promise<void>;
-  editBody: (commentId: string, body: string) => Promise<void>;
+  editBody: (commentId: string, body: string, mentionIds?: string[]) => Promise<void>;
   remove: (commentId: string) => Promise<void>;
+  applySuggestion: (threadId: string, apply: boolean) => Promise<CommentThread | null>;
   refresh: () => Promise<void>;
 };
 
@@ -60,9 +67,20 @@ export function useComments(dashboardId: string | null, options: { enabled?: boo
   const [threads, setThreads] = useState<CommentThread[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [me, setMe] = useState<string | null>(null);
+  const [canEditDashboard, setCanEditDashboard] = useState(false);
+  const [people, setPeople] = useState<CommentPeople | null>(null);
+  const peopleReq = useRef<Promise<CommentPerson[]> | null>(null);
   const seq = useRef(0);
   const threadsRef = useRef(threads);
   threadsRef.current = threads;
+  // The optimistic comment wears the writer's real name (and so colour) once known.
+  const peopleRef = useRef(people);
+  peopleRef.current = people;
+  const meAuthor = (): DashboardComment["author"] => {
+    const m = peopleRef.current?.people.find((p) => p.is_me);
+    return m ? { id: m.id, name: m.name, initials: m.initials, email: m.email ?? null } : ME;
+  };
 
   const refresh = useCallback(async () => {
     if (!dashboardId || !enabled) return;
@@ -72,6 +90,8 @@ export function useComments(dashboardId: string | null, options: { enabled?: boo
       const res = await dashboardCommentsApi.list(dashboardId, { include_resolved: true });
       if (n !== seq.current) return;
       setThreads(res.threads || []);
+      setMe(res.me ?? null);
+      setCanEditDashboard(Boolean(res.can_edit_dashboard));
       setError(null);
     } catch (e: any) {
       if (n !== seq.current) return;
@@ -84,9 +104,29 @@ export function useComments(dashboardId: string | null, options: { enabled?: boo
 
   useEffect(() => {
     setThreads([]);
+    setPeople(null);
+    peopleReq.current = null;
     if (enabled) refresh();
     return () => { seq.current++; };
   }, [enabled, refresh]);
+
+  // A team works on the same dashboard: pick up their comments when the
+  // tab comes back into view, and every minute while it is open.
+  useEffect(() => {
+    if (!enabled) return;
+    const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    const id = window.setInterval(() => { if (document.visibilityState === "visible") refresh(); }, 60000);
+    return () => { document.removeEventListener("visibilitychange", onVisible); window.clearInterval(id); };
+  }, [enabled, refresh]);
+
+  const loadPeople = useCallback(async (): Promise<CommentPerson[]> => {
+    if (!dashboardId || !enabled) return [];
+    if (!peopleReq.current) {
+      peopleReq.current = dashboardCommentsApi.people(dashboardId).then((p) => { setPeople(p); return p.people; }).catch(() => { peopleReq.current = null; return []; });
+    }
+    return peopleReq.current;
+  }, [dashboardId, enabled]);
 
   const counts = useMemo(() => countsOf(threads), [threads]);
 
@@ -107,20 +147,20 @@ export function useComments(dashboardId: string | null, options: { enabled?: boo
     });
   }, []);
 
-  const addThread = useCallback(async (blockId: string, body: string, anchor: CommentAnchor | null = null) => {
+  const addThread = useCallback(async (blockId: string, body: string, anchor: CommentAnchor | null = null, mentionIds: string[] = []) => {
     if (!dashboardId || !enabled) return null;
     const text = body.trim();
     if (!text) return null;
     const tempId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const now = new Date().toISOString();
     const temp: CommentThread = {
-      id: tempId, dashboard_id: dashboardId, block_id: blockId, page_id: null, parent_id: null, author: ME, body: text, anchor,
+      id: tempId, dashboard_id: dashboardId, block_id: blockId, page_id: null, parent_id: null, author: meAuthor(), body: text, anchor,
       mentions: [], resolved_at: null, created_at: now, updated_at: now, can_edit: true, can_resolve: true, can_delete: true,
       replies: [], reply_count: 0, resolved: false,
     };
     setThreads((prev) => [...prev, temp]);
     try {
-      const stored = await dashboardCommentsApi.create(dashboardId, { body: text, block_id: blockId, anchor: anchor || undefined });
+      const stored = await dashboardCommentsApi.create(dashboardId, { body: text, block_id: blockId, anchor: anchor || undefined, mention_ids: mentionIds });
       replaceThread(tempId, stored);
       return stored;
     } catch (e: any) {
@@ -129,7 +169,7 @@ export function useComments(dashboardId: string | null, options: { enabled?: boo
     }
   }, [dashboardId, enabled, replaceThread]);
 
-  const reply = useCallback(async (threadId: string, body: string) => {
+  const reply = useCallback(async (threadId: string, body: string, mentionIds: string[] = []) => {
     if (!dashboardId || !enabled) return;
     const text = body.trim();
     if (!text) return;
@@ -137,12 +177,12 @@ export function useComments(dashboardId: string | null, options: { enabled?: boo
     const now = new Date().toISOString();
     const parent = threadsRef.current.find((t) => t.id === threadId);
     const temp: DashboardComment = {
-      id: tempId, dashboard_id: dashboardId, block_id: parent?.block_id ?? null, page_id: parent?.page_id ?? null, parent_id: threadId, author: ME, body: text,
+      id: tempId, dashboard_id: dashboardId, block_id: parent?.block_id ?? null, page_id: parent?.page_id ?? null, parent_id: threadId, author: meAuthor(), body: text,
       anchor: null, mentions: [], resolved_at: null, created_at: now, updated_at: now, can_edit: true, can_resolve: true, can_delete: true,
     };
     setThreads((prev) => prev.map((t) => (t.id === threadId ? { ...t, replies: [...t.replies, temp], reply_count: t.reply_count + 1 } : t)));
     try {
-      const stored = await dashboardCommentsApi.create(dashboardId, { body: text, parent_id: threadId });
+      const stored = await dashboardCommentsApi.create(dashboardId, { body: text, parent_id: threadId, mention_ids: mentionIds });
       replaceThread(threadId, stored);
     } catch (e: any) {
       setThreads((prev) => prev.map((t) => (t.id === threadId ? { ...t, replies: t.replies.filter((r) => r.id !== tempId), reply_count: Math.max(0, t.reply_count - 1) } : t)));
@@ -163,12 +203,19 @@ export function useComments(dashboardId: string | null, options: { enabled?: boo
     }
   }, [dashboardId, enabled, replaceThread]);
 
-  const editBody = useCallback(async (commentId: string, body: string) => {
+  const editBody = useCallback(async (commentId: string, body: string, mentionIds?: string[]) => {
     if (!dashboardId || !enabled) return;
     const text = body.trim();
     if (!text) return;
-    const stored = await dashboardCommentsApi.update(dashboardId, commentId, { body: text }).catch((e) => { throw new Error(readError(e, "Couldn't save this edit.")); });
+    const stored = await dashboardCommentsApi.update(dashboardId, commentId, { body: text, ...(mentionIds ? { mention_ids: mentionIds } : {}) }).catch((e) => { throw new Error(readError(e, "Couldn't save this edit.")); });
     replaceThread(stored.id, stored);
+  }, [dashboardId, enabled, replaceThread]);
+
+  const applySuggestion = useCallback(async (threadId: string, apply: boolean) => {
+    if (!dashboardId || !enabled) return null;
+    const stored = await dashboardCommentsApi.suggestion(dashboardId, threadId, apply).catch((e) => { throw new Error(readError(e, apply ? "Couldn't apply this." : "Couldn't undo this.")); });
+    replaceThread(stored.id, stored);
+    return stored;
   }, [dashboardId, enabled, replaceThread]);
 
   const remove = useCallback(async (commentId: string) => {
@@ -187,12 +234,13 @@ export function useComments(dashboardId: string | null, options: { enabled?: boo
     }
   }, [dashboardId, enabled]);
 
-  return { threads, counts, loading, error, enabled, threadsFor, countFor, addThread, reply, resolve, editBody, remove, refresh };
+  return { threads, counts, loading, error, enabled, me, canEditDashboard, people, loadPeople, threadsFor, countFor, addThread, reply, resolve, editBody, remove, applySuggestion, refresh };
 }
 
 // The inert twin for views with no identity (the published link).
 export const NO_COMMENTS: CommentsApi = {
-  threads: [], counts: {}, loading: false, error: null, enabled: false,
+  threads: [], counts: {}, loading: false, error: null, enabled: false, me: null, canEditDashboard: false, people: null, loadPeople: async () => [],
   threadsFor: () => [], countFor: () => ({ open: 0, total: 0 }),
-  addThread: async () => null, reply: async () => undefined, resolve: async () => undefined, editBody: async () => undefined, remove: async () => undefined, refresh: async () => undefined,
+  addThread: async () => null, reply: async () => undefined, resolve: async () => undefined, editBody: async () => undefined, remove: async () => undefined,
+  applySuggestion: async () => null, refresh: async () => undefined,
 };
