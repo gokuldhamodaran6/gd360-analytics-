@@ -31,6 +31,7 @@ every one the credentials can see is synced.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -52,12 +53,12 @@ def _cfg(name: str, default: str = "") -> str:
 
 # ---- shared helpers ---------------------------------------------------------
 
-ACCOUNT_COLS = ["account_id", "account", "followers", "posts_count", "url"]
+ACCOUNT_COLS = ["account_id", "account", "followers", "posts_count", "posts_synced", "latest_post_date", "url"]
 DAILY_COLS = ["date", "account_id", "account", "followers_gained", "followers_lost", "reach", "impressions",
               "engagements", "clicks", "video_views", "profile_views", "watch_minutes"]
 POST_COLS = ["post_id", "account_id", "account", "posted_at", "post_date", "type", "text", "url", "reach",
              "impressions", "likes", "comments", "shares", "saves", "engagements", "clicks", "video_views"]
-_NUMERIC = {"followers", "posts_count", "followers_gained", "followers_lost", "reach", "impressions", "engagements",
+_NUMERIC = {"followers", "posts_count", "posts_synced", "followers_gained", "followers_lost", "reach", "impressions", "engagements",
             "clicks", "video_views", "profile_views", "watch_minutes", "likes", "comments", "shares", "saves",
             "average_view_duration"}
 MAX_TEXT = 500
@@ -105,16 +106,156 @@ def _body(r) -> dict | list:
     return b if b is not None else {}
 
 
+# ---- the sync report (round 38c) ---------------------------------------------
+# A sync used to say "success" with 0 rows whenever Meta (or any app) refused
+# a part quietly - a retired metric, a permission the sign-in didn't include,
+# an account under 100 followers. Every refusal is now kept, per account, and
+# turned into plain words: the source page shows it, the answer reads it, and
+# a person always knows WHY a number is missing.
+_REPORT: contextvars.ContextVar = contextvars.ContextVar("gd360_sync_report", default=None)
+METRIC_WORDS = {
+    "reach": "daily reach", "page_total_media_view_unique": "daily reach", "page_impressions_unique": "daily reach",
+    "page_media_view": "daily views", "page_impressions": "daily views", "views": "views",
+    "page_post_engagements": "daily engagement", "page_daily_follows_unique": "new followers per day",
+    "page_daily_unfollows_unique": "unfollows per day", "page_views_total": "Page visits",
+    "page_video_views": "video views", "follower_count": "new followers per day",
+    "post insights": "post reach and saves",
+}
+
+
+def report_start():
+    return _REPORT.set({"accounts": {}, "refusals": [], "last": None})
+
+
+def _rep() -> dict | None:
+    return _REPORT.get()
+
+
+def _rep_account(acc_id, name=None) -> dict | None:
+    r = _rep()
+    if r is None:
+        return None
+    a = r["accounts"].setdefault(str(acc_id), {"id": str(acc_id), "name": name, "followers": None, "posts": None,
+                                               "lifetime_posts": None, "latest_post": None, "ok": [], "missing": []})
+    if name and not a.get("name"):
+        a["name"] = name
+    return a
+
+
+def _rep_metric(acc_id, metric: str, ok: bool, reason: str | None = None) -> None:
+    a = _rep_account(acc_id)
+    if a is None:
+        return
+    label = METRIC_WORDS.get(metric, metric.replace("_", " "))
+    if ok:
+        if label not in a["ok"]:
+            a["ok"].append(label)
+        a["missing"] = [m for m in a["missing"] if m["what"] != label]
+    elif label not in a["ok"] and not any(m["what"] == label for m in a["missing"]):
+        a["missing"].append({"what": label, "why": reason or "Meta didn't send it."})
+
+
+def _why(err: dict | None) -> str:
+    """A refusal, in words a person can act on."""
+    if not err:
+        return "the app didn't send it."
+    msg, code = str(err.get("message") or ""), err.get("code")
+    low = msg.lower()
+    if code in (10, 200, 3) or "permission" in low or "not authorized" in low or "access" in low and "insights" in low:
+        app = (_rep() or {}).get("app")
+        perm = {"instagram": "instagram_manage_insights", "facebook": "read_insights",
+                "whatsapp": "whatsapp_business_management"}.get(app or "", "insights access")
+        return f"the sign-in didn't allow {perm}. Reconnect and allow it."
+    if "100 followers" in low or ("followers" in low and "100" in low):
+        return "Meta only shares this for accounts with at least 100 followers."
+    if code == 100 and ("metric" in low or "valid" in low):
+        return "Meta no longer offers this metric."
+    if code == 190 or "expired" in low or "session" in low:
+        return "the sign-in has expired. Reconnect."
+    if code in (4, 17, 32, 613, 80001) or "limit" in low:
+        return "Meta's rate limit was hit; the next sync tries again."
+    if err.get("status") in (500, 502, 503) or "timeout" in low:
+        return "the app didn't answer in time; the next sync tries again."
+    return f"the app said: {msg[:160]}" if msg else f"the app refused it ({err.get('status')})."
+
+
+def report_finish(token) -> dict | None:
+    """The report as stored on the source: per account what came, what didn't and why, plus a headline."""
+    r = _REPORT.get()
+    try:
+        _REPORT.reset(token)
+    except ValueError:
+        pass
+    if not r or not r["accounts"] and not r["refusals"]:
+        return None
+    accounts = list(r["accounts"].values())
+    # one line per reason: "All accounts: no daily reach, daily views or video views - the sign-in didn't
+    # allow read_insights. Reconnect and allow it." - not seven lines that say the same thing
+    groups: dict[str, dict] = {}
+    for a in accounts:
+        nm = a.get("name") or a["id"]
+        if a.get("posts") == 0:
+            key = f"Meta returned none of its {a['lifetime_posts']} posts." if a.get("lifetime_posts") else "no posts yet."
+            groups.setdefault("posts:" + key, {"text": key, "what": [], "who": []})["who"].append(nm)
+        for m in a["missing"]:
+            g = groups.setdefault("why:" + m["why"], {"text": m["why"], "what": [], "who": []})
+            if m["what"] not in g["what"]:
+                g["what"].append(m["what"])
+            if nm not in g["who"]:
+                g["who"].append(nm)
+
+    def _list(xs: list[str]) -> str:
+        return xs[0] if len(xs) == 1 else ", ".join(xs[:-1]) + " or " + xs[-1]
+    uniq: list[str] = []
+    for g in groups.values():
+        who = "All accounts" if len(accounts) > 1 and len(g["who"]) == len(accounts) else ", ".join(g["who"])
+        body = f"no {_list(g['what'])} - {g['text']}" if g["what"] else g["text"]
+        uniq.append(f"{who}: {body}")
+    with_posts = sum(1 for a in accounts if a.get("posts"))
+    latest = max((a["latest_post"] for a in accounts if a.get("latest_post")), default=None)
+    if accounts:
+        head = f"{len(accounts)} account{'s' if len(accounts) != 1 else ''}"
+        head += f" · posts from {with_posts}" if with_posts else " · no posts came back"
+        if latest:
+            try:
+                d = date.fromisoformat(str(latest)[:10])
+                head += f" · latest post {d.day} {d.strftime('%b %Y')}"
+            except ValueError:
+                head += f" · latest post {latest}"
+    else:
+        head = "Nothing came back"
+    return {"at": datetime.utcnow().isoformat(timespec="seconds"), "headline": head, "accounts": accounts,
+            "problems": uniq[:12], "refusals": r["refusals"][:30]}
+
+
 def _try_get(url: str, **kw) -> dict | list | None:
     """GET that returns the JSON body, or None when the call fails (a
     retired metric, a post without insights, a timeout). Auth problems
-    surface earlier, on the account call, which is not tolerant."""
+    surface earlier, on the account call, which is not tolerant. Every
+    failure is kept in the sync report (round 38c) - never dropped."""
+    rep_ = _rep()
     try:
         r = ss._get(url, **kw)
     except SyncError as e:
         print(f"[app_connectors] skipped {ss._host(url)}: {e}")
+        if rep_ is not None:
+            rep_["last"] = {"status": 0, "code": None, "message": str(e)[:200]}
         return None
     if r.status_code >= 400:
+        if rep_ is not None:
+            err = {}
+            try:
+                body = r.json() or {}
+                e = body.get("error") if isinstance(body, dict) else None
+                err = e if isinstance(e, dict) else {"message": str(e or "")}
+            except ValueError:
+                pass
+            params = kw.get("params") or {}
+            last = {"status": r.status_code, "code": err.get("code"), "message": str(err.get("message") or "")[:240],
+                    "path": url.split("?")[0].split(".com", 1)[-1][:120], "metric": params.get("metric") or params.get("fields", "")[:60]}
+            rep_["last"] = last
+            if len(rep_["refusals"]) < 40:
+                rep_["refusals"].append(last)
         return None
     return _body(r)
 
@@ -171,7 +312,7 @@ def _social_tables(accounts: list[dict], daily: dict, posts: list[dict]) -> dict
             p["post_date"] = p["posted_at"]
     d_rows = sorted(daily.values(), key=lambda r: (str(r["account_id"]), r["date"]))
     out = {
-        "accounts": _frame(accounts, ACCOUNT_COLS),
+        "accounts": _frame(accounts, ACCOUNT_COLS, dates=("latest_post_date",)),
         "channel_daily": _frame(d_rows, DAILY_COLS, dates=("date",)),
         "posts": _frame(posts, POST_COLS, stamps=("posted_at",), dates=("post_date",)),
     }
@@ -190,6 +331,23 @@ def _put(daily: dict, acc_id: str, acc_name: str, day, key: str, value) -> None:
     if row is None:
         row = daily[k] = {"date": day, "account_id": str(acc_id), "account": acc_name}
     row[key] = value
+
+
+def _all_history(info: dict | None) -> bool:
+    """"All history" at connect (no history_days): every post the app keeps,
+    not the last year - an account that last posted in 2024 still has a story."""
+    return not (info or {}).get("history_days")
+
+
+def _post_cutoff(info: dict | None) -> pd.Timestamp | None:
+    if _all_history(info):
+        return None
+    return pd.Timestamp(date.today() - timedelta(days=ss._window_days(info, 365)))
+
+
+def _iso_day(v) -> str | None:
+    t = _naive(v) if v else None
+    return t.date().isoformat() if t is not None else None
 
 
 def _window_start(info: dict, default: int, cap: int | None = None) -> date:
@@ -346,6 +504,8 @@ def _graph_daily(obj_id: str, metric: str, token: str, start: date, end: date, c
         if body is None:
             misses += 1
             if not ok and misses >= 2:
+                rep_ = _rep()
+                _rep_metric(obj_id, metric, False, _why(rep_["last"] if rep_ else None))
                 return None  # retired or not allowed: stop asking
             continue
         ok = True
@@ -358,6 +518,8 @@ def _graph_daily(obj_id: str, metric: str, token: str, start: date, end: date, c
                 val = _num(val)
                 if day is not None and val is not None:
                     out[day] = val  # chunks may share a boundary day: keep one value, never double it
+    rep_ = _rep()
+    _rep_metric(obj_id, metric, ok, None if ok else _why(rep_["last"] if rep_ else None))
     return out if ok else None
 
 
@@ -380,8 +542,9 @@ class _MetricSets:
     """Tries metric groups in order and remembers the first that works, so
     a retired metric costs one failed call per sync, not one per post."""
 
-    def __init__(self, groups: list[list[str]], base: str | None = None):
+    def __init__(self, groups: list[list[str]], base: str | None = None, account: str | None = None):
         self.groups = groups
+        self.account = account
         self.base = base or _graph_base()
         self.good: list[str] | None = None
         self.misses = 0
@@ -391,11 +554,17 @@ class _MetricSets:
             body = _try_get(f"{self.base}/{obj_id}/insights", params={"metric": ",".join(self.good), "access_token": token})
             return _insight_values(body) if body is not None else {}
         if self.misses >= 5:
+            if self.misses == 5 and self.account:
+                rep_ = _rep()
+                _rep_metric(self.account, "post insights", False, _why(rep_["last"] if rep_ else None))
+                self.misses += 1
             return {}  # five posts in a row had no insights at all: stop asking
         for g in self.groups:
             body = _try_get(f"{self.base}/{obj_id}/insights", params={"metric": ",".join(g), "access_token": token})
             if body is not None:
                 self.good = g
+                if self.account:
+                    _rep_metric(self.account, "post insights", True)
                 return _insight_values(body)
         self.misses += 1
         return {}  # this post has no insights (e.g. too old or not owned) - try again for the next one
@@ -407,7 +576,7 @@ def _ig_discover_raw(creds: dict) -> list[dict]:
     token = _meta_token(creds)
     if _is_ig_login_token(token):
         # Instagram API with Instagram Login: the token IS one professional account
-        r = ss._get(f"{_ig_graph_base()}/me", params={"fields": "user_id,username,followers_count,account_type", "access_token": token})
+        r = ss._get(f"{_ig_graph_base()}/me", params={"fields": "user_id,username,followers_count,media_count,account_type", "access_token": token})
         _meta_raise(r, "Instagram", token)
         me = _body(r) or {}
         ig_id = str(me.get("user_id") or me.get("id") or "")
@@ -417,10 +586,10 @@ def _ig_discover_raw(creds: dict) -> list[dict]:
             raise SyncError(f"@{me.get('username') or ig_id} is a personal Instagram account. Switch it to a Business or "
                             "Creator account in the Instagram app (Settings › Account type and tools), then connect again.")
         return [{"ig_id": ig_id, "username": me.get("username"), "followers": me.get("followers_count"),
-                 "page_id": "", "page_name": None, "token": token, "base": _ig_graph_base()}]
+                 "media_count": me.get("media_count"), "page_id": "", "page_name": None, "token": token, "base": _ig_graph_base()}]
     probe = ss._get(f"{_graph_base()}/me", params={"fields": "id", "access_token": token})
     _meta_raise(probe, "Instagram", token)
-    fields = "id,name,access_token,instagram_business_account{id,username,followers_count}"
+    fields = "id,name,access_token,instagram_business_account{id,username,followers_count,media_count}"
     pages = _graph_pages(f"{_graph_base()}/me/accounts", {"fields": fields, "limit": 100, "access_token": token},
                          "Instagram", 1000)
     if not pages:  # the token may itself be a Page token
@@ -433,7 +602,7 @@ def _ig_discover_raw(creds: dict) -> list[dict]:
         ig = p.get("instagram_business_account") or {}
         if ig.get("id"):
             out.append({"ig_id": str(ig["id"]), "username": ig.get("username"), "followers": ig.get("followers_count"),
-                        "page_id": str(p.get("id") or ""), "page_name": p.get("name"),
+                        "media_count": ig.get("media_count"), "page_id": str(p.get("id") or ""), "page_name": p.get("name"),
                         "token": p.get("access_token") or token, "base": _graph_base()})
     return out
 
@@ -487,10 +656,19 @@ def _ig_refresh(creds: dict) -> None:
         creds["token_refreshed_at"] = stamp  # too new to refresh yet: try again in a week
 
 
+def _rep_app(app: str) -> None:
+    r = _rep()
+    if r is not None:
+        r["app"] = app
+
+
 def instagram_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
+    _rep_app("instagram")
     _ig_refresh(creds)
-    start = _window_start(info, 365, cap=730)
+    # round 38c: insights as far back as Meta keeps them (2 years); posts: all of them ("All history")
+    start = _window_start(info, 730, cap=730)
     today = date.today()
+    cutoff = _post_cutoff(info)
     accounts, posts, daily = [], [], {}
     for a in _ig_accounts(creds, info):
         ig, token = a["ig_id"], a["token"]
@@ -498,25 +676,24 @@ def instagram_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
         prof = _must_get(f"{base}/{ig}", "Instagram",
                          params={"fields": "username,followers_count,media_count", "access_token": token}) or {}
         name = f"@{prof.get('username') or a.get('username') or ig}"
-        accounts.append({"account_id": ig, "account": name, "followers": _num(prof.get("followers_count")),
-                         "posts_count": _num(prof.get("media_count")),
-                         "url": f"https://www.instagram.com/{prof.get('username') or a.get('username') or ''}"})
+        rep_acc = _rep_account(ig, name)
+        followers = _num(prof.get("followers_count"))
         # daily account insights (each metric separately; retired ones are skipped)
         for metric, col, since, extra in (
-            ("reach", "reach", start, None),
+            ("reach", "reach", start, {"metric_type": "time_series"}),
             ("follower_count", "followers_gained", max(start, today - timedelta(days=29)), None),
         ):
             series = _graph_daily(ig, metric, token, since, today, 30, extra, base=base)
             for day, val in (series or {}).items():
                 _put(daily, ig, name, day, col, val)
-        # media in the window, newest first
-        cutoff = pd.Timestamp(start)
         media = _graph_pages(
             f"{base}/{ig}/media",
             {"fields": "id,caption,media_type,media_product_type,timestamp,permalink,like_count,comments_count",
              "limit": 100, "access_token": token}, "Instagram", 1000,
-            stop=lambda m: bool(m.get("timestamp")) and (_naive(m["timestamp"]) or cutoff) < cutoff)
-        sets = _MetricSets([["reach", "saved", "shares", "views", "total_interactions"], ["reach", "saved"]], base=base)
+            stop=(lambda m: bool(m.get("timestamp")) and (_naive(m["timestamp"]) or cutoff) < cutoff) if cutoff is not None else None)
+        sets = _MetricSets([["reach", "saved", "shares", "views", "total_interactions"],
+                            ["reach", "saved", "shares", "total_interactions"], ["reach", "saved"], ["reach"]],
+                           base=base, account=ig)
         for i, m in enumerate(media):
             row = {"post_id": str(m.get("id")), "account_id": ig, "account": name, "posted_at": m.get("timestamp"),
                    "type": _ig_post_type(m), "text": m.get("caption"), "url": m.get("permalink"),
@@ -533,6 +710,16 @@ def instagram_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
                 if vals.get("total_interactions") is not None:
                     row["engagements"] = vals.get("total_interactions")
             posts.append(row)
+        latest = _iso_day(media[0].get("timestamp")) if media else None
+        accounts.append({"account_id": ig, "account": name, "followers": followers,
+                         "posts_count": _num(prof.get("media_count")), "posts_synced": len(media),
+                         "latest_post_date": latest,
+                         "url": f"https://www.instagram.com/{prof.get('username') or a.get('username') or ''}"})
+        if rep_acc is not None:
+            rep_acc.update({"followers": followers, "posts": len(media), "lifetime_posts": _num(prof.get("media_count")),
+                            "latest_post": latest})
+            if followers is not None and followers < 100:
+                rep_acc["note"] = "Under 100 followers: Meta holds back some account insights."
     return _social_tables(accounts, daily, posts)
 
 
@@ -578,9 +765,12 @@ def facebook_pages_test(creds: dict) -> str:
 _FB_PAGE_METRICS = (
     # (metric, column) - tried one by one; retired ones are skipped, and a
     # later metric for the same column is only asked for when an earlier one is gone
+    # round 38c: Meta retired page_impressions_unique (June 2025) and page_impressions (Nov 2025);
+    # their replacements come first, the old names stay as a fallback for older API versions
+    ("page_total_media_view_unique", "reach"),
     ("page_impressions_unique", "reach"),
+    ("page_media_view", "impressions"),
     ("page_impressions", "impressions"),
-    ("page_media_view", "impressions"),        # the newer "views" metric, used when impressions is retired
     ("page_post_engagements", "engagements"),
     ("page_daily_follows_unique", "followers_gained"),
     ("page_daily_unfollows_unique", "followers_lost"),
@@ -590,7 +780,9 @@ _FB_PAGE_METRICS = (
 
 
 def facebook_pages_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
-    start = _window_start(info, 365, cap=730)
+    _rep_app("facebook")
+    start = _window_start(info, 730, cap=730)
+    cutoff = _post_cutoff(info)
     today = date.today()
     accounts, posts, daily = [], [], {}
     for p in _fb_pages(creds, info):
@@ -598,6 +790,7 @@ def facebook_pages_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
         prof = _try_get(f"{_graph_base()}/{pid}", params={"fields": "name,followers_count,fan_count,link", "access_token": token}) or {}
         followers = prof.get("followers_count") if prof.get("followers_count") is not None else prof.get("fan_count")
         name = prof.get("name") or name
+        rep_acc = _rep_account(pid, name)
         got_cols: set[str] = set()
         for metric, col in _FB_PAGE_METRICS:
             if col in got_cols:
@@ -605,6 +798,8 @@ def facebook_pages_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
             series = _graph_daily(pid, metric, token, start, today, 90)
             if series is None:
                 continue
+            if rep_acc is not None:  # a fallback that worked clears the retired name's "missing"
+                rep_acc["missing"] = [m for m in rep_acc["missing"] if m["what"] != METRIC_WORDS.get(metric)]
             got_cols.add(col)
             for day, val in series.items():
                 _put(daily, pid, name, day, col, val)
@@ -612,9 +807,11 @@ def facebook_pages_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
             f"{_graph_base()}/{pid}/posts",
             {"fields": "id,message,created_time,permalink_url,status_type,shares,"
                        "reactions.summary(total_count).limit(0),comments.summary(total_count).limit(0)",
-             "since": _unix(start), "limit": 100, "access_token": token}, "Facebook", 1000)
-        sets = _MetricSets([["post_impressions_unique", "post_clicks"], ["post_impressions_unique"], ["post_clicks"],
-                            ["post_media_view"]])
+             **({"since": _unix(cutoff.date())} if cutoff is not None else {}), "limit": 100, "access_token": token},
+            "Facebook", 1000)
+        sets = _MetricSets([["post_total_media_view_unique", "post_media_view", "post_clicks"],
+                            ["post_total_media_view_unique", "post_clicks"], ["post_impressions_unique", "post_clicks"],
+                            ["post_clicks"], ["post_media_view"]], account=pid)
         for i, it in enumerate(items):
             likes = _num(((it.get("reactions") or {}).get("summary") or {}).get("total_count"))
             comments = _num(((it.get("comments") or {}).get("summary") or {}).get("total_count"))
@@ -625,14 +822,19 @@ def facebook_pages_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
                    "engagements": _sum(likes, comments, shares)}
             if i < 200:
                 vals = sets.fetch(row["post_id"], token)
-                row["reach"] = vals.get("post_impressions_unique")
+                row["reach"] = vals.get("post_total_media_view_unique", vals.get("post_impressions_unique"))
                 row["clicks"] = vals.get("post_clicks")
                 if vals.get("post_media_view") is not None:
                     row["impressions"] = vals.get("post_media_view")
             posts.append(row)
-        accounts.append({"account_id": pid, "account": name,
-                         "followers": _num(followers) if followers is not None else p.get("followers"),
-                         "posts_count": len(items), "url": prof.get("link") or f"https://www.facebook.com/{pid}"})
+        latest = _iso_day(items[0].get("created_time")) if items else None
+        fol = _num(followers) if followers is not None else p.get("followers")
+        # round 38c: Meta gives no lifetime post count for a Page - posts_count stays empty, never "0 posts"
+        accounts.append({"account_id": pid, "account": name, "followers": fol, "posts_count": None,
+                         "posts_synced": len(items), "latest_post_date": latest,
+                         "url": prof.get("link") or f"https://www.facebook.com/{pid}"})
+        if rep_acc is not None:
+            rep_acc.update({"followers": fol, "posts": len(items), "latest_post": latest})
     return _social_tables(accounts, daily, posts)
 
 
@@ -1798,6 +2000,7 @@ def _wa_templates(w: dict, start: date, end: date) -> tuple[list[dict], list[dic
 
 
 def whatsapp_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
+    _rep_app("whatsapp")
     start = _window_start(info, 365, cap=730)
     today = date.today()
     msgs, conv, tpls, tpl_daily, phones = [], [], [], [], []
@@ -1825,6 +2028,27 @@ def whatsapp_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
 
 # ---- discovery ----------------------------------------------------------------
 
+def _account_detail(followers, media_count, latest, via, posts_known: bool = True) -> str:
+    """What a person should know before picking an account (round 38c): its size, how recent its posts
+    are, and when Meta will hold insights back."""
+    bits = []
+    if isinstance(followers, (int, float)):
+        bits.append(f"{int(followers):,} followers")
+    if isinstance(media_count, (int, float)):
+        bits.append(f"{int(media_count):,} posts")
+    if latest is not None:
+        days = (pd.Timestamp.utcnow().tz_localize(None) - latest).days
+        bits.append(f"latest post {latest.strftime('%-d %b %Y')}" + (" - over a year ago" if days > 365 else ""))
+    elif posts_known and media_count != 0:
+        bits.append("no posts yet")
+    if via:
+        bits.append(f"via {via}")
+    out = " · ".join(bits)
+    if isinstance(followers, (int, float)) and followers < 100:
+        out += " · under 100 followers: Meta shares less insight"
+    return out
+
+
 def discover(kind: str, creds: dict) -> list[dict]:
     """The pages / accounts / sites the credentials can see, for the
     "pick which accounts to sync" step: [{id, name, detail}]."""
@@ -1833,17 +2057,31 @@ def discover(kind: str, creds: dict) -> list[dict]:
         if not found:
             raise SyncError("No Instagram professional accounts were found. Switch the Instagram account to a Business "
                             "or Creator account and link it to a Facebook Page you manage, then sign in again.")
-        return [{"id": a["ig_id"], "name": f"@{a['username']}" if a.get("username") else a["ig_id"],
-                 "detail": " · ".join(x for x in (f"{a['followers']:,} followers" if isinstance(a.get("followers"), int) else "",
-                                                 f"via {a['page_name']}" if a.get("page_name") else "") if x)}
-                for a in found]
+        out = []
+        for a in found[:30]:
+            latest = None
+            body = _try_get(f"{a.get('base') or _graph_base()}/{a['ig_id']}/media",
+                            params={"fields": "timestamp", "limit": 1, "access_token": a["token"]})
+            if isinstance(body, dict) and body.get("data"):
+                latest = _naive(body["data"][0].get("timestamp"))
+            out.append({"id": a["ig_id"], "name": f"@{a['username']}" if a.get("username") else a["ig_id"],
+                        "detail": _account_detail(a.get("followers"), a.get("media_count"), latest, a.get("page_name"))})
+        return out
     if kind == "facebook_pages":
         found = _fb_discover_raw(creds)
         if not found:
             raise SyncError("No Facebook Pages were found for this sign-in. Make sure you have a task on the Page and "
                             "that you ticked the Pages when Facebook asked which ones to share.")
-        return [{"id": p["page_id"], "name": p["name"] or p["page_id"],
-                 "detail": f"{p['followers']:,} followers" if isinstance(p.get("followers"), int) else ""} for p in found]
+        out = []
+        for p in found[:30]:
+            latest = None
+            body = _try_get(f"{_graph_base()}/{p['page_id']}/posts", params={"fields": "created_time", "limit": 1,
+                                                                            "access_token": p["token"]})
+            if isinstance(body, dict) and body.get("data"):
+                latest = _naive(body["data"][0].get("created_time"))
+            out.append({"id": p["page_id"], "name": p["name"] or p["page_id"],
+                        "detail": _account_detail(p.get("followers"), None, latest, None, posts_known=body is not None)})
+        return out
     if kind == "whatsapp_business":
         found = _wa_discover_raw(creds)
         if not found:

@@ -704,10 +704,32 @@ def _score(ds: models.DataSource, tables, qw: set[str], topic: str | None, named
         s += 2 * len(tw & name_w) + len(tw & table_w) + min(3, len(tw & col_w))
         if ds.kind in TOPIC_APPS.get(topic, []):
             s += 5
+    # round 38c: the app the question names wins - "how are my FACEBOOK pages doing" is Facebook Pages,
+    # never GA4 because GA4 happens to have a page column
+    aw = _app_words(ds.kind)
+    brand = qw & (aw - _APP_COMMON)
+    if brand:
+        s += 12 * len(brand) + 3 * len(qw & aw & _APP_COMMON)
     why = "named in your question" if named else ""
     if named:
         s += 100
     return s, why
+
+
+_APP_ALIASES = {"meta_ads": {"facebook", "fb", "meta"}, "facebook_pages": {"facebook", "fb"},
+                "instagram": {"instagram", "insta", "ig"}, "whatsapp_business": {"whatsapp", "wa"},
+                "ga4": {"ga4", "ga"}, "google_analytics": {"ga4", "ga"}}
+# label words that are ordinary nouns: they only count next to the app's own name ("facebook PAGES")
+_APP_COMMON = {"page", "pages", "ads", "ad", "sheet", "sheets", "file", "files", "analytic", "analytics", "search",
+               "console", "store", "shop", "account", "accounts", "email", "mail", "calendar", "drive", "sql", "database"}
+_APP_GENERIC = {"business", "online", "data", "app", "the", "and", "my", "4"}
+
+
+def _app_words(kind: str | None) -> set[str]:
+    """The words a person uses for an app: its label ("Facebook Pages") plus common names ("fb", "insta")."""
+    if not kind:
+        return set()
+    return (words(KIND_LABELS.get(kind, "")) | _APP_ALIASES.get(kind, set())) - _APP_GENERIC
 
 
 # coverage cache: (ds id, table, column) -> (at, lo, hi, rows)
@@ -925,6 +947,8 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
             meas = _measures(cols, qw)
             tw = len(words(tname) & (qw | TOPIC_WORDS.get(topic or "", set())))
             rank = (2 if dcol else 0) + (2 if meas else 0) + tw + (1 if any(ID_NAME.search(str(c.get("name"))) for c in cols) else 0)
+            if source_mode(ds.kind) == "synced" and tname in _ACCOUNT_TABLES:
+                rank -= 4  # a page / account list describes the source; the daily numbers and posts answer
             if best_t is None or rank > best_t[0]:
                 best_t = (rank, tname, key, dcol, meas)
         c = _source_brief(ds) | {"score": s, "named": named, "table": best_t[1] if best_t else None,
@@ -1013,23 +1037,43 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
     # a word the question names that only some sources have as a column ("customers by city"):
     # the ones without it can't split by it
     colwords = []
+    idwords: set[str] = set()
     for _s, _ds, tables, _n, _w in relevant:
         cw = set()
         for _t, _k, cols in tables:
             for col in cols:
                 cw |= words(str(col.get("name") or ""))
+        # round 38c: a word that names a source ("my FACEBOOK PAGE") or the accounts it holds is the
+        # source, not a column to split by - "facebook page performance" never marks Facebook Pages as unfit
+        idwords |= words(_ds.name or "") | words(KIND_LABELS.get(_ds.kind, _ds.kind or "")) | words((_ds.kind or "").replace("_", " "))
+        if "account" in cw and _ds.kind in ACCOUNT_NOUN:
+            idwords |= words(" ".join(ACCOUNT_NOUN[_ds.kind]))
         colwords.append(cw)
     generic = MEASURE_WORDS | set().union(*TOPIC_WORDS.values()) | {"customer", "customers", "order", "orders", "product",
                                                                      "products", "date", "time", "name", "type"}
-    dims = [w for w in qw - generic if len(w) >= 3 and any(w in cw for cw in colwords) and not all(w in cw for cw in colwords)]
+    dims = [w for w in qw - generic - idwords if len(w) >= 3 and any(w in cw for cw in colwords) and not all(w in cw for cw in colwords)]
     if dims:
         for c, cw in zip(cands, colwords):
             c["dims"] = [d for d in dims if d in cw]
             if c["fit"] == "good" and not any(d in cw for d in dims):
                 c["fit"], c["why"] = "weak", f"has no {dims[0]} column"
 
+    # round 38c: a synced app that only sent its page / account details (no posts, no daily numbers)
+    # never wins "Best fit" over one that holds the data - and each says what it really holds
+    by_ds = {r[1].id: r[1] for r in relevant}
+    for c in cands:
+        ds = by_ds.get(c["id"])
+        if ds is not None and source_mode(ds.kind) == "synced":
+            held = synced_holdings(db, ds.id)
+            if held is not None:
+                c["empty"], c["holds"] = held
+    cands.sort(key=lambda c: bool(c.get("empty")))
     for c in cands:
         c["says"] = _says_fit(c, needs_time)
+        if c.get("empty") and c["fit"] == "good":
+            c["says"] = f"{c['name']} only sent {c['holds']} at the last sync - no posts or daily numbers yet"
+        elif c.get("holds") and c["fit"] == "good":
+            c["says"] += f" · {c['holds']}"
     good = [c for c in cands if c["fit"] == "good"]
     unfit = [c for c in cands if c["fit"] != "good"]
     picked: list[dict] = []
@@ -1149,6 +1193,13 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
         fy = _forecast_year_issue(said_year, period, cands, today, keep, what)
         if fy:
             issues.insert(0, fy)
+
+    # round 38c: a source with several pages / accounts and a question that names none of them -
+    # ask which one first (one tap each, or "Compare all"), never blend them silently
+    if picked and not any(i["kind"] in ("cant_answer",) for i in issues):
+        acc = account_issue(db, user, q, [c["id"] for c in picked], accepted)
+        if acc:
+            issues.append(acc)
 
     ready = not issues
     restated = _restate(what, period, picked, needs_time)
@@ -1469,6 +1520,107 @@ def apply_fixes(question: str, fixes: dict[str, str]) -> str:
     return out
 
 
+ACCOUNT_NOUN = {"facebook_pages": ("page", "pages"), "instagram": ("account", "accounts"),
+                "linkedin_pages": ("page", "pages"), "youtube": ("channel", "channels"),
+                "whatsapp_business": ("WhatsApp account", "WhatsApp accounts"), "meta_ads": ("ad account", "ad accounts"),
+                "google_ads": ("ad account", "ad accounts"), "search_console": ("site", "sites")}
+_ALL_WORDS = re.compile(r"\b(all|both|each|every|compare|comparison|vs|versus|total|overall|combined|across|together|"
+                        r"which (?:page|account|channel)s?|best|worst|top|rank|ranking)\b", re.I)
+
+
+def _norm_name(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).strip()
+
+
+_ACCOUNT_TABLES = {"accounts", "phone_numbers", "ad_accounts", "properties", "sites", "pages"}
+
+
+def synced_holdings(db: Session, ds_id: str) -> tuple[bool, str] | None:
+    """(only account details came back?, a few words on what it holds) from the row counts of a synced
+    source's tables - no data is loaded. None when it has never synced."""
+    rows = db.query(models.SyncedTable.table_name, models.SyncedTable.row_count).filter(
+        models.SyncedTable.datasource_id == ds_id).all()
+    if not rows:
+        return None
+    counts = {str(n): int(r or 0) for n, r in rows}
+    data = {n: r for n, r in counts.items() if n not in _ACCOUNT_TABLES}
+    acc = sum(r for n, r in counts.items() if n in _ACCOUNT_TABLES)
+    if data and not any(data.values()):
+        what = f"{acc} account{'s' if acc != 1 else ''}' details" if acc else "account details"
+        return True, what
+
+    def words(n: str, r: int) -> str:
+        if n == "posts":
+            return f"{r:,} post{'s' if r != 1 else ''}"
+        if n.endswith("daily"):
+            return f"{r:,} daily rows"
+        return f"{r:,} {n.replace('_', ' ')} rows"
+    top = sorted(((n, r) for n, r in data.items() if r), key=lambda x: (x[0] != "posts", -x[1]))[:2]
+    return False, " · ".join(words(n, r) for n, r in top)
+
+
+def source_accounts(db: Session, ds: models.DataSource) -> list[dict]:
+    """The pages / accounts a synced app holds, with a few words each (round 38c)."""
+    if source_mode(ds.kind) != "synced":
+        return []
+    try:
+        from .synced_sources import load_table
+        names = {r[0] for r in db.query(models.SyncedTable.table_name).filter(models.SyncedTable.datasource_id == ds.id).all()}
+        if "accounts" in names:
+            df = load_table(db, ds.id, "accounts")
+        elif "phone_numbers" in names and ds.kind == "whatsapp_business":
+            return []  # one WhatsApp account with several numbers is still one account
+        else:
+            return []
+    except Exception:  # noqa: BLE001
+        return []
+    if "account" not in df.columns or len(df) < 2:
+        return []
+    out = []
+    for _, r in df.iterrows():
+        bits = []
+        f = r.get("followers")
+        if f is not None and f == f:
+            bits.append(f"{int(f):,} followers")
+        lp = r.get("latest_post_date")
+        if lp is not None and lp == lp and str(lp) not in ("NaT", "None"):
+            bits.append(f"latest post {pd.Timestamp(lp).strftime('%-d %b %Y')}")
+        elif "posts_synced" in df.columns and r.get("posts_synced") == 0:
+            bits.append("no posts synced")
+        out.append({"name": str(r["account"]), "detail": " · ".join(bits)})
+    return out
+
+
+def account_issue(db: Session, user: models.User, question: str, source_ids: list[str],
+                  accepted: list[str] | None = None) -> dict | None:
+    """"Which page?" - only when a picked source has 2+ accounts, the question names none of them and doesn't
+    ask about all of them. The answer travels in the brief (accounts) and the thread remembers it."""
+    if _ALL_WORDS.search(question or ""):
+        return None
+    if any(str(a).startswith("accounts:") for a in accepted or []):
+        return None
+    qn = f" {_norm_name(question)} "
+    for sid in source_ids[:3]:
+        ds = db.get(models.DataSource, sid)
+        if ds is None:
+            continue
+        accs = source_accounts(db, ds)
+        if len(accs) < 2:
+            continue
+        named = [a for a in accs if (n := _norm_name(a["name"]).lstrip(" ")) and (f" {n} " in qn or f" {n.lstrip('@')} " in qn)]
+        if named:
+            return None
+        one, many = ACCOUNT_NOUN.get(ds.kind, ("account", "accounts"))
+        opts = [{"id": f"acc{i}", "label": a["name"], "detail": a["detail"], "value": a["name"]} for i, a in enumerate(accs[:8])]
+        opts.append({"id": "all", "label": f"Compare all {len(accs)}", "detail": f"Every {one} side by side",
+                     "value": "__all__", "recommended": True})
+        return {"id": "account", "kind": "account", "title": f"Which {one}?",
+                "text": f"{ds.name} has {len(accs)} {many}. Which one should I look at?",
+                "source_id": ds.id, "source_name": ds.name, "column": "account", "noun": one,
+                "options": opts, "multi": True}
+    return None
+
+
 def planner_context(brief: dict | None) -> str:
     """The agreement made before planning, as the planner reads it."""
     if not brief:
@@ -1495,6 +1647,16 @@ def planner_context(brief: dict | None) -> str:
         lines.append("- Some of that period hasn't happened yet: also fetch the metric's full history by month (not "
                      "filtered to the future part) - GD360 forecasts the missing part from it with a statistical model. "
                      "Never treat the missing future rows as zero and never estimate them in SQL.")
+    acc = brief.get("accounts")
+    if isinstance(acc, dict):
+        vals = [str(v) for v in acc.get("values") or [] if v and v != "__all__"]
+        src = acc.get("source_name") or "the source"
+        if vals:
+            quoted = ", ".join("'" + v.replace("'", "''") + "'" for v in vals[:8])
+            lines.append(f"- Only these accounts of {src}: {quoted}. Filter every query on that source with "
+                         f"account IN ({quoted}).")
+        else:
+            lines.append(f"- Every account of {src}, each on its own: GROUP BY account and compare them side by side.")
     if brief.get("restated"):
         lines.append(f"- What the person confirmed they want: {brief['restated']}")
     for n in brief.get("notes") or []:

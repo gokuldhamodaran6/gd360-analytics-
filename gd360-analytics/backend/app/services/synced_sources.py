@@ -725,7 +725,12 @@ def sync_datasource(db: Session, ds: models.DataSource, reason: str = "schedule"
     try:
         creds = credentials(ds)
         before = json.dumps(creds, sort_keys=True, default=str)
-        tables = app["fetch"](creds, ds.connection_info or {})
+        # round 38c: what came back and what the app refused, per account, kept on the source
+        rep_token = _ac.report_start()
+        try:
+            tables = app["fetch"](creds, ds.connection_info or {})
+        finally:
+            report = _ac.report_finish(rep_token)
         if json.dumps(creds, sort_keys=True, default=str) != before:
             # round 38b: the fetch extended a token (Instagram login) - keep the new one
             ds.encrypted_secret = security.encrypt_secret(json.dumps(creds))
@@ -738,6 +743,12 @@ def sync_datasource(db: Session, ds: models.DataSource, reason: str = "schedule"
         if tables:
             # round 36: the app's main table, so a read that names no table never picks one by name
             ds.connection_info = {**(ds.connection_info or {}), "primary_table": next(iter(tables.keys()))}
+        info = dict(ds.connection_info or {})
+        if report:
+            info["sync_report"] = report
+        else:
+            info.pop("sync_report", None)
+        ds.connection_info = info
         ds.last_synced_at = datetime.utcnow()
         ds.sync_error = None
         ds.next_sync_at = next_sync_time(ds)

@@ -33,6 +33,7 @@ backtested exponential-smoothing engine dashboards use).
 from __future__ import annotations
 
 import io
+import tempfile
 import json
 import logging
 import math
@@ -45,6 +46,7 @@ import traceback
 from collections import Counter
 from datetime import datetime
 
+import duckdb
 import joblib
 import numpy as np
 import pandas as pd
@@ -64,6 +66,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -71,6 +74,9 @@ from .. import models
 from ..config import get_settings
 from ..database import SessionLocal
 from . import ml_studio_methods as _m
+from . import blob_io
+from . import ml_data as md
+from . import ml_queue
 
 logger = logging.getLogger("gd360.ml_studio")
 
@@ -164,7 +170,7 @@ SPEC_KEYS = ("problem_type", "source_id", "table", "target", "positive_value", "
              "exclude", "share", "goal", "joins", "space_id", "start_column", "end_column", "duration_column", "event_column", "drivers",
              "scenario", "spend_columns", "order_column", "item_column", "entity_column", "treatment_column", "treated_value", "price_column",
              "units_column", "channel_column", "conversion_column", "conversion_value", "text_column", "label_column", "tags", "fields",
-             "fields_how", "k")
+             "fields_how", "k", "prep_sql")
 COLUMN_KEYS = ("target", "time_column", "value_column", "group_column", "start_column", "end_column", "duration_column", "event_column",
                "order_column", "item_column", "entity_column", "treatment_column", "price_column", "units_column", "channel_column",
                "conversion_column", "text_column", "label_column")
@@ -255,25 +261,37 @@ def _table_entry(db: Session, user: models.User, source_id: str, table: str | No
     return tables[0]
 
 
-def load_frame(db: Session, user: models.User, source_id: str, table: str | None, cap: int | None = None) -> tuple[pd.DataFrame, dict, bool]:
-    """(data, table entry, capped?) - the person's access rules applied.
-    2026-10-09 (round 15): `cap` lets a joined table or a key sample use its
-    own row limit (default: the training limit)."""
-    from . import data_access_rules, synced_sources
-    from .data_loader import load_dataframe
+def _source_view(db: Session, user: models.User, bench: "md.Bench", source_id: str, table: str | None, view: str, *,
+                 n_live: int, time_col: str | None = None) -> tuple[dict, "md.Snapshot"]:
+    """2026-10-12 (round 39): one source table as a view in the run's DuckDB -
+    a read-only snapshot (files, synced apps) or, for a live warehouse, the
+    rows it sampled itself. The person's access rules are part of the view."""
     entry = _table_entry(db, user, source_id, table)
     ds = db.get(models.DataSource, source_id)
+    try:
+        snap = md.snapshot(db, ds, entry)
+        if snap.mode == "live":
+            frame, total, sql, how = md.live_rows(db, user, ds, entry["key"] or entry["table"], n_live,
+                                                  time_col=time_col if time_col in {c["name"] for c in entry["columns"]} else None)
+            snap.rows, snap.live_sql, snap.how = total, sql, how
+            bench.attach(db, user, snap, view, frame=frame)
+        else:
+            bench.attach(db, user, snap, view)
+    except md.DataError as e:
+        raise StudioError(str(e)) from e
+    return entry, snap
+
+
+def load_frame(db: Session, user: models.User, source_id: str, table: str | None, cap: int | None = None) -> tuple[pd.DataFrame, dict, bool]:
+    """(data, table entry, sampled?) - the person's access rules applied.
+    2026-10-12 (round 39): read through the data layer - a fair random sample
+    of `cap` rows when the table is bigger, never its first rows."""
     cap = int(cap or get_settings().ML_MAX_TRAIN_ROWS)
-    if entry["mode"] == "synced":
-        df = synced_sources.load_table(db, ds.id, entry["key"])
-    else:
-        df = load_dataframe(ds, table=entry["key"], version="original", row_limit=cap + 1, db=db)
-    capped = len(df) > cap
-    if capped:
-        df = df.head(cap)
-    df = data_access_rules.filter_dataframe_for_role(db, df, ds, user)
-    df = df.reset_index(drop=True)
-    return df, entry, capped
+    with md.Bench() as b:
+        entry, snap = _source_view(db, user, b, source_id, table, "source", n_live=cap)
+        b.lock()
+        df, info = md.take(b, "source", cap)
+    return df.reset_index(drop=True), entry, info.rows_used < max(info.rows_total, snap.rows if snap.mode == "live" else 0)
 
 
 # ------------------------------------------------- spaces and joins ----
@@ -378,73 +396,74 @@ def _aggregate_per_key(jdf: pd.DataFrame, key: str, alias: str, max_cols: int = 
     return out.reset_index(), made
 
 
-def apply_joins(db: Session, user: models.User, base: pd.DataFrame, entry: dict, joins: list[dict]) -> tuple[pd.DataFrame, list[dict], list[str], dict]:
-    """Left-joins each join table onto the base rows. Returns (data, info per
-    join, warnings, column origin {column: table})."""
-    joins = [j for j in (joins or []) if j and j.get("source_id")][:6]
+def _sql_joins(bench: "md.Bench", base: pd.DataFrame, entry: dict, attached: list[tuple[dict, dict, "md.Snapshot", str]]
+               ) -> tuple[pd.DataFrame, list[dict], list[str], dict]:
+    """2026-10-12 (round 39): each joined table becomes one row per key IN SQL,
+    over all of its rows, then is left-joined onto the run's rows - the same
+    columns, names and rules as before, without the old row cap."""
     origin = {c: entry["table"] for c in base.columns}
-    if not joins:
-        return base, [], [], origin
-    cap = int(getattr(get_settings(), "ML_MAX_JOIN_ROWS", 0) or get_settings().ML_MAX_TRAIN_ROWS * 2)
     used: set[str] = set()
     info, warnings = [], []
-    df = base.copy()
+    df = _coerce_numeric_strings(base.copy())
     n = len(df)
-    for j in joins:
-        jdf, jentry, jcapped = load_frame(db, user, j["source_id"], j.get("table"), cap=cap)
+    cols_of = {}
+    for j, jentry, jsnap, view in attached:
         key, bkey = j.get("key"), j.get("base_key") or j.get("key")
-        if not key or key not in jdf.columns:
+        jcols = cols_of.setdefault(view, [c for c, _ in bench.columns(view)])
+        if not key or key not in jcols:
             raise StudioError(f"There is no column called {key} in {jentry['table']} to join on.")
         if not bkey or bkey not in df.columns:
             raise StudioError(f"There is no column called {bkey} in {entry['table']} to join on.")
         alias = _alias(jentry["table"], used)
-        jdf = _coerce_numeric_strings(jdf)
-        jdf = jdf.assign(__k=norm_keys(jdf[key]).values).dropna(subset=["__k"])
-        many = bool(jdf["__k"].duplicated().any())
-        if many:
-            agg, made = _aggregate_per_key(jdf, key, alias)
-        else:
-            keep = [c for c in jdf.columns if c not in (key, "__k")][:60]
-            agg = jdf[["__k"] + keep].rename(columns={c: f"{alias}__{c}" for c in keep})
-            made = [f"{alias}__{c}" for c in keep]
-        agg[f"{alias}__matched"] = 1
+        made, many, jrows = md.aggregate_join(bench, view, key, alias, f"agg_{alias}")
+        made = [c for c in made if c not in df.columns]
+        df = md.join_onto(bench, df, bkey, f"agg_{alias}", alias, made, many)
         made.append(f"{alias}__matched")
-        clash = [c for c in made if c in df.columns]
-        if clash:
-            agg = agg.drop(columns=clash)
-            made = [c for c in made if c not in clash]
-        bk = norm_keys(df[bkey])
-        merged = df.assign(__k=bk.values).merge(agg, on="__k", how="left", sort=False)
-        merged = merged.drop(columns="__k")
-        merged[f"{alias}__matched"] = merged[f"{alias}__matched"].fillna(0).astype(int)
-        if many:
-            merged[f"{alias}__rows"] = merged[f"{alias}__rows"].fillna(0)
-            for c in made:
-                if c.endswith("_sum"):
-                    merged[c] = merged[c].fillna(0)
-        df = merged
         for c in made:
             origin[c] = jentry["table"]
         matched = int(df[f"{alias}__matched"].sum())
         rate = matched / n if n else 0.0
         if many:
-            how = (f"{len(jdf):,} rows in {jentry['table']} become one row per {key}: a row count ({alias}__rows), sums and averages of numbers, "
+            how = (f"{jrows:,} rows in {jentry['table']} become one row per {key}: a row count ({alias}__rows), sums and averages of numbers, "
                    f"days since the latest date and the number of different values of text. Rows with no match get 0 rows and 0 totals and "
                    f"{alias}__matched = 0, so “none” and “no match” stay distinguishable.")
         else:
             how = (f"One row per {key} in {jentry['table']}; its columns are added with the prefix {alias}__. "
                    f"Rows with no match keep empty values and {alias}__matched = 0.")
+        jcapped = jsnap.mode == "live" and jsnap.rows > jrows
         info.append({"source_id": j["source_id"], "source": jentry["source"], "table": jentry["table"], "key": key, "base_key": bkey,
                      "alias": alias, "matched": matched, "base_rows": n, "match_rate": rate, "many_per_key": many,
-                     "join_rows": int(len(jdf)), "capped": bool(jcapped), "aggregated": made if many else [], "added": made, "how": how})
+                     "join_rows": int(jrows), "capped": bool(jcapped), "aggregated": made[:-1] if many else [], "added": made, "how": how})
         if rate < 0.5:
             warnings.append(f"Only {rate * 100:.1f}% of rows in {entry['table']} found a match in {jentry['table']} on {bkey} = {key} - check that this is the right key.")
         if jcapped:
-            warnings.append(f"{jentry['table']} has more than {cap:,} rows; only the first {cap:,} were joined, so its counts and totals are partial.")
+            warnings.append(f"{jentry['table']} is a live table with {jsnap.rows:,} rows; {jrows:,} were sampled for the join, so its counts and totals are partial.")
     for bk in sorted({j["base_key"] for j in info}):
         if bool(norm_keys(base[bk]).dropna().duplicated().any()):
             warnings.append(f"{entry['table']} has several rows per {bk} - each of those rows gets the same joined values.")
     return df, info, warnings, origin
+
+
+def _attach_joins(db: Session, user: models.User, bench: "md.Bench", joins: list[dict]) -> list[tuple[dict, dict, "md.Snapshot", str]]:
+    out = []
+    for i, j in enumerate([j for j in (joins or []) if j and j.get("source_id")][:6]):
+        jentry, jsnap = _source_view(db, user, bench, j["source_id"], j.get("table"), f"join_{i + 1}",
+                                     n_live=get_settings().ML_MAX_TRAIN_ROWS)
+        out.append((j, jentry, jsnap, f"join_{i + 1}"))
+    return out
+
+
+def apply_joins(db: Session, user: models.User, base: pd.DataFrame, entry: dict, joins: list[dict]) -> tuple[pd.DataFrame, list[dict], list[str], dict]:
+    """Left-joins each join table onto the base rows. Returns (data, info per
+    join, warnings, column origin {column: table}). 2026-10-12 (round 39): in
+    SQL over every row of each joined table (see _sql_joins)."""
+    joins = [j for j in (joins or []) if j and j.get("source_id")][:6]
+    if not joins:
+        return base, [], [], {c: entry["table"] for c in base.columns}
+    with md.Bench() as b:
+        attached = _attach_joins(db, user, b, joins)
+        b.lock()
+        return _sql_joins(b, base, entry, attached)
 
 
 def joins_text(entry: dict, info: list[dict]) -> str:
@@ -458,21 +477,125 @@ def joins_text(entry: dict, info: list[dict]) -> str:
             (f"{rate * 100:.1f}% matched" if len(info) == 1 else f"matched: {rates}"))
 
 
-def load_spec_frame(db: Session, user: models.User, spec: dict) -> tuple[pd.DataFrame, dict, bool, dict]:
-    """The base table with every join applied. Returns (data, entry, capped,
-    join summary {joins, warnings, origin, text})."""
+# 2026-10-12 (round 39): how each kind's rows may be sampled without breaking its maths
+_GROUP_KEY = {"bought_together": "order_column", "recommendations": "entity_column", "cohorts": "entity_column",
+              "attribution": "entity_column"}
+_RECENT = ("what_if", "marketing_mix")
+_SERIES = ("forecast_one", "forecast_many")
+_STRATIFY = {"yes_no": "target", "which_category": "target", "drivers": "target", "uplift": "treatment_column"}
+PLAN_ROWS = 60_000
+
+
+def _sampling_for(ptype: str | None, spec: dict, cols: set[str]) -> dict:
+    """{prefer, label, time_col, group_col, series} for md.take."""
+    tcol = spec.get("time_column") if spec.get("time_column") in cols else None
+    if ptype in _SERIES and tcol:
+        return {"series": True, "time_col": tcol}
+    if ptype in _GROUP_KEY and spec.get(_GROUP_KEY[ptype]) in cols:
+        return {"prefer": "groups", "group_col": spec[_GROUP_KEY[ptype]]}
+    if ptype in _RECENT and tcol:
+        return {"prefer": "recent", "time_col": tcol}
+    if ptype in SUPERVISED and tcol:
+        return {"prefer": "recent", "time_col": tcol}
+    if ptype == "time_to_event" and spec.get("start_column") in cols:
+        return {"prefer": "recent", "time_col": spec["start_column"]}
+    lab = spec.get(_STRATIFY.get(ptype or "", "")) if ptype in _STRATIFY else None
+    if lab in cols:
+        return {"prefer": "stratified", "label": lab}
+    return {"prefer": "uniform"}
+
+
+def _series_rows(bench: "md.Bench", view: str, spec: dict, total: int) -> tuple[pd.DataFrame, "md.SampleInfo"]:
+    """A forecast over a big table: the history summed per day (and series) in
+    SQL - every row still counts, only far fewer rows come back."""
+    tcol, vcol, gcol = spec.get("time_column"), spec.get("value_column"), spec.get("group_column")
+    cols = {c for c, _ in bench.columns(view)}
+    val = f"SUM(TRY_CAST({md.q(vcol)} AS DOUBLE))" if vcol in cols else "COUNT(*)::DOUBLE"
+    vname = vcol if vcol in cols else "rows"
+    g = md.q(gcol) if spec.get("problem_type") == "forecast_many" and gcol in cols else None
+    sql = (f"SELECT date_trunc('day', TRY_CAST({md.q(tcol)} AS TIMESTAMP)) AS {md.q(tcol)}, " + (f"{g}, " if g else "")
+           + f"{val} AS {md.q(vname)} FROM {md.q(view)} WHERE TRY_CAST({md.q(tcol)} AS TIMESTAMP) IS NOT NULL "
+           + f"GROUP BY 1{', 2' if g else ''} ORDER BY 1")
+    df = bench.run(sql, step="sample", title="Sum the history per day" + (" and series" if g else ""))
+    if vcol not in cols:
+        spec["value_column"] = vname
+    text = (f"All {total:,} rows, summed per day{' and ' + gcol if g else ''} in SQL ({len(df):,} rows) - every row counts "
+            "towards the series, only the daily totals come back.")
+    return df, md.SampleInfo("daily", total, total, text, sql)
+
+
+def load_spec_frame(db: Session, user: models.User, spec: dict, *, cap: int | None = None, factor: float = 1.0,
+                    with_profile: bool = False) -> tuple[pd.DataFrame, dict, bool, dict]:
+    """The rows a run learns from. Returns (data, entry, sampled?, join summary
+    {joins, warnings, origin, text, data}). 2026-10-12 (round 39): through the
+    data layer - read-only snapshots or warehouse SQL, the person's SQL step
+    (spec["prep_sql"]) when there is one, a row budget from the memory really
+    free, a fair sample above it, joins in SQL. `data` says all of it, with the
+    real code that ran (code), for the run page."""
     _check_space(db, user, spec)
-    df, entry, capped = load_frame(db, user, spec["source_id"], spec.get("table"))
-    joined = {"joins": [], "warnings": [], "origin": {}, "text": ""}
-    if spec.get("joins"):
-        df = _coerce_numeric_strings(df)
-        df, info, warnings, origin = apply_joins(db, user, df, entry, spec["joins"])
-        joined = {"joins": info, "warnings": warnings, "origin": origin, "text": joins_text(entry, info)}
-    return df, entry, capped, joined
+    ptype = spec.get("problem_type")
+    s = get_settings()
+    t0 = time.time()
+    with md.Bench() as b:
+        try:
+            entry, snap = _source_view(db, user, b, spec["source_id"], spec.get("table"), "source", n_live=cap or s.ML_MAX_TRAIN_ROWS,
+                                       time_col=spec.get("time_column"))
+            attached = _attach_joins(db, user, b, spec.get("joins") or [])
+            b.lock()
+            view = "source"
+            prep = None
+            if (spec.get("prep_sql") or "").strip():
+                allowed = {"source"} | {v for *_, v in attached}
+                try:
+                    rows_p, cols_p = md.run_select(b, spec["prep_sql"], allowed, out_view="model", step="prepare",
+                                                   title="The table the model learns from (your SQL)")
+                except md.DataError as e:
+                    raise StudioError(f"The data step's SQL didn't run: {e}") from e
+                view = "model"
+                prep = {"rows": rows_p, "columns": [c for c, _ in cols_p]}
+            total = b.count(view)
+            if total == 0:
+                raise StudioError("That table has no rows you can see.")
+            cols = {c for c, _ in b.columns(view)}
+            budget = md.row_budget(b, view, kind=ptype or "", factor=factor)
+            n = budget.rows if cap is None else min(cap, budget.rows)
+            how = _sampling_for(ptype, spec, cols)
+            if how.pop("series", False) and total > n:
+                df, sinfo = _series_rows(b, view, spec, total)
+            else:
+                how.pop("series", None)
+                df, sinfo = md.take(b, view, n, **how)
+            df = _coerce_numeric_strings(df.reset_index(drop=True))
+            joined = {"joins": [], "warnings": [], "origin": {c: entry["table"] for c in df.columns}, "text": ""}
+            if attached:
+                df, info, warnings, origin = _sql_joins(b, df, entry, attached)
+                joined = {"joins": info, "warnings": warnings, "origin": origin, "text": joins_text(entry, info)}
+            prof = md.profile(b, view, time_col=spec.get("time_column"), label=how.get("label") or (spec.get("target") if ptype in SUPERVISED else None)) if with_profile else None
+            log = [vars(x) for x in b.log]
+        except md.DataError as e:
+            raise StudioError(str(e)) from e
+        except duckdb.Error as e:
+            raise StudioError(f"Reading the data stopped: {md._clean_duck_error(e)}") from e  # noqa: SLF001
+    sampled = sinfo.rows_used < sinfo.rows_total and sinfo.strategy not in ("daily", "all")
+    live_total = snap.rows if snap.mode == "live" else 0
+    if snap.mode == "live" and live_total > sinfo.rows_total:
+        sampled = True
+    joined["data"] = {
+        "source": {"name": entry["source"], "table": entry["table"], "kind": snap.kind, "mode": snap.mode, "how": snap.how,
+                   "reused": snap.reused, "build_seconds": snap.build_seconds, "rows": max(snap.rows, sinfo.rows_total)},
+        "rows_total": max(live_total, sinfo.rows_total), "rows_used": int(len(df)), "columns": len(df.columns),
+        "sample": {"strategy": sinfo.strategy if not (snap.mode == "live" and live_total > sinfo.rows_total and sinfo.strategy == "all") else "warehouse",
+                   "text": sinfo.text if not (snap.mode == "live" and live_total > sinfo.rows_total) else f"{snap.how}. {sinfo.text}",
+                   "balance": sinfo.balance},
+        "budget": {"rows": budget.rows, "free_mb": budget.free_mb, "bytes_per_row": budget.per_row_bytes, "reason": budget.reason,
+                   "factor": factor},
+        "prep": prep, "live_sql": snap.live_sql, "code": log, "profile": prof, "seconds": round(time.time() - t0, 2),
+    }
+    return df, entry, sampled, joined
 
 
 def join_preview(db: Session, user: models.User, spec: dict) -> dict:
-    df, entry, capped, joined = load_spec_frame(db, user, spec)
+    df, entry, capped, joined = load_spec_frame(db, user, spec, cap=PLAN_ROWS)
     origin = joined["origin"] or {c: entry["table"] for c in df.columns}
     prev = df.head(8)
     rows = [{c: _jsonable(v) for c, v in r.items()} for r in prev.to_dict(orient="records")]
@@ -480,7 +603,8 @@ def join_preview(db: Session, user: models.User, spec: dict) -> dict:
         "rows": int(len(df)), "columns": [{"name": c, "from": origin.get(c, entry["table"])} for c in df.columns], "preview": rows,
         "joins": [{k: j[k] for k in ("source_id", "source", "table", "key", "base_key", "alias", "matched", "base_rows", "match_rate",
                                      "many_per_key", "aggregated", "added", "how", "join_rows", "capped")} for j in joined["joins"]],
-        "warnings": joined["warnings"] + ([f"The main table is larger than the training limit; the first {len(df):,} rows are used."] if capped else []),
+        "warnings": joined["warnings"],
+        "sample": (joined.get("data") or {}).get("sample"),
         "text": joined["text"],
     })
 
@@ -1045,31 +1169,51 @@ def make_plan(db: Session, user: models.User, spec: dict) -> dict:
     if ptype not in READY:
         raise StudioError("That kind of project isn't available yet - pick one of the others.")
     # 2026-10-09 (round 15): the base table with any joins applied (and the Space checked)
-    df, entry, capped, joined = load_spec_frame(db, user, spec)
+    # 2026-10-12 (round 39): the plan checks a fair sample of up to 60,000 rows; it reports the
+    # table's true size and how the run itself will read it (every row, or a fair sample, and why)
+    df, entry, capped, joined = load_spec_frame(db, user, spec, cap=PLAN_ROWS)
     df = _coerce_numeric_strings(df)
     n = len(df)
     if n == 0:
         raise StudioError("That table has no rows you can see.")
+    data = joined.get("data") or {}
+    total = int(data.get("rows_total") or n)
+    budget = int((data.get("budget") or {}).get("rows") or n)
+    train_rows = min(total, budget)
     cols = list(df.columns)
     rows: list[dict] = []
     plan: dict = {"problem_type": ptype, "source_id": spec["source_id"], "source": entry["source"], "table": entry["table"],
-                  "rows": n, "capped": capped, "columns": cols, "warnings": list(joined["warnings"]),
+                  "rows": total, "capped": total > budget, "columns": cols, "warnings": list(joined["warnings"]),
+                  "train_rows": train_rows, "checked_rows": n,
+                  "data": {"how": (data.get("source") or {}).get("how"), "budget": data.get("budget"), "prep": data.get("prep"),
+                           "strategy": _sampling_for(ptype, spec, set(cols)), "sample": data.get("sample")},
                   "joins": [{k: j[k] for k in ("source", "table", "key", "base_key", "matched", "base_rows", "match_rate", "many_per_key",
                                                "aggregated", "how")} for j in joined["joins"]]}
-    cap = get_settings().ML_MAX_TRAIN_ROWS
-    data_note = f"{_fmt_int(n)} rows · {len(cols)} columns" + (f" · first {cap:,} rows (server limit)" if capped else "")
+    data_note = (f"{_fmt_int(total)} rows · {len(cols)} columns · " +
+                 ("trains on every row" if train_rows >= total else f"trains on {_fmt_int(train_rows)} ({_strategy_words(ptype, spec, set(cols))})"))
     data_v = f"{entry['source']} · {entry['table']}" + (f" + {len(joined['joins'])} joined table{'s' if len(joined['joins']) != 1 else ''}" if joined["joins"] else "")
+    if (spec.get("prep_sql") or "").strip():
+        data_v += " · shaped by your SQL step"
     if joined["text"]:
         data_note = joined["text"] + " · " + data_note
-    if capped:
-        plan["warnings"].append(f"The table has more than {cap:,} rows. This server trains on the first {cap:,} and the results will say so.")
+    n_scale = train_rows / n if n else 1.0
 
     if ptype not in SUPERVISED and ptype not in ("segments", "anomalies") and ptype not in NEEDS_TIME:
-        rows, extra = _plan_new(ptype, df, spec, data_v, data_note, n)
+        rows, extra = _plan_new(ptype, df, spec, data_v, data_note, train_rows)
         plan["warnings"] += extra.pop("warnings_new", [])
         plan.update(extra)
     elif ptype in SUPERVISED:
-        y, info = _label(df, spec)
+        try:
+            y, info = _label(df, spec)
+        except StudioError as e:
+            # 2026-10-12 (round 39): no usable label yet - when the table is per event and the goal per
+            # entity, the answer is a data step that builds the label, not a dead end
+            hint = entity_hint(db, user, spec, cols) if not (spec.get("prep_sql") or "").strip() else None
+            if not hint:
+                raise
+            plan.update(needs_prep=hint, title=f"Shape one row per {hint['noun']} first", rows_text=[], warnings=[str(e)],
+                        spec={k: spec.get(k) for k in SPEC_KEYS})
+            return _m.clean(plan)
         keep = y.notna()
         feats, excluded, dates = _feature_columns(df[keep], spec)
         if spec.get("time_column") in feats:
@@ -1082,7 +1226,7 @@ def make_plan(db: Session, user: models.User, spec: dict) -> dict:
                 else "Trained on a random 80% of rows, tested on the other 20%")
         rows = [
             {"k": "Answer", "v": answer, "m": kind},
-            {"k": "Label", "v": _label_text(info), "m": f"{int(keep.sum()):,} rows with a known {info['target']}"},
+            {"k": "Label", "v": _label_text(info), "m": f"about {int(keep.sum() * n_scale):,} rows with a known {info['target']}"},
             {"k": "Data", "v": data_v, "m": data_note},
             {"k": "Features", "v": f"{len(feats)} columns" + (f", {len(dates)} date{'s' if len(dates) != 1 else ''} turned into month and weekday" if dates else ""),
              "m": ", ".join(feats[:8]) + (" …" if len(feats) > 8 else "")},
@@ -1091,7 +1235,7 @@ def make_plan(db: Session, user: models.User, spec: dict) -> dict:
              "m": ", ".join(s["column"] for s in suspects)},
             {"k": "Fair test", "v": test, "m": f"baseline to beat: {_baseline_name(info, df, feats)}"},
             {"k": "Compute", "v": f"Gradient boosting, random forest and a linear model, tuned in up to {get_settings().ML_TRIALS} trials",
-             "m": f"est. {_estimate(n, len(feats))} on this server"},
+             "m": f"est. {_estimate(train_rows, len(feats))} on {_where_words()}"},
             {"k": "Output", "v": _output_text(ptype, info), "m": "a new saved table in the same source, with the top reasons per row" if ptype != "drivers" else "ranked drivers with direction"},
         ]
         plan.update(title=title, target=info["target"], label=info, features=feats, excluded=excluded, dates=dates, leak_suspects=suspects)
@@ -1108,7 +1252,7 @@ def make_plan(db: Session, user: models.User, spec: dict) -> dict:
             {"k": "Features", "v": f"{len(feats)} columns", "m": ", ".join(feats[:8]) + (" …" if len(feats) > 8 else "")},
             {"k": "Fair test", "v": "Group quality measured by silhouette (how well separated the groups are)" if ptype == "segments"
              else "Each outlier is shown with the columns that make it unusual, so it can be checked", "m": ""},
-            {"k": "Compute", "v": "In memory on this server", "m": f"est. {_estimate(n, len(feats), light=True)}"},
+            {"k": "Compute", "v": f"On {_where_words()}", "m": f"est. {_estimate(train_rows, len(feats), light=True)}"},
             {"k": "Output", "v": "A saved table with each row's group" if ptype == "segments" else "A saved table with each row's anomaly score", "m": ""},
         ]
         plan.update(features=feats, excluded=excluded, dates=dates)
@@ -1139,13 +1283,31 @@ def make_plan(db: Session, user: models.User, spec: dict) -> dict:
              "m": f"{periods} {grain}s of history · {_d(t.min())} → {_d(t.max())}"},
             {"k": "Data", "v": data_v, "m": data_note},
             {"k": "Fair test", "v": "Rolling-origin backtest on the last periods, compared with “same period last season”", "m": "MASE below 1 beats the baseline"},
-            {"k": "Compute", "v": "In memory on this server", "m": "seconds"},
+            {"k": "Compute", "v": f"On {_where_words()}", "m": "seconds"},
             {"k": "Output", "v": "Forecast table and chart", "m": ""},
         ]
         plan.update(grain=grain, horizon=horizon, time_column=tcol, value_column=vcol, group_column=group)
     plan["rows_text"] = rows
+    # 2026-10-12 (round 39): the data step - offered when the goal is per entity and the table isn't
+    if (spec.get("prep_sql") or "").strip():
+        plan["rows_text"].insert(1, {"k": "Data step", "v": f"Your SQL shapes {_fmt_int(int((data.get('prep') or {}).get('rows') or n))} rows",
+                                     "m": "runs in the sandbox before every training and scoring run"})
+    else:
+        plan["prep_hint"] = entity_hint(db, user, spec, cols)
     plan["spec"] = {k: spec.get(k) for k in SPEC_KEYS}
     return _m.clean(plan)
+
+
+def _where_words() -> str:
+    return "the ML worker" if get_settings().ML_WORKER_MODE == "external" else "this server"
+
+
+def _strategy_words(ptype: str | None, spec: dict, cols: set[str]) -> str:
+    how = _sampling_for(ptype, spec, cols)
+    if how.get("series"):
+        return "every row, summed per day"
+    return {"stratified": f"stratified on {how.get('label')}", "recent": f"the most recent by {how.get('time_col')}",
+            "groups": f"whole {how.get('group_col')} groups", "uniform": "a fair random sample"}.get(how.get("prefer") or "uniform", "a fair sample")
 
 
 def _grain_for(t: pd.Series) -> str:
@@ -1271,9 +1433,16 @@ def _target_name(ptype: str, spec: dict) -> str:
     return {"segments": "segment", "anomalies": "anomaly", "themes": "theme", "sentiment": "sentiment", "doc_facts": "facts"}.get(ptype, "rows")
 
 
+def _fresh_progress(ptype: str | None, message: str) -> dict:
+    return {"stages": _stage_list(ptype), "leaderboard": [], "curve": [], "trials_done": 0,
+            "trials_total": get_settings().ML_TRIALS if ptype in TUNED else None, "leaks": [], "resources": {},
+            "message": message}
+
+
 def start(db: Session, user: models.User, spec: dict, name: str, goal: str | None, run_now: bool = False) -> models.MLModel:
-    """Creates the project and trains it on a background thread (or, with
-    run_now, in this thread - tests and scripts)."""
+    """Creates the project and queues its training run (or, with run_now,
+    trains it in this thread - tests and scripts). 2026-10-12 (round 39):
+    runs go through the queue (services/ml_queue.py) and a worker trains them."""
     ptype = spec.get("problem_type")
     if ptype not in READY:
         raise StudioError("That kind of project isn't available yet.")
@@ -1287,19 +1456,27 @@ def start(db: Session, user: models.User, spec: dict, name: str, goal: str | Non
         owner_id=user.id, workspace_id=ds.workspace_id, datasource_id=ds.id, name=(name or "ML project").strip()[:120],
         target_column=target, status="training", problem_type=ptype, goal=(goal or "").strip() or None,
         table_name=entry["key"], plan={"spec": spec}, started_at=datetime.utcnow(), stop_requested=False,
-        progress={"stages": _stage_list(ptype), "leaderboard": [], "curve": [], "trials_done": 0,
-                  "trials_total": get_settings().ML_TRIALS if ptype in TUNED else None, "leaks": [], "resources": {},
-                  "message": "Waiting for the server…"},
+        progress=_fresh_progress(ptype, "Queued…"),
     )
     db.add(m)
     db.commit()
     db.refresh(m)
     if run_now:
-        _run(m.id)
+        run_training(m.id, {})
         db.refresh(m)
     else:
-        threading.Thread(target=_run, args=(m.id,), daemon=True, name=f"ml-{m.id[:8]}").start()
+        _enqueue_training(db, m, user.id)
     return m
+
+
+def _enqueue_training(db: Session, m: models.MLModel, owner_id: str) -> None:
+    job = ml_queue.enqueue(db, kind="train", model=m, owner_id=owner_id, payload={"budget_factor": 1.0})
+    ahead = ml_queue.position(db, job)
+    running = db.query(models.MLJob).filter(models.MLJob.state == "running").count()
+    m.progress = {**dict(m.progress or {}), "message": (f"Queued - {ahead + running} run{'s' if ahead + running != 1 else ''} ahead"
+                                                         if ahead + running else "Starting…")}
+    flag_modified(m, "progress")
+    db.commit()
 
 
 def restart(db: Session, m: models.MLModel) -> models.MLModel:
@@ -1308,25 +1485,33 @@ def restart(db: Session, m: models.MLModel) -> models.MLModel:
     m.error_message = None
     m.stop_requested = False
     m.started_at = datetime.utcnow()
-    m.progress = {"stages": _stage_list(m.problem_type), "leaderboard": [], "curve": [], "trials_done": 0,
-                  "trials_total": get_settings().ML_TRIALS if m.problem_type in TUNED else None, "leaks": [],
-                  "resources": {}, "message": "Waiting for the server…"}
+    m.progress = _fresh_progress(m.problem_type, "Queued…")
     db.commit()
-    threading.Thread(target=_run, args=(m.id,), daemon=True, name=f"ml-{m.id[:8]}").start()
+    _enqueue_training(db, m, m.owner_id)
     return m
 
 
 def request_stop(db: Session, m: models.MLModel) -> None:
+    if ml_queue.cancel_queued(db, m.id):
+        m.status = "failed"
+        m.error_message = "Stopped before it started."
+        m.progress = {**dict(m.progress or {}), "message": "Stopped before it started."}
+        flag_modified(m, "progress")
     m.stop_requested = True
     db.commit()
 
 
 class Job:
-    """Progress writes for one run (each commit is visible to the page polling it)."""
+    """Progress writes for one run (each commit is visible to the page polling it).
+    2026-10-12 (round 39): a stage can carry what the run page shows beside
+    it - `code` (the SQL / Python that ran), `visual` (charts of what the step
+    did) and `preview` (the first rows) - and the run knows its row budget
+    factor (halved when a retry follows an out-of-memory stop)."""
 
-    def __init__(self, db: Session, m: models.MLModel):
+    def __init__(self, db: Session, m: models.MLModel, factor: float = 1.0):
         self.db, self.m = db, m
         self.t0 = time.time()
+        self.factor = float(factor or 1.0)
 
     @property
     def progress(self) -> dict:
@@ -1336,21 +1521,47 @@ class Job:
         p = self.progress
         p.update(fields)
         p["elapsed"] = round(time.time() - self.t0, 1)
-        p["resources"] = {**(p.get("resources") or {}), "memory_mb": _rss_mb(), "workers": os.cpu_count() or 1}
+        p["resources"] = {**(p.get("resources") or {}), "memory_mb": _rss_mb(), "memory_now_mb": md.rss_mb(), "workers": os.cpu_count() or 1,
+                          "worker": get_settings().ML_WORKER_MODE}
         self.m.progress = p
         flag_modified(self.m, "progress")
         self.db.commit()
 
-    def stage(self, sid: str, status: str, note: str = "") -> None:
+    def stage(self, sid: str, status: str, note: str = "", *, code: list | None = None, visual: list | None = None,
+              preview: dict | None = None) -> None:
         p = self.progress
+        now = round(time.time() - self.t0, 1)
         for s in p.get("stages") or []:
             if s["id"] == sid:
                 s["status"] = status
                 if note:
                     s["note"] = note
+                if status == "running":
+                    s["started"] = now
+                elif s.get("started") is not None:
+                    s["seconds"] = round(now - s["started"], 1)
+                if code is not None:
+                    s["code"] = _m.clean(code[:14])
+                if visual is not None:
+                    s["visual"] = _m.clean(visual[:8])
+                if preview is not None:
+                    s["preview"] = _m.clean(preview)
             elif status == "running" and s["status"] == "running":
                 s["status"] = "done"
         self.save(stages=p.get("stages"), current=sid if status == "running" else p.get("current"))
+
+    def attach(self, sid: str, *, code: list | None = None, visual: list | None = None, preview: dict | None = None) -> None:
+        """Adds code / visuals to a stage without changing its status."""
+        p = self.progress
+        for s in p.get("stages") or []:
+            if s["id"] == sid:
+                if code:
+                    s["code"] = _m.clean((s.get("code") or []) + code)[:14]
+                if visual:
+                    s["visual"] = _m.clean((s.get("visual") or []) + visual)[:8]
+                if preview is not None:
+                    s["preview"] = _m.clean(preview)
+        self.save(stages=p.get("stages"))
 
     def check_stop(self) -> None:
         self.db.refresh(self.m, attribute_names=["stop_requested"])
@@ -1396,34 +1607,35 @@ def memory_headroom_mb() -> int | None:
 
 
 def fit_memory(job: "Job", df: pd.DataFrame, n_cols: int, time_col: str | None) -> pd.DataFrame:
-    """Keeps a run inside the server's free memory: when the data would not
-    fit, it trains on fewer rows (the most recent, when there is a date
-    column) and says so on the run - never a silent sample, never a crash
-    that takes the whole server down."""
+    """The last safety net after the row budget: if memory dropped while the
+    data loaded (another run, a busy server), it trains on fewer rows - a
+    fair, seeded random share (or the most recent rows, with a date) - and
+    says so on the run. It never stops a run that is already down to the
+    smallest fair sample: a few thousand rows are a few MB, and a model on
+    them beats an error."""
     head = memory_headroom_mb()
     if head is None:
         return df
+    floor = min(len(df), md.MIN_BUDGET)
     per_row = df.memory_usage(deep=True).sum() / max(len(df), 1) * 2 + max(n_cols, 1) * 8 * 14
     need_mb = len(df) * per_row / (1024 * 1024) + 40
     usable = head - 60  # leave room for everything else the server is doing
-    if need_mb <= usable:
+    if need_mb <= usable or len(df) <= floor:
         return df
-    rows_ok = int(len(df) * max(usable, 0) / need_mb * 0.9)
-    if rows_ok < 2000:
-        raise StudioError(
-            f"This server has only about {head} MB of memory free right now, which isn't enough to train on this table. "
-            "Try again in a minute, leave out some columns, or move the backend to a larger instance."
-        )
+    rows_ok = max(floor, int(len(df) * max(usable, 0) / need_mb * 0.9))
+    if rows_ok >= len(df):
+        return df
     if time_col and time_col in df.columns:
         order = pd.to_datetime(df[time_col], errors="coerce", utc=True).sort_values(na_position="first").index
         df = df.loc[order[-rows_ok:]].reset_index(drop=True)
         which = "the most recent"
     else:
-        df = df.head(rows_ok).reset_index(drop=True)
-        which = "the first"
+        df = df.sample(n=rows_ok, random_state=get_settings().ML_SAMPLE_SEED).reset_index(drop=True)
+        which = "a fair random"
     res = dict(job.progress.get("resources") or {})
     res.update(rows_used=rows_ok, memory_limited=True)
-    job.save(resources=res, memory_note=f"This server had about {head} MB free, so it trained on {which} {rows_ok:,} rows.")
+    job.save(resources=res, memory_note=f"Memory got tight while the data loaded (about {head} MB free), so it trained on {which} {rows_ok:,} rows. "
+                                        "A separate ML worker with more memory trains on every row.")
     return df
 
 
@@ -1434,23 +1646,34 @@ def _rss_mb() -> int:
         return 0
 
 
-def _run(model_id: str) -> None:
+def run_training(model_id: str, payload: dict | None = None) -> tuple[bool, str | None]:
+    """Trains one queued project to the end. Returns (ok, error) - "stopped"
+    when the person stopped it. Called by the worker (services/ml_worker.py)
+    and, with run_now, directly."""
+    payload = payload or {}
     db = SessionLocal()
-    sem = _sem()
     try:
         m = db.get(models.MLModel, model_id)
         if not m:
-            return
-        job = Job(db, m)
-        got = sem.acquire(timeout=1)
-        if not got:
-            job.save(message="Another training is running on this server - this one starts when it finishes.")
-            sem.acquire()
+            return False, "The project no longer exists."
+        if m.stop_requested:
+            m.status = "failed"
+            m.error_message = "Stopped before it started."
+            Job(db, m).save(message="Stopped before it started.")
+            return False, "stopped"
+        job = Job(db, m, factor=float(payload.get("budget_factor") or 1.0))
+        note = payload.get("note")
+        m.status = "training"
+        m.started_at = datetime.utcnow()
+        m.progress = _fresh_progress(m.problem_type, note or "Reading the data…")
+        if note:
+            m.progress["retry_note"] = note
+        flag_modified(m, "progress")
+        db.commit()
         job.t0 = time.time()
         try:
             user = db.get(models.User, m.owner_id)
             spec = dict((m.plan or {}).get("spec") or {})
-            job.save(message="Loading the data…")
             ptype = m.problem_type
             if ptype in SUPERVISED:
                 _train_supervised(db, job, user, spec)
@@ -1464,7 +1687,11 @@ def _run(model_id: str) -> None:
                 # 2026-10-09 (round 15): the newer kinds
                 TRAINERS[ptype](db, job, user, spec)
             if isinstance(m.results, dict):
-                m.results = _m.clean(m.results)
+                res = dict(m.results)
+                res["data"] = job.progress.get("data")
+                res["code"] = _model_code(m, spec, res)
+                m.results = _m.clean(res)
+            _finish_stage_code(job, m, spec)
             m.status = "ready"
             m.trained_at = datetime.utcnow()
             m.error_message = None
@@ -1475,18 +1702,29 @@ def _run(model_id: str) -> None:
             except Exception:  # noqa: BLE001
                 logger.warning("[ml_studio] could not record a version for %s", m.id)
             db.commit()
+            return True, None
         except Stopped:
             db.rollback()
             m = db.get(models.MLModel, model_id)
             m.status = "failed"
             m.error_message = "Stopped before it finished."
             Job(db, m).save(message="Stopped.")
+            return False, "stopped"
         except StudioError as e:
             db.rollback()
             m = db.get(models.MLModel, model_id)
             m.status = "failed"
             m.error_message = str(e)
             Job(db, m).save(message=str(e))
+            return False, str(e)
+        except MemoryError:
+            db.rollback()
+            m = db.get(models.MLModel, model_id)
+            m.status = "failed"
+            m.error_message = ("This run ran out of memory. Train again (it will use fewer rows), leave out wide text columns, "
+                               "or give ML its own worker with more memory.")
+            Job(db, m).save(message=m.error_message)
+            return False, m.error_message
         except Exception as e:  # noqa: BLE001
             logger.warning("[ml_studio] training %s failed: %s\n%s", model_id, e, traceback.format_exc())
             db.rollback()
@@ -1494,12 +1732,84 @@ def _run(model_id: str) -> None:
             m.status = "failed"
             m.error_message = f"Training stopped with an error: {type(e).__name__}: {str(e)[:300]}"
             Job(db, m).save(message=m.error_message)
+            return False, m.error_message
         finally:
-            sem.release()
             import gc
             gc.collect()
     finally:
         db.close()
+
+
+def _run(model_id: str) -> None:
+    """Kept for older callers: trains in this thread."""
+    run_training(model_id, {})
+
+
+_EST = {("hgb", True): ("sklearn.ensemble", "HistGradientBoostingClassifier"), ("hgb", False): ("sklearn.ensemble", "HistGradientBoostingRegressor"),
+        ("forest", True): ("sklearn.ensemble", "RandomForestClassifier"), ("forest", False): ("sklearn.ensemble", "RandomForestRegressor"),
+        ("linear", True): ("sklearn.linear_model", "LogisticRegression"), ("linear", False): ("sklearn.linear_model", "Ridge")}
+
+_METHOD_CODE = {
+    "segments": "from sklearn.cluster import KMeans\nmodel = KMeans(n_clusters={k}, n_init=10, random_state=42)  # k chosen by silhouette\ngroups = model.fit_predict(X)",
+    "anomalies": "from sklearn.ensemble import IsolationForest\nmodel = IsolationForest(n_estimators=200, random_state=42)\nscore = -model.fit(X).score_samples(X)  # higher = more unusual",
+}
+
+
+def _model_code(m: models.MLModel, spec: dict, res: dict) -> str:
+    """The Python that reproduces this model on the rows the data step read -
+    the algorithm and the settings that actually won, not a template."""
+    ptype = m.problem_type
+    lines = ["# " + (m.name or "ML project"), "# rows: the table the data step produced (see its SQL)", "import pandas as pd", ""]
+    if ptype in SUPERVISED and res.get("winner_key"):
+        classify = res.get("kind") != "number"
+        mod, cls = _EST[(res["winner_key"], classify)]
+        params = dict(res.get("winner_params") or {})
+        if res["winner_key"] == "linear" and classify:
+            params = {"C": params.get("C", 1.0), "max_iter": 2000}
+        feats = list(res.get("features") or [])
+        dates = list(res.get("dates") or [])
+        lines += [f"from {mod} import {cls}", "from sklearn.compose import ColumnTransformer", "from sklearn.impute import SimpleImputer",
+                  "from sklearn.pipeline import Pipeline", "from sklearn.preprocessing import OneHotEncoder" + (", StandardScaler" if res["winner_key"] == "linear" else ""), "",
+                  f"features = {json.dumps(feats)}", f"target = {json.dumps((res.get('label') or {}).get('target') or m.target_column)}"]
+        if dates:
+            lines += [f"for c in {json.dumps(dates)}:  # dates become month, weekday and day of month",
+                      "    d = pd.to_datetime(rows[c], errors='coerce', utc=True)",
+                      "    rows[c + '__month'], rows[c + '__weekday'], rows[c + '__day'] = d.dt.month, d.dt.weekday, d.dt.day",
+                      f"features = [f for f in features if f not in {json.dumps(dates)}] + [c + s for c in {json.dumps(dates)} for s in ('__month', '__weekday', '__day')]"]
+        lines += ["X, y = rows[features], rows[target]",
+                  "numbers = [c for c in features if pd.api.types.is_numeric_dtype(X[c])]",
+                  "categories = [c for c in features if c not in numbers]",
+                  "prep = ColumnTransformer([",
+                  "    ('num', Pipeline([('impute', SimpleImputer(strategy='median'))" + (", ('scale', StandardScaler())" if res["winner_key"] == "linear" else "") + "]), numbers),",
+                  "    ('cat', Pipeline([('impute', SimpleImputer(strategy='most_frequent')),",
+                  "                      ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False, max_categories=20))]), categories),",
+                  "])",
+                  f"model = Pipeline([('prep', prep), ('model', {cls}(**{json.dumps(params)}))])",
+                  "model.fit(X, y)",
+                  f"# held-out {res.get('metric') or 'score'}: {res.get('test_score')} ({res.get('split') or ''})"]
+        return "\n".join(lines)
+    if ptype in _METHOD_CODE:
+        feats = list(res.get("features") or [])
+        lines += [f"features = {json.dumps(feats)}", "X = pd.get_dummies(rows[features]).fillna(0)", _METHOD_CODE[ptype].format(k=res.get("k") or 4)]
+        return "\n".join(lines)
+    method = res.get("method") or res.get("headline") or ""
+    lines += [f"# {TYPE_WORDS.get(ptype, ptype)}", f"# method: {method}" if method else "# method: see the results page",
+              "# GD360 runs this with services/ml_studio_methods.py; the settings it used:",
+              "settings = " + json.dumps({k: spec.get(k) for k in COLUMN_KEYS + LIST_KEYS + ("horizon", "grain", "k") if spec.get(k)}, default=str)]
+    return "\n".join(lines)
+
+
+TYPE_WORDS = {p["id"]: p["title"] for p in PROBLEMS}
+
+
+def _finish_stage_code(job: "Job", m: models.MLModel, spec: dict) -> None:
+    res = m.results if isinstance(m.results, dict) else {}
+    code = res.get("code")
+    if not code:
+        return
+    stages = [s_["id"] for s_ in (job.progress.get("stages") or [])]
+    sid = "train" if "train" in stages else (stages[-2] if len(stages) > 1 else stages[-1])
+    job.attach(sid, code=[{"title": "The model, as it was trained", "lang": "python", "engine": "Python · scikit-learn", "code": code}])
 
 
 def _dump(pipe) -> bytes:
@@ -1565,18 +1875,81 @@ def _positive_proba(model, X, positive) -> np.ndarray:
 
 
 def _load_for_job(db: Session, job: Job, user: models.User, spec: dict, time_col: str | None = None) -> tuple[pd.DataFrame, dict, bool, dict]:
-    """2026-10-09 (round 15): the shared “Load the data” stage - base table,
-    joins, the server row limit and the memory guard - for every kind."""
-    job.stage("data", "running")
-    df, entry, capped, joined = load_spec_frame(db, user, spec)
-    df = _coerce_numeric_strings(df)
-    total = len(df)
-    job.stage("data", "done", f"{total:,} rows · {len(df.columns)} columns" + (f" · {joined['text']}" if joined["text"] else "")
-              + (" · server row limit reached" if capped else ""))
-    job.save(resources={"rows_used": total, "rows_total": total, "capped": capped}, joins=joined["joins"])
+    """The shared "Load the data" stage for every kind. 2026-10-12 (round 39):
+    the data layer reads (snapshot / warehouse SQL), applies the person's SQL
+    step, works out the row budget, samples fairly above it and joins in SQL -
+    and the stage carries the real code, the visuals and the first rows."""
+    job.stage("data", "running", "Reading the data where it lives…")
+    job.save(message="Reading the data…")
+    df, entry, capped, joined = load_spec_frame(db, user, spec, factor=job.factor, with_profile=True)
+    data = joined.get("data") or {}
+    total = int(data.get("rows_total") or len(df))
+    note = (f"{len(df):,} of {total:,} rows" if len(df) < total and (data.get("sample") or {}).get("strategy") != "daily"
+            else f"{total:,} rows") + f" · {len(df.columns)} columns" + (f" · {joined['text']}" if joined["text"] else "")
+    job.stage("data", "done", note, code=_data_code(data), visual=_data_visuals(data, df, spec), preview=_preview(df))
+    job.save(resources={"rows_used": int(len(df)), "rows_total": total, "capped": capped,
+                        "budget_rows": (data.get("budget") or {}).get("rows"), "free_mb": (data.get("budget") or {}).get("free_mb")},
+             joins=joined["joins"], data={k: v for k, v in data.items() if k not in ("code", "profile")},
+             message=(data.get("sample") or {}).get("text") or "Data ready.")
     job.check_stop()
     df = fit_memory(job, df, len(df.columns) + 20, time_col if time_col in df.columns else None)
     return df, entry, capped, joined
+
+
+def _preview(df: pd.DataFrame, rows: int = 12, cols: int = 24) -> dict:
+    head = df.iloc[:rows, :cols]
+    return {"columns": [str(c) for c in head.columns], "rows": [[_jsonable(v) for v in r] for r in head.itertuples(index=False, name=None)],
+            "total_columns": int(len(df.columns))}
+
+
+def _data_code(data: dict) -> list[dict]:
+    """The statements the data stage really ran, oldest first."""
+    out = []
+    src = data.get("source") or {}
+    head = (f"-- {src.get('name')} · {src.get('table')}\n-- {src.get('how') or ''}\n"
+            f"-- {'Snapshot reused' if src.get('reused') else 'Read just now'}; access rules are part of the view \"source\".")
+    out.append({"title": "Where the data comes from", "lang": "sql", "engine": "DuckDB" if src.get("mode") != "live" else src.get("kind"),
+                "code": head + ("\n\n" + data["live_sql"] + ";" if data.get("live_sql") else ""), "rows": src.get("rows")})
+    for e in data.get("code") or []:
+        out.append({"title": e.get("title") or e.get("step"), "lang": "sql", "engine": e.get("engine") or "DuckDB",
+                    "code": (e.get("sql") or "").strip() + ";", "rows": e.get("rows"), "seconds": e.get("seconds"),
+                    "editable": e.get("step") == "prepare"})
+    return out
+
+
+def _data_visuals(data: dict, df: pd.DataFrame, spec: dict) -> list[dict]:
+    """Charts of what the data stage did, for people who'd rather see it."""
+    v: list[dict] = []
+    total = int(data.get("rows_total") or 0)
+    used = int(data.get("rows_used") or len(df))
+    samp = data.get("sample") or {}
+    bud = data.get("budget") or {}
+    v.append({"type": "funnel", "title": "From the source to the model",
+              "items": [{"label": "Rows in the source", "value": total},
+                        *([{"label": "Rows after your SQL step", "value": (data.get("prep") or {}).get("rows")}] if data.get("prep") else []),
+                        {"label": "Rows the model learns from", "value": used}],
+              "note": samp.get("text")})
+    v.append({"type": "kpis", "items": [
+        {"label": "Columns", "value": int(data.get("columns") or len(df.columns))},
+        {"label": "Memory free for this run", "value": f"{int(bud.get('free_mb') or 0):,} MB"},
+        {"label": "Row budget", "value": int(bud.get("rows") or 0), "note": bud.get("reason")},
+        {"label": "Read in", "value": f"{data.get('seconds', 0)} s"}]})
+    prof = data.get("profile") or {}
+    if samp.get("balance"):
+        v.append({"type": "bars", "title": "Each outcome: in the source and in the sample", "series": ["In the source", "Used"],
+                  "items": [{"label": b["value"], "values": [b["total"], b["used"]]} for b in samp["balance"][:12]]})
+    elif prof.get("label"):
+        v.append({"type": "bars", "title": f"{prof['label']['name']}: how often each value appears",
+                  "items": [{"label": x["value"], "value": x["rows"]} for x in prof["label"]["values"]]})
+    if prof.get("over_time"):
+        v.append({"type": "columns", "title": "Rows per month", "items": [{"label": x["period"], "value": x["rows"]} for x in prof["over_time"]]})
+    if prof.get("per_column"):
+        miss = sorted(prof["per_column"], key=lambda c: -c["missing"])[:12]
+        v.append({"type": "bars", "title": "Missing values by column", "unit": "%",
+                  "items": [{"label": c["name"], "value": round(c["missing"] * 100, 1), "note": c["type"]} for c in miss]})
+        types = prof.get("types") or {}
+        v.append({"type": "split", "title": "Column types", "items": [{"label": k, "value": n} for k, n in types.items()]})
+    return v
 
 
 def _train_supervised(db: Session, job: Job, user: models.User, spec: dict, frame: tuple | None = None) -> None:
@@ -1611,14 +1984,26 @@ def _train_supervised(db: Session, job: Job, user: models.User, spec: dict, fram
             vc = y.value_counts()
         if vc.min() < 5:
             raise StudioError(f"“{vc.idxmin()}” appears only {int(vc.min())} times - too few to learn from.")
-    job.stage("label", "done", _label_text(info))
+    if info["kind"] == "number":
+        lab_vis = [{"type": "histogram", "title": f"{info['target']}: how the values spread", "bins": md.histogram(y, 24)}]
+    else:
+        vc_l = y.value_counts()
+        lab_vis = [{"type": "bars", "title": f"{info['target']}: rows per outcome",
+                    "items": [{"label": str(k), "value": int(v), "note": "the outcome to predict" if str(k) == str(info.get("positive")) else ""}
+                              for k, v in vc_l.head(20).items()]}]
+    job.stage("label", "done", _label_text(info), visual=lab_vis)
 
     job.stage("features", "running")
     feats, excluded, dates = _feature_columns(df, spec)
     tcol = spec.get("time_column") if spec.get("time_column") in df.columns else None
     if not feats:
         raise StudioError("No column is usable to learn from.")
-    job.stage("features", "done", f"{len(feats)} features" + (f" · {len(dates)} date{'s' if len(dates) != 1 else ''} as month/weekday" if dates else ""))
+    kinds_f = Counter("date" if c in dates else "number" if pd.api.types.is_numeric_dtype(df[c]) else "category" for c in feats)
+    job.stage("features", "done", f"{len(feats)} features" + (f" · {len(dates)} date{'s' if len(dates) != 1 else ''} as month/weekday" if dates else ""),
+              visual=[{"type": "split", "title": "What the model can use", "items": [{"label": k, "value": v} for k, v in kinds_f.items()]},
+                      {"type": "table", "title": "Columns", "columns": ["Column", "Used as", "Why"],
+                       "rows": [[c, "date parts" if c in dates else "number" if pd.api.types.is_numeric_dtype(df[c]) else "category", "used"] for c in feats[:40]]
+                       + [[x["column"], "left out", x["reason"]] for x in excluded[:20]]}])
     job.check_stop()
 
     job.stage("leaks", "running")
@@ -1628,7 +2013,10 @@ def _train_supervised(db: Session, job: Job, user: models.User, spec: dict, fram
     dates = [c for c in dates if c in feats]
     if not feats:
         raise StudioError("Every usable column gives the answer away, so there is nothing fair to learn from.")
-    job.stage("leaks", "done", f"{len(leaks)} column{'s' if len(leaks) != 1 else ''} removed" if leaks else "nothing removed")
+    job.stage("leaks", "done", f"{len(leaks)} column{'s' if len(leaks) != 1 else ''} removed" if leaks else "nothing removed",
+              visual=[{"type": "table", "title": "Columns that gave the answer away", "columns": ["Column", "Why it was removed"],
+                       "rows": [[x["column"], x["reason"]] for x in leaks]}] if leaks else
+              [{"type": "note", "title": "No leaks", "text": f"None of the {len(feats)} columns predicts {info['target']} suspiciously well on its own."}])
     job.save(leaks=leaks)
 
     classify = info["kind"] != "number"
@@ -1726,7 +2114,15 @@ def _train_supervised(db: Session, job: Job, user: models.User, spec: dict, fram
     winner = finals[win_key]
     w = per_alg[win_key]
     job.stage("test", "done", f"{w['algorithm']}: {_metric_text(info['kind'], w['test_score'])} on {len(te):,} held-out rows "
-                              f"vs baseline {_metric_text(info['kind'], base_row.get('test_score'))}")
+                              f"vs baseline {_metric_text(info['kind'], base_row.get('test_score'))}",
+              visual=[{"type": "kpis", "items": [
+                          {"label": f"{_metric_name(info['kind'])} · {w['algorithm']}", "value": _metric_text(info["kind"], w["test_score"]), "tone": "good"},
+                          {"label": "Baseline", "value": _metric_text(info["kind"], base_row.get("test_score"))},
+                          {"label": "Held-out rows", "value": int(len(te))}, {"label": "Training rows", "value": int(len(tr))}]},
+                      {"type": "bars", "title": f"{_metric_name(info['kind'])} on held-out rows", "format": "score",
+                       "items": [{"label": r["algorithm"], "value": r.get("test_score"), "note": "chosen" if r.get("key") == win_key else ("baseline" if r.get("baseline") else "")}
+                                 for r in board if r.get("test_score") is not None]},
+                      {"type": "note", "title": "How it was tested", "text": split_text + ". The winner was picked on a validation slice, then tested once."}])
     job.save(leaderboard=board)
     job.check_stop()
 
@@ -1735,7 +2131,11 @@ def _train_supervised(db: Session, job: Job, user: models.User, spec: dict, fram
     per_class = confusion = None
     if info["kind"] == "multiclass":
         per_class, confusion = _class_report(winner, X_te, y_te)
-    job.stage("explain", "done", f"top driver: {drivers[0]['feature']}" if drivers else "")
+    job.stage("explain", "done", f"top driver: {drivers[0]['feature']}" if drivers else "",
+              visual=[{"type": "bars", "title": f"What moves {info['target']}", "format": "share",
+                       "items": [{"label": d["feature"], "value": abs(float(d["importance"])),
+                                  "note": "higher raises it" if d.get("direction") == "up" else "higher lowers it" if d.get("direction") == "down" else "mixed"}
+                                 for d in drivers[:12]]}] if drivers else None)
 
     m.model_artifact = _dump(winner)
     job.save(resources={**(job.progress.get("resources") or {}), "model_mb": round(len(m.model_artifact) / 1e6, 1)})
@@ -1756,7 +2156,8 @@ def _train_supervised(db: Session, job: Job, user: models.User, spec: dict, fram
         "beats_baseline": bool(beat), "split": split_text, "train_rows": int(len(tr)), "test_rows": int(len(te)),
         "rows_total": total, "capped": capped, "memory_note": job.progress.get("memory_note"),
         "drivers": drivers[:15], "leaks": leaks, "excluded": excluded,
-        "features": feats, "positive": positive,
+        "features": feats, "positive": positive, "dates": dates,
+        "winner_key": win_key, "winner_params": _json(dict(w.get("params") or {})),
         "warnings": ([] if beat else ["The model did not beat the simple baseline on held-out rows - its scores are no better than a one-column rule. Check the columns it can use."])
         + (["A near-perfect score usually means a column still gives the answer away - check the drivers."]
            if (info["kind"] == "binary" and (w["test_score"] or 0) > 0.995) or (info["kind"] == "number" and (w["test_score"] or 0) > 0.995) else [])
@@ -2895,7 +3296,8 @@ def _train_pairs(db, job, user, spec):
     pairs = res["pairs"]
     warnings = []
     if capped:
-        warnings.append("Only the first rows of the table were read (server limit); orders cut at the limit may be missing lines.")
+        warnings.append("The table was sampled by whole orders to fit this run's memory - every order kept has all of its lines; "
+                        "pairs are found in that share of orders.")
     if not pairs:
         warnings.append(f"No pair of products appears together in {res['threshold']}+ orders.")
     job.stage("explain", "done", f"top lift {pairs[0]['lift']:.1f}" if pairs else "no strong pairs")
@@ -2982,7 +3384,7 @@ def _train_cohorts(db, job, user, spec):
         kpis.append(_m.kpi(f"{cfg['value']} per customer, first {len(cum)} months", cum[-1] if cum else None))
     warnings = ["The latest month may still be in progress, so its retention can look low."]
     if capped:
-        warnings.append("Only the first rows of the table were read (server limit), so later orders may be missing.")
+        warnings.append("The table was sampled by whole customers to fit this run's memory - every customer kept has all of their orders.")
     job.stage("explain", "done", f"month-1 retention {avg[1] * 100:.0f}%" if len(avg) > 1 and avg[1] is not None else "")
     m.model_artifact = None
     m.feature_columns, m.excluded_columns, m.algorithm, m.task_type = [cfg["entity"], cfg["time"]], [], "studio_cohorts", "cohorts"
@@ -4016,7 +4418,7 @@ def _rejoin_for_scoring(m: models.MLModel, df: pd.DataFrame) -> pd.DataFrame:
         db.close()
 
 
-def score_frame(m: models.MLModel, df: pd.DataFrame) -> pd.DataFrame:
+def score_frame(m: models.MLModel, df: pd.DataFrame, rejoined: pd.DataFrame | None = None) -> pd.DataFrame:
     """Every row scored - with the top 3 reasons for supervised models.
     2026-10-09 (round 15): every newer kind either writes its own columns or
     says plainly why it scores periods / channels, not rows."""
@@ -4110,7 +4512,7 @@ def score_frame(m: models.MLModel, df: pd.DataFrame) -> pd.DataFrame:
             return out
         if typ == "uplift":
             feats = m.feature_columns or []
-            src = _rejoin_for_scoring(m, df) if ((m.plan or {}).get("spec") or {}).get("joins") and any(f not in df.columns for f in feats) else df
+            src = (rejoined if rejoined is not None else _rejoin_for_scoring(m, df)) if ((m.plan or {}).get("spec") or {}).get("joins") and any(f not in df.columns for f in feats) else df
             X = _coerce_numeric_strings(src.copy()).reindex(columns=feats)
             u = _uplift_predict(art["treated"], X, art["kind"]) - _uplift_predict(art["control"], X, art["kind"])
             out["uplift_score"] = np.round(u, 4)
@@ -4121,7 +4523,7 @@ def score_frame(m: models.MLModel, df: pd.DataFrame) -> pd.DataFrame:
     feats = m.feature_columns or []
     src = df
     if ((m.plan or {}).get("spec") or {}).get("joins") and any(f not in df.columns for f in feats):
-        src = _rejoin_for_scoring(m, df)
+        src = rejoined if rejoined is not None else _rejoin_for_scoring(m, df)
     X = _coerce_numeric_strings(src.copy()).reindex(columns=feats)
     if m.task_type == "clustering":
         labels = pipe.predict(X)
@@ -4187,15 +4589,337 @@ def _row_reasons(pipe, X: pd.DataFrame, kind, positive, top_feats: list[str], ba
 
 
 def recover_interrupted() -> None:
+    """At start-up: a project still "training" with no queued or running job
+    (it was trained by the old in-process thread) is marked failed; queued and
+    running jobs are left to the queue, which picks them up again."""
     db = SessionLocal()
     try:
         rows = db.query(models.MLModel).filter(models.MLModel.status == "training", models.MLModel.problem_type.isnot(None)).all()
         for m in rows:
+            live = db.query(models.MLJob).filter(models.MLJob.model_id == m.id, models.MLJob.state.in_(("queued", "running"))).first()
+            if live:
+                continue
             m.status = "failed"
             m.error_message = "The server restarted while this was training - start it again."
-        if rows:
-            db.commit()
+        db.commit()
     except Exception:  # noqa: BLE001
         db.rollback()
     finally:
         db.close()
+
+# ------------------------------------------------- scoring as a job ----
+# 2026-10-12 (round 39): "Score every row" runs on the worker, in chunks of
+# 20,000 rows read straight from the snapshot - memory stays flat however big
+# the table is, every row gets its top reasons (the old in-request path left
+# them out above 50,000 rows), and the page shows progress instead of waiting
+# on one long request.
+
+SCORE_CHUNK = 20_000
+WHOLE_TABLE_KINDS = ("cohorts", "recommendations")
+NOT_ROW_KINDS = ("forecast_one", "forecast_many", "what_if", "marketing_mix", "attribution")
+
+
+def start_scoring(db: Session, user: models.User, m: models.MLModel, table: str | None = None) -> models.MLJob:
+    if m.status != "ready":
+        raise StudioError("This model isn't ready to use yet.")
+    if m.problem_type in NOT_ROW_KINDS or m.task_type == "forecast":
+        raise StudioError("This kind of model works on periods or channels, not rows - its results are on this page.")
+    p = dict(m.progress or {})
+    if (p.get("scoring") or {}).get("state") in ("queued", "running"):
+        raise StudioError("It is already scoring.")
+    job = ml_queue.enqueue(db, kind="score", model=m, owner_id=user.id, payload={"user_id": user.id, "table": table or m.table_name})
+    p["scoring"] = {"state": "queued", "job_id": job.id, "done": 0, "total": None, "started_by": user.id}
+    m.progress = p
+    flag_modified(m, "progress")
+    db.commit()
+    return job
+
+
+def _scoring_progress(db: Session, m: models.MLModel, **fields) -> None:
+    db.refresh(m)
+    p = dict(m.progress or {})
+    p["scoring"] = {**(p.get("scoring") or {}), **fields}
+    m.progress = _m.clean(p)
+    flag_modified(m, "progress")
+    db.commit()
+
+
+def run_scoring(model_id: str, payload: dict) -> tuple[bool, str | None, dict | None]:
+    """Scores every row of the model's table (or `payload["table"]`) and saves
+    the result as a new saved table. Returns (ok, error, result)."""
+    from . import audit
+    from .data_loader import purpose_label
+    db = SessionLocal()
+    t0 = time.time()
+    buf = None
+    try:
+        m = db.get(models.MLModel, model_id)
+        if not m:
+            return False, "The model no longer exists.", None
+        user = db.get(models.User, payload.get("user_id") or m.owner_id)
+        ds = db.get(models.DataSource, m.datasource_id)
+        if not ds or not user:
+            return False, "The data source no longer exists.", None
+        spec = (m.plan or {}).get("spec") or {}
+        table = payload.get("table") or m.table_name
+        _scoring_progress(db, m, state="running", done=0, started_at=datetime.utcnow().isoformat() + "Z")
+        # the scored rows go to a temp file on disk, not a string in memory -
+        # the server holds one chunk at a time, then the finished file once
+        buf = tempfile.TemporaryFile(mode="w+b", dir=md.cache_root())
+        written = 0
+        try:
+            with md.Bench() as b:
+                entry, snap = _source_view(db, user, b, ds.id, table, "source", n_live=get_settings().ML_MAX_TRAIN_ROWS)
+                attached = _attach_joins(db, user, b, spec.get("joins") or []) if spec.get("joins") else []
+                b.lock()
+                total = b.count("source")
+                _scoring_progress(db, m, total=total)
+                feats = m.feature_columns or []
+                need_join = bool(attached) and any(f not in {c for c, _ in b.columns("source")} for f in feats)
+                aggs = []
+                if need_join:
+                    used: set[str] = set()
+                    for j, jentry, _jsnap, view in attached:
+                        alias = _alias(jentry["table"], used)
+                        made, many, _ = md.aggregate_join(b, view, j.get("key"), alias, f"agg_{alias}")
+                        aggs.append((j.get("base_key") or j.get("key"), alias, made, many))
+                if m.problem_type in WHOLE_TABLE_KINDS:
+                    frames = [b.run("SELECT * FROM source", title="Read every row")]
+                    chunks = iter(frames)
+                else:
+                    reader = b.con.execute("SELECT * FROM source").fetch_record_batch(SCORE_CHUNK)
+                    chunks = (batch.to_pandas() for batch in reader)
+                first = True
+                for chunk in chunks:
+                    rejoined = None
+                    if need_join:
+                        rejoined = _coerce_numeric_strings(chunk.copy().reset_index(drop=True))
+                        for bkey, alias, made, many in aggs:
+                            rejoined = md.join_onto(b, rejoined, bkey, f"agg_{alias}", alias, [c for c in made if c not in rejoined.columns], many)
+                        rejoined.index = chunk.index
+                    out = score_frame(m, chunk, rejoined=rejoined)
+                    out.to_csv(buf, header=first, index=False, encoding="utf-8")
+                    first = False
+                    written += len(out)
+                    del out, rejoined, chunk
+                    _scoring_progress(db, m, done=written)
+                    db.refresh(m, attribute_names=["stop_requested"])
+                    if m.stop_requested:
+                        m.stop_requested = False
+                        _scoring_progress(db, m, state="cancelled")
+                        return False, "stopped", None
+        except md.DataError as e:
+            raise StudioError(str(e)) from e
+        buf.seek(0)
+        pos = (db.query(func.max(models.DatasetVersion.position)).filter(models.DatasetVersion.datasource_id == ds.id).scalar() or 0)
+        label = purpose_label(f"Scored with {m.name}")
+        v = models.DatasetVersion(
+            datasource_id=ds.id, name=label, parent_version_id=None, parent_version_ids=None, data=b"", position=pos + 1,
+            cleaning_log=[{"prompt": f"Scored with ML model '{m.name}'", "summary": f"Every row scored by '{m.name}' on the ML worker, "
+                           f"{SCORE_CHUNK:,} rows at a time.", "rows_before": written, "rows_after": written, "nulls_before": None,
+                           "nulls_after": None, "created_at": datetime.utcnow().isoformat()}],
+        )
+        db.add(v)
+        db.flush()
+        blob_io.put_bytes(db, models.DatasetVersion, "data", v.id, buf)  # streamed from the temp file
+        buf.close()
+        m.prediction_count = (m.prediction_count or 0) + written
+        m.last_predicted_at = datetime.utcnow()
+        audit.log_audit_event(db, actor=user, action="ml_model_scored", workspace_id=ds.workspace_id, target_type="ml_model",
+                              target_id=m.id, metadata={"row_count": written, "worker": True})
+        db.commit()
+        result = {"version_id": v.id, "version_name": v.name, "rows": written, "seconds": round(time.time() - t0, 1)}
+        _scoring_progress(db, m, state="done", done=written, **result)
+        return True, None, result
+    except StudioError as e:
+        db.rollback()
+        m = db.get(models.MLModel, model_id)
+        if m:
+            _scoring_progress(db, m, state="failed", error=str(e))
+        return False, str(e), None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[ml_studio] scoring %s failed: %s\n%s", model_id, e, traceback.format_exc())
+        db.rollback()
+        m = db.get(models.MLModel, model_id)
+        msg = f"Scoring stopped: {type(e).__name__}: {str(e)[:240]}"
+        if m:
+            _scoring_progress(db, m, state="failed", error=msg)
+        return False, msg, None
+    finally:
+        if buf is not None and not buf.closed:
+            buf.close()
+        db.close()
+
+
+# ------------------------------------------------- the SQL data step ----
+# 2026-10-12 (round 39): the chat engine's method inside ML Studio. The model
+# learns from a table a SELECT shapes - written by the person, or by the LLM
+# from a sentence ("one row per customer, did they buy again in 90 days") -
+# checked in the run's sandbox (only this run's tables, read-only, no files),
+# run on a sample to preview it, and fixed by the LLM when it fails (up to 3
+# tries, each one shown).
+
+PREP_SYSTEM = """GD360 ML DATA STEP
+You write ONE DuckDB SELECT that shapes the table a machine-learning model will learn from.
+Tables you may read (and nothing else): %s.
+Rules:
+- One SELECT (WITH ... SELECT is fine). No semicolons, no other statements, no table functions, no files.
+- Quote column names that need it with double quotes. Cast text dates with TRY_CAST(x AS TIMESTAMP).
+- When the goal is about each customer / user / account / product and the table has many rows per one of them,
+  return ONE row per that entity: counts, sums, averages, recency (days since the last row), distinct counts.
+- When the goal predicts something in the future, build features only from rows BEFORE a cutoff date and the
+  label only from rows AFTER it - never let the answer leak into the features.
+- Keep the column names short and readable (snake_case).
+Return JSON only: {"sql": "...", "explain": "one or two plain sentences on what each row is and what each column means"}"""
+
+
+def _prep_bench(db: Session, user: models.User, spec: dict) -> tuple["md.Bench", dict, list]:
+    b = md.Bench()
+    try:
+        entry, snap = _source_view(db, user, b, spec["source_id"], spec.get("table"), "source", n_live=PLAN_ROWS)
+        attached = _attach_joins(db, user, b, spec.get("joins") or [])
+        b.lock()
+    except Exception:
+        b.close()
+        raise
+    return b, entry, attached
+
+
+def _schema_for_llm(b: "md.Bench", views: list[str]) -> str:
+    out = []
+    for v in views:
+        cols = b.columns(v)
+        sample = b.run(f"SELECT * FROM {md.q(v)} LIMIT 3", log=False)
+        out.append(f"TABLE {v} ({b.count(v):,} rows): " + ", ".join(f"{c} {t}" for c, t in cols[:80]))
+        out.append("  example rows: " + json.dumps([{k: _jsonable(x) for k, x in r.items()} for r in sample.to_dict(orient="records")], default=str)[:1200])
+    return "\n".join(out)
+
+
+def check_prep(db: Session, user: models.User, spec: dict, sql: str) -> dict:
+    """Runs a data-step SELECT in the sandbox: its rows, columns and the first
+    rows - or a plain error. Never raises for a bad SELECT."""
+    b, entry, attached = _prep_bench(db, user, spec)
+    try:
+        allowed = {"source"} | {v for *_, v in attached}
+        try:
+            rows, cols = md.run_select(b, sql, allowed, out_view="model", step="prepare", title="The data step")
+        except md.DataError as e:
+            return {"ok": False, "error": str(e), "sql": sql}
+        except duckdb.Error as e:
+            return {"ok": False, "error": md._clean_duck_error(e), "sql": sql}  # noqa: SLF001
+        prev = b.run("SELECT * FROM model LIMIT 12", log=False)
+        dup_hint = None
+        return {"ok": True, "sql": md.check_select(b, sql, allowed), "rows": rows, "source_rows": b.count("source"),
+                "columns": [{"name": c, "type": md._type_family(t)} for c, t in cols], "preview": _preview(prev), "hint": dup_hint}  # noqa: SLF001
+    finally:
+        b.close()
+
+
+def suggest_prep(db: Session, user: models.User, spec: dict, request: str) -> dict:
+    """The LLM writes the data step from a sentence; each failed attempt goes
+    back to it with the error until one runs (3 tries). Returns the checked
+    result plus the attempts, so the page can show what was fixed."""
+    from . import ai_engine
+    b, entry, attached = _prep_bench(db, user, spec)
+    try:
+        views = ["source"] + [v for *_, v in attached]
+        schema = _schema_for_llm(b, views)
+    finally:
+        b.close()
+    goal = (spec.get("goal") or "").strip()
+    messages = [{"role": "system", "content": PREP_SYSTEM % ", ".join(views)},
+                {"role": "user", "content": f"{schema}\n\nGoal of the model: {goal or '(not given)'}\nWhat the table should be: {request.strip()}"}]
+    attempts = []
+    for _ in range(3):
+        try:
+            out = ai_engine._plan_with_retry(messages, max_tokens=1800)  # noqa: SLF001
+        except Exception as e:  # noqa: BLE001
+            raise StudioError(f"The AI couldn't write the data step just now ({str(e)[:120]}). Write the SQL yourself, or try again.") from e
+        sql = str((out or {}).get("sql") or "").strip()
+        explain = str((out or {}).get("explain") or "").strip()
+        res = check_prep(db, user, spec, sql) if sql else {"ok": False, "error": "The AI returned no SQL.", "sql": ""}
+        attempts.append({"sql": sql, "ok": res["ok"], "error": res.get("error")})
+        if res["ok"]:
+            res.update(explain=explain, attempts=attempts, healed=len(attempts) > 1)
+            return _m.clean(res)
+        messages += [{"role": "assistant", "content": json.dumps({"sql": sql, "explain": explain})},
+                     {"role": "user", "content": f"That SQL failed: {res.get('error')}\nFix it and return the JSON again."}]
+    raise StudioError("The AI couldn't write a data step that runs (3 tries): " + (attempts[-1].get("error") or "") +
+                      " - edit the SQL yourself or describe the table differently.")
+
+
+def entity_hint(db: Session, user: models.User, spec: dict, cols: list[str]) -> dict | None:
+    """When the goal is about each customer / user / account / product and the
+    table has several rows for each of them, the plan offers to shape one row
+    per entity with a data step (the chat engine's method)."""
+    if (spec.get("prep_sql") or "").strip() or spec.get("problem_type") not in SUPERVISED + ("segments",):
+        return None
+    goal = (spec.get("goal") or "").lower()
+    nouns = {"customer": "customer", "user": "user", "account": "account", "client": "client", "member": "member", "product": "product",
+             "subscriber": "subscriber", "store": "store", "patient": "patient", "employee": "employee", "supplier": "supplier", "guest": "guest"}
+    noun = next((v for k, v in nouns.items() if k in goal), None)
+    if not noun:
+        return None
+    cand = [c for c in cols if re.search(rf"{noun}.*(id|key|email|number|no)$|^{noun}$", c.lower())]
+    if not cand:
+        return None
+    col = cand[0]
+    try:
+        with md.Bench() as b:
+            _source_view(db, user, b, spec["source_id"], spec.get("table"), "source", n_live=PLAN_ROWS)
+            b.lock()
+            row = b.con.execute(f"SELECT COUNT(*), COUNT(DISTINCT {md.q(col)}) FROM source").fetchone()
+    except Exception:  # noqa: BLE001
+        return None
+    rows, ents = int(row[0] or 0), int(row[1] or 0)
+    if not ents or rows / ents < 1.5:
+        return None
+    return {"entity": col, "noun": noun, "rows": rows, "entities": ents, "per": round(rows / ents, 1),
+            "text": f"Each {noun} appears {rows / ents:.1f} times in this table ({ents:,} {noun}s, {rows:,} rows). "
+                    f"To predict per {noun}, shape one row per {noun} first.",
+            "request": f"One row per {col} with their history summarised, and the outcome for: {spec.get('goal') or 'the goal'}"}
+
+
+# ------------------------------------------------------- the notebook ----
+
+def notebook(m: models.MLModel) -> dict:
+    """A Jupyter notebook that replays the run: the data step's SQL in DuckDB
+    over files exported from GD360, then the model with the settings that won."""
+    res = m.results if isinstance(m.results, dict) else {}
+    prog = m.progress if isinstance(m.progress, dict) else {}
+    spec = (m.plan or {}).get("spec") or {}
+    data = res.get("data") or prog.get("data") or {}
+    stages = prog.get("stages") or []
+    data_stage = next((s_ for s_ in stages if s_.get("id") == "data"), {})
+
+    def md_cell(text):
+        return {"cell_type": "markdown", "metadata": {}, "source": text}
+
+    def code_cell(text):
+        return {"cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [], "source": text}
+
+    src = data.get("source") or {}
+    cells = [
+        md_cell(f"# {m.name}\n\n{m.goal or ''}\n\nExported from GD360 ML Studio. It replays this run: the data step in DuckDB, "
+                f"then the model with the algorithm and settings that won. Results can differ slightly (random seeds, newer data)."),
+        md_cell(f"## 1. The data\n\nExport **{src.get('table') or m.table_name}** from {src.get('name') or 'the source'} "
+                "(Data › the table › Download CSV) next to this notebook as `source.csv`"
+                + (" and each joined table as `join_1.csv`, `join_2.csv` …" if spec.get("joins") else "") + "."),
+        code_cell("import duckdb, pandas as pd\ncon = duckdb.connect()\ncon.sql(\"CREATE VIEW source AS SELECT * FROM read_csv_auto('source.csv')\")"
+                  + "".join(f"\ncon.sql(\"CREATE VIEW join_{i + 1} AS SELECT * FROM read_csv_auto('join_{i + 1}.csv')\")" for i, _ in enumerate(spec.get("joins") or []))),
+    ]
+    if (spec.get("prep_sql") or "").strip():
+        cells += [md_cell("## 2. The data step (your SQL)"),
+                  code_cell(f'con.sql("""CREATE VIEW model AS\n{spec["prep_sql"].strip()}\n""")')]
+    sample = (data.get("sample") or {})
+    picked = [c for c in (data_stage.get("code") or []) if (c.get("title") or "").lower().startswith(("stratified", "keep", "random", "read every", "sum the history"))]
+    rows_sql = (picked[-1]["code"].rstrip(";") if picked else "SELECT * FROM " + ("model" if spec.get("prep_sql") else "source"))
+    cells += [md_cell(f"## 3. The rows the model learned from\n\n{sample.get('text') or ''}"),
+              code_cell(f'rows = con.sql("""\n{rows_sql}\n""").df()\nrows.shape')]
+    if spec.get("joins"):
+        cells.append(md_cell("Joined tables were summarised per key in SQL and left-joined onto these rows - see the run page's "
+                             "Data step for each statement."))
+    if res.get("code"):
+        cells += [md_cell("## 4. The model"), code_cell(res["code"])]
+    return {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+                                         "language_info": {"name": "python"}}, "nbformat": 4, "nbformat_minor": 5}
