@@ -11,6 +11,7 @@
 //     dashboard and Snooze a week (snoozing is for you only).
 // The same alert also goes by email, from the server, in the same run.
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { personColor } from "../dashboard/comments/people";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
 import { AppNotification, notificationsApi, WhyOut } from "../api/alerts";
@@ -80,6 +81,16 @@ const KindIcon = ({ n }: { n: AppNotification }) => {
     );
   if (n.kind === "reminder")
     return <span className="w-8 h-8 shrink-0 rounded-[9px] bg-warning-fill text-warning grid place-items-center"><Svg size={15}><circle cx="12" cy="12" r="8" /><path d="M12 8v4l2.5 2" /></Svg></span>;
+  // round 38: a teammate's comment or @mention wears their initials
+  if (n.kind === "mention" || n.kind === "comment") {
+    const who = String(n.data?.initials || "").slice(0, 2) || "•";
+    return (
+      <span className="relative w-8 h-8 shrink-0 rounded-full text-[#07090A] grid place-items-center text-[11px] font-semibold" style={{ background: personColor(n.data?.author) }} data-notification-kind={n.kind}>
+        {who}
+        <span className="absolute -right-1 -bottom-1 w-4 h-4 rounded-full bg-surface border border-border grid place-items-center text-[9px] text-brand-ink" aria-hidden="true">{n.kind === "mention" ? "@" : "”"}</span>
+      </span>
+    );
+  }
   if (n.kind === "failed")
     return <span className="w-8 h-8 shrink-0 rounded-[9px] bg-danger-fill text-danger grid place-items-center"><Svg size={15}><path d="M12 8v5M12 16h.01" /><circle cx="12" cy="12" r="9" /></Svg></span>;
   return <span className="w-8 h-8 shrink-0 rounded-[9px] bg-kind-alert-fill text-kind-alert grid place-items-center"><Svg size={14} w={2.4}><path d="m5 12 5 5 9-10" /></Svg></span>;
@@ -160,7 +171,7 @@ function Toast({ n, onClose }: { n: AppNotification; onClose: () => void }) {
         <div className="flex items-center gap-2 pt-0.5">
           {n.link && (
             <Link to={n.link} onClick={onClose} className="ui-focus h-7 px-2.5 rounded-[8px] bg-primary text-on-primary text-[12px] font-semibold inline-flex items-center">
-              Open
+              {n.kind === "mention" || n.kind === "comment" ? "Open the comment" : "Open"}
             </Link>
           )}
           <button
@@ -355,7 +366,9 @@ function Item({ n, onNavigate }: { n: AppNotification; onNavigate: () => void })
         <span className="text-caption text-muted">
           {[n.data?.source, timeAgo(n.created_at)].filter(Boolean).join(" · ")}
         </span>
-        {n.body && !why && <span className="text-caption text-secondary leading-snug">{n.body}</span>}
+        {n.body && !why && (n.kind === "mention" || n.kind === "comment" ? (
+          <span className="text-caption text-secondary leading-snug border-l-2 border-tint-border pl-2.5 line-clamp-3" data-comment-quote="">{n.body}</span>
+        ) : <span className="text-caption text-secondary leading-snug">{n.body}</span>)}
         {why && (
           <div className="rounded-[12px] border border-kind-answer-border bg-kind-answer-fill/50 p-3 flex flex-col gap-1.5" data-why="">
             {why.current && (
@@ -450,8 +463,8 @@ function Item({ n, onNavigate }: { n: AppNotification; onNavigate: () => void })
           </div>
         )}
         {!isAlert && n.link && (
-          <Link to={n.link} onClick={() => { markRead(); onNavigate(); }} className="self-start text-caption text-kind-alert hover:underline">
-            Open →
+          <Link to={n.link} onClick={() => { markRead(); onNavigate(); }} className="self-start text-caption text-kind-alert hover:underline" data-open-notification="">
+            {n.kind === "mention" || n.kind === "comment" ? "Open the comment →" : "Open →"}
           </Link>
         )}
       </div>
