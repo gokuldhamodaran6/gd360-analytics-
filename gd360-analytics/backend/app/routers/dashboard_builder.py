@@ -2422,7 +2422,17 @@ def _page_out(page: models.DashboardPage) -> schemas.DashboardPageOut:
     )
 
 
-def _dashboard_datasource(db: Session, d: models.Dashboard) -> models.DataSource | None:
+def _page_of(d: models.Dashboard, page_or_block) -> models.DashboardPage | None:
+    """Round 35b: the page a block sits on (or the page itself)."""
+    if page_or_block is None:
+        return None
+    if isinstance(page_or_block, models.DashboardPage):
+        return page_or_block
+    pid = getattr(page_or_block, "page_id", None)
+    return next((p for p in d.pages if p.id == pid), None)
+
+
+def _dashboard_datasource(db: Session, d: models.Dashboard, page=None) -> models.DataSource | None:
     """The data source this dashboard's blocks are (or can be) built
     against - resolved from source_conversation_id, best-effort: returns
     None for a dashboard with no source conversation, or whose original
@@ -2431,6 +2441,13 @@ def _dashboard_datasource(db: Session, d: models.Dashboard) -> models.DataSource
     frontend knows whether Ask AI/manual-build are even offered; the
     endpoints that actually NEED it (ask_ai_block, build_manual_block) use
     the stricter _resolve_datasource below, which raises instead."""
+    # 2026-10-12 (round 35b): a page (or a block's page) on its own source reads that source - a
+    # dashboard merged from others keeps each page on the source it was built on
+    pg = _page_of(d, page)
+    if pg is not None and getattr(pg, "datasource_id", None):
+        own = db.query(models.DataSource).filter(models.DataSource.id == pg.datasource_id).first()
+        if own:
+            return own
     # 2026-10-07 (dashboard-from-prompt round): a dashboard committed from
     # a proposal records its data source directly (models.Dashboard.
     # datasource_id) - no conversation needed. The conversation walk below
@@ -2448,7 +2465,7 @@ def _dashboard_datasource(db: Session, d: models.Dashboard) -> models.DataSource
     return db.query(models.DataSource).filter(models.DataSource.id == conv.datasource_id).first()
 
 
-def _resolve_datasource(db: Session, user: models.User, d: models.Dashboard) -> models.DataSource:
+def _resolve_datasource(db: Session, user: models.User, d: models.Dashboard, page=None) -> models.DataSource:
     """Same resolution as _dashboard_datasource, but for an endpoint that
     is about to actually RUN something against the data (ask-ai/manual-
     build) - raises a clear, friendly error instead of quietly returning
@@ -2456,7 +2473,7 @@ def _resolve_datasource(db: Session, user: models.User, d: models.Dashboard) -> 
     that specific data source (not just to the dashboard - a dashboard
     shared into a workspace doesn't automatically mean every editor there
     also has access to the original data source it was generated from)."""
-    ds = _dashboard_datasource(db, d)
+    ds = _dashboard_datasource(db, d, page)
     if not ds:
         raise HTTPException(
             400,
@@ -2468,7 +2485,7 @@ def _resolve_datasource(db: Session, user: models.User, d: models.Dashboard) -> 
     return ds
 
 
-def _resolve_datasource_for_read(db: Session, user: models.User, d: models.Dashboard) -> models.DataSource | None:
+def _resolve_datasource_for_read(db: Session, user: models.User, d: models.Dashboard, page=None) -> models.DataSource | None:
     """The read-only counterpart to _resolve_datasource, for
     preview_filtered_blocks - cross-filtering doesn't change any stored
     data, so it only needs VIEW access to the data source (can_access_
@@ -2478,7 +2495,7 @@ def _resolve_datasource_for_read(db: Session, user: models.User, d: models.Dashb
     data source itself failing to load) - the caller degrades to an empty
     filtered-blocks response rather than surfacing an error for what is,
     from the viewer's perspective, just "nothing filtered."."""
-    ds = _dashboard_datasource(db, d)
+    ds = _dashboard_datasource(db, d, page)
     if not ds or not workspace_access.can_access_datasource(db, ds, user):
         return None
     return ds
@@ -2579,10 +2596,44 @@ def _assign_stored_colors(db: Session, d: models.Dashboard) -> None:
         print(f"[dashboard_builder] stored colours not registered (non-fatal): {e}")
 
 
+def _annotate_pages(db: Session, d: models.Dashboard, pages_out: list, base_ds) -> list[dict]:
+    """Round 35b: each page says which source it reads (its own, or the dashboard's) and whether it
+    computes in a warehouse; returns every distinct source as [{id, name, kind, live}]."""
+    from ..services.data_freshness import is_live
+    by_id = {p.id: p for p in d.pages}
+    cache: dict = {}
+    seen: dict = {}
+    for po in pages_out:
+        pg = by_id.get(po.id)
+        sid = getattr(pg, "datasource_id", None) if pg is not None else None
+        if sid:
+            if sid not in cache:
+                cache[sid] = db.query(models.DataSource).filter(models.DataSource.id == sid).first()
+            pds = cache[sid] or base_ds
+        else:
+            pds = base_ds
+        if pds is not None:
+            po.datasource_id, po.datasource_name, po.datasource_kind = pds.id, pds.name, pds.kind
+            po.warehouse_native = dashboard_engine.is_warehouse_native(pds)
+            seen.setdefault(pds.id, {"id": pds.id, "name": pds.name, "kind": pds.kind, "live": is_live(pds.kind)})
+    if base_ds is not None and base_ds.id not in seen and not pages_out:
+        seen[base_ds.id] = {"id": base_ds.id, "name": base_ds.name, "kind": base_ds.kind, "live": is_live(base_ds.kind)}
+    return list(seen.values())
+
+
+def _refresh_fields(d: models.Dashboard) -> dict:
+    interval = d.refresh_interval or "off"
+    paused = bool(interval not in ("off", "realtime") and d.last_viewed_at
+                  and (datetime.utcnow() - d.last_viewed_at).days >= 7)
+    return {"refresh_interval": interval, "next_refresh_at": None if paused else d.next_refresh_at,
+            "last_refreshed_at": d.last_refreshed_at, "refresh_paused": paused}
+
+
 def _builder_out(db: Session, d: models.Dashboard, user: models.User) -> schemas.DashboardBuilderOut:
     pages = [_page_out(p) for p in sorted(d.pages, key=lambda p: p.position)]
     share = d.share
     ds = _dashboard_datasource(db, d)
+    sources = _annotate_pages(db, d, pages, ds)
     # 2026-09-29 (design revamp): "from which project this dashboard
     # created" + "merge with other dashboards in the same project" - see
     # DashboardBuilderOut's own field comments for exactly what each of
@@ -2635,8 +2686,28 @@ def _builder_out(db: Session, d: models.Dashboard, user: models.User) -> schemas
         has_background_image=bool(d.background_image),
         comment_counts=_comment_counts(db, d.id),
         **_appearance_fields(db, d, ds),
-        **_warehouse_dashboard_fields(db, d, ds, include_tables=True),
+        **_merged_tables(db, d, ds, pages),
+        sources=sources,
+        **_refresh_fields(d),
     )
+
+
+def _merged_tables(db: Session, d: models.Dashboard, ds, pages_out: list) -> dict:
+    """The dashboard-level fields, with `tables` covering every warehouse source its pages read
+    (round 35b: a merged dashboard's editor can build on any of its pages' tables)."""
+    out = _warehouse_dashboard_fields(db, d, ds, include_tables=True)
+    extra = {po.datasource_id for po in pages_out if po.datasource_id and (not ds or po.datasource_id != ds.id) and po.warehouse_native}
+    for sid in extra:
+        other = db.query(models.DataSource).filter(models.DataSource.id == sid).first()
+        if other is None:
+            continue
+        try:
+            schema, _aliases = query_builder.with_version_aliases(other.schema_cache, dashboard_engine.load_versions(db, other))
+            for t, cols in query_builder.builder_columns(schema, None).items():
+                out["tables"].setdefault(t, cols)
+        except Exception as e:  # noqa: BLE001
+            print(f"[dashboard_builder] tables for page source {sid} skipped: {e}")
+    return out
 
 
 def _comment_counts(db: Session, dashboard_id: str) -> dict:
@@ -3270,6 +3341,22 @@ def create_blank_dashboard(
     user: models.User = Depends(get_current_user),
 ):
     name = (payload.name or "").strip()[:120] or "Untitled dashboard"
+    # round 35b: several sources -> one page per source, each reading its own
+    ids = [i for i in dict.fromkeys(payload.datasource_ids or []) if i]
+    if len(ids) > 1:
+        sources = [_resolve_proposal_datasource(db, user, i) for i in ids]
+        dashboard = models.Dashboard(owner_id=user.id, name=name, layout_version=2, datasource_id=sources[0].id,
+                                     default_period="month")
+        db.add(dashboard)
+        db.flush()
+        for pos, src in enumerate(sources):
+            db.add(models.DashboardPage(dashboard_id=dashboard.id, name=src.name[:120], position=pos,
+                                        datasource_id=src.id if pos else None))
+        db.commit()
+        db.refresh(dashboard)
+        return _builder_out(db, dashboard, user)
+    if ids and not payload.datasource_id:
+        payload = payload.model_copy(update={"datasource_id": ids[0]})
     if payload.conversation_id:
         conv = db.query(models.Conversation).filter(models.Conversation.id == payload.conversation_id).first()
         if not conv or not workspace_access.can_access_conversation(db, conv, user):
@@ -4210,8 +4297,8 @@ def build_dashboard_from_goal(
     - replace: the classic dashboard row `replace` becomes this full
       dashboard IN PLACE - same id (old links keep working), name,
       owner and sharing - with the new pages and filters."""
-    if add_to is not None and add_to.datasource_id and add_to.datasource_id != ds.id:
-        raise HTTPException(400, "That dashboard is built on a different data source - pick one built on the same source, or create a new dashboard.")
+    # round 35b: a page may read its own source - pages drafted on another source than the
+    # dashboard's keep that source (see DashboardPage.datasource_id), so this is no longer refused
     try:
         # pages: "auto", or 1 / 2 (2026-10-11 - an answer added as one page)
         proposal = _build_proposal(db, user, ds, goal, pages=pages if pages in (1, 2) else "auto",
@@ -4244,9 +4331,17 @@ def build_dashboard_from_goal(
         for old_page in list(target.pages):  # a classic answer dashboard has none; be safe
             db.delete(old_page)
         db.flush()
+    params_before = {p.get("id") for p in (target.parameters or []) if isinstance(p, dict)} if isinstance(target.parameters, list) else set()
     moved = _move_pages(db, fresh, target, suffix=None if replace is not None else "new")
     if not target.datasource_id:
         target.datasource_id = ds.id
+    elif target.datasource_id != ds.id:
+        for p in target.pages:
+            if p.id in moved:
+                p.datasource_id = ds.id
+        # the filters that came with them read that source too
+        target.parameters = [({**p, "datasource_id": ds.id} if isinstance(p, dict) and p.get("id") not in params_before else p)
+                             for p in (target.parameters or [])]
     db.delete(fresh)
     db.commit()
     db.refresh(target)
@@ -4294,7 +4389,7 @@ def swap_block(
         # just shown it; the same query the page runs, never anything more).
         shape = None
         if spec is not None:
-            ds = _resolve_datasource(db, user, d)
+            ds = _resolve_datasource(db, user, d, block)
             schema, _ = query_builder.with_version_aliases(ds.schema_cache, dashboard_engine.load_versions(db, ds))
             shape = _spec_shape(ds, schema, spec, config)
             if asked == "auto" and dashboard_engine.is_warehouse_native(ds):
@@ -4356,7 +4451,7 @@ def swap_block(
         widened = _map_ready_spec(spec)
         if widened != spec:
             try:
-                ds = _resolve_datasource(db, user, d)
+                ds = _resolve_datasource(db, user, d, block)
                 if dashboard_engine.is_warehouse_native(ds):
                     check = dashboard_engine.validate_spec_in_warehouse(ds, widened, dashboard_engine.load_versions(db, ds), date_column=d.date_column)
                     if check["ok"]:
@@ -4378,6 +4473,18 @@ def get_builder_dashboard(
     # (every block of a file dashboard) has its values registered here, so
     # the very first paint already has its colours.
     _assign_stored_colors(db, d)
+    # round 35b: someone is reading it - an auto-refresh that paused itself resumes
+    now = datetime.utcnow()
+    if not d.last_viewed_at or (now - d.last_viewed_at).total_seconds() > 3600:
+        was_paused = _refresh_fields(d)["refresh_paused"]
+        d.last_viewed_at = now
+        if was_paused and d.refresh_interval not in (None, "off", "realtime"):
+            from ..services.scheduler import compute_next_refresh_at
+            d.next_refresh_at = compute_next_refresh_at(d.refresh_interval, now)
+        try:
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
     return _builder_out(db, d, user)
 
 
@@ -4402,6 +4509,140 @@ def get_builder_dashboard(
 # "Overview", and silently landing two same-named, unrelated page tabs
 # next to each other on the merged result would be far more confusing
 # than one honestly-labeled extra word.
+@router.post("/{dashboard_id}/pages/{page_id}/draft", response_model=schemas.DashboardBuilderOut, status_code=201)
+def draft_into_page(
+    dashboard_id: str,
+    page_id: str,
+    payload: schemas.DraftIntoPageRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """2026-10-12 (round 35b): "What should it show?" on an empty page - GD360 drafts checked blocks
+    from the page's own source (the same engine as every dashboard proposal) and puts them on this
+    dashboard. An empty page it was asked from is replaced by the drafted one, in its place."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    page = next((p for p in d.pages if p.id == page_id), None)
+    if not page:
+        raise HTTPException(404, "Page not found on this dashboard.")
+    ds = _resolve_datasource(db, user, d, page)
+    was_empty = all(_is_empty_warehouse_block(b) or not (b.config or {}) for b in page.blocks)
+    position, old_name = page.position, page.name
+    target, moved = build_dashboard_from_goal(db, user, ds, payload.goal.strip(), add_to=d, pages=1)
+    if was_empty and moved:
+        stale = next((p for p in target.pages if p.id == page_id), None)
+        if stale is not None:
+            db.delete(stale)
+            db.flush()
+        first = next((p for p in target.pages if p.id == moved[0]), None)
+        if first is not None:
+            first.position = position
+            if old_name not in ("Overview", ds.name):
+                first.name = old_name
+        for i, p in enumerate(sorted(target.pages, key=lambda x: (x.position, x.id not in moved))):
+            p.position = i
+        db.commit()
+        db.refresh(target)
+    return _builder_out(db, target, user)
+
+
+@router.post("/{dashboard_id}/merge-in", response_model=schemas.DashboardBuilderOut, status_code=201)
+def merge_dashboards_in(
+    dashboard_id: str,
+    payload: schemas.MergeDashboardsRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """2026-10-12 (round 35b): "Merge a dashboard in" - copies the pages of other dashboards (any
+    source; each page keeps reading its own) onto this one. The originals are left as they are."""
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
+    for sid in payload.dashboard_ids:
+        src = db.query(models.Dashboard).filter(models.Dashboard.id == sid).first()
+        if not src or src.layout_version != 2 or not _can_view(db, src, user) or src.id == d.id:
+            raise HTTPException(404, "One of the dashboards to merge wasn't found.")
+        copy_dashboard_into(db, d, src)
+    db.commit()
+    db.refresh(d)
+    return _builder_out(db, d, user)
+
+
+def copy_dashboard_into(db: Session, target: models.Dashboard, source: models.Dashboard) -> list[str]:
+    """Round 35b: every page of `source` (blocks, SQL cells, filters) copied onto `target` with new
+    ids, after target's pages. A page keeps reading the source it was built on. A filter on a
+    column target already filters becomes that one shared filter; any other comes along (reading
+    its own source). Returns the new page ids. The caller commits."""
+    import uuid
+    target_ds = _dashboard_datasource(db, target)
+    ids: dict[str, str] = {}
+    for p in source.pages:
+        ids[p.id] = str(uuid.uuid4())
+        for b in p.blocks:
+            ids[b.id] = str(uuid.uuid4())
+    # filters: shared by column, else brought over
+    t_params = [p for p in (target.parameters or []) if isinstance(p, dict)] if isinstance(target.parameters, list) else []
+    by_col = {(p.get("column") or "").lower(): p for p in t_params if p.get("column")}
+    taken = {p.get("id") for p in t_params}
+    src_ds = _dashboard_datasource(db, source)
+    for p in (source.parameters or []) if isinstance(source.parameters, list) else []:
+        if not isinstance(p, dict) or not p.get("id"):
+            continue
+        same = by_col.get((p.get("column") or "").lower())
+        if same is not None:
+            ids[p["id"]] = same["id"]
+            continue
+        new_id = p["id"]
+        n = 2
+        while new_id in taken:
+            new_id = f"{p['id']}_{n}"
+            n += 1
+        taken.add(new_id)
+        ids[p["id"]] = new_id
+        copied = dict(p, id=new_id)
+        if src_ds is not None and (target_ds is None or src_ds.id != target_ds.id) and not copied.get("datasource_id"):
+            copied["datasource_id"] = src_ds.id
+        t_params.append(copied)
+        if copied.get("column"):
+            by_col[copied["column"].lower()] = copied
+    target.parameters = t_params
+    if not target.date_column and source.date_column:
+        target.date_column = source.date_column
+    if not target.default_period and source.default_period:
+        target.default_period = source.default_period
+
+    def remap(value):
+        if value is None:
+            return None
+        text = json.dumps(value, default=str)
+        for old, new in ids.items():
+            if old != new:
+                text = text.replace(f'"{old}"', f'"{new}"')
+        return json.loads(text)
+
+    next_pos = max((p.position for p in target.pages), default=-1) + 1
+    names = {p.name for p in target.pages}
+    new_pages: list[str] = []
+    skip_block = {"id", "page_id", "last_run", "previous_config"}
+    for p in sorted(source.pages, key=lambda x: x.position):
+        pds = _dashboard_datasource(db, source, p)
+        name = p.name if p.name not in names else f"{p.name} ({source.name})"[:120]
+        names.add(name)
+        np_ = models.DashboardPage(id=ids[p.id], dashboard_id=target.id, name=name, position=next_pos,
+                                   background_color=p.background_color,
+                                   datasource_id=(pds.id if pds is not None and (target_ds is None or pds.id != target_ds.id) else None))
+        next_pos += 1
+        target.pages.append(np_)  # keeps target.pages current for the next source's positions and names
+        new_pages.append(np_.id)
+        for b in p.blocks:
+            fields = {c.name: getattr(b, c.name) for c in models.DashboardBlock.__table__.columns if c.name not in skip_block}
+            for k, v in list(fields.items()):
+                if isinstance(v, (dict, list)):
+                    fields[k] = remap(copy.deepcopy(v))
+            db.add(models.DashboardBlock(id=ids[b.id], page_id=np_.id, **fields))
+    if target.datasource_id is None and src_ds is not None:
+        target.datasource_id = src_ds.id
+    db.flush()
+    return new_pages
+
+
 @router.post("/{dashboard_id}/merge-from/{source_dashboard_id}", response_model=schemas.DashboardBuilderOut, status_code=201)
 def merge_dashboard(
     dashboard_id: str,
@@ -4686,7 +4927,7 @@ def create_block(
     # _store_block_spec removes the marker the moment the block is built.
     # A file dashboard's empty block is unchanged ({}).
     if not payload.config and payload.type in _DATA_BLOCK_TYPES \
-            and dashboard_engine.is_warehouse_native(_dashboard_datasource(db, d)):
+            and dashboard_engine.is_warehouse_native(_dashboard_datasource(db, d, page)):
         default_config = {**default_config, "empty": True}
     block = models.DashboardBlock(
         page_id=page.id,
@@ -4719,7 +4960,7 @@ def _fill_forecast_template(db: Session, user: models.User, d: models.Dashboard,
     model call; the person edits the query (the measure, the grain)
     afterwards. With no date column to draw over, the block is left empty
     with its forecast option set, and the empty state says what it needs."""
-    ds = _dashboard_datasource(db, d)
+    ds = _dashboard_datasource(db, d, block)
     grain = d.default_period if d.default_period in forecast_svc.GRAINS else "month"
     options = _default_forecast_options(grain)
     if ds is not None and dashboard_engine.is_warehouse_native(ds):
@@ -4968,7 +5209,7 @@ def ask_ai_block(
     pause into)."""
     d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
     block = _get_block(db, d, block_id)
-    ds = _resolve_datasource(db, user, d)
+    ds = _resolve_datasource(db, user, d, block)
 
     # 2026-10-07 (block editing on a warehouse source): a warehouse/
     # database source NEVER reaches load_dataframe/analyze below. The
@@ -5082,7 +5323,7 @@ def build_manual_block(
     later - see the module docstring's Phase 2b section, point 2."""
     d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
     block = _get_block(db, d, block_id)
-    ds = _resolve_datasource(db, user, d)
+    ds = _resolve_datasource(db, user, d, block)
 
     # 2026-10-07 (block editing on a warehouse source): a warehouse/
     # database source NEVER reaches load_dataframe below - the recipe is
@@ -5675,7 +5916,7 @@ def preview_filtered_blocks(
     # metric/transform) genuinely needs the live `df` to recompute against;
     # see the `if recipe and df is None: continue` guard below for how that
     # one real dependency is now handled per-block instead of up front.
-    ds = _resolve_datasource_for_read(db, user, d)
+    ds = _resolve_datasource_for_read(db, user, d, page)
     # 2026-10-06 (warehouse-native dashboards layer): for a warehouse/
     # database source the live rows are NEVER loaded into the app -
     # load_dataframe would have pulled a row-capped SAMPLE here and
@@ -6181,7 +6422,7 @@ def _run_page_for(
         colors = appearance_svc.registry_payload(doc if doc is not None else getattr(d, "appearance", None))
     except Exception as e:
         print(f"[dashboard_builder] colour registry skipped (non-fatal): {e}")
-    return schemas.RunPageOut(
+    out = schemas.RunPageOut(
         blocks=result["blocks"], matched_rows=result["matched_rows"], total_rows=result.get("total_rows"),
         computed_in=result["computed_in"], total_duration_ms=result["total_duration_ms"], period=result["period"],
         date_range=result.get("date_range"), skipped_block_ids=skipped, empty_block_ids=empty,
@@ -6189,6 +6430,74 @@ def _run_page_for(
         parameters_used=result.get("parameters_used") or {}, missing_parameters=result.get("missing_parameters") or [],
         date_bounds=date_bounds, colors=colors,
     )
+    # 2026-10-12 (round 35): the complete, unfiltered run is kept as this viewer's snapshot - the page
+    # opens on it at once next time, with its "as of" time, instead of a 10-second skeleton
+    if persist_last_run and not hidden_block_ids and _is_canonical_run(payload, d):
+        _save_snapshot(db, d, page, user_id, out)
+    return out
+
+
+_SNAPSHOT_MAX_BYTES = 4_000_000
+
+
+def _page_signature(d: models.Dashboard, page: models.DashboardPage) -> str:
+    """What a page's results are a function of (besides the data): its blocks' definitions and the
+    dashboard's rail. A snapshot taken under another definition is never shown."""
+    import hashlib
+    parts = [json.dumps({"p": d.parameters, "dc": d.date_column, "dp": d.default_period}, sort_keys=True, default=str)]
+    for b in sorted(page.blocks, key=lambda x: x.id):
+        cfg = b.config or {}
+        parts.append(json.dumps({"id": b.id, "t": b.type, "spec": cfg.get("spec"), "sql": cfg.get("sql"),
+                                 "src": cfg.get("source_block_id"), "q": getattr(b, "query_sql", None)},
+                                sort_keys=True, default=str))
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
+
+
+def _save_snapshot(db: Session, d: models.Dashboard, page: models.DashboardPage, user_id: str, out) -> None:
+    try:
+        body = out.model_dump(mode="json") if hasattr(out, "model_dump") else out.dict()
+        if not any((r or {}).get("status") == "ok" for r in (body.get("blocks") or {}).values()):
+            return
+        blob = json.dumps(body, default=str)
+        if len(blob) > _SNAPSHOT_MAX_BYTES:
+            return
+        payload = {"signature": _page_signature(d, page), "run": json.loads(blob)}
+        row = (db.query(models.DashboardPageSnapshot)
+               .filter(models.DashboardPageSnapshot.page_id == page.id, models.DashboardPageSnapshot.user_id == user_id)
+               .first())
+        if row is None:
+            row = models.DashboardPageSnapshot(page_id=page.id, dashboard_id=d.id, user_id=user_id)
+            db.add(row)
+        row.payload = payload
+        row.period = body.get("period")
+        row.computed_at = datetime.utcnow()
+        db.commit()
+    except Exception as e:  # noqa: BLE001 - a snapshot is a convenience, never a failed run
+        print(f"[dashboard_builder] snapshot save skipped (non-fatal): {e}")
+        db.rollback()
+
+
+@router.get("/{dashboard_id}/pages/{page_id}/snapshot")
+def get_page_snapshot(
+    dashboard_id: str,
+    page_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """2026-10-12 (round 35): this viewer's last complete, unfiltered run of the page, if the page is
+    still defined the way it was then - {computed_at, period, run} - else {computed_at: null}. Drawn
+    at once while a live source refreshes behind it."""
+    d = _get_dashboard_v2(db, user, dashboard_id)
+    page = next((p for p in d.pages if p.id == page_id), None)
+    if not page:
+        raise HTTPException(404, "Page not found on this dashboard.")
+    row = (db.query(models.DashboardPageSnapshot)
+           .filter(models.DashboardPageSnapshot.page_id == page.id, models.DashboardPageSnapshot.user_id == user.id)
+           .first())
+    payload = row.payload if row is not None and isinstance(row.payload, dict) else None
+    if not payload or payload.get("signature") != _page_signature(d, page) or not isinstance(payload.get("run"), dict):
+        return {"computed_at": None, "period": None, "run": None}
+    return {"computed_at": row.computed_at.isoformat() + "Z", "period": row.period, "run": payload["run"]}
 
 
 def _confirm_auto_charts(page: models.DashboardPage, results: dict, payload: schemas.RunPageRequest, d: models.Dashboard) -> bool:
@@ -6442,7 +6751,7 @@ def _validate_cell_config(
             assert_read_only_sql(sql)
         except ReadOnlyViolation as e:
             raise HTTPException(400, f"A SQL cell can only run a single SELECT: {e}")
-        ds = _resolve_datasource(db, user, d)
+        ds = _resolve_datasource(db, user, d, page)
         if not dashboard_engine.is_warehouse_native(ds):
             raise HTTPException(400, "SQL cells run inside a warehouse/database - this dashboard's source is a file.")
         others = [c for c in _page_cells(page) if c["id"] != block.id]
@@ -6516,7 +6825,7 @@ def run_page(
     page = next((p for p in d.pages if p.id == page_id), None)
     if not page:
         raise HTTPException(404, "Page not found on this dashboard.")
-    ds = _resolve_datasource_for_read(db, user, d)
+    ds = _resolve_datasource_for_read(db, user, d, page)
     if not ds:
         raise HTTPException(400, "This dashboard has no linked data source you can access.")
     if not dashboard_engine.is_warehouse_native(ds):
@@ -6536,10 +6845,24 @@ def get_parameter_options(
     """A rail control's distinct values with counts (chips, multi-select,
     the country search) - one GROUP BY query, cached 10 minutes."""
     d = _get_dashboard_v2(db, user, dashboard_id)
-    ds = _resolve_datasource_for_read(db, user, d)
+    ds = _param_datasource(db, d, param_id)
+    if ds is not None and not workspace_access.can_access_datasource(db, ds, user):
+        ds = None
     if not ds or not dashboard_engine.is_warehouse_native(ds):
         raise HTTPException(400, "Parameter options are computed in the warehouse - this dashboard's source is a file.")
     return _parameter_options_for(db, d, ds, param_id, search, limit, user.id)
+
+
+def _param_datasource(db: Session, d: models.Dashboard, param_id: str) -> models.DataSource | None:
+    """Round 35b: the source a rail filter reads its options from - its own (a filter brought in by
+    a merge keeps the source it was made on), else the dashboard's."""
+    params = d.parameters if isinstance(d.parameters, list) else []
+    param = next((p for p in params if isinstance(p, dict) and p.get("id") == param_id), None)
+    if param and param.get("datasource_id"):
+        own = db.query(models.DataSource).filter(models.DataSource.id == param["datasource_id"]).first()
+        if own:
+            return own
+    return _dashboard_datasource(db, d)
 
 
 def _parameter_options_for(db, d, ds, param_id, search, limit, user_id) -> schemas.ParameterOptionsOut:
@@ -7269,7 +7592,7 @@ def set_block_spec(
     the work - shared with Ask AI and build-manually.)"""
     d = _get_dashboard_v2(db, user, dashboard_id, require_edit=True)
     block = _get_block(db, d, block_id)
-    ds = _resolve_datasource(db, user, d)
+    ds = _resolve_datasource(db, user, d, block)
     if not dashboard_engine.is_warehouse_native(ds):
         raise HTTPException(400, "Block specs are for dashboards on a warehouse/database source.")
     chart_type = payload.chart_type
@@ -7317,7 +7640,7 @@ def get_block_sql(
     GET can carry the rail's state; none = the block's own SQL at rest."""
     d = _get_dashboard_v2(db, user, dashboard_id)
     block = _get_block(db, d, block_id)
-    ds = _resolve_datasource_for_read(db, user, d)
+    ds = _resolve_datasource_for_read(db, user, d, block)
     if not ds or not dashboard_engine.is_warehouse_native(ds):
         raise HTTPException(400, "Show SQL is for dashboards on a warehouse/database source.")
     config = block.config or {}
@@ -8101,6 +8424,7 @@ def _render_public_dashboard(
     _assign_stored_colors(db, d)
     ds = _dashboard_datasource(db, d)
     pages = [_public_page_out(p) for p in sorted(d.pages, key=lambda p: p.position)]
+    _annotate_pages(db, d, pages, ds)
     return schemas.PublicDashboardOut(
         name=d.name,
         pages=pages,
@@ -8139,17 +8463,30 @@ def _public_warehouse_context(db: Session, share: models.DashboardShare, x_dashb
 
 
 def _public_run(db, share, page_id, payload, x_dashboard_access_token) -> schemas.RunPageOut:
-    d, ds = _public_warehouse_context(db, share, x_dashboard_access_token)
+    _authorize_public_share(share, x_dashboard_access_token)
+    d = db.query(models.Dashboard).filter(models.Dashboard.id == share.dashboard_id).first()
+    if not d:
+        raise HTTPException(404, "This dashboard isn't available.")
     page = next((p for p in d.pages if p.id == page_id), None)
     if not page:
         raise HTTPException(404, "Page not found on this dashboard.")
+    # round 35b: the page's own source (a merged dashboard can mix them)
+    ds = _dashboard_datasource(db, d, page)
+    if not ds or not dashboard_engine.is_warehouse_native(ds):
+        raise HTTPException(400, "This page's blocks are not computed in a warehouse.")
     out = _run_page_for(db, d, page, ds, payload, d.owner_id, persist_last_run=False, anonymous=True)
     out.blocks = {bid: _strip_sql_from_result(res) for bid, res in (out.blocks or {}).items()}
     return out
 
 
 def _public_options(db, share, param_id, search, limit, x_dashboard_access_token) -> schemas.ParameterOptionsOut:
-    d, ds = _public_warehouse_context(db, share, x_dashboard_access_token)
+    _authorize_public_share(share, x_dashboard_access_token)
+    d = db.query(models.Dashboard).filter(models.Dashboard.id == share.dashboard_id).first()
+    if not d:
+        raise HTTPException(404, "This dashboard isn't available.")
+    ds = _param_datasource(db, d, param_id)
+    if not ds or not dashboard_engine.is_warehouse_native(ds):
+        raise HTTPException(400, "This filter's options are not computed in a warehouse.")
     return _parameter_options_for(db, d, ds, param_id, search, limit, d.owner_id)
 
 
@@ -8288,7 +8625,7 @@ def preview_filtered_blocks_public(
     # computes its spec'd blocks in the warehouse (owner's connection and
     # budget - see _public_warehouse_context); a file dashboard keeps the
     # static, no-live-connection path exactly as before.
-    ds = _dashboard_datasource(db, d)
+    ds = _dashboard_datasource(db, d, page)
     if ds and dashboard_engine.is_warehouse_native(ds):
         _check_rate_limit(f"public-run:ip:{ip}", limit=_PUBLIC_RUN_RATE_LIMIT)
         _check_rate_limit(f"public-run:slug:{slug}", limit=_PUBLIC_RUN_RATE_LIMIT)
@@ -8388,7 +8725,7 @@ def preview_filtered_blocks_public_by_domain(
     page = next((p for p in d.pages if p.id == page_id), None)
     if not page:
         raise HTTPException(404, "Page not found on this dashboard.")
-    ds = _dashboard_datasource(db, d)
+    ds = _dashboard_datasource(db, d, page)
     if ds and dashboard_engine.is_warehouse_native(ds):
         _check_rate_limit(f"public-run:ip:{ip}", limit=_PUBLIC_RUN_RATE_LIMIT)
         _check_rate_limit(f"public-run:domain:{hostname}", limit=_PUBLIC_RUN_RATE_LIMIT)

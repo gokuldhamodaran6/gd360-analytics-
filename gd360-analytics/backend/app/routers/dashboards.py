@@ -49,14 +49,19 @@ see a dashboard but lacks the tier for the specific action they tried gets
 a 403 instead - same info-non-leak convention as workspaces.py and
 services/workspace_access.py.
 """
+import copy
+import json
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..database import get_db
 from ..deps import get_current_user
 from ..services import audit, workspace_access
+from ..services.data_freshness import data_mode, is_live
 
 router = APIRouter(prefix="/dashboards", tags=["dashboards"])
 
@@ -128,9 +133,100 @@ def _source_ref(conv: models.Conversation | None, user: models.User, db: Session
     }
 
 
+def _list_extras(db: Session, dashboards: list[models.Dashboard]) -> dict[str, dict]:
+    """Round 35: sources, freshness, published, last computed and a thumbnail layout for every
+    dashboard in the list - a handful of set queries, not one request per card."""
+    ids = [d.id for d in dashboards]
+    if not ids:
+        return {}
+    # an older dashboard knew its source only through the chat it was made from
+    via_chat = {d.source_conversation_id for d in dashboards if not d.datasource_id and d.source_conversation_id}
+    chat_ds = ({cid: dsid for cid, dsid in db.query(models.Conversation.id, models.Conversation.datasource_id)
+                .filter(models.Conversation.id.in_(list(via_chat))).all()} if via_chat else {})
+    src_ids: dict[str, list[str]] = {}
+    for d in dashboards:
+        primary = d.datasource_id or chat_ds.get(d.source_conversation_id)
+        sids = [primary] if primary else []
+        if d.layout_version == 3:
+            sids += [s for s in ((d.project_spec or {}).get("source_ids") or []) if isinstance(s, str)]
+        src_ids[d.id] = list(dict.fromkeys(sids))
+    all_src = {s for v in src_ids.values() for s in v}
+    ds_map = ({r.id: r for r in db.query(models.DataSource.id, models.DataSource.name, models.DataSource.kind)
+               .filter(models.DataSource.id.in_(list(all_src))).all()} if all_src else {})
+    pages = (db.query(models.DashboardPage.id, models.DashboardPage.dashboard_id, models.DashboardPage.position,
+                      models.DashboardPage.datasource_id)
+             .filter(models.DashboardPage.dashboard_id.in_(ids)).all())
+    # round 35b: a page on its own source counts as one of the dashboard's sources
+    for _pid, did, _pos, psid in pages:
+        if psid and did in src_ids and psid not in src_ids[did]:
+            src_ids[did].append(psid)
+    all_src = {s for v in src_ids.values() for s in v}
+    ds_map = ({r.id: r for r in db.query(models.DataSource.id, models.DataSource.name, models.DataSource.kind)
+               .filter(models.DataSource.id.in_(list(all_src))).all()} if all_src else {})
+    pages = [(a, b, c) for a, b, c, _d in pages]
+    first: dict[str, tuple] = {}
+    page_count: dict[str, int] = {}
+    for pid, did, pos in pages:
+        page_count[did] = page_count.get(did, 0) + 1
+        if did not in first or (pos or 0) < (first[did][1] or 0):
+            first[did] = (pid, pos)
+    page_ids = [p[0] for p in pages]
+    by_page = {p[0]: p[1] for p in pages}
+    first_ids = {v[0] for v in first.values()}
+    preview: dict[str, list[dict]] = {}
+    block_count: dict[str, int] = {}
+    data_at: dict[str, datetime] = {}
+    if page_ids:
+        chart_kind = models.DashboardBlock.config["chart_type"].as_string()
+        rows = (db.query(models.DashboardBlock.page_id, models.DashboardBlock.type, models.DashboardBlock.x,
+                         models.DashboardBlock.y, models.DashboardBlock.w, models.DashboardBlock.h, chart_kind,
+                         models.DashboardBlock.last_run)
+                .filter(models.DashboardBlock.page_id.in_(page_ids)).all())
+        for pid, btype, x, y, w, h, ck, last_run in rows:
+            did = by_page.get(pid)
+            block_count[did] = block_count.get(did, 0) + 1
+            ran = (last_run or {}).get("ran_at") if isinstance(last_run, dict) else None
+            if ran:
+                try:
+                    t = datetime.fromisoformat(str(ran).replace("Z", "+00:00")).replace(tzinfo=None)
+                    if did not in data_at or t > data_at[did]:
+                        data_at[did] = t
+                except ValueError:
+                    pass
+            if pid in first_ids and len(preview.setdefault(did, [])) < 24:
+                preview[did].append({"t": btype, "x": x or 0, "y": y or 0, "w": w or 6, "h": h or 4, "c": ck})
+        snaps = (db.query(models.DashboardPageSnapshot.dashboard_id, func.max(models.DashboardPageSnapshot.computed_at))
+                 .filter(models.DashboardPageSnapshot.dashboard_id.in_(ids))
+                 .group_by(models.DashboardPageSnapshot.dashboard_id).all())
+        for did, t in snaps:
+            if t and (did not in data_at or t > data_at[did]):
+                data_at[did] = t
+    shares = {r.dashboard_id for r in db.query(models.DashboardShare.dashboard_id)
+              .filter(models.DashboardShare.dashboard_id.in_(ids), models.DashboardShare.published_at.isnot(None)).all()}
+    out: dict[str, dict] = {}
+    for d in dashboards:
+        srcs = [{"id": s, "name": ds_map[s].name, "kind": ds_map[s].kind, "live": is_live(ds_map[s].kind)}
+                for s in src_ids[d.id] if s in ds_map]
+        at = data_at.get(d.id)
+        if d.layout_version == 3 and getattr(d, "snapshot_at", None):
+            at = max(at, d.snapshot_at) if at else d.snapshot_at
+        if d.layout_version == 1:
+            at = None
+        out[d.id] = {
+            "sources": srcs, "data_mode": data_mode([s["kind"] for s in srcs]) if d.layout_version != 1 else None,
+            "published": d.id in shares, "data_at": at,
+            "updated_at": max([t for t in (d.created_at, at) if t] or [d.created_at]),
+            "page_count": page_count.get(d.id, 0), "block_count": block_count.get(d.id, 0) if d.layout_version != 1 else len(d.charts),
+            "preview": sorted(preview.get(d.id, []), key=lambda b: (b["y"], b["x"])),
+            "refresh_interval": (d.refresh_interval or "off") if d.layout_version == 2 else "off",
+        }
+    return out
+
+
 def _dashboard_out(db: Session, dash: models.Dashboard, user: models.User,
-                   conv_cache: dict | None = None) -> schemas.DashboardOut:
-    creator = db.query(models.User).filter(models.User.id == dash.owner_id).first()
+                   conv_cache: dict | None = None, extras: dict | None = None,
+                   people: dict | None = None, ws_names: dict | None = None) -> schemas.DashboardOut:
+    creator = people.get(dash.owner_id) if people is not None else db.query(models.User).filter(models.User.id == dash.owner_id).first()
     conv = None
     if dash.source_conversation_id:
         if conv_cache is not None and dash.source_conversation_id in conv_cache:
@@ -141,8 +237,11 @@ def _dashboard_out(db: Session, dash: models.Dashboard, user: models.User,
         conv = db.get(models.Conversation, dash.project_spec["project_id"])
     ws_name = None
     if dash.workspace_id:
-        ws = db.query(models.Workspace).filter(models.Workspace.id == dash.workspace_id).first()
-        ws_name = ws.name if ws else None
+        if ws_names is not None and dash.workspace_id in ws_names:
+            ws_name = ws_names[dash.workspace_id]
+        else:
+            ws = db.query(models.Workspace).filter(models.Workspace.id == dash.workspace_id).first()
+            ws_name = ws.name if ws else None
     return schemas.DashboardOut(
         id=dash.id,
         name=dash.name,
@@ -157,6 +256,7 @@ def _dashboard_out(db: Session, dash: models.Dashboard, user: models.User,
         can_delete=_can_delete(db, dash, user),
         layout_version=dash.layout_version or 1,
         **_source_ref(conv, user, db),
+        **(extras or {}),
     )
 
 
@@ -178,9 +278,120 @@ def list_dashboards(db: Session = Depends(get_db), user: models.User = Depends(g
         dashboards = db.query(models.Dashboard).filter(models.Dashboard.owner_id == user.id).all()
     conv_ids = {d.source_conversation_id for d in dashboards if d.source_conversation_id}
     conv_cache = {c.id: c for c in db.query(models.Conversation).filter(models.Conversation.id.in_(list(conv_ids))).all()} if conv_ids else {}
-    out = [_dashboard_out(db, d, user, conv_cache) for d in dashboards]
-    out.sort(key=lambda d: d.created_at, reverse=True)
+    extras = _list_extras(db, dashboards)
+    owner_ids = {d.owner_id for d in dashboards}
+    people = {u.id: u for u in db.query(models.User).filter(models.User.id.in_(list(owner_ids))).all()} if owner_ids else {}
+    w_ids = {d.workspace_id for d in dashboards if d.workspace_id}
+    ws_names = {w.id: w.name for w in db.query(models.Workspace).filter(models.Workspace.id.in_(list(w_ids))).all()} if w_ids else {}
+    out = [_dashboard_out(db, d, user, conv_cache, extras.get(d.id), people, ws_names) for d in dashboards]
+    out.sort(key=lambda d: d.updated_at or d.created_at, reverse=True)
     return out
+
+
+_DUP_SKIP = {"id", "created_at", "owner_id", "name", "workspace_id", "source_conversation_id", "next_refresh_at", "last_refreshed_at"}
+
+
+def _unique_name(db: Session, owner_id: str, base: str) -> str:
+    taken = {n for (n,) in db.query(models.Dashboard.name).filter(models.Dashboard.owner_id == owner_id).all()}
+    if base not in taken:
+        return base
+    i = 2
+    while f"{base} ({i})" in taken:
+        i += 1
+    return f"{base} ({i})"
+
+
+@router.post("/merge", response_model=schemas.DashboardOut, status_code=201)
+def merge_dashboards(payload: schemas.MergeDashboardsRequest, db: Session = Depends(get_db),
+                     user: models.User = Depends(get_current_user)):
+    """2026-10-12 (round 35b): "New dashboard → Merge existing dashboards". One new dashboard with
+    every page of the chosen ones, in the order given - each page still reads the source it was
+    built on, filters on the same column become one shared filter, the first one's look is kept.
+    The originals stay unless keep_originals is false (and then only those this person may delete)."""
+    from .dashboard_builder import copy_dashboard_into, _dashboard_datasource
+    if len(payload.dashboard_ids) < 2:
+        raise HTTPException(400, "Pick at least two dashboards to merge.")
+    sources: list[models.Dashboard] = []
+    for sid in dict.fromkeys(payload.dashboard_ids):
+        src = db.query(models.Dashboard).filter(models.Dashboard.id == sid).first()
+        if not src or not _can_view(db, src, user):
+            raise HTTPException(404, "One of the dashboards to merge wasn't found.")
+        if (src.layout_version or 1) != 2:
+            raise HTTPException(400, f"“{src.name}” is a classic dashboard - upgrade it first, then merge.")
+        sources.append(src)
+    first = sources[0]
+    first_ds = _dashboard_datasource(db, first)
+    look = {c.name: getattr(first, c.name) for c in models.Dashboard.__table__.columns
+            if c.name in ("brand_primary_color", "brand_accent_color", "background_style", "background_color", "logo_image",
+                          "logo_image_content_type", "background_image", "background_image_content_type", "appearance")}
+    base = (payload.name or "").strip()[:120] or f"{first.name} + {len(sources) - 1} more"
+    merged = models.Dashboard(owner_id=user.id, name=_unique_name(db, user.id, base), layout_version=2,
+                              datasource_id=first_ds.id if first_ds else None, parameters=[], **look)
+    db.add(merged)
+    db.flush()
+    for src in sources:
+        copy_dashboard_into(db, merged, src)
+    audit.log_audit_event(db, actor=user, action="dashboard_merged", workspace_id=None, target_type="dashboard",
+                          target_id=merged.id)
+    if not payload.keep_originals:
+        for src in sources:
+            if _can_delete(db, src, user):
+                db.query(models.DashboardPageSnapshot).filter(models.DashboardPageSnapshot.dashboard_id == src.id).delete(synchronize_session=False)
+                db.delete(src)
+    db.commit()
+    db.refresh(merged)
+    return _dashboard_out(db, merged, user, None, _list_extras(db, [merged]).get(merged.id))
+
+
+@router.post("/{dashboard_id}/duplicate", response_model=schemas.DashboardOut, status_code=201)
+def duplicate_dashboard(dashboard_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """2026-10-12 (round 35): a full copy of a dashboard - its look, rail, saved views, pages and
+    blocks - owned by the person copying it, kept in the same workspace when they can edit there.
+    Never copied: its published link, comments, the run history and where it was made from."""
+    src = _get_viewable(db, user, dashboard_id)
+    if (src.layout_version or 1) != 2:
+        raise HTTPException(400, "Only live dashboards can be duplicated. Upgrade this one first.")
+    ids: dict[str, str] = {}
+    import uuid
+    for p in src.pages:
+        ids[p.id] = str(uuid.uuid4())
+        for b in p.blocks:
+            ids[b.id] = str(uuid.uuid4())
+
+    def remap(value):
+        if value is None:
+            return None
+        text = json.dumps(value, default=str)
+        for old, new in ids.items():
+            if old in text:
+                text = text.replace(old, new)
+        return json.loads(text)
+
+    fields = {c.name: getattr(src, c.name) for c in models.Dashboard.__table__.columns if c.name not in _DUP_SKIP}
+    for k, v in list(fields.items()):
+        if isinstance(v, (dict, list)):
+            fields[k] = remap(copy.deepcopy(v))
+    keep_ws = src.workspace_id if (src.workspace_id and _can_edit(db, src, user)) else None
+    new = models.Dashboard(**fields, owner_id=user.id, workspace_id=keep_ws,
+                           name=_unique_name(db, user.id, f"{src.name} copy"[:120]))
+    db.add(new)
+    db.flush()
+    page_skip = {"id", "dashboard_id"}
+    block_skip = {"id", "page_id", "last_run"}
+    for p in src.pages:
+        pf = {c.name: getattr(p, c.name) for c in models.DashboardPage.__table__.columns if c.name not in page_skip}
+        np_ = models.DashboardPage(id=ids[p.id], dashboard_id=new.id, **pf)
+        db.add(np_)
+        for b in p.blocks:
+            bf = {c.name: getattr(b, c.name) for c in models.DashboardBlock.__table__.columns if c.name not in block_skip}
+            for k, v in list(bf.items()):
+                if isinstance(v, (dict, list)):
+                    bf[k] = remap(copy.deepcopy(v))
+            db.add(models.DashboardBlock(id=ids[b.id], page_id=np_.id, **bf))
+    db.commit()
+    db.refresh(new)
+    extras = _list_extras(db, [new])
+    return _dashboard_out(db, new, user, None, extras.get(new.id))
 
 
 @router.post("", response_model=schemas.DashboardOut, status_code=201)
@@ -362,6 +573,8 @@ def delete_dashboard(dashboard_id: str, db: Session = Depends(get_db), user: mod
         db, actor=user, action="dashboard_deleted", workspace_id=d.workspace_id,
         target_type="dashboard", target_id=d.id,
     )
+    # round 35: its saved page snapshots go with it
+    db.query(models.DashboardPageSnapshot).filter(models.DashboardPageSnapshot.dashboard_id == d.id).delete(synchronize_session=False)
     db.delete(d)
     db.commit()
     return None

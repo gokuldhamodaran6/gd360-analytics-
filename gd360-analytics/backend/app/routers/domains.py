@@ -834,6 +834,7 @@ def viewer_dashboard(host: str, path: str, request: Request, db: Session = Depen
         if ctx.hidden:
             out.blocks = [b for b in out.blocks if b.id not in ctx.hidden]
         pages.append(out)
+    dbm._annotate_pages(db, ctx.d, pages, ctx.ds)  # noqa: SLF001 - round 35b: each page's own source
     dash = schemas.PublicDashboardOut(
         name=title, pages=pages, brand_primary_color=ctx.d.brand_primary_color,
         brand_accent_color=ctx.d.brand_accent_color, background_style=ctx.d.background_style,
@@ -865,15 +866,17 @@ def viewer_run(host: str, path: str, page_id: str, payload: schemas.RunPageReque
                db: Session = Depends(get_db), user: models.User | None = Depends(optional_user)):
     _limits(request, host)
     ctx = _Ctx(db, host, path, user)
-    if not ctx.warehouse:
-        raise HTTPException(400, "This dashboard's blocks are not computed in a warehouse.")
     page = _page(ctx, page_id)
+    # round 35b: a page on its own source (a merged dashboard) runs on that source
+    pds = dbm._dashboard_datasource(db, ctx.d, page)  # noqa: SLF001
+    if not (pds and dashboard_engine.is_warehouse_native(pds)):
+        raise HTTPException(400, "This dashboard's blocks are not computed in a warehouse.")
     if ctx.ruled:
         if not ctx.values:
             raise HTTPException(403, "There are no rows for you on this dashboard yet. Ask its owner to add you.")
         payload = payload.model_copy(update={"filters": list(payload.filters[:11]) + [ctx.forced_filter()],
                                               "block_ids": [b for b in (payload.block_ids or []) if b not in ctx.hidden] or None})
-    out = dbm._run_page_for(db, ctx.d, page, ctx.ds, payload, ctx.d.owner_id, persist_last_run=False,  # noqa: SLF001
+    out = dbm._run_page_for(db, ctx.d, page, pds, payload, ctx.d.owner_id, persist_last_run=False,  # noqa: SLF001
                             anonymous=True, hidden_block_ids=ctx.hidden or None)
     out.blocks = {bid: dbm._strip_sql_from_result(res) for bid, res in (out.blocks or {}).items()  # noqa: SLF001
                   if bid not in ctx.hidden}
@@ -900,10 +903,11 @@ def viewer_preview(host: str, path: str, page_id: str, payload: schemas.ApplyFil
     page = _page(ctx, page_id)
     if ctx.ruled:
         raise HTTPException(400, "This view is limited to your rows - refresh the page.")
-    if ctx.warehouse:
+    pds = dbm._dashboard_datasource(db, ctx.d, page)  # noqa: SLF001
+    if pds and dashboard_engine.is_warehouse_native(pds):
         _limits(request, host)
         return dbm._public_filtered_out(dbm._filter_page_blocks_warehouse(  # noqa: SLF001
-            db, ctx.d, page, ctx.ds, payload, ctx.d.owner_id, anonymous=True))
+            db, ctx.d, page, pds, payload, ctx.d.owner_id, anonymous=True))
     out = dbm._filter_page_blocks(db, page, df=None, ds=None, payload=payload)  # noqa: SLF001
     return dbm._public_filtered_out(dbm._with_file_colors(db, ctx.d, page, out, payload, anonymous=True))  # noqa: SLF001
 
