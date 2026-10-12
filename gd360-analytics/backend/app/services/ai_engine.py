@@ -1377,7 +1377,9 @@ no explanation, nothing before or after the JSON - of exactly this shape:
                         "chart_type": <a chart type from the list below> | null,
                         "from_metric": "<exact saved metric name>" | null,
                         "text": "<for a text block only: one or two plain sentences>" | null,
-                        "spec": <BlockSpec> | null}, ...]}, ...],
+                        "spec": <BlockSpec> | null,
+                        "origin": "Q1" | "Q2" | ... | "suggested",   // only when the goal lists answers as Q1, Q2, ...
+                        "why": "<a few words: why this block is on the dashboard>"}, ...]}, ...],
  "parameters": ["<low-cardinality column worth a filter control>", ...],
  "suggestions": ["<a short follow-up the person could ask for, e.g. 'Add a cancellation heatmap'>", ...]}
 
@@ -1398,6 +1400,10 @@ __CHART_TYPE_GUIDE__
 
 Strict rules:
 - Use ONLY table and column names spelled exactly as in the schema. Never invent a column, a table or a number.
+- Several tables: every column a block uses must be in THAT block's "table" - pick the table that has them all.
+- When the goal lists earlier answers as Q1, Q2, ...: every block that shows one of those answers carries
+  "origin" with its label (and shows the same numbers the answer did); every other block carries "origin":
+  "suggested". Never leave an answer out unless the goal says to.
 - "date_parts" (group by the weekday / month-of-year of a date column) and "bins" (a histogram of ONE numeric
   column: no group_by, no time, a single count measure) are optional; omit them unless a block needs them.
 - A block whose title or intent says forecast / projection is a "chart" with "time" set (GD360 adds the forecast).

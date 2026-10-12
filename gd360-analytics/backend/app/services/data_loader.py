@@ -493,6 +493,19 @@ def default_table_for_preview(ds: models.DataSource) -> str | None:
     before)."""
     if not _is_multi_sheet_schema(ds.schema_cache):
         return None
+    # 2026-10-12 (round 36): a synced app's main table (GA4 traffic_daily, Shopify orders), recorded
+    # at sync, never the first by name - filters and previews read the table the app is about.
+    try:
+        from .synced_sources import SYNCED_KINDS, _KNOWN_MAIN_TABLES
+        if ds.kind in SYNCED_KINDS:
+            info = ds.connection_info if isinstance(ds.connection_info, dict) else {}
+            if info.get("primary_table") and info["primary_table"] in (ds.schema_cache or {}):
+                return str(info["primary_table"])
+            for known in _KNOWN_MAIN_TABLES:
+                if known in (ds.schema_cache or {}):
+                    return known
+    except Exception:  # noqa: BLE001 - fall back to the first table
+        pass
     return next(iter((ds.schema_cache or {}).keys()), None)
 
 

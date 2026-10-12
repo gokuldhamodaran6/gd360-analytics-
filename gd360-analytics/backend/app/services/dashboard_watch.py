@@ -262,10 +262,15 @@ class _Probe:
         self._frame = None
         self._max = "?"
 
-    def frame(self):
+    def frame(self, m: dict | None = None):
+        """The rows a tile reads: round 36 - the table its recipe names, for a multi-table source."""
         if self._frame is None:
-            self._frame = _file_frame(self.db, self.user, self.ds)
-        return self._frame
+            from ..routers.dashboard_builder import _TableFrames
+            self._frame = _TableFrames(self.db, self.ds, self.user)
+        df = self._frame.for_recipe((m or {}).get("recipe"))
+        if df is None:
+            raise WatchError(next(iter(self._frame.errors.values()), "The data could not be loaded."))
+        return df
 
     def max_date(self) -> date | None:
         if self._max != "?":
@@ -276,7 +281,7 @@ class _Probe:
                 out = _wh_max_date(self.db, self.user, self.d, self.ds, self.parts[0][2].get("table"))
             elif self.ds is not None:
                 recipe = self.parts[0][2].get("recipe") or {}
-                s = _file_dates(self.frame(), recipe.get("trend_column") or self.d.date_column)
+                s = _file_dates(self.frame(self.parts[0][2]), recipe.get("trend_column") or self.d.date_column)
                 out = s.max().date() if s is not None else None
         except Exception as e:  # noqa: BLE001
             logger.info("[watch] max date unavailable: %s", e)
@@ -318,7 +323,7 @@ class _Probe:
             if m.get("static"):
                 out[b.id] = (_num((b.config or {}).get("value")), None)
                 continue
-            frame = self.frame()
+            frame = self.frame(m)
             if days:
                 s = _file_dates(frame, (m.get("recipe") or {}).get("trend_column") or self.d.date_column)
                 if s is None:
@@ -357,11 +362,11 @@ class _Probe:
                             pts.append((p.strftime("%Y-%m"), v))
                     out[b.id] = pts
         elif self.ds is not None:
-            frame = self.frame()
             for _, b, m in self.parts:
                 if m.get("static"):
                     out[b.id] = []
                     continue
+                frame = self.frame(m)
                 s = _file_dates(frame, (m.get("recipe") or {}).get("trend_column") or self.d.date_column)
                 if s is None:
                     out[b.id] = []

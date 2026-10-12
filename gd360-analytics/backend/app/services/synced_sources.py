@@ -114,11 +114,43 @@ def store_table(db: Session, datasource_id: str, name: str, df: pd.DataFrame) ->
 _CACHE: dict[tuple[str, str], tuple[datetime, pd.DataFrame]] = {}
 
 
+def primary_table(db: Session, datasource_id: str) -> str | None:
+    """2026-10-12 (round 36): the table a synced app source means when nobody names one - the
+    app's own main table (the first one its fetch returns: GA4 traffic_daily, Shopify orders, the
+    ads apps' campaign_daily), recorded at sync. It used to be the FIRST BY NAME, so GA4 quietly
+    answered every "no table" read from events_daily: a dashboard planned on traffic_daily then
+    failed 4 blocks of 5 and kept one KPI summed over the wrong table."""
+    ds = db.get(models.DataSource, datasource_id)
+    if ds is not None:
+        info = ds.connection_info if isinstance(ds.connection_info, dict) else {}
+        if info.get("primary_table"):
+            return str(info["primary_table"])
+        cache = ds.schema_cache if isinstance(ds.schema_cache, dict) else {}
+        if cache:
+            # A source synced before round 36 has no primary_table yet and its cache may be in
+            # name order: prefer the app's known main table, else the first one.
+            for known in _KNOWN_MAIN_TABLES:
+                if known in cache:
+                    return known
+            return next(iter(cache.keys()))
+    return None
+
+
+# The main table of each synced app, in the order its fetch returns them.
+_KNOWN_MAIN_TABLES = ("traffic_daily", "orders", "campaign_daily", "channel_daily", "search_daily")
+
+
 def load_table(db: Session, datasource_id: str, name: str | None = None) -> pd.DataFrame:
     q = db.query(models.SyncedTable).filter(models.SyncedTable.datasource_id == datasource_id)
+    if not name:
+        name = primary_table(db, datasource_id)
+    row = None
     if name:
-        q = q.filter(models.SyncedTable.table_name == name)
-    row = q.order_by(models.SyncedTable.table_name).first()
+        row = q.filter(models.SyncedTable.table_name == name).first()
+        if row is None and name:
+            raise ValueError(f'The table "{name}" has not been synced from this app.')
+    if row is None:
+        row = q.order_by(models.SyncedTable.table_name).first()
     if row is None:
         raise ValueError("No data has been synced from this app yet.")
     key = (datasource_id, row.table_name)
@@ -132,9 +164,13 @@ def load_table(db: Session, datasource_id: str, name: str | None = None) -> pd.D
     return df.copy()
 
 
-def schema_cache_for(db: Session, datasource_id: str) -> dict:
+def schema_cache_for(db: Session, datasource_id: str, order: list[str] | None = None) -> dict:
+    """{table: columns} - in the app's own order when given (its main table first), so the
+    schema a planner reads and the table a "no table" read loads agree."""
     rows = db.query(models.SyncedTable).filter(models.SyncedTable.datasource_id == datasource_id).all()
-    return {r.table_name: r.columns or [] for r in rows}
+    by_name = {r.table_name: r.columns or [] for r in rows}
+    ordered = [n for n in (order or []) if n in by_name] + sorted(n for n in by_name if n not in (order or []))
+    return {n: by_name[n] for n in ordered}
 
 
 # ---- helpers -----------------------------------------------------------------
@@ -692,7 +728,11 @@ def sync_datasource(db: Session, ds: models.DataSource, reason: str = "schedule"
         for name, df in tables.items():
             store_table(db, ds.id, name, df)
             counts[name] = int(len(df))
-        ds.schema_cache = schema_cache_for(db, ds.id) or {n: _columns_of(t) for n, t in tables.items()}
+        db.flush()
+        ds.schema_cache = schema_cache_for(db, ds.id, list(tables.keys())) or {n: _columns_of(t) for n, t in tables.items()}
+        if tables:
+            # round 36: the app's main table, so a read that names no table never picks one by name
+            ds.connection_info = {**(ds.connection_info or {}), "primary_table": next(iter(tables.keys()))}
         ds.last_synced_at = datetime.utcnow()
         ds.sync_error = None
         ds.next_sync_at = next_sync_time(ds)

@@ -128,7 +128,7 @@ def refresh_dashboard(db: Session, dashboard: models.Dashboard, job_type: str) -
     # here would risk a circular import; importing inside the function body
     # avoids that entirely and costs nothing at this call frequency (once
     # per due dashboard per minute, at most).
-    from ..routers.dashboard_builder import _ai_result_to_block, _dashboard_datasource, _run_manual_recipe
+    from ..routers.dashboard_builder import _ai_result_to_block, _dashboard_datasource, _run_manual_recipe, _TableFrames, carry_block_meta
 
     ds = _dashboard_datasource(db, dashboard)
     job = models.JobRun(
@@ -162,7 +162,11 @@ def refresh_dashboard(db: Session, dashboard: models.Dashboard, job_type: str) -
             dashboard.next_refresh_at = compute_next_refresh_at(dashboard.refresh_interval, dashboard.last_refreshed_at)
             job.status = "success"
             return job
-        original_df = load_dataframe(ds, table=None, version="original", db=db)
+        # round 36: one frame per table - each block refreshes on the table its recipe names
+        file_frames = _TableFrames(db, ds, None)
+        original_df = file_frames.get(None)
+        if original_df is None:
+            raise ValueError(next(iter(file_frames.errors.values()), "The data could not be loaded."))
 
         for page in dashboard.pages:
             for block in page.blocks:
@@ -182,11 +186,15 @@ def refresh_dashboard(db: Session, dashboard: models.Dashboard, job_type: str) -
                 old_anomalies = bool(config.get("anomalies_enabled"))
                 try:
                     if recipe:
+                        block_df = file_frames.for_recipe(recipe) if file_frames.multi else original_df
+                        if block_df is None:
+                            logger.warning("[scheduler] block %s: its table did not load: %s", block.id, file_frames.errors)
+                            continue
                         actual_type, new_config, _default_title = _run_manual_recipe(
-                            original_df, recipe, existing_title=block.title
+                            block_df, recipe, existing_title=block.title
                         )
                         block.type = actual_type
-                        block.config = new_config
+                        block.config = carry_block_meta(config, new_config)
                         block.data_updated_at = datetime.utcnow()
                     elif ai_prompt:
                         result = ai_engine.analyze(
@@ -274,7 +282,7 @@ def _refresh_file_pages(db: Session, dashboard: models.Dashboard, ds: models.Dat
     """Round 35b: the pages of a mixed dashboard whose source GD360 computes itself (a live sheet,
     an API, a stream - an uploaded file has nothing new to read, so it is skipped): every
     recipe block recomputed from that page's source."""
-    from ..routers.dashboard_builder import _dashboard_datasource, _run_manual_recipe
+    from ..routers.dashboard_builder import _dashboard_datasource, _run_manual_recipe, _TableFrames, carry_block_meta
     from .data_freshness import is_live
     frames: dict = {}
     for page in dashboard.pages:
@@ -282,23 +290,20 @@ def _refresh_file_pages(db: Session, dashboard: models.Dashboard, ds: models.Dat
         if pds is None or dashboard_engine.is_warehouse_native(pds) or not is_live(pds.kind):
             continue
         if pds.id not in frames:
-            try:
-                frames[pds.id] = load_dataframe(pds, table=None, version="original", db=db)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[scheduler] page %s source %s didn't load: %s", page.id, pds.id, e)
-                frames[pds.id] = None
-        df = frames[pds.id]
-        if df is None:
-            continue
+            frames[pds.id] = _TableFrames(db, pds, None)  # round 36: per table, loaded on first use
+        tf = frames[pds.id]
         for block in page.blocks:
             recipe = (block.config or {}).get("recipe")
             if not recipe:
                 continue
+            df = tf.for_recipe(recipe)
+            if df is None:
+                logger.warning("[scheduler] page %s source %s didn't load: %s", page.id, pds.id, tf.errors)
+                continue
             try:
-                accent = (block.config or {}).get("accent_color")
-                block.type, block.config, _t = _run_manual_recipe(df, recipe, existing_title=block.title)
-                if accent:
-                    block.config["accent_color"] = accent
+                old_config = dict(block.config or {})
+                block.type, new_config, _t = _run_manual_recipe(df, recipe, existing_title=block.title)
+                block.config = carry_block_meta(old_config, new_config)
                 block.data_updated_at = datetime.utcnow()
             except Exception as e:  # noqa: BLE001
                 logger.warning("[scheduler] block %s on dashboard %s failed to refresh: %s", block.id, dashboard.id, e)
