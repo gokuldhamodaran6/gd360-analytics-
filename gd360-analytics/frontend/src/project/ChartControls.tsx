@@ -10,12 +10,18 @@ import WorkspaceChart from "../components/WorkspaceChart";
 import { PALETTES, type ChartStyle, type PaletteId } from "../lib/chartStyle";
 import type { ResultColumn } from "../api/projects";
 import { DataTable } from "./Visuals";
+import type { BlockResult } from "../api/client";
+import { MapChart } from "../dashboard/charts/MapChart";
+import { mapModel } from "../dashboard/charts/mapModel";
+import { dimFromValues } from "../dashboard/charts/recommend";
+import { useChartTheme } from "../dashboard/theme/ChartThemeContext";
 
-type View = "auto" | "bar" | "horizontal_bar" | "line" | "area" | "pie" | "table";
+type View = "auto" | "map" | "bar" | "horizontal_bar" | "line" | "area" | "pie" | "table";
 type Prefs = { view: View; style: Partial<ChartStyle> };
 
 const VIEWS: { id: View; label: string; icon: JSX.Element }[] = [
   { id: "auto", label: "Auto", icon: <path d="M12 3l2.2 5.3L20 9l-4.4 3.8L17 18.5 12 15.6 7 18.5l1.4-5.7L4 9l5.8-.7z" /> },
+  { id: "map", label: "Map", icon: <><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z" /><path d="M9 4v14M15 6v14" /></> },
   { id: "bar", label: "Bars", icon: <path d="M5 20V10M12 20V4M19 20v-7" /> },
   { id: "horizontal_bar", label: "Horizontal bars", icon: <path d="M4 5h9M4 12h16M4 19h6" /> },
   { id: "line", label: "Line", icon: <path d="M3 17l5-6 4 3 8-9" /> },
@@ -88,8 +94,28 @@ export default function ChartWithControls({
     };
   }, [styleOpen]);
 
-  const views = tableAlongside ? VIEWS.filter((v) => v.id !== "table") : VIEWS;
-  const view = tableAlongside && prefs.view === "table" ? "auto" : prefs.view;
+  // round 36: countries are drawn on a map (with the ranked top 10 beside it) - the same brain as the
+  // dashboards: one country column with more than 6 countries and one measure.
+  const theme = useChartTheme();
+  const map = useMemo(() => {
+    const nums = (n: string) => rows.every((r) => r[n] === null || r[n] === undefined || typeof r[n] === "number");
+    const names = columns.map((c) => c.name);
+    const measures = names.filter(nums);
+    const dims = names.filter((n) => !measures.includes(n));
+    if (dims.length !== 1 || !measures.length) return null;
+    const shape = dimFromValues(dims[0], rows.map((r) => r[dims[0]]), rows.map((r) => r[measures[0]]));
+    if (shape.role !== "country") return null;
+    const result = { status: "ok", columns, rows, row_count: rows.length, dimensions: [dims[0]], measures: [measures[0]] } as unknown as BlockResult;
+    try {
+      return mapModel(result, { config: { chart_type: "map" }, title } as any, theme);
+    } catch {
+      return null;
+    }
+  }, [columns, rows, title, theme]);
+  const views = (tableAlongside ? VIEWS.filter((v) => v.id !== "table") : VIEWS).filter((v) => v.id !== "map" || map);
+  const picked = tableAlongside && prefs.view === "table" ? "auto" : prefs.view;
+  const view: View = picked === "map" && !map ? "auto" : picked;
+  const showMap = Boolean(map) && (view === "map" || (view === "auto" && (!chartType || chartType === "table" || chartType === "map" || chartType === "bar" || chartType === "horizontal_bar")));
   const effectiveType = view === "auto" ? (chartType && chartType !== "table" ? chartType : null) : view;
   const style = prefs.style;
   const styled = Object.keys(style).length > 0;
@@ -176,6 +202,10 @@ export default function ChartWithControls({
       </div>
       {view === "table" ? (
         <DataTable visual={{ type: "chart", title, columns, rows, truncated }} />
+      ) : showMap && map ? (
+        <div className="min-w-0" data-answer-map="">
+          <MapChart model={map} title={title} minHeight={Math.max(minHeight, 300)} />
+        </div>
       ) : (
         <div className="min-w-0 [&>div.card]:border-0 [&>div.card]:bg-transparent [&>div.card]:p-0 [&>div.card]:shadow-none [&>div.card]:rounded-none [&>div.card:hover]:shadow-none">
           <WorkspaceChart
