@@ -210,6 +210,40 @@ def _visual_brief(v: dict, i: int, allowed: Allowed, currency: str | None) -> di
                 note = ""
             facts.append(f"{it.get('label')} {'added' if val >= 0 else 'took away'} {present.nice(abs(val), fmt, cur)}{note}")
         return {"index": i, "type": "waterfall", "title": title, "facts": facts, "summary": summary}
+    if t == "forecast":
+        # round 32: a forecast chart - what it forecasts, its range, how it was made, year by year
+        h = v.get("headline") or {}
+        m = v.get("method") or {}
+        fmt_ = v.get("format") or "number"
+        cur = v.get("currency") or currency
+        for k in ("value", "lo80", "hi80", "lo95", "hi95"):
+            allowed.add(h.get(k), fmt_)
+        allowed.add_text(" ".join(str(h.get(k) or "") for k in ("display", "range_display", "wide_display", "total_display",
+                                                                 "cagr_display")))
+        facts = [f"Forecast for {h.get('label')}: {h.get('display')} - likely between {h.get('range_display')} (8 in 10 "
+                 f"outcomes), and almost surely between {h.get('wide_display')}"]
+        vs = h.get("vs") or {}
+        if vs.get("display"):
+            allowed.add(vs.get("value"), fmt_)
+            allowed.add(vs.get("pct"), "percent")
+            facts.append(f"Actual {vs.get('label')}: {vs.get('display')}" + (f" ({vs['pct_display']} to the forecast)" if vs.get("pct_display") else ""))
+        facts.append(f"Method: {m.get('label')}, from {m.get('history')}")
+        if m.get("mape") is not None:
+            allowed.add(m["mape"], "percent")
+            facts.append(f"When tested on past periods it hadn't seen, it was typically {m['mape']:.1f}% off"
+                         + (f" (a {m.get('baseline')} guess: {m['baseline_mape']:.1f}%)" if m.get("baseline_mape") is not None else ""))
+        if m.get("long_range_from"):
+            facts.append(f"From {m['long_range_from']} it is a long-range projection: growth fades and the range widens each year")
+        rows = []
+        for y in (v.get("years") or [])[-14:]:
+            allowed.add(y.get("value"), fmt_)
+            for k in ("lo80", "hi80"):
+                allowed.add(y.get(k), fmt_)
+            word = {"actual": "actual", "forecast": "forecast", "mixed": "actual so far + forecast"}.get(y.get("kind"), "")
+            rng = f" (likely {present.nice(y.get('lo80'), fmt_, cur)} – {present.nice(y.get('hi80'), fmt_, cur)})" if y.get("lo80") is not None else ""
+            facts.append(f"{y.get('period')}: {present.nice(y.get('value'), fmt_, cur)} {word}{rng}")
+            rows.append({"year": y.get("period"), "value": y.get("value"), "kind": y.get("kind")})
+        return {"index": i, "type": "forecast", "title": title, "facts": facts, "rows": rows}
     if t == "kpis":
         facts = []
         for k in v.get("items") or []:

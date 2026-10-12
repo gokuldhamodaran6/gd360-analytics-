@@ -53,6 +53,82 @@ FORECAST = re.compile(r"\b(forecast|predict|projection|project(?:ed)?|expect(?:e
 HISTORY = re.compile(r"\b(history|historical|trend|trends|over time|by (?:day|week|month|quarter|year)|daily|weekly|monthly|"
                      r"quarterly|yearly|growth|grew|grow|change|changed|compare|comparison|vs|versus|since|until|between)\b", re.I)
 
+# ---- what the question wants, read by meaning (round 32) ---------------------------
+# "forcast", "predcit", "projeciton", "trnd", "compair": one slipped key never turns a
+# forecast into a history question. Rules only - no model call.
+FORECAST_WORDS = ("forecast", "forecasts", "forecasting", "forecasted", "predict", "predicts", "predicting", "predicted",
+                  "prediction", "predictions", "projection", "projections", "projected", "outlook", "extrapolate")
+INTENT_VOCAB = FORECAST_WORDS + (
+    "trend", "trends", "trending", "compare", "compared", "comparing", "comparison", "revenue", "profit", "profits",
+    "growth", "average", "quarter", "quarterly", "monthly", "weekly", "yearly", "annual", "customers", "orders",
+    "margin", "conversion", "conversions", "breakdown", "seasonality", "season", "seasonal", "performance",
+)
+# real words that sit one or two keys away from an intent word - never "corrected"
+_NOT_TYPOS = {
+    "protection", "protected", "protect", "predicate", "product", "products", "production", "productive", "project",
+    "projects", "forest", "forests", "forecourt", "tender", "trends", "average", "annually", "annul", "customer",
+    "orderly", "ordered", "margins", "marginal", "quarters", "quartet", "seasons", "seasoned", "compete", "competing",
+    "computed", "compute", "computer", "complete", "completed", "growing", "grown", "comparable", "performer",
+    "performed", "conversation", "conversations", "convention", "profile", "profiles", "provide", "provider",
+    "breakdowns", "outlook", "outlooks", "revenues", "monthly", "weekly",
+}
+_SHORT_TYPOS = {"trnd": "trend", "trnds": "trends", "fcst": "forecast", "frcst": "forecast", "fcast": "forecast",
+                "forcast": "forecast", "forcasts": "forecasts", "forcasting": "forecasting", "forcaste": "forecast",
+                "predcit": "predict", "perdict": "predict", "projeciton": "projection", "compair": "compare",
+                "comapre": "compare", "revnue": "revenue", "reveune": "revenue", "revenu": "revenue"}
+_FORECAST_CUE = re.compile(r"\b(?:what\s+will|will\s+(?:it|we|they|sales|revenue|profit|orders|\w+)\s+(?:be|reach|hit|grow|look)|"
+                           r"going\s+to\s+(?:be|reach|hit|grow)|(?:expected|projected|estimated)\s+(?:sales|revenue|profit|orders|demand|growth)|"
+                           r"in\s+the\s+(?:coming|next)\s+(?:days?|weeks?|months?|quarters?|years?)|years?\s+from\s+now|"
+                           r"(?:next|coming|upcoming|following)\s+(?:\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)?\s*"
+                           r"(?:days?|weeks?|months?|quarters?|years?))\b", re.I)
+
+
+def _intent_word(tok: str) -> str | None:
+    """The intent word a token was meant to be ("forcast" -> "forecast"), or None."""
+    t = tok.lower()
+    if t in INTENT_VOCAB:
+        return t
+    if t in _SHORT_TYPOS:
+        return _SHORT_TYPOS[t]
+    if len(t) < 5 or t in _NOT_TYPOS or not t.isalpha():
+        return None
+    close = difflib.get_close_matches(t, INTENT_VOCAB, n=1, cutoff=0.84)
+    if close and close[0][0] == t[0] and abs(len(close[0]) - len(t)) <= 2:
+        return close[0]
+    return None
+
+
+def read_typos(text: str) -> tuple[str, dict[str, str]]:
+    """The question with slipped intent words read as meant, and what changed:
+    "2016 forcast in sales" -> ("2016 forecast in sales", {"forcast": "forecast"})."""
+    fixes: dict[str, str] = {}
+
+    def swap(m: re.Match) -> str:
+        w = m.group(0)
+        meant = _intent_word(w)
+        if not meant or meant == w.lower():
+            return w
+        fixes[w] = meant
+        return meant.capitalize() if w[:1].isupper() else meant
+    out = re.sub(r"[A-Za-z]+", swap, text or "")
+    return out, fixes
+
+
+def forecast_word(text: str) -> str | None:
+    """The forecast word the question uses - however it is spelt - or None."""
+    for w in re.findall(r"[A-Za-z]+", text or ""):
+        meant = _intent_word(w)
+        if meant in FORECAST_WORDS:
+            return w
+    return None
+
+
+def wants_forecast(text: str) -> bool:
+    """Does the question look ahead? A forecast word (typos too) or a plain
+    future cue ("what will sales be", "next 10 years", "5 years from now")."""
+    return bool(forecast_word(text) or _FORECAST_CUE.search(text or ""))
+
+
 # words that say what the question is about -> measure-ish column names
 MEASURE_WORDS = {
     "revenue", "sales", "sale", "amount", "total", "price", "value", "gmv", "income", "turnover", "profit", "margin",
@@ -120,8 +196,8 @@ def fmt_day(d: date) -> str:
 def fmt_range(a: date, b: date) -> str:
     """'July – September 2026', '4 – 10 Oct 2026', 'Nov 2024 – Jan 2025', '2025'."""
     if a.day == 1 and b == _month_end(b.year, b.month):
-        if a.month == 1 and b.month == 12 and a.year == b.year:
-            return str(a.year)
+        if a.month == 1 and b.month == 12:
+            return str(a.year) if a.year == b.year else f"{a.year} – {b.year}"
         if a.year == b.year:
             if a.month == b.month:
                 return f"{MONTHS[a.month - 1].title()} {a.year}"
@@ -331,6 +407,31 @@ def _parse_one(t: str, today: date) -> tuple[dict | None, list[dict]]:
     alts: list[dict] = []
     y0, m0 = today.year, today.month
 
+    # round 32: the future, said the way people say it - "next 10 years", "the coming quarter",
+    # "in 5 years", "3 years from now" (a forecast; whole calendar periods, starting after today)
+    nums = r"(\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+    m = re.search(rf"\b(?:next|coming|upcoming|following)\s+(?:{nums}\s+)?(day|week|month|quarter|year)s?\b", t)
+    if m:
+        n = max(1, min(_num(m.group(1)) or 1, 50)) if m.group(1) else 1
+        unit = m.group(2)
+        if unit == "day":
+            a = today + timedelta(days=1)
+            return _period(a, a + timedelta(days=n - 1), f"the next {n} days" if n > 1 else "tomorrow", key="next"), []
+        if unit == "week":
+            a = today + timedelta(days=7 - today.weekday())
+            return _period(a, a + timedelta(days=7 * n - 1), f"the next {n} weeks" if n > 1 else "next week", key="next"), []
+        if unit == "year":
+            return _period(date(y0 + 1, 1, 1), date(y0 + n, 12, 31), f"the next {n} years" if n > 1 else "next year", key="next"), []
+        step = 3 if unit == "quarter" else 1
+        start_m = ((m0 - 1) // 3 + 1) * 3 + 1 if unit == "quarter" else m0 + 1
+        ys, ms = _add_months(y0, 1, start_m - 1)
+        ye, me = _add_months(ys, ms, n * step - 1)
+        return _period(date(ys, ms, 1), _month_end(ye, me), f"the next {n} {unit}s" if n > 1 else f"next {unit}", key="next"), []
+    m = re.search(rf"\b(?:in\s+{nums}\s+years?(?:'?\s*time)?|{nums}\s+years?\s+from\s+(?:now|today))\b", t)
+    if m:
+        n = max(1, min(_num(m.group(1) or m.group(2)) or 1, 50))
+        return _period(date(y0 + n, 1, 1), date(y0 + n, 12, 31), str(y0 + n), key="next"), []
+
     m = re.search(r"\b(?:last|past|previous|prior|recent)\s+(\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(day|week|month|quarter|year)s?\b", t)
     if m:
         n = max(1, min(_num(m.group(1)) or 1, 120))
@@ -426,7 +527,7 @@ def _parse_one(t: str, today: date) -> tuple[dict | None, list[dict]]:
         return _period(date(int(m.group(1)), 1, 1), today, f"since {m.group(1)}"), []
     for m in re.finditer(r"(?<![\d.,])\b((?:19|20)\d\d)\b", t):
         yr = int(m.group(1))
-        if 1990 <= yr <= y0 + 10 and _year_ok(t, m):
+        if 1990 <= yr <= y0 + 30 and _year_ok(t, m):
             return _year_period(yr, today), []
     return None, alts
 
@@ -450,7 +551,7 @@ def date_issues(text: str, today: date, accepted: list[str] | None = None) -> li
     out: list[dict] = []
     keep = {str(a).lower() for a in accepted or []}
     low = (text or "").lower()
-    forecast = bool(FORECAST.search(low))
+    forecast = bool(FORECAST.search(low)) or wants_forecast(low)
     strong = rf"(?:{MONTH_RE}|year|fy|q[1-4])"
     weak = r"(?:in|since|during|for|of|until|till|from|to)"
     # after a month / "year" / Q1 any 3-6 digit number is meant as a year; after
@@ -780,6 +881,13 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
     issues: list[dict] = []
     issues += date_issues(qd, today, accepted)
     period, alts = (None, []) if any(i["kind"] in ("year_typo", "month_typo") for i in issues) else parse_period(qd, today)
+    # round 32: a forecast covers whole periods - "2026 forecast" is all of 2026, not "2026 so far" - and
+    # "forecast March" is the coming March. A year the person chose to keep as written is read as asked.
+    keep = {str(a).lower() for a in accepted or []}
+    forecast = wants_forecast(qd) and not any(i["kind"] in ("year_typo", "month_typo") for i in issues)
+    said_year = _said_year(qd, period) if period and not period.get("parts") else None
+    if forecast and period and not period.get("parts") and not (said_year and said_year in keep):
+        period, alts = forecast_span(period, today), []
     qw = words(q)
     topic = _topic(qw)
     needs_time = bool(period) or bool(HISTORY.search(q))
@@ -834,7 +942,7 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
         cands.append(c)
 
     # coverage for the strongest few that have dates (time-boxed)
-    if coverage and needs_time and period and not period.get("future"):
+    if coverage and needs_time and period and (not period.get("future") or period.get("forecast")):
         todo = [c for c in cands if c["fit"] == "good" and c["date_column"]][:3]
         # round 25b: a person with row/column rules on a source never hears its full date range
         # (it would describe rows they can't see) - unknown coverage is never a blocker
@@ -872,6 +980,12 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
                 if not cov:
                     continue
                 lo, hi = date.fromisoformat(cov["start"]), date.fromisoformat(cov["end"])
+                if period.get("forecast"):
+                    # a forecast learns from the history before the period - data that ends before it is the point
+                    if lo > b:
+                        c["fit"] = "out_of_range"
+                        c["why"] = f"its dates run {cov['text']} - nothing before {period['text']} to learn from"
+                    continue
                 if hi < a or lo > b:
                     c["fit"] = "out_of_range"
                     c["why"] = f"its dates run {cov['text']} - nothing in {period['text']}"
@@ -984,15 +1098,20 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
         if oor and not good:
             c = oor[0]
             cov = c["coverage"]
-            hi = date.fromisoformat(cov["end"])
+            lo, hi = date.fromisoformat(cov["start"]), date.fromisoformat(cov["end"])
             span = (date.fromisoformat(period["end"]) - date.fromisoformat(period["start"])).days
-            shifted = _shift_to(hi, span, period)
+            # round 32: the nearest period the data has - its earliest when the question is before it starts
+            before = date.fromisoformat(period["end"]) < lo
+            shifted = _shift_from(lo, span, period) if before else _shift_to(hi, span, period)
+            word = "earliest" if before else "latest"
             for i in (issues if shifted else []):
                 if i["kind"] == "cant_answer":
-                    i["options"].insert(0, {"id": "shift", "label": f"Use its latest {_span_words(period)}: {shifted['text']}",
+                    i["options"].insert(0, {"id": "shift", "label": f"Use its {word} {_span_words(period)}: {shifted['text']}",
                                             "value": c["id"], "period": shifted, "recommended": True})
-                    i["text"] = (f"{c['name']} has {what}, but its dates run {cov['text']} - nothing in {period['text']}. "
-                                 f"I can use its latest {_span_words(period)} instead ({shifted['text']}).")
+                    gap = (f"{period['text']} is before this data starts ({lo.year})" if before
+                           else f"nothing in {period['text']}")
+                    i["text"] = (f"{c['name']} has {what}, but its dates run {cov['text']} - {gap}. "
+                                 f"I can use its {word} {_span_words(period)} instead ({shifted['text']}).")
 
     # a comparison no single source can make: put together the sources that have each period
     if period and period.get("parts") and not any(i["kind"] in ("cant_answer", "swap") for i in issues):
@@ -1023,6 +1142,14 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
                     "options": [opt(c, n == 0) for n, c in enumerate(good[:4])], "multi": True,
                 })
 
+    # round 32: a forecast for a year the data already covers (or that is long past) is almost always a
+    # slip - "2016 forcast" with data to 2025 means 2026. Asked first, like any date that can't be right.
+    if forecast and period and not period.get("parts") and not any(
+            i["kind"] in ("year_typo", "month_typo", "future_year") for i in issues):
+        fy = _forecast_year_issue(said_year, period, cands, today, keep, what)
+        if fy:
+            issues.insert(0, fy)
+
     ready = not issues
     restated = _restate(what, period, picked, needs_time)
     return {
@@ -1033,6 +1160,7 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
         "period": period,
         "period_options": ([period] + alts) if period and alts else [],
         "needs_time": needs_time,
+        "forecast": bool(period.get("forecast")) if period else bool(forecast),
         "issues": issues,
         "candidates": cands,
         "picked": [c["id"] for c in picked],
@@ -1108,6 +1236,106 @@ def _span_words(period: dict) -> str:
     return f"{(b - a).days + 1} days"
 
 
+def _shift_from(lo: date, span_days: int, period: dict) -> dict | None:
+    """The same length of time, starting where the data starts (round 32)."""
+    a0, b0 = date.fromisoformat(period["start"]), date.fromisoformat(period["end"])
+    if b0 < a0 or span_days < 0:
+        return None
+    if a0.day == 1 and b0 == _month_end(b0.year, b0.month):
+        months = (b0.year - a0.year) * 12 + b0.month - a0.month + 1
+        ye, me = _add_months(lo.year, lo.month, months - 1)
+        return _period(date(lo.year, lo.month, 1), _month_end(ye, me),
+                       "its earliest month" if months == 1 else f"its earliest {months} months", key="shift")
+    return _period(lo, lo + timedelta(days=span_days), f"its earliest {span_days + 1} days", key="shift")
+
+
+def _said_year(q: str, period: dict | None) -> str | None:
+    """The year the person wrote for this period ("2016" in "2016 forcast in sales")."""
+    if not period:
+        return None
+    want = period["start"][:4]
+    for m in re.finditer(r"(?<![\d.,])\b((?:19|20)\d\d)\b", q or ""):
+        if m.group(1) == want:
+            return m.group(1)
+    return None
+
+
+def forecast_span(p: dict, today: date) -> dict:
+    """A period read as a forecast target: whole calendar periods ("2026 so far" -> 2026, "this quarter so far" ->
+    the whole quarter), and a month or day named without a year that has passed -> the coming one."""
+    a, b = date.fromisoformat(p["start"]), date.fromisoformat(p["end"])
+    label = str(p.get("label") or "")
+    low = label.lower()
+    if low.endswith("so far"):
+        if "quarter" in low:
+            b = _month_end(a.year, ((a.month - 1) // 3) * 3 + 3)
+            label = "this quarter"
+        elif "month" in low:
+            b = _month_end(a.year, a.month)
+            label = "this month"
+        elif "week" in low:
+            b = a + timedelta(days=6)
+            label = "this week"
+        else:
+            b = date(a.year, 12, 31)
+            label = str(a.year) if low.startswith(str(a.year)) else "this year"
+    elif p.get("assumed") and b < today:
+        a = _safe_day(a.year + 1, a.month, a.day)
+        b = _safe_day(b.year + 1, b.month, b.day) if not (b.day >= 28 and b == _month_end(b.year, b.month)) \
+            else _month_end(b.year + 1, b.month)
+        label = fmt_range(a, b)
+    out = _period(a, b, label, assumed=bool(p.get("assumed")), key=p.get("key") or "asked")
+    out["forecast"] = True
+    if a > today:
+        out["future"] = True
+    return out
+
+
+def _hamming(a: str, b: str) -> int:
+    return sum(x != y for x, y in zip(a, b)) + abs(len(a) - len(b))
+
+
+def _forecast_year_issue(said: str | None, period: dict, cands: list[dict], today: date, keep: set, what: str) -> dict | None:
+    """'Did you mean 2026?' for a forecast of a year that has already happened (round 32)."""
+    if not said or said in keep:
+        return None
+    a, b = date.fromisoformat(period["start"]), date.fromisoformat(period["end"])
+    covs = [c["coverage"] for c in cands if c.get("coverage") and c.get("fit") in ("good", "out_of_range")]
+    if covs:
+        lo = min(date.fromisoformat(x["start"]) for x in covs)
+        hi = max(date.fromisoformat(x["end"]) for x in covs)
+        if b > hi:
+            return None  # it looks ahead of the data: a real forecast
+        min_year = hi.year + 1 if hi >= date(hi.year, 12, 1) else hi.year
+    else:
+        if b >= date(today.year, 1, 1):
+            return None
+        lo = hi = None
+        min_year = today.year
+    window = [y for y in range(min_year, min_year + 3)]
+    near = [y for y in window if _hamming(str(y), said) == 1]
+    sugg: list[int] = []
+    for y in near + [min_year]:
+        if y not in sugg:
+            sugg.append(y)
+    best = sugg[0]
+    core = what.strip("“”") or "the numbers"
+    inside = bool(lo and a >= lo)
+    if lo and hi:
+        runs = f"{lo.year} to {hi.year}" if lo.year != hi.year else str(hi.year)
+        text = (f"{said} is already in your data, which runs {runs}. A forecast looks ahead - did you mean {best}?" if inside
+                else f"Your data runs {runs}, and a forecast looks ahead - so I think you mean {best}.")
+    else:
+        text = f"{said} has already happened, and a forecast looks ahead - so I think you mean {best}."
+    opts = [{"id": f"y{y}", "label": f"Forecast {y}", "value": str(y), "recommended": i == 0} for i, y in enumerate(sugg[:2])]
+    if lo and hi and lo.year < hi.year:
+        opts.append({"id": "history", "label": f"Show {lo.year}–{hi.year} instead", "value": "history",
+                     "question": f"Show {core} by year from {lo.year} to {hi.year}"})
+    opts.append({"id": "keep", "label": f"Show actual {said}" if inside else f"I really mean {said}", "value": said})
+    return {"id": f"fyear:{said}", "kind": "forecast_year", "said": said, "title": f"Did you mean {best}?", "text": text,
+            "options": opts, "fix": {"from": said}, "suggested": str(best)}
+
+
 def _others(db, user, workspace_id, pool, exclude: set | None = None) -> list[dict]:
     exclude = exclude or set()
     rows = accessible_sources(db, user, workspace_id)
@@ -1177,6 +1405,13 @@ def _what(q: str, qw: set[str], topic: str | None) -> str:
             return f"your {core}"
         return f"your {TOPIC_LABEL[topic]} data"
     core = _strip_period(q)
+    # round 32: "forecast next 10 years" names no measure - the forecast words are not the subject
+    bare = re.sub(r"\s+", " ", " ".join(w for w in re.findall(r"[\w'-]+", core)
+                                        if (_intent_word(w) or "") not in FORECAST_WORDS
+                                        and w.lower() not in ("for", "in", "the", "a", "of", "what", "will", "be", "is",
+                                                              "me", "show", "give", "please", "our", "my"))).strip()
+    if wants_forecast(q) and not bare:
+        return "your main numbers"
     return f"“{core}”" if core else "your question"
 
 
@@ -1198,6 +1433,13 @@ def _part_words(p: dict) -> str:
 
 
 def _restate(what: str, period: dict | None, picked: list[dict], needs_time: bool) -> str:
+    if period and period.get("forecast") and not period.get("parts"):
+        # round 32: "A forecast of your sales for 2026, built from the history in Ecommerce_Data."
+        s = f"A forecast of {what} for {_part_words(period)}, built from the history"
+        if picked:
+            names = [c["name"] for c in picked]
+            s += " in " + (names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1])
+        return s + "."
     s = what[0].upper() + what[1:]
     if period and period.get("parts"):
         a, b = period["parts"][:2]
@@ -1206,7 +1448,9 @@ def _restate(what: str, period: dict | None, picked: list[dict], needs_time: boo
             s += " (part of it is a forecast - it hasn't happened yet)"
     elif period:
         s += f" for {_part_words(period)}"
-        if period.get("future"):
+        if period.get("forecast"):
+            s += " (a forecast, built from the history)"
+        elif period.get("future"):
             s += " (a forecast - it hasn't happened yet)"
     elif needs_time:
         s += " over all the dates in the data"
@@ -1237,11 +1481,20 @@ def planner_context(brief: dict | None) -> str:
         lines.append(f"- Compare two periods, exactly these date ranges (inclusive): {a['start']} to {a['end']} "
                      f"({a.get('text') or ''}) versus {b['start']} to {b['end']} ({b.get('text') or ''}). "
                      "Show both side by side and the change between them.")
+    elif p and p.get("start") and p.get("end") and (p.get("forecast") or brief.get("forecast")):
+        # round 32: a forecast is computed by GD360 from the history - the planner fetches that history
+        lines.append(f"- FORECAST target: {p['start']} to {p['end']} inclusive ({p.get('text') or ''}). That period has little "
+                     "or no data yet, so do NOT filter the query to it: fetch the metric's FULL history by month (every "
+                     "month the data has, up to its latest date) and use analysis type \"trend\" with the month as "
+                     "time_column. GD360 computes the forecast from that history with a statistical model - never "
+                     "estimate or extrapolate future values in SQL, and never set can_answer to false because the "
+                     "target period has no rows yet.")
     elif p and p.get("start") and p.get("end"):
         lines.append(f"- Period: {p['start']} to {p['end']} inclusive ({p.get('text') or ''}). Use exactly this date range.")
-    if p and (p.get("future") or any(x.get("future") for x in parts)):
-        lines.append("- Some of that period hasn't happened yet: forecast it from the history and say it is a forecast; "
-                     "never treat the missing future rows as zero.")
+    if p and not p.get("forecast") and (p.get("future") or any(x.get("future") for x in parts)):
+        lines.append("- Some of that period hasn't happened yet: also fetch the metric's full history by month (not "
+                     "filtered to the future part) - GD360 forecasts the missing part from it with a statistical model. "
+                     "Never treat the missing future rows as zero and never estimate them in SQL.")
     if brief.get("restated"):
         lines.append(f"- What the person confirmed they want: {brief['restated']}")
     for n in brief.get("notes") or []:
