@@ -586,7 +586,12 @@ def _new_question(db: Session, user: models.User, q: str, ws: str | None, state:
 
 def _safe_check(db: Session, user: models.User, q: str, ws: str | None, accepted: list[str] | None) -> dict:
     try:
-        return qc.check(db, user, q, workspace_id=ws, accepted=accepted, today=_today())
+        c = qc.check(db, user, q, workspace_id=ws, accepted=accepted, today=_today())
+        # round 38c: by voice, several pages are compared side by side rather than asked about one by one
+        if any(i.get("kind") == "account" for i in c.get("issues") or []):
+            c["issues"] = [i for i in c["issues"] if i.get("kind") != "account"]
+            c["ready"] = not c["issues"]
+        return c
     except Exception as e:  # noqa: BLE001 - never stand between a person and an answer
         logger.warning("[assistant] question check skipped: %s", e)
         return {"ready": True, "issues": [], "candidates": [], "picked": [], "what": "the answer", "period": None}

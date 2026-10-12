@@ -56,7 +56,7 @@ from ..services.data_loader import (
     dataframe_to_csv_bytes, is_warehouse_query, warehouse_no_file_message,
     drop_cached_original, file_import_settings_for, purpose_label,
 )
-from ..services import file_import
+from ..services import blob_io, file_import
 from ..services.profiling import (
     build_profile_query, parse_profile_row, build_top_values_query, parse_top_values, TOP_VALUES_MAX_DISTINCT,
     profile_dataframe,
@@ -715,12 +715,15 @@ async def upload_file(
         name=name,
         kind=kind,
         connection_info=connection_info,
-        file_data=contents,
+        file_data=None,
         read_only=True,
         schema_cache=schema,
     )
     db.add(ds)
     db.flush()
+    # 2026-10-12 (round 39): the file is streamed to the database, so a big
+    # upload never needs several copies of itself in memory to be stored
+    blob_io.put_bytes(db, models.DataSource, "file_data", ds.id, contents)
     audit.log_audit_event(
         db, actor=user, action="datasource_connected", workspace_id=ds.workspace_id,
         target_type="datasource", target_id=ds.id, metadata={"kind": ds.kind},

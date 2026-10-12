@@ -35,6 +35,8 @@ answer), and the thread remembers which answers are on which dashboard
 """
 from __future__ import annotations
 
+import json
+
 import re
 import time
 from collections import defaultdict, deque
@@ -362,6 +364,11 @@ def _clean_brief(brief: dict | None) -> dict | None:
         out["notes"] = notes
     if brief.get("forecast") and out.get("period"):
         out["forecast"] = True
+    acc = brief.get("accounts")
+    if isinstance(acc, dict) and (acc.get("values") or acc.get("all")):
+        vals = [str(v)[:120] for v in (acc.get("values") or [])[:12] if v]
+        out["accounts"] = {"source_id": str(acc.get("source_id") or "")[:64], "source_name": str(acc.get("source_name") or "")[:120],
+                           "values": vals}
     return out or None
 
 
@@ -728,6 +735,13 @@ def _understand_followup(db: Session, user: models.User, conv: models.Conversati
     from ..services.question_check import wants_forecast
     dated = bool(c.get("period")) or wants_forecast(payload.question)
     issue = next((i for i in c.get("issues") or [] if i.get("kind") in _DATE_ISSUES), None)
+    # round 38c: the page / account picked earlier in the thread holds for its follow-ups; asked only once.
+    # A pick made on the follow-up's own "Which page?" card comes back as accepted "accounts:{json}".
+    acc_issue = next((i for i in c.get("issues") or [] if i.get("kind") == "account"), None)
+    picked_now = _accounts_from_accepted(payload.accepted)
+    earlier = picked_now or _thread_accounts(db, conv)
+    if not issue and acc_issue and not earlier:
+        issue = acc_issue  # a date that can't be right is asked first; "which page?" only once dates are clear
     if issue:
         keep = ("question", "what", "period", "needs_time", "forecast", "restated")
         return {"check": {k: c.get(k) for k in keep} | {"ready": False, "issues": [issue], "candidates": [],
@@ -735,7 +749,50 @@ def _understand_followup(db: Session, user: models.User, conv: models.Conversati
     # only a forecast's period travels: a follow-up's other dates often lean on the answer before it
     # ("compare with last year"), which the planner reads from the thread
     p = c.get("period")
-    return {"dated": dated, "brief": _clean_brief({"period": p, "forecast": True}) if p and p.get("forecast") else None}
+    brief = _clean_brief({"period": p, "forecast": True}) if p and p.get("forecast") else None
+    if picked_now:
+        brief = (brief or {}) | {"accounts": picked_now}
+    elif earlier and _keeps_accounts(db, conv, payload.question):
+        brief = (brief or {}) | {"accounts": earlier}
+    return {"dated": dated, "brief": brief}
+
+
+def _accounts_from_accepted(accepted: list[str] | None) -> dict | None:
+    for a in accepted or []:
+        if isinstance(a, str) and a.startswith("accounts:"):
+            try:
+                raw = json.loads(a[len("accounts:"):])
+            except ValueError:
+                return None
+            cleaned = _clean_brief({"accounts": raw}) or {}
+            return cleaned.get("accounts")
+    return None
+
+
+def _keeps_accounts(db: Session, conv: models.Conversation, question: str) -> bool:
+    """A follow-up keeps the thread's page choice unless it names a page itself or asks about all of them."""
+    from ..services import question_check as qc
+    if qc._ALL_WORDS.search(question or ""):  # noqa: SLF001
+        return False
+    qn = f" {qc._norm_name(question)} "  # noqa: SLF001
+    for sid in list(conv.source_ids or [])[:3]:
+        ds = db.get(models.DataSource, sid)
+        for a in (qc.source_accounts(db, ds) if ds else []):
+            n = qc._norm_name(a["name"])  # noqa: SLF001
+            if n and f" {n} " in qn:
+                return False
+    return True
+
+
+def _thread_accounts(db: Session, conv: models.Conversation) -> dict | None:
+    """The accounts the person picked earlier in this thread (latest wins)."""
+    runs = (db.query(models.ProjectRun).filter(models.ProjectRun.conversation_id == conv.id)
+            .order_by(models.ProjectRun.created_at.desc()).limit(12).all())
+    for r in runs:
+        acc = ((r.plan or {}).get("brief") or {}).get("accounts") if isinstance(r.plan, dict) else None
+        if isinstance(acc, dict):
+            return acc
+    return None
 
 
 MAX_EXPLAINS = 60

@@ -139,6 +139,7 @@ def _status(db: Session, ds: models.DataSource) -> dict:
         "id": ds.id, "name": ds.name, "kind": ds.kind, "label": synced_sources.APPS[ds.kind]["label"],
         "sync_interval": info.get("sync_interval") or synced_sources.DEFAULT_INTERVAL.get(ds.kind),
         "history_days": info.get("history_days"), "account": info.get("account_label"),
+        "sync_report": info.get("sync_report"),
         "last_synced_at": ds.last_synced_at, "next_sync_at": ds.next_sync_at, "sync_error": ds.sync_error,
         "syncing": ds.id in _SYNCING,
         "tables": [{"name": n, "rows": r, "synced_at": t} for n, r, t in tables],
