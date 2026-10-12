@@ -396,7 +396,7 @@ If the person's question cannot be answered from this material, set needs_new_da
 need in new_question (and still explain what the material does show)."""
 
 
-def _clean_points(raw: dict, allowed: Allowed) -> dict | None:
+def _clean_points(raw: dict, allowed: Allowed, problems: list | None = None) -> dict | None:
     if not isinstance(raw, dict):
         return None
     head = str(raw.get("headline") or "").strip()
@@ -406,7 +406,10 @@ def _clean_points(raw: dict, allowed: Allowed) -> dict | None:
     bad = [b for t in texts for b in allowed.check(t)]
     if not head or len(pts) < 1 or bad:
         if bad:
-            logger.info("[explain] model wrote numbers that aren't in the result: %s", bad[:5])
+            # round 33: said where it can be seen (INFO never reached production logs)
+            logger.warning("[explain] model wrote numbers that aren't in the result: %s", bad[:5])
+            if problems is not None:
+                problems.extend(bad[:8])
         return None
     return {
         "headline": head[:300],
@@ -422,15 +425,25 @@ def _model(material: dict, question: str | None, allowed: Allowed) -> dict | Non
     from . import ai_engine
     import json
     ask = question.strip()[:500] if question else "Explain this."
-    try:
-        raw = ai_engine._plan_with_retry([  # noqa: SLF001
-            {"role": "system", "content": _EXPLAINER},
-            {"role": "user", "content": f"Material:\n{json.dumps(material, default=str)[:12000]}\n\nThe person asks: {ask}"},
-        ], max_tokens=1400)
-    except Exception as e:  # noqa: BLE001
-        logger.info("[explain] model unavailable: %s", e)
-        return None
-    return _clean_points(raw, allowed)
+    user = f"Material:\n{json.dumps(material, default=str)[:12000]}\n\nThe person asks: {ask}"
+    # round 33: a draft with a number that isn't in the material gets ONE more try, told which numbers -
+    # before, the first slip went straight to the plain fallback
+    for attempt in range(2):
+        problems: list = []
+        try:
+            raw = ai_engine._plan_with_retry([  # noqa: SLF001
+                {"role": "system", "content": _EXPLAINER},
+                {"role": "user", "content": user},
+            ], max_tokens=1400)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[explain] model unavailable: %s", e)
+            return None
+        out = _clean_points(raw, allowed, problems)
+        if out is not None or not problems:
+            return out
+        user += ("\n\nYour previous draft used numbers that are not in the material: " + ", ".join(map(str, problems))
+                 + ". Rewrite it using ONLY numbers written in the material, copied exactly as written there.")
+    return None
 
 
 def _fallback_visual(v: dict, ctx: dict) -> dict:
@@ -521,14 +534,9 @@ def block_material(block: dict, allowed: Allowed) -> dict:
     if kpi:
         allowed.add(kpi.get("value"))
         allowed.add_text(" ".join(str(kpi.get(k) or "") for k in ("display", "delta", "prior_display", "sparkline_text")))
-        facts.append(f"{title}: {kpi.get('display')}" + (f" ({kpi.get('delta')} {kpi.get('delta_caption') or 'vs prior period'})" if kpi.get("delta") else ""))
-        spark = [x for x in (kpi.get("sparkline") or []) if _f(x) is not None][-36:]
-        if len(spark) >= 3:
-            for x in spark:
-                allowed.add(x)
-            facts.append(f"Over the last {len(spark)} periods it ranged from {present.nice(min(spark))} to {present.nice(max(spark))}")
-            allowed.add(min(spark))
-            allowed.add(max(spark))
+        scope = f" ({block['filters_text']})" if block.get("filters_text") else ""
+        facts.append(f"{title}: {kpi.get('display')}{scope}" + (f" ({kpi.get('delta')} {kpi.get('delta_caption') or 'vs prior period'})" if kpi.get("delta") else ""))
+        facts += _spark_facts(kpi, title, allowed, currency)
     for r in rows:
         for c in cols:
             if isinstance(r.get(c), (int, float)) and not isinstance(r.get(c), bool):
@@ -536,6 +544,62 @@ def block_material(block: dict, allowed: Allowed) -> dict:
     facts += _rows_facts(title, cols, rows, allowed, currency, block.get("dimensions"))
     return {"title": title, "type": btype if btype != "chart" else (block.get("chart_type") or "chart"), "facts": facts,
             "rows": rows[:MAX_ROWS], "filters": block.get("filters_text")}
+
+
+_GRAIN_WORD = {"day": "days", "week": "weeks", "month": "months", "quarter": "quarters", "year": "years"}
+_MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _spark_facts(kpi: dict, title: str, allowed: Allowed, currency: str | None) -> list[str]:
+    """Round 33: what a KPI's trend line says, in its own units and periods - its range over the WHOLE line
+    the page draws (not "the last 36 periods"), the last 12 months against the 12 before, and the month that
+    peaks most years."""
+    vals = [_f(x) for x in (kpi.get("sparkline") or [])]
+    periods = [str(p) for p in (kpi.get("spark_periods") or [])]
+    pairs = [(periods[i] if i < len(periods) else None, v) for i, v in enumerate(vals) if v is not None][-120:]
+    if len(pairs) < 3:
+        return []
+    kind = {"currency": "currency", "percent": "ratio"}.get(str(kpi.get("format") or ""), None) or _kind_of(title, [v for _p, v in pairs])
+    nice = lambda v: present.nice(v, kind, currency or "USD")  # noqa: E731
+    grain = str(kpi.get("grain") or "")
+    unit = _GRAIN_WORD.get(grain, "periods")
+    out = []
+    lo = min(pairs, key=lambda x: x[1])
+    hi = max(pairs, key=lambda x: x[1])
+    for x in (lo[1], hi[1]):
+        allowed.add(x, kind)
+    def ym(t: str | None) -> str | None:
+        m = re.match(r"^(\d{4})-(\d{2})", t or "")
+        return f"{_MON[int(m.group(2)) - 1]} {m.group(1)}" if m and 1 <= int(m.group(2)) <= 12 else (t[:10] if t else None)
+    span = f" ({ym(pairs[0][0])} to {ym(pairs[-1][0])})" if pairs[0][0] and pairs[-1][0] else ""
+    when = lambda p: f" in {ym(p[0])}" if p[0] else ""  # noqa: E731
+    out.append(f"Across the {len(pairs)} {unit} on the trend line{span} it ranged from {nice(lo[1])}{when(lo)} to {nice(hi[1])}{when(hi)}")
+    allowed.add(len(pairs))
+    additive = kind != "ratio" and not re.search(r"(avg|average|mean|rate|ratio|per|aov|value)", title, re.I)
+    if grain == "month" and len(pairs) >= 24:
+        last, prev = [v for _p, v in pairs[-12:]], [v for _p, v in pairs[-24:-12]]
+        a, b = (sum(last), sum(prev)) if additive else (sum(last) / 12, sum(prev) / 12)
+        if b:
+            ch = (a - b) / abs(b) * 100
+            allowed.add(a, kind)
+            allowed.add(b, kind)
+            allowed.add(ch, "percent")
+            word = "in total" if additive else "on average"
+            out.append(f"The last 12 months came to {nice(a)} {word}, against {nice(b)} in the 12 months before ({ch:+.1f}%)")
+        dated = [(int(p[5:7]), int(p[:4]), v) for p, v in pairs if p and re.match(r"^\d{4}-\d{2}", p)]
+        years: dict[int, list[tuple[int, float]]] = {}
+        for m, y, v in dated:
+            years.setdefault(y, []).append((m, v))
+        full = {y: ms for y, ms in years.items() if len(ms) == 12}
+        if len(full) >= 2:
+            tops = [max(ms, key=lambda t: t[1])[0] for ms in full.values()]
+            best = max(set(tops), key=tops.count)
+            n = tops.count(best)
+            if n >= max(2, len(full) * 2 / 3):
+                allowed.add(n)
+                allowed.add(len(full))
+                out.append(f"{_MON[best - 1]} is its strongest month in {n} of {len(full)} full years - a yearly peak")
+    return out
 
 
 def explain_block(block: dict, question: str | None = None, use_model: bool = True) -> dict:
@@ -548,7 +612,10 @@ def explain_block(block: dict, question: str | None = None, use_model: bool = Tr
     by = "model"
     if out is None:
         by = "numbers"
-        out = {"headline": f"{mat['title']}.", "points": [{"text": f + ".", "ref": None} for f in mat["facts"][:MAX_POINTS]]
+        facts = mat["facts"][:MAX_POINTS + 1]
+        # round 33: the headline says the number, not just the tile's name
+        head = facts[0] if facts else mat["title"]
+        out = {"headline": head + ".", "points": [{"text": f + ".", "ref": None} for f in facts[1:MAX_POINTS + 1]]
                or [{"text": "This tile shows the rows below.", "ref": None}],
                "takeaway": None, "followups": [], "needs_new_data": False, "new_question": None}
     return {**out, "block_id": block.get("id"), "title": mat["title"], "written_by": by, "question": (question or "").strip() or None,
