@@ -1373,7 +1373,7 @@ export const conversationApi = {
   // "moved" vs "skipped" means.
   bulkMove: (conversationIds: string[], folderId: string | null) =>
     api
-      .patch<{ moved: string[]; skipped: string[]; folder_id: string | null }>("/conversations/bulk-move", {
+      .patch<{ moved: string[]; skipped: string[]; wrong_kind?: string[]; folder_id: string | null }>("/conversations/bulk-move", {
         conversation_ids: conversationIds,
         folder_id: folderId,
       })
@@ -1391,13 +1391,19 @@ export type FolderSummary = {
   created_at: string;
   project_count: number;
   can_edit: boolean;
+  // round 34: the Library tab the folder belongs to ("answer" | "analysis" | "talk") - stored when it
+  // was made under a tab, or inferred when everything in it is one kind; null = shown under every tab
+  kind?: LibraryKind | null;
+  kind_inferred?: boolean;
+  counts?: Partial<Record<LibraryKind, number>>;
 };
+export type LibraryKind = "answer" | "analysis" | "talk";
 
 export const folderApi = {
   list: (workspaceId: string) =>
     api.get<FolderSummary[]>("/folders", { params: { workspace_id: workspaceId } }).then((r) => r.data),
-  create: (workspaceId: string, name: string) =>
-    api.post<FolderSummary>("/folders", { workspace_id: workspaceId, name }).then((r) => r.data),
+  create: (workspaceId: string, name: string, kind?: LibraryKind | null) =>
+    api.post<FolderSummary>("/folders", { workspace_id: workspaceId, name, kind: kind || null }).then((r) => r.data),
   rename: (id: string, name: string) => api.patch<FolderSummary>(`/folders/${id}`, { name }).then((r) => r.data),
   remove: (id: string) => api.delete<{ id: string; deleted: boolean }>(`/folders/${id}`).then((r) => r.data),
 };
