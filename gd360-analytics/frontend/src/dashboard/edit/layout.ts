@@ -48,7 +48,14 @@ export function viewLayout(blocks: DashboardBlock[], heights?: Record<string, nu
     const h = Math.max(1, heights?.[b.id] ?? int(b.h, 4));
     return { i: b.id, x, y: Math.max(0, int(b.y, 0)), w, h };
   });
-  return compact(items);
+  // round 37: viewing, a card alone in its row takes the whole width - never a half-empty row
+  // (the stored layout is untouched; the editor still shows and saves it as placed)
+  const placed = compact(items);
+  return placed.map((it) => {
+    if (it.w >= GRID_COLS) return it;
+    const alone = !placed.some((o) => o !== it && o.y < it.y + it.h && it.y < o.y + o.h);
+    return alone ? { ...it, x: 0, w: GRID_COLS } : it;
+  });
 }
 
 // `metrics`: the grid's row height and gap for the dashboard's density
