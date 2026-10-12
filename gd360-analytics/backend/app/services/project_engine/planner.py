@@ -91,6 +91,18 @@ can_answer to false only because the future period has no rows. Read slips kindl
 Do not add helper sort columns (month_num, sort_order) to the analysis table -
 GD360 orders months and weekdays itself.
 
+What is really in the data (round 38c): each TABLE says how many rows it has and, for synced apps, its
+date range and its accounts; a source's "note" says what the app could not send at the last sync and why.
+- Never query a TABLE marked EMPTY. If the question can only be answered from empty tables, set
+  can_answer to false; in "missing" say plainly what is empty and why (use the source note, e.g. "Meta sent
+  no posts for these accounts" or "daily reach needs a permission the sign-in didn't allow"), and give
+  "alternatives" the non-empty tables CAN answer (followers by account, the latest posts...).
+- Use the date range a table states: a question about "performance" or "recently" on data that ends long
+  ago is answered for the data's own latest period, and the "assumptions" say which dates were used.
+- A source with several accounts (pages, profiles, ad accounts, numbers): unless the person named one or
+  asked for a total, keep the accounts apart (GROUP BY account) so each is shown on its own - never add
+  them into one number.
+
 Today's date is {{today}}.
 
 Answer with JSON only, in exactly this shape:

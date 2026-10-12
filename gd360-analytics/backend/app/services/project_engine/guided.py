@@ -456,6 +456,16 @@ def finish(db: Session, run_id: str) -> None:
         for s in done if s.get("kind") != "combine"
     ]
     plan["combine"] = [{k: s.get(k) for k in ("id", "title", "purpose", "sql")} for s in done if s.get("kind") == "combine"]
+    # round 38c: every step came back empty - the same plain "no data yet" answer as Instant Answers
+    if all(df is None or len(df) == 0 for df in tables.values()):
+        from .catalog import build_catalog
+        from .executor import _no_data_answer, empty_for_lack_of_data
+        conv = db.get(models.Conversation, run.conversation_id)
+        user = db.get(models.User, run.owner_id)
+        cat = build_catalog(db, user, list(conv.source_ids or []))
+        if empty_for_lack_of_data(plan, cat):
+            _no_data_answer(db, run, plan, cat)
+            return
     analysis, warnings = analyse(plan, tables, done, run.question)
     rk = (analysis.get("summary") or {}).get("rank")
     if rk and isinstance(plan.get("analysis"), dict) and not plan["analysis"].get("rank"):
@@ -470,6 +480,15 @@ def finish(db: Session, run_id: str) -> None:
     idx = present.number_index(analysis.get("facts") or [], [*evidence, *[v for v in analysis.get("visuals") or [] if v.get("rows")]], currency)
     answer = present.polish_answer(answer, idx, currency) | {"written_by": answer.get("written_by")}
     enrich_causes(answer, analysis, plan, done, idx, currency)
+    try:
+        from .catalog import build_catalog
+        from .executor import askable_next
+        conv = db.get(models.Conversation, run.conversation_id)
+        user = db.get(models.User, run.owner_id)
+        answer["next_questions"] = askable_next(answer.get("next_questions") or [], plan,
+                                                build_catalog(db, user, list(conv.source_ids or [])))
+    except Exception as e:  # noqa: BLE001 - suggestions never fail an answer
+        print(f"[guided] next questions kept as written: {e}")
 
     db.refresh(run)
     result = dict(run.result or {})

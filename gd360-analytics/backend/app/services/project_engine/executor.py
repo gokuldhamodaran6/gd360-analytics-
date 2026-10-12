@@ -188,7 +188,7 @@ def plan_run(db: Session, run_id: str) -> None:
             "headline": "I can't answer that from this data yet.",
             "answer": plan.get("missing") or "The data needed for this question is not in the project's sources.",
             "causes": [], "ruled_out": [], "next_questions": [],
-            "options": ways_forward(plan, run.question),
+            "options": ways_forward(plan, run.question, catalog),
         }}
         run.finished_at = datetime.utcnow()
         _assistant_message(db, run, run.result["answer"])
@@ -248,7 +248,132 @@ def _read_question(question: str, brief: dict | None) -> tuple[str, dict]:
     return fixed, out
 
 
-def ways_forward(plan: dict, question: str) -> list[dict]:
+_TABLE_QUESTIONS = {
+    "accounts": "How many followers does each account have?",
+    "posts": "Which posts got the most engagement?",
+    "channel_daily": "How has daily reach changed over time?",
+    "campaign_daily": "Which campaigns spent the most?",
+    "messages_daily": "How many WhatsApp messages were delivered each day?",
+    "conversations_daily": "What did WhatsApp cost by category?",
+    "templates": "Which WhatsApp templates were read the most?",
+    "phone_numbers": "What is the quality rating of each WhatsApp number?",
+    "traffic_daily": "How has traffic changed over time?",
+    "orders": "How have orders changed over time?",
+}
+
+
+_EMPTY_WORDS = {
+    "posts": ("post", "reel", "story", "stories", "caption", "content type", "publishing"),
+    "channel_daily": ("reach", "impression", "daily", "per day", "follower growth", "growth", "trend", "over time",
+                      "by month", "by week", "views"),
+    "template_daily": ("template",), "templates": ("template",),
+    "conversations_daily": ("cost", "spend", "billed", "conversation"),
+    "messages_daily": ("delivered", "sent", "messages"),
+}
+
+
+def askable_next(questions: list, plan: dict, catalog) -> list:
+    """Round 38c: "Ask next" never suggests a question the data can't answer - a suggestion that needs a table
+    with no rows is swapped for one the filled tables can answer."""
+    used = {s.get("source_id") for s in plan.get("steps") or []}
+    srcs = [x for x in catalog.sources if x.id in used] or list(catalog.sources)
+    empty = {t.name for x in srcs for t in x.tables if t.rows == 0}
+    filled = [t.name for x in srcs for t in x.tables if t.rows]
+    if not empty:
+        return questions
+    bad_words = [w for t in empty for w in _EMPTY_WORDS.get(t, ())]
+    keep = [q for q in questions if not any(w in str(q).lower() for w in bad_words)]
+    for t in filled:
+        q = _TABLE_QUESTIONS.get(t)
+        if len(keep) >= 3:
+            break
+        if q and q not in keep:
+            keep.append(q)
+    return keep[:3]
+
+
+def empty_for_lack_of_data(plan: dict, catalog) -> bool:
+    """An all-empty result is "this app holds nothing for it yet" only when a query read a synced app's table
+    that has no rows at all. A file or database that has rows but none matching the dates or filters keeps
+    the normal answer path (it is the question that's off, not the data)."""
+    for st in plan.get("steps") or []:
+        src = catalog.source(st.get("source_id")) if st.get("source_id") else None
+        if src is None or src.mode != "synced":
+            continue
+        sql = str(st.get("sql") or "").lower()
+        for t in src.tables:
+            if t.rows == 0 and re.search(rf"\b{re.escape(t.name.lower())}\b", sql):
+                return True
+    return False
+
+
+def _held_words(table: str, rows: int) -> str:
+    """"2 accounts' details", "24 posts", "1,462 daily rows" - what a table holds, in plain words."""
+    if table in ("accounts", "pages", "ad_accounts", "phone_numbers", "properties", "sites"):
+        noun = {"phone_numbers": "phone number", "properties": "property", "sites": "site"}.get(table, "account")
+        return f"{rows:,} {noun}{'s' if rows != 1 else ''}' details" if noun != "property" else f"{rows:,} properties' details"
+    if table == "posts":
+        return f"{rows:,} post{'s' if rows != 1 else ''}"
+    if table.endswith("daily"):
+        return f"{rows:,} daily rows"
+    return f"{table.replace('_', ' ')} ({rows:,} rows)"
+
+
+def _and_list(xs: list[str]) -> str:
+    return xs[0] if len(xs) == 1 else ", ".join(xs[:-1]) + " and " + xs[-1]
+
+
+def _no_data_answer(db: Session, run: models.ProjectRun, plan: dict, catalog) -> None:
+    """Round 38c: the queries ran and every result was empty. The answer says, in plain words, what the
+    source does hold, why the rest is missing (its sync report), and offers what it CAN answer."""
+    used_ids = [s.get("source_id") for s in plan.get("steps") or [] if s.get("source_id")]
+    srcs = [catalog.source(i) for i in dict.fromkeys(used_ids)]
+    srcs = [x for x in srcs if x is not None] or list(catalog.sources)[:1]
+    names = ", ".join(x.name for x in srcs[:2]) or "This data"
+    have, why, asks, links = [], [], [], []
+    for src in srcs[:2]:
+        filled = [t for t in src.tables if t.rows]
+        if src.mode != "synced":
+            have.append(f"Nothing in {src.name} matched this question")  # row counts are only known for apps
+        elif filled:
+            have.append(f"{src.name} only holds " + _and_list([_held_words(t.name, t.rows) for t in filled[:3]])
+                        + " so far - nothing this question needs")
+        else:
+            have.append(f"{src.name} hasn't brought in any rows yet")
+        ds = db.get(models.DataSource, src.id)
+        rep = ((ds.connection_info or {}).get("sync_report") if ds and isinstance(ds.connection_info, dict) else None) or {}
+        for p in (rep.get("problems") or [])[:3]:
+            why.append(str(p))
+        for t in filled:
+            q = _TABLE_QUESTIONS.get(t.name)
+            if q and q not in asks:
+                asks.append(q)
+        if src.mode == "synced":
+            links.append({"id": f"source-{src.id}", "label": f"See what {src.name} sent at the last sync",
+                          "href": f"/data?tab=sources&report={src.id}", "kind": "connect"})
+    for q in plan.get("alternatives") or []:
+        q = re.sub(r"\s+", " ", str(q or "")).strip()
+        if 4 <= len(q) <= 140 and q not in asks:
+            asks.append(q)
+    text = ". ".join(have) + "."
+    if why:
+        text += " What's missing and why: " + " ".join(w if w.endswith(".") else w + "." for w in why)
+    answer = {
+        "headline": f"{names} has nothing to show for this yet.",
+        "answer": text,
+        "causes": [], "ruled_out": [], "next_questions": [],
+        "options": [{"id": f"alt{i + 1}", "label": q, "question": q, "kind": "ask"} for i, q in enumerate(asks[:3])] + links[:1],
+        "no_data": True,
+    }
+    run.status = "needs_input"
+    run.result = {"answer": answer, "no_data": True, "warnings": [],
+                  "queries": sum(1 for s in run.steps or [] if s.get("status") in ("done", "failed"))}
+    run.finished_at = datetime.utcnow()
+    _assistant_message(db, run, answer)
+    db.commit()
+
+
+def ways_forward(plan: dict, question: str, catalog=None) -> list[dict]:
     """The closest questions the sources CAN answer (round 32) - from the planner's own alternatives,
     plus connecting data that has what's missing."""
     out: list[dict] = []
@@ -257,6 +382,13 @@ def ways_forward(plan: dict, question: str) -> list[dict]:
         if 4 <= len(q) <= 140 and q.lower() != (question or "").strip().lower() and q not in [o["question"] for o in out]:
             out.append({"id": f"alt{len(out) + 1}", "label": q, "question": q, "kind": "ask"})
     out = out[:3]
+    # round 38c: an app that synced but holds nothing for this - its own report says why, one tap away
+    synced_empty = [x for x in (catalog.sources if catalog else []) if x.mode == "synced" and any(t.rows == 0 for t in x.tables)]
+    if synced_empty:
+        x = synced_empty[0]
+        out.append({"id": f"source-{x.id}", "label": f"See what {x.name} sent at the last sync", "href": f"/data?tab=sources&report={x.id}",
+                    "kind": "connect"})
+        return out
     out.append({"id": "connect", "label": "Connect data that has it", "href": "/data?tab=catalog", "kind": "connect"})
     return out
 
@@ -526,9 +658,13 @@ def analyse(plan: dict, tables: dict, steps: list[dict], question: str = "") -> 
     try:
         analysis = run_analysis(spec, tables)
     except (AnalysisError, KeyError, ValueError, TypeError) as e:
-        warnings.append(f"The planned analysis could not be completed ({e}); showing the results as they are.")
-        last = (plan.get("combine") or plan.get("steps") or [{}])[-1].get("id")
-        fallback_table = last if last in tables else next(iter(tables))
+        # round 38c: in words, and the fallback shows a table that HAS rows - never a bare header
+        empty = "empty" in str(e).lower()
+        warnings.append("One part of this came back with no rows, so it is left out; showing what the data does have."
+                        if empty else "The full analysis couldn't be computed from these results; showing them as they are.")
+        order = [x.get("id") for x in reversed((plan.get("combine") or []) + (plan.get("steps") or []))]
+        filled = [t for t in order if t in tables and len(tables[t])] or [t for t in tables if len(tables[t])]
+        fallback_table = filled[0] if filled else next(iter(tables))
         analysis = run_analysis({"type": "lookup", "table": fallback_table}, tables)
     # 2026-10-12 (round 32): a question about the future gets a forecast - from the history the plan
     # fetched, for exactly the period asked - never the history alone (project_engine/forecasting.py)
@@ -705,6 +841,12 @@ def _execute(db: Session, run: models.ProjectRun) -> None:
         db.commit()
         return
 
+    # round 38c: every query ran and came back empty - never an empty table and an engine error; say what
+    # the data has, why the rest is missing (the app's own sync report), and what CAN be asked instead
+    if all(df is None or len(df) == 0 for df in tables.values()) and empty_for_lack_of_data(plan, catalog):
+        _no_data_answer(db, run, plan, catalog)
+        return
+
     analysis, warnings = analyse(plan, tables, run.steps, run.question)
     rk = (analysis.get("summary") or {}).get("rank")
     if rk and isinstance(plan.get("analysis"), dict) and not plan["analysis"].get("rank"):
@@ -721,6 +863,7 @@ def _execute(db: Session, run: models.ProjectRun) -> None:
     idx = present.number_index(analysis.get("facts") or [], [*evidence, *[v for v in analysis.get("visuals") or [] if v.get("rows")]], currency)
     answer = present.polish_answer(answer, idx, currency) | {"written_by": answer.get("written_by")}
     enrich_causes(answer, analysis, plan, run.steps or [], idx, currency)
+    answer["next_questions"] = askable_next(answer.get("next_questions") or [], plan, catalog)
 
     run.result = {
         "answer": answer,

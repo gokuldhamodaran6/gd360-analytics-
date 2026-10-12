@@ -65,6 +65,9 @@ class CatalogTable:
     name: str                 # what the planner writes in SQL
     source_key: str | None    # the real table / sheet key to load (DuckDB sources)
     columns: list[dict]       # [{name, type}]
+    # round 38c: what is IN the table, so nothing is planned on an empty one
+    rows: int | None = None
+    facts: str = ""           # "dates 2024-10-12 to 2026-10-11; accounts: A, B"
 
 
 @dataclass
@@ -165,6 +168,50 @@ def _columns(cols: list) -> list[dict]:
     return out
 
 
+_DATE_NAMES = ("date", "day", "posted_at", "post_date", "created_at", "send_date", "month", "week")
+
+
+def _synced_facts(db: Session, ds_id: str, table: str, cols: list, n) -> str:
+    """The date range and the accounts a synced table holds - a few words the planner reads (round 38c)."""
+    if not n:
+        return ""
+    names = [str(c.get("name") if isinstance(c, dict) else c) for c in cols]
+    want_date = next((c for c in _DATE_NAMES if c in names), None)
+    want_acc = "account" if "account" in names else None
+    if not (want_date or want_acc):
+        return ""
+    try:
+        from ..synced_sources import load_table
+        df = load_table(db, ds_id, table)
+    except Exception:  # noqa: BLE001 - facts are a hint, never a blocker
+        return ""
+    bits = []
+    if want_date and want_date in df.columns:
+        try:
+            import pandas as pd
+            d = pd.to_datetime(df[want_date], errors="coerce", utc=True).dropna()
+            if len(d):
+                bits.append(f"{want_date} from {d.min().date()} to {d.max().date()}")
+        except Exception:  # noqa: BLE001
+            pass
+    if want_acc and want_acc in df.columns:
+        vals = [str(v) for v in df[want_acc].dropna().unique().tolist()[:12]]
+        if vals:
+            bits.append(f"{len(df[want_acc].dropna().unique())} account(s): " + ", ".join(vals))
+    return "; ".join(bits)
+
+
+def _sync_note(ds: models.DataSource) -> str:
+    """What the last sync could not bring, in the app's own words (round 38c)."""
+    rep = (ds.connection_info or {}).get("sync_report") if isinstance(ds.connection_info, dict) else None
+    if not isinstance(rep, dict):
+        return ""
+    probs = [str(p) for p in rep.get("problems") or []][:4]
+    if not probs:
+        return ""
+    return "Last sync: " + rep.get("headline", "") + ". Not available: " + " | ".join(probs)
+
+
 def build_source(db: Session, ds: models.DataSource, user: models.User) -> CatalogSource:
     mode = source_mode(ds.kind)
     dialect = LIVE_DIALECTS.get(ds.kind, "duckdb")
@@ -183,10 +230,14 @@ def build_source(db: Session, ds: models.DataSource, user: models.User) -> Catal
             .order_by(models.SyncedTable.table_name)
             .all()
         )
-        for name, cols, _n in rows[:MAX_TABLES_PER_SOURCE]:
-            src.tables.append(CatalogTable(name=name, source_key=name, columns=_columns(cols or [])))
+        for name, cols, n in rows[:MAX_TABLES_PER_SOURCE]:
+            src.tables.append(CatalogTable(name=name, source_key=name, columns=_columns(cols or []),
+                                           rows=int(n) if n is not None else None,
+                                           facts=_synced_facts(db, ds.id, name, cols or [], n)))
         if not rows:
             src.note = "No data has been synced from this app yet."
+        else:
+            src.note = _sync_note(ds)
         return src
 
     pairs = _schema_tables(ds)
@@ -265,7 +316,13 @@ class Catalog:
                 text = ", ".join(f"{c['name']} ({c['type'] or '?'})" for c in cols[:60])
                 if len(cols) > 60:
                     text += f", ... {len(cols) - 60} more columns"
-                line = f"  TABLE {t.name}: {text}"
+                if t.rows == 0:
+                    line = f"  TABLE {t.name} [EMPTY - 0 rows, never query it]: {text}"
+                elif t.rows is not None or t.facts:
+                    meta = ", ".join(x for x in (f"{t.rows:,} rows" if t.rows is not None else "", t.facts) if x)
+                    line = f"  TABLE {t.name} [{meta}]: {text}"
+                else:
+                    line = f"  TABLE {t.name}: {text}"
                 if used + len(line) > share and shown:
                     lines.append(f"  ... {len(s.tables) - shown} more tables in this source")
                     break
