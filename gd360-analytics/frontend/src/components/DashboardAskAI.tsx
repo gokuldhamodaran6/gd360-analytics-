@@ -47,7 +47,15 @@ export function snapshotBlock(b: DashboardBlock, run: DashboardRun, warehouse: b
     };
     if (b.type === "kpi" || b.type === "gauge") {
       const d = kpiDisplay(r, b);
-      snap.kpi = { value: kpiValue(r), display: d.value, delta: d.delta?.label || null, delta_caption: d.delta?.caption || null, sparkline: d.sparkline };
+      // round 33: the trend line's own periods, grain and units travel with it, so an explanation says
+      // "across 60 months (2021-01 to 2025-12)" in dollars - not "the last 36 periods" in bare numbers
+      const m = r.measures?.[0];
+      const srows = (r.sparkline?.rows || []).filter((row) => m && typeof row[m] === "number" && Number.isFinite(row[m]));
+      const tcol = (r.sparkline?.columns || []).map((c) => c.name).find((n) => n !== m && srows.some((row) => typeof row[n] === "string" && /^\d{4}-\d{2}/.test(row[n])));
+      snap.kpi = {
+        value: kpiValue(r), display: d.value, delta: d.delta?.label || null, delta_caption: d.delta?.caption || null, sparkline: d.sparkline,
+        format: d.format.format, grain: r.sparkline?.grain || null, spark_periods: tcol ? srows.map((row) => String(row[tcol])) : [],
+      };
     }
     return snap;
   }
@@ -525,19 +533,24 @@ function ExplainCard({ e, page, onFollowup, onWatch }: { e: BlockExplanation; pa
     <section className="rounded-[16px] border border-border bg-surface p-4 flex flex-col gap-3" data-ai-explain="">
       <p className="m-0 text-[15px] leading-[22px] text-text font-medium">{e.headline}</p>
       <ol className="list-none m-0 p-0 flex flex-col gap-2.5">
-        {e.points.map((p, i) => (
+        {e.points.map((p, i) => {
+          // round 33: one "Show" link per tile - not the same link under every point
+          const id = p.block_id || e.block_id;
+          const firstForTile = e.points.findIndex((q) => (q.block_id || e.block_id) === id) === i;
+          return (
           <li key={i} className="grid grid-cols-[22px_1fr] gap-2.5 items-start">
             <span className="mt-[1px] w-[22px] h-[22px] rounded-full bg-kind-answer-fill text-kind-answer grid place-items-center font-mono text-[11px]" aria-hidden="true">{i + 1}</span>
             <span className="flex flex-col gap-1">
               <span className="text-ui text-secondary leading-relaxed">{p.text}</span>
-              {(p.block_id || e.block_id) && (titleOf(p.block_id || e.block_id)) && (
+              {id && firstForTile && titleOf(id) && (
                 <button type="button" onClick={() => flashBlock(p.block_id || e.block_id)} className="self-start text-[12px] text-kind-answer hover:underline">
                   Show “{titleOf(p.block_id || e.block_id)}”
                 </button>
               )}
             </span>
           </li>
-        ))}
+          );
+        })}
       </ol>
       {e.takeaway && <p className="m-0 text-ui text-text leading-relaxed border-l-2 border-kind-answer pl-3">{e.takeaway}</p>}
       {e.needs_new_data && (

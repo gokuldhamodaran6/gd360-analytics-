@@ -505,7 +505,11 @@ export default function EulivProvider() {
     if (hiddenRoute) setOpen(false);
   }, [hiddenRoute]);
 
-  const wakeOn = !!settings.wake && !hiddenRoute && !open && !isTouchDevice() && speechInputSupported();
+  // 2026-10-12 (round 33): "Hi Euliv" listens on Home only. Its pill is the honest sign that the mic is
+  // listening, so it can't simply be hidden elsewhere - the listening stops off Home too, and the
+  // pill no longer sits over every page's bottom-left corner. Euliv itself still opens anywhere.
+  const onHome = loc.pathname === "/" || loc.pathname === "/home";
+  const wakeOn = !!settings.wake && onHome && !hiddenRoute && !open && !isTouchDevice() && speechInputSupported();
   const wake = useWakeWord(wakeOn, (rest) => openEuliv(rest || undefined));
 
   if (hiddenRoute) return null;
@@ -1180,7 +1184,7 @@ function WakeOffer({ settings }: { settings: EulivSettings }) {
   if (done === "on") {
     return (
       <div className="order-last rounded-[16px] border border-kind-answer-border bg-kind-answer-fill/60 px-4 py-3 text-[13px] text-secondary" data-euliv-wake-on="">
-        <b className="text-text">“Hi Euliv” is on.</b> Close this and just say it whenever a GD360 tab is in front.
+        <b className="text-text">“Hi Euliv” is on.</b> Close this and just say it on the Home page.
       </div>
     );
   }
@@ -1188,7 +1192,7 @@ function WakeOffer({ settings }: { settings: EulivSettings }) {
   return (
     <div className="order-last rounded-[16px] border border-border bg-base/40 px-4 py-3 flex flex-wrap items-center gap-3" data-euliv-wake-offer="">
       <span className="flex-1 min-w-[220px] text-[13px] leading-snug text-secondary">
-        <b className="text-text">Start me by voice?</b> Turn on “Hi Euliv” and I'll listen for my name while GD360 is open in front. Nothing is sent until you say it.
+        <b className="text-text">Start me by voice?</b> Turn on “Hi Euliv” and I'll listen for my name on the Home page. Nothing is sent until you say it.
       </span>
       <button type="button" onClick={() => { saveSettings({ wake: true, wakeAsked: true }); setDone("on"); }}
         className="ui-focus h-9 px-4 rounded-full bg-primary text-on-primary text-[13px] font-semibold" data-euliv-wake-yes="">Turn on</button>
@@ -1272,7 +1276,7 @@ function EulivSettingsPanel({ settings, wakeProblem, onDone }: { settings: Euliv
         help={
           touch
             ? "On phones and tablets Euliv listens only while you tap the orb."
-            : "Say “Hi Euliv” or just “Euliv” while a GD360 tab is open and in front. A small pill shows while it's listening; nothing is sent until you say the name."
+            : "Say “Hi Euliv” or just “Euliv” on the Home page while its tab is in front. A small pill shows while it's listening; nothing is sent until you say the name."
         }
       />
       {wakeProblem && <span className="text-[12.5px] text-warning -mt-3 pl-8">{wakeProblem}</span>}
