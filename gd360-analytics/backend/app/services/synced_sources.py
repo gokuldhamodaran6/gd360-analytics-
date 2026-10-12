@@ -137,7 +137,7 @@ def primary_table(db: Session, datasource_id: str) -> str | None:
 
 
 # The main table of each synced app, in the order its fetch returns them.
-_KNOWN_MAIN_TABLES = ("traffic_daily", "orders", "campaign_daily", "channel_daily", "search_daily")
+_KNOWN_MAIN_TABLES = ("traffic_daily", "orders", "campaign_daily", "channel_daily", "search_daily", "messages_daily")
 
 
 def load_table(db: Session, datasource_id: str, name: str | None = None) -> pd.DataFrame:
@@ -723,7 +723,12 @@ def sync_datasource(db: Session, ds: models.DataSource, reason: str = "schedule"
     except Exception:  # noqa: BLE001 - history is best effort, never blocks a sync
         db.rollback()
     try:
-        tables = app["fetch"](credentials(ds), ds.connection_info or {})
+        creds = credentials(ds)
+        before = json.dumps(creds, sort_keys=True, default=str)
+        tables = app["fetch"](creds, ds.connection_info or {})
+        if json.dumps(creds, sort_keys=True, default=str) != before:
+            # round 38b: the fetch extended a token (Instagram login) - keep the new one
+            ds.encrypted_secret = security.encrypt_secret(json.dumps(creds))
         counts = {}
         for name, df in tables.items():
             store_table(db, ds.id, name, df)

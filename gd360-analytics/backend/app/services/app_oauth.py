@@ -34,13 +34,13 @@ from ..config import get_settings
 PENDING_MINUTES = 30
 HTTP_TIMEOUT = 30
 
-PROVIDERS = ("meta", "google", "linkedin", "hubspot")
-PROVIDER_LABELS = {"meta": "Meta (Facebook)", "google": "Google", "linkedin": "LinkedIn", "hubspot": "HubSpot"}
+PROVIDERS = ("meta", "instagram", "google", "linkedin", "hubspot")
+PROVIDER_LABELS = {"meta": "Meta (Facebook)", "instagram": "Instagram", "google": "Google", "linkedin": "LinkedIn", "hubspot": "HubSpot"}
 
 # Which provider each app signs in through. app_connectors.HELP[kind]
 # ["oauth_provider"] wins when present; this covers the existing apps too.
 KIND_PROVIDER = {
-    "instagram": "meta", "facebook_pages": "meta", "meta_ads": "meta",
+    "instagram": "meta", "facebook_pages": "meta", "meta_ads": "meta", "whatsapp_business": "meta",
     "youtube": "google", "search_console": "google", "ga4": "google", "google_ads": "google",
     "linkedin_pages": "linkedin",
     "hubspot": "hubspot",
@@ -48,6 +48,15 @@ KIND_PROVIDER = {
 
 META_SCOPES = ["pages_show_list", "pages_read_engagement", "read_insights", "instagram_basic",
                "instagram_manage_insights", "ads_read", "business_management"]
+# round 38b: each Meta app asks only for what it reads (a permission the Meta
+# app has not been approved for would block the whole sign-in).
+META_SCOPES_BY_KIND = {
+    "instagram": ["pages_show_list", "pages_read_engagement", "instagram_basic", "instagram_manage_insights",
+                  "business_management"],
+    "facebook_pages": ["pages_show_list", "pages_read_engagement", "read_insights", "business_management"],
+    "meta_ads": ["ads_read", "business_management"],
+    "whatsapp_business": ["whatsapp_business_management", "business_management"],
+}
 GOOGLE_SCOPES = {
     "youtube": ["https://www.googleapis.com/auth/youtube.readonly",
                 "https://www.googleapis.com/auth/yt-analytics.readonly"],
@@ -56,11 +65,15 @@ GOOGLE_SCOPES = {
     "google_ads": ["https://www.googleapis.com/auth/adwords"],
 }
 LINKEDIN_SCOPES = ["r_organization_social", "rw_organization_admin", "r_organization_admin"]
+# round 38b: Instagram API with Instagram Login - the person signs in with
+# Instagram itself (Business or Creator account); no Facebook Page involved.
+INSTAGRAM_SCOPES = ["instagram_business_basic", "instagram_business_manage_insights"]
 HUBSPOT_SCOPES = ["crm.objects.contacts.read", "crm.objects.deals.read", "crm.objects.companies.read",
                   "crm.objects.owners.read"]
 
 _ENV = {
     "meta": ("META_APP_ID", "META_APP_SECRET"),
+    "instagram": ("INSTAGRAM_APP_ID", "INSTAGRAM_APP_SECRET"),
     "google": ("GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"),
     "linkedin": ("LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"),
     "hubspot": ("HUBSPOT_CLIENT_ID", "HUBSPOT_CLIENT_SECRET"),
@@ -71,7 +84,19 @@ class OAuthError(RuntimeError):
     """Something the person can act on (cancelled, expired, not configured)."""
 
 
+def effective_provider(kind: str | None, provider: str | None) -> str | None:
+    """Instagram signs in with Instagram itself when the server has an
+    Instagram app (no Facebook Page needed), else through Facebook."""
+    if kind == "instagram" and configured("instagram"):
+        return "instagram"
+    return provider
+
+
 def provider_for(kind: str) -> str | None:
+    return effective_provider(kind, _declared_provider(kind))
+
+
+def _declared_provider(kind: str) -> str | None:
     try:
         from . import app_connectors
         help_ = (getattr(app_connectors, "HELP", {}) or {}).get(kind) or {}
@@ -120,8 +145,15 @@ def authorize_url(kind: str, user: models.User) -> str:
     state = security.create_oauth_state(user.id, _purpose(provider, kind))
     common = {"client_id": cid, "redirect_uri": redirect_uri(provider), "state": state, "response_type": "code"}
     if provider == "meta":
+        config_id = (getattr(s, "META_LOGIN_CONFIG_ID", "") or "").strip()
+        if config_id:  # Facebook Login for Business: the saved configuration carries the permissions
+            return f"https://www.facebook.com/{s.META_GRAPH_VERSION}/dialog/oauth?" + urlencode(
+                {**common, "config_id": config_id, "override_default_response_type": "true"})
         return f"https://www.facebook.com/{s.META_GRAPH_VERSION}/dialog/oauth?" + urlencode(
-            {**common, "scope": ",".join(META_SCOPES)})
+            {**common, "scope": ",".join(META_SCOPES_BY_KIND.get(kind, META_SCOPES))})
+    if provider == "instagram":
+        return "https://www.instagram.com/oauth/authorize?" + urlencode(
+            {**common, "scope": ",".join(INSTAGRAM_SCOPES), "enable_fb_login": "0"})
     if provider == "google":
         scopes = GOOGLE_SCOPES.get(kind)
         if not scopes:
@@ -203,6 +235,23 @@ def exchange_code(provider: str, code: str) -> dict:
                                                         "fb_exchange_token": short["access_token"]})
         return {"access_token": long.get("access_token") or short["access_token"],
                 "expires_in": long.get("expires_in") or short.get("expires_in")}
+    if provider == "instagram":
+        short = _call(requests.post, "https://api.instagram.com/oauth/access_token", "Instagram",
+                      data={"client_id": cid, "client_secret": secret, "grant_type": "authorization_code",
+                            "redirect_uri": ruri, "code": code.split("#")[0]})
+        if isinstance(short.get("data"), list) and short["data"]:
+            short = short["data"][0]
+        if not short.get("access_token"):
+            raise OAuthError("Instagram did not return an access token.")
+        try:  # swap the 1-hour token for a 60-day one (GD360 refreshes it on every sync after that)
+            long = _call(requests.get, "https://graph.instagram.com/access_token", "Instagram",
+                         params={"grant_type": "ig_exchange_token", "client_secret": secret,
+                                 "access_token": short["access_token"]})
+        except OAuthError:
+            long = {}
+        return {"access_token": long.get("access_token") or short["access_token"],
+                "expires_in": long.get("expires_in") or short.get("expires_in"),
+                "scope": ",".join(short.get("permissions") or []) if isinstance(short.get("permissions"), list) else short.get("permissions")}
     if provider == "google":
         tok = _call(requests.post, "https://oauth2.googleapis.com/token", "Google",
                     data={"code": code, "client_id": cid, "client_secret": secret, "redirect_uri": ruri,

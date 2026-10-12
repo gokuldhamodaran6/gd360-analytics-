@@ -240,14 +240,66 @@ def _label_many(names: list[str]) -> str:
 # ---- Meta (Instagram, Facebook Pages) ---------------------------------------
 
 def _graph_base() -> str:
-    return f"https://graph.facebook.com/{settings.META_GRAPH_VERSION}"
+    # META_GRAPH_HOST: only for a stand-in Graph API in tests; never set in production
+    return f"{_cfg('META_GRAPH_HOST', 'https://graph.facebook.com').rstrip('/')}/{settings.META_GRAPH_VERSION}"
+
+
+def _ig_graph_base() -> str:
+    """Instagram API with Instagram Login (tokens that start with "IG")
+    lives on its own host; the Facebook-login API (tokens "EAA…") on
+    graph.facebook.com. Same paths, same metrics."""
+    return f"https://graph.instagram.com/{settings.META_GRAPH_VERSION}"
+
+
+def _is_ig_login_token(token: str) -> bool:
+    return token.startswith("IG")
 
 
 def _meta_token(creds: dict) -> str:
-    token = str(creds.get("access_token") or "").strip()
+    """The token as Meta issued it: a paste often carries quotes, a
+    "Bearer " or "access_token=" prefix, or a line break from the copy -
+    any of which makes Meta answer "Cannot parse access token"."""
+    token = str(creds.get("access_token") or "").strip().strip("'\"").strip()
+    for prefix in ("Bearer ", "bearer ", "access_token=", "Access token:", "access_token:"):
+        if token.startswith(prefix):
+            token = token[len(prefix):].strip()
+    token = "".join(token.split())
     if not token:
         raise SyncError("A Meta access token is required. Sign in with Facebook again, or paste a token.")
+    if len(token) == 32 and all(c in "0123456789abcdefABCDEF" for c in token):
+        raise SyncError("That is your Meta App secret, not an access token - it can't read accounts, and it should never "
+                        "be pasted here. Keep it in GD360's server settings (META_APP_SECRET) so Sign in with Facebook "
+                        "works, and reset it in Meta (App settings › Basic) if it has been shared.")
+    if "|" in token and not token.startswith(("EA", "IG")):
+        raise SyncError("That is an app token (App ID|App secret), which cannot read accounts. Paste a user or system "
+                        "user access token instead - it starts with EAA (Facebook login) or IGAA (Instagram login).")
+    if not token.startswith(("EA", "IG")) or len(token) < 60:
+        raise SyncError("That doesn't look like a Meta access token. A Facebook-login token starts with EAA and an "
+                        "Instagram-login token with IGAA, and both are long (150+ characters). Check you copied the "
+                        "access token itself - not the App ID, App secret or Instagram account ID - and all of it.")
     return token
+
+
+def _meta_raise(r, app: str, token: str):
+    """Meta's errors, in words a person can act on."""
+    if r.status_code < 400:
+        return
+    try:
+        err = (r.json() or {}).get("error") or {}
+    except ValueError:
+        err = {}
+    msg = str(err.get("message") or "")
+    code = err.get("code")
+    if "Cannot parse access token" in msg:
+        raise SyncError(f"{app} couldn't read this token. It looks like a "
+                        f"{'Instagram-login (IGAA…)' if _is_ig_login_token(token) else 'Facebook-login (EAA…)'} token - "
+                        "copy it again from the Meta app (Generate token) in one piece, with nothing before or after it.")
+    if code == 190 or "expired" in msg.lower() or "Session has expired" in msg:
+        raise SyncError(f"This {app} token has expired or was revoked. Generate a new one in your Meta app "
+                        "(tokens from the Graph API Explorer last about an hour - use a long-lived or system user token).")
+    if code in (10, 200) or "permission" in msg.lower():
+        raise SyncError(f"The token is missing a permission {app} needs. {msg}".strip())
+    ss._raise_for(r, app)
 
 
 def _graph_pages(url: str, params: dict | None, app: str, cap: int, stop=None) -> list[dict]:
@@ -281,7 +333,7 @@ def _meta_end_day(end_time: str | None):
 
 
 def _graph_daily(obj_id: str, metric: str, token: str, start: date, end: date, chunk: int,
-                 extra: dict | None = None) -> dict | None:
+                 extra: dict | None = None, base: str | None = None) -> dict | None:
     """{date: value} for one daily insights metric, asked for in chunks.
     None when the metric is not available at all (retired, no permission)."""
     out: dict = {}
@@ -290,7 +342,7 @@ def _graph_daily(obj_id: str, metric: str, token: str, start: date, end: date, c
     for a, b in reversed(list(_chunks(start, end, chunk))):  # newest first: a retired metric fails at once
         params = {"metric": metric, "period": "day", "since": _unix(a), "until": _unix(b), "access_token": token,
                   **(extra or {})}
-        body = _try_get(f"{_graph_base()}/{obj_id}/insights", params=params)
+        body = _try_get(f"{base or _graph_base()}/{obj_id}/insights", params=params)
         if body is None:
             misses += 1
             if not ok and misses >= 2:
@@ -328,19 +380,20 @@ class _MetricSets:
     """Tries metric groups in order and remembers the first that works, so
     a retired metric costs one failed call per sync, not one per post."""
 
-    def __init__(self, groups: list[list[str]]):
+    def __init__(self, groups: list[list[str]], base: str | None = None):
         self.groups = groups
+        self.base = base or _graph_base()
         self.good: list[str] | None = None
         self.misses = 0
 
     def fetch(self, obj_id: str, token: str) -> dict:
         if self.good is not None:
-            body = _try_get(f"{_graph_base()}/{obj_id}/insights", params={"metric": ",".join(self.good), "access_token": token})
+            body = _try_get(f"{self.base}/{obj_id}/insights", params={"metric": ",".join(self.good), "access_token": token})
             return _insight_values(body) if body is not None else {}
         if self.misses >= 5:
             return {}  # five posts in a row had no insights at all: stop asking
         for g in self.groups:
-            body = _try_get(f"{_graph_base()}/{obj_id}/insights", params={"metric": ",".join(g), "access_token": token})
+            body = _try_get(f"{self.base}/{obj_id}/insights", params={"metric": ",".join(g), "access_token": token})
             if body is not None:
                 self.good = g
                 return _insight_values(body)
@@ -352,6 +405,21 @@ class _MetricSets:
 
 def _ig_discover_raw(creds: dict) -> list[dict]:
     token = _meta_token(creds)
+    if _is_ig_login_token(token):
+        # Instagram API with Instagram Login: the token IS one professional account
+        r = ss._get(f"{_ig_graph_base()}/me", params={"fields": "user_id,username,followers_count,account_type", "access_token": token})
+        _meta_raise(r, "Instagram", token)
+        me = _body(r) or {}
+        ig_id = str(me.get("user_id") or me.get("id") or "")
+        if not ig_id:
+            return []
+        if str(me.get("account_type") or "").upper() == "PERSONAL":
+            raise SyncError(f"@{me.get('username') or ig_id} is a personal Instagram account. Switch it to a Business or "
+                            "Creator account in the Instagram app (Settings › Account type and tools), then connect again.")
+        return [{"ig_id": ig_id, "username": me.get("username"), "followers": me.get("followers_count"),
+                 "page_id": "", "page_name": None, "token": token, "base": _ig_graph_base()}]
+    probe = ss._get(f"{_graph_base()}/me", params={"fields": "id", "access_token": token})
+    _meta_raise(probe, "Instagram", token)
     fields = "id,name,access_token,instagram_business_account{id,username,followers_count}"
     pages = _graph_pages(f"{_graph_base()}/me/accounts", {"fields": fields, "limit": 100, "access_token": token},
                          "Instagram", 1000)
@@ -366,7 +434,7 @@ def _ig_discover_raw(creds: dict) -> list[dict]:
         if ig.get("id"):
             out.append({"ig_id": str(ig["id"]), "username": ig.get("username"), "followers": ig.get("followers_count"),
                         "page_id": str(p.get("id") or ""), "page_name": p.get("name"),
-                        "token": p.get("access_token") or token})
+                        "token": p.get("access_token") or token, "base": _graph_base()})
     return out
 
 
@@ -398,13 +466,36 @@ def _ig_post_type(m: dict) -> str:
     return str(m.get("media_type") or "post").lower()
 
 
+def _ig_refresh(creds: dict) -> None:
+    """An Instagram-login token lives 60 days and can be extended while it
+    is valid (and at least a day old): GD360 extends it at most once a
+    week, on a sync, and keeps the new one (sync_datasource saves creds the
+    fetch changed). A failed refresh never stops the sync."""
+    token = str(creds.get("access_token") or "").strip()
+    if not _is_ig_login_token(token):
+        return
+    last = _naive(creds.get("token_refreshed_at")) if creds.get("token_refreshed_at") else None
+    if last is not None and pd.Timestamp.utcnow().tz_localize(None) - last < pd.Timedelta(days=7):
+        return
+    body = _try_get("https://graph.instagram.com/refresh_access_token",
+                    params={"grant_type": "ig_refresh_token", "access_token": token})
+    stamp = datetime.utcnow().isoformat(timespec="seconds")
+    if isinstance(body, dict) and body.get("access_token"):
+        creds["access_token"] = body["access_token"]
+        creds["token_refreshed_at"] = stamp
+    elif last is None:
+        creds["token_refreshed_at"] = stamp  # too new to refresh yet: try again in a week
+
+
 def instagram_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
+    _ig_refresh(creds)
     start = _window_start(info, 365, cap=730)
     today = date.today()
     accounts, posts, daily = [], [], {}
     for a in _ig_accounts(creds, info):
         ig, token = a["ig_id"], a["token"]
-        prof = _must_get(f"{_graph_base()}/{ig}", "Instagram",
+        base = a.get("base") or _graph_base()
+        prof = _must_get(f"{base}/{ig}", "Instagram",
                          params={"fields": "username,followers_count,media_count", "access_token": token}) or {}
         name = f"@{prof.get('username') or a.get('username') or ig}"
         accounts.append({"account_id": ig, "account": name, "followers": _num(prof.get("followers_count")),
@@ -415,17 +506,17 @@ def instagram_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
             ("reach", "reach", start, None),
             ("follower_count", "followers_gained", max(start, today - timedelta(days=29)), None),
         ):
-            series = _graph_daily(ig, metric, token, since, today, 30, extra)
+            series = _graph_daily(ig, metric, token, since, today, 30, extra, base=base)
             for day, val in (series or {}).items():
                 _put(daily, ig, name, day, col, val)
         # media in the window, newest first
         cutoff = pd.Timestamp(start)
         media = _graph_pages(
-            f"{_graph_base()}/{ig}/media",
+            f"{base}/{ig}/media",
             {"fields": "id,caption,media_type,media_product_type,timestamp,permalink,like_count,comments_count",
              "limit": 100, "access_token": token}, "Instagram", 1000,
             stop=lambda m: bool(m.get("timestamp")) and (_naive(m["timestamp"]) or cutoff) < cutoff)
-        sets = _MetricSets([["reach", "saved", "shares", "views", "total_interactions"], ["reach", "saved"]])
+        sets = _MetricSets([["reach", "saved", "shares", "views", "total_interactions"], ["reach", "saved"]], base=base)
         for i, m in enumerate(media):
             row = {"post_id": str(m.get("id")), "account_id": ig, "account": name, "posted_at": m.get("timestamp"),
                    "type": _ig_post_type(m), "text": m.get("caption"), "url": m.get("permalink"),
@@ -449,6 +540,11 @@ def instagram_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
 
 def _fb_discover_raw(creds: dict) -> list[dict]:
     token = _meta_token(creds)
+    if _is_ig_login_token(token):
+        raise SyncError("This is an Instagram-login token (IGAA…), which can't read Facebook Pages. Use Sign in with "
+                        "Facebook, or a Facebook-login / system user token (EAA…) with pages_read_engagement and read_insights.")
+    probe = ss._get(f"{_graph_base()}/me", params={"fields": "id", "access_token": token})
+    _meta_raise(probe, "Facebook", token)
     pages = _graph_pages(f"{_graph_base()}/me/accounts",
                          {"fields": "id,name,access_token,followers_count,fan_count", "limit": 100, "access_token": token},
                          "Facebook", 1000)
@@ -1460,6 +1556,273 @@ def klaviyo_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
     }
 
 
+# WhatsApp Business -----------------------------------------------------------
+# 2026-10-12 (round 38b): the WhatsApp Business Platform (Cloud API) through
+# the same Meta sign-in. What a business wants to know about its WhatsApp:
+#   - messages_daily      sent and delivered per day and number, delivery rate
+#   - conversations_daily what Meta billed: messages (or conversations) by
+#                         category (marketing / utility / authentication /
+#                         service), free vs paid, country, and cost
+#   - templates           every message template with its status, quality and
+#                         sent / delivered / read / clicked over the window
+#   - template_daily      the same per template per day
+#   - phone_numbers       each number's quality rating and messaging limit
+# Needs whatsapp_business_management (and business_management to find the
+# accounts). Every part is best effort except finding the account: a WABA
+# without template insights switched on still gets its messages and costs.
+
+WA_MSG_COLS = ["date", "account_id", "account", "phone_number", "sent", "delivered", "delivery_rate"]
+WA_CONV_COLS = ["date", "account_id", "account", "phone_number", "country", "category", "pricing_type", "messages",
+                "cost", "currency"]
+WA_TPL_COLS = ["template_id", "account_id", "account", "template", "category", "language", "status", "quality",
+               "sent", "delivered", "read", "clicked", "read_rate", "click_rate"]
+WA_TPL_DAILY_COLS = ["date", "template_id", "template", "account_id", "account", "category", "sent", "delivered",
+                     "read", "clicked", "read_rate"]
+WA_PHONE_COLS = ["phone_number_id", "account_id", "account", "phone_number", "verified_name", "quality_rating",
+                 "messaging_limit", "status"]
+_WA_NUMERIC = {"sent", "delivered", "delivery_rate", "messages", "cost", "read", "clicked", "read_rate", "click_rate"}
+_WA_LIMITS = {"TIER_50": "50 a day", "TIER_250": "250 a day", "TIER_1K": "1,000 a day", "TIER_10K": "10,000 a day",
+              "TIER_100K": "100,000 a day", "TIER_UNLIMITED": "Unlimited"}
+
+
+def _rate(part, whole):
+    if part is None or not whole:
+        return None
+    return round(100.0 * float(part) / float(whole), 2)
+
+
+def _wa_from_debug_token(token: str) -> list[str]:
+    """WABA ids the token was granted (Meta lists them per permission)."""
+    cid, secret = _cfg("META_APP_ID"), _cfg("META_APP_SECRET")
+    if not (cid and secret):
+        return []
+    body = _try_get(f"{_graph_base()}/debug_token", params={"input_token": token, "access_token": f"{cid}|{secret}"})
+    out: list[str] = []
+    for g in ((body or {}).get("data") or {}).get("granular_scopes") or [] if isinstance(body, dict) else []:
+        if g.get("scope") in ("whatsapp_business_management", "whatsapp_business_messaging"):
+            out += [str(t) for t in g.get("target_ids") or []]
+    return list(dict.fromkeys(out))
+
+
+def _wa_discover_raw(creds: dict, info: dict | None = None) -> list[dict]:
+    token = _meta_token(creds)
+    if _is_ig_login_token(token):
+        raise SyncError("This is an Instagram-login token (IGAA…), which can't read WhatsApp. Use Continue with "
+                        "Facebook, or a system user token (EAA…) with whatsapp_business_management.")
+    probe = ss._get(f"{_graph_base()}/me", params={"fields": "id", "access_token": token})
+    _meta_raise(probe, "WhatsApp", token)
+    found: dict[str, dict] = {}
+    edge = "{id,name,currency,timezone_id}"
+    try:  # needs business_management; without it the token's own grants still name the accounts
+        businesses = _graph_pages(f"{_graph_base()}/me/businesses",
+                                  {"fields": f"id,name,owned_whatsapp_business_accounts{edge},client_whatsapp_business_accounts{edge}",
+                                   "limit": 100, "access_token": token}, "WhatsApp", 200)
+    except SyncError:
+        businesses = []
+    for b in businesses:
+        for key in ("owned_whatsapp_business_accounts", "client_whatsapp_business_accounts"):
+            for w in ((b.get(key) or {}).get("data") or []):
+                if w.get("id"):
+                    found.setdefault(str(w["id"]), {"waba_id": str(w["id"]), "name": w.get("name"), "currency": w.get("currency"),
+                                                    "business": b.get("name")})
+    wanted = _account_filter(creds, info) or set()
+    for wid in list(wanted) + _wa_from_debug_token(token):
+        if wid in found:
+            continue
+        body = _try_get(f"{_graph_base()}/{wid}", params={"fields": "id,name,currency,timezone_id", "access_token": token})
+        if isinstance(body, dict) and body.get("id"):
+            found[str(body["id"])] = {"waba_id": str(body["id"]), "name": body.get("name"), "currency": body.get("currency"),
+                                       "business": None}
+    out = list(found.values())
+    for w in out:
+        nums = _try_get(f"{_graph_base()}/{w['waba_id']}/phone_numbers",
+                        params={"fields": "id,display_phone_number,verified_name,quality_rating,messaging_limit_tier,status,code_verification_status",
+                                "limit": 50, "access_token": token})
+        w["numbers"] = (nums or {}).get("data") or [] if isinstance(nums, dict) else []
+        w["token"] = token
+    return out
+
+
+def _wa_accounts(creds: dict, info: dict | None = None) -> list[dict]:
+    found = _wa_discover_raw(creds, info)
+    if not found:
+        raise SyncError("No WhatsApp Business accounts were found for this sign-in. You need access to the WhatsApp "
+                        "Business account in Meta Business Suite (Business settings › Accounts › WhatsApp accounts), and "
+                        "the sign-in must allow whatsapp_business_management and business_management.")
+    want = _account_filter(creds, info)
+    if want:
+        found = [w for w in found if w["waba_id"] in want]
+        if not found:
+            raise SyncError("None of the selected WhatsApp accounts can be reached with this sign-in any more. "
+                            "Reconnect and pick the accounts again.")
+    return found
+
+
+def whatsapp_test(creds: dict) -> str:
+    accs = _wa_accounts(creds)
+    nums = sum(len(w.get("numbers") or []) for w in accs)
+    return f"{_label_many([w.get('name') or w['waba_id'] for w in accs])} · {nums} number{'s' if nums != 1 else ''}"
+
+
+def _digits(phone: str | None) -> str:
+    return "".join(ch for ch in str(phone or "") if ch.isdigit())
+
+
+def _wa_field(waba: str, field: str, token: str) -> dict | None:
+    body = _try_get(f"{_graph_base()}/{waba}", params={"fields": field, "access_token": token})
+    return body if isinstance(body, dict) else None
+
+
+def _wa_messages(w: dict, start: date, end: date) -> list[dict]:
+    rows: dict = {}
+    token, waba = w["token"], w["waba_id"]
+    numbers = [n.get("display_phone_number") for n in w.get("numbers") or [] if n.get("display_phone_number")] or [None]
+    for phone in numbers:
+        for a, b in reversed(list(_chunks(start, end, 90))):
+            spec = f"analytics.start({_unix(a)}).end({_unix(b)}).granularity(DAY)"
+            if phone:
+                spec += f'.phone_numbers(["{_digits(phone)}"])'
+            body = _wa_field(waba, spec, token)
+            if body is None:
+                continue
+            for p in ((body.get("analytics") or {}).get("data_points") or []):
+                day = _from_unix(p.get("start"))
+                if day is None:
+                    continue
+                # chunks share their boundary day: one value per day and number, never added twice
+                rows[(day.date(), phone or "")] = {"date": day.date(), "account_id": waba, "account": w.get("name") or waba,
+                                                   "phone_number": phone, "sent": _num(p.get("sent")) or 0,
+                                                   "delivered": _num(p.get("delivered")) or 0}
+    for r in rows.values():
+        r["delivery_rate"] = _rate(r["delivered"], r["sent"])
+    return sorted(rows.values(), key=lambda r: (r["date"], str(r["phone_number"])))
+
+
+def _wa_billing(w: dict, start: date, end: date) -> list[dict]:
+    """Meta's per-message pricing (July 2025 on): pricing_analytics. Older
+    accounts and older days: conversation_analytics. Whichever answers."""
+    token, waba = w["token"], w["waba_id"]
+    out: list[dict] = []
+    seen: set = set()
+    for a, b in reversed(list(_chunks(start, end, 90))):
+        got = False
+        spec = (f"pricing_analytics.start({_unix(a)}).end({_unix(b)}).granularity(DAILY)"
+                '.dimensions(["PRICING_CATEGORY","PRICING_TYPE","COUNTRY","PHONE"])')
+        body = _wa_field(waba, spec, token)
+        for block in ((body or {}).get("pricing_analytics") or {}).get("data") or []:
+            for p in block.get("data_points") or []:
+                day = _from_unix(p.get("start"))
+                if day is None:
+                    continue
+                got = True
+                key = ("p", day.date(), p.get("phone_number"), p.get("country"), p.get("pricing_category"), p.get("pricing_type"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({"date": day.date(), "account_id": waba, "account": w.get("name") or waba,
+                            "phone_number": p.get("phone_number"), "country": p.get("country"),
+                            "category": str(p.get("pricing_category") or "").lower() or None,
+                            "pricing_type": str(p.get("pricing_type") or "").lower() or None,
+                            "messages": _num(p.get("volume")), "cost": _num(p.get("cost")), "currency": w.get("currency")})
+        if got:
+            continue
+        spec = (f"conversation_analytics.start({_unix(a)}).end({_unix(b)}).granularity(DAILY)"
+                '.dimensions(["CONVERSATION_CATEGORY","CONVERSATION_TYPE","COUNTRY","PHONE"])')
+        body = _wa_field(waba, spec, token)
+        for block in ((body or {}).get("conversation_analytics") or {}).get("data") or []:
+            for p in block.get("data_points") or []:
+                day = _from_unix(p.get("start"))
+                if day is None:
+                    continue
+                key = ("c", day.date(), p.get("phone_number"), p.get("country"), p.get("conversation_category"), p.get("conversation_type"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({"date": day.date(), "account_id": waba, "account": w.get("name") or waba,
+                            "phone_number": p.get("phone_number"), "country": p.get("country"),
+                            "category": str(p.get("conversation_category") or "").lower() or None,
+                            "pricing_type": str(p.get("conversation_type") or "").lower() or None,
+                            "messages": _num(p.get("conversation")), "cost": _num(p.get("cost")), "currency": w.get("currency")})
+    return sorted(out, key=lambda r: (r["date"], str(r["phone_number"]), str(r["category"])))
+
+
+def _wa_templates(w: dict, start: date, end: date) -> tuple[list[dict], list[dict]]:
+    token, waba = w["token"], w["waba_id"]
+    tpls = _graph_pages(f"{_graph_base()}/{waba}/message_templates",
+                        {"fields": "id,name,status,category,language,quality_score", "limit": 100, "access_token": token},
+                        "WhatsApp", 1000)
+    by_id = {str(t.get("id")): t for t in tpls if t.get("id")}
+    totals: dict = {tid: {"sent": None, "delivered": None, "read": None, "clicked": None} for tid in by_id}
+    daily: dict = {}
+    t_start = max(start, end - timedelta(days=89))  # Meta keeps template insights about 90 days
+    ids = list(by_id)
+    for i in range(0, len(ids), 10):
+        batch = ids[i:i + 10]
+        for a, b in reversed(list(_chunks(t_start, end, 30))):
+            body = _try_get(f"{_graph_base()}/{waba}/template_analytics",
+                            params={"start": _unix(a), "end": _unix(b), "granularity": "DAILY",
+                                    "metric_types": json.dumps(["SENT", "DELIVERED", "READ", "CLICKED"]),
+                                    "template_ids": json.dumps(batch), "access_token": token})
+            if body is None:
+                break  # template insights are off for this account (Meta: Insights › Template analytics)
+            for block in (body.get("data") or []) if isinstance(body, dict) else []:
+                for p in block.get("data_points") or []:
+                    tid = str(p.get("template_id") or "")
+                    day = _from_unix(p.get("start"))
+                    if tid not in by_id or day is None:
+                        continue
+                    clicked = p.get("clicked")
+                    clicks = sum(_num(c.get("count")) or 0 for c in clicked) if isinstance(clicked, list) else _num(clicked)
+                    vals = {"sent": _num(p.get("sent")), "delivered": _num(p.get("delivered")), "read": _num(p.get("read")),
+                            "clicked": clicks}
+                    if not any(v for v in vals.values()):
+                        continue
+                    t = by_id[tid]
+                    daily[(tid, day.date())] = {"date": day.date(), "template_id": tid, "template": t.get("name"), "account_id": waba,
+                                                "account": w.get("name") or waba, "category": str(t.get("category") or "").lower() or None,
+                                                **vals, "read_rate": _rate(vals["read"], vals["delivered"])}
+    for d in daily.values():  # totals from the de-duplicated days
+        for k in ("sent", "delivered", "read", "clicked"):
+            if d.get(k) is not None:
+                totals[d["template_id"]][k] = (totals[d["template_id"]][k] or 0) + d[k]
+    rows = []
+    for tid, t in by_id.items():
+        tot = totals[tid]
+        q = t.get("quality_score")
+        rows.append({"template_id": tid, "account_id": waba, "account": w.get("name") or waba, "template": t.get("name"),
+                     "category": str(t.get("category") or "").lower() or None, "language": t.get("language"),
+                     "status": str(t.get("status") or "").lower() or None,
+                     "quality": str((q or {}).get("score") if isinstance(q, dict) else q or "").replace("_", " ").lower() or None,
+                     **tot, "read_rate": _rate(tot["read"], tot["delivered"]), "click_rate": _rate(tot["clicked"], tot["delivered"])})
+    return rows, sorted(daily.values(), key=lambda r: (r["date"], str(r["template"])))
+
+
+def whatsapp_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
+    start = _window_start(info, 365, cap=730)
+    today = date.today()
+    msgs, conv, tpls, tpl_daily, phones = [], [], [], [], []
+    for w in _wa_accounts(creds, info):
+        name = w.get("name") or w["waba_id"]
+        for n in w.get("numbers") or []:
+            phones.append({"phone_number_id": str(n.get("id")), "account_id": w["waba_id"], "account": name,
+                           "phone_number": n.get("display_phone_number"), "verified_name": n.get("verified_name"),
+                           "quality_rating": str(n.get("quality_rating") or "").lower() or None,
+                           "messaging_limit": _WA_LIMITS.get(str(n.get("messaging_limit_tier") or ""), n.get("messaging_limit_tier")),
+                           "status": str(n.get("status") or "").lower() or None})
+        msgs += _wa_messages(w, start, today)
+        conv += _wa_billing(w, start, today)
+        t_rows, t_daily = _wa_templates(w, start, today)
+        tpls += t_rows
+        tpl_daily += t_daily
+    return {
+        "messages_daily": _frame(msgs, WA_MSG_COLS, dates=("date",), numeric=_WA_NUMERIC),
+        "conversations_daily": _frame(conv, WA_CONV_COLS, dates=("date",), numeric=_WA_NUMERIC),
+        "templates": _frame(tpls, WA_TPL_COLS, numeric=_WA_NUMERIC),
+        "template_daily": _frame(tpl_daily, WA_TPL_DAILY_COLS, dates=("date",), numeric=_WA_NUMERIC),
+        "phone_numbers": _frame(phones, WA_PHONE_COLS, numeric=set()),
+    }
+
+
 # ---- discovery ----------------------------------------------------------------
 
 def discover(kind: str, creds: dict) -> list[dict]:
@@ -1481,6 +1844,18 @@ def discover(kind: str, creds: dict) -> list[dict]:
                             "that you ticked the Pages when Facebook asked which ones to share.")
         return [{"id": p["page_id"], "name": p["name"] or p["page_id"],
                  "detail": f"{p['followers']:,} followers" if isinstance(p.get("followers"), int) else ""} for p in found]
+    if kind == "whatsapp_business":
+        found = _wa_discover_raw(creds)
+        if not found:
+            raise SyncError("No WhatsApp Business accounts were found for this sign-in. You need access to the WhatsApp "
+                            "Business account in Meta Business Suite, and the sign-in must allow whatsapp_business_management.")
+        out = []
+        for w in found:
+            nums = [n.get("display_phone_number") for n in w.get("numbers") or [] if n.get("display_phone_number")]
+            detail = " · ".join(x for x in (", ".join(nums[:2]) + (f" +{len(nums) - 2} more" if len(nums) > 2 else ""),
+                                             f"via {w['business']}" if w.get("business") else "") if x)
+            out.append({"id": w["waba_id"], "name": w.get("name") or w["waba_id"], "detail": detail or "No phone numbers yet"})
+        return out
     if kind == "linkedin_pages":
         found = _li_discover_raw(creds)
         if not found:
@@ -1523,26 +1898,45 @@ APPS = {
     "hubspot": {"label": "HubSpot", "test": hubspot_test, "fetch": hubspot_fetch,
                 "fields": ["access_token", "refresh_token"]},
     "klaviyo": {"label": "Klaviyo", "test": klaviyo_test, "fetch": klaviyo_fetch, "fields": ["api_key"]},
+    "whatsapp_business": {"label": "WhatsApp Business", "test": whatsapp_test, "fetch": whatsapp_fetch,
+                          "fields": ["access_token", "account_ids"]},
 }
 
 DEFAULT_INTERVAL = {"instagram": "1h", "facebook_pages": "1h", "linkedin_pages": "1h", "youtube": "6h",
-                    "search_console": "6h", "woocommerce": "1h", "stripe": "1h", "hubspot": "1h", "klaviyo": "1h"}
+                    "search_console": "6h", "woocommerce": "1h", "stripe": "1h", "hubspot": "1h", "klaviyo": "1h",
+                    "whatsapp_business": "6h"}
 
 _SOCIAL_SUMMARY = "Followers, daily reach and engagement, and every post with its likes, comments and shares."
 
 HELP = {
+    "whatsapp_business": {
+        "label": "WhatsApp Business", "category": "crm", "oauth_provider": "meta", "discover": True,
+        "summary": "Messages sent and delivered every day, what Meta billed by category (marketing, utility, "
+                   "authentication, service) and country, and every template with its reads and clicks.",
+        "fields": [
+            {"key": "access_token", "label": "Access token", "placeholder": "EAA…", "secret": True, "optional": False, "multiline": False},
+            {"key": "account_ids", "label": "WhatsApp Business account IDs to sync (blank = all)", "placeholder": "102290129340398",
+             "secret": False, "optional": True, "multiline": False},
+        ],
+        "steps": [
+            "You need access to the WhatsApp Business account in Meta Business Suite (Business settings › Accounts › WhatsApp accounts).",
+            "Click Continue with Facebook and allow whatsapp_business_management and business_management for that business.",
+            "Pick which WhatsApp accounts to sync. Or paste a system user token (Business settings › System users) with whatsapp_business_management.",
+            "For template reads and clicks, turn on template insights once in WhatsApp Manager › Insights.",
+        ],
+    },
     "instagram": {
         "label": "Instagram", "category": "social", "oauth_provider": "meta", "discover": True,
         "summary": "Followers, daily reach and follower gains, and every post and reel with reach, likes, comments, saves and shares.",
         "fields": [
-            {"key": "access_token", "label": "Access token", "placeholder": "EAAG…", "secret": True, "optional": False, "multiline": False},
+            {"key": "access_token", "label": "Access token", "placeholder": "EAA… or IGAA…", "secret": True, "optional": False, "multiline": False},
             {"key": "account_ids", "label": "Instagram account IDs to sync (blank = all)", "placeholder": "17841400000000000",
              "secret": False, "optional": True, "multiline": False},
         ],
         "steps": [
             "Make sure the Instagram account is a Business or Creator account and is linked to a Facebook Page you manage.",
             "Click Sign in with Facebook and allow access to the Page and its Instagram account (instagram_basic, instagram_manage_insights, pages_show_list, pages_read_engagement).",
-            "Pick which Instagram accounts to sync. Or paste a long-lived access token from a Meta system user with those permissions.",
+            "Pick which Instagram accounts to sync. Or paste a long-lived access token: a Facebook-login / system user token (starts EAA…) with those permissions, or an Instagram-login token (starts IGAA…) from your Meta app's Instagram API setup (instagram_business_basic, instagram_business_manage_insights).",
         ],
     },
     "facebook_pages": {

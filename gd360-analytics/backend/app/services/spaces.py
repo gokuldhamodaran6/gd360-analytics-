@@ -42,13 +42,13 @@ STORE_KINDS = ("shopify", "woocommerce", "stripe")
 _EXTRA_LABELS = {
     "instagram": "Instagram", "facebook_pages": "Facebook Pages", "linkedin_pages": "LinkedIn Pages",
     "youtube": "YouTube", "search_console": "Search Console", "woocommerce": "WooCommerce",
-    "stripe": "Stripe", "hubspot": "HubSpot", "klaviyo": "Klaviyo",
+    "stripe": "Stripe", "hubspot": "HubSpot", "klaviyo": "Klaviyo", "whatsapp_business": "WhatsApp Business",
 }
 
 _SUGGEST = {
     "Marketing & Brand": ("instagram", "facebook_pages", "linkedin_pages", "youtube", "tiktok", "pinterest",
                           "meta_ads", "google_ads", "linkedin_ads", "tiktok_ads", "ga4", "search_console", "klaviyo",
-                          "mailchimp"),
+                          "mailchimp", "whatsapp_business"),
     "Sales": ("shopify", "woocommerce", "stripe", "hubspot", "amazon", "amazon_seller", "salesforce", "etsy", "ebay"),
     "Finance": ("quickbooks", "xero", "netsuite"),
     "HR & People": ("bamboohr", "workday", "greenhouse", "gusto", "deel"),
@@ -511,6 +511,22 @@ def overview(db: Session, user: models.User, space: models.Space, days: int = 28
             row.update({"revenue": _sum(cur, "revenue"),
                         "clicks": _sum(cur, "clicks") if "clicks" in cur.columns else _sum(cur, "clicks_unique"),
                         "reach": _sum(cur, "recipients") if "recipients" in cur.columns else _sum(cur, "delivered")})
+        elif k == "whatsapp_business":
+            # round 38b: WhatsApp - people reached = messages delivered; spend = what Meta billed
+            row["group"] = "Messaging"
+            msgs = load(ds, "messages_daily")
+            if msgs is None:
+                waiting.append(ds.name)
+                continue
+            mark(ds)
+            cur, prev = _window(msgs, ("date",), start, end), _window(msgs, ("date",), p_start, p_end)
+            reach, reach_p = _sum(cur, "delivered"), _sum(prev, "delivered")
+            conv = load(ds, "conversations_daily")
+            tday = load(ds, "template_daily")
+            row.update({"reach": reach, "reach_previous": reach_p, "reach_delta_pct": _r(pct_change(reach, reach_p), 1),
+                        "impressions": _sum(cur, "sent"),
+                        "spend": _sum(_window(conv, ("date",), start, end), "cost") if conv is not None else None,
+                        "clicks": _sum(_window(tday, ("date",), start, end), "clicked") if tday is not None else None})
         else:
             continue
         channels.append(row)
