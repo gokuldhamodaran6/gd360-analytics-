@@ -1,6 +1,7 @@
+import { setShowOrigins, useShowOrigins } from "../dashboard/blockIcons";
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { MadeFromLink, sourceHref } from "../lib/kinds";
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import { DomainPublishRow, PublishToDomainSheet } from "../components/PublishToDomain";
 import {
   dashboardBuilderApi, DashboardBlock, DashboardBuilderDetail, DashboardBuilderPage, DashboardBlockType, datasourceApi, WorkspaceSummary, qualityChecksApi, jobsApi,
@@ -15,7 +16,7 @@ import {
 } from "../dashboard";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { brandingBackgroundImageStyle, brandingStyleVars, hexToRgbTriple, useBrandingAsset } from "../lib/branding";
-import { ConfirmDialog, MergeIcon as KitMergeIcon, MoreIcon, PaletteIcon as KitPaletteIcon, Popover, Sheet, WarningIcon, buttonClasses, cn } from "../ui";
+import { ConfirmDialog, InfoIcon as KitInfoIcon, MergeIcon as KitMergeIcon, MoreIcon, PaletteIcon as KitPaletteIcon, Popover, Sheet, WarningIcon, buttonClasses, cn } from "../ui";
 import { MenuRow } from "../dashboard/menu";
 import { AppearanceSheet } from "../dashboard/theme/AppearanceSheet";
 import { BrandAssets } from "../dashboard/theme/BrandAssets";
@@ -1248,6 +1249,21 @@ function DashboardBuilderViewBody({
     () => ({ ...dash, datasource_id: pageDsId, datasource_name: pageDsName, datasource_kind: pageDsKind, warehouse_native: warehouse }),
     [dash, pageDsId, pageDsName, pageDsKind, warehouse]
   );
+  // round 37: a dashboard made from a thread can show where each block came from - off by default
+  const showOrigins = useShowOrigins();
+  const hasOrigins = useMemo(() => (dash.pages || []).some((pg) => (pg.blocks || []).some((b) => b.config?.origin)), [dash.pages]);
+  // round 37: the dashboard's own measure (its first KPI summing a column: GA4 sessions) - what the
+  // rail's filter values are counted in, so "Direct 1,820" matches the charts
+  const fileWeight = useMemo(() => {
+    if (warehouse) return null;
+    for (const pg of dash.pages || []) {
+      for (const b of [...(pg.blocks || [])].sort((a, c) => a.y - c.y || a.x - c.x)) {
+        const r = b.config?.recipe;
+        if (b.type === "kpi" && r && r.agg === "sum" && typeof r.metric_column === "string" && !/(^|_)(users|visitors)$/i.test(r.metric_column)) return r.metric_column as string;
+      }
+    }
+    return null;
+  }, [warehouse, dash.pages]);
   const source = useMemo<RunSource>(
     () =>
       warehouse
@@ -1260,10 +1276,11 @@ function DashboardBuilderViewBody({
           }
         : {
             kind: "file",
+            countNoun: fileWeight ? fileWeight.replace(/_/g, " ") : null,
             datasourceId: pageDsId,
             // What a file block's subtitle calls its table ("... · Bookings export").
             name: pageDsName,
-            preview: (pageId, filters, blockFilters) => dashboardBuilderApi.previewFiltered(dash.id, pageId, filters, blockFilters),
+            preview: (pageId, filters, blockFilters, opts) => dashboardBuilderApi.previewFiltered(dash.id, pageId, filters, blockFilters, opts),
             distinctValues: pageDsId
               ? (column, search) =>
                   // round 36: a filter on a multi-table source reads its options from the table that has the column
@@ -1271,11 +1288,12 @@ function DashboardBuilderViewBody({
                     .getColumnDistinctValues(pageDsId as string, column, null, {
                       search, limit: 200,
                       table: ((dash.parameters || []) as any[]).find((p) => p?.column === column)?.table ?? null,
+                      weight: fileWeight,
                     })
                     .then((r) => ({ values: r.values }))
               : undefined,
           },
-    [warehouse, dash.id, pageDsId, pageDsName, dash.parameters]
+    [warehouse, dash.id, pageDsId, pageDsName, dash.parameters, fileWeight]
   );
   const persistSavedViews = useCallback(
     async (views: Parameters<typeof dashboardBuilderApi.updateSavedViews>[1]) => {
@@ -1290,6 +1308,8 @@ function DashboardBuilderViewBody({
     page: activePage,
     source,
     persistSavedViews: dash.can_edit ? persistSavedViews : undefined,
+    // round 37: an app dashboard (GA4 ...) opens on the last 28 days, compared with the 28 before
+    defaultRangeDays: !warehouse && dash.date_column && (dash.sources || []).some((s) => s.synced) ? 28 : undefined,
   });
   // 2026-10-12 (round 35): a live source GD360 computes itself (Google Sheets, an API, a stream):
   // Refresh reloads it and recomputes every block - the same job a scheduled refresh runs - then
@@ -1360,7 +1380,7 @@ function DashboardBuilderViewBody({
       }
     }
     return {
-      sources: (dash.sources || []).map((s) => ({ name: s.name, kind: s.kind })),
+      sources: (dash.sources || []).map((s) => ({ name: s.name, kind: s.kind, synced: s.synced, syncedAt: s.synced_at || null })),
       schedule: {
         interval, canEdit: dash.can_edit, onChange: setScheduleInterval, saving: savingSchedule,
         nextAt: dash.next_refresh_at || null, paused: Boolean(dash.refresh_paused),
@@ -1383,6 +1403,13 @@ function DashboardBuilderViewBody({
   // block endpoint plus setDash, nothing the grid couldn't also show.
   const [renderMode, setRenderMode] = useDashboardViewMode(dash.id);
   const comments = useComments(dash.id);
+  // round 38: a notification's link (?comment=<id>) opens that thread on its chart
+  const location = useLocation();
+  const linkedThreadId = useMemo(() => new URLSearchParams(location.search).get("comment"), [location.search]);
+  const onChartChanged = useCallback(async (blockId: string) => {
+    try { setDash(await dashboardBuilderApi.get(dash.id)); } catch { /* the chart keeps its last drawing */ }
+    runRef.current.rerunBlock(blockId);
+  }, [dash.id, setDash]);
   // The editor: always mounted (hooks), only handed to the shell while editing.
   const editor = useDashboardEditor({ dash, setDash, page: activePage, run, warehouse, fileColumns: editorColumns });
   const canvasOwner = useMemo<CanvasOwnerActions | null>(
@@ -1506,6 +1533,10 @@ function DashboardBuilderViewBody({
         onViewChange={setRenderMode}
         canvasOwner={canvasOwner}
         comments={comments}
+        commentPages={dash.pages}
+        onOpenPage={setActivePageId}
+        initialThreadId={linkedThreadId}
+        onChartChanged={onChartChanged}
         onEditDashboard={dash.can_edit ? () => setEditing(true) : undefined}
         onUpgradeBlocks={upgradeBlocks}
         editing={isEditing ? { editor, onDone: done, onRename: renameDashboard } : null}
@@ -1559,6 +1590,11 @@ function DashboardBuilderViewBody({
                 {({ close }) => (
                   <div className="py-1">
                     <MenuRow icon={<KitPaletteIcon size={14} />} onClick={() => { close(); openAppearance(); }}>Appearance…</MenuRow>
+                    {hasOrigins && (
+                      <MenuRow icon={<KitInfoIcon size={14} />} trailing={<span className="text-caption text-muted">{showOrigins ? "On" : "Off"}</span>} onClick={() => { close(); setShowOrigins(!showOrigins); }}>
+                        Show where blocks came from
+                      </MenuRow>
+                    )}
                     {isEditing && canMerge && <MenuRow icon={<KitMergeIcon size={14} />} onClick={() => { close(); setMoreSheet("merge"); }}>Merge dashboards…</MenuRow>}
                   </div>
                 )}
