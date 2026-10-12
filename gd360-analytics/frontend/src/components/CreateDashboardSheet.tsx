@@ -224,7 +224,7 @@ export default function CreateDashboardSheet({
               onChange={(e) => setName(e.target.value)}
               maxLength={120}
               disabled={busy}
-              placeholder="e.g. Hotel performance"
+              placeholder="e.g. Weekly performance"
             />
           </label>
         )}

@@ -212,7 +212,7 @@ export function NoticedBanner({ dashboardId, noticed, onWatch }: { dashboardId: 
 type Msg =
   | { id: string; role: "user"; text: string }
   | { id: string; role: "gd"; kind: "thinking"; text: string }
-  | { id: string; role: "gd"; kind: "explain"; explain: BlockExplanation; focus?: string | null; question: string }
+  | { id: string; role: "gd"; kind: "explain"; explain: BlockExplanation; focus?: string | null; question: string; view?: string; viewLabel?: string }
   | { id: string; role: "gd"; kind: "draft"; draft: AlertDraft; choices: MetricChoice[]; done?: boolean }
   | { id: string; role: "gd"; kind: "question"; result: Extract<DraftResult, { status: "need_metric" | "need_line" }> }
   | { id: string; role: "gd"; kind: "done"; text: string; pending: boolean; automationId: string }
@@ -263,6 +263,16 @@ export function DashboardAskAI({
   };
 
   const blocks = () => snapshotPage(page, run, warehouse);
+  // round 35: what the page was showing when an answer was written - if the person then switches
+  // Month to Year (or filters), that answer says so and offers to explain the view now on screen
+  const PERIOD_WORD: Record<string, string> = { day: "Day", week: "Week", month: "Month", quarter: "Quarter", year: "Year" };
+  const viewKey = () => `${run.state.period}|${run.activeFilterCount}|${run.state.dateRange.from || ""}|${run.state.dateRange.to || ""}`;
+  const viewLabel = () => {
+    const p = PERIOD_WORD[run.state.period] || run.state.period;
+    const f = run.activeFilterCount ? ` with ${run.activeFilterCount} filter${run.activeFilterCount === 1 ? "" : "s"}` : "";
+    const d = run.state.dateRange.from || run.state.dateRange.to ? " in a date range" : "";
+    return `${p} view${f}${d}`;
+  };
 
   const ask = async (q: string, focus?: string | null) => {
     const question = q.trim();
@@ -274,7 +284,7 @@ export function DashboardAskAI({
     try {
       const out = await dashboardAiApi.ask(dash.id, { question, page_id: page?.id, blocks: blocks(), focus_block_id: focus || null });
       if (out.kind === "explain") {
-        replace(wait, { id: wait, role: "gd", kind: "explain", explain: out.explain, focus, question });
+        replace(wait, { id: wait, role: "gd", kind: "explain", explain: out.explain, focus, question, view: viewKey(), viewLabel: viewLabel() });
         const first = focus || out.explain.points.find((p) => p.block_id)?.block_id;
         if (first) flashBlock(first);
       } else if (out.status === "ok") {
@@ -304,7 +314,7 @@ export function DashboardAskAI({
     setBusy(true);
     try {
       const ex = await dashboardAiApi.explain(dash.id, snap);
-      replace(wait, { id: wait, role: "gd", kind: "explain", explain: ex, focus: b.id, question: "" });
+      replace(wait, { id: wait, role: "gd", kind: "explain", explain: ex, focus: b.id, question: "", view: viewKey(), viewLabel: viewLabel() });
     } catch (e: any) {
       replace(wait, { id: wait, role: "gd", kind: "error", text: errText(e, "Couldn't explain this chart right now.") });
     } finally {
@@ -445,6 +455,23 @@ export function DashboardAskAI({
                 </div>
                 {m.kind === "thinking" && <div className="text-ui text-secondary inline-flex items-center gap-2"><Spinner className="text-kind-answer" /> {m.text}</div>}
                 {m.kind === "error" && <div className="rounded-[12px] border border-danger-border bg-danger-fill px-3 py-2 text-ui text-danger">{m.text}</div>}
+                {m.kind === "explain" && m.view && m.view !== viewKey() && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-[10px] border border-warning-border bg-warning-fill px-3 py-2 text-caption text-warning" data-explain-stale="">
+                    <span>Written for the {m.viewLabel || "earlier view"} - the page now shows the {viewLabel()}.</span>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      className="ui-focus ml-auto rounded font-semibold underline-offset-2 hover:underline disabled:opacity-50"
+                      onClick={() => {
+                        const b = m.focus ? page?.blocks.find((x) => x.id === m.focus) : null;
+                        if (!m.question && b) explainBlock(b);
+                        else ask(m.question || "Explain this page", m.focus);
+                      }}
+                    >
+                      Explain again
+                    </button>
+                  </div>
+                )}
                 {m.kind === "explain" && (
                   <ExplainCard
                     e={m.explain}
