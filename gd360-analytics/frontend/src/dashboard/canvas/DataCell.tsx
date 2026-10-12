@@ -140,7 +140,7 @@ export function DataCell({ cell, cells, run, source, mode, parameters, owner, pi
             viewAsTable={asTable}
           />
         )}
-        {run.loading && run.ready && result && <div aria-hidden="true" className="ui-shimmer pointer-events-none absolute inset-0 rounded-ctl opacity-30" />}
+        {run.loading && !run.quiet && run.ready && result && <div aria-hidden="true" className="ui-shimmer pointer-events-none absolute inset-0 rounded-ctl opacity-30" />}
       </div>
       {computed && !compact && (
         <div className="border-t border-subtle">
