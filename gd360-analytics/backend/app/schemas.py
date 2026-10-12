@@ -1725,6 +1725,9 @@ class ProposalBlockOut(BaseModel):
     # and the forecast options when the goal asked for one.
     chart_reason: Optional[str] = None
     forecast: Optional[dict] = None
+    # round 36 (thread dashboards): "Q2" (from that answer) | "suggested" | "you", and why it is there.
+    origin: Optional[str] = None
+    why: Optional[str] = None
 
 
 class ProposalPageOut(BaseModel):
