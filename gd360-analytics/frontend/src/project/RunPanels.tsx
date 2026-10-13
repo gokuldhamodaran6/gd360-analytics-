@@ -1,6 +1,7 @@
 // 2026-10-08 (round 11): the four tabs of a project question - Plan,
 // Sources (each query, live), Results (the answer drawn) and Evidence (every
 // result table with the exact query that produced it).
+import { AnalystAnswer, AnalystMethod, AnalystProgress, analystOf, isAnalystRun } from "./AnalystAnswer";
 import { useEffect, useState } from "react";
 import type { DashKpi, EvidenceTable, ProjectRun, RunStep } from "../api/projects";
 import { KpiRow, VisualCard } from "./Visuals";
@@ -131,12 +132,18 @@ function SourceChip({ name, mode }: { name: string; mode?: string | null }) {
 
 // ---- Plan -------------------------------------------------------------------
 
-export function PlanTab({
-  run, canEdit, onRun, onReplan, busy, seed,
-}: {
+type PlanProps = {
   run: ProjectRun; canEdit: boolean; onRun: () => void; onReplan: (note: string) => void; busy: boolean;
   seed?: { text: string; n: number } | null;
-}) {
+};
+
+export function PlanTab(props: PlanProps) {
+  // R43: the Analyst's method, checks and code instead of SQL steps
+  if (isAnalystRun(props.run)) return <AnalystMethod run={props.run} />;
+  return <PlanTabInner {...props} />;
+}
+
+function PlanTabInner({ run, canEdit, onRun, onReplan, busy, seed }: PlanProps) {
   const plan = run.plan;
   const [editing, setEditing] = useState(false);
   const [note, setNote] = useState("");
@@ -263,6 +270,11 @@ export function PlanTab({
 // ---- Sources ----------------------------------------------------------------
 
 export function SourcesTab({ run }: { run: ProjectRun }) {
+  if (isAnalystRun(run)) return <AnalystProgress run={run} />;
+  return <SourcesTabInner run={run} />;
+}
+
+function SourcesTabInner({ run }: { run: ProjectRun }) {
   const steps = run.steps || [];
   if (!steps.length) return <Empty text="Nothing has run yet." spinner={run.status === "planning"} />;
   const scanned = steps.reduce((a, s) => a + (s.bytes_scanned || 0), 0);
@@ -319,6 +331,19 @@ function sourceLine(s: RunStep): string {
 // ---- Results ----------------------------------------------------------------
 
 export function ResultsTab({ run }: { run: ProjectRun }) {
+  // R43: a question the Analyst worked out has its own answer page
+  if (isAnalystRun(run)) {
+    if (run.status === "done" && analystOf(run)) return <AnalystAnswer run={run} />;
+    if (run.status === "failed") {
+      return (
+        <div className="flex flex-col gap-4">
+          <div className="rounded-card border border-danger-border bg-danger-fill p-4 text-ui text-text">{run.error || "The analysis could not be finished."}</div>
+          <AnalystProgress run={run} />
+        </div>
+      );
+    }
+    return <AnalystProgress run={run} />;
+  }
   const res = run.result;
   if (!res || run.status !== "done") {
     if (run.status === "needs_input" && res?.answer) {
