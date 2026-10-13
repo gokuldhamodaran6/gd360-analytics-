@@ -290,3 +290,44 @@ def engine(db: Session = Depends(get_db), user: models.User = Depends(get_curren
     running = db.query(models.MLJob).filter(models.MLJob.state == "running").count()
     return {"mode": s.ML_WORKER_MODE, "queued": queued, "running": running, "memory_free_mb": ml_data.memory_free_mb(),
             "process_mb": ml_data.rss_mb(), "max_rows": s.ML_MAX_TRAIN_ROWS, "seed": s.ML_SAMPLE_SEED}
+
+
+# 2026-10-12 (round 40): a model trained inside the database is ONE SQL statement - copy it, download it, run it there
+@router.get("/projects/{model_id}/sql")
+def model_sql(model_id: str, format: str | None = None, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """The scoring SQL (select / view / dbt) as JSON, or one of them as a .sql file with ?format=."""
+    import re as _re
+    from fastapi.responses import Response
+    m = _get_accessible_ml_model(db, user, model_id)
+    pack = ((m.results or {}).get("pushdown") or {}).get("sql") if isinstance(m.results, dict) else None
+    if m.status != "ready" or not pack:
+        raise HTTPException(409, "This model has no SQL - only models trained inside the database do.")
+    if not format:
+        return {k: pack.get(k) for k in ("dialect", "engine", "select", "view", "dbt", "column", "view_name")}
+    if format not in ("select", "view", "dbt"):
+        raise HTTPException(400, "format is select, view or dbt.")
+    name = _re.sub(r"[^A-Za-z0-9_-]+", "_", m.name or "model").strip("_")[:60] or "model"
+    body = pack[format] + ("" if format == "dbt" else ";\n")
+    return Response(body, media_type="application/sql",
+                    headers={"Content-Disposition": f'attachment; filename="{name}{"_dbt" if format == "dbt" else ""}.sql"'})
+
+
+@router.post("/projects/{model_id}/sql/test")
+def model_sql_test(model_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Runs the scoring SQL over every row in the database, read only, under the
+    person's access rules - how many rows it scores and how the scores spread."""
+    from sqlalchemy.orm.attributes import flag_modified
+    from ..services import ml_pushdown
+    m = _get_accessible_ml_model(db, user, model_id)
+    if m.status != "ready":
+        raise HTTPException(409, "Test the SQL once the model is ready.")
+    try:
+        out = ml_pushdown.test_in_database(db, user, m)
+    except svc.StudioError as e:
+        _bad(e)
+    res = dict(m.results or {})
+    res["pushdown"] = {**(res.get("pushdown") or {}), "last_test": out}
+    m.results = res
+    flag_modified(m, "results")
+    db.commit()
+    return out
