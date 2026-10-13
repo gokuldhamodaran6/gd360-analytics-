@@ -491,6 +491,15 @@ class Settings(BaseSettings):
     # CSV uploads bigger than this are read straight into the snapshot by
     # DuckDB, streaming, instead of through pandas (MB).
     ML_FAST_CSV_MB: int = 8
+    # --- 2026-10-13 (round 41): in-database training (services/ml_pushdown.py).
+    # The most data one training run may scan, in GB (BigQuery / Snowflake
+    # bill by it). The plan estimates every run before it starts; a run over
+    # this is not offered, and a run that reaches it stops - and can go on
+    # from its last step. 0 = no limit.
+    ML_SQL_MAX_GB_PER_RUN: float = 200.0
+    # How long one training pass may run in the warehouse (seconds). Passes
+    # read every row, so they get longer than a chat question's 30 seconds.
+    ML_SQL_STATEMENT_TIMEOUT_SECONDS: int = 1800
 
 
 @lru_cache
