@@ -221,7 +221,7 @@ function useWidth<T extends HTMLElement>(): [React.RefObject<T>, number] {
   return [ref, w];
 }
 
-function LineView({ s }: { s: LineSection }) {
+export function LineView({ s }: { s: LineSection }) {
   const [ref, W] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
   const x = s.x || [];

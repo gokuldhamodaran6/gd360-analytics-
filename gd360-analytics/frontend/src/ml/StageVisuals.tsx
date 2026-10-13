@@ -4,6 +4,7 @@
 // _data_visuals and the trainers' stage visuals); this file draws them with
 // the theme's own tokens, so they read the same in light and dark.
 import type { StagePreview, Visual, VisualItem } from "../api/mlStudio";
+import { LineView } from "./ResultSections";
 
 const DO = "rgb(var(--auto-do))";
 const TELL = "rgb(var(--auto-tell))";
@@ -251,6 +252,13 @@ export default function StageVisuals({ visuals }: { visuals?: Visual[] | null })
             return <Histogram key={i} v={v} />;
           case "table":
             return <Table key={i} v={v} />;
+          case "line":
+            // round 40: a training curve, a ROC curve, calibration - the results page's own line chart
+            return (
+              <Card key={i} title={v.title} note={v.note}>
+                <LineView s={{ type: "line", title: v.title || "", x: v.x, series: v.series, format: v.format || "number" }} />
+              </Card>
+            );
           case "note":
             return (
               <Card key={i} title={v.title}>
