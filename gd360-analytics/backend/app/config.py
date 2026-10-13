@@ -217,6 +217,11 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-4o-mini"
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_MODEL: str = "claude-sonnet-4-5"
+    # 2026-10-13 (R43 Analyst brain): the model that writes the Analyst's
+    # Python (what-if, simulation, optimisation, finance, statistics). Empty
+    # = the provider's main model (GEMINI_MODEL / ANTHROPIC_MODEL ...). Set
+    # it to that provider's strongest model for the best reasoning.
+    ANALYST_MODEL: str = ""
     # 2026-10-13 (round 42, Event OS): optional public-post search for the
     # Buzz screen. X recent search reads anyone's public posts with the event's
     # hashtag or name (pay per read); YouTube search finds public videos
