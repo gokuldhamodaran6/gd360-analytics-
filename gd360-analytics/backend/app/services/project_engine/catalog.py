@@ -240,6 +240,8 @@ def build_source(db: Session, ds: models.DataSource, user: models.User) -> Catal
             src.note = _sync_note(ds)
         return src
 
+    if ds.kind in ("csv", "excel"):
+        _refresh_file_schema(db, ds)
     pairs = _schema_tables(ds)
     if mode == "live":
         for key, cols in pairs[:MAX_TABLES_PER_SOURCE]:
@@ -255,6 +257,44 @@ def build_source(db: Session, ds: models.DataSource, user: models.User) -> Catal
     if ds.kind == "mongodb":
         src.note = "MongoDB collections are read up to the first 75,000 documents."
     return src
+
+
+TIDY_VERSION = 1
+
+
+def _refresh_file_schema(db: Session, ds: models.DataSource) -> None:
+    """R43: files uploaded before the smart reader (title rows, two header
+    rows, totals rows - services/file_import.tidy_frame) read with new,
+    clean column names now. Their cached schema is refreshed once, so every
+    plan uses the names the data really has."""
+    info = ds.connection_info if isinstance(ds.connection_info, dict) else {}
+    if info.get("tidy_v") == TIDY_VERSION or not ds.file_data:
+        return
+    try:
+        from sqlalchemy.orm.attributes import flag_modified
+        from .. import data_loader
+        pairs = _schema_tables(ds)
+        if not pairs:
+            return
+        if len(pairs) == 1 and pairs[0][0] is None:
+            df = data_loader.load_dataframe(ds, table=None, db=db)
+            new_cache: dict = {"columns": [{"name": str(c), "type": str(df[c].dtype)} for c in df.columns]}
+        else:
+            new_cache = {}
+            for key, _cols in pairs:
+                df = data_loader.load_dataframe(ds, table=key, db=db)
+                new_cache[key] = [{"name": str(c), "type": str(df[c].dtype)} for c in df.columns]
+        ds.schema_cache = new_cache
+        ds.connection_info = {**info, "tidy_v": TIDY_VERSION}
+        flag_modified(ds, "schema_cache")
+        flag_modified(ds, "connection_info")
+        db.commit()
+    except Exception as e:  # noqa: BLE001 - never hides a source
+        print(f"[catalog] schema refresh skipped for {ds.id}: {e}")
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def accessible_sources(db: Session, user: models.User, workspace_id: str | None = None) -> list[models.DataSource]:

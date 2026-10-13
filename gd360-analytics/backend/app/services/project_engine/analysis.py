@@ -124,6 +124,8 @@ def table_payload(df: pd.DataFrame, limit: int = MAX_VISUAL_ROWS) -> dict:
         for k, v in rec.items():
             if isinstance(v, float) and not math.isfinite(v):
                 v = None
+            elif v is pd.NaT or (v is not None and not isinstance(v, (str, bytes, list, dict)) and pd.isna(v) is True):
+                v = None  # R43: never the text "NaT" on an axis or in a table
             elif isinstance(v, (pd.Timestamp,)):
                 v = v.isoformat()[:19].replace("T00:00:00", "")
             elif hasattr(v, "isoformat"):
@@ -337,6 +339,8 @@ def _close(a: float, b: float, tol: float = 0.03) -> bool:
 
 # ---- trend -------------------------------------------------------------------
 
+_TIME_WORD = re.compile(r"(date|day|week|month|quarter|year|period)", re.I)
+
 def _trend(spec: dict, tables: dict, facts: _Facts) -> dict:
     df = tables.get(spec.get("table"))
     if df is None or not len(df):
@@ -346,10 +350,22 @@ def _trend(spec: dict, tables: dict, facts: _Facts) -> dict:
     if not tcol or not vcols:
         raise AnalysisError("The trend needs a time column and at least one value column.")
     work = df.copy()
-    try:
-        work["_t"] = pd.to_datetime(work[tcol])
-    except Exception:  # noqa: BLE001
+    # R43: only real dates are read as dates - "Clock Time" in minutes, a week number or a day 1..7 stays a
+    # number (it used to become 1970 timestamps and an axis labelled "NaT")
+    real_dates = False
+    if pd.api.types.is_datetime64_any_dtype(work[tcol]):
+        work["_t"], real_dates = work[tcol], True
+    elif pd.api.types.is_numeric_dtype(work[tcol]):
         work["_t"] = work[tcol]
+    else:
+        try:
+            parsed = pd.to_datetime(work[tcol], errors="coerce")
+            if parsed.notna().mean() >= 0.8:
+                work["_t"], real_dates = parsed, True
+            else:
+                work["_t"] = work[tcol]
+        except Exception:  # noqa: BLE001
+            work["_t"] = work[tcol]
     work = work.sort_values("_t")
     from . import present
     metric = spec.get("metric_name") or present.humanize(vcols[0])
@@ -381,7 +397,8 @@ def _trend(spec: dict, tables: dict, facts: _Facts) -> dict:
         total = facts.add(f"{present.metric_total_label(name)} over the period", float(s.sum())) if summable else None
         series_out.append({"name": name, "first": first, "last": last, "pct": pc, "jump": jump,
                            "fact_ids": [f["id"] for f in (f1, f2, ch, fp, fmax, fmin, total) if f]})
-    visuals = [{"type": "chart", "title": spec.get("title") or f"{metric} over time",
+    over = "over time" if real_dates or _TIME_WORD.search(str(tcol)) else f"by {present.humanize(tcol).lower()}"
+    visuals = [{"type": "chart", "title": spec.get("title") or f"{metric} {over}",
                 "chart_type": spec.get("chart_type") or "line", **present.annotate(table_payload(df), facts.currency)}]
     return {"summary": {"metric": metric, "series": series_out}, "visuals": visuals, "warnings": []}
 

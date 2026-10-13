@@ -148,6 +148,12 @@ def plan_run(db: Session, run_id: str) -> None:
     user = db.get(models.User, run.owner_id)
     catalog = build_catalog(db, user, list(conv.source_ids or []))
     guided = bool(conv and conv.kind == "guided")
+    # 2026-10-13 (R43): questions that need a model, a scenario, a simulation, maths SQL can't hold - or no
+    # data at all - go to the Analyst (writes and runs Python, checks itself, decision-first answer)
+    from . import analyst
+    if not run.note and analyst.wants_analyst(run.question, catalog, conv.kind if conv else "project"):
+        _run_analyst(db, run, catalog, user)
+        return
     previous = None
     if run.note:
         # a re-plan: the plan this run replaces is kept on the run itself
@@ -169,6 +175,10 @@ def plan_run(db: Session, run_id: str) -> None:
         if read_as.get("assumptions"):
             plan["assumptions"] = read_as["assumptions"] + list(plan.get("assumptions") or [])
     except planner.PlanningError as e:
+        if not guided and "AI" not in str(e) and "usage limit" not in str(e):
+            # R43: no SQL plan fits - the Analyst reads the data itself instead of giving up
+            _run_analyst(db, run, catalog, user, fallback_note=str(e))
+            return
         run.status = "failed"
         run.error_message = str(e)
         run.finished_at = datetime.utcnow()
@@ -181,6 +191,11 @@ def plan_run(db: Session, run_id: str) -> None:
     ]
     run.plan = plan
     run.steps = initial_steps(plan)
+    if not plan.get("can_answer", True) and not guided:
+        # R43: what SQL alone can't answer, the Analyst can - it models, assumes out loud and computes
+        run.plan = plan
+        _run_analyst(db, run, catalog, user, fallback_note=plan.get("missing") or "the data has no direct query for it")
+        return
     if not plan.get("can_answer", True):
         # round 32: never a dead end - what the data CAN answer that comes closest, as one-tap choices
         run.status = "needs_input"
@@ -219,6 +234,38 @@ def plan_run(db: Session, run_id: str) -> None:
         return
     if run.auto_run:
         execute_run(db, run_id)
+
+
+def _run_analyst(db: Session, run: models.ProjectRun, catalog, user, fallback_note: str | None = None) -> None:
+    from . import analyst
+    acquired = _RUN_SLOTS.acquire(timeout=120)
+    if not acquired:
+        run.status = "failed"
+        run.error_message = "GD360 is busy answering other questions right now. Please try again in a minute."
+        run.finished_at = datetime.utcnow()
+        db.commit()
+        return
+    try:
+        out = analyst.run(db, run, catalog, user, _history(db, run), fallback_note=fallback_note)
+    finally:
+        _RUN_SLOTS.release()
+    if out and out.get("cannot"):
+        # the facts are not in the data: the closest questions it CAN answer, one tap each (round 32)
+        plan = dict(run.plan or {}) if isinstance(run.plan, dict) else {}
+        plan["can_answer"] = False
+        plan["missing"] = plan.get("missing") or out["cannot"]
+        plan["alternatives"] = plan.get("alternatives") or out.get("alternatives") or []
+        run.plan = plan
+        run.steps = run.steps or []
+        run.status = "needs_input"
+        run.result = {"answer": {
+            "headline": "I can't answer that from this data yet.",
+            "answer": plan["missing"], "causes": [], "ruled_out": [], "next_questions": [],
+            "options": ways_forward(plan, run.question, catalog),
+        }}
+        run.finished_at = datetime.utcnow()
+        _assistant_message(db, run, run.result["answer"])
+        db.commit()
 
 
 def _read_question(question: str, brief: dict | None) -> tuple[str, dict]:
