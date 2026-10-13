@@ -32,7 +32,7 @@ import {
   speechLang, speechOutputSupported, voiceLang, wakeInAny, autoEnglish, ENGLISHES, type EulivSettings,
 } from "../thread/voice";
 
-const HIDDEN_ON = ["/admin", "/pricing", "/about", "/start", "/register", "/login", "/admin-login", "/help", "/public", "/d/", "/invite", "/privacy", "/connect/", "/e/", "/w/", "/a/", "/r/"];
+const HIDDEN_ON = ["/admin", "/pricing", "/about", "/start", "/register", "/login", "/admin-login", "/help", "/public", "/d/", "/invite", "/privacy", "/connect/", "/e/", "/w/", "/a/", "/r/", "/staff/", "/t/", "/sp/", "/f/", "/x/", "/sign/"];
 const OPEN_EVENT = "gd360:euliv";
 
 /** Opens Euliv from anywhere (Home, the top bar, the command palette ...). */

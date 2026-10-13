@@ -17,7 +17,7 @@ import { useAuth } from "../api/AuthContext";
 import { AppNotification, notificationsApi, WhyOut } from "../api/alerts";
 
 const POLL_MS = 20000;
-const HIDDEN_ON = ["/admin", "/pricing", "/about", "/start", "/register", "/login", "/admin-login", "/help", "/public", "/d/", "/invite", "/privacy", "/connect/", "/e/", "/w/", "/a/", "/r/"];
+const HIDDEN_ON = ["/admin", "/pricing", "/about", "/start", "/register", "/login", "/admin-login", "/help", "/public", "/d/", "/invite", "/privacy", "/connect/", "/e/", "/w/", "/a/", "/r/", "/staff/", "/t/", "/sp/", "/f/", "/x/", "/sign/"];
 const DESKTOP_KEY = "gd360_desktop_alerts";
 
 // ---- a tiny shared store (the bell and the poller read the same state) --------
