@@ -11,7 +11,7 @@ from .routers import (
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
     data_access_rules, ml_models, metric_definitions, transforms, pipelines, projects, apps, automations, ml_studio,
     spaces, site, admin_v2, admin_ops, admin_biz, inapp, guided, initiatives, gtm, gtm_public,
-    ops, trust, domains, notifications, dashboard_ai, assistant,
+    ops, trust, domains, notifications, dashboard_ai, assistant, eventos, eventos_public,
 )
 from .services.scheduler import start_scheduler
 
@@ -277,6 +277,9 @@ app.include_router(admin_ops.router)
 app.include_router(admin_biz.router)
 app.include_router(inapp.router)
 # 2026-10-10: Initiatives + the account-based marketing centre (+ public pages/tracking)
+# 2026-10-13 (round 42): Event OS - before its parent so /initiatives/eventos/* never reads as an initiative id
+app.include_router(eventos.router)
+app.include_router(eventos_public.router)
 app.include_router(initiatives.router)
 app.include_router(gtm.router)
 app.include_router(gtm_public.router)

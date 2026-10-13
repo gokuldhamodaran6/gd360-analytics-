@@ -3361,3 +3361,248 @@ class DashboardPageSnapshot(Base):
     period = Column(String, nullable=True)
     payload = Column(JSON, nullable=False)
     computed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+# ============================================================================
+# 2026-10-13 (round 42): Event OS - one event tracked before, during and
+# after. An event is an Initiative (kind event/webinar); these tables hold
+# what an event needs on top: its setup, the signed expectation contract,
+# tickets (registration -> check-in), the event-day stream, posts found
+# about it, sessions, sponsors and their leads, and agent suggestions.
+# See services/eventos/__init__.py.
+# ============================================================================
+
+def _short_code() -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(8))
+
+
+class EventConfig(Base):
+    __tablename__ = "event_configs"
+
+    initiative_id = Column(String, ForeignKey("initiatives.id", ondelete="CASCADE"), primary_key=True)
+    format = Column(String, nullable=False, default="offline")  # offline|online|webinar|hybrid|meetup|booth|roadshow|launch|workshop|festival
+    mode = Column(String, nullable=False, default="team")  # solo|team|pro|mega
+    starts_at = Column(DateTime, nullable=True)  # local wall-clock time of the venue / host
+    ends_at = Column(DateTime, nullable=True)
+    timezone = Column(String, nullable=True, default="Asia/Kolkata")
+    capacity = Column(Integer, nullable=True)
+    fire_limit = Column(Integer, nullable=True)
+    post_window_days = Column(Integer, nullable=False, default=30)
+    code = Column(String, nullable=True, index=True)  # e.g. AIS26: ads named INIT-AIS26-* count here
+    hashtags = Column(JSON, nullable=True)
+    keywords = Column(JSON, nullable=True)
+    promo_codes = Column(JSON, nullable=True)
+    handles = Column(JSON, nullable=True)  # {"speakers": [...], "sponsors": [...], "press": [...]}
+    ad_campaigns = Column(JSON, nullable=True)  # campaign ids / names mapped by hand
+    zones = Column(JSON, nullable=True)  # [{id, name, capacity}]
+    staff_key = Column(String, nullable=False, default=lambda: secrets.token_urlsafe(18))
+    share_token = Column(String, unique=True, index=True, default=lambda: secrets.token_urlsafe(18))
+    share_enabled = Column(Boolean, default=False)
+    survey_token = Column(String, unique=True, index=True, default=lambda: secrets.token_urlsafe(12))
+    data = Column(JSON, nullable=True)  # join_url, prices, learnings, sample flag, last scan times ...
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EventAsset(Base):
+    """A brand image (banner, logo, stage backdrop) the vision check looks
+    for in posts, or a photo staff took. Small images only (<= 3 MB)."""
+    __tablename__ = "event_assets"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind = Column(String, nullable=False, default="banner")  # banner|logo|backdrop|badge|photo
+    label = Column(String, nullable=True)
+    mime = Column(String, nullable=False, default="image/png")
+    data = deferred(Column(LargeBinary, nullable=False))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EventGoal(Base):
+    """One line of the expectation contract: who expects what, the range
+    agreed, how it is measured and when it was signed."""
+    __tablename__ = "event_goals"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id", ondelete="CASCADE"), nullable=False, index=True)
+    owner_name = Column(String, nullable=False)
+    owner_role = Column(String, nullable=True)
+    owner_email = Column(String, nullable=True)
+    label = Column(String, nullable=False)
+    metric = Column(String, nullable=False)  # a key in services/eventos/score.METRICS, or "custom"
+    unit = Column(String, nullable=True)
+    target = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    weight = Column(Float, nullable=False, default=1.0)
+    lower_is_better = Column(Boolean, default=False)
+    safety = Column(Boolean, default=False)  # a miss caps the event score at 60
+    actual_typed = Column(Float, nullable=True)  # for "custom" or reported goals
+    sign_token = Column(String, unique=True, index=True, default=lambda: secrets.token_urlsafe(18))
+    signed_at = Column(DateTime, nullable=True)
+    signed_by = Column(String, nullable=True)
+    version = Column(Integer, default=1)
+    history = Column(JSON, nullable=True)  # [{at, by, change}]
+    position = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EventTicket(Base):
+    """A person's place at the event: registered -> checked in. The QR on
+    the ticket is the code; walk-ins get one when captured."""
+    __tablename__ = "event_tickets"
+    __table_args__ = (Index("ix_event_tickets_init_status", "initiative_id", "status"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id", ondelete="CASCADE"), nullable=False, index=True)
+    code = Column(String, unique=True, index=True, default=_short_code)
+    contact_id = Column(String, nullable=True, index=True)
+    account_id = Column(String, nullable=True)
+    name = Column(String, nullable=True)
+    email = Column(String, nullable=True, index=True)
+    company = Column(String, nullable=True)
+    title = Column(String, nullable=True)
+    seniority = Column(String, nullable=True)
+    city = Column(String, nullable=True)
+    tier = Column(String, nullable=False, default="free")  # free|paid|vip|speaker|sponsor|staff|press
+    icp = Column(Boolean, nullable=True)
+    source = Column(String, nullable=True)  # the channel they came from
+    ref = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="registered")  # registered|checked_in|cancelled
+    walk_in = Column(Boolean, default=False)
+    consent = Column(Boolean, default=False)
+    registered_at = Column(DateTime, default=datetime.utcnow, index=True)
+    confirmed_at = Column(DateTime, nullable=True)
+    checked_in_at = Column(DateTime, nullable=True)
+    checked_in_by = Column(String, nullable=True)
+    gate = Column(String, nullable=True)
+    show_prob = Column(Float, nullable=True)
+    online_minutes = Column(Float, nullable=True)
+    engagement = Column(Float, nullable=True)  # webinar / online engagement score 0-100
+    data = Column(JSON, nullable=True)
+
+
+class EventTouch(Base):
+    """The event-day and online stream: gate and session scans, booth
+    visits, stream joins, polls, questions, chat, CTA clicks, ratings,
+    survey answers and occupancy counts. One row each."""
+    __tablename__ = "event_touches"
+    __table_args__ = (Index("ix_event_touches_init_kind", "initiative_id", "kind"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind = Column(String, nullable=False)
+    occurred_at = Column(DateTime, default=datetime.utcnow, index=True)
+    ticket_id = Column(String, nullable=True, index=True)
+    session_id = Column(String, nullable=True)
+    sponsor_id = Column(String, nullable=True)
+    zone = Column(String, nullable=True)
+    value = Column(Float, nullable=True)
+    text = Column(Text, nullable=True)
+    source = Column(String, nullable=True)
+    truth = Column(String, nullable=False, default="counted")
+    client_id = Column(String, nullable=True, index=True)  # offline queue id - the same scan is never counted twice
+    data = Column(JSON, nullable=True)
+
+
+class EventMention(Base):
+    """A post, video or article about the event - found by hashtag, link,
+    code, words or the banner in the picture - or added by hand."""
+    __tablename__ = "event_mentions"
+    __table_args__ = (UniqueConstraint("initiative_id", "platform", "external_id", name="uq_event_mention"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id", ondelete="CASCADE"), nullable=False, index=True)
+    platform = Column(String, nullable=False)  # instagram|facebook|linkedin|youtube|x|news|other
+    external_id = Column(String, nullable=False)
+    author = Column(String, nullable=True)
+    author_kind = Column(String, nullable=True)  # own|speaker|sponsor|attendee|press|creator|public
+    url = Column(String, nullable=True)
+    text = Column(Text, nullable=True)
+    media_url = Column(Text, nullable=True)
+    posted_at = Column(DateTime, nullable=True, index=True)
+    reach = Column(Float, nullable=True)
+    engagements = Column(Float, nullable=True)
+    matched_by = Column(String, nullable=True)  # hashtag|link|code|keyword|banner|manual
+    confidence = Column(Float, nullable=True)
+    why = Column(JSON, nullable=True)
+    state = Column(String, nullable=False, default="auto")  # auto|review|confirmed|rejected
+    sentiment = Column(String, nullable=True)  # positive|neutral|negative
+    ticket_id = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EventSession(Base):
+    __tablename__ = "event_sessions"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String, nullable=False)
+    speaker = Column(String, nullable=True)
+    room = Column(String, nullable=True)
+    track = Column(String, nullable=True)
+    starts_at = Column(DateTime, nullable=True)
+    ends_at = Column(DateTime, nullable=True)
+    capacity = Column(Integer, nullable=True)
+    online = Column(Boolean, default=False)
+    data = Column(JSON, nullable=True)
+
+
+class EventSponsor(Base):
+    __tablename__ = "event_sponsors"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    tier = Column(String, nullable=True)
+    booth = Column(String, nullable=True)
+    goal_leads = Column(Integer, nullable=True)
+    amount = Column(Float, nullable=True)  # what they paid
+    contact_email = Column(String, nullable=True)
+    token = Column(String, unique=True, index=True, default=lambda: secrets.token_urlsafe(18))
+    staff_key = Column(String, nullable=False, default=lambda: secrets.token_urlsafe(12))
+    renewal = Column(String, nullable=False, default="none")  # none|verbal|signed|declined
+    renewal_at = Column(DateTime, nullable=True)
+    data = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EventLead(Base):
+    __tablename__ = "event_leads"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id", ondelete="CASCADE"), nullable=False, index=True)
+    sponsor_id = Column(String, nullable=True, index=True)
+    ticket_id = Column(String, nullable=True)
+    name = Column(String, nullable=True)
+    email = Column(String, nullable=True)
+    company = Column(String, nullable=True)
+    title = Column(String, nullable=True)
+    rating = Column(Integer, nullable=True)  # 1-5
+    interests = Column(JSON, nullable=True)
+    note = Column(Text, nullable=True)
+    scanned_by = Column(String, nullable=True)
+    client_id = Column(String, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class EventAction(Base):
+    """Something the event agent suggests (or did): approve, dismiss, and
+    every decision is kept."""
+    __tablename__ = "event_actions"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id", ondelete="CASCADE"), nullable=False, index=True)
+    key = Column(String, nullable=False)  # stable id of the rule that raised it, e.g. "confirm_silent"
+    agent = Column(String, nullable=False, default="Analyst")
+    phase = Column(String, nullable=True)
+    title = Column(String, nullable=False)
+    detail = Column(Text, nullable=True)
+    impact = Column(String, nullable=True)
+    state = Column(String, nullable=False, default="proposed")  # proposed|done|dismissed
+    payload = Column(JSON, nullable=True)
+    result = Column(Text, nullable=True)
+    decided_by = Column(String, nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

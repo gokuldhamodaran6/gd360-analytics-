@@ -217,6 +217,13 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-4o-mini"
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_MODEL: str = "claude-sonnet-4-5"
+    # 2026-10-13 (round 42, Event OS): optional public-post search for the
+    # Buzz screen. X recent search reads anyone's public posts with the event's
+    # hashtag or name (pay per read); YouTube search finds public videos
+    # about it. Without them, Buzz still reads your own synced accounts and
+    # any link pasted by hand.
+    X_BEARER_TOKEN: str = ""
+    YOUTUBE_API_KEY: str = ""
 
     # --- Safety limits (generous defaults; raise/lower as you like) ---
     # 2026-09-22 incident: the backend runs on a single 512MB instance, and
