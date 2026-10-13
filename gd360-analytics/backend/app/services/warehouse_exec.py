@@ -77,10 +77,11 @@ def _snowflake_connector(ds: models.DataSource) -> SnowflakeConnector:
     )
 
 
-def _sql_connector(ds: models.DataSource) -> SQLConnector:
+def _sql_connector(ds: models.DataSource, statement_timeout: int | None = None) -> SQLConnector:
     info = ds.connection_info or {}
     username, password = security.decrypt_secret(ds.encrypted_secret).split("␟")
-    return SQLConnector(ds.kind, info["host"], info["port"], info["database"], username, password, info.get("ssl", True))
+    return SQLConnector(ds.kind, info["host"], info["port"], info["database"], username, password, info.get("ssl", True),
+                        statement_timeout=statement_timeout)
 
 
 def wrap_ctes(sql: str, ctes: list[tuple[str, str]] | None) -> str:
@@ -92,7 +93,7 @@ def wrap_ctes(sql: str, ctes: list[tuple[str, str]] | None) -> str:
     return warehouse_tables.wrap_with_ctes(sql, ctes)
 
 
-def run_sql(ds: models.DataSource, sql: str, ctes: list[tuple[str, str]] | None = None, params=None):
+def run_sql(ds: models.DataSource, sql: str, ctes: list[tuple[str, str]] | None = None, params=None, limits: dict | None = None):
     """The thread-safe core: ONE statement, a fresh connector, every guard
     the connector enforces. Returns (df, bytes_scanned). Raises
     ReadOnlyViolation / QueryTooExpensive / the warehouse's own error.
@@ -103,24 +104,31 @@ def run_sql(ds: models.DataSource, sql: str, ctes: list[tuple[str, str]] | None 
     bind_parameters produced for THIS `ds.kind`: a list of {name, type,
     value|values} for BigQuery (real query parameters in the job config),
     a {name: value} dict for every other kind (SQLAlchemy / Snowflake
-    binding). Values are never spliced into the SQL text anywhere."""
+    binding). Values are never spliced into the SQL text anywhere.
+
+    `limits` (2026-10-13, round 41: in-database training) raises this one
+    statement's guards for a pass that reads every row of a big table:
+    {"max_bytes": BigQuery's per-statement scan ceiling, "timeout_seconds":
+    the statement timeout on every other engine}. The caller enforces its
+    own per-run ceiling (ML_SQL_MAX_GB_PER_RUN) and the daily budget."""
     kind = ds.kind
+    limits = limits or {}
     sql = wrap_ctes(sql, ctes)
     # `params` is only passed when there is something to bind, so the
     # unparameterised path calls the connectors exactly as before.
     extra = {"params": params} if params else {}
     if kind == "bigquery":
         df, bytes_scanned = _bigquery_connector(ds).run_pushdown_query(
-            sql, max_bytes=settings.BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY, **extra,
+            sql, max_bytes=int(limits.get("max_bytes") or settings.BIGQUERY_MAX_BYTES_SCANNED_PER_QUERY), **extra,
         )
         return df, bytes_scanned
     if kind == "snowflake":
         df, bytes_scanned = _snowflake_connector(ds).run_pushdown_query(
-            sql, statement_timeout_seconds=settings.SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS, **extra,
+            sql, statement_timeout_seconds=int(limits.get("timeout_seconds") or settings.SNOWFLAKE_STATEMENT_TIMEOUT_SECONDS), **extra,
         )
         return df, bytes_scanned
     if kind in ("postgres", "mysql", "sqlserver", "supabase"):
-        df = _sql_connector(ds).load_dataframe(sql, is_raw_sql=True, **extra)
+        df = _sql_connector(ds, limits.get("timeout_seconds")).load_dataframe(sql, is_raw_sql=True, **extra)
         return df, None
     raise ValueError(f"run_sql does not handle kind {kind!r}")
 
@@ -247,7 +255,7 @@ def classify_error(e: Exception) -> str:
 
 def execute_sql(
     db: Session, ds: models.DataSource, user_id: str, sql: str, ctes: list[tuple[str, str]] | None = None,
-    params=None,
+    params=None, limits: dict | None = None,
 ) -> dict:
     """The audited one-at-a-time wrapper. Returns {"df", "bytes_scanned",
     "attempt": {sql, status, error}} on success, {"attempt": {...}} on
@@ -259,7 +267,7 @@ def execute_sql(
         log_pushdown(db, user_id, ds.id, ds.kind, sql, None, "error", str(e))
         return {"attempt": {"sql": sql, "status": "error", "error": str(e)}}
     try:
-        df, bytes_scanned = run_sql(ds, wrapped, params=params)
+        df, bytes_scanned = run_sql(ds, wrapped, params=params, limits=limits)
     except QueryTooExpensive as e:
         log_pushdown(db, user_id, ds.id, ds.kind, wrapped, e.estimated_bytes, "rejected_too_expensive", str(e))
         return {"attempt": {"sql": wrapped, "status": "rejected_too_expensive", "error": str(e)}}

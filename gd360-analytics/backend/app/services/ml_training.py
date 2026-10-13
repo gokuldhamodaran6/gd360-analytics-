@@ -522,6 +522,9 @@ def _explain_prediction(
     more than one class's row) returns None for the same reason: no
     single feature-level number honestly describes "up or down" across
     more than two classes at once."""
+    if hasattr(pipeline, "contributions"):
+        # 2026-10-12 (round 40): a model trained inside the database (ml_pushdown.SqlGLM) - linear, so exact
+        return pipeline.contributions(row)
     if algorithm not in ("logistic_regression", "linear_regression"):
         return None
 

@@ -23,9 +23,17 @@ _ctx: ContextVar[dict] = ContextVar("gd360_ai_ctx", default={})
 _local = threading.local()
 
 # USD per 1M tokens (input, output). Matched by substring of the model name.
+# 2026-10-13 (round 41): Gemini 3.6 Flash - the model production runs - is
+# $0.75 / $3.75 until 31 Dec 2026 and $1.50 / $7.50 from 1 Jan 2027 (Google's
+# list price). The old "flash" row ($0.30 / $2.50, Gemini 2.5 Flash) made the
+# admin screen show about 45% less than the real bill.
+DATED_PRICES = {
+    "gemini-3.6-flash": [("2027-01-01", 1.50, 7.50), ("0000-00-00", 0.75, 3.75)],
+}
 PRICES = [
     ("flash-lite", 0.10, 0.40),
-    ("flash", 0.30, 2.50),
+    ("2.5-flash", 0.30, 2.50),
+    ("flash", 0.75, 3.75),
     ("gemini", 1.25, 10.00),
     ("gpt-oss-120b", 0.15, 0.75),
     ("gpt-oss-20b", 0.10, 0.50),
@@ -73,8 +81,14 @@ def reset_context(token) -> None:
         pass
 
 
-def price_for(model: str | None) -> tuple[float, float]:
+def price_for(model: str | None, when: datetime | None = None) -> tuple[float, float]:
     m = (model or "").lower()
+    day = (when or datetime.utcnow()).strftime("%Y-%m-%d")
+    for key, steps in DATED_PRICES.items():
+        if key in m and "lite" not in m:
+            for since, pin, pout in steps:   # newest first
+                if day >= since:
+                    return pin, pout
     for key, pin, pout in PRICES:
         if key in m:
             return pin, pout

@@ -170,7 +170,7 @@ SPEC_KEYS = ("problem_type", "source_id", "table", "target", "positive_value", "
              "exclude", "share", "goal", "joins", "space_id", "start_column", "end_column", "duration_column", "event_column", "drivers",
              "scenario", "spend_columns", "order_column", "item_column", "entity_column", "treatment_column", "treated_value", "price_column",
              "units_column", "channel_column", "conversion_column", "conversion_value", "text_column", "label_column", "tags", "fields",
-             "fields_how", "k", "prep_sql")
+             "fields_how", "k", "prep_sql", "engine")
 COLUMN_KEYS = ("target", "time_column", "value_column", "group_column", "start_column", "end_column", "duration_column", "event_column",
                "order_column", "item_column", "entity_column", "treatment_column", "price_column", "units_column", "channel_column",
                "conversion_column", "text_column", "label_column")
@@ -209,6 +209,10 @@ STAGES = {
     "themes": [("data", "Load the data"), ("features", "Read the words"), ("train", "Find themes"), ("explain", "Name and count")],
     "doc_facts": [("data", "Load the data"), ("fields", "Decide the fields"), ("train", "Pull out the facts"), ("explain", "Check completeness")],
 }
+
+# 2026-10-12 (round 40): a yes/no or number model trained inside the database (services/ml_pushdown.py)
+SQL_STAGES = [("data", "Read the table in place"), ("features", "Choose the columns"), ("train", "Train inside the database"),
+              ("test", "Grade on held-out rows"), ("sql", "Write the model as SQL")]
 
 _SEM: threading.Semaphore | None = None
 _SEM_LOCK = threading.Lock()
@@ -1179,6 +1183,9 @@ def make_plan(db: Session, user: models.User, spec: dict) -> dict:
     data = joined.get("data") or {}
     total = int(data.get("rows_total") or n)
     budget = int((data.get("budget") or {}).get("rows") or n)
+    if (data.get("source") or {}).get("mode") == "live":
+        # 2026-10-12 (round 40): a live warehouse samples at most ML_MAX_TRAIN_ROWS rows for a run in GD360
+        budget = min(budget, int(get_settings().ML_MAX_TRAIN_ROWS))
     train_rows = min(total, budget)
     cols = list(df.columns)
     rows: list[dict] = []
@@ -1288,6 +1295,62 @@ def make_plan(db: Session, user: models.User, spec: dict) -> dict:
         ]
         plan.update(grain=grain, horizon=horizon, time_column=tcol, value_column=vcol, group_column=group)
     plan["rows_text"] = rows
+    # 2026-10-12 (round 40): where it trains - inside the database (every row, in place) or on a fair sample in GD360
+    # 2026-10-13 (round 41): with what it will cost (passes, time, bytes on BigQuery) and the per-run limit
+    if ptype in ("yes_no", "number"):
+        from . import ml_pushdown
+        src_info = data.get("source") or {}
+        live = src_info.get("mode") == "live"
+        est = None
+        try:
+            ds_ = db.get(models.DataSource, spec["source_id"])
+            if ds_ is not None and (not live or ds_.kind in ml_pushdown.SQL_KINDS):
+                est = ml_pushdown.estimate(db, user, spec, ptype, total, entry, ds_, live)
+        except Exception:  # noqa: BLE001 - an estimate that can't run never blocks the plan
+            logger.info("[ml_studio] in-database estimate failed", exc_info=True)
+        routes = ml_pushdown.routes(ptype, spec, data, total, budget, (plan.get("label") or {}).get("kind"), est)
+        plan["routes"] = routes
+        if not spec.get("engine") and routes["recommended"] == "sql":
+            spec["engine"] = "sql"   # never chosen yet: a live warehouse trains in place by default
+        if spec.get("engine") == "sql" and not routes["sql"]["available"]:
+            plan["warnings"].append("In-database training isn't available for this one: " + (routes["sql"]["why"] or "") + " It will train on a sample.")
+            spec["engine"] = None
+        if spec.get("engine") == "sql":
+            r = routes["sql"]
+            binary = ptype == "yes_no"
+            types_ = {c["name"]: str(c.get("type") or "") for c in entry.get("columns") or []}
+            cat_ = ml_pushdown.catalog_columns(types_, spec)
+            tcol_ = spec.get("time_column")
+            timed = bool(tcol_) and ml_pushdown.type_class(types_.get(tcol_, ""))[0] == "date"
+            for row in rows:
+                if row["k"] == "Data":
+                    row["m"] = f"{_fmt_int(total)} rows · {len(cols)} columns · trains on every row, inside {r['where']}"
+                elif row["k"] == "Features":
+                    n_, d_, c_ = len(cat_["numbers"]), len(cat_["dates"]), len(cat_["categories"])
+                    row["v"] = (f"{n_} number{'s' if n_ != 1 else ''}, {c_} categor{'ies' if c_ != 1 else 'y'}"
+                                + (f" and {d_} date{'s' if d_ != 1 else ''} as “days before”" if d_ else ""))
+                    row["m"] = ("from the catalog; the run counts every column inside the database and leaves out ids, constants and free text"
+                                + (f" · not readable in SQL: {', '.join(x['column'] for x in cat_['left_out'] if 'nested' in x['reason'] or 'time' in x['reason'])[:80]}"
+                                   if any('nested' in x['reason'] or 'time' in x['reason'] for x in cat_["left_out"]) else ""))
+                elif row["k"] == "Leak check":
+                    row["m"] = ((row["m"] + " · ") if row["m"] else "") + "checked again on every row inside the database (correlations and outcome per value)"
+                elif row["k"] == "Fair test":
+                    row["v"] = (f"Trains on older rows, tests on the newest 20% by {tcol_} - inside the database" if timed else
+                                "A fixed 20% of rows held out by a hash, graded inside the database")
+                    row["m"] = ("ROC, precision-recall, calibration and lift from a 1,000-bucket histogram of the held-out scores" if binary
+                                else "R², typical error and predicted vs actual, computed in SQL")
+                elif row["k"] == "Compute":
+                    warm = binary and total >= ml_pushdown.WARM_ROWS * 1.25
+                    row["v"] = (f"{r['model']} trained inside {r['where']}: " +
+                                ("a warm start on a sample the engine draws, then 2-3 passes over every row" if warm else
+                                 "one SELECT per step, usually 4-6 steps" if binary else "one pass over the training rows"))
+                    row["m"] = (est or {}).get("text") or ""
+                elif row["k"] == "Output":
+                    row["v"] = _output_text(ptype, plan.get("label") or {}) + " - and the model as one SQL statement for your own database"
+            rows.insert(next((i for i, x in enumerate(rows) if x["k"] == "Compute"), len(rows)),
+                        {"k": "Rows out", "v": f"None - every query returns sums and counts; no row leaves {r['where']}",
+                         "m": "the run page meters it"})
+        plan["engine"] = spec.get("engine")
     # 2026-10-12 (round 39): the data step - offered when the goal is per entity and the table isn't
     if (spec.get("prep_sql") or "").strip():
         plan["rows_text"].insert(1, {"k": "Data step", "v": f"Your SQL shapes {_fmt_int(int((data.get('prep') or {}).get('rows') or n))} rows",
@@ -1420,8 +1483,14 @@ def _leak_suspects(df: pd.DataFrame, y: pd.Series, feats: list[str], info: dict)
 
 # ----------------------------------------------------------- the job ----
 
-def _stage_list(ptype: str) -> list[dict]:
-    return [{"id": sid, "title": title, "status": "pending", "note": ""} for sid, title in STAGES[ptype]]
+def _engine(ptype: str | None, spec: dict | None) -> str | None:
+    """"sql" when this run trains inside the database (round 40)."""
+    return "sql" if (spec or {}).get("engine") == "sql" and ptype in ("yes_no", "number") else None
+
+
+def _stage_list(ptype: str, engine: str | None = None) -> list[dict]:
+    stages = SQL_STAGES if engine == "sql" else STAGES[ptype]
+    return [{"id": sid, "title": title, "status": "pending", "note": ""} for sid, title in stages]
 
 
 def _target_name(ptype: str, spec: dict) -> str:
@@ -1433,10 +1502,10 @@ def _target_name(ptype: str, spec: dict) -> str:
     return {"segments": "segment", "anomalies": "anomaly", "themes": "theme", "sentiment": "sentiment", "doc_facts": "facts"}.get(ptype, "rows")
 
 
-def _fresh_progress(ptype: str | None, message: str) -> dict:
-    return {"stages": _stage_list(ptype), "leaderboard": [], "curve": [], "trials_done": 0,
-            "trials_total": get_settings().ML_TRIALS if ptype in TUNED else None, "leaks": [], "resources": {},
-            "message": message}
+def _fresh_progress(ptype: str | None, message: str, engine: str | None = None) -> dict:
+    return {"stages": _stage_list(ptype, engine), "leaderboard": [], "curve": [], "trials_done": 0,
+            "trials_total": get_settings().ML_TRIALS if ptype in TUNED and engine != "sql" else None, "leaks": [], "resources": {},
+            "message": message, "engine": engine}
 
 
 def start(db: Session, user: models.User, spec: dict, name: str, goal: str | None, run_now: bool = False) -> models.MLModel:
@@ -1456,7 +1525,7 @@ def start(db: Session, user: models.User, spec: dict, name: str, goal: str | Non
         owner_id=user.id, workspace_id=ds.workspace_id, datasource_id=ds.id, name=(name or "ML project").strip()[:120],
         target_column=target, status="training", problem_type=ptype, goal=(goal or "").strip() or None,
         table_name=entry["key"], plan={"spec": spec}, started_at=datetime.utcnow(), stop_requested=False,
-        progress=_fresh_progress(ptype, "Queued…"),
+        progress=_fresh_progress(ptype, "Queued…", _engine(ptype, spec)),
     )
     db.add(m)
     db.commit()
@@ -1485,7 +1554,10 @@ def restart(db: Session, m: models.MLModel) -> models.MLModel:
     m.error_message = None
     m.stop_requested = False
     m.started_at = datetime.utcnow()
-    m.progress = _fresh_progress(m.problem_type, "Queued…")
+    ckpt = (m.progress or {}).get("pushdown_ckpt")
+    m.progress = _fresh_progress(m.problem_type, "Queued…", _engine(m.problem_type, (m.plan or {}).get("spec")))
+    if ckpt and m.progress.get("engine") == "sql":
+        m.progress["pushdown_ckpt"] = ckpt   # 2026-10-13 (round 41): kept, so a stopped in-database run goes on from its last step
     db.commit()
     _enqueue_training(db, m, m.owner_id)
     return m
@@ -1665,7 +1737,10 @@ def run_training(model_id: str, payload: dict | None = None) -> tuple[bool, str 
         note = payload.get("note")
         m.status = "training"
         m.started_at = datetime.utcnow()
-        m.progress = _fresh_progress(m.problem_type, note or "Reading the data…")
+        ckpt = (m.progress or {}).get("pushdown_ckpt")
+        m.progress = _fresh_progress(m.problem_type, note or "Reading the data…", _engine(m.problem_type, (m.plan or {}).get("spec")))
+        if ckpt and m.progress.get("engine") == "sql":
+            m.progress["pushdown_ckpt"] = ckpt   # 2026-10-13 (round 41): an in-database run goes on from its last finished step
         if note:
             m.progress["retry_note"] = note
         flag_modified(m, "progress")
@@ -1675,7 +1750,10 @@ def run_training(model_id: str, payload: dict | None = None) -> tuple[bool, str 
             user = db.get(models.User, m.owner_id)
             spec = dict((m.plan or {}).get("spec") or {})
             ptype = m.problem_type
-            if ptype in SUPERVISED:
+            if _engine(ptype, spec) == "sql":
+                from . import ml_pushdown
+                ml_pushdown.train(db, job, user, spec)
+            elif ptype in SUPERVISED:
                 _train_supervised(db, job, user, spec)
             elif ptype == "segments":
                 _train_segments(db, job, user, spec)
@@ -1759,6 +1837,8 @@ def _model_code(m: models.MLModel, spec: dict, res: dict) -> str:
     """The Python that reproduces this model on the rows the data step read -
     the algorithm and the settings that actually won, not a template."""
     ptype = m.problem_type
+    if res.get("engine") == "sql":
+        return _sql_model_code(m, res)
     lines = ["# " + (m.name or "ML project"), "# rows: the table the data step produced (see its SQL)", "import pandas as pd", ""]
     if ptype in SUPERVISED and res.get("winner_key"):
         classify = res.get("kind") != "number"
@@ -1802,10 +1882,25 @@ def _model_code(m: models.MLModel, spec: dict, res: dict) -> str:
 TYPE_WORDS = {p["id"]: p["title"] for p in PROBLEMS}
 
 
+def _sql_model_code(m: models.MLModel, res: dict) -> str:
+    """Round 40: the in-database model in plain Python - the same numbers the
+    SQL multiplies, so anyone can score a row by hand and check it.
+    Round 41: every kind of term (dates, curves, empty flags, outcome rates)."""
+    from . import ml_pushdown
+    pdn = res.get("pushdown") or {}
+    g = pdn.get("glm") or {}
+    glm = ml_pushdown.SqlGLM(kind="binary" if res.get("kind") == "binary" else "number", numeric=g.get("numeric"), categories=g.get("categories"),
+                             beta=g.get("beta"), names=g.get("names"), terms=g.get("terms"), dialect=g.get("dialect"))
+    return ml_pushdown.python_code(glm, m.name, pdn.get("engine"), pdn.get("rows"), res.get("positive"))
+
+
 def _finish_stage_code(job: "Job", m: models.MLModel, spec: dict) -> None:
     res = m.results if isinstance(m.results, dict) else {}
     code = res.get("code")
     if not code:
+        return
+    if res.get("engine") == "sql":
+        job.attach("sql", code=[{"title": "The same model in Python (to check a row by hand)", "lang": "python", "engine": "Python", "code": code}])
         return
     stages = [s_["id"] for s_ in (job.progress.get("stages") or [])]
     sid = "train" if "train" in stages else (stages[-2] if len(stages) > 1 else stages[-1])
@@ -4624,6 +4719,12 @@ def start_scoring(db: Session, user: models.User, m: models.MLModel, table: str 
         raise StudioError("This model isn't ready to use yet.")
     if m.problem_type in NOT_ROW_KINDS or m.task_type == "forecast":
         raise StudioError("This kind of model works on periods or channels, not rows - its results are on this page.")
+    res_ = m.results if isinstance(m.results, dict) else {}
+    pdn_ = res_.get("pushdown") or {}
+    if res_.get("engine") == "sql" and pdn_.get("live"):
+        # 2026-10-13 (round 41): GD360 reads a live table only up to a row cap - the model's own SQL scores every row in place
+        raise StudioError(f"This model runs inside {pdn_.get('engine')}: its SQL scores every row there - use “Use it in {pdn_.get('engine')}” "
+                          "(a SELECT, a view or a dbt model). Scoring in GD360 would read only part of a live table.")
     p = dict(m.progress or {})
     if (p.get("scoring") or {}).get("state") in ("queued", "running"):
         raise StudioError("It is already scoring.")
@@ -4672,10 +4773,20 @@ def run_scoring(model_id: str, payload: dict) -> tuple[bool, str | None, dict | 
                 entry, snap = _source_view(db, user, b, ds.id, table, "source", n_live=get_settings().ML_MAX_TRAIN_ROWS)
                 attached = _attach_joins(db, user, b, spec.get("joins") or []) if spec.get("joins") else []
                 b.lock()
-                total = b.count("source")
+                # 2026-10-13 (round 41): a model trained after a data step learned from that step's table -
+                # score the same table (the step runs on the rows being scored), not the raw source
+                view = "source"
+                if (spec.get("prep_sql") or "").strip():
+                    try:
+                        md.run_select(b, spec["prep_sql"], {"source"} | {v for *_, v in attached}, out_view="model", step="prepare",
+                                      title="The table the model scores (your SQL)")
+                    except md.DataError as e:
+                        raise StudioError(f"The data step's SQL didn't run on the rows to score: {e}") from e
+                    view = "model"
+                total = b.count(view)
                 _scoring_progress(db, m, total=total)
                 feats = m.feature_columns or []
-                need_join = bool(attached) and any(f not in {c for c, _ in b.columns("source")} for f in feats)
+                need_join = bool(attached) and any(f not in {c for c, _ in b.columns(view)} for f in feats)
                 aggs = []
                 if need_join:
                     used: set[str] = set()
@@ -4684,10 +4795,10 @@ def run_scoring(model_id: str, payload: dict) -> tuple[bool, str | None, dict | 
                         made, many, _ = md.aggregate_join(b, view, j.get("key"), alias, f"agg_{alias}")
                         aggs.append((j.get("base_key") or j.get("key"), alias, made, many))
                 if m.problem_type in WHOLE_TABLE_KINDS:
-                    frames = [b.run("SELECT * FROM source", title="Read every row")]
+                    frames = [b.run(f"SELECT * FROM {view}", title="Read every row")]
                     chunks = iter(frames)
                 else:
-                    reader = b.con.execute("SELECT * FROM source").fetch_record_batch(SCORE_CHUNK)
+                    reader = b.con.execute(f"SELECT * FROM {view}").fetch_record_batch(SCORE_CHUNK)
                     chunks = (batch.to_pandas() for batch in reader)
                 first = True
                 for chunk in chunks:
@@ -4729,6 +4840,8 @@ def run_scoring(model_id: str, payload: dict) -> tuple[bool, str | None, dict | 
                               target_id=m.id, metadata={"row_count": written, "worker": True})
         db.commit()
         result = {"version_id": v.id, "version_name": v.name, "rows": written, "seconds": round(time.time() - t0, 1)}
+        if snap.mode == "live" and int(snap.rows or 0) > written:
+            result["rows_total"] = int(snap.rows)   # round 41: a live table is read up to a row cap - the page says "of"
         _scoring_progress(db, m, state="done", done=written, **result)
         return True, None, result
     except StudioError as e:
@@ -4921,5 +5034,10 @@ def notebook(m: models.MLModel) -> dict:
                              "Data step for each statement."))
     if res.get("code"):
         cells += [md_cell("## 4. The model"), code_cell(res["code"])]
+    sqlp = (res.get("pushdown") or {}).get("sql") or {}
+    if sqlp.get("select"):
+        cells += [md_cell(f"## 5. The model as SQL\n\nTrained inside {sqlp.get('engine')}. This SELECT scores every row where it lives; "
+                          "here it runs in DuckDB over `source.csv`."),
+                  code_cell('scored = con.sql("""\n' + (sqlp.get("notebook_select") or sqlp["select"]) + '\n""").df()\nscored.head()')]
     return {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
                                          "language_info": {"name": "python"}}, "nbformat": 4, "nbformat_minor": 5}

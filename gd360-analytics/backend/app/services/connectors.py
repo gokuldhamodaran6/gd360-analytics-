@@ -105,10 +105,54 @@ def assert_read_only_sql(raw_sql: str) -> None:
     if stmt_type != "SELECT":
         raise ReadOnlyViolation(f"Only SELECT queries are allowed (got {stmt_type}).")
 
-    lowered = raw_sql.lower()
+    lowered = _without_quoted_text(raw_sql).lower()
     for kw in FORBIDDEN_SQL_KEYWORDS:
         if re.search(rf"\b{re.escape(kw)}\b", lowered):
             raise ReadOnlyViolation(f"Query contains a forbidden keyword: {kw}.")
+
+
+def _without_quoted_text(sql: str) -> str:
+    """2026-10-13 (round 41): the SQL with quoted text and comments blanked
+    out, for the forbidden-keyword scan - so a value ('Replace', 'update
+    pending') or a column named "update" no longer blocks a read-only query
+    (an ML training pass carries a category's values as literals). Quoted
+    text cannot execute. Only done when the quoting is the same in every
+    engine: if the text has a backslash (MySQL / BigQuery escapes, E''
+    strings), a $ (PostgreSQL dollar quoting) or a # (a MySQL comment),
+    nothing is blanked and the whole text is scanned, exactly as before."""
+    if any(ch in sql for ch in "\\$#"):
+        return sql
+    out, i, n = [], 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch == "-" and sql.startswith("--", i):
+            j = sql.find("\n", i)
+            i = n if j < 0 else j
+            out.append(" ")
+            continue
+        if ch == "/" and sql.startswith("/*", i):
+            j = sql.find("*/", i + 2)
+            if j < 0:
+                return sql            # an unclosed comment: scan everything
+            i = j + 2
+            out.append(" ")
+            continue
+        if ch in "'\"`":
+            j = i + 1
+            while True:
+                j = sql.find(ch, j)
+                if j < 0:
+                    return sql        # an unclosed quote: scan everything
+                if j + 1 < n and sql[j + 1] == ch:   # a doubled quote is part of the text
+                    j += 2
+                    continue
+                break
+            out.append(f"{ch}{ch}")
+            i = j + 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def assert_read_only_mongo_pipeline(pipeline: list) -> None:
@@ -207,14 +251,17 @@ _SQL_CONNECT_TIMEOUT_SECONDS = 10
 _SQL_STATEMENT_TIMEOUT_SECONDS = 30
 
 
-def _sql_connect_args(kind: str) -> dict:
+def _sql_connect_args(kind: str, statement_timeout: int | None = None) -> dict:
+    # 2026-10-13 (round 41): in-database training passes read every row of a
+    # big table - they get their own, longer limit (ML_SQL_STATEMENT_TIMEOUT_SECONDS)
+    t = int(statement_timeout or _SQL_STATEMENT_TIMEOUT_SECONDS)
     if kind == "postgres" or kind == "supabase":
         return {
             "connect_timeout": _SQL_CONNECT_TIMEOUT_SECONDS,
             # psycopg2's own way to set a session-level statement timeout
             # (milliseconds) before the first query ever runs - applies to
             # every query on this connection, not just one.
-            "options": f"-c statement_timeout={_SQL_STATEMENT_TIMEOUT_SECONDS * 1000}",
+            "options": f"-c statement_timeout={t * 1000}",
         }
     if kind == "mysql":
         return {
@@ -222,8 +269,8 @@ def _sql_connect_args(kind: str) -> dict:
             # pymysql's read/write timeouts bound time waiting on the
             # socket mid-query (a locked table, a slow scan) - connect_timeout
             # alone only covers the initial TCP handshake.
-            "read_timeout": _SQL_STATEMENT_TIMEOUT_SECONDS,
-            "write_timeout": _SQL_STATEMENT_TIMEOUT_SECONDS,
+            "read_timeout": t,
+            "write_timeout": t,
         }
     if kind == "sqlserver":
         return {
@@ -231,16 +278,17 @@ def _sql_connect_args(kind: str) -> dict:
             # bounds each query - both real kwargs this driver accepts
             # directly, no session command needed the way postgres does.
             "login_timeout": _SQL_CONNECT_TIMEOUT_SECONDS,
-            "timeout": _SQL_STATEMENT_TIMEOUT_SECONDS,
+            "timeout": t,
         }
     return {}
 
 
 class SQLConnector:
-    def __init__(self, kind: str, host: str, port: int, database: str, username: str, password: str, ssl: bool = True):
+    def __init__(self, kind: str, host: str, port: int, database: str, username: str, password: str, ssl: bool = True,
+                 statement_timeout: int | None = None):
         self.kind = kind
         self.url = _sql_engine_url(kind, host, port, database, username, password, ssl)
-        self.connect_args = _sql_connect_args(kind)
+        self.connect_args = _sql_connect_args(kind, statement_timeout)
 
     def test_connection(self) -> None:
         engine = create_engine(self.url, pool_pre_ping=True, connect_args=self.connect_args)
