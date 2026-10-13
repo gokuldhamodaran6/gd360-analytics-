@@ -701,7 +701,7 @@ async def upload_file(
     except Exception as e:
         raise HTTPException(400, f"Could not read file: {e}")
 
-    connection_info: dict = {"original_filename": file.filename}
+    connection_info: dict = {"original_filename": file.filename, "tidy_v": 1}
     if inspection:
         connection_info["import_inspection"] = inspection
     if import_by_sheet:

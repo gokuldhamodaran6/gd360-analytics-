@@ -84,6 +84,8 @@ class CreateProjectRequest(BaseModel):
     # "guided" = Guided Analysis (the same plan, run one step at a time -
     # services/project_engine/guided.py, routers/guided.py).
     mode: str = "answer"
+    # 2026-10-13 (R43): answer without any data (the Analyst makes its own numbers)
+    no_data: bool = False
     # 2026-10-11 (round 24, Understand before answering): what the person
     # agreed to on the check card / with Euliv - the period in dates and the
     # read-back - handed to the planner so the answer is exactly that.
@@ -320,7 +322,12 @@ def _run_out(run: models.ProjectRun, full: bool = True) -> dict:
         # a guided analysis keeps every step's full result on the run; the
         # page reads each step's preview instead
         result = {k: v for k, v in (run.result or {}).items() if k != "guided_tables"} if run.result else run.result
-        out.update({"plan": plan if plan.get("steps") is not None else None, "steps": run.steps or [], "result": result})
+        out.update({"plan": plan if (plan.get("steps") is not None or plan.get("mode") == "analyst") else None,
+                    "steps": run.steps or [], "result": result})
+    # R43: the Analyst's live progress (read, plan, run, check, write) for the thread column too
+    if isinstance(run.plan, dict) and run.plan.get("mode") == "analyst":
+        out["analyst_progress"] = run.plan.get("progress") or []
+        out["mode"] = "analyst"
     return out
 
 
@@ -473,12 +480,21 @@ def _scope_ids(db: Session, user: models.User, source_ids: list[str] | None, spa
 @router.post("", status_code=201)
 def create_project(payload: CreateProjectRequest, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     _rate_limit(user.id)
-    ids, space = _scope_ids(db, user, payload.source_ids, payload.space_id, payload.workspace_id, payload.question)
-    first = db.get(models.DataSource, ids[0])
     guided = payload.mode == "guided"
+    try:
+        if payload.no_data and not guided:
+            raise HTTPException(400, "no data")
+        ids, space = _scope_ids(db, user, payload.source_ids, payload.space_id, payload.workspace_id, payload.question)
+    except HTTPException as e:
+        # 2026-10-13 (R43): no data is fine for a Quick answer - the Analyst builds its own numbers
+        # ("simulate a coffee shop with random arrivals", "NPV of 5 years of 10k at 8%")
+        if guided or e.status_code != 400 or ((payload.space_id or payload.source_ids) and not payload.no_data):
+            raise
+        ids, space = [], None
+    first = db.get(models.DataSource, ids[0]) if ids else None
     conv = models.Conversation(
-        owner_id=user.id, datasource_id=ids[0], kind="guided" if guided else "project", source_ids=ids,
-        workspace_id=payload.workspace_id or first.workspace_id, title=payload.question.strip()[:80],
+        owner_id=user.id, datasource_id=ids[0] if ids else None, kind="guided" if guided else "project", source_ids=ids,
+        workspace_id=payload.workspace_id or (first.workspace_id if first else None), title=payload.question.strip()[:80],
         space_id=space.id if space else None,
     )
     db.add(conv)
@@ -508,6 +524,27 @@ def check_question(payload: CheckRequest, db: Session = Depends(get_db), user: m
 def get_run(run_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     run, _conv = _run(db, run_id, user)
     return _run_out(run)
+
+
+@router.get("/runs/{run_id}/analyst.xlsx")
+def analyst_xlsx(run_id: str, inputs: str | None = None, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """R43: the Analyst's answer as Excel - the scenarios with LIVE formulas over the input cells (the rates the
+    person set on the page), every table, and the method with its checks and code."""
+    from fastapi.responses import Response
+    from ..services.project_engine import analyst
+    run, _conv = _run(db, run_id, user)
+    if (run.result or {}).get("analysis_type") != "analyst":
+        raise HTTPException(404, "This answer has no analysis workbook.")
+    vals = {}
+    try:
+        raw = json.loads(inputs) if inputs else {}
+        vals = {str(k): float(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+    except (ValueError, TypeError):
+        vals = {}
+    data = analyst.workbook(run, vals)
+    name = re.sub(r"[^A-Za-z0-9 _-]+", "", ((run.result or {}).get("analyst") or {}).get("title") or "GD360 analysis")[:60] or "GD360 analysis"
+    return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{name}.xlsx"'})
 
 
 @router.post("/runs/{run_id}/execute")
@@ -669,14 +706,19 @@ def ask(project_id: str, payload: AskRequest, db: Session = Depends(get_db), use
     # about before anything runs or is explained
     understood = None
     same_sources = not (payload.space_id or payload.source_ids)
-    if payload.understand and not payload.brief and same_sources:
+    # R43: a thread the Analyst answers (no data, or a what-if / model question) continues with the Analyst -
+    # no date check and no "explain the chart" detour for "what if I add 5?"
+    from ..services.project_engine import analyst as _analyst
+    analyst_followup = conv.kind != "guided" and (not (conv.source_ids or []) or bool(_analyst._ROUTE.search(payload.question or ""))
+                                                  or _last_was_analyst(db, conv))
+    if payload.understand and not payload.brief and same_sources and not analyst_followup:
         understood = _understand_followup(db, user, conv, payload)
         if understood and understood.get("check"):
             return {"project_id": conv.id, "kind": "check", "check": understood["check"],
                     "source_ids": conv.source_ids or [], **_space_ref(db, conv, user)}
     # 2026-10-11 (Explain & Alerts): "explain this chart" is answered from the
     # answer on screen - no new run - unless the sources are changing.
-    if payload.route and same_sources:
+    if payload.route and same_sources and not (analyst_followup and not payload.explain_target):
         done = _explain_context(db, conv, payload.context_run_id)
         if done is not None:
             from ..services import explain as explain_svc
@@ -719,6 +761,12 @@ def ask(project_id: str, payload: AskRequest, db: Session = Depends(get_db), use
 
 
 _DATE_ISSUES = ("year_typo", "month_typo", "future_year", "forecast_year")
+
+
+def _last_was_analyst(db: Session, conv: models.Conversation) -> bool:
+    last = (db.query(models.ProjectRun).filter(models.ProjectRun.conversation_id == conv.id, models.ProjectRun.status == "done")
+            .order_by(models.ProjectRun.created_at.desc()).first())
+    return bool(last and (last.result or {}).get("analysis_type") == "analyst")
 
 
 def _understand_followup(db: Session, user: models.User, conv: models.Conversation, payload: AskRequest) -> dict | None:
