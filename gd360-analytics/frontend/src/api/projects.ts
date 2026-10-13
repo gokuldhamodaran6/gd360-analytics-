@@ -387,6 +387,8 @@ export type QuestionCheck = {
   picked: string[]; picked_sources?: { id: string; name: string; label: string }[]; restated: string | null;
   connect?: { kind: string; label: string; url: string }[]; sources_considered?: number; skipped?: boolean;
   forecast?: boolean;
+  // R43: nothing in the data fits / no data at all - the Analyst builds its own numbers
+  no_data?: boolean;
 };
 export type RunBrief = {
   period?: CheckPeriod | null; restated?: string | null; notes?: string[]; forecast?: boolean;
@@ -402,7 +404,7 @@ export const projectsApi = {
   // 2026-10-09 (round 15): space_id asks one Space (its sources you can use);
   // send space_id or source_ids, never both.
   // mode "guided" starts a Guided Analysis (the same engine, one step at a time).
-  create: (payload: { question: string; source_ids?: string[]; space_id?: string; workspace_id?: string; auto_run?: boolean; mode?: "answer" | "guided"; brief?: RunBrief }) =>
+  create: (payload: { question: string; source_ids?: string[]; space_id?: string; workspace_id?: string; auto_run?: boolean; mode?: "answer" | "guided"; brief?: RunBrief; no_data?: boolean }) =>
     api.post<{ project_id: string; run_id: string; space_id?: string | null; kind?: string }>("/projects", payload).then((r) => r.data),
   get: (id: string) => api.get<Project>(`/projects/${id}`).then((r) => r.data),
   update: (id: string, payload: { title?: string; source_ids?: string[] }) =>
