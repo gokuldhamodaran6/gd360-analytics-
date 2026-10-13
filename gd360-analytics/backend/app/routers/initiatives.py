@@ -346,7 +346,10 @@ def patch_initiative(initiative_id: str, body: PatchInitiative, db: Session = De
 def delete_initiative(initiative_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     i = initiative_for(db, user, initiative_id, edit=True)
     for M in (models.InitiativeTask, models.InitiativeItem, models.InitiativeUpdate, models.InitiativeMessage,
-              models.InitiativeLink, models.InitiativeMember, models.InitiativeOutreach):
+              models.InitiativeLink, models.InitiativeMember, models.InitiativeOutreach,
+              # round 42: Event OS
+              models.EventTicket, models.EventTouch, models.EventMention, models.EventSession, models.EventLead,
+              models.EventSponsor, models.EventGoal, models.EventAction, models.EventAsset, models.EventConfig):
         db.query(M).filter(M.initiative_id == i.id).delete(synchronize_session=False)
     db.query(models.GtmReminder).filter(models.GtmReminder.initiative_id == i.id).delete(synchronize_session=False)
     # engagements stay on the accounts (they happened); they just lose the link

@@ -174,10 +174,11 @@ class RegisterBody(BaseModel):
     consent: bool = False
     visitor_id: str | None = Field(default=None, max_length=64)
     ref: str | None = Field(default=None, max_length=20)  # a team member's personal invite link
+    source: str | None = Field(default=None, max_length=60)  # utm_source / ?src= on the registration link
     hp: str | None = None  # honeypot: real people never fill it
 
 
-def _confirmation(i: models.Initiative, to: str, name: str) -> None:
+def _confirmation(i: models.Initiative, to: str, name: str, ticket: str | None = None) -> None:
     d = i.details or {}
     when = ""
     if i.key_date:
@@ -186,8 +187,10 @@ def _confirmation(i: models.Initiative, to: str, name: str) -> None:
 
     def go():
         try:
+            from ..services.automations import app_url
             lines = [f"You're registered for {i.title}."] + ([when] if when else []) + ([i.location] if i.location else []) + \
-                    ([f"Join link: {join}"] if join else [])
+                    ([f"Join link: {join}"] if join else []) + \
+                    ([f"Your ticket (show the QR at the door): {app_url()}/t/{ticket}"] if ticket else [])
             body = "".join(f'<p style="margin:0 0 10px">{html.escape(x)}</p>' for x in lines)
             send_email([to], f"You're registered: {i.title}",
                        f'<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;color:#1B2321;max-width:560px">'
@@ -222,10 +225,25 @@ def register(token: str, body: RegisterBody, request: Request, db: Session = Dep
         if body.consent:
             gtm.record(db, i.workspace_id, "newsletter_signup", account_id=c.account_id, contact_id=c.id,
                        initiative_id=i.id, channel="registration page", rescore=False)
+    # round 42 (Event OS): every registration gets a ticket with a QR code for check-in
+    ticket_code = None
+    if i.kind in ("event", "webinar"):
+        from ..services.eventos import core as ev
+        cfg = ev.ensure_config(db, i)
+        t = db.query(models.EventTicket).filter(models.EventTicket.initiative_id == i.id, models.EventTicket.contact_id == c.id).first()
+        if t is None:
+            t = ev.ticket_from_contact(db, i, c, source=body.source or ("Team invite" if body.ref else "Registration page"),
+                                       when=datetime.utcnow(), ref=body.ref, consent=body.consent)
+            db.flush()
+        ticket_code = t.code
+        join = (cfg.data or {}).get("join_url")
+        if join and not (i.details or {}).get("join_url"):
+            i.details = {**(i.details or {}), "join_url": join}
     db.commit()
     if not already and email_configured():
-        _confirmation(i, c.email, body.name)
-    return {"ok": True, "already": bool(already), "join_url": (i.details or {}).get("join_url") if i.kind == "webinar" else None}
+        _confirmation(i, c.email, body.name, ticket_code)
+    return {"ok": True, "already": bool(already), "ticket": ticket_code,
+            "join_url": (i.details or {}).get("join_url") if i.kind == "webinar" else None}
 
 
 # ================================================================ walk-ins ==
