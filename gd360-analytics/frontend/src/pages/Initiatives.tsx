@@ -6,6 +6,7 @@ import { Link, useNavigate } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { Hub, initiativesApi, InitiativeSummary, Kind, errorText } from "../api/initiatives";
+import { eventApi } from "../api/eventos";
 import { Banner, daysLabel, Empty, fmtDate, HealthPill, KIND_LABEL, KindBadge, KindGlyph, KindTile, Meter, Section, Stat, tone } from "../initiatives/ui";
 
 const STARTERS: { kind: Kind; label: string; brief: string }[] = [
@@ -27,6 +28,12 @@ export default function Initiatives() {
   const [kind, setKind] = useState<Kind | "">("");
   const [filter, setFilter] = useState<"active" | "done" | "all">("active");
   const [dept, setDept] = useState("");
+  const [sampleBusy, setSampleBusy] = useState<string | null>(null);
+  const sample = async (stage: "before" | "live" | "done") => {
+    setSampleBusy(stage); setError("");
+    try { const r = await eventApi.sample(stage, activeWorkspaceId); nav(`/initiatives/${r.id}`); }
+    catch (e) { setError(errorText(e, "Couldn't create the sample event.")); setSampleBusy(null); }
+  };
 
   useEffect(() => {
     if (!activeWorkspaceId) return;
@@ -95,6 +102,21 @@ export default function Initiatives() {
                   </button>
                 );
               })}
+            </div>
+          </section>
+
+          <section className="relative overflow-hidden rounded-card border border-border bg-surface p-5 sm:p-6 flex flex-wrap items-center gap-5" data-event-sample="">
+            <div className="pointer-events-none absolute -right-16 -top-20 w-[420px] h-[240px]" style={{ background: "radial-gradient(closest-side, rgb(var(--color-primary) / 0.14), transparent)" }} />
+            <div className="flex flex-col gap-1 min-w-0 flex-[1_1_380px] relative">
+              <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-brand-ink">New · Event OS</span>
+              <div className="text-section font-semibold text-text">One event, tracked from the first sign-up to the last post</div>
+              <p className="m-0 text-caption text-muted max-w-[620px]">Event 360, the success score, registrations against forecast, every post with its picture, the live floor, sponsors and the A–Z report. Open a sample to see every screen with realistic made-up data.</p>
+            </div>
+            <div className="flex gap-2 flex-wrap relative">
+              {([["before", "24 days before"], ["live", "Live day"], ["done", "After the event"]] as const).map(([k, l]) => (
+                <button key={k} type="button" className={k === "done" ? "btn-primary text-sm" : "btn-secondary text-sm"} disabled={!!sampleBusy} onClick={() => sample(k)} data-sample-stage={k}>
+                  {sampleBusy === k ? "Building…" : l}</button>
+              ))}
             </div>
           </section>
 

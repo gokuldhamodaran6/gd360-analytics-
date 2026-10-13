@@ -18,6 +18,7 @@ import CampaignsPanel from "../initiatives/CampaignsPanel";
 import UpdatesTab from "../initiatives/UpdatesTab";
 import ResultsTab from "../initiatives/ResultsTab";
 import Assistant from "../initiatives/Assistant";
+import EventShell from "../eventos/EventShell";
 
 type TabId = "overview" | "plan" | "board" | "team" | "audience" | "tracking" | "campaigns" | "updates" | "results";
 const PEOPLE_KINDS = new Set(["event", "webinar", "campaign", "abm"]);
@@ -73,6 +74,20 @@ export default function InitiativeDetail() {
             <p className="text-ui text-muted mt-1">It may have been deleted, or it's in a workspace you're not part of.</p>
             <Link to="/initiatives" className="btn-primary text-sm mt-4 inline-flex">All initiatives</Link>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Round 42: an event or webinar opens as Event OS - every screen of the
+  // event, before, during and after, in one place.
+  if (i && (i.kind === "event" || i.kind === "webinar")) {
+    return (
+      <div className="dash-shell flex min-h-screen">
+        <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
+        <div className="flex-1 min-w-0 flex flex-col" data-event-os="">
+          {error && <div className="px-4 sm:px-8 pt-4"><Banner kind="error" onClose={() => setError("")}>{error}</Banner></div>}
+          <EventShell i={i} reload={load} onError={setError} />
         </div>
       </div>
     );

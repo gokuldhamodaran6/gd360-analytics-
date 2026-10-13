@@ -6,6 +6,7 @@
 import { ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { errorText, publicGtm } from "../api/initiatives";
+import { API_URL } from "../api/client";
 
 function Frame({ children, narrow = true }: { children: ReactNode; narrow?: boolean }) {
   return (
@@ -52,7 +53,8 @@ export function EventRegister() {
     setBusy(true); setErr("");
     let vid: string | undefined;
     try { vid = localStorage.getItem("gd360_vid") || undefined; } catch { /* none */ }
-    try { setDone(await publicGtm.register(token, { ...f, ref: params.get("ref") || undefined, visitor_id: vid })); } catch (e) { setErr(errorText(e)); } finally { setBusy(false); }
+    try { setDone(await publicGtm.register(token, { ...f, ref: params.get("ref") || undefined, visitor_id: vid,
+      source: params.get("utm_source") || params.get("src") || (document.referrer && !document.referrer.includes(window.location.host) ? new URL(document.referrer).hostname.replace(/^www\./, "") : undefined) })); } catch (e) { setErr(errorText(e)); } finally { setBusy(false); }
   };
   return (
     <Frame>
@@ -68,6 +70,16 @@ export function EventRegister() {
           <div className="flex flex-col gap-2" data-registered="">
             <div className="text-section font-semibold">{done.already ? "You're already registered" : "You're registered"}</div>
             <p className="m-0 text-ui text-secondary">{done.join_url ? <>Join here when it starts: <a className="text-primary underline break-all" href={done.join_url}>{done.join_url}</a></> : "We'll see you there. A confirmation is on its way if email is set up for this event."}</p>
+            {done.ticket && (
+              <div className="mt-2 flex items-center gap-4 rounded-ctl border border-border bg-surface2 p-3" data-ticket-qr="">
+                <img src={`${API_URL}/public/eventos/ticket/${done.ticket}/qr.svg`} alt={`Your ticket QR, code ${done.ticket}`} className="w-[104px] h-[104px] rounded-[8px] bg-white p-1" />
+                <div className="flex flex-col gap-1 min-w-0">
+                  <span className="text-caption text-muted">Your ticket - show it at the door</span>
+                  <span className="font-mono text-[20px] tracking-[0.12em] text-text">{done.ticket}</span>
+                  <a className="text-caption text-primary underline" href={`/t/${done.ticket}`}>Open your ticket</a>
+                </div>
+              </div>
+            )}
           </div>
         ) : !ev.open ? (
           <div className="text-ui text-secondary">Registration is closed.</div>
