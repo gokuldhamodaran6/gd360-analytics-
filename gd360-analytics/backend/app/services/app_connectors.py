@@ -57,11 +57,13 @@ ACCOUNT_COLS = ["account_id", "account", "followers", "posts_count", "posts_sync
 DAILY_COLS = ["date", "account_id", "account", "followers_gained", "followers_lost", "reach", "impressions",
               "engagements", "clicks", "video_views", "profile_views", "watch_minutes"]
 POST_COLS = ["post_id", "account_id", "account", "posted_at", "post_date", "type", "text", "url", "reach",
-             "impressions", "likes", "comments", "shares", "saves", "engagements", "clicks", "video_views"]
+             "impressions", "likes", "comments", "shares", "saves", "engagements", "clicks", "video_views",
+             # 2026-10-13 (round 42): the post's picture / thumbnail, so Event OS can show it and check it for the event's banner
+             "media_url"]
 _NUMERIC = {"followers", "posts_count", "posts_synced", "followers_gained", "followers_lost", "reach", "impressions", "engagements",
             "clicks", "video_views", "profile_views", "watch_minutes", "likes", "comments", "shares", "saves",
             "average_view_duration"}
-MAX_TEXT = 500
+MAX_TEXT = 2200  # round 42: full captions (Instagram allows 2,200) - hashtags often sit at the end
 
 
 def _account_filter(creds: dict, info: dict | None = None) -> set[str] | None:
@@ -688,7 +690,7 @@ def instagram_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
                 _put(daily, ig, name, day, col, val)
         media = _graph_pages(
             f"{base}/{ig}/media",
-            {"fields": "id,caption,media_type,media_product_type,timestamp,permalink,like_count,comments_count",
+            {"fields": "id,caption,media_type,media_product_type,timestamp,permalink,like_count,comments_count,media_url,thumbnail_url",
              "limit": 100, "access_token": token}, "Instagram", 1000,
             stop=(lambda m: bool(m.get("timestamp")) and (_naive(m["timestamp"]) or cutoff) < cutoff) if cutoff is not None else None)
         sets = _MetricSets([["reach", "saved", "shares", "views", "total_interactions"],
@@ -697,7 +699,8 @@ def instagram_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
         for i, m in enumerate(media):
             row = {"post_id": str(m.get("id")), "account_id": ig, "account": name, "posted_at": m.get("timestamp"),
                    "type": _ig_post_type(m), "text": m.get("caption"), "url": m.get("permalink"),
-                   "likes": _num(m.get("like_count")), "comments": _num(m.get("comments_count"))}
+                   "likes": _num(m.get("like_count")), "comments": _num(m.get("comments_count")),
+                   "media_url": m.get("thumbnail_url") if m.get("media_type") == "VIDEO" else m.get("media_url")}
             if i < 300:
                 vals = sets.fetch(row["post_id"], token)
                 row["reach"] = vals.get("reach")
@@ -805,7 +808,7 @@ def facebook_pages_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
                 _put(daily, pid, name, day, col, val)
         items = _graph_pages(
             f"{_graph_base()}/{pid}/posts",
-            {"fields": "id,message,created_time,permalink_url,status_type,shares,"
+            {"fields": "id,message,created_time,permalink_url,status_type,shares,full_picture,"
                        "reactions.summary(total_count).limit(0),comments.summary(total_count).limit(0)",
              **({"since": _unix(cutoff.date())} if cutoff is not None else {}), "limit": 100, "access_token": token},
             "Facebook", 1000)
@@ -819,7 +822,7 @@ def facebook_pages_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
             row = {"post_id": str(it.get("id")), "account_id": pid, "account": name, "posted_at": it.get("created_time"),
                    "type": it.get("status_type") or "post", "text": it.get("message"), "url": it.get("permalink_url"),
                    "likes": likes, "comments": comments, "shares": shares,
-                   "engagements": _sum(likes, comments, shares)}
+                   "engagements": _sum(likes, comments, shares), "media_url": it.get("full_picture")}
             if i < 200:
                 vals = sets.fetch(row["post_id"], token)
                 row["reach"] = vals.get("post_total_media_view_unique", vals.get("post_impressions_unique"))
@@ -1096,7 +1099,8 @@ def youtube_fetch(creds: dict, info: dict) -> dict[str, pd.DataFrame]:
                 sn = it.get("snippet") or {}
                 videos[vid] = {"post_id": vid, "account_id": cid, "account": name, "type": "video",
                                "posted_at": (it.get("contentDetails") or {}).get("videoPublishedAt") or sn.get("publishedAt"),
-                               "text": sn.get("title"), "url": f"https://www.youtube.com/watch?v={vid}"}
+                               "text": sn.get("title"), "url": f"https://www.youtube.com/watch?v={vid}",
+                               "media_url": ((sn.get("thumbnails") or {}).get("high") or (sn.get("thumbnails") or {}).get("default") or {}).get("url")}
         page = body.get("nextPageToken")
         if not page:
             break

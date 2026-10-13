@@ -457,6 +457,14 @@ def _tick() -> None:
             logger.warning("[scheduler] initiatives tick failed: %s", e)
             db.rollback()
 
+        # 2026-10-13 (round 42): Event OS - posts about live events, every 6 hours.
+        from .eventos.jobs import tick as eventos_tick
+        try:
+            eventos_tick(db, datetime.utcnow())
+        except Exception as e:  # noqa: BLE001 - never stops the loop
+            logger.warning("[scheduler] event scans failed: %s", e)
+            db.rollback()
+
         # 2026-10-10 (round 19): company-domain viewers' Monday emails.
         from .domains import send_due_subscriptions
         try:
