@@ -45,6 +45,8 @@ import InitiativeNew from "./pages/InitiativeNew";
 import InitiativeDetail from "./pages/InitiativeDetail";
 import Accounts from "./pages/Accounts";
 import { ApprovePage, EventRegister, RepPage, WalkInCapture } from "./pages/PublicInitiative";
+import { SharedEvent, SignGoal, SponsorPublic, SurveyPage, TicketPage } from "./eventos/PublicPages";
+import StaffApp from "./eventos/StaffApp";
 import ProjectDashboard from "./pages/ProjectDashboard";
 import SpacePage from "./pages/SpacePage";
 import CommandPalette from "./components/CommandPalette";
@@ -157,6 +159,12 @@ export default function App() {
       <Route path="/initiatives/:initiativeId" element={<Protected><InitiativeDetail /></Protected>} />
       <Route path="/accounts" element={<Protected><Accounts /></Protected>} />
       <Route path="/e/:token" element={<EventRegister />} />
+      <Route path="/staff/:token" element={<StaffApp />} />
+      <Route path="/t/:code" element={<TicketPage />} />
+      <Route path="/sp/:token" element={<SponsorPublic />} />
+      <Route path="/f/:token" element={<SurveyPage />} />
+      <Route path="/x/:token" element={<SharedEvent />} />
+      <Route path="/sign/:token" element={<SignGoal />} />
       <Route path="/w/:token" element={<WalkInCapture />} />
       <Route path="/a/:token" element={<ApprovePage />} />
       <Route path="/r/:token" element={<RepPage />} />
