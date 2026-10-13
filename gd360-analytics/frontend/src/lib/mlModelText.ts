@@ -105,6 +105,12 @@ export function algorithmLabel(algorithm: string | null): string {
     random_forest_classifier: "Random Forest (classifier)",
     linear_regression: "Linear Regression",
     random_forest_regressor: "Random Forest (regressor)",
+    // ML Studio (round 13+); the round-40 ones trained inside the database
+    studio_hgb: "Gradient boosting",
+    studio_forest: "Random forest",
+    studio_linear: "Linear model",
+    studio_sql_logistic: "Logistic regression, trained in the database",
+    studio_sql_linear: "Linear regression, trained in the database",
   };
   return labels[algorithm] || algorithm;
 }
