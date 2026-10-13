@@ -20,7 +20,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
 import TopNav from "../components/TopNav";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
-import { conversationApi, ConversationSummary, dashboardApi, DashboardSummary } from "../api/client";
+import { api, conversationApi, ConversationSummary, dashboardApi, DashboardSummary } from "../api/client";
 import { projectsApi, ProjectSource, type QuestionCheck, type RunBrief } from "../api/projects";
 import QuestionCheckCard, { type CheckGo } from "../components/QuestionCheck";
 import { timeAgo, autoRunPreference } from "../project/format";
@@ -232,19 +232,21 @@ export default function Home() {
     };
   };
 
-  const start = async (q: string, picked?: { source_ids?: string[]; brief?: RunBrief }) => {
+  const start = async (q: string, picked?: { source_ids?: string[]; brief?: RunBrief; no_data?: boolean }) => {
     setBusy(true);
     setError("");
     try {
       const sc = scopeParams();
+      const noData = Boolean(picked?.no_data) || (mode === "quick" && (sources || []).length === 0);
       const out = await projectsApi.create({
         question: q,
-        space_id: picked?.source_ids ? undefined : sc.space_id,
-        source_ids: picked?.source_ids || sc.source_ids,
+        space_id: noData || picked?.source_ids ? undefined : sc.space_id,
+        source_ids: noData ? undefined : picked?.source_ids || sc.source_ids,
         workspace_id: activeWorkspaceId || undefined,
         auto_run: mode === "quick" ? autoRunPreference() : undefined,
         mode: mode === "guided" ? "guided" : undefined,
         brief: picked?.brief,
+        no_data: noData || undefined,
       });
       navigate(mode === "guided" ? `/g/${out.project_id}` : `/p/${out.project_id}?run=${out.run_id}`);
     } catch (e: any) {
@@ -265,26 +267,61 @@ export default function Home() {
     } catch {
       c = null; // the check never blocks a question
     }
-    if (c && !c.ready && c.issues.length) {
+    // R43: only a question whose MEANING is unclear stops here (a date that can't be right, which page).
+    // Which data to use is decided, not asked: the best fit is used and shown on the answer, changeable there.
+    const soft = new Set(["choose", "confirm_pick"]);
+    if (c && !c.ready && c.issues.length && !c.issues.every((i) => soft.has(i.kind))) {
       setCheck(c);
       setBusy(false);
       return;
     }
     setCheck(null);
-    await start(q, c?.period ? { brief: { period: c.period, restated: c.restated } } : undefined);
+    // straight to the answer - the data the check picked (an attached file is always picked), or none at all
+    const brief = c?.period ? { period: c.period, restated: c.restated } : undefined;
+    const pickedIds = c && (scope.kind === "all" || !c.ready) && c.picked?.length ? c.picked : undefined;
+    await start(q, { brief, no_data: Boolean(c?.no_data), source_ids: c?.no_data ? undefined : pickedIds });
   };
 
   const submit = async () => {
     const typed = question.trim();
     const q = mode === "guided" && typed.length < 2 ? GUIDED_DEFAULT : typed;
     if (q.length < 2 || busy) return;
-    if (!summary.count) {
+    if (!summary.count && (mode === "guided" || (sources || []).length > 0)) {
       setError(chosenSpace ? `${chosenSpace.name} has no sources you can use yet.` : "Pick at least one source to ask about.");
       return;
     }
     if (mode === "guided" && typed.length < 2) return start(q);
     accepted.current = [];
     await runCheck(q);
+  };
+
+  // R43: "+" attaches a file right here - uploaded, read (titles, two header rows and totals rows handled)
+  // and picked for this question in one step; no trip to the Data page, no second pick.
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [attached, setAttached] = useState<{ id: string; name: string; rows?: number | null; status: "uploading" | "ready" | "error"; error?: string } | null>(null);
+  const attach = async (file: File) => {
+    setAddOpen(false);
+    setError("");
+    const name = file.name.replace(/\.(xlsx|xls|csv)$/i, "");
+    setAttached({ id: "", name: file.name, status: "uploading" });
+    try {
+      const form = new FormData();
+      form.append("name", name.slice(0, 80) || "Upload");
+      form.append("file", file);
+      const { data } = await api.post("/datasources/file", form, { headers: { "Content-Type": "multipart/form-data" } });
+      if (activeWorkspaceId) {
+        try { await api.patch(`/datasources/${data.id}/workspace`, { workspace_id: activeWorkspaceId }); } catch { /* stays personal */ }
+      }
+      const rows = (data?.connection_info?.import_summary?.rows ?? null) as number | null;
+      setAttached({ id: data.id, name: file.name, rows, status: "ready" });
+      const list = await projectsApi.sources(activeWorkspaceId || undefined).catch(() => null);
+      if (list) setSources(list);
+      setScopeState({ kind: "sources", ids: [data.id] });
+      window.setTimeout(() => boxRef.current?.focus(), 0);
+    } catch (e: any) {
+      setAttached({ id: "", name: file.name, status: "error", error: e?.response?.data?.detail || "Couldn't read that file." });
+    }
   };
 
   const goFromCheck = (g: CheckGo) => {
@@ -357,17 +394,7 @@ export default function Home() {
               <p className="m-0 text-[16px] sm:text-[18px] leading-relaxed text-secondary text-balance max-w-[620px]" data-home-subline="">{subline}</p>
             </div>
 
-            {noSources ? (
-              <div className="w-full rounded-card border border-border bg-surface p-6 text-left flex flex-col sm:flex-row sm:items-center gap-4 justify-between">
-                <div>
-                  <div className="text-section font-semibold text-text">Connect your first source</div>
-                  <div className="text-ui text-muted mt-1">
-                    A warehouse, a database, a spreadsheet, or an app like Shopify, Google Analytics or your ad accounts.
-                  </div>
-                </div>
-                <Link to="/data" className="btn-primary text-sm shrink-0">Connect data</Link>
-              </div>
-            ) : (
+            {(
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
@@ -414,16 +441,46 @@ export default function Home() {
                     <ListeningStrip heard={voice.heard} onStop={voice.stop} level={voice.level} hint={voice.hint} />
                   ) : (
                     <>
-                      <Link
-                        to="/data"
-                        aria-label="Add data: connect a source or upload a file"
-                        title="Connect a source or upload a file"
-                        className="ui-focus w-11 h-11 rounded-full border border-border-strong grid place-items-center text-secondary hover:text-text hover:bg-subtle/60 shrink-0"
-                        data-home-add=""
-                      >
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-                      </Link>
-                      <ScopePicker scope={scope} onChange={setScope} sources={sources} spaces={spaces} variant="composer" disabled={busy} />
+                      <div className="relative">
+                        <button
+                          type="button"
+                          aria-label="Add data"
+                          aria-expanded={addOpen}
+                          onClick={() => setAddOpen((o) => !o)}
+                          className="ui-focus w-11 h-11 rounded-full border border-border-strong grid place-items-center text-secondary hover:text-text hover:bg-subtle/60 shrink-0"
+                          data-home-add=""
+                        >
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                        </button>
+                        <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" data-home-file=""
+                          onChange={(e) => { const f = e.target.files?.[0]; if (f) void attach(f); e.target.value = ""; }} />
+                        {addOpen && (
+                          <div role="menu" className="absolute z-30 left-0 top-[calc(100%+8px)] w-[290px] rounded-[16px] border border-border-strong bg-surface p-1.5 shadow-[0_24px_60px_-20px_rgb(0_0_0/0.8)] flex flex-col" data-home-add-menu="">
+                            <button type="button" role="menuitem" onClick={() => fileRef.current?.click()} className="ui-focus flex items-center gap-3 px-3 py-2.5 rounded-[11px] text-left hover:bg-subtle/70">
+                              <span className="w-8 h-8 rounded-[9px] grid place-items-center bg-kind-answer-fill text-kind-answer" aria-hidden="true">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V4M7 9l5-5 5 5M5 20h14" /></svg>
+                              </span>
+                              <span className="flex flex-col"><span className="text-ui text-text font-medium">Upload a file</span><span className="text-caption text-muted">Excel or CSV · used for this question</span></span>
+                            </button>
+                            <Link to="/data" role="menuitem" className="ui-focus flex items-center gap-3 px-3 py-2.5 rounded-[11px] text-left hover:bg-subtle/70">
+                              <span className="w-8 h-8 rounded-[9px] grid place-items-center bg-subtle text-secondary" aria-hidden="true">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><ellipse cx="12" cy="6" rx="7" ry="3" /><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3" /></svg>
+                              </span>
+                              <span className="flex flex-col"><span className="text-ui text-text font-medium">Connect a source</span><span className="text-caption text-muted">Warehouse, database or app</span></span>
+                            </Link>
+                          </div>
+                        )}
+                      </div>
+                      {attached ? (
+                        <span className={`inline-flex items-center gap-2 h-11 pl-2 pr-3 rounded-full border text-ui max-w-[320px] ${attached.status === "error" ? "border-danger/40 text-danger" : "border-kind-answer-border bg-kind-answer-fill/40 text-text"}`} data-home-attached={attached.status}>
+                          <span className="w-7 h-7 rounded-full grid place-items-center bg-[#1D6B45] text-white font-mono text-[10px] shrink-0" aria-hidden="true">{/\.csv$/i.test(attached.name) ? "CSV" : "XL"}</span>
+                          <span className="truncate">{attached.name}</span>
+                          <span className="text-caption text-muted shrink-0">{attached.status === "uploading" ? "reading…" : attached.status === "error" ? attached.error : attached.rows != null ? `${attached.rows.toLocaleString()} rows` : "ready"}</span>
+                          <button type="button" aria-label="Remove the file from this question" className="text-muted hover:text-text text-[15px] leading-none" onClick={() => { setAttached(null); setScopeState({ kind: "all" }); }}>×</button>
+                        </span>
+                      ) : (
+                        <ScopePicker scope={scope} onChange={setScope} sources={sources} spaces={spaces} variant="composer" disabled={busy} />
+                      )}
                       <span className="flex-1" />
                     </>
                   )}
@@ -456,6 +513,11 @@ export default function Home() {
                   </div>
                 </div>
               </form>
+            )}
+            {noSources && !attached && (
+              <p className="m-0 -mt-3 text-ui text-muted text-center max-w-[620px]" data-home-nodata="">
+                No data connected yet - ask anyway: GD360 can model, simulate and calculate from the question alone. <Link to="/data" className="text-kind-answer hover:underline">Connect data</Link> for answers about your business.
+              </p>
             )}
             {error && <div role="alert" className="text-ui text-danger -mt-2">{error}</div>}
             {!error && voice.error && <div role="alert" className="text-ui text-warning -mt-2" data-voice-error="">{voice.error}</div>}

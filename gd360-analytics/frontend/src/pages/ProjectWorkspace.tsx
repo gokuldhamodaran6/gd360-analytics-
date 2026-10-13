@@ -30,6 +30,7 @@ import {
   primaryDashboard, threadPrompt, useDashboardFlow,
 } from "../thread/DashboardFlow";
 import { EvidenceTab, PlanTab, ResultsTab, SourcesTab } from "../project/RunPanels";
+import { AnalystProgress, isAnalystRun } from "../project/AnalystAnswer";
 import { NotificationBell } from "../components/NotificationCenter";
 import { AboutChip, AboutChipView, ExplainProvider, ExplainTurn, scrollToTarget, timeline, useExplainController } from "../thread/Explain";
 import { autoRunPreference, timeAgo } from "../project/format";
@@ -46,6 +47,7 @@ function errorText(e: any, fallback: string): string {
 
 function defaultTab(run: ProjectRun | null): TabId {
   if (!run) return "plan";
+  if (isAnalystRun(run)) return "results"; // R43: the Analyst shows its work live on the answer page
   if (run.status === "done" || run.status === "needs_input") return "results";
   if (run.status === "running" || run.status === "failed" || run.status === "stopped") return "sources";
   return "plan";
@@ -576,7 +578,7 @@ export default function ProjectWorkspace() {
                     canEdit={!!project?.can_edit}
                     busy={busy || !!activeRun}
                     next={
-                      current?.id === r.id && r.status === "done" && project?.can_edit ? (
+                      current?.id === r.id && r.status === "done" && project?.can_edit && !isAnalystRun(r) ? (
                         <WhatNext studioHref={studioHref} studioSource={project?.sources.length && project.sources.length > 1 ? `${project.sources.length} sources` : deeperSource?.name || null} onGuided={startGuided} guiding={guiding} onCreate={createDashboard} />
                       ) : null
                     }
@@ -635,7 +637,9 @@ export default function ProjectWorkspace() {
                     onClick={() => setTab(t)}
                     className={`h-11 text-body border-b-2 -mb-px whitespace-nowrap ${currentTab === t ? "text-text border-[rgb(var(--color-accent))]" : "text-muted border-transparent hover:text-text"}`}
                   >
-                    {t === "plan" ? "Plan" : t === "sources" ? (current?.status === "running" ? "Sources · live" : "Sources") : t === "results" ? "Results" : `Evidence${current?.result?.queries ? ` · ${current.result.queries} queries` : ""}`}
+                    {isAnalystRun(current)
+                      ? (t === "plan" ? "Method" : t === "sources" ? (current?.status === "running" ? "Live work · now" : "Live work") : t === "results" ? "Answer" : `Tables${(current?.result as any)?.evidence?.length ? ` · ${(current?.result as any).evidence.length}` : ""}`)
+                      : t === "plan" ? "Plan" : t === "sources" ? (current?.status === "running" ? "Sources · live" : "Sources") : t === "results" ? "Results" : `Evidence${current?.result?.queries ? ` · ${current.result.queries} queries` : ""}`}
                   </button>
                 ))}
               </div>
@@ -747,7 +751,7 @@ function ThreadItem({
         {run.status === "planning" && (
           <div className="flex items-center gap-2.5 text-ui text-muted">
             <span className="w-4 h-4 rounded-full border-2 border-border border-t-[rgb(var(--color-accent))] animate-spin" />
-            Reading your sources and planning the queries…
+            Reading your question and your data…
           </div>
         )}
 
@@ -786,7 +790,9 @@ function ThreadItem({
           </>
         )}
 
-        {(run.status === "running" || (run.status === "stopped" && steps.length > 0)) && (
+        {isAnalystRun(run) && run.status === "running" && <AnalystProgress run={run} compact />}
+
+        {!isAnalystRun(run) && (run.status === "running" || (run.status === "stopped" && steps.length > 0)) && (
           <div className="flex flex-col gap-2">
             {steps.map((s) => (
               <div key={s.id} className="grid grid-cols-[18px_1fr] gap-2.5 items-start">
@@ -813,6 +819,12 @@ function ThreadItem({
           <>
             <p className="m-0 text-body text-text leading-relaxed">{ans.headline}</p>
             {ans.answer && ans.answer !== ans.headline && <p className="m-0 text-ui text-secondary leading-relaxed">{ans.answer}</p>}
+            {isAnalystRun(run) && (
+              <span className="self-start inline-flex items-center gap-1.5 h-6 px-2 rounded-md bg-kind-answer-fill text-kind-answer text-[11.5px] font-medium" data-thread-analyst="">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 6l-6 6 6 6M16 6l6 6-6 6" /></svg>
+                Worked out with code{(run.result as any)?.analyst?.checks?.some((c: any) => c.ok) ? " · checked" : ""}
+              </span>
+            )}
             {ans.causes.length > 0 && (
               <ol className="m-0 pl-5 flex flex-col gap-2 text-ui text-secondary leading-relaxed">
                 {ans.causes.slice(0, 3).map((c, i) => (
