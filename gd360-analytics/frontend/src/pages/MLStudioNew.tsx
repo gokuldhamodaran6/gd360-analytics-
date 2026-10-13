@@ -29,6 +29,7 @@ import AdjustPanel from "../ml/AdjustPanel";
 import { candKey, CheckJoin, ChooseTables, MAX_JOINS, Stepper } from "../ml/JoinFlow";
 import { joinsSentence } from "../ml/ResultSections";
 import DataStep from "../ml/DataStep";
+import RoutePicker from "../ml/RoutePicker";
 import { PrepCheck } from "../api/mlStudio";
 import { CodeIcon } from "../ui";
 
@@ -456,6 +457,9 @@ export default function MLStudioNew() {
                   <>
                     <h2 className="m-0 text-[19px] font-bold leading-snug text-text text-balance">{plan.title}</h2>
                     {planJoinsLine && <p className="m-0 text-caption text-secondary">{planJoinsLine}</p>}
+                    {plan.routes && spec && (
+                      <RoutePicker routes={plan.routes} engine={plan.engine ?? spec.engine} busy={!!busy || adjust} onPick={(e) => makePlan({ ...spec, engine: e })} />
+                    )}
                     <dl className="m-0 flex flex-col">
                       {plan.rows_text.map((r) => (
                         <div key={r.k} className="grid grid-cols-[84px_minmax(0,1fr)] sm:grid-cols-[96px_minmax(0,1fr)] gap-3 py-3 border-t border-border">
@@ -497,7 +501,7 @@ export default function MLStudioNew() {
                       </button>
                     )}
                     <button type="button" className="btn-primary text-sm" onClick={start} disabled={!plan || !!plan.needs_prep || !!busy || adjust}>
-                      {busy === "start" ? "Starting…" : "Start training →"}
+                      {busy === "start" ? "Starting…" : plan?.engine === "sql" && plan.routes?.sql.available ? (plan.routes.sql.live ? `Train inside ${plan.routes.sql.where} →` : "Train on every row →") : "Start training →"}
                     </button>
                   </div>
                 )}

@@ -22,6 +22,7 @@ import {
   mlStudioApi,
   NOT_SCORABLE,
   Progress,
+  Pushdown,
   RunData,
   Stage,
   StudioProject,
@@ -32,6 +33,7 @@ import ResultSections, { Headline, joinsSentence } from "../ml/ResultSections";
 import StageVisuals, { compact, RowsPreview } from "../ml/StageVisuals";
 import CodeBlock from "../ml/CodeBlock";
 import DataStep from "../ml/DataStep";
+import ModelSql from "../ml/ModelSql";
 import { CodeIcon, DatabaseIcon, DownloadIcon, ShieldCheckIcon, SegmentedControl, TableIcon, ChartIcon } from "../ui";
 
 type Tab = "visual" | "code" | "rows";
@@ -67,6 +69,7 @@ function storyFor(p: StudioProject, kind: string, data?: RunData): string {
       ? `Learned from ${compact(used)} of ${compact(total)} rows (${STRATEGY_WORDS[data?.sample?.strategy || ""] || "a fair sample"})`
       : `Learned from all ${Number(total).toLocaleString()} rows`
     : "";
+  if (res.headline && res.engine === "sql") return res.headline;
   if (res.headline && !LEGACY_RESULTS.has(p.problem_type || "")) return [res.headline, rowsBit].filter(Boolean).join(" · ");
   if (kind === "binary" || kind === "multiclass" || kind === "number") {
     const [m1] = METRIC[kind] || ["Score"];
@@ -127,6 +130,13 @@ export default function MLStudioProject() {
   const canTry = ["yes_no", "number", "drivers", "which_category"].includes(ptype);
   const joinsUsed = (res?.joins && res.joins.length ? res.joins : prog?.joins) || [];
   const joinLine = joinsSentence(joinsUsed, training ? "Learning from" : "Learned from");
+  // round 40: trained inside the database
+  const isSql = res?.engine === "sql" || prog?.engine === "sql";
+  const pd: Pushdown | null = (res?.pushdown as Pushdown) || null;
+  const livePd = prog?.pushdown;
+  const sqlWhere = pd?.engine || livePd?.engine || "the database";
+  const inWarehouse = isSql && (pd ? pd.live : livePd?.live ?? data?.source?.mode === "live");
+  const rowsInPlace = pd?.rows ?? livePd?.rows;
 
   const shownId = (picked.current && sel) || (training ? defaultStage(stages, p?.status) : sel || defaultStage(stages, p?.status));
   const stage = stages.find((s) => s.id === shownId) || null;
@@ -270,7 +280,12 @@ export default function MLStudioProject() {
                         </button>
                       )}
                       {p.status === "ready" && canTry && <Link to={`/ml-models/${id}`} className="btn-secondary text-sm">Try a prediction</Link>}
-                      {p.status === "ready" && scorable && scoring?.state !== "running" && scoring?.state !== "queued" && (
+                      {p.status === "ready" && isSql && pd && (
+                        <a href="#model-sql" className={inWarehouse ? "btn-primary text-sm" : "btn-secondary text-sm"} data-ml-use-sql="">
+                          {inWarehouse ? `Use it in ${pd.engine}` : "The model as SQL"}
+                        </a>
+                      )}
+                      {p.status === "ready" && scorable && !inWarehouse && scoring?.state !== "running" && scoring?.state !== "queued" && (
                         <button type="button" className="btn-primary text-sm" disabled={!!busy} onClick={() => act("score", () => mlStudioApi.scoreJob(id), "Couldn't start scoring.")} data-ml-score="">
                           Score every row
                         </button>
@@ -298,7 +313,7 @@ export default function MLStudioProject() {
                 <section className="rounded-card border border-border bg-surface px-4 py-3 flex items-center gap-4 flex-wrap" data-ml-scoring={scoring.state}>
                   <span className="text-ui font-medium text-text">
                     {scoring.state === "done"
-                      ? `Scored ${Number(scoring.rows || 0).toLocaleString()} rows in ${scoring.seconds} s`
+                      ? `Scored ${Number(scoring.rows || 0).toLocaleString()}${scoring.rows_total ? ` of ${Number(scoring.rows_total).toLocaleString()} rows (a sample of the live table)` : " rows"} in ${scoring.seconds} s`
                       : scoring.state === "failed"
                         ? "Scoring stopped"
                         : scoring.state === "queued"
@@ -322,6 +337,43 @@ export default function MLStudioProject() {
                 </section>
               )}
 
+              {isSql ? (
+                <section className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }} aria-label="How much data" data-ml-scale="sql">
+                  <ScaleTile
+                    label="Rows read in place"
+                    value={rowsInPlace != null ? compact(rowsInPlace) : "—"}
+                    exact={rowsInPlace}
+                    note={(pd || livePd)?.train_rows != null ? `${compact((pd || livePd)!.train_rows)} to learn · ${compact((pd || livePd)!.test_rows)} held out` : `counted inside ${sqlWhere}`}
+                    tone="do"
+                  />
+                  <ScaleTile
+                    label={`Queries in ${sqlWhere}`}
+                    value={pd ? String(pd.passes) : livePd ? String(livePd.passes) : "—"}
+                    note={pd ? `${pd.train_steps} training step${pd.train_steps === 1 ? "" : "s"} · ${pd.db_seconds} s in the database` : "each one SELECT, read only"}
+                  />
+                  {pd && pd.sample_rows_looked_at > 0 ? (
+                    <ScaleTile
+                      label="Came back to GD360"
+                      value={bytesText(pd.model_bytes ?? pd.bytes_back)}
+                      exact={pd.model_bytes ?? pd.bytes_back}
+                      note={`sums and a score histogram · plus ${pd.sample_rows_looked_at.toLocaleString()} rows to read the column types`}
+                    />
+                  ) : (
+                    <ScaleTile
+                      label={`Your rows that left ${sqlWhere}`}
+                      value={pd ? String(pd.rows_out ?? 0) : livePd ? String(livePd.rows_out ?? 0) : "0"}
+                      note={pd ? `${bytesText(pd.bytes_back)} of sums and counts came back` : livePd ? `${bytesText(livePd.bytes_back)} of sums and counts so far` : "only sums and counts come back"}
+                      tone="do"
+                    />
+                  )}
+                  <ScaleTile
+                    label="Scores every row"
+                    value={pd ? (pd.last_test ? compact(pd.last_test.rows) : "1 SELECT") : "—"}
+                    exact={pd?.last_test?.rows}
+                    note={pd?.last_test ? `checked in ${pd.engine}` : `the model as SQL, run in ${sqlWhere}`}
+                  />
+                </section>
+              ) : (
               <section className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }} aria-label="How much data" data-ml-scale="">
                 <ScaleTile
                   label="Rows in the source"
@@ -350,6 +402,7 @@ export default function MLStudioProject() {
                   note={scoring?.state === "done" ? "saved as a table" : scorable ? "every row, on the worker" : "this kind reports, not scores"}
                 />
               </section>
+              )}
 
               {stages.length > 0 && (
                 <section className="grid gap-5 lg:grid-cols-[320px_minmax(0,1fr)] items-start" aria-label="The run" data-ml-run="">
@@ -432,10 +485,32 @@ export default function MLStudioProject() {
               {p.status === "ready" && res && (
                 <section className="flex flex-col gap-4" aria-label="Results" data-ml-results="">
                   <h2 className="m-0 text-[20px] font-semibold text-text">Results</h2>
-                  {legacy ? <Results kind={kind} res={res} /> : <GenericResults res={res} />}
+                  {legacy && !isSql ? <Results kind={kind} res={res} /> : <GenericResults res={res} />}
                 </section>
               )}
 
+              {p.status === "ready" && isSql && pd?.sql && <ModelSql id={id} pd={pd} canRun />}
+
+              {isSql ? (
+              <section className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }} aria-label="How this run is governed" data-ml-trust="sql">
+                <TrustCard title="Where it ran" lines={[
+                  inWarehouse ? `Inside ${sqlWhere}: every pass was one SELECT over the rows where they live.` : `Inside ${sqlWhere}, over every row of this exact version of the data.`,
+                  pd ? (pd.sample_rows_looked_at > 0
+                    ? `${pd.passes} queries · ${bytesText(pd.bytes_back)} back · GD360 looked at ${pd.sample_rows_looked_at.toLocaleString()} rows only to read the column types.`
+                    : `${pd.passes} queries · ${bytesText(pd.bytes_back)} back · not one of your rows left ${sqlWhere}: every query returned sums, counts or a histogram.`) : "",
+                ]} />
+                <TrustCard title="Reproducible" lines={[
+                  pd?.split?.how === "time"
+                    ? `Tested on the newest rows by ${pd.split.column} (from ${pd.split.cutoff_text}) - the future the model hadn't seen.`
+                    : pd ? `The held-out rows are fixed by a hash of ${pd.key || "the row values"} - the same rows on every run.` : "The held-out rows are fixed by a hash - the same rows on every run.",
+                  "Every query is in the run's Code tab; the notebook replays the model in Python and DuckDB.",
+                ]} />
+                <TrustCard icon title="Governed" lines={[
+                  "Read-only SQL through GD360's warehouse guard, with your access rules in every WHERE.",
+                  inWarehouse ? "Every pass is in the query log and counts towards the daily scan budget." : "Runs in the read-only sandbox; no file or network access.",
+                ]} />
+              </section>
+              ) : (
               <section className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))" }} aria-label="How this run is governed" data-ml-trust="">
                 <TrustCard title="Where it ran" lines={[
                   engine?.mode === "external" ? "A dedicated ML worker with its own memory" : "The ML worker inside this server, one run at a time",
@@ -450,6 +525,7 @@ export default function MLStudioProject() {
                   "SQL runs read-only in a sandbox; every step's code is kept with the run.",
                 ]} />
               </section>
+              )}
 
               {!training && p.can_delete && (
                 <div className="flex gap-2">
@@ -469,6 +545,13 @@ export default function MLStudioProject() {
       </div>
     </div>
   );
+}
+
+/** Round 40: bytes as people read them. */
+function bytesText(n: number): string {
+  if (n < 1024) return `${n.toLocaleString()} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function ScaleTile({ label, value, exact, note, tone, hint }: { label: string; value: string; exact?: number | null; note?: string; tone?: "do"; hint?: string }) {
