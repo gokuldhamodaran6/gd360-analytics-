@@ -73,6 +73,8 @@ export type Spec = {
   text_column?: string | null;
   /** round 39: the SQL data step the model learns from */
   prep_sql?: string | null;
+  /** round 40: "sql" trains a yes/no or number model inside the database */
+  engine?: "sql" | "sample" | null;
   label_column?: string | null;
   tags?: string[] | null;
   fields?: string[] | null;
@@ -120,7 +122,28 @@ export type Plan = {
   data?: { how?: string; budget?: RunData["budget"]; prep?: RunData["prep"]; sample?: RunData["sample"] };
   needs_prep?: PrepHint | null;
   prep_hint?: PrepHint | null;
+  // round 40
+  routes?: Routes | null;
+  engine?: "sql" | "sample" | null;
 };
+
+/** Round 40: where a yes/no or number model can train. */
+/** Round 41: what an in-database run will cost, worked out before it starts. */
+export type RouteEstimate = {
+  passes: number;
+  seconds: number;
+  bytes?: number | null;
+  bytes_per_pass?: number;
+  cap_gb?: number;
+  over_cap?: boolean;
+  budget_left?: number | null;
+  over_budget?: boolean;
+  rows?: number;
+  text: string;
+  why?: string;
+};
+export type Route = { available: boolean; why?: string | null; where: string; live?: boolean; title: string; text: string; model: string; gives: string; estimate?: RouteEstimate | null };
+export type Routes = { recommended: "sql" | "sample"; sql: Route; sample: Route };
 
 export type JoinCandidate = {
   source_id: string;
@@ -174,7 +197,8 @@ export type Visual =
   | { type: "split"; title?: string; items: VisualItem[] }
   | { type: "histogram"; title?: string; bins: { x0: number; x1: number; count: number }[] }
   | { type: "table"; title?: string; columns: string[]; rows: (string | number | null)[][] }
-  | { type: "note"; title?: string; text: string };
+  | { type: "note"; title?: string; text: string }
+  | { type: "line"; title?: string; x: string[]; series: { name: string; values: (number | null)[]; dashed?: boolean }[]; format?: ValueFormat; note?: string };
 
 export type StagePreview = { columns: string[]; rows: unknown[][]; total_columns: number };
 
@@ -206,6 +230,8 @@ export type Scoring = {
   done?: number;
   total?: number | null;
   rows?: number;
+  /** round 41: a live table is scored on a sample - how many rows it has */
+  rows_total?: number;
   version_id?: string;
   version_name?: string;
   seconds?: number;
@@ -262,6 +288,85 @@ export type Progress = {
   data?: RunData;
   scoring?: Scoring;
   retry_note?: string;
+  // round 40: a run inside the database
+  engine?: "sql" | null;
+  pushdown?: {
+    engine: string;
+    dialect: string;
+    passes: number;
+    bytes_back: number;
+    model_bytes?: number;
+    /** round 41: customer rows that came back - always 0 */
+    rows_out?: number;
+    seconds: number;
+    scanned?: number | null;
+    live?: boolean;
+    rows?: number;
+    train_rows?: number;
+    test_rows?: number;
+  };
+};
+
+/** Round 40: what a model trained inside the database keeps - the evidence and the model as SQL. */
+export type SqlPack = { dialect: string; engine: string; select: string; view: string; dbt: string; column: string; view_name: string; terms?: number };
+export type SqlTest = {
+  engine: string;
+  dialect: string;
+  sql: string;
+  seconds: number;
+  scanned?: number | null;
+  checked_at: string;
+  rows: number;
+  mean?: number | null;
+  min?: number | null;
+  max?: number | null;
+  buckets?: { from: number; to: number; rows: number; avg: number | null }[];
+};
+export type Coefficient = { term: string; column: string; coef: number; se: number; lo: number; hi: number; odds: number | null; raw: number; sure: boolean };
+export type Pushdown = {
+  engine: string;
+  dialect: string;
+  kind: string;
+  live: boolean;
+  table: string;
+  passes: number;
+  train_steps: number;
+  converged: boolean;
+  seconds: number;
+  db_seconds: number;
+  bytes_back: number;
+  /** what training and grading returned: sums and the score histogram, no rows */
+  model_bytes?: number;
+  /** round 40 read a 2,000-row sample to type the columns; round 41 reads none (0) */
+  sample_rows_looked_at: number;
+  /** round 41: customer rows that came back - every query returns sums and counts */
+  rows_out?: number;
+  full_passes?: number;
+  resumed?: number;
+  split?: { how: "time" | "hash"; column?: string; cutoff_text?: string; newest_text?: string; train_share?: number; key?: string | null; note?: string } | null;
+  warm?: { how: "engine" | "hash"; percent: number; steps: number; rows: number } | null;
+  columns?: { column: string; type?: string; filled?: number | null; distinct?: number | null; use: string }[];
+  scanned?: number | null;
+  rows: number;
+  train_rows: number;
+  test_rows: number;
+  key?: string | null;
+  history: { step: number; log_loss?: number; rmse?: number; change?: number }[];
+  metrics: Record<string, any>;
+  coefficients: Coefficient[];
+  intercept: number;
+  sql: SqlPack;
+  agree?: {
+    rows?: number;
+    max_diff?: number;
+    error?: string;
+    where?: string;
+    /** round 41: the SQL run on made-up rows (never the customer's) and compared with Python */
+    synthetic?: { rows?: number; max_diff?: number | null; error?: string } | null;
+  } | null;
+  out_column: string;
+  log: { step: string; title: string; seconds: number; bytes_back: number; rows: number; scanned?: number | null }[];
+  last_test?: SqlTest | null;
 };
 
 // ---- generic results (round 15) ----
@@ -385,6 +490,10 @@ export const mlStudioApi = {
   prepareSuggest: (spec: Spec, request: string) =>
     api.post<PrepCheck>("/ml-studio/prepare/suggest", { spec, request }, { timeout: 240000 }).then((r) => r.data),
   notebook: (id: string) => api.get(`/ml-studio/projects/${id}/notebook`, { responseType: "blob" }).then((r) => r.data as Blob),
+  // round 40: the model as SQL
+  sqlFile: (id: string, format: "select" | "view" | "dbt") =>
+    api.get(`/ml-studio/projects/${id}/sql`, { params: { format }, responseType: "blob" }).then((r) => r.data as Blob),
+  sqlTest: (id: string) => api.post<SqlTest>(`/ml-studio/projects/${id}/sql/test`, {}, { timeout: 600000 }).then((r) => r.data),
   engine: () => api.get<Engine>("/ml-studio/engine").then((r) => r.data),
   remove: (id: string) => api.delete(`/ml-models/${id}`),
 };
