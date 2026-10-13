@@ -238,9 +238,22 @@ def _load_file_original(ds: models.DataSource, ext_hint: str, sheet: str | None)
     inference that could drift. A file with no stored settings reads with
     the plain FileConnector exactly as it always did."""
     settings, summary = file_import_settings_for(ds, sheet)
-    if not settings:
-        return FileConnector(ds.file_data, ext_hint).load_dataframe(sheet_name=sheet if sheet else 0)
     from . import file_import
+    if not settings:
+        # R43: title rows, a second header row and a totals row are fixed
+        # on every load, so files uploaded before this round answer right
+        # without a re-upload.
+        df = FileConnector(ds.file_data, ext_hint).load_dataframe(sheet_name=sheet if sheet else 0)
+        if len(df.columns) and sum(1 for c in df.columns if str(c).startswith("Unnamed:")) >= 0.5 * len(df.columns):
+            try:  # a title line was read as the header: find the real one
+                filename = (ds.connection_info or {}).get("original_filename") or ("upload" + ext_hint)
+                info = file_import.inspect_file(ds.file_data, filename)
+                hr = next((x["detected_header_row"] for x in info["sheets"] if not sheet or x["name"] == sheet), info["detected_header_row"])
+                if hr and hr > 1:
+                    return file_import.load_with_settings(ds.file_data, filename, {"header_row": hr, "sheet": sheet})
+            except Exception as e:  # noqa: BLE001
+                print(f"[data_loader] header re-detect skipped: {e}")
+        return file_import.tidy_frame(df)
 
     filename = (ds.connection_info or {}).get("original_filename") or ("upload" + ext_hint)
     df = file_import.load_with_settings(ds.file_data, filename, {**settings, "sheet": sheet or settings.get("sheet")})

@@ -135,6 +135,9 @@ MEASURE_WORDS = {
     "cost", "spend", "spent", "budget", "orders", "order", "quantity", "qty", "units", "clicks", "impressions",
     "conversions", "sessions", "users", "visitors", "pageviews", "bookings", "booking", "adr", "rate", "count",
     "refunds", "returns", "discount", "tax", "net", "gross", "fees", "payment", "payments", "subtotal",
+    # R43: time and operations measures ("Waiting Time", "Service Time", minutes, duration...)
+    "wait", "waiting", "time", "minutes", "minute", "duration", "service", "delay", "hours", "hour", "seconds",
+    "score", "salary", "wage", "wages", "headcount", "volume", "weight", "distance", "capacity", "demand", "stock",
 }
 TOPIC_WORDS = {
     "ecommerce": {"ecommerce", "commerce", "shop", "store", "online", "orders", "order", "cart", "checkout", "product",
@@ -1093,9 +1096,10 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
     named_bad = [c for c in unfit if c["named"]]
     if scoped and len(pool) == 1:
         c = cands[0] if cands else None
-        if c and c["fit"] != "good":
+        if c and c["fit"] not in ("good", "weak"):
             issues.append(_cant_issue([c], [], period, what, connect))
         elif c:
+            # R43: the one file the person attached or picked is always used - never "use instead"
             picked = [c]
     elif named_good:
         picked = named_good
@@ -1201,6 +1205,31 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
         if acc:
             issues.append(acc)
 
+    # R43: a question for the Analyst (a what-if, a cost to compute, a simulation...) or one with no data at all
+    # never stops to pick data - the Analyst reads what fits, or builds its own numbers
+    no_data = False
+    try:
+        from .project_engine.analyst import _ROUTE as _ANALYST_ROUTE
+        analytic = bool(_ANALYST_ROUTE.search(q))
+    except Exception:  # noqa: BLE001
+        analytic = False
+    if not pool:
+        issues = [i for i in issues if i["kind"] in ("year_typo", "month_typo")]
+        picked, no_data = [], True
+    elif analytic:
+        issues = [i for i in issues if i["kind"] not in ("cant_answer", "swap", "choose", "confirm_pick")]
+        named_any = [c for c in cands if c["named"]]
+        if scoped:
+            picked = picked or cands[:4]
+        elif named_any:
+            picked = named_any[:2]
+        elif _SELF_CONTAINED.search(q):
+            picked = []  # "use random numbers", "NPV of a 50k machine": the question carries its own numbers
+        elif not picked:
+            picked = good[:1] or [c for c in cands if c["score"] > 0][:1]
+        if not picked:
+            no_data = True
+
     ready = not issues
     restated = _restate(what, period, picked, needs_time)
     return {
@@ -1219,7 +1248,16 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
         "restated": restated,
         "connect": connect,
         "sources_considered": len(pool),
+        "no_data": no_data,
     }
+
+
+# R43: questions that carry their own numbers, or ask for made-up ones - no data needed unless one is named
+_SELF_CONTAINED = re.compile(
+    r"\brandom (numbers?|data|sample)|\buse random\b|\bsimulat|\bmonte\s*carlo|\bnpv\b|\birr\b|\bpayback\b|\bloan\b|\bemi\b|"
+    r"\bpresent value\b|\bprobability\b|\bexpected value\b|\beoq\b|\bnewsvendor\b|\bsample size\b|\b\d[\d,.]*\s*(k|%|percent)\b.*\b\d",
+    re.I,
+)
 
 
 def _without_names(q: str, names: list[str]) -> str:

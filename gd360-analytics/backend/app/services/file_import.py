@@ -381,7 +381,218 @@ def load_with_settings(data: bytes, filename: str | None, settings: dict | None)
     if s["trim_whitespace"]:
         df = _strip_text_columns(df)
     df.columns = [str(c) for c in df.columns]
-    return df.reset_index(drop=True)
+    return tidy_frame(df.reset_index(drop=True))
+
+
+# ---------------------------------------------------------------- tidy
+# 2026-10-13 (R43, Analyst brain): spreadsheets people actually upload -
+# a class workbook, a finance export - carry a title, a second header row
+# under merged group labels ("Arrivals" over "Rand # | IAT | Clock Time")
+# and a totals row at the bottom ("Sum of Customer Waiting Time = 843").
+# Read as plain data, the sub-header became a data row, the columns came
+# out as "Unnamed: 2", and the totals row was counted as one more
+# customer - every SUM doubled. tidy_frame() fixes all three, keeps the
+# totals as CHECKS (the numbers the file itself says are right), and
+# never touches an ordinary table.
+
+_TOTAL_LABEL = re.compile(
+    r"^\s*(grand\s+|sub-?\s*)?totals?\b|\bsum\s+of\b|^\s*sum\b|^\s*(average|avg|mean)\b|\btotal\s*[:=]|=\s*$",
+    re.I,
+)
+_UNNAMED = re.compile(r"^Unnamed: \d+(\.\d+)?$")
+
+
+def _num(v):
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float, np.integer, np.floating)):
+        return None if pd.isna(v) else float(v)
+    if isinstance(v, str) and _NUMBER_SHAPE.match(v) and any(ch.isdigit() for ch in v):
+        try:
+            return float(_clean_number_text(pd.Series([v])).iloc[0])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _is_text(v) -> bool:
+    return isinstance(v, str) and v.strip() != "" and _num(v) is None
+
+
+def _merge_subheader(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """A second header row read as the first data row: in two or more
+    columns row 0 is text while the values under it are numbers. Group
+    labels from merged cells ("Unnamed: n" after a named column) carry
+    across. Returns the frame and a note per renamed column."""
+    if len(df) < 3:
+        return df, []
+    row0 = df.iloc[0].tolist()
+    body = df.iloc[1:201]
+    hits = []
+    for j, col in enumerate(df.columns):
+        if not _is_text(row0[j]):
+            continue
+        vals = [v for v in body[col].tolist() if not (v is None or (isinstance(v, float) and np.isnan(v)))]
+        if len(vals) >= 2 and sum(1 for v in vals if _num(v) is not None) >= 0.8 * len(vals):
+            hits.append(j)
+    unnamed = sum(1 for c in df.columns if _UNNAMED.match(str(c)))
+    if len(hits) < 2 or (unnamed == 0 and len(hits) < 0.5 * len(df.columns)):
+        return df, []
+    names: list[str] = []
+    group = ""
+    for j, col in enumerate(df.columns):
+        c = str(col).strip()
+        if not _UNNAMED.match(c):
+            group = c
+        sub = row0[j] if _is_text(row0[j]) else None
+        if sub:
+            sub = str(sub).strip()
+            if group and not _UNNAMED.match(c) and group.lower() in sub.lower():
+                name = sub
+            elif group and group.lower() not in sub.lower() and len(group) <= 30:
+                name = f"{group} {sub}"
+            else:
+                name = sub
+        else:
+            name = c
+        names.append(name)
+    seen: dict = {}
+    out = []
+    for n in names:
+        k = n.lower()
+        seen[k] = seen.get(k, 0) + 1
+        out.append(n if seen[k] == 1 else f"{n} {seen[k]}")
+    df = df.iloc[1:].copy()
+    df.columns = out
+    return df, [f"Joined two header rows into {', '.join(out[j] for j in hits[:6])}"]
+
+
+def _numeric_view(col: pd.Series) -> pd.Series:
+    """Column as floats (NaN where a cell is not a number), vectorized."""
+    if pd.api.types.is_numeric_dtype(col) and not pd.api.types.is_bool_dtype(col):
+        return col.astype(float)
+    t = col.astype(object)
+    is_str = t.map(lambda v: isinstance(v, str))
+    out = pd.to_numeric(t.where(~is_str), errors="coerce")
+    if is_str.any():
+        sv = t[is_str].astype(str)
+        shaped = sv.str.match(_NUMBER_SHAPE) & sv.str.contains(r"\d")
+        conv = pd.to_numeric(_clean_number_text(sv), errors="coerce").where(shaped)
+        out = out.astype(float)
+        out.loc[conv.index] = conv
+    return out.astype(float)
+
+
+def _total_rows(df: pd.DataFrame) -> tuple[list[int], list[dict]]:
+    """Bottom rows that are totals / averages of the rows above, as
+    positions, plus each total as a check {label, column, value, kind}.
+
+    A row counts as a total when it carries a total-like label ("Total",
+    "Sum of ...", "Average") or when its first column is empty and EVERY
+    number in it equals the sum or average of the column above. A normal
+    last row ("d", 6) is never dropped just because 6 = 1+2+3."""
+    n = len(df)
+    if n < 3:
+        return [], []
+    tail = df.tail(5)
+    cols = list(df.columns)
+    first_col = cols[0]
+    cache: dict = {}
+
+    def numeric(c):
+        if c not in cache:
+            cache[c] = _numeric_view(df[c]).to_numpy()
+        return cache[c]
+
+    def num_cols_for(row) -> list:
+        out = []
+        for c in cols:
+            v = row[c]
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                continue
+            if _num(v) is not None:
+                out.append(c)
+        return out
+
+    drop: list[int] = []
+    checks: list[dict] = []
+    footnote = None
+    for back in range(1, min(5, n - 2) + 1):
+        pos = n - back
+        row = tail.iloc[len(tail) - back]
+        cells = [v for v in row.tolist() if not (v is None or (isinstance(v, float) and np.isnan(v)))]
+        label = next((v.strip() for v in cells if isinstance(v, str) and _TOTAL_LABEL.search(v)), None)
+        filled_num = num_cols_for(row)
+        first_empty = row[first_col] is None or (isinstance(row[first_col], float) and np.isnan(row[first_col])) or str(row[first_col]).strip() == "" or first_col in filled_num and label is not None
+        if not label and not first_empty:
+            if back == 1 and len(cells) <= 1:
+                footnote = pos
+                continue  # a footnote line under the table
+            break
+        keep = np.ones(pos, dtype=bool)
+        for p in drop:
+            if p < pos:
+                keep[p] = False
+        matched = []
+        for c in filled_num:
+            arr = numeric(c)
+            col_vals = arr[:pos][keep]
+            col_vals = col_vals[~np.isnan(col_vals)]
+            if len(col_vals) < 2:
+                continue
+            v = float(arr[pos])
+            tot = float(col_vals.sum())
+            mean = tot / len(col_vals)
+            if tot != 0 and abs(v - tot) <= max(abs(tot) * 1e-6, 0.005):
+                matched.append({"column": str(c), "value": v, "kind": "sum"})
+            elif mean != 0 and len(col_vals) >= 3 and abs(v - mean) <= max(abs(mean) * 1e-6, 0.005):
+                matched.append({"column": str(c), "value": v, "kind": "average"})
+        if label or (matched and len(matched) == len(filled_num)):
+            drop.append(pos)
+            for m in matched:
+                checks.append({"label": label or f"Total of {m['column']}", **m})
+            if not matched:
+                checks.append({"label": label, "column": None, "value": None, "kind": "label"})
+        else:
+            break
+    if drop and footnote is not None:
+        drop.append(footnote)
+    return drop, checks
+
+
+def tidy_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Joins a second header row, drops bottom totals rows (kept in
+    df.attrs["gd360_checks"]) and empty filler columns, and turns columns
+    that are now all numbers into numbers. A plain table comes back as it
+    went in."""
+    if df is None or len(df.columns) == 0 or len(df) < 3:
+        return df
+    notes: list[str] = []
+    try:
+        df, n1 = _merge_subheader(df)
+        notes += n1
+        drop, checks = _total_rows(df)
+        if drop:
+            df = df.drop(index=df.index[drop])
+            notes.append(f"Set aside {len(drop)} totals row{'s' if len(drop) > 1 else ''} at the bottom - kept as checks, not data")
+        empty = [c for c in df.columns if df[c].isna().all() and (notes or _UNNAMED.match(str(c)))]
+        if empty and len(empty) < len(df.columns):
+            df = df.drop(columns=empty)
+        if notes:  # only re-type a frame we actually changed
+            for c in df.columns:
+                if df[c].dtype == object:
+                    nonnull = int(df[c].notna().sum())
+                    conv = _numeric_view(df[c])
+                    if nonnull and int(conv.notna().sum()) == nonnull:
+                        df[c] = conv
+                if pd.api.types.is_float_dtype(df[c]) and len(df[c]) and df[c].notna().all() and (df[c] % 1 == 0).all():
+                    df[c] = df[c].astype("int64")
+        df = df.reset_index(drop=True)
+        df.attrs["gd360_checks"] = checks
+        df.attrs["gd360_tidy"] = notes
+    except Exception as e:  # noqa: BLE001 - tidying is a nicety; never break a load
+        print(f"[file_import] tidy skipped: {e}")
+    return df
 
 
 # ---------------------------------------------------------------- infer

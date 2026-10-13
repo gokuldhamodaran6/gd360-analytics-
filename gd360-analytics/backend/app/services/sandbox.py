@@ -68,6 +68,32 @@ SAFE_BUILTINS = {
 }
 
 
+# 2026-10-13 (R43 Analyst): numpy/pandas resolve some methods lazily through
+# the CALLING frame's builtins (e.g. ndarray.clip imports numpy.core._methods
+# on first use), so a scope with no __import__ broke ordinary code with
+# "KeyError: '__import__'". This guarded import lets those library-internal
+# lookups and `import numpy as np` style lines through, and nothing else:
+# no os, sys, io, subprocess, socket, importlib, pickle...
+_IMPORT_ROOTS = {
+    "numpy", "pandas", "scipy", "math", "cmath", "statistics", "itertools", "collections", "functools", "operator",
+    "datetime", "decimal", "fractions", "random", "re", "json", "heapq", "bisect", "copy", "string", "numbers",
+    "warnings", "typing", "enum", "dataclasses", "textwrap", "calendar", "dateutil", "pytz", "zoneinfo",
+}
+
+
+def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: A002
+    import builtins as _b
+    import sys as _sys
+    root = (name or "").split(".")[0]
+    if level == 0 and root in _IMPORT_ROOTS:
+        return _b.__import__(name, globals, locals, fromlist, level)
+    # a library's own lazy import of a module that is already loaded
+    if level == 0 and name in _sys.modules and root not in ("os", "sys", "subprocess", "socket", "shutil", "importlib",
+                                                             "ctypes", "pickle", "multiprocessing", "builtins", "io"):
+        return _b.__import__(name, globals, locals, fromlist, level)
+    raise ImportError(f"import of {name!r} is not allowed here - pd, np, stats and the helpers are already loaded")
+
+
 def _read_container_memory_limit_bytes() -> int:
     """Best-effort read of this CONTAINER's real memory ceiling (the cgroup
     limit), not a number picked in isolation from it. cgroup v2 (modern
@@ -93,7 +119,7 @@ def _read_container_memory_limit_bytes() -> int:
     return _FALLBACK_BYTES
 
 
-def _child_worker(code: str, tables: dict[str, pd.DataFrame], conn, timeout: int) -> None:
+def _child_worker(code: str, tables: dict[str, pd.DataFrame], conn, timeout: int, extra: dict | None = None) -> None:
     try:
         try:
             import resource
@@ -187,9 +213,9 @@ def _child_worker(code: str, tables: dict[str, pd.DataFrame], conn, timeout: int
         # code (still the overwhelming majority of requests) is completely
         # unaffected. `tables` additionally exposes every selected table by
         # name, for code that compares, merges, or joins more than one.
-        primary = next(iter(tables.values()))
+        primary = next(iter(tables.values())) if tables else pd.DataFrame()
         scope = {
-            "__builtins__": SAFE_BUILTINS,
+            "__builtins__": {**SAFE_BUILTINS, "__import__": _guarded_import},
             "pd": pd,
             "np": np,
             "stats": stats,
@@ -197,6 +223,11 @@ def _child_worker(code: str, tables: dict[str, pd.DataFrame], conn, timeout: int
             "df": primary,
             "result": None,
         }
+        if extra:
+            # 2026-10-13 (R43 Analyst): extra names for the analyst - more
+            # pure-math modules and GD360's helper functions. Still no
+            # import, file, network or interpreter access.
+            scope.update(extra)
         exec(code, scope)  # noqa: S102 - intentional, restricted scope above
         conn.send(("ok", scope.get("result")))
     except Exception:
@@ -205,7 +236,7 @@ def _child_worker(code: str, tables: dict[str, pd.DataFrame], conn, timeout: int
         conn.close()
 
 
-def run_sandboxed(code: str, tables: dict[str, pd.DataFrame], timeout: int = 20) -> tuple[Any, str | None]:
+def run_sandboxed(code: str, tables: dict[str, pd.DataFrame], timeout: int = 20, extra: dict | None = None) -> tuple[Any, str | None]:
     """Runs `code` against one or more named tables in an isolated process.
     Returns (result, error)."""
     # 2026-09-23: real production logs showed "Analysis code timed out"
@@ -224,7 +255,7 @@ def run_sandboxed(code: str, tables: dict[str, pd.DataFrame], timeout: int = 20)
     # investigation can look at, instead of starting from zero again.
     start = time.monotonic()
     parent_conn, child_conn = mp.Pipe()
-    process = mp.Process(target=_child_worker, args=(code, tables, child_conn, timeout), daemon=True)
+    process = mp.Process(target=_child_worker, args=(code, tables, child_conn, timeout, extra), daemon=True)
     process.start()
 
     # 2026-09-29 (parallel-pieces round): root-caused during Phase 3 testing
