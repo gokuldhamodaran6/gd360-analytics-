@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { useAuth } from "./api/AuthContext";
 import Login from "./pages/Login";
 import AdminLogin from "./pages/AdminLogin";
@@ -37,6 +37,9 @@ import ConnectResourcePicker from "./pages/ConnectResourcePicker";
 import PrivacyPolicy from "./pages/PrivacyPolicy";
 import InviteJoin from "./pages/InviteJoin";
 import HomePage from "./pages/Home";
+// 2026-10-14 (R46, GD360 2.0): the chat-first conversation surface
+import ChatHome from "./chat/ChatHome";
+import ConversationPage from "./chat/Conversation";
 import ProjectWorkspace from "./pages/ProjectWorkspace";
 import GuidedAnalysis from "./pages/GuidedAnalysis";
 import TalkPage from "./pages/TalkPage";
@@ -73,7 +76,8 @@ function Home() {
   if (loading) return null;
   // 2026-10-08 (round 11): signed in, "/" is the one-question Home; the
   // full Projects library (folders, bulk actions) moved to /projects.
-  return user ? <HomePage /> : <MarketingHome />;
+  // 2026-10-14 (R46): signed in, "/" is the GD360 2.0 conversation home; the one-question Home stays at /home.
+  return user ? <ChatHome /> : <MarketingHome />;
 }
 
 // 2026-09-24 (Dashboard Builder Phase 4, white-label custom domains): this
@@ -147,9 +151,14 @@ export default function App() {
       {/* 2026-10-08 (round 11): multi-source Projects and their dashboards. */}
       {/* 2026-10-10 (Clarity Blueprint): "Projects" is now Library - every
           answer and analysis, labelled. Old /projects links still land there. */}
+      <Route path="/home" element={<Protected><HomePage /></Protected>} />
+      <Route path="/chat" element={<Protected><ChatHome /></Protected>} />
+      <Route path="/chat/:conversationId" element={<Protected><ConversationPage /></Protected>} />
       <Route path="/library" element={<Protected><Dashboard /></Protected>} />
       <Route path="/projects" element={<RedirectKeepingQuery to="/library" />} />
-      <Route path="/p/:projectId" element={<Protected><ProjectWorkspace /></Protected>} />
+      {/* 2026-10-13 (R45): keyed by the answer's id, so moving from one answer to another (command
+          palette, a notification) starts clean - no questions, sources or answer from the last one. */}
+      <Route path="/p/:projectId" element={<Protected><KeyedProjectWorkspace /></Protected>} />
       <Route path="/g/:projectId" element={<Protected><GuidedAnalysis /></Protected>} />
       {/* 2026-10-11 (round 24): a saved talk with Euliv */}
       <Route path="/v/:talkId" element={<Protected><TalkPage /></Protected>} />
@@ -276,6 +285,12 @@ export default function App() {
 }
 
 // 2026-10-10: a moved page keeps its query string (e.g. /projects?type=answer).
+// 2026-10-13 (R45): a fresh ProjectWorkspace per answer (see the /p/:projectId route).
+function KeyedProjectWorkspace() {
+  const { projectId = "" } = useParams();
+  return <ProjectWorkspace key={projectId} />;
+}
+
 function RedirectKeepingQuery({ to }: { to: string }) {
   const { search } = useLocation();
   return <Navigate to={`${to}${search}`} replace />;
