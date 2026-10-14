@@ -1,8 +1,15 @@
 import type { BlockAnomaly, BlockForecast, BlockResult, BlockSpec, DashboardBlock, ForecastSeries, PartialPeriods } from "../../api/client";
 import { normalizeChartType } from "../../lib/exploreEngine";
-import { blockFormat, chartArrangement, formatValue, humanize, MAX_SERIES, measureAliases, measureFormats, PLAIN_FORMAT, titleMentions, type ChartArrangement, type ValueFormat } from "../format";
+import { axisTitle, meaningFromName } from "../../lib/numberFormat";
+import {
+  blockFormat, chartArrangement, formatUnit, formatValue, humanize, isAdditiveMeasure, MAX_SERIES, measureAliases, measureFormats, PLAIN_FORMAT, sharedAxisTitle, titleMentions,
+  valueAxisTitle, type ChartArrangement, type ValueFormat,
+} from "../format";
 import { BY_VALUE_MAX_BARS, DEFAULT_CHART_THEME, MEASURES_KEY, blockColorMode, blockSingleColor, valueKey, type ChartTheme } from "../theme/chartTheme";
-import { normalizeGrain, parseDateParts, periodLabel, periodTick, type DateParts, type Grain } from "./geometry";
+import { binLabel, binValues, planBins } from "./bins";
+import {
+  excelSerialParts, normalizeGrain, parseDateParts, partsIso, partsTime, periodIndex, periodLabel, periodStart, periodTick, slashOrderOf, type DateParts, type Grain,
+} from "./geometry";
 import { calendarPosition, dimInfo } from "./dimensions";
 import { normalizeChartTypeKey } from "./recommend";
 
@@ -105,6 +112,9 @@ export type ChartSeries = {
   key: string;
   name: string;
   values: (number | null)[];
+  // 2026-10-13 (R45): this series' own number format (its unit), when it
+  // differs from the panel's - the tooltip writes each series its own way.
+  format?: ValueFormat;
   // The real numbers when `values` are shares of a 100% stack.
   raw?: (number | null)[];
   color: string;
@@ -127,6 +137,11 @@ export type ChartPanel = {
   kind?: ChartKind;
   // The format of the real numbers behind a 100% stack (tooltip).
   rawFormat?: ValueFormat;
+  // 2026-10-13 (R45): the value axis' title, unit included ("Waiting time
+  // (min)") - drawn rotated beside the axis (vertical) or under it
+  // (horizontal bars). Null where the panel title already is the axis' name
+  // (small multiples: "Revenue ($)" above each panel).
+  yTitle?: string | null;
 };
 
 // `future`: a period that has not happened (a forecast's axis).
@@ -189,6 +204,16 @@ export type ChartModel = {
   // Small-print lines under the plot, after `note`: the forecast's
   // caption (or its refusal), the partial-period note.
   captions?: string[];
+  // ---- 2026-10-13 (R45) ----
+  // A numeric x (a sequence, a clock hour, a bucket's start): each
+  // category's position on a LINEAR scale - a line / area is spaced by
+  // value, not drawn as evenly spaced categories.
+  xNumeric?: number[] | null;
+  // A horizontal reference line (config.reference: an average, a target).
+  reference?: { value: number; label: string } | null;
+  // The categories are the largest N of `total` (a ranking): the layout
+  // says "Top N of M" when it shows fewer still.
+  ranked?: { total: number } | null;
 };
 
 // The forms that are not drawn by the cartesian renderer.

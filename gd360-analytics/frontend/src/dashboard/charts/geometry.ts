@@ -134,26 +134,79 @@ export function valueDomain(values: number[], fromZero: boolean): [number, numbe
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-export type DateParts = { y: number; m: number; d: number };
+export type DateParts = { y: number; m: number; d: number; h?: number; mi?: number };
+
+const MONTH_WORD: Record<string, number> = {
+  jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2, apr: 3, april: 3, may: 4, jun: 5, june: 5, jul: 6, july: 6,
+  aug: 7, august: 7, sep: 8, sept: 8, september: 8, oct: 9, october: 9, nov: 10, november: 10, dec: 11, december: 11,
+};
+
+function validParts(y: number, mo: number, d: number, h = 0, mi = 0): DateParts | null {
+  if (!Number.isInteger(y) || y < 1000 || y > 9999 || mo < 0 || mo > 11 || d < 1 || d > 31 || h < 0 || h > 23 || mi < 0 || mi > 59) return null;
+  return h || mi ? { y, m: mo, d, h, mi } : { y, m: mo, d };
+}
 
 /** "2015-07-01", "2015-07-01T00:00:00Z", "2015-07" -> parts, read as
  *  written (a period bucket is a calendar label, never shifted by the
- *  viewer's time zone). */
-export function parseDateParts(v: unknown): DateParts | null {
-  if (v instanceof Date && !Number.isNaN(v.getTime())) return { y: v.getUTCFullYear(), m: v.getUTCMonth(), d: v.getUTCDate() };
+ *  viewer's time zone).
+ *  2026-10-13 (R45): also "2025-03-04 14:00" (the hour is kept - intraday
+ *  data no longer collapses to days), "2025/03/04", "Mar 2025" /
+ *  "March 2025", "04 Mar 2025", and "DD/MM/YYYY" or "MM/DD/YYYY" when the
+ *  value itself says which (a part above 12). An ambiguous "03/04/2025" is
+ *  read the way `slashOrder` says (see slashOrderOf), month-first by default. */
+export function parseDateParts(v: unknown, slashOrder: "dmy" | "mdy" = "mdy"): DateParts | null {
+  if (v instanceof Date && !Number.isNaN(v.getTime())) return validParts(v.getUTCFullYear(), v.getUTCMonth(), v.getUTCDate(), v.getUTCHours(), v.getUTCMinutes());
   if (typeof v !== "string") return null;
-  const m = /^(\d{4})-(\d{2})(?:-(\d{2}))?(?:[T ].*)?$/.exec(v.trim());
-  if (!m) return null;
-  const y = Number(m[1]), mo = Number(m[2]) - 1, d = m[3] ? Number(m[3]) : 1;
-  if (mo < 0 || mo > 11 || d < 1 || d > 31) return null;
-  return { y, m: mo, d };
+  const t = v.trim();
+  let m = /^(\d{4})[-/](\d{1,2})(?:[-/](\d{1,2}))?(?:[T ](\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/.exec(t);
+  if (m) return validParts(Number(m[1]), Number(m[2]) - 1, m[3] ? Number(m[3]) : 1, m[4] ? Number(m[4]) : 0, m[5] ? Number(m[5]) : 0);
+  m = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})(?:[T ](\d{1,2}):(\d{2})(?::\d{2})?)?$/.exec(t);
+  if (m) {
+    const a = Number(m[1]), b = Number(m[2]);
+    const dmy = a > 12 ? true : b > 12 ? false : slashOrder === "dmy";
+    return validParts(Number(m[3]), (dmy ? b : a) - 1, dmy ? a : b, m[4] ? Number(m[4]) : 0, m[5] ? Number(m[5]) : 0);
+  }
+  m = /^([A-Za-z]{3,9})\.?,?\s+(\d{4})$/.exec(t);
+  if (m && m[1].toLowerCase() in MONTH_WORD) return validParts(Number(m[2]), MONTH_WORD[m[1].toLowerCase()], 1);
+  m = /^(\d{1,2})\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})$/.exec(t);
+  if (m && m[2].toLowerCase() in MONTH_WORD) return validParts(Number(m[3]), MONTH_WORD[m[2].toLowerCase()], Number(m[1]));
+  m = /^([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})$/.exec(t);
+  if (m && m[1].toLowerCase() in MONTH_WORD) return validParts(Number(m[3]), MONTH_WORD[m[1].toLowerCase()], Number(m[2]));
+  return null;
 }
 
-export type Grain = "day" | "week" | "month" | "quarter" | "year";
+/** 2026-10-13 (R45): which way a column writes its slashed dates - "dmy"
+ *  when any value has a first part above 12 (31/01/2025), else "mdy". */
+export function slashOrderOf(values: unknown[]): "dmy" | "mdy" {
+  for (const v of values) {
+    if (typeof v !== "string") continue;
+    const m = /^(\d{1,2})[/.-](\d{1,2})[/.-]\d{4}/.exec(v.trim());
+    if (m && Number(m[1]) > 12) return "dmy";
+  }
+  return "mdy";
+}
+
+/** 2026-10-13 (R45): an Excel serial day number (45000 = 2023-03-15) as
+ *  parts - only ever asked for a column whose role is a date. */
+export function excelSerialParts(n: unknown): DateParts | null {
+  if (typeof n !== "number" || !Number.isFinite(n) || n < 20000 || n > 80000) return null;
+  const ms = Math.round((n - 25569) * 86400000);
+  const d = new Date(ms);
+  return validParts(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes());
+}
+
+/** Milliseconds of a date's parts (UTC) - an order and a spacing. */
+export function partsTime(p: DateParts): number {
+  return Date.UTC(p.y, p.m, p.d, p.h || 0, p.mi || 0);
+}
+
+export type Grain = "hour" | "day" | "week" | "month" | "quarter" | "year";
 
 export function normalizeGrain(g: string | null | undefined): Grain {
-  return g === "day" || g === "week" || g === "quarter" || g === "year" ? g : "month";
+  return g === "hour" || g === "day" || g === "week" || g === "quarter" || g === "year" ? g : "month";
 }
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
 
 /** The axis label of one period. `withYear` is set on the first tick and
  *  wherever the year turns, so "Oct 2014 · Jan 2015 · Apr · Jul" reads
@@ -162,6 +215,7 @@ export function periodTick(p: DateParts, grain: Grain, withYear: boolean): strin
   if (grain === "year") return String(p.y);
   if (grain === "quarter") return withYear ? `Q${Math.floor(p.m / 3) + 1} ${p.y}` : `Q${Math.floor(p.m / 3) + 1}`;
   if (grain === "month") return withYear ? `${MONTHS[p.m]} ${p.y}` : MONTHS[p.m];
+  if (grain === "hour") return (p.h || 0) === 0 || withYear ? `${MONTHS[p.m]} ${p.d} ${pad2(p.h || 0)}:00` : `${pad2(p.h || 0)}:00`;
   return withYear ? `${MONTHS[p.m]} ${p.d}, ${p.y}` : `${MONTHS[p.m]} ${p.d}`;
 }
 
@@ -171,10 +225,50 @@ export function periodLabel(p: DateParts, grain: Grain): string {
   if (grain === "quarter") return `Q${Math.floor(p.m / 3) + 1} ${p.y}`;
   if (grain === "month") return `${MONTHS_LONG[p.m]} ${p.y}`;
   if (grain === "week") return `Week of ${MONTHS[p.m]} ${p.d}, ${p.y}`;
+  if (grain === "hour") return `${MONTHS[p.m]} ${p.d}, ${p.y} ${pad2(p.h || 0)}:${pad2(p.mi || 0)}`;
   return `${MONTHS[p.m]} ${p.d}, ${p.y}`;
 }
 
+/** 2026-10-13 (R45): the period a date falls in, as one integer per grain
+ *  (consecutive periods are consecutive integers) - the key that lets a
+ *  time axis fill the periods the data skipped. Weeks count from `weekAnchor`
+ *  (the first week's day number) so a Sunday-start series stays aligned. */
+export function periodIndex(p: DateParts, grain: Grain, weekAnchor = 0): number {
+  const day = Math.floor(Date.UTC(p.y, p.m, p.d) / 86400000);
+  switch (grain) {
+    case "year": return p.y;
+    case "quarter": return p.y * 4 + Math.floor(p.m / 3);
+    case "month": return p.y * 12 + p.m;
+    case "week": return Math.floor((day - weekAnchor) / 7);
+    case "hour": return day * 24 + (p.h || 0);
+    default: return day;
+  }
+}
+
+/** The first moment of period `index` (periodIndex's inverse). */
+export function periodStart(index: number, grain: Grain, weekAnchor = 0): DateParts {
+  const fromDay = (day: number, h = 0): DateParts => {
+    const d = new Date(day * 86400000);
+    return validParts(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), h) || { y: d.getUTCFullYear(), m: d.getUTCMonth(), d: d.getUTCDate() };
+  };
+  switch (grain) {
+    case "year": return { y: index, m: 0, d: 1 };
+    case "quarter": return { y: Math.floor(index / 4), m: (((index % 4) + 4) % 4) * 3, d: 1 };
+    case "month": return { y: Math.floor(index / 12), m: ((index % 12) + 12) % 12, d: 1 };
+    case "week": return fromDay(index * 7 + weekAnchor);
+    case "hour": return fromDay(Math.floor(index / 24), ((index % 24) + 24) % 24);
+    default: return fromDay(index);
+  }
+}
+
+/** A period's ISO key ("2025-03-01", "2025-03-01T14:00:00"). */
+export function partsIso(p: DateParts, withTime = false): string {
+  const day = `${p.y}-${pad2(p.m + 1)}-${pad2(p.d)}`;
+  return withTime ? `${day}T${pad2(p.h || 0)}:${pad2(p.mi || 0)}:00` : day;
+}
+
 const TIME_STEPS: Record<Grain, number[]> = {
+  hour: [1, 2, 3, 6, 12, 24, 48, 168],
   day: [1, 2, 7, 14, 28, 56, 91, 182, 365],
   week: [1, 2, 4, 8, 13, 26, 52],
   month: [1, 2, 3, 6, 12, 24, 60, 120],
@@ -190,10 +284,12 @@ function onStep(p: DateParts, index: number, grain: Grain, step: number): boolea
   if (grain === "month") return step >= 12 ? p.m === 0 && p.y % (step / 12) === 0 : p.m % step === 0;
   if (grain === "quarter") return step >= 4 ? p.m < 3 && p.y % (step / 4) === 0 : Math.floor(p.m / 3) % step === 0;
   if (grain === "year") return p.y % step === 0;
+  if (grain === "hour") return step >= 24 ? (p.h || 0) === 0 && index % (step / 24) === 0 : (p.h || 0) % step === 0;
   return index % step === 0;
 }
 
-export type AxisTick = { index: number; x: number; text: string; full: string; cut: boolean; anchor: "start" | "middle" | "end" };
+// `rotate` (degrees, 2026-10-13 R45): a crowded category label drawn on a slant.
+export type AxisTick = { index: number; x: number; text: string; full: string; cut: boolean; anchor: "start" | "middle" | "end"; rotate?: number };
 
 /** Which periods get an x tick, so that no two labels touch and none
  *  leaves [left, right]. */
@@ -214,7 +310,9 @@ export function timeTicks(parts: DateParts[], xs: number[], grain: Grain, measur
     let lastEnd = -Infinity;
     for (let i = 0; i < n; i++) {
       if (!onStep(parts[i], i, grain, s)) continue;
-      const withYear = grain === "year" || lastYear !== parts[i].y;
+      // An hourly axis names the day where the day turns (and on the first tick).
+      const turn = grain === "hour" ? parts[i].y * 400 + parts[i].m * 32 + parts[i].d : parts[i].y;
+      const withYear = grain === "year" || lastYear !== turn;
       const text = periodTick(parts[i], grain, withYear);
       const w = measure(text, size);
       let x0 = xs[i] - w / 2;
@@ -224,7 +322,7 @@ export function timeTicks(parts: DateParts[], xs: number[], grain: Grain, measur
       else if (x0 + w > right) { x0 = right - w; x = right; anchor = "end"; }
       if (x0 < lastEnd + gap) continue;
       lastEnd = x0 + w;
-      lastYear = parts[i].y;
+      lastYear = grain === "hour" ? parts[i].y * 400 + parts[i].m * 32 + parts[i].d : parts[i].y;
       out.push({ index: i, x, text, full: periodLabel(parts[i], grain), cut: false, anchor });
     }
     return out;
@@ -259,6 +357,32 @@ export function categoryTicks(labels: string[], xs: number[], band: number, meas
     out.push({ index: i, x, text: fit.text, full: labels[i], cut: fit.cut, anchor });
   }
   return out;
+}
+
+export const ROTATE_DEG = -35;
+const SIN = Math.sin((Math.abs(ROTATE_DEG) * Math.PI) / 180), COS = Math.cos((Math.abs(ROTATE_DEG) * Math.PI) / 180);
+
+/** 2026-10-13 (R45): category labels too long for their band are drawn on
+ *  a -35 degree slant instead of being cut to "Offl…": each label gets up to
+ *  `maxLen` px along its slant (cut with an ellipsis beyond that, full text
+ *  kept for the tooltip), every k-th one when even slanted ones would
+ *  touch. `height` is the vertical room the slanted labels need. */
+export function rotatedCategoryTicks(labels: string[], xs: number[], band: number, measure: Measure, left: number, maxLen = 110, size = 11): { ticks: AxisTick[]; height: number } {
+  const n = labels.length;
+  if (!n) return { ticks: [], height: 0 };
+  // Two slanted labels need about a line height / sin(35) between them.
+  const need = (size * 1.3) / SIN;
+  const step = band >= need ? 1 : Math.max(1, Math.ceil(need / Math.max(1, band)));
+  const out: AxisTick[] = [];
+  let widest = 0;
+  for (let i = 0; i < n; i += step) {
+    // The slant runs left from the tick: never past the chart's left edge.
+    const room = Math.max(24, Math.min(maxLen, (xs[i] - left) / COS));
+    const fit = fitText(labels[i], room, measure, size);
+    widest = Math.max(widest, fit.width);
+    out.push({ index: i, x: xs[i], text: fit.text, full: labels[i], cut: fit.cut, anchor: "end", rotate: ROTATE_DEG });
+  }
+  return { ticks: out, height: Math.ceil(widest * SIN + size * COS + 6) };
 }
 
 /** Value ticks thinned until their labels have air between them along a
