@@ -2,7 +2,9 @@
 // Sources (each query, live), Results (the answer drawn) and Evidence (every
 // result table with the exact query that produced it).
 import { AnalystAnswer, AnalystMethod, AnalystProgress, analystOf, isAnalystRun } from "./AnalystAnswer";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { fmtNumber, formatByMeaning, meaningFromName } from "../lib/numberFormat";
+import { friendlyError } from "./errors";
 import type { DashKpi, EvidenceTable, ProjectRun, RunStep } from "../api/projects";
 import { KpiRow, VisualCard } from "./Visuals";
 import WaysForward from "./WaysForward";
@@ -129,6 +131,28 @@ function SourceChip({ name, mode }: { name: string; mode?: string | null }) {
     </span>
   );
 }
+
+// 2026-10-13 (R45): an error a person can read - one human sentence; the raw
+// engine text (SQL, binder errors, tracebacks) only behind "Details", and only
+// for people who can edit this thread.
+export function ErrorNote({ error, fallback, showDetails = false, className = "", boxed = true }: {
+  error: unknown; fallback?: string; showDetails?: boolean; className?: string; boxed?: boolean;
+}) {
+  const f = friendlyError(error, fallback);
+  return (
+    <div className={`${boxed ? "rounded-ctl border border-danger-border bg-danger-fill p-3 text-text" : "text-danger"} text-ui leading-snug flex flex-col gap-1.5 min-w-0 ${className}`} data-error-note={f.technical ? "technical" : ""}>
+      <span>{f.text}</span>
+      {showDetails && f.details && (
+        <details className="group text-caption text-muted">
+          <summary className="ui-focus cursor-pointer select-none w-fit rounded hover:text-text">Details</summary>
+          <pre className="m-0 mt-1.5 p-2.5 rounded-ctl bg-base border border-border font-mono text-[11px] leading-relaxed text-secondary whitespace-pre-wrap break-words max-h-48 overflow-auto">{f.details}</pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => (n === 1 ? one : many);
 
 // ---- Plan -------------------------------------------------------------------
 
@@ -269,25 +293,26 @@ function PlanTabInner({ run, canEdit, onRun, onReplan, busy, seed }: PlanProps) 
 
 // ---- Sources ----------------------------------------------------------------
 
-export function SourcesTab({ run }: { run: ProjectRun }) {
+export function SourcesTab({ run, showDetails = false }: { run: ProjectRun; showDetails?: boolean }) {
   if (isAnalystRun(run)) return <AnalystProgress run={run} />;
-  return <SourcesTabInner run={run} />;
+  return <SourcesTabInner run={run} showDetails={showDetails} />;
 }
 
-function SourcesTabInner({ run }: { run: ProjectRun }) {
+function SourcesTabInner({ run, showDetails }: { run: ProjectRun; showDetails: boolean }) {
   const steps = run.steps || [];
   if (!steps.length) return <Empty text="Nothing has run yet." spinner={run.status === "planning"} />;
   const scanned = steps.reduce((a, s) => a + (s.bytes_scanned || 0), 0);
   const returned = steps.filter((s) => s.kind === "step").reduce((a, s) => a + (s.rows_returned || 0), 0);
   const running = steps.some((s) => s.status === "running");
+  const asking = new Set(steps.filter((s) => s.kind === "step").map((s) => s.source_id)).size;
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-baseline justify-between gap-3 flex-wrap">
         <h2 className="m-0 text-title font-semibold tracking-tight text-text">
-          {running ? `Asking ${new Set(steps.filter((s) => s.kind === "step").map((s) => s.source_id)).size} sources at once` : "What each source answered"}
+          {running ? (asking === 1 ? "Asking your source" : `Asking ${asking} sources at once`) : asking === 1 ? "What your source answered" : "What each source answered"}
         </h2>
         <span className="font-mono text-caption text-muted">
-          {returned.toLocaleString()} rows returned{scanned ? ` · ${bytes(scanned)} scanned` : ""}
+          {fmtNumber(returned, 0)} {plural(returned, "row")} returned{scanned ? ` · ${bytes(scanned)} scanned` : ""}
         </span>
       </div>
       <div className="grid gap-3.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))" }}>
@@ -304,15 +329,15 @@ function SourcesTabInner({ run }: { run: ProjectRun }) {
             </div>
             <span className="text-body text-secondary leading-snug">{s.purpose || s.title}</span>
             <SqlBlock sql={s.sql} preview />
-            {s.error && <span className="text-ui text-danger leading-snug">{s.error}</span>}
+            {s.error && <ErrorNote error={s.error} fallback="This part couldn't run." showDetails={showDetails} boxed={false} />}
             {s.note && <span className="text-caption text-warning">{s.note}</span>}
             <div className="flex justify-between gap-2 font-mono text-caption text-muted flex-wrap">
               <span>
-                {s.bytes_scanned ? `${bytes(s.bytes_scanned)} scanned → ` : s.rows_read ? `${s.rows_read.toLocaleString()} rows read → ` : ""}
-                {s.rows_returned != null ? `${s.rows_returned.toLocaleString()} rows` : s.status === "pending" ? "—" : s.status === "running" ? "running" : "—"}
+                {s.bytes_scanned ? `${bytes(s.bytes_scanned)} scanned → ` : s.rows_read ? `${fmtNumber(s.rows_read, 0)} ${plural(s.rows_read, "row")} read → ` : ""}
+                {s.rows_returned != null ? `${fmtNumber(s.rows_returned, 0)} ${plural(s.rows_returned, "row")}` : s.status === "pending" ? "—" : s.status === "running" ? "running" : "—"}
                 {s.truncated ? " · first 5,000" : ""}
               </span>
-              <span>{s.repaired ? "fixed once · " : ""}{s.status === "pending" ? "queued" : ms(s.duration_ms)}</span>
+              <span>{s.repaired ? "corrected automatically · " : ""}{s.status === "pending" ? "queued" : ms(s.duration_ms)}</span>
             </div>
           </div>
         ))}
@@ -330,14 +355,14 @@ function sourceLine(s: RunStep): string {
 
 // ---- Results ----------------------------------------------------------------
 
-export function ResultsTab({ run }: { run: ProjectRun }) {
+export function ResultsTab({ run, showDetails = false }: { run: ProjectRun; showDetails?: boolean }) {
   // R43: a question the Analyst worked out has its own answer page
   if (isAnalystRun(run)) {
-    if (run.status === "done" && analystOf(run)) return <AnalystAnswer run={run} />;
+    if (run.status === "done" && analystOf(run)) return <AnalystAnswer key={run.id} run={run} />;
     if (run.status === "failed") {
       return (
         <div className="flex flex-col gap-4">
-          <div className="rounded-card border border-danger-border bg-danger-fill p-4 text-ui text-text">{run.error || "The analysis could not be finished."}</div>
+          <ErrorNote error={run.error} fallback="The analysis couldn't be finished. Please ask again." showDetails={showDetails} className="rounded-card p-4" />
           <AnalystProgress run={run} />
         </div>
       );
@@ -348,6 +373,9 @@ export function ResultsTab({ run }: { run: ProjectRun }) {
   if (!res || run.status !== "done") {
     if (run.status === "needs_input" && res?.answer) {
       return <WaysForward answer={res.answer} />;
+    }
+    if (run.status === "failed") {
+      return <ErrorNote error={run.error} fallback="This question couldn't be answered. Please ask again." showDetails={showDetails} className="rounded-card p-4" />;
     }
     return <Empty text={run.status === "running" || run.status === "planning" ? "The answer appears here when every source has replied." : "No results for this question."} spinner={run.status === "running"} />;
   }
@@ -466,7 +494,7 @@ export function ResultsTab({ run }: { run: ProjectRun }) {
       )}
       <p className="m-0 text-caption text-muted">
         {ans.written_by === "template"
-          ? "Written from the computed numbers (the AI writer was unavailable or used a number it was not given)."
+          ? "Written straight from the computed numbers, so every figure above is exact."
           : "Every number above was computed from your data; the text was checked against those numbers before it was shown."}
       </p>
     </div>
@@ -493,65 +521,92 @@ export function EvidenceTab({ run }: { run: ProjectRun }) {
       <p className="m-0 text-ui text-muted">
         Every table the answer was computed from, with the exact query that produced it and where it ran.
       </p>
-      {ev.map((t) => {
-        const step = steps.find((s) => s.id === t.id);
-        return (
-          <section key={t.id} className="rounded-card border border-border bg-surface overflow-hidden">
-            <div className="flex justify-between items-center gap-3 px-4 py-3 flex-wrap">
-              <span className="flex flex-col gap-0.5">
-                <span className="text-body font-semibold text-text">{t.title}</span>
-                <span className="text-caption text-muted">
-                  {t.source} · {t.rows.length.toLocaleString()} row{t.rows.length === 1 ? "" : "s"}{t.truncated ? " (first 200 shown)" : ""}
-                </span>
-              </span>
-              <span className="flex items-center gap-2">
-                <ModeBadge mode={step?.mode} />
-                <button
-                  type="button"
-                  className="btn-secondary text-xs"
-                  onClick={() => {
-                    const blob = new Blob([toCsv(t)], { type: "text/csv" });
-                    const a = document.createElement("a");
-                    a.href = URL.createObjectURL(blob);
-                    a.download = `${t.title.replace(/[^\w]+/g, "_").toLowerCase()}.csv`;
-                    a.click();
-                    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-                  }}
-                >
-                  Download CSV
-                </button>
-              </span>
-            </div>
-            {step && <div className="px-4 pb-3"><SqlBlock sql={step.sql} /></div>}
-            <div className="overflow-auto max-h-80 border-t border-border">
-              <table className="w-full text-ui border-collapse">
-                <thead className="sticky top-0 bg-surface2">
-                  <tr>
-                    {t.columns.map((c) => (
-                      <th key={c.name} className={`px-3 py-2 font-medium text-muted whitespace-nowrap ${c.dtype === "number" ? "text-right" : "text-left"}`}>{c.name}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {t.rows.slice(0, 50).map((r, i) => (
-                    <tr key={i} className="border-t border-border">
-                      {t.columns.map((c) => {
-                        const v = (r as any)[c.name];
-                        return (
-                          <td key={c.name} className={`px-3 py-1.5 whitespace-nowrap ${c.dtype === "number" ? "text-right font-mono" : "text-secondary"}`}>
-                            {v == null ? "—" : typeof v === "number" ? v.toLocaleString(undefined, { maximumFractionDigits: 4 }) : String(v)}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        );
-      })}
+      {ev.map((t) => <EvidenceTable key={t.id} t={t} step={steps.find((s) => s.id === t.id)} />)}
     </div>
+  );
+}
+
+// 2026-10-13 (R45): what the caption says is what the table shows - the first
+// EVIDENCE_PAGE rows, "Show more" for the next ones, and an honest note when
+// the stored table itself was cut (the CSV has every row that was kept).
+export const EVIDENCE_PAGE = 50;
+export function evidenceCaption(source: string, kept: number, shown: number, truncated: boolean): string {
+  const rows = `${fmtNumber(kept, 0)} ${kept === 1 ? "row" : "rows"}${truncated ? " kept (the query returned more)" : ""}`;
+  return shown < kept ? `${source} · showing ${fmtNumber(shown, 0)} of ${rows}` : `${source} · ${rows}`;
+}
+
+function EvidenceTable({ t, step }: { t: EvidenceTable; step?: RunStep }) {
+  const [limit, setLimit] = useState(EVIDENCE_PAGE);
+  const shown = Math.min(limit, t.rows.length);
+  // every number written by what its column means ("$1,204", "21.1 min", "4.5%")
+  const meanings = useMemo(
+    () => Object.fromEntries(t.columns.map((c) => [c.name, meaningFromName(c.name, t.rows.slice(0, 200).map((r) => (r as any)[c.name]))])),
+    [t],
+  );
+  return (
+    <section className="rounded-card border border-border bg-surface overflow-hidden" data-evidence-table={t.id}>
+      <div className="flex justify-between items-center gap-3 px-4 py-3 flex-wrap">
+        <span className="flex flex-col gap-0.5 min-w-0">
+          <span className="text-body font-semibold text-text">{t.title}</span>
+          <span className="text-caption text-muted" data-evidence-caption="">{evidenceCaption(t.source, t.rows.length, shown, Boolean(t.truncated))}</span>
+        </span>
+        <span className="flex items-center gap-2">
+          <ModeBadge mode={step?.mode} />
+          <button
+            type="button"
+            className="btn-secondary text-xs"
+            onClick={() => {
+              const blob = new Blob([toCsv(t)], { type: "text/csv" });
+              const a = document.createElement("a");
+              a.href = URL.createObjectURL(blob);
+              a.download = `${t.title.replace(/[^\w]+/g, "_").toLowerCase()}.csv`;
+              a.click();
+              setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+            }}
+          >
+            Download CSV
+          </button>
+        </span>
+      </div>
+      {step && <div className="px-4 pb-3"><SqlBlock sql={step.sql} /></div>}
+      <div className="overflow-auto max-h-80 border-t border-border">
+        <table className="w-full text-ui border-collapse">
+          <thead className="sticky top-0 bg-surface2">
+            <tr>
+              {t.columns.map((c) => (
+                <th key={c.name} scope="col" className={`px-3 py-2 font-medium text-muted whitespace-nowrap ${c.dtype === "number" ? "text-right" : "text-left"}`}>{c.name}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {t.rows.slice(0, shown).map((r, i) => (
+              <tr key={i} className="border-t border-border">
+                {t.columns.map((c) => {
+                  const v = (r as any)[c.name];
+                  return (
+                    <td key={c.name} className={`px-3 py-1.5 whitespace-nowrap ${c.dtype === "number" ? "text-right font-mono tabular-nums" : "text-secondary"}`}>
+                      {v == null ? "—" : typeof v === "number" ? formatByMeaning(v, meanings[c.name]) : String(v)}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {shown < t.rows.length && (
+        <div className="flex items-center gap-3 px-4 py-2.5 border-t border-border">
+          <button type="button" className="ui-focus text-caption text-kind-answer hover:underline" onClick={() => setLimit((n) => n + EVIDENCE_PAGE * 4)} data-evidence-more="">
+            Show {fmtNumber(Math.min(EVIDENCE_PAGE * 4, t.rows.length - shown), 0)} more
+          </button>
+          {t.rows.length - shown > EVIDENCE_PAGE * 4 && (
+            <button type="button" className="ui-focus text-caption text-muted hover:text-text" onClick={() => setLimit(t.rows.length)}>
+              Show all {fmtNumber(t.rows.length, 0)}
+            </button>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -575,6 +630,6 @@ function pctOf(share?: string | null): number | null {
 function shareText(share: string, offset: boolean, changeWord: string): string {
   if (offset) return `made up ${share}`;
   const p = pctOf(share);
-  if (p != null && p > 100) return `${share} of the ${changeWord} - more than all of it; gains elsewhere made up ${(p - 100).toFixed(p - 100 < 10 ? 1 : 0)}%`;
+  if (p != null && p > 100) return `${share} of the ${changeWord} - more than all of it; gains elsewhere made up ${fmtNumber(p - 100, p - 100 < 10 ? 1 : 0)}%`;
   return `${share} of the ${changeWord}`;
 }

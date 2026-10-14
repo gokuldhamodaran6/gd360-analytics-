@@ -4,16 +4,24 @@
 // side; the rates as live sliders (recomputed in the browser from the safe
 // formulas the analysis returned - no new question); where the choice would
 // flip; how it was worked out, with the checks it passed and its code.
+// 2026-10-13 (R44, answer polish): the page is decision -> live chart ->
+// one trimmed table; assumptions are a row of chips that open their own
+// slider; the work trail lives only in Method; follow-ups sit in the thread.
 import { useMemo, useState } from "react";
 import type { ProjectRun } from "../api/projects";
 import { API_URL } from "../api/client";
 import { VisualCard } from "./Visuals";
 import { useAsk } from "./WaysForward";
+import { shortTitle } from "../thread/DashboardFlow";
+import { friendlyError } from "./errors";
+import {
+  bestIndex, cell, computeRows, leadNum as leadNumShared, normalizeModel, num, ScenarioAssumptions, ScenarioChart,
+  ScenarioDecision, ScenarioTable, useScenarioValues, type ScenarioModel,
+} from "./ScenarioBlock";
+export { cleanLabel } from "./ScenarioBlock";
+import { cleanLabel } from "./ScenarioBlock";
 
-type Input = { key: string; label: string; value: number; min: number; max: number; step: number; unit: string };
-type Row = { label: string; values: Record<string, number>; computed: Record<string, number> };
-type Output = { key: string; label: string; expr: string; format: string };
-type Model = { inputs: Input[]; rows: Row[]; outputs: Output[]; pick: { output: string; goal: "min" | "max" } };
+type Model = ScenarioModel;
 type Table = { title: string; columns: { name: string; dtype: string }[]; rows: Record<string, any>[]; rows_total?: number; truncated?: boolean };
 type Check = { label: string; expected: number | null; got: number | null; ok: boolean };
 type Progress = { id: string; label: string; status: string; detail?: string | null; at_s?: number };
@@ -29,99 +37,47 @@ export const isAnalystRun = (run: ProjectRun | null | undefined): boolean =>
   Boolean(run && (((run as any).mode === "analyst") || (run.plan as any)?.mode === "analyst" || (run.result as any)?.analysis_type === "analyst"));
 export const progressOf = (run: ProjectRun): Progress[] => ((run as any).analyst_progress || (run.plan as any)?.progress || []) as Progress[];
 
-// ---- a tiny, safe expression evaluator (the model's formulas) ----------------------------------------------
-function evaluate(expr: string, names: Record<string, number>): number {
-  const toks = expr.match(/\d+\.?\d*(?:e[-+]?\d+)?|\.\d+|[A-Za-z_][A-Za-z0-9_]*|\*\*|[-+*/(),]/g) || [];
-  let i = 0;
-  const peek = () => toks[i];
-  const next = () => toks[i++];
-  const prim = (): number => {
-    const t = next();
-    if (t === undefined) throw new Error("end");
-    if (t === "(") { const v = add(); next(); return v; }
-    if (t === "-") return -power();
-    if (t === "+") return power();
-    if (/^[\d.]/.test(t)) return parseFloat(t);
-    if (peek() === "(") {
-      next();
-      const args: number[] = [];
-      if (peek() !== ")") { args.push(add()); while (peek() === ",") { next(); args.push(add()); } }
-      next();
-      if (t === "min") return Math.min(...args);
-      if (t === "max") return Math.max(...args);
-      if (t === "abs") return Math.abs(args[0]);
-      if (t === "round") return args.length > 1 ? Math.round(args[0] * 10 ** args[1]) / 10 ** args[1] : Math.round(args[0]);
-      throw new Error(t);
-    }
-    if (!(t in names)) throw new Error(t);
-    return names[t];
-  };
-  const power = (): number => { const b = prim(); if (peek() === "**") { next(); return b ** unary(); } return b; };
-  const unary = (): number => (peek() === "-" ? (next(), -unary()) : power());
-  const mul = (): number => { let v = unary(); while (peek() === "*" || peek() === "/") { const op = next(); const r = unary(); v = op === "*" ? v * r : v / r; } return v; };
-  const add = (): number => { let v = mul(); while (peek() === "+" || peek() === "-") { const op = next(); const r = mul(); v = op === "+" ? v + r : v - r; } return v; };
-  return add();
+// 2026-10-13 (R45): the evaluator, ranking, break-even search, chips, chart and options table live in
+// ./ScenarioBlock.tsx - one implementation shared with the dashboard "scenario" block.
+const leadNum = leadNumShared;
+const plural = (n: number, w: string) => (n === 1 ? w : `${w}s`);
+const MONEY_COL = /\(\s*[$€£₹¥]\s*\)|[$€£₹¥]|\b(cost|costs|revenue|price|profit|spend|wage|salary|margin|npv|cash)\b/i;
+const colSym = (name: string) => (name.match(/[$€£₹¥]/) || ["$"])[0];
+/** One formatter per column, so every row of a column shows the same decimals and currency. */
+function columnFormat(name: string, values: any[]): (v: any) => string {
+  const nums = values.filter((v) => typeof v === "number" && Number.isFinite(v)) as number[];
+  const frac = nums.some((v) => Math.abs(v - Math.round(v)) > 1e-9);
+  const big = nums.some((v) => Math.abs(v) >= 1000);
+  if (MONEY_COL.test(name)) {
+    const sym = colSym(name);
+    const d = frac && !big ? 2 : 0;
+    return (v) => (typeof v === "number" && Number.isFinite(v) ? `${v < 0 ? "−" : ""}${sym}${num(Math.abs(v), d, d)}` : cell(v));
+  }
+  const d = !frac ? 0 : nums.some((v) => Math.abs(v) < 1 && Math.abs(v) > 0) ? 2 : nums.every((v) => Math.abs(v * 10 - Math.round(v * 10)) < 1e-9) ? 1 : 2;
+  return (v) => (typeof v === "number" && Number.isFinite(v) ? num(v, d, d) : cell(v));
 }
-
-function compute(m: Model, vals: Record<string, number>): Row[] {
-  return m.rows.map((r) => {
-    const names: Record<string, number> = { ...vals, ...r.values };
-    const out: Record<string, number> = {};
-    for (const o of m.outputs) {
-      try { out[o.key] = evaluate(o.expr, { ...names, ...out }); } catch { out[o.key] = NaN; }
-    }
-    return { ...r, computed: out };
-  });
-}
-
-function bestIndex(m: Model, rows: Row[]): number {
-  let best = -1;
-  rows.forEach((r, i) => {
-    const v = r.computed[m.pick.output];
-    if (!Number.isFinite(v)) return;
-    if (best < 0 || (m.pick.goal === "min" ? v < rows[best].computed[m.pick.output] - 1e-9 : v > rows[best].computed[m.pick.output] + 1e-9)) best = i;
-  });
-  return best;
-}
-
-// ---- formatting ---------------------------------------------------------------------------------------------
-const nf = (v: number, d = 0) => v.toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: 0 });
-function fmtOut(v: number, format: string, sym: string): string {
-  if (!Number.isFinite(v)) return "–";
-  const a = Math.abs(v);
-  const sign = v < 0 ? "−" : "";
-  if (format === "money") return `${sign}${sym}${a >= 1000 ? nf(a, 0) : nf(a, a < 10 ? 2 : 0)}`;
-  if (format === "percent") return `${nf(v, 1)}%`;
-  if (format === "minutes") return `${nf(v, a < 10 ? 1 : 0)} min`;
-  if (format === "hours") return `${nf(v, 1)} h`;
-  if (format === "integer") return nf(v, 0);
-  return a >= 100 ? nf(v, 0) : nf(v, 2);
-}
-function fmtInput(i: Input, v: number): string {
-  const d = i.step < 0.01 ? 3 : i.step < 1 ? 2 : 0;
-  if (/^[$€£₹¥]$/.test(i.unit)) return `${i.unit}${v.toLocaleString(undefined, { minimumFractionDigits: d > 0 && v < 100 ? Math.min(d, 2) : 0, maximumFractionDigits: d })}`;
-  if (i.unit === "%" || (i.max <= 1 && /rate|share|pct|percent/i.test(i.key + i.label))) return `${nf(i.max <= 1 ? v * 100 : v, 1)}%`;
-  return `${nf(v, d)}${i.unit ? ` ${i.unit}` : ""}`;
-}
-const pretty = (k: string) => k.replace(/_/g, " ").replace(/\bmin\b/, "(min)").replace(/^\w/, (c) => c.toUpperCase());
-function cell(v: any): string {
-  if (v === null || v === undefined) return "–";
-  if (typeof v === "number") return Math.abs(v) >= 1000 ? nf(v, 0) : Number.isInteger(v) ? String(v) : nf(v, Math.abs(v) < 1 ? 3 : 2);
-  return String(v);
-}
+const headerName = (n: string) => n.replace(/\s*\(\s*[$€£₹¥]\s*\)/, "");
 
 // ---- the page -----------------------------------------------------------------------------------------------
 export function AnalystAnswer({ run }: { run: ProjectRun }) {
   const a = analystOf(run) as Analyst;
   const ans = run.result?.answer;
   const ask = useAsk();
-  const visuals = run.result?.visuals || [];
+  const model = useMemo(() => normalizeModel(a.model), [a.model]);
+  const { init, vals, setVals } = useScenarioValues(model);
+  const rows = useMemo(() => (model ? computeRows(model, vals) : []), [model, vals]);
+  const best = model ? bestIndex(model, rows) : -1;
+  const changed = Boolean(model?.inputs.some((i) => Math.abs((vals[i.key] ?? i.value) - i.value) > 1e-12));
+  // a static chart of the same options as the live model is redundant (and goes stale when a rate moves)
+  const visuals = (run.result?.visuals || []).filter((v: any) => !model || (v.rows || []).length !== model.rows.length);
   const checks = a.checks || [];
   const passed = checks.filter((c) => c.ok);
   return (
     <div className="flex flex-col gap-5" data-analyst-answer="">
-      <section className="relative overflow-hidden rounded-[20px] border border-kind-answer-border bg-surface p-5 sm:p-7 flex flex-col gap-4">
-        <div className="pointer-events-none absolute -top-24 -right-16 w-[420px] h-[260px] opacity-70" style={{ background: "radial-gradient(closest-side, rgb(var(--color-kind-answer) / 0.13), transparent)" }} />
+      <section className="relative rounded-[20px] border border-kind-answer-border bg-surface p-5 sm:p-7 flex flex-col gap-4">
+        <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[20px]" aria-hidden="true">
+          <div className="absolute -top-24 -right-16 w-[420px] h-[260px] opacity-70" style={{ background: "radial-gradient(closest-side, rgb(var(--color-kind-answer) / 0.13), transparent)" }} />
+        </div>
         <span className="relative font-mono text-[11px] uppercase tracking-[0.14em] text-kind-answer">The answer{a.no_data ? " · worked out from your question" : ""}</span>
         <h2 className="relative m-0 text-[22px] sm:text-[27px] leading-[1.25] font-semibold tracking-[-0.015em] text-text text-balance" data-analyst-headline="">{ans?.headline}</h2>
         {ans?.answer && <p className="relative m-0 text-body sm:text-[15.5px] leading-[1.65] text-secondary max-w-[900px]">{ans.answer}</p>}
@@ -130,245 +86,180 @@ export function AnalystAnswer({ run }: { run: ProjectRun }) {
             {((ans as any).bullets as string[]).map((b, i) => <li key={i}>{b}</li>)}
           </ul>
         )}
-        <div className="relative flex gap-2 flex-wrap">
-          {passed.length > 0 && (
-            <span className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full bg-good-fill text-good text-caption" data-analyst-check="">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>
-              {passed[0].label}{passed[0].expected !== null ? ` (${cell(passed[0].expected)})` : ""}
-            </span>
-          )}
-          {checks.some((c) => !c.ok) && <span className="inline-flex items-center h-8 px-3 rounded-full bg-warning-fill text-warning text-caption">A check didn't match - read the method before relying on this</span>}
-          {(a.assumptions || []).length > 0 && (
-            <span className="inline-flex items-center h-8 px-3 rounded-full bg-warning-fill/60 text-warning text-caption">{(a.assumptions || []).length} assumption{(a.assumptions || []).length > 1 ? "s" : ""} - change them below</span>
-          )}
-          {a.reading && <span className="inline-flex items-center h-8 px-3 rounded-full bg-subtle text-caption text-secondary max-w-full truncate" title={a.reading}>Read as: {a.reading}</span>}
-          {(a.other_readings || []).slice(0, 1).map((q) => (
-            <button key={q} type="button" disabled={!ask} onClick={() => ask && ask(q)} className="ui-focus inline-flex items-center h-8 px-3 rounded-full border border-border-strong text-caption text-text hover:bg-subtle disabled:opacity-50" data-analyst-reading="">
-              Meant something else? {q.length > 60 ? `${q.slice(0, 60)}…` : q}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      {a.model && <LiveModel model={a.model} runId={run.id} />}
-
-      {visuals.map((v, i) => <VisualCard key={i} visual={v} id={`${run.id}:a${i}`} />)}
-
-      {(a.tables || []).map((t, i) => <DataTable key={i} table={t} open={i === 0 && !a.model} />)}
-
-      {(a.assumptions || []).length > 0 && (
-        <section className="rounded-card border border-border bg-surface p-5 flex flex-col gap-3">
-          <h3 className="m-0 text-section font-semibold text-text">What I assumed</h3>
-          <div className="grid gap-2.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))" }}>
-            {(a.assumptions || []).map((x, i) => (
-              <div key={i} className="flex gap-2.5 items-start px-3.5 py-3 rounded-ctl bg-base text-ui text-secondary leading-snug">
-                <span className="mt-0.5 w-5 h-5 rounded-full bg-warning-fill text-warning grid place-items-center text-[11px] font-semibold shrink-0" aria-hidden="true">{i + 1}</span>{x}
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      <WorkedOut a={a} />
-
-      {(ans?.next_questions || []).length > 0 && (
-        <section className="flex flex-col gap-2">
-          <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">Push it further</span>
-          <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))" }}>
-            {(ans?.next_questions || []).map((q) => (
-              <button key={q} type="button" disabled={!ask} onClick={() => ask && ask(q)} className="ui-focus text-left min-h-11 px-4 py-3 rounded-[14px] border border-border bg-surface text-ui text-text hover:border-kind-answer-border hover:bg-kind-answer-fill/30 disabled:opacity-50" data-analyst-next="">
-                {q}
+        {(passed.length > 0 || checks.some((c) => !c.ok) || (a.other_readings || []).length > 0) && (
+          <div className="relative flex gap-2 flex-wrap">
+            {passed.length > 0 && (
+              <span className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full bg-good-fill text-good text-caption" title={passed.map((c) => `${c.label}: expected ${cell(c.expected)}, got ${cell(c.got)}`).join("\n")} data-analyst-check="">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>
+                Matches your {a.no_data ? "inputs" : "data"}{passed[0].expected !== null ? <b className="font-mono font-medium tabular-nums">· {cell(passed[0].expected)}</b> : null}
+              </span>
+            )}
+            {checks.some((c) => !c.ok) && <span className="inline-flex items-center h-8 px-3 rounded-full bg-warning-fill text-warning text-caption">A check didn't match - see Method before relying on this</span>}
+            {(a.other_readings || []).slice(0, 1).map((q) => (
+              <button key={q} type="button" disabled={!ask} onClick={() => ask && ask(q)} title={a.reading ? `Read as: ${a.reading}` : q}
+                className="ui-focus inline-flex items-center h-8 px-3 rounded-full border border-border-strong text-caption text-text hover:bg-subtle disabled:opacity-50 max-w-full" data-analyst-reading="">
+                <span className="truncate">Meant something else? {q.length > 64 ? `${q.slice(0, 64).replace(/\s+\S*$/, "")}…` : q}</span>
               </button>
             ))}
           </div>
-        </section>
+        )}
+        <ScenarioAssumptions model={model} vals={vals} setVals={setVals} init={init} notes={a.assumptions || []} />
+      </section>
+
+      {/* 2026-10-13 (R45): the live what-if is project/ScenarioBlock's chart + table (the same pieces a dashboard draws) */}
+      {model && (
+        <ScenarioChart
+          model={model}
+          rows={rows}
+          best={best}
+          decision={changed ? <ScenarioDecision model={model} rows={rows} best={best} note="With your changes:" /> : undefined}
+        />
       )}
-      <p className="m-0 text-caption text-muted">
-        {a.no_data ? "No data was attached: every number comes from the stated assumptions and the analysis code, which you can read in Method." : "Every number above was computed by code run on your data; the text was checked against those numbers before it was shown."}
-      </p>
+      {model && <ScenarioTable model={model} rows={rows} best={best} vals={vals} changed={changed} actions={<ExcelButton run={run} vals={vals} />} />}
+
+      {visuals.map((v, i) => <VisualCard key={i} visual={v} id={`${run.id}:a${i}`} />)}
+
+      {(a.tables || []).map((t, i) => <DataTable key={i} table={t} open={i === 0 && !model} />)}
     </div>
   );
 }
 
-function LiveModel({ model, runId }: { model: Model; runId: string }) {
-  const init = useMemo(() => Object.fromEntries(model.inputs.map((i) => [i.key, i.value])), [model]);
-  const [vals, setVals] = useState<Record<string, number>>(init);
-  const rows = useMemo(() => compute(model, vals), [model, vals]);
-  const best = bestIndex(model, rows);
-  const sym = model.inputs.find((i) => /^[$€£₹¥]$/.test(i.unit))?.unit || "$";
-  const pick = model.outputs.find((o) => o.key === model.pick.output) || model.outputs[model.outputs.length - 1];
-  const changed = model.inputs.some((i) => Math.abs((vals[i.key] ?? i.value) - i.value) > 1e-12);
-  // the parts the picked number is the sum of ("waiting_cost + labor") - drawn as a stacked bar
-  const parts = useMemo(() => {
-    const ids = pick.expr.split("+").map((x) => x.trim());
-    return ids.length > 1 && ids.every((x) => model.outputs.some((o) => o.key === x)) ? ids : [];
-  }, [pick, model]);
-  const maxV = Math.max(1e-9, ...rows.map((r) => Math.abs(r.computed[pick.key] || 0)));
-  const valueKeys = Object.keys(model.rows[0]?.values || {}).filter((k) => !/^(k|n|id)$/.test(k));
-  const flips = useMemo(() => model.inputs.slice(0, 3).map((inp) => {
-    // the range of this input (others held) where today's best option stays best
-    if (best < 0) return null;
-    const label = rows[best].label;
-    const steps = 240;
-    const lo = inp.min, hi = inp.max;
-    const cur = vals[inp.key];
-    const bestAt = (x: number) => { const rr = compute(model, { ...vals, [inp.key]: x }); const b = bestIndex(model, rr); return b >= 0 ? rr[b].label : ""; };
-    const xs = Array.from({ length: steps + 1 }, (_, s) => lo + ((hi - lo) * s) / steps);
-    const ok = xs.map((x) => bestAt(x) === label);
-    let c = 0;
-    xs.forEach((x, k) => { if (Math.abs(x - cur) < Math.abs(xs[c] - cur)) c = k; });
-    if (!ok[c]) return null;
-    let l = c, r = c;
-    while (l > 0 && ok[l - 1]) l--;
-    while (r < steps && ok[r + 1]) r++;
-    // the exact edge between a grid point that keeps the choice and the next that doesn't
-    const edge = (inside: number, outside: number) => {
-      let a = inside, b = outside;
-      for (let k = 0; k < 40; k++) { const m = (a + b) / 2; if (bestAt(m) === label) a = m; else b = m; }
-      return a;
-    };
-    const from: number | null = l > 0 ? edge(xs[l], xs[l - 1]) : xs[l];
-    const to: number | null = r < steps ? edge(xs[r], xs[r + 1]) : xs[r];
-    if (from === null || to === null) return null;
-    return { inp, label, from, to, atMin: from <= lo + 1e-9, atMax: to >= hi - 1e-9 };
-  }).filter(Boolean) as { inp: Input; label: string; from: number; to: number; atMin: boolean; atMax: boolean }[], [model, vals, rows, best]);
-  const COLORS = ["rgb(var(--color-series-2))", "rgb(var(--color-series-1))", "rgb(var(--color-series-3))", "rgb(var(--color-series-4))"];
+/** Follow-up chips for the thread, next to the question box. */
+export function AnalystNext({ run, onAsk, disabled }: { run: ProjectRun; onAsk: (q: string) => void; disabled?: boolean }) {
+  const qs = (run.result?.answer?.next_questions || []).slice(0, 3);
+  if (!qs.length) return null;
   return (
-    <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_330px] items-start" data-analyst-model="">
-      <div className="rounded-card border border-border bg-surface flex flex-col min-w-0 overflow-hidden">
-        <div className="px-5 pt-5 pb-3 flex items-baseline justify-between gap-3 flex-wrap">
-          <h3 className="m-0 text-section font-semibold text-text">Every option, side by side</h3>
-          <span className="text-caption text-muted">{changed ? "with your rates" : "updates as you move the rates"}</span>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[560px] text-ui border-collapse">
-            <thead>
-              <tr className="text-left text-caption text-muted border-y border-border bg-base/40">
-                <th className="font-normal px-5 py-2.5">Option</th>
-                {valueKeys.map((k) => <th key={k} className="font-normal px-3 text-right">{pretty(k)}</th>)}
-                {model.outputs.map((o) => <th key={o.key} className={`font-normal px-3 text-right ${o.key === pick.key ? "text-text" : ""}`}>{o.label}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r, i) => (
-                <tr key={r.label} className={`border-b border-border last:border-b-0 ${i === best ? "bg-kind-answer-fill/40" : ""}`} data-model-row={i === best ? "best" : ""}>
-                  <td className="px-5 py-3 whitespace-nowrap">
-                    <span className="text-text font-medium">{r.label}</span>
-                    {i === best && <span className="ml-2 inline-flex items-center h-5 px-1.5 rounded-md bg-kind-answer text-[rgb(var(--color-base))] text-[10.5px] font-semibold uppercase tracking-[0.04em]">{model.pick.goal === "min" ? "Cheapest" : "Best"}</span>}
-                  </td>
-                  {valueKeys.map((k) => <td key={k} className="px-3 text-right font-mono tabular-nums text-secondary">{cell(r.values[k])}</td>)}
-                  {model.outputs.map((o) => (
-                    <td key={o.key} className={`px-3 text-right font-mono tabular-nums ${o.key === pick.key ? (i === best ? "text-kind-answer font-semibold" : "text-text font-semibold") : "text-secondary"}`}>
-                      {fmtOut(r.computed[o.key], o.format, sym)}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div className="px-5 py-4 border-t border-border flex flex-col gap-2.5">
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <span className="text-ui font-semibold text-text">{pick.label}{parts.length ? " - where it goes" : ""}</span>
-            {parts.length > 0 && (
-              <span className="flex gap-3 text-caption text-secondary flex-wrap">
-                {parts.map((p, i) => <span key={p} className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-[3px]" style={{ background: COLORS[i % 4] }} />{model.outputs.find((o) => o.key === p)?.label}</span>)}
-              </span>
-            )}
-          </div>
-          {rows.map((r, i) => (
-            <div key={r.label} className="grid grid-cols-[minmax(0,110px)_minmax(0,1fr)_84px] gap-3 items-center">
-              <span className={`text-caption truncate ${i === best ? "text-text font-medium" : "text-muted"}`}>{r.label}</span>
-              <span className="flex h-[20px] gap-[2px]" role="img" aria-label={`${r.label}: ${fmtOut(r.computed[pick.key], pick.format, sym)}`}>
-                {(parts.length ? parts : [pick.key]).map((p, j) => (
-                  <span key={p} className="block h-full rounded-[4px] transition-[width] duration-300" style={{ width: `${Math.max(0, (100 * (r.computed[p] || 0)) / maxV)}%`, background: parts.length ? COLORS[j % 4] : i === best ? "rgb(var(--color-kind-answer))" : "rgb(var(--color-series-1))" }} />
-                ))}
-              </span>
-              <span className={`font-mono text-caption text-right tabular-nums ${i === best ? "text-kind-answer" : "text-secondary"}`}>{fmtOut(r.computed[pick.key], pick.format, sym)}</span>
-            </div>
-          ))}
-        </div>
+    <div className="flex flex-col gap-1.5" data-analyst-next-chips="">
+      <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-muted">Ask next</span>
+      <div className="flex flex-col items-start gap-1.5">
+        {qs.map((q) => (
+          <button key={q} type="button" disabled={disabled} onClick={(e) => { e.stopPropagation(); onAsk(q); }} title={q}
+            className="ui-focus max-w-full text-left px-3 py-1.5 rounded-[12px] border border-border bg-surface text-caption text-text leading-snug hover:border-kind-answer-border hover:bg-kind-answer-fill/30 disabled:opacity-50" data-analyst-next="">
+            {q}
+          </button>
+        ))}
       </div>
-
-      <div className="flex flex-col gap-4">
-        <div className="rounded-card border border-border bg-surface p-5 flex flex-col gap-4">
-          <div className="flex items-baseline justify-between gap-2">
-            <span className="text-section font-semibold text-text">Change the assumptions</span>
-            {changed && <button type="button" onClick={() => setVals(init)} className="text-caption text-kind-answer hover:underline">Reset</button>}
-          </div>
-          <span className="text-caption text-muted -mt-3">Instant - no new question needed.</span>
-          {model.inputs.map((i) => (
-            <label key={i.key} className="flex flex-col gap-1.5">
-              <span className="flex items-baseline justify-between gap-2 text-ui"><span className="text-secondary">{i.label}</span><b className="font-mono font-medium text-text tabular-nums">{fmtInput(i, vals[i.key])}</b></span>
-              <input type="range" min={i.min} max={i.max} step={i.step} value={vals[i.key]} onChange={(e) => setVals((v) => ({ ...v, [i.key]: Number(e.target.value) }))}
-                className="w-full accent-[rgb(var(--color-kind-answer))] h-6" aria-label={i.label} data-model-input={i.key} />
-            </label>
-          ))}
-          <a href={`${API_URL}/projects/runs/${runId}/analyst.xlsx?${new URLSearchParams({ inputs: JSON.stringify(vals) })}`}
-            onClick={(e) => { e.preventDefault(); void downloadXlsx(runId, vals); }}
-            className="ui-focus self-start inline-flex items-center gap-2 h-9 px-3.5 rounded-ctl border border-border-strong text-ui text-text hover:bg-subtle" data-analyst-xlsx="">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 4v12M7 11l5 5 5-5M5 20h14" /></svg>
-            Excel with live formulas
-          </a>
-        </div>
-        {flips.length > 0 && (
-          <div className="rounded-card border border-border bg-surface p-5 flex flex-col gap-2.5" data-analyst-flip="">
-            <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">When would the choice change?</span>
-            {flips.map((f) => (
-              <p key={f.inp.key} className="m-0 text-ui text-secondary leading-relaxed">
-                <b className="text-text font-semibold">{f.label}</b> stays {model.pick.goal === "min" ? "cheapest" : "best"} while {f.inp.label.toLowerCase()} is{" "}
-                {f.atMin && f.atMax ? <>anywhere from {fmtInput(f.inp, f.inp.min)} to {fmtInput(f.inp, f.inp.max)}</> : f.atMin ? <>below {fmtInput(f.inp, f.to)}</> : f.atMax ? <>above {fmtInput(f.inp, f.from)}</> : <>between {fmtInput(f.inp, f.from)} and {fmtInput(f.inp, f.to)}</>}.
-              </p>
-            ))}
-          </div>
-        )}
-      </div>
-    </section>
+    </div>
   );
 }
 
-async function downloadXlsx(runId: string, vals: Record<string, number>) {
-  const { api } = await import("../api/client");
-  const r = await api.get(`/projects/runs/${runId}/analyst.xlsx`, { params: { inputs: JSON.stringify(vals) }, responseType: "blob" });
-  const url = URL.createObjectURL(r.data as Blob);
-  const el = document.createElement("a");
-  el.href = url;
-  el.download = "GD360 analysis.xlsx";
-  document.body.appendChild(el);
-  el.click();
-  el.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+// ---- Excel --------------------------------------------------------------------------------------------------
+/** 2026-10-13 (R45): "attachment; filename*=UTF-8''Barista%20costs.xlsx" -> "Barista costs.xlsx" (null when absent). */
+export function filenameFromDisposition(header: string | null | undefined): string | null {
+  if (!header) return null;
+  const star = /filename\*\s*=\s*([^;]+)/i.exec(header);
+  if (star) {
+    let v = star[1].trim().replace(/^"(.*)"$/, "$1");
+    const m = /^([\w-]+)'[^']*'(.*)$/.exec(v);
+    if (m) v = m[2];
+    try { const d = decodeURIComponent(v); if (d.trim()) return d.trim(); } catch { /* fall through to filename= */ }
+  }
+  const plain = /filename\s*=\s*("([^"]*)"|[^;]+)/i.exec(header);
+  const v = (plain?.[2] ?? plain?.[1] ?? "").trim();
+  return v || null;
 }
 
+/** "<short title>.xlsx", safe for every file system. */
+export function xlsxName(title: string): string {
+  const base = title.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80).trim();
+  return `${base || "GD360 analysis"}.xlsx`;
+}
+
+function ExcelButton({ run, vals }: { run: ProjectRun; vals: Record<string, number> }) {
+  const [state, setState] = useState<"" | "busy" | "error">("");
+  const [err, setErr] = useState("");
+  const download = async () => {
+    if (state === "busy") return;
+    setState("busy");
+    setErr("");
+    try {
+      const { api } = await import("../api/client");
+      const r = await api.get(`/projects/runs/${run.id}/analyst.xlsx`, { params: { inputs: JSON.stringify(vals) }, responseType: "blob" });
+      const name = filenameFromDisposition(r.headers?.["content-disposition"]) || xlsxName(shortTitle(run));
+      const url = URL.createObjectURL(r.data as Blob);
+      const el = document.createElement("a");
+      el.href = url;
+      el.download = name;
+      document.body.appendChild(el);
+      el.click();
+      el.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+      setState("");
+    } catch (e: any) {
+      setErr(friendlyError(e?.response?.data?.detail, "The Excel file couldn't be made. Please try again.").text);
+      setState("error");
+    }
+  };
+  return (
+    <span className="flex flex-col items-end gap-1">
+      <a href={`${API_URL}/projects/runs/${run.id}/analyst.xlsx?${new URLSearchParams({ inputs: JSON.stringify(vals) })}`}
+        onClick={(e) => { e.preventDefault(); void download(); }}
+        aria-busy={state === "busy"}
+        className="ui-focus inline-flex items-center gap-2 h-8 px-3 rounded-ctl border border-border-strong text-caption text-text hover:bg-subtle" data-analyst-xlsx="">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 4v12M7 11l5 5 5-5M5 20h14" /></svg>
+        {state === "busy" ? "Preparing…" : "Excel"}
+      </a>
+      {state === "error" && <span role="alert" className="text-caption text-danger max-w-[260px] text-right" data-analyst-xlsx-error="">{err}</span>}
+    </span>
+  );
+}
+
+const MAX_COLS = 6;
 function DataTable({ table, open: initial }: { table: Table; open: boolean }) {
   const [open, setOpen] = useState(initial);
   const [all, setAll] = useState(false);
+  const [wide, setWide] = useState(false);
   const rows = all ? table.rows : table.rows.slice(0, 12);
+  const cols = table.columns;
+  // a number column that only repeats the start of a text column ("Baristas" 2 | "2 Baristas") is hidden
+  const dup = new Set(cols.filter((c) => c.dtype === "number" && table.rows.length > 0 && cols.some((s) => s.dtype !== "number" && table.rows.every((r) => leadNum(String(r[s.name] ?? "")) === r[c.name]))).map((c) => c.name));
+  const usable = cols.filter((c) => !dup.has(c.name));
+  // the default view: the label, then the columns a decision is made on
+  const score = (n: string) => (/total/i.test(n) ? 4 : 0) + (MONEY_COL.test(n) ? 3 : 0) + (/avg|average|mean|rate|share|%/i.test(n) ? 2 : 0) + (/max|min\b|count|delayed/i.test(n) ? -1 : 0);
+  const keep = usable.length <= MAX_COLS ? usable : (() => {
+    const text = usable.filter((c) => c.dtype !== "number").slice(0, 1);
+    const nums = usable.filter((c) => c.dtype === "number").map((c, i) => ({ c, s: score(c.name), i }))
+      .sort((x, y) => y.s - x.s || x.i - y.i).slice(0, MAX_COLS - text.length).map((x) => x.c.name);
+    return usable.filter((c) => text.includes(c) || nums.includes(c.name));
+  })();
+  const shown = wide ? cols : keep;
+  const fmt = useMemo(() => Object.fromEntries(cols.map((c) => [c.name, c.dtype === "number" ? columnFormat(c.name, table.rows.map((r) => r[c.name])) : (v: any) => (typeof v === "string" ? cleanLabel(v) : cell(v))])), [table]);
   return (
     <section className="rounded-card border border-border bg-surface overflow-hidden" data-analyst-table="">
-      <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="ui-focus w-full px-5 py-4 flex items-center justify-between gap-3 text-left hover:bg-subtle/30">
-        <span className="flex flex-col"><span className="text-section font-semibold text-text">{table.title}</span>
-          <span className="text-caption text-muted">{(table.rows_total ?? table.rows.length).toLocaleString()} rows · {table.columns.length} columns</span></span>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={`text-muted transition-transform ${open ? "rotate-180" : ""}`}><path d="M6 9l6 6 6-6" /></svg>
-      </button>
+      <div className="flex items-center gap-2 pr-3 hover:bg-subtle/30">
+        <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="ui-focus flex-1 min-w-0 px-5 py-4 flex items-center justify-between gap-3 text-left">
+          <span className="flex flex-col min-w-0"><span className="text-section font-semibold text-text">{table.title}</span>
+            <span className="text-caption text-muted">{num(table.rows_total ?? table.rows.length)} {plural(table.rows_total ?? table.rows.length, "row")} · {cols.length} {plural(cols.length, "column")}</span></span>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={`shrink-0 text-muted transition-transform ${open ? "rotate-180" : ""}`}><path d="M6 9l6 6 6-6" /></svg>
+        </button>
+      </div>
       {open && (
         <>
           <div className="overflow-x-auto border-t border-border">
             <table className="w-full text-ui border-collapse">
-              <thead><tr className="text-left text-caption text-muted bg-base/40">{table.columns.map((c) => <th key={c.name} className={`font-normal px-4 py-2.5 whitespace-nowrap ${c.dtype === "number" ? "text-right" : ""}`}>{c.name}</th>)}</tr></thead>
+              <thead><tr className="text-left text-caption text-muted bg-base/40">{shown.map((c) => <th key={c.name} className={`font-normal px-4 first:pl-5 last:pr-5 py-2.5 whitespace-nowrap ${c.dtype === "number" ? "text-right" : ""}`}>{c.dtype === "number" ? headerName(c.name) : c.name}</th>)}</tr></thead>
               <tbody>
                 {rows.map((r, i) => (
                   <tr key={i} className="border-t border-border">
-                    {table.columns.map((c) => <td key={c.name} className={`px-4 py-2 whitespace-nowrap ${c.dtype === "number" ? "text-right font-mono tabular-nums" : "text-text"}`}>{cell(r[c.name])}</td>)}
+                    {shown.map((c) => <td key={c.name} className={`px-4 first:pl-5 last:pr-5 py-2.5 whitespace-nowrap ${c.dtype === "number" ? "text-right font-mono tabular-nums text-secondary" : "text-text"}`}>{fmt[c.name](r[c.name])}</td>)}
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          {table.rows.length > 12 && (
-            <button type="button" onClick={() => setAll((x) => !x)} className="ui-focus w-full px-5 py-3 border-t border-border text-caption text-kind-answer hover:bg-subtle/30 text-left">
-              {all ? "Show fewer rows" : `Show all ${table.rows.length.toLocaleString()} rows`}
-            </button>
+          {(table.rows.length > 12 || keep.length < cols.length) && (
+            <div className="flex items-center gap-4 px-5 py-3 border-t border-border flex-wrap">
+              {keep.length < cols.length && (
+                <button type="button" onClick={() => setWide((x) => !x)} className="ui-focus text-caption text-kind-answer hover:underline" data-table-all-cols="">
+                  {wide ? "Fewer columns" : `All columns (${cols.length})`}
+                </button>
+              )}
+              {table.rows.length > 12 && (
+                <button type="button" onClick={() => setAll((x) => !x)} className="ui-focus text-caption text-kind-answer hover:underline">
+                  {all ? "Show fewer rows" : `Show all ${num(table.rows.length)} rows`}
+                </button>
+              )}
+            </div>
           )}
         </>
       )}
@@ -460,7 +351,7 @@ export function AnalystMethod({ run }: { run: ProjectRun }) {
           <h3 className="m-0 text-section font-semibold text-text">Data used</h3>
           {(a.data_used || []).map((d) => (
             <div key={d.name} className="flex flex-col gap-1 py-2 border-t border-border first-of-type:border-t-0">
-              <span className="text-ui text-text">{d.name} <span className="text-muted">· {d.rows.toLocaleString()} rows</span></span>
+              <span className="text-ui text-text">{d.name} <span className="text-muted">· {num(d.rows)} {plural(d.rows, "row")}</span></span>
               {(d.notes || []).map((n, i) => <span key={i} className="text-caption text-muted">{n}</span>)}
             </div>
           ))}
