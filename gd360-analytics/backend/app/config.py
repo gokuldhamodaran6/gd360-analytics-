@@ -222,6 +222,20 @@ class Settings(BaseSettings):
     # = the provider's main model (GEMINI_MODEL / ANTHROPIC_MODEL ...). Set
     # it to that provider's strongest model for the best reasoning.
     ANALYST_MODEL: str = ""
+    # 2026-10-14 (R46, GD360 2.0 conversation): world questions are answered
+    # with a web-grounded model call. "gemini" uses Google Search grounding on
+    # the Gemini API (needs only GEMINI_API_KEY); "tavily" uses TAVILY_API_KEY
+    # and the main model; "none" answers from the model alone and says so.
+    # Empty = gemini when AI_PROVIDER is gemini, else tavily when its key is
+    # set, else none.
+    WEB_SEARCH_PROVIDER: str = ""
+    TAVILY_API_KEY: str = ""
+    # 2026-10-14 (R46): plans and limits (services/agent/plans.py). Every
+    # feature is on every plan; plans differ by limits. PLAN_DEFAULT is the
+    # plan an account is on until billing exists; PLAN_ENFORCE=False shows
+    # usage without blocking anything.
+    PLAN_DEFAULT: str = "team"
+    PLAN_ENFORCE: bool = False
     # 2026-10-13 (round 42, Event OS): optional public-post search for the
     # Buzz screen. X recent search reads anyone's public posts with the event's
     # hashtag or name (pay per read); YouTube search finds public videos

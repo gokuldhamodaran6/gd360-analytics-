@@ -11,7 +11,7 @@ from .routers import (
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
     data_access_rules, ml_models, metric_definitions, transforms, pipelines, projects, apps, automations, ml_studio,
     spaces, site, admin_v2, admin_ops, admin_biz, inapp, guided, initiatives, gtm, gtm_public,
-    ops, trust, domains, notifications, dashboard_ai, assistant, eventos, eventos_public,
+    ops, trust, domains, notifications, dashboard_ai, assistant, eventos, eventos_public, v2,
 )
 from .services.scheduler import start_scheduler
 
@@ -293,6 +293,8 @@ app.include_router(notifications.router)
 app.include_router(dashboard_ai.router)
 # 2026-10-11: Euliv, the voice assistant
 app.include_router(assistant.router)
+# 2026-10-14 (R46): GD360 2.0 - the chat-first conversation API
+app.include_router(v2.router)
 # 2026-09-30 (Gokul's own bug report - Governance/Jobs redesign + Pipelines/
 # Catalog removal round): the standalone /catalog router is gone - Gokul's
 # own words were that it duplicated the Projects filter and Data Sources
