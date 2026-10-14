@@ -409,6 +409,9 @@ export const projectsApi = {
   get: (id: string) => api.get<Project>(`/projects/${id}`).then((r) => r.data),
   update: (id: string, payload: { title?: string; source_ids?: string[] }) =>
     api.patch<{ id: string; title: string; source_ids: string[] }>(`/projects/${id}`, payload).then((r) => r.data),
+  // 2026-10-13 (R45): rename an answer (PATCH /projects/{id} {"title"}) - the inline rename in its header
+  rename: (id: string, title: string) =>
+    api.patch<{ id: string; title: string }>(`/projects/${id}`, { title: title.trim().slice(0, 80) }).then((r) => r.data),
   // 2026-10-11 (Ask Journey): a Guided Analysis follow-up picks its mode
   // ("guided" step by step, "answer" straight through); any thread can
   // change its sources with the question (space_id or source_ids).
