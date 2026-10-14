@@ -50,8 +50,14 @@ MONTH_RE = r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?
 NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
                 "ten": 10, "eleven": 11, "twelve": 12, "a": 1, "an": 1}
 FORECAST = re.compile(r"\b(forecast|predict|projection|project(?:ed)?|expect(?:ed)?|will|next|budget|target|plan(?:ned)?|goal)\b", re.I)
-HISTORY = re.compile(r"\b(history|historical|trend|trends|over time|by (?:day|week|month|quarter|year)|daily|weekly|monthly|"
-                     r"quarterly|yearly|growth|grew|grow|change|changed|compare|comparison|vs|versus|since|until|between)\b", re.I)
+# 2026-10-13 (R45): only words that really ask for time. "compare / vs / between / change" are comparisons of
+# anything ("product A vs product B"), not periods - before, they marked a dateless product list "can't answer".
+HISTORY = re.compile(r"\b(history|historical|trend|trends|trending|over time|time series|by (?:day|date|week|month|quarter|year)|"
+                     r"per (?:day|week|month|quarter|year)|each (?:day|week|month|quarter|year)|daily|weekly|monthly|quarterly|"
+                     r"yearly|annually|month[\s-]+(?:over|on|by)[\s-]+month|year[\s-]+(?:over|on)[\s-]+year|yoy|mom|growth|grew|"
+                     r"grow(?:n|ing)? (?:over|since|from)|seasonal\w*|seasonality|"
+                     r"por (?:d[ií]a|semana|mes|año|ano|trimestre)|pro (?:tag|woche|monat|jahr)|par (?:jour|semaine|mois|an|ann[ée]e)|"
+                     r"al mese|per mese|mensual\w*|monatlich\w*|mensuel\w*|tendencia|tendance|entwicklung)\b", re.I)
 
 # ---- what the question wants, read by meaning (round 32) ---------------------------
 # "forcast", "predcit", "projeciton", "trnd", "compair": one slipped key never turns a
@@ -123,10 +129,40 @@ def forecast_word(text: str) -> str | None:
     return None
 
 
-def wants_forecast(text: str) -> bool:
+# 2026-10-13 (R45): forecast words that are DATA, not the future - "expected revenue vs actual revenue",
+# "the projected revenue column", "shipped in the following week after purchase". A column literally named
+# expected / projected / forecast is read from the data like any other column.
+_PLAN_WORDS = r"(?:expected|projected|projection|forecast(?:ed|s)?|predicted|estimated|budget(?:ed)?|planned|target(?:ed)?)"
+_VS_ACTUAL = re.compile(rf"\b{_PLAN_WORDS}\b[^.?!]{{0,60}}\b(?:vs\.?|versus|against|compared\s+(?:to|with)|and|with)\s+"
+                        rf"(?:the\s+|our\s+)?actuals?\b|\bactuals?\b[^.?!]{{0,60}}\b(?:vs\.?|versus|against|compared\s+(?:to|with)|"
+                        rf"and|with)\s+(?:the\s+|our\s+)?{_PLAN_WORDS}\b", re.I)
+_AS_COLUMN = re.compile(rf"\b{_PLAN_WORDS}[\s_]+\w+(?:[\s_]+\w+)?[\s_]+(?:column|field|col)\b|"
+                        rf"\b(?:column|field)\s+(?:called|named)?\s*[\"'“]?\w*{_PLAN_WORDS}", re.I)
+_EVENT_RELATIVE = re.compile(r"\b(?:in\s+|within\s+)?(?:the\s+)?(?:following|next)\s+(?:\d{1,3}\s+|one\s+|two\s+|few\s+)?"
+                             r"(?:days?|weeks?|months?)\s+(?:after|of|from|following|since)\b", re.I)
+
+
+def _strip_data_words(text: str, columns: list[str] | None = None) -> str:
+    t = text or ""
+    if _VS_ACTUAL.search(t):
+        t = re.sub(rf"\b{_PLAN_WORDS}\b", " ", t, flags=re.I)
+    t = _AS_COLUMN.sub(" ", t)
+    t = _EVENT_RELATIVE.sub(" ", t)
+    for col in columns or []:
+        norm = re.sub(r"[\s_\-]+", " ", str(col or "")).strip().lower()
+        if len(norm) >= 6 and re.search(rf"\b{_PLAN_WORDS}\b", norm) and " " in norm:
+            t = re.sub(r"[\s_\-]+".join(re.escape(w) for w in norm.split()), " ", t, flags=re.I)
+    return t
+
+
+def wants_forecast(text: str, columns: list[str] | None = None) -> bool:
     """Does the question look ahead? A forecast word (typos too) or a plain
-    future cue ("what will sales be", "next 10 years", "5 years from now")."""
-    return bool(forecast_word(text) or _FORECAST_CUE.search(text or ""))
+    future cue ("what will sales be", "next 10 years", "5 years from now").
+    2026-10-13 (R45): never for forecast words that name data ("expected vs actual", "the projected revenue
+    column", a column called expected_revenue in `columns`) or a time relative to an event ("in the
+    following week after purchase")."""
+    t = _strip_data_words(text or "", columns)
+    return bool(forecast_word(t) or _FORECAST_CUE.search(t))
 
 
 # words that say what the question is about -> measure-ish column names
@@ -239,8 +275,13 @@ _CMP = re.compile(r"\b(?:vs\.?|versus|compared\s+(?:to|with)|comparing\s+(?:it\s
 _YOY = re.compile(r"\b(?:yoy|year[\s-]+(?:over|on)[\s-]+year)\b")
 _MOM = re.compile(r"\b(?:mom|month[\s-]+(?:over|on)[\s-]+month)\b")
 _SAME_LY = re.compile(r"\b(?:the\s+)?same\s+(?:period|time|month|quarter|week|days?|months?|dates?)\s+(?:last|a|the\s+previous|previous|the\s+year\s+before)\s*(?:year)?\b")
+# 2026-10-13 (R45): "last 30 days vs PREVIOUS 30 days" / "the 30 days before" is the same window moved back by its own
+# length - before, "previous 30 days" was read as "the last 30 days" again and the comparison was lost.
 _BEFORE = re.compile(r"\b(?:the\s+)?(?:month|week|quarter|year|period|day|days|months|weeks)\s+before\b|"
-                     r"\b(?:the\s+)?(?:previous|prior|preceding)\s+(?:month|week|quarter|year|period)\b")
+                     r"\b(?:the\s+)?(?:previous|prior|preceding)\s+(?:(?:\d{1,3}|one|two|three|four|five|six|seven|eight|nine|"
+                     r"ten|eleven|twelve)\s+)?(?:month|week|quarter|year|period|day)s?\b|"
+                     r"\b(?:the\s+)?(?:\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+"
+                     r"(?:days|weeks|months|quarters)\s+before\b")
 _PREP = r"(?:in|of|since|from|during|for|until|till|to|through|between|on|and|early|late|mid|by|before|after)"
 _DAY_MON = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?({MONTH_RE})\b(?:\s*,?\s*('\d{{2}}|\d{{4}})\b)?")
 _MON_DAY = re.compile(rf"\b({MONTH_RE})\s+(\d{{1,2}})(?:st|nd|rd|th)?\b(?!\s*(?:%|k\b|m\b|units|orders|items))(?:\s*,?\s*(\d{{4}})\b)?")
@@ -264,21 +305,32 @@ def _future(p: dict | None, today: date) -> dict | None:
     return p
 
 
-def parse_period(text: str, today: date) -> tuple[dict | None, list[dict]]:
+def parse_period(text: str, today: date, prefer_day_first: bool = True,
+                 fiscal_start_month: int | None = None) -> tuple[dict | None, list[dict]]:
     """(the period the question asks about, other readings worth offering).
-    A comparison comes back as one period with `parts` = [the first, the second]."""
-    t = " " + (text or "").lower() + " "
+    A comparison comes back as one period with `parts` = [the first, the second].
+    2026-10-13 (R45): numeric dates ("1/3/2025 to 31/3/2025", "on 2025-03-01", "03/2025"), fiscal years
+    ("FY 2024/25", "FY25"), halves ("H1 2025"), day ranges ("between 5 and 10 March") and other languages'
+    month names ("marzo", "März", "mars", "março") are read by services/dates.py. Date-like text that can't be
+    read for sure gives NO period (None) - never a wrong one the planner is then told to use exactly."""
+    from . import dates as _dates
+    t = " " + _dates.normalize(text or "") + " "
+    side = lambda x: _parse_side(x, today, prefer_day_first, fiscal_start_month)  # noqa: E731
     m = _CMP.search(t)
     if m:
         left, right = t[:m.start()] + " ", " " + t[m.end():]
-        p1, a1 = _parse_one(left, today)
+        p1, a1, bad1 = side(left)
+        if bad1:
+            return None, []
         p2 = None
         if p1 and _SAME_LY.search(right):
             p2 = _shift_period(p1, months=12)
         elif p1 and _BEFORE.search(right):
             p2 = _shift_period(p1, back=True)
         else:
-            p2, _ = _parse_one(right, today)
+            p2, _, bad2 = side(right)
+            if bad2:
+                return None, []
             # "this year so far vs last year" means the same dates a year earlier - like for like
             if p1 and p2 and p1["end"] == today.isoformat() and p2.get("label") in ("last year", "last month", "last quarter", "last week"):
                 p2 = _shift_period(p1, months={"last year": 12, "last quarter": 3, "last month": 1}.get(p2["label"], 0),
@@ -287,12 +339,31 @@ def parse_period(text: str, today: date) -> tuple[dict | None, list[dict]]:
             return _future(_compare(p1, p2), today), []
         if p1 or p2:
             return _future(p1 or p2, today), (a1 if p1 else [])
-    p, alts = _parse_one(t, today)
+    p, alts, bad = side(t)
+    if bad:
+        return None, []
     if p and _YOY.search(t):
         return _future(_compare(p, _shift_period(p, months=12)), today), []
     if p and _MOM.search(t) and date.fromisoformat(p["end"]) - date.fromisoformat(p["start"]) < timedelta(days=32):
         return _future(_compare(p, _shift_period(p, back=True)), today), []
     return _future(p, today), alts
+
+
+def _parse_side(t: str, today: date, prefer_day_first: bool = True,
+                fiscal_start_month: int | None = None) -> tuple[dict | None, list[dict], bool]:
+    """(period, alternatives, unreadable?) for one side of a question - the explicit forms first (dates.py),
+    then the English relative reader below."""
+    from . import dates as _dates
+    status, ep = _dates.parse_explicit(t, today, prefer_day_first, fiscal_start_month)
+    if status == "unparsed":
+        return None, [], True
+    if status == "ok" and ep:
+        out = _period(ep["start"], ep["end"], ep["label"], assumed=bool(ep.get("assumed")))
+        if ep.get("assumption"):
+            out["assumption"] = ep["assumption"]
+        return out, [], False
+    p, alts = _parse_one(t, today)
+    return p, alts, False
 
 
 def _compare(p1: dict, p2: dict) -> dict:
@@ -302,6 +373,9 @@ def _compare(p1: dict, p2: dict) -> dict:
     out = _period(a, b, text, assumed=bool(p1.get("assumed") or p2.get("assumed")), key="compare")
     out["text"] = text
     out["parts"] = [p1, p2]
+    notes = [x.get("assumption") for x in (p1, p2) if x.get("assumption")]
+    if notes:
+        out["assumption"] = " ".join(dict.fromkeys(notes))
     return out
 
 
@@ -637,22 +711,45 @@ def _or(items: list) -> str:
 # ---- the data --------------------------------------------------------------------------
 
 def _source_tables(db: Session, ds: models.DataSource, user: models.User) -> list[tuple[str, str | None, list[dict]]]:
-    """(display name, load key, [{name, type}]) for each table of a source."""
+    """(display name, load key, [{name, type}]) for each table of a source.
+    2026-10-13 (R45): each column also carries its meaning when the catalog knows it (role, day_first) - read
+    from its values by services/semantics.py, so "Fecha" holding dates counts as a date column."""
     try:
         src = build_source(db, ds, user)
     except Exception:  # noqa: BLE001 - a broken source never breaks the check
         return []
-    return [(t.name, t.source_key, t.columns) for t in src.tables]
+    out = []
+    for t in src.tables:
+        mean = getattr(t, "meanings", None) or {}
+        cols = [{**c, "role": mean[c["name"]].get("role"), "day_first": mean[c["name"]].get("day_first")}
+                if c.get("name") in mean else c for c in t.columns]
+        out.append((t.name, t.source_key, cols))
+    return out
+
+
+# 2026-10-13 (R45): date columns named in other languages ("Fecha", "Datum", "Data" in pt/it, "Date de vente")
+DATE_NAME_INTL = re.compile(r"(^|[_\s.])(fecha|datum|date|jour|giorno|tarikh|tarik|tanggal|d[ií]a|dato|p[äa]iv[äa]m[äa][äa]r[äa]|"
+                            r"mes|m[eê]s|mois|mese|monat|maand|a[ñn]o|anno|ann[ée]e|jahr|semana|woche|semaine)($|[_\s.])|"
+                            r"^data$|^data[_\s](venda|pedido|compra|ordine|vendita|emissao|emissão|pagamento|criacao|criação|entrega|fattura)",
+                            re.I)
+_NOT_DATE_ROLES = {"duration", "money", "measure", "count", "percent", "rate", "clock", "id", "sequence", "boolean", "geo"}
 
 
 def _date_col(cols: list[dict]) -> str | None:
     best, score = None, 0
     for c in cols:
         name, typ = str(c.get("name") or ""), str(c.get("type") or "")
+        role = c.get("role")
+        # 2026-10-13 (R45): the column's meaning, read from its values (services/semantics.py), decides first:
+        # "Fecha" holding dates is a date; "Waiting Time" holding minutes is not, whatever its name says
+        if role in _NOT_DATE_ROLES:
+            continue
         s = 0
+        if role == "date":
+            s += 4
         if DATE_TYPES.search(typ) and not re.search(r"interval", typ, re.I):
             s += 3
-        if DATE_NAME.search(name):
+        if DATE_NAME.search(name) or DATE_NAME_INTL.search(name):
             s += 2
         if s == 0:
             continue
@@ -670,6 +767,13 @@ def _measures(cols: list[dict], q_words: set[str]) -> list[str]:
     for c in cols:
         name, typ = str(c.get("name") or ""), str(c.get("type") or "")
         w = words(name)
+        role = c.get("role")
+        if role:
+            # 2026-10-13 (R45): by meaning when it is known - an ID or a year is never a measure; a money column
+            # named in another language ("Importe", "Umsatz") is one
+            if role in _MEASURE_ROLES and (w & MEASURE_WORDS or role in ("money", "count", "duration")):
+                out.append(name)
+            continue
         numeric = bool(NUMERIC_TYPES.search(typ)) or not typ
         if numeric and (w & MEASURE_WORDS) and not ID_NAME.search(name):
             out.append(name)
@@ -905,16 +1009,12 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
     qd = _without_names(q, [s.name for s in accessible_sources(db, user, workspace_id)])
     issues: list[dict] = []
     issues += date_issues(qd, today, accepted)
-    period, alts = (None, []) if any(i["kind"] in ("year_typo", "month_typo") for i in issues) else parse_period(qd, today)
-    # round 32: a forecast covers whole periods - "2026 forecast" is all of 2026, not "2026 so far" - and
-    # "forecast March" is the coming March. A year the person chose to keep as written is read as asked.
+    typo = any(i["kind"] in ("year_typo", "month_typo") for i in issues)
+    period, alts = (None, []) if typo else parse_period(qd, today)
     keep = {str(a).lower() for a in accepted or []}
-    forecast = wants_forecast(qd) and not any(i["kind"] in ("year_typo", "month_typo") for i in issues)
-    said_year = _said_year(qd, period) if period and not period.get("parts") else None
-    if forecast and period and not period.get("parts") and not (said_year and said_year in keep):
-        period, alts = forecast_span(period, today), []
     qw = words(q)
     topic = _topic(qw)
+    # 2026-10-13 (R45): a period only when one was really read, or trend words - "compare A vs B" needs no dates
     needs_time = bool(period) or bool(HISTORY.search(q))
 
     # the sources in play: the ones picked on Home (a Space or chosen sources), else everything this person can use
@@ -941,6 +1041,21 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
     scored.sort(key=lambda r: -r[0])
     relevant = [r for r in scored if r[0] > 0][:MAX_CANDIDATES] if not scoped else scored[:MAX_CANDIDATES]
 
+    # 2026-10-13 (R45): numeric dates are read the way the data writes them - a source whose own text dates are
+    # month-first (03/31/2025) reads "3/1/2025" as 1 March only when the numbers can't decide it
+    pref = [c.get("day_first") for r in relevant[:3] for _t, _k, cols in r[2] for c in cols if c.get("day_first") is not None]
+    if period and pref and not any(pref) and not typo:
+        period, alts = parse_period(qd, today, prefer_day_first=False)
+    # round 32: a forecast covers whole periods - "2026 forecast" is all of 2026, not "2026 so far" - and
+    # "forecast March" is the coming March. A year the person chose to keep as written is read as asked.
+    # R45: a forecast word that is one of the data's own column names ("expected_revenue") is data, not the future
+    colnames = [str(c.get("name") or "") for r in relevant for _t, _k, cols in r[2] for c in cols][:2000]
+    forecast = wants_forecast(qd, colnames) and not typo
+    said_year = _said_year(qd, period) if period and not period.get("parts") else None
+    if forecast and period and not period.get("parts") and not (said_year and said_year in keep):
+        period, alts = forecast_span(period, today), []
+    qmc = _concepts(qw)
+
     t_start = time.time()
     cands: list[dict] = []
     for s, ds, tables, named, why in relevant:
@@ -954,15 +1069,17 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
                 rank -= 4  # a page / account list describes the source; the daily numbers and posts answer
             if best_t is None or rank > best_t[0]:
                 best_t = (rank, tname, key, dcol, meas)
+        mcols = {w for _t, _k, cols in tables for col in cols if _is_measure_col(col) for w in words(str(col.get("name") or ""))}
         c = _source_brief(ds) | {"score": s, "named": named, "table": best_t[1] if best_t else None,
                                  "date_column": best_t[3] if best_t else None,
                                  "measures": (best_t[4] if best_t else [])[:4], "coverage": None, "fit": "good",
-                                 "why": why}
+                                 "why": why, "concepts": sorted(qmc & _concepts(mcols))}
         if not tables:
             c["fit"], c["why"] = "none", "no tables I can read yet"
         elif needs_time and not c["date_column"]:
-            c["fit"] = "no_dates"
-            c["why"] = "has no dates, so it can't show a period or a trend"
+            # 2026-10-13 (R45): a soft note, never a blocker - the answer can still use the data (over all its rows)
+            c["no_dates"] = True
+            c["soft"] = "has no dates, so it can't show a period or a trend"
         elif not c["measures"] and not any(ID_NAME.search(str(col.get("name"))) for _t, _k, cols in tables for col in cols):
             c["fit"] = "weak"
             c["why"] = c["why"] or "has nothing to count or add up"
@@ -1078,6 +1195,8 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
         elif c.get("holds") and c["fit"] == "good":
             c["says"] += f" · {c['holds']}"
     good = [c for c in cands if c["fit"] == "good"]
+    if needs_time:
+        good.sort(key=lambda c: (bool(c.get("empty")), bool(c.get("no_dates")), -c["score"]))  # dated data first (R45)
     unfit = [c for c in cands if c["fit"] != "good"]
     picked: list[dict] = []
     connect = [{"kind": k, "label": KIND_LABELS.get(k, k), "url": f"/data?tab=catalog&connect={k}"}
@@ -1118,8 +1237,13 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
         gtop = good[0]["score"]
         close = [c for c in good if c["score"] >= max(1, gtop * 0.5)]
         notable = [c for c in unfit if c["score"] >= max(1, top_score * 0.5)]
+        pair = _two_sources(good, qmc)
         if scoped:
             picked = close
+        elif pair:
+            # 2026-10-13 (R45): "ROAS: ad spend vs revenue" - each source holds one of the measures asked about,
+            # so both are used (before, one was picked and the other measure was simply missing)
+            picked = pair
         elif len(close) >= 2:
             picked = [close[0]]
             issues.append({
@@ -1209,27 +1333,40 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
     # never stops to pick data - the Analyst reads what fits, or builds its own numbers
     no_data = False
     try:
-        from .project_engine.analyst import _ROUTE as _ANALYST_ROUTE
+        from .project_engine.analyst import _ROUTE as _ANALYST_ROUTE, MADE_UP as _MADE_UP
         analytic = bool(_ANALYST_ROUTE.search(q))
+        made_up = bool(_MADE_UP.search(q))
     except Exception:  # noqa: BLE001
-        analytic = False
+        analytic = made_up = False
     if not pool:
         issues = [i for i in issues if i["kind"] in ("year_typo", "month_typo")]
         picked, no_data = [], True
     elif analytic:
         issues = [i for i in issues if i["kind"] not in ("cant_answer", "swap", "choose", "confirm_pick")]
         named_any = [c for c in cands if c["named"]]
+        # 2026-10-13 (R45): a what-if about real data is answered FROM that data. Before, any question with a
+        # number and a "%" ("what if we raise prices 10% for 3 months") was "self-contained", no data was
+        # attached and the Analyst invented random numbers. Now no data only when the question asks for
+        # made-up numbers, or it is a finance formula that carries all its own numbers and touches no source.
         if scoped:
             picked = picked or cands[:4]
         elif named_any:
             picked = named_any[:2]
-        elif _SELF_CONTAINED.search(q):
-            picked = []  # "use random numbers", "NPV of a 50k machine": the question carries its own numbers
+        elif made_up:
+            picked = []
         elif not picked:
-            picked = good[:1] or [c for c in cands if c["score"] > 0][:1]
+            ranked = sorted(cands, key=lambda c: (-len(c.get("concepts") or []), c["fit"] != "good", -c["score"]))
+            picked = ranked[:1]
+            if not picked and scored and not _SELF_CONTAINED.search(q):
+                ds0 = scored[0][1]
+                picked = [_source_brief(ds0) | {"score": scored[0][0], "named": False, "fit": "good", "why": ""}]
         if not picked:
             no_data = True
 
+    # 2026-10-13 (R45): what isn't blocking but worth saying ("Products has no dates - over all its rows")
+    notes = [f"{c['name']} {c['soft']}" for c in picked if c.get("soft")]
+    if period and period.get("assumption"):
+        notes.append(period["assumption"])
     ready = not issues
     restated = _restate(what, period, picked, needs_time)
     return {
@@ -1249,15 +1386,77 @@ def check(db: Session, user: models.User, question: str, *, source_ids: list[str
         "connect": connect,
         "sources_considered": len(pool),
         "no_data": no_data,
+        "notes": notes,
     }
 
 
-# R43: questions that carry their own numbers, or ask for made-up ones - no data needed unless one is named
+# R43: questions that carry their own numbers - no data needed unless one is named.
+# 2026-10-13 (R45): only the finance / maths formulas that carry ALL their inputs ("NPV of a 50k machine at 8%"),
+# and only when no source touches the question. The old catch-alls ("simulat", "loan", "probability", any
+# number followed by "%") sent real-data what-ifs to invented numbers.
 _SELF_CONTAINED = re.compile(
-    r"\brandom (numbers?|data|sample)|\buse random\b|\bsimulat|\bmonte\s*carlo|\bnpv\b|\birr\b|\bpayback\b|\bloan\b|\bemi\b|"
-    r"\bpresent value\b|\bprobability\b|\bexpected value\b|\beoq\b|\bnewsvendor\b|\bsample size\b|\b\d[\d,.]*\s*(k|%|percent)\b.*\b\d",
+    r"\bnpv\b|\birr\b|\bpayback\b|\bpresent value\b|\bemi (?:for|on|of)\b|\bloan of\b|\bamorti[sz]ation\b|"
+    r"\beoq\b|\bnewsvendor\b|\bsample size\b",
     re.I,
 )
+
+# 2026-10-13 (R45): measure concepts - the same thing under different column names, and metrics built from two
+# ("ROAS" = spend and revenue), so a question's measures can be matched to the sources that hold them
+_CONCEPTS = {
+    "revenue": {"revenue", "revenues", "sales", "sale", "income", "turnover", "gmv", "bookings"},
+    "spend": {"spend", "spent", "cost", "costs", "budget", "adspend"},
+    "orders": {"orders", "order", "transactions", "purchases"},
+    "customers": {"customers", "customer", "users", "buyers", "clients"},
+    "clicks": {"clicks", "click"},
+    "impressions": {"impressions", "impression", "views", "reach"},
+    "conversions": {"conversions", "conversion", "leads", "signups"},
+    "sessions": {"sessions", "session", "visits", "visitors", "traffic"},
+    "profit": {"profit", "profits", "margin"},
+    "units": {"units", "quantity", "qty"},
+    "price": {"price", "prices"},
+    "wait": {"wait", "waiting", "queue"},
+}
+_DERIVED = {"roas": {"spend", "revenue"}, "roi": {"spend", "revenue"}, "cac": {"spend", "customers"},
+            "cpa": {"spend", "conversions"}, "cpc": {"spend", "clicks"}, "ctr": {"clicks", "impressions"},
+            "aov": {"revenue", "orders"}, "cpm": {"spend", "impressions"}}
+
+
+def _concepts(ws: set[str]) -> set[str]:
+    out = {k for k, syn in _CONCEPTS.items() if ws & syn}
+    for d, parts in _DERIVED.items():
+        if d in ws:
+            out |= parts | {d}
+    return out
+
+
+_MEASURE_ROLES = {"money", "measure", "count", "duration", "percent", "rate"}
+
+
+def _is_measure_col(col: dict) -> bool:
+    role = col.get("role")
+    if role:
+        return role in _MEASURE_ROLES
+    return bool(NUMERIC_TYPES.search(str(col.get("type") or ""))) and not ID_NAME.search(str(col.get("name") or ""))
+
+
+def _two_sources(good: list[dict], qmc: set[str]) -> list[dict] | None:
+    """Two sources when the measures asked about live in two different ones (2026-10-13, R45)."""
+    want = {c for c in qmc if c not in _DERIVED}
+    if len(want) < 2 or len(good) < 2:
+        return None
+    gtop = max(c["score"] for c in good)
+    pool = [c for c in good if c["score"] >= max(1, gtop * 0.3) and not c.get("empty")]
+    if not pool:
+        return None
+    best = max(pool, key=lambda c: (len(set(c.get("concepts") or []) & want), c["score"]))
+    have = set(best.get("concepts") or []) & want
+    if have >= want or not have:
+        return None
+    other = max((c for c in pool if c is not best), default=None,
+                key=lambda c: (len((set(c.get("concepts") or []) & want) - have), c["score"]))
+    if other is None or not ((set(other.get("concepts") or []) & want) - have):
+        return None
+    return [best, other]
 
 
 def _without_names(q: str, names: list[str]) -> str:
@@ -1280,6 +1479,9 @@ def _says_fit(c: dict, needs_time: bool) -> str:
     fit = c.get("fit")
     if fit == "no_dates":
         return f"{name} has no dates, so it can't show a period or a trend"
+    if c.get("no_dates") and fit == "good":
+        meas0 = [_human(m) for m in (c.get("measures") or [])[:2]]
+        return f"{name} has {' and '.join(meas0) or 'the records'} but no dates, so it is read over all its rows"
     if fit == "out_of_range" and cov:
         return f"{name} only covers {cov['text']}"
     if fit in ("weak", "none"):
@@ -1681,6 +1883,10 @@ def planner_context(brief: dict | None) -> str:
                      "target period has no rows yet.")
     elif p and p.get("start") and p.get("end"):
         lines.append(f"- Period: {p['start']} to {p['end']} inclusive ({p.get('text') or ''}). Use exactly this date range.")
+    if p and p.get("assumption"):
+        # 2026-10-13 (R45): how an ambiguous date was read (day-first, the fiscal year) travels with the period,
+        # so the answer can say it
+        lines.append(f"- How the dates were read: {p['assumption']} Put this in \"assumptions\".")
     if p and not p.get("forecast") and (p.get("future") or any(x.get("future") for x in parts)):
         lines.append("- Some of that period hasn't happened yet: also fetch the metric's full history by month (not "
                      "filtered to the future part) - GD360 forecasts the missing part from it with a statistical model. "
