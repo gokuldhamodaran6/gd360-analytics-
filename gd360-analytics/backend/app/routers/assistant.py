@@ -199,7 +199,7 @@ def _follow_up(db: Session, user: models.User, question: str, state: TurnState,
         return _reply(eu.first_sentences(say, 3, 420), "explain", _keep(state), explain={
             "headline": ex.get("headline"), "points": ex.get("points") or [], "takeaway": ex.get("takeaway"),
             "followups": ex.get("followups") or [], "run_id": state.last_run_id,
-            "link": f"/p/{state.project_id}?run={state.last_run_id}" if state.last_run_id else f"/p/{state.project_id}",
+            "link": f"/chat/{state.project_id}",  # R46: the answer opens in the GD360 2.0 conversation
         })
     st = _keep(state, last_run_id=out["run_id"])
     return _reply("On it.", "run", st, run_id=out["run_id"], project_id=state.project_id, question=question)
@@ -1345,7 +1345,7 @@ def answer(run_id: str, talk_id: str | None = None, db: Session = Depends(get_db
 
 def _answer(db: Session, user: models.User, run_id: str) -> dict:
     run, conv = projects._run(db, run_id, user)  # noqa: SLF001 - same access rules as the thread page
-    link = f"/p/{conv.id}?run={run.id}"
+    link = f"/chat/{conv.id}"  # R46: the answer opens in the GD360 2.0 conversation
     steps = run.steps or []
     if run.status in ("planning", "running", "planned"):
         done = sum(1 for s in steps if s.get("status") == "done")
