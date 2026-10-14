@@ -190,7 +190,8 @@ export function modelToBlock(model: ResultChartModel, id: string, title: string 
   const groupBy = isTime ? dimensions.slice(1) : dimensions;
   const spec = {
     table: "",
-    time: isTime && grain ? { column: xName, grain } : null,
+    // R45 added an hourly grain to the chart geometry; a block spec still groups by day at the finest
+    time: isTime && grain ? { column: xName, grain: grain === "hour" ? "day" : grain } : null,
     group_by: groupBy,
     measures: measures.map((m) => ({ alias: m, agg: aggs[m], column: m })),
   };
