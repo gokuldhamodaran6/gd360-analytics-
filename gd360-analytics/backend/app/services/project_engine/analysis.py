@@ -141,20 +141,34 @@ def table_payload(df: pd.DataFrame, limit: int = MAX_VISUAL_ROWS) -> dict:
 
 
 class _Facts:
-    def __init__(self, kind: str, currency: str | None):
+    def __init__(self, kind: str, currency: str | None, source_currency: str | None = None):
         self.items: list[dict] = []
         self.kind = kind
         self.currency = currency
+        # 2026-10-13 (R45): the data's own currency, known even when the plan's format is not "currency"
+        # (a lookup's revenue column on INR data is written with ₹, never $)
+        self.source_currency = source_currency or currency
 
-    def add(self, label: str, value, kind: str | None = None, signed: bool = False, table: str | None = None) -> dict:
+    def add(self, label: str, value, kind: str | None = None, signed: bool = False, table: str | None = None,
+            display: str | None = None, currency: str | None = None, meaning: dict | None = None) -> dict:
         k = kind or self.kind
+        cur = currency or (self.currency if k == "currency" else None) or self.source_currency
+        if k == "ratio" and signed and display is None and _num(value) is not None:
+            k_disp = "points"  # a change in a rate is in percentage points: "−1.3 pts", never "−1.30%"
+            display = fmt(_num(value) * 100, k_disp, signed=signed)
         f = {
             "id": f"f{len(self.items) + 1}",
             "label": label,
             "value": _num(value),
             "kind": k,
-            "display": fmt(value, k, self.currency, signed=signed),
+            "display": display if display is not None else fmt(value, k, cur, signed=signed),
         }
+        if k == "currency" and cur:
+            f["currency"] = cur
+        if meaning:
+            for key in ("role", "unit", "scale"):
+                if meaning.get(key) is not None:
+                    f[key] = meaning[key]
         if table:
             f["table"] = table  # which step's result it came from (sources on the answer)
         self.items.append(f)
@@ -350,24 +364,41 @@ def _trend(spec: dict, tables: dict, facts: _Facts) -> dict:
     if not tcol or not vcols:
         raise AnalysisError("The trend needs a time column and at least one value column.")
     work = df.copy()
+    from . import present
     # R43: only real dates are read as dates - "Clock Time" in minutes, a week number or a day 1..7 stays a
     # number (it used to become 1970 timestamps and an axis labelled "NaT")
     real_dates = False
+    month_start = False
     if pd.api.types.is_datetime64_any_dtype(work[tcol]):
         work["_t"], real_dates = work[tcol], True
     elif pd.api.types.is_numeric_dtype(work[tcol]):
         work["_t"] = work[tcol]
     else:
-        try:
-            parsed = pd.to_datetime(work[tcol], errors="coerce")
-            if parsed.notna().mean() >= 0.8:
-                work["_t"], real_dates = parsed, True
-            else:
-                work["_t"] = work[tcol]
-        except Exception:  # noqa: BLE001
-            work["_t"] = work[tcol]
-    work = work.sort_values("_t")
-    from . import present
+        vals = work[tcol].dropna().tolist()
+        if vals and all(present.calendar_position(v) is not None for v in vals):
+            # 2026-10-13 (R45): month / weekday / quarter / "Jan 2025" labels in calendar order - they were
+            # sorted alphabetically (Apr, Aug, Dec ...) and "from Apr to Sep" became the trend's change
+            work["_t"] = work[tcol].map(lambda v: present.sort_key(v))
+        else:
+            try:
+                numeric = pd.to_numeric(work[tcol].astype(str).str.replace(",", "", regex=False), errors="coerce")
+                if numeric.notna().all():
+                    work["_t"] = numeric  # "2", "10", "11" in number order, never "10" < "2"
+                else:
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        parsed = pd.to_datetime(work[tcol], errors="coerce", format="mixed")
+                    if parsed.notna().mean() >= 0.8:
+                        work["_t"], real_dates = parsed, True
+                    else:
+                        work["_t"] = work[tcol].map(lambda v: present.sort_key(v))
+            except Exception:  # noqa: BLE001
+                work["_t"] = work[tcol].map(lambda v: present.sort_key(v))
+    if real_dates:
+        t = pd.to_datetime(work["_t"], errors="coerce").dropna()
+        month_start = bool(len(t)) and bool((t.dt.day == 1).all() and (t.dt.normalize() == t).all())
+    work = work.sort_values("_t", kind="stable")
     metric = spec.get("metric_name") or present.humanize(vcols[0])
     series_out = []
     for v in vcols:
@@ -378,7 +409,15 @@ def _trend(spec: dict, tables: dict, facts: _Facts) -> dict:
             continue
         first, last = float(s.iloc[0]), float(s.iloc[-1])
         name = metric if len(vcols) == 1 else present.humanize(v)
-        tl = lambda i: str(valid[tcol].iloc[i])[:10]  # noqa: E731
+
+        def tl(i: int, _valid=valid) -> str:
+            # 2026-10-13 (R45): a month written as a month ("Jan 2025"), never "2025-01-01"
+            if month_start:
+                try:
+                    return pd.Timestamp(_valid["_t"].iloc[i]).strftime("%b %Y")
+                except Exception:  # noqa: BLE001
+                    pass
+            return str(_valid[tcol].iloc[i])[:10]
         f1 = facts.add(f"{name}, {tl(0)}", first)
         f2 = facts.add(f"{name}, {tl(-1)}", last)
         ch = facts.add(f"Change in {name} from {tl(0)} to {tl(-1)}", last - first, signed=True)
@@ -393,9 +432,14 @@ def _trend(spec: dict, tables: dict, facts: _Facts) -> dict:
             j = int(diffs.abs().values.argmax()) + 1
             fj = facts.add(f"Biggest move in {name}: {tl(j - 1)} to {tl(j)}", float(diffs.iloc[j - 1]), signed=True)
             jump = {"from": tl(j - 1), "to": tl(j), "change": float(diffs.iloc[j - 1]), "fact_id": fj["id"]}
-        summable = spec.get("summable", True) and present._additive(v) and spec.get("format") not in ("percent", "ratio")
+        # 2026-10-13 (R45): an average, a rate, a price or a per-X ratio is never added up over the period
+        # ("Total AOV over the period $165" was the old answer)
+        summable = (spec.get("summable", True) and present._additive(v, df[v]) and spec.get("format") not in ("percent", "ratio"))
         total = facts.add(f"{present.metric_total_label(name)} over the period", float(s.sum())) if summable else None
         series_out.append({"name": name, "first": first, "last": last, "pct": pc, "jump": jump,
+                           "first_label": tl(0), "last_label": tl(-1), "max_label": tl(imax), "min_label": tl(imin),
+                           "ids": {"first": f1["id"], "last": f2["id"], "change": ch["id"], "pct": fp["id"] if fp else None,
+                                   "max": fmax["id"], "min": fmin["id"], "total": total["id"] if total else None},
                            "fact_ids": [f["id"] for f in (f1, f2, ch, fp, fmax, fmin, total) if f]})
     over = "over time" if real_dates or _TIME_WORD.search(str(tcol)) else f"by {present.humanize(tcol).lower()}"
     visuals = [{"type": "chart", "title": spec.get("title") or f"{metric} {over}",
@@ -415,16 +459,29 @@ def _breakdown(spec: dict, tables: dict, facts: _Facts) -> dict:
     if not dim or not val:
         raise AnalysisError("The breakdown needs a dimension column and a value column.")
     spec = {**spec, "dimension_column": dim, "value_column": val}
-    additive = present._additive(val) and spec.get("format") not in ("percent", "ratio")
-    work = df[[dim, val]].copy()
-    work[val] = pd.to_numeric(work[val], errors="coerce")
-    work = work.dropna(subset=[val]).groupby(dim, as_index=False, dropna=False)[val].agg("sum" if additive else "mean")
+    # 2026-10-13 (R45): additive from services/semantics (name AND values) - a per-customer revenue, an AOV,
+    # a rate or a score gets no total and no shares; several rows per segment are averaged weighted by
+    # their count column (orders beside avg_order_value), never a plain mean of means
+    additive = present._additive(val, df[val]) and spec.get("format") not in ("percent", "ratio")
+    work = present.aggregate(df[[c for c in df.columns]], [dim], val, additive=additive)[[dim, val]]
     work = work.sort_values(val, ascending=False).reset_index(drop=True)
     metric = spec.get("metric_name") or present.humanize(val)
     dim_label = present.humanize(dim).lower()
     rank = spec.get("rank") if spec.get("rank") in ("highest", "lowest") else "highest"
-    total = float(work[val].sum()) if additive else None
-    ft = facts.add(present.metric_total_label(metric), total) if additive else None
+    # 2026-10-13 (R45): a top-N (LIMIT n) or a capped result is not all of the data - its total is the total
+    # of the rows shown and each share is "of the top N shown", unless the result carries the grand total
+    from . import e2_meaning
+    scope = e2_meaning.result_scope(df, spec.get("table"), spec, dim, val)
+    partial = (scope["limit"] or scope["capped"]) and not scope["full_total"]
+    shown_total = float(work[val].sum()) if additive else None
+    total = (float(scope["full_total"]) if (additive and scope["full_total"]) else shown_total)
+    if partial and additive:
+        cut = f"top {scope['limit']:,} shown" if scope["limit"] else f"first {scope['rows']:,} rows"
+        ft = facts.add(f"{present.metric_total_label(metric)} of the {cut}", total)
+        share_of = f"share of the {cut}"
+    else:
+        ft = facts.add(present.metric_total_label(metric), total) if additive else None
+        share_of = f"share of {present.metric_lower(metric)}"
     n = len(work)
     picked = list(range(min(10, n)))
     for i in range(max(0, n - 3), n):  # the lowest are facts too: "which month is weakest" needs them
@@ -436,9 +493,13 @@ def _breakdown(spec: dict, tables: dict, facts: _Facts) -> dict:
         v = float(row[val])
         share = v / total * 100 if additive and total else None
         fv = facts.add(f"{metric} for {row[dim]}", v)
-        fs = facts.add(f"{row[dim]}: share of {present.metric_lower(metric)}", share, kind="percent") if share is not None else None
-        segs.append({"segment": str(row[dim]), "value": v, "share": share, "rank": i + 1,
-                     "fact_ids": [f["id"] for f in (fv, fs) if f]})
+        fs = facts.add(f"{row[dim]}: {share_of}", share, kind="percent") if share is not None else None
+        seg = {"segment": str(row[dim]), "value": v, "share": share, "rank": i + 1,
+               "share_label": "of the total" if not partial else f"of the {share_of[len('share of the '):]}",
+               "fact_ids": [f["id"] for f in (fv, fs) if f] if not partial else [fv["id"]]}
+        if partial and fs:
+            seg["share_fact_id"] = fs["id"]  # never at fact_ids[1]: KPI tiles print that as "x% of total"
+        segs.append(seg)
     # Uneven calendar coverage, when the table says how many years each row covers.
     cov = next((c for c in df.columns if re.search(r"(^|_)(years?_covered|n_years|num_years|year_count|years_in_data|years)$", str(c), re.I)
                 and c not in (dim, val)), None)
@@ -457,7 +518,7 @@ def _breakdown(spec: dict, tables: dict, facts: _Facts) -> dict:
                 fp = facts.add(f"{metric} per year of data for {name} ({y} years)", v)
                 per_year.append({"segment": name, "value": v, "years": y, "fact_ids": [fp["id"]]})
     f3 = None
-    if additive and total and n > 4:
+    if additive and total and n > 4 and not partial:
         f3 = facts.add(f"Top 3 share of {present.metric_lower(metric)}", float(work[val].head(3).sum() / total * 100), kind="percent")
     fn = facts.add(f"Number of {dim_label} values", int(n), kind="integer")
     highest = segs[0] if segs else None
@@ -469,11 +530,15 @@ def _breakdown(spec: dict, tables: dict, facts: _Facts) -> dict:
     if not visuals:
         visuals = [{"type": "chart", "title": spec.get("title") or f"{metric} by {dim_label}",
                     "chart_type": spec.get("chart_type") or ("horizontal_bar" if n > 6 else "bar"), **table_payload(df)}]
+    caveat = e2_meaning.scope_caveat(scope, present.in_sentence(metric)) if (scope["limit"] or scope["capped"]) else None
+    if caveat and scope["full_total"]:
+        caveat = None
     return {"summary": {"metric": metric, "total": total, "segments": segs, "segment_count": int(n), "rank": rank,
                         "additive": additive, "dimension": dim_label, "highest": highest, "lowest": lowest,
                         "per_year": per_year, "total_fact_id": ft["id"] if ft else None,
+                        "total_scope": "shown" if partial and additive else "all",
                         "fact_ids": [x["id"] for x in (ft, f3, fn) if x]},
-            "visuals": visuals, "warnings": []}
+            "visuals": visuals, "warnings": [caveat] if caveat else []}
 
 
 # ---- lookup / list -----------------------------------------------------------
@@ -484,12 +549,33 @@ def _lookup(spec: dict, tables: dict, facts: _Facts) -> dict:
         raise AnalysisError("The result table was not produced.")
     kpis = []
     if len(df) == 1:
+        # 2026-10-13 (R45): each column formatted by what it IS (services/semantics), not by the plan's one
+        # format - "Year $2,025", "Store ID $10.4k" and "Conversion rate $0.03" were the old tiles. IDs,
+        # sequences, years, clock times, dates and helper sort keys are not KPIs at all.
+        from . import e2_meaning
+        from .present import column_kind
+        value_col = _col(df, spec.get("value_column")) if spec.get("value_column") else None
         for c in df.columns:
-            v = _num(df.iloc[0][c])
-            if v is not None and not isinstance(df.iloc[0][c], bool):
-                from .present import column_kind, humanize
-                f = facts.add(humanize(c), v, kind=column_kind(c, [v], facts.kind) if facts.kind == "number" else None)
-                kpis.append({"label": f["label"], "display": f["display"], "fact_id": f["id"]})
+            raw = df.iloc[0][c]
+            v = _num(raw)
+            if v is None or isinstance(raw, bool):
+                continue
+            m = e2_meaning.col_meaning(c, df[c], facts.source_currency)
+            if m.get("role") in ("id", "sequence", "year", "clock", "date", "helper", "boolean"):
+                continue
+            kind, mm = e2_meaning.fact_format(m)
+            if kind == "number" and m.get("role") not in ("duration",):
+                kind = column_kind(c, [v])
+                if c == value_col and facts.kind in ("currency", "percent", "ratio"):
+                    kind = facts.kind
+                if kind == "currency":
+                    mm = {**m, "role": "money"}
+                elif kind in ("percent", "ratio"):
+                    mm = {**m, "role": "percent", "scale": "fraction" if kind == "ratio" else "points"}
+            cur = m.get("currency") or facts.source_currency
+            f = facts.add(e2_meaning.label_for(c, mm), v, kind=kind, currency=cur,
+                          display=e2_meaning.display(v, kind, mm, cur), meaning=mm)
+            kpis.append({"label": f["label"], "display": f["display"], "fact_id": f["id"]})
     visuals = []
     if kpis:
         visuals.append({"type": "kpis", "items": kpis})
@@ -512,13 +598,21 @@ def reconcile_format(spec: dict, tables: dict[str, pd.DataFrame], sql_by_table: 
     with no x100 in the SQL that made it and no pct/percent in its name, is a ratio; a "ratio" with
     values above 1.5 is in percentage points."""
     from . import present
+    if isinstance(spec, dict):
+        # 2026-10-13 (R45): the analysis reads each step's SQL to tell a top-N (LIMIT n) from all of the data
+        spec["_sql_by_table"] = dict(sql_by_table or {})
+        spec["_format_checked"] = True
     fmt = (spec or {}).get("format")
     if fmt not in ("percent", "ratio"):
         return fmt
-    df = tables.get((spec or {}).get("table")) if spec.get("table") else None
+    # 2026-10-13 (R45): an explain_change keeps its numbers in total.table / total.value_column - looking only
+    # at spec["table"] left "Why did conversion rate drop?" at 0.0% vs 0.0% for a 0.021 vs 0.034 rate
+    total = spec.get("total") if isinstance(spec.get("total"), dict) else {}
+    tname = spec.get("table") or total.get("table")
+    df = tables.get(tname) if tname else None
     if df is None or not len(df):
         return fmt
-    names = [spec.get("value_column")] + list(spec.get("value_columns") or [])
+    names = [spec.get("value_column"), total.get("value_column")] + list(spec.get("value_columns") or [])
     cols = [c for c in (_col(df, n) for n in names if n) if c]
     if not cols:
         cols = [c for c in df.columns if present._PERCENT_NAME.search(str(c)) and not present._NOT_PERCENT.search(str(c))]
@@ -527,7 +621,7 @@ def reconcile_format(spec: dict, tables: dict[str, pd.DataFrame], sql_by_table: 
     vals = pd.concat([pd.to_numeric(df[c], errors="coerce") for c in cols]).dropna()
     if not len(vals):
         return fmt
-    sql = (sql_by_table or {}).get(spec.get("table")) or ""
+    sql = (sql_by_table or {}).get(tname) or ""
     named_pct = any(re.search(r"pct|percent", str(c), re.I) for c in cols)
     if fmt == "percent" and bool(((vals >= 0) & (vals <= 1)).all()) and not _X100_RE.search(sql) and not named_pct:
         return "ratio"
@@ -537,10 +631,18 @@ def reconcile_format(spec: dict, tables: dict[str, pd.DataFrame], sql_by_table: 
 
 
 def run_analysis(spec: dict, tables: dict[str, pd.DataFrame]) -> dict:
-    kind = (spec or {}).get("format") or "number"
+    spec = spec or {}
+    if spec.get("format") in ("percent", "ratio"):
+        try:  # 2026-10-13 (R45): idempotent; a caller that skipped reconcile_format still gets 2.1%, never "0.0%"
+            fixed = reconcile_format(spec, tables, spec.get("_sql_by_table"))
+            if fixed:
+                spec = {**spec, "format": fixed}
+        except Exception:  # noqa: BLE001
+            pass
+    kind = spec.get("format") or "number"
     if kind not in ("currency", "number", "integer", "percent", "ratio"):
         kind = "number"
-    facts = _Facts(kind, (spec or {}).get("currency") if kind == "currency" else None)
+    facts = _Facts(kind, spec.get("currency") if kind == "currency" else None, spec.get("currency"))
     atype = (spec or {}).get("type") or "lookup"
     if atype == "explain_change":
         out = _explain_change(spec, tables, facts)
@@ -555,6 +657,20 @@ def run_analysis(spec: dict, tables: dict[str, pd.DataFrame]) -> dict:
             f.setdefault("table", spec["table"])
         for v in out.get("visuals") or []:
             v.setdefault("tables", [spec["table"]])
+    # 2026-10-13 (R45): a result cut at the row limit is said out loud, whatever the analysis type
+    from . import e2_meaning
+    warns = out.setdefault("warnings", [])
+    used = [spec.get("table"), (spec.get("total") or {}).get("table"), (spec.get("series") or {}).get("table")]
+    used += [x.get("table") for x in (spec.get("drivers") or []) + (spec.get("components") or []) if isinstance(x, dict)]
+    for tid in dict.fromkeys(t for t in used if t):
+        tdf = (tables or {}).get(tid)
+        if tdf is None or (atype in ("breakdown", "comparison") and tid == spec.get("table")):
+            continue
+        sc = e2_meaning.result_scope(tdf, tid, spec)
+        if sc["capped"]:
+            msg = e2_meaning.scope_caveat(sc)
+            if msg and msg not in warns:
+                warns.append(msg)
     out["facts"] = facts.items
     out["type"] = atype
     return out

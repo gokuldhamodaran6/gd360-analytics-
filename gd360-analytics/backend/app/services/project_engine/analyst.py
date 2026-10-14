@@ -60,17 +60,62 @@ MAX_ROWS = 300_000
 LIVE_ROWS = 50_000
 
 # Questions that need a model, a formula, a scenario or maths SQL can't hold.
+# 2026-10-13 (R45): modelling INTENT only. Before, plain totals that merely said "cost", "per barista", "queue",
+# "loan", "EMI" or "probability" ("show daily cost by campaign", "average queue time by day", "total loan amount
+# by branch") came here and were answered from a 50k-row sample instead of an exact SQL total, while ordinary
+# what-if wording ("what happens if prices go up 10%", "suppose we cut spend in half", "impact of a 10% price
+# increase") was missed. Word-boundary patterns, proven by 40+ positive and 40+ negative examples
+# (tests_e1/test_route.py).
+_VERB = (r"(?:increase[sd]?|increasing|raise[sd]?|raising|lower(?:ed|ing|s)?|cut(?:s|ting)?|reduce[sd]?|reducing|"
+         r"double[sd]?|doubling|halve[sd]?|halving|triple[sd]?|drop(?:s|ped)?|rise[sn]?|rose|grow(?:s|n)?|grew|fall(?:s|en)?|fell|"
+         r"go(?:es)?\s+(?:up|down)|went\s+(?:up|down)|add(?:ed|ing)?|hire[sd]?|hiring|open(?:ed|ing|s)?|close[sd]?|closing|"
+         r"remove[sd]?|removing|stop(?:ped)?|launch(?:ed|es)?|switch(?:ed)?|move[sd]?|spend|spent|invest(?:ed)?|charge[sd]?|"
+         r"offer(?:ed)?|discount(?:ed)?|expand(?:ed)?|change[sd]?|shift(?:ed)?|keep|kept|lose|lost|gain(?:ed)?)")
+_QTY = r"(?:\d[\d,.]*\s*(?:%|percent|pc|k|x|times)?|double|half|twice|triple|in\s+half|a\s+(?:second|third|new)|another|one\s+more|two\s+more)"
 _ROUTE = re.compile(
-    r"\bwhat[\s-]*if\b|\bscenarios?\b|\bsimulat|\bmonte\s*carlo|\brandom (numbers?|data|sample)|\buse random\b|"
-    r"\boptimi[sz]|\bmaximi[sz]e\b|\bminimi[sz]e\b|\bcheapest (option|number|plan|way|mix)|\bbest (number|mix|combination) of\b|"
-    r"\bbreak[\s-]*even|\bsensitivity\b|\bnpv\b|\birr\b|\bpayback\b|\bpresent value\b|\bdiscount(ed)? cash|\bloan\b|\bemi\b|"
-    r"\bprobability\b|\bexpected value\b|\bhypothesis\b|\bstatistically significant|\bp[\s-]?value\b|\bconfidence interval\b|"
-    r"\bregression\b|\bcorrelation\b|\belasticity\b|\bqueue|\bbaristas?\b|\bstaffing\b|\bhow many (staff|people|servers|agents|cashiers|machines|trucks) (do|should|would)\b|"
-    r"\bif (i|we) (add|hire|increase|decrease|raise|cut|double|halve|remove|reduce|open|close)\b|"
-    r"\b(increase|decrease|raise|cut|reduce)\b[^.?!]*\bby\s+\d+\s*%[^.?!]*\b(what|how|would|impact|effect)\b|"
-    r"\b(add|hire)\s+\d+\s+(more\s+)?\w+|"
-    r"\b(labou?r|holding|ordering|waiting|opportunity|total daily|daily) cost\b|\bcost of (waiting|delay|holding)\b|"
-    r"\beoq\b|\breorder point\b|\bsafety stock\b|\bnewsvendor\b|\blinear program|\bsample size\b|\ba/?b test\b",
+    # explicit what-if language
+    r"\bwhat[\s-]*if\b|\bwhat\s+(?:happens|happened|would\s+happen|will\s+happen|could\s+happen)\b|"
+    r"\bhow\s+(?:would|will|could|might|does|do)\b[^.?!]{0,60}\b(?:change|move|respond|react|shift|look|be\s+affected)\b[^.?!]{0,40}\bif\b|"
+    r"\b(?:would|will|could|might)\b[^.?!]{0,60}\bif\s+(?:we|i|you|they|our|the|prices?|costs?|sales|demand|spend)\b|"
+    r"\bsuppos(?:e|ing)\b|\bimagine\b|\bhypothetical(?:ly)?\b|\blet'?s\s+say\b|\bsay\s+we\b|\bassum(?:e|ing)\s+(?:that\s+)?"
+    rf"(?:we|i|prices?|costs?|sales|demand|growth|churn|a|an|\d)|\bassum(?:e|ing)\b[^.?!]{{0,40}}{_QTY}|"
+    rf"\bif\s+(?:we|i|you|they|the\s+company|management)\s+(?:\w+\s+){{0,2}}{_VERB}\b|"
+    rf"\bif\s+(?:the\s+|our\s+|my\s+)?\w+(?:\s+\w+)?\s+(?:were\s+to\s+)?{_VERB}\b[^.?!]{{0,30}}{_QTY}|"
+    rf"\b(?:impact|effect|consequences?|result)\s+(?:of|on)\b[^.?!]{{0,40}}(?:\d[\d,.]*\s*(?:%|percent)|\bdoubl|\bhalv|"
+    r"\b(?:raising|cutting|lowering|reducing|increasing|decreasing|hiring|adding|opening|closing|removing|launching|dropping|"
+    r"doubling|halving)\b|\b(?:an?\s+)?(?:price|fee|wage|rate|cost|budget|spend|tax)\s+(?:increase|decrease|cut|rise|hike|drop|change)\b)|"
+    r"\bscenarios?\b|\bsimulat|\bmonte\s*carlo|\brandom (?:numbers?|data|sample)|\buse random\b|"
+    # optimisation and decisions
+    r"\boptimi[sz]|\bmaximi[sz]e\b|\bminimi[sz]e\b|\bcheapest (?:option|number|plan|way|mix)|\bbest (?:number|mix|combination) of\b|"
+    r"\bbreak[\s-]*even|\bsensitivity\b|\btrade[\s-]*off\b|"
+    # finance with inputs
+    r"\bnpv\b|\birr\b|\bpayback\b|\bpresent value\b|\bdiscount(?:ed)? cash|\bemi (?:for|on|of)\b|\bloan of\b|\bamorti[sz]ation\b|"
+    # forecasts with assumptions / statistics
+    r"\b(?:forecast|project|projection|predict)\w*\b[^.?!]{0,60}\b(?:assuming|if|with\s+\d|at\s+\d[\d.]*\s*%\s*growth)\b|"
+    r"\bprobability\s+(?:that|of\s+(?:a|an|at\s+least|more|getting|waiting|having))\b|\bchances?\s+(?:that|of\s+(?:a|at\s+least))\b|"
+    r"\bexpected value of\b|\bhypothesis\b|\bstatistically\s+significant|\bsignificance\b|\bp[\s-]?value\b|"
+    r"\bconfidence interval\b|\bregression\b|\bcorrelat(?:ion|ed|e)\b|\belasticity\b|\bt[\s-]?test\b|\bchi[\s-]?square|\banova\b|"
+    r"\ba/?b test\b|\bsample size\b|"
+    # queues and staffing
+    r"\bhow many (?:staff|people|servers|agents|cashiers|baristas|tellers|nurses|doctors|drivers|machines|trucks|employees|workers|counters|lanes|tills)\s+(?:do|should|would|will|are|is)\s+(?:we|i|you|needed|required)\b|"
+    r"\b(?:staffing|headcount)\s+(?:plan|level|model|needed|required)\b|\bqueue(?:ing)?\s+(?:model|simulation|theory)\b|"
+    r"\b(?:cost of (?:waiting|delay)|(?:waiting|opportunity|holding|ordering) cost)\b|"
+    r"\b(?:add|hire|remove|fire|cut)\s+(?:\d+|one|two|three|four|five|another)\s+(?:more\s+)?[a-z]+|"
+    r"\bwith\s+(?:\d+|one|two|three|four|five)\s+(?:more\s+|fewer\s+|extra\s+)?(?:baristas?|servers?|staff|agents?|cashiers?|tellers?|nurses?|doctors?|machines?|lanes?|counters?|tills?|registers?|workers?|employees?)\b|"
+    r"\beoq\b|\breorder point\b|\bsafety stock\b|\bnewsvendor\b|\blinear program|"
+    # other languages: "was wäre wenn", "wenn wir ...", "qué pasaría si", "et si", "e se", "agar hum"
+    r"\bwas\s+w[äa]re,?\s+wenn\b|\bwenn\s+wir\b|\bqu[eé]\s+pasar[ií]a\s+si\b|\bqu[eé]\s+pasa\s+si\b|\bet\s+si\s+(?:on|nous)\b|"
+    r"\bque\s+se\s+passerait|\be\s+se\s+(?:aumentassimo|riducessimo|aumentarmos|reduzirmos)\b|\bagar\s+(?:hum|ham)\b",
+    re.I,
+)
+
+# 2026-10-13 (R45): the only questions that are answered WITHOUT the person's data when data exists - they ask for
+# made-up numbers in so many words
+MADE_UP = re.compile(
+    r"\brandom (?:numbers?|data|sample|values?|arrivals?)|\buse random\b|\bmade[\s-]up\b|\bmake up (?:some )?(?:data|numbers)|"
+    r"\bsynthetic\b|\bdummy (?:data|numbers)|\bfake (?:data|numbers)|\bhypothetical (?:data|numbers|company|business|shop|store|cafe|caf[ée])|"
+    r"\bimaginary\b|\bfictional\b|\bsimulated (?:data|numbers)|\bgenerate (?:some |sample |random )?(?:data|numbers)|"
+    r"\bwithout (?:using )?(?:my|our|the|any) data\b|\bno data\b|\bfrom scratch\b",
     re.I,
 )
 
@@ -167,11 +212,28 @@ def _words(text: str) -> set[str]:
     return out
 
 
+def _measure_words(t) -> set[str]:
+    """Words of a table's measure columns - by meaning when the catalog read it (services/semantics.py), else by type."""
+    meanings = getattr(t, "meanings", None) or {}
+    out: set[str] = set()
+    for c in t.columns:
+        name = str(c.get("name"))
+        role = (meanings.get(name) or {}).get("role")
+        numeric = role in ("money", "measure", "count", "duration", "percent", "rate") if role else \
+            bool(re.search(r"(int|float|double|decimal|numeric|number|real|money)", str(c.get("type") or ""), re.I))
+        if numeric:
+            out |= _words(name)
+    return out
+
+
 def relevant_sources(catalog: Catalog, question: str, limit: int = 3) -> list:
     """With one or two sources in scope they were chosen - use them. With
-    many (every connected source, nothing picked), only the ones whose names,
-    tables or columns the question touches; none when the question is
-    self-contained ("simulate 100 customers with random arrivals")."""
+    many (every connected source, nothing picked), the ones whose names,
+    tables or columns the question touches.
+    2026-10-13 (R45): never none just because nothing scored 2 - "what if we raise prices 10%" with five
+    sources used to load no data and the Analyst invented random numbers. Now: the best-scoring source (a
+    source whose MEASURE columns match the question's words wins), and none only when the question asks
+    for made-up numbers in so many words and names no source."""
     if len(catalog.sources) <= 2:
         return list(catalog.sources)
     q = _words(question)
@@ -179,11 +241,14 @@ def relevant_sources(catalog: Catalog, question: str, limit: int = 3) -> list:
     for pos, s in enumerate(catalog.sources):
         names = _words(s.name) | {w for t in s.tables for w in _words(t.name)}
         cols = {w for t in s.tables for c in t.columns for w in _words(str(c.get("name")))}
-        score = 3 * len(q & names) + len(q & cols)
-        if score >= 2:
-            scored.append((-score, pos, s))
+        meas = {w for t in s.tables for w in _measure_words(t)}
+        score = 3 * len(q & names) + len(q & cols) + 2 * len(q & meas)
+        scored.append((-score, pos, s, len(q & names)))
     scored.sort(key=lambda x: (x[0], x[1]))
-    return [x[2] for x in scored[:limit]]
+    if MADE_UP.search(question or "") and not any(x[3] for x in scored):
+        return []
+    strong = [x[2] for x in scored if -x[0] >= 2][:limit]
+    return strong or [scored[0][2]]
 
 
 def load_frames(db: Session, user: models.User, catalog: Catalog, question: str = "") -> tuple[dict, list[dict]]:
@@ -201,13 +266,17 @@ def load_frames(db: Session, user: models.User, catalog: Catalog, question: str 
             if len(frames) >= MAX_TABLES:
                 break
             note = None
+            total = None
             try:
                 if src.mode == "synced":
                     df = synced_sources.load_table(db, ds.id, t.source_key)
                 elif src.mode == "live":
                     df = data_loader.load_dataframe(ds, table=t.source_key or t.name, row_limit=LIVE_ROWS, db=db)
                     if len(df) >= LIVE_ROWS:
-                        note = f"First {LIVE_ROWS:,} rows of a live table."
+                        # 2026-10-13 (R45): say how much of the table this is - "the first 50,000 of 1,204,331 rows" when
+                        # the real count is known (the catalog, or the Data tab's already-paid-for profile)
+                        total = t.rows if t.rows and t.rows > len(df) else _cached_total(ds.id, t.source_key or t.name)
+                        note = _sample_note(len(df), total, "live table")
                 else:
                     df = data_loader.load_dataframe(ds, table=t.source_key, db=db)
             except Exception as e:  # noqa: BLE001
@@ -221,15 +290,42 @@ def load_frames(db: Session, user: models.User, catalog: Catalog, question: str 
                 print(f"[analyst] access rules failed on {src.name}: {e}")
                 continue
             if len(df) > MAX_ROWS:
+                total = len(df)
                 df = df.head(MAX_ROWS)
-                note = f"First {MAX_ROWS:,} rows."
+                note = _sample_note(MAX_ROWS, total, "table")
             label = src.name if len(src.tables) == 1 else f"{src.name} / {t.name}"
             name = _py_name(t.name if len(src.tables) > 1 else src.name, taken)
             frames[name] = df
             info.append({"name": name, "label": label, "source": src.name, "source_id": src.id, "kind": src.label,
                          "rows": int(len(df)), "columns": int(df.shape[1]), "checks": checks, "notes": notes,
-                         "note": note, "formulas": _sheet_formulas(ds, t.source_key)})
+                         "note": note, "rows_total": int(total) if total else None, "sampled": bool(note),
+                         "currency": _frame_currency(df), "formulas": _sheet_formulas(ds, t.source_key)})
     return frames, info
+
+
+def _sample_note(n: int, total: int | None, what: str) -> str:
+    if total and total > n:
+        return f"Based on the first {n:,} of {total:,} rows of this {what}."
+    return f"Based on the first {n:,} rows of this {what} (it may hold more)."
+
+
+def _cached_total(ds_id: str, table: str | None) -> int | None:
+    try:
+        from ..profile_cache import cached_exact_total_rows
+        return cached_exact_total_rows(ds_id, table) if table else None
+    except Exception:  # noqa: BLE001 - a count is a nicety; never a query
+        return None
+
+
+def _frame_currency(df: pd.DataFrame) -> str | None:
+    """The currency the data's money columns are in (services/semantics.py), or None (2026-10-13, R45)."""
+    try:
+        from ..semantics import infer_frame
+        cur = [m.get("currency") for m in infer_frame(df.head(5000), max_columns=60).values()
+               if m.get("role") == "money" and m.get("currency")]
+        return max(set(cur), key=cur.count) if cur else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _sheet_formulas(ds: models.DataSource, sheet: str | None) -> list[str]:
@@ -323,6 +419,9 @@ How to think, like the best analyst in the room:
 - Columns that ARE random draws (e.g. "Rand #" next to a derived value) are the simulation's random numbers:
   reuse them so your baseline matches the file; only draw new ones when asked for fresh randomness.
 - Follow the conventions of the file (a class assignment, a finance model): same units, same rounding.
+- Name options by the level they end at, never by the change: "1 barista (today)", "2 baristas", "3 baristas" -
+  not "Add 1" / "Add 2" (that reads two ways). Put the option name in ONE column only (no separate number column
+  repeating it). Money columns end in "($)" (or the file's currency) and keep 2 decimals.
 - Prefer exact methods; when you simulate, use a fixed seed and enough runs (1,000+) and report the spread.
 - Be exact. Vectorize; the code must finish in under 20 seconds. Never print; build `result`.
 
@@ -371,7 +470,9 @@ WRITER_SYSTEM = f"""You are the {WRITER_MARKER}. Write the answer a senior analy
 the COMPUTED results only. Never invent or round to a new number: every number you write must appear in
 the results (you may write it rounded the obvious way, e.g. 21.075 -> 21.1, 963.0 -> $963).
 
-Lead with the decision or the direct answer in the headline (max 22 words, the key number in it). Then 2-4
+Lead with the decision or the direct answer in the headline (max 22 words, the key number in it). When a BEST
+OPTION is given, the headline names it and its number first ("2 baristas is the cheapest: $89 a day vs $459 today"),
+then the asked-about options can follow in the text. Money: "$459", "$113.50" - never "$459.0". Then 2-4
 short sentences that explain why, with the trade-off and the condition under which the answer would change
 (break-even) when there is one. Say which assumptions matter. Plain words, no jargon, no markdown.
 Then up to 3 follow-up questions that push the analysis further (sensitivity, risk, a bigger scenario).
@@ -650,7 +751,7 @@ def write_answer(question: str, meta: dict, res: dict) -> dict:
     msgs = [{"role": "system", "content": WRITER_SYSTEM},
             {"role": "user", "content": f"QUESTION: {question}\nHOW IT WAS READ: {meta.get('reading') or ''}\n"
                                         f"METHOD: {meta.get('method') or ''}\nASSUMPTIONS: {json.dumps(meta.get('assumptions') or [])}\n\n"
-                                        + _results_text(res)}]
+                                        + _results_text(res) + _best_text(res)}]
     for attempt in range(2):
         try:
             raw = ai_engine._extract_json(_call(msgs, max_tokens=3000))
@@ -663,11 +764,101 @@ def write_answer(question: str, meta: dict, res: dict) -> dict:
         text = " ".join([draft["headline"], draft["answer"], *draft["bullets"]])
         bad = unsupported_numbers(text, allowed)
         if draft["headline"] and not bad:
-            return {**draft, "written_by": "model"}
+            return _polish({**draft, "written_by": "model"}, res)
         msgs += [{"role": "assistant", "content": json.dumps(raw)[:4000]},
                  {"role": "user", "content": "These numbers are not in the results: " + ", ".join(bad[:8])
                   + ". Rewrite using only numbers from the results. JSON only."}]
-    return {**fallback_answer(question, meta, res), "written_by": "template"}
+    return _polish({**fallback_answer(question, meta, res), "written_by": "template"}, res)
+
+
+# ---- decision first (R44) ----------------------------------------------------
+
+def _money(v: float, sym: str = "$") -> str:
+    a = abs(v)
+    body = f"{a:,.0f}" if a >= 1000 or float(a).is_integer() else f"{a:,.2f}"
+    return f"{'-' if v < 0 else ''}{sym}{body}"
+
+
+def _out_text(v: float, fmt: str, sym: str) -> str:
+    if fmt == "money":
+        return _money(v, sym)
+    if fmt == "percent":
+        return f"{v:,.1f}%"
+    if fmt == "minutes":
+        return f"{_fmt(v)} min"
+    return _fmt(v)
+
+
+def _decision(res: dict) -> dict | None:
+    """The best option of the live model, today's option and their numbers."""
+    m = res.get("model")
+    if not m or not m.get("rows"):
+        return None
+    best = _best_row(m)
+    if not best:
+        return None
+    key = m["pick"]["output"]
+    o = next((o for o in m["outputs"] if o["key"] == key), None)
+    if not o:
+        return None
+    sym = next((i["unit"] for i in m["inputs"] if i.get("unit") in ("$", "€", "£", "₹", "¥")), "$")
+    base = m["rows"][0]
+    label = _clean_label(best["label"])
+    return {"label": label, "value": best["computed"][key], "text": _out_text(best["computed"][key], o["format"], sym),
+            "word": "cheapest" if m["pick"]["goal"] == "min" else "best", "measure": o["label"].lower(),
+            "base_label": _clean_label(base["label"]), "base_text": _out_text(base["computed"][key], o["format"], sym),
+            "is_base": best is base}
+
+
+def _best_text(res: dict) -> str:
+    d = _decision(res)
+    if not d:
+        return ""
+    return (f"\nBEST OPTION: {d['label']} is the {d['word']} ({d['measure']} {d['text']})"
+            + ("" if d["is_base"] else f"; today ({d['base_label'].replace(' (today)', '')}): {d['base_text']}") + ".")
+
+
+_ADD_PAREN = re.compile(r"\s*\((?:add|plus|\+)\s*\d+[^)]*\)", re.I)
+
+
+def _clean_label(label: str) -> str:
+    return _ADD_PAREN.sub("", str(label)).replace("(Baseline)", "(today)").replace("(baseline)", "(today)").strip()
+
+
+_TRAIL0 = re.compile(r"([$€£₹¥])(\d[\d,]*)\.0+\b(?!\.?\d)")
+_ONE_DEC = re.compile(r"([$€£₹¥])(\d[\d,]*)\.(\d)\b(?!\.?\d)")
+
+
+def tidy_money(text: str) -> str:
+    """$459.0 -> $459; $113.5 -> $113.50."""
+    if not text:
+        return text
+    text = _TRAIL0.sub(r"\1\2", text)
+    return _ONE_DEC.sub(r"\1\2.\g<3>0", text)
+
+
+def _polish(ans: dict, res: dict) -> dict:
+    """Money written like money, and a choice answered with the choice: when the
+    headline doesn't name the best option, a decision headline leads and the
+    writer's headline becomes the first sentence of the answer."""
+    ans = {**ans, "headline": tidy_money(ans.get("headline") or ""), "answer": tidy_money(ans.get("answer") or ""),
+           "bullets": [tidy_money(b) for b in ans.get("bullets") or []]}
+    d = _decision(res)
+    if not d:
+        return ans
+    head = ans["headline"]
+    lead = re.match(r"\s*(\d+(?:\.\d+)?)", d["label"])
+    names_best = d["text"] in head and (d["label"].lower() in head.lower() or (lead and re.search(rf"\b{re.escape(lead.group(1))}\b", head)))
+    if names_best:
+        return ans
+    new = (f"{d['label']} is the {d['word']}: {d['measure']} {d['text']}"
+           + ("" if d["is_base"] else f", vs {d['base_text']} today") + ".")
+    if d["is_base"]:
+        new = f"Keep {d['label']}: it is already the {d['word']}, at {d['text']}."
+    first = head.rstrip()
+    ans["answer"] = (first + ("" if first.endswith((".", "!", "?")) else ".") + " " + ans["answer"]).strip() if first else ans["answer"]
+    ans["headline"] = new[0].upper() + new[1:]
+    return ans
 
 
 def _fmt(v: float) -> str:
@@ -681,11 +872,6 @@ def fallback_answer(question: str, meta: dict, res: dict) -> dict:
     parts = [f"{k.replace('_', ' ')}: {_fmt(v)}" for k, v in list(keys.items())[:4]]
     m = res.get("model")
     headline = meta.get("title") or "Here is the analysis"
-    if m:
-        best = _best_row(m)
-        if best:
-            o = next(o for o in m["outputs"] if o["key"] == m["pick"]["output"])
-            headline = f"{best['label']} is the best option: {o['label'].lower()} {_fmt(best['computed'][o['key']])}."
     return {"headline": headline, "answer": "; ".join(parts) + ("." if parts else ""), "bullets": [],
             "next_questions": [q for q in meta.get("other_readings") or []][:2]}
 

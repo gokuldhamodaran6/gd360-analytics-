@@ -26,7 +26,8 @@ import re
 
 import pandas as pd
 
-from .numbers import CURRENCY_SYMBOLS, _NUM_RE, _DATE_RE, _finite
+from .. import semantics as _sem
+from .numbers import CURRENCY_SYMBOLS, _NUM_RE, _DATE_RE, _finite, _symbol
 
 MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
           "november", "december"]
@@ -137,39 +138,36 @@ def column_kind(name, values, default: str | None = None) -> str:
 
 
 def nice(v, kind: str = "number", currency: str | None = "USD") -> str:
-    """A number as it is written in a sentence or a table cell."""
+    """A number as it is written in a sentence or a table cell.
+
+    2026-10-13 (R45): half-up rounding and semantics.compact, like the frontend (21.075 -> 21.08,
+    999,999 -> 1M - never "1000.0K"); a currency GD360 has no symbol for is written as its code."""
     f = _finite(v)
     if f is None:
         return "—"
     a = abs(f)
     sign = "−" if f < 0 else ""
     if kind == "percent":
-        return f"{sign}{a:.1f}%"
+        return f"{sign}{_sem.fmt_number(a, 1)}%"
     if kind == "ratio":
-        return f"{sign}{a * 100:.1f}%"
+        return f"{sign}{_sem.fmt_number(a * 100, 1)}%"
     if kind == "currency":
-        sym = CURRENCY_SYMBOLS.get((currency or "USD").upper(), "")
-        if a >= 1e9:
-            body = f"{a / 1e9:.2f}B"
-        elif a >= 1e6:
-            body = f"{a / 1e6:.2f}M" if a < 1e7 else f"{a / 1e6:.1f}M"
-        elif a >= 1e4:
-            body = f"{a / 1e3:.1f}K"  # round 35: "K", like every chart label
+        sym = _symbol(currency)
+        if a >= 9999.5:
+            body = _sem.compact(a)
         elif a >= 100:
-            body = f"{a:,.0f}"
+            body = f"{int(_sem.round_half_up(a, 0)):,}"
         else:
-            body = f"{a:,.2f}"
+            body = f"{_sem.round_half_up(a, 2):,.2f}"
         return f"{sign}{sym}{body}" if sym else f"{sign}{body} {currency}"
     if kind == "integer":
-        return f"{sign}{a:,.0f}"
-    if a >= 1e9:
-        return f"{sign}{a / 1e9:.2f}B"
-    if a >= 1e6:
-        return f"{sign}{a / 1e6:.2f}M" if a < 1e7 else f"{sign}{a / 1e6:.1f}M"
+        return f"{sign}{int(_sem.round_half_up(a, 0)):,}"
+    if a >= 999_999.5:
+        return sign + _sem.compact(a)
     if a >= 1000:
-        return f"{sign}{a:,.0f}"
+        return f"{sign}{int(_sem.round_half_up(a, 0)):,}"
     if a >= 1:
-        return f"{sign}{a:,.2f}".rstrip("0").rstrip(".")
+        return sign + _sem.fmt_number(a, 2).rstrip("0").rstrip(".")
     if a == 0:
         return "0"
     return f"{sign}{a:.3g}"
@@ -177,14 +175,54 @@ def nice(v, kind: str = "number", currency: str | None = "USD") -> str:
 
 # ---- calendar dimensions -----------------------------------------------------
 
+_MONTH_YEAR = re.compile(r"([a-z]{3,9})\.?[\s\-/']+'?(\d{2}|\d{4})")
+_YEAR_MONTH = re.compile(r"(\d{4})[-/](\d{1,2})")
+_QUARTER_YEAR = re.compile(r"(?:(\d{4})[\s\-/]?q([1-4])|q([1-4])[\s\-/]?'?(\d{2}|\d{4}))")
+
+
 def calendar_position(v) -> int | None:
-    s = str(v or "").strip().lower()
+    """Where a calendar label sits in time: Jan=1, Monday=1, Q3=3 - and (2026-10-13, R45) the labels
+    GD360 writes for months of several years, "Jan 2025", "2025-01" and "Q1 2025", as yyyymm00 keys so
+    they sort in time, never alphabetically."""
+    s = str(v if v is not None else "").strip().lower()
     if s in _MONTH_POS:
         return _MONTH_POS[s]
     if s in _WEEKDAY_POS:
         return _WEEKDAY_POS[s]
     m = re.fullmatch(r"q([1-4])", s)
-    return int(m.group(1)) if m else None
+    if m:
+        return int(m.group(1))
+    m = _MONTH_YEAR.fullmatch(s)
+    if m and m.group(1) in _MONTH_POS:
+        y = int(m.group(2))
+        y = y + 2000 if y < 100 else y
+        return y * 10000 + _MONTH_POS[m.group(1)] * 100
+    m = _YEAR_MONTH.fullmatch(s)
+    if m and 1 <= int(m.group(2)) <= 12:
+        return int(m.group(1)) * 10000 + int(m.group(2)) * 100
+    m = _QUARTER_YEAR.fullmatch(s)
+    if m:
+        y, q = (m.group(1), m.group(2)) if m.group(1) else (m.group(4), m.group(3))
+        y = int(y) + (2000 if len(y) == 2 else 0)
+        return y * 10000 + (int(q) * 3 - 2) * 100
+    return None
+
+
+def sort_key(v) -> tuple:
+    """A key that orders any time-like label the way a person reads it (2026-10-13, R45): calendar labels
+    by calendar_position, ISO dates in time, numeric strings as numbers ("2" before "10"), the rest as text."""
+    pos = calendar_position(v)
+    if pos is not None:
+        return (0, float(pos), "")
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and _finite(v) is not None:
+        return (1, float(v), "")
+    s = str(v if v is not None else "").strip()
+    f = _finite(s.replace(",", "")) if re.fullmatch(r"[-+]?[\d,]*\.?\d+", s) else None
+    if f is not None:
+        return (1, f, "")
+    if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+        return (2, 0.0, s)
+    return (3, 0.0, s.lower())
 
 
 def is_month_series(values) -> bool:
@@ -303,16 +341,84 @@ def _primary_measure(measures: list[str], prefer: str | None = None) -> str | No
     if prefer and prefer in measures:
         return prefer
     for m in measures:
-        if _CURRENCY_NAME.search(str(m)) and not _AVG_NAME.search(str(m)):
+        if _CURRENCY_NAME.search(str(m)) and _additive(m):
             return m
     for m in measures:
-        if not _AVG_NAME.search(str(m)):
+        if _additive(m):
             return m
     return measures[0]
 
 
-def _additive(measure: str) -> bool:
-    return not _AVG_NAME.search(str(measure))
+_SUM_WORD = re.compile(r"\b(total|sum)\b")
+_AVG_WORD = re.compile(r"\b(avg|average|mean|median|per)\b")
+_NEVER_SUM = ("id", "sequence", "year", "clock", "percent", "rate", "date", "boolean", "text", "geo", "category")
+
+
+def _additive(measure: str, series: pd.Series | None = None) -> bool:
+    """Whether a measure may be added up across rows (2026-10-13, R45: from services/semantics, not a
+    short name list). Never: averages, per-X ratios, AOV/ARPU, prices, margins, rates, percentages, scores,
+    ratings, ages and other levels - "Total revenue per customer $400" and "Total AOV $165" were the old
+    result. With the values, an ID, a year, a clock time or a percentage is never summed either."""
+    text = _sem._norm(measure)
+    if series is not None:
+        try:
+            role = _sem.infer_column(measure, series).get("role")
+        except Exception:  # noqa: BLE001
+            role = None
+        if role in _NEVER_SUM and not (role == "category" and pd.api.types.is_numeric_dtype(series)):
+            return False
+    if _AVG_WORD.search(text):
+        return False
+    if _SUM_WORD.search(text):
+        return True
+    if _sem._has(_sem._AVG_W, text):
+        return False
+    if _sem._has(_sem._PERCENT_W, text) and not _sem._has(_sem._NOT_PERCENT_W, text):
+        return False
+    return True
+
+
+_WEIGHT_NAME = re.compile(r"\b(orders?|customers?|users?|sessions?|visits?|visitors?|transactions?|count|counts|n|units|"
+                          r"quantity|qty|volume|weight|weights|leads|clicks|impressions|bookings|tickets|calls|members|"
+                          r"accounts|records|rows|deals|nights|items|responses|respondents|patients|students|employees|"
+                          r"shipments|purchases|installs|signups|views|pageviews)\b")
+
+
+def weight_column(df: pd.DataFrame, measure: str, exclude: tuple | list = ()) -> str | None:
+    """The count a non-additive measure is an average over (orders beside avg_order_value), so a segment
+    with several rows is averaged weighted by it, not row by row (2026-10-13, R45)."""
+    for c in df.columns:
+        if c == measure or c in exclude:
+            continue
+        if not pd.api.types.is_numeric_dtype(df[c]) or pd.api.types.is_bool_dtype(df[c]):
+            continue
+        text = _sem._norm(c)
+        if not _WEIGHT_NAME.search(text) or _AVG_WORD.search(text) or _sem._has(_sem._ID_W, text):
+            continue
+        w = pd.to_numeric(df[c], errors="coerce")
+        if w.notna().any() and (w.dropna() >= 0).all() and w.sum() > 0:
+            return c
+    return None
+
+
+def aggregate(df: pd.DataFrame, keys: list, measure: str, additive: bool | None = None) -> pd.DataFrame:
+    """One row per key: a sum for an additive measure; for a non-additive one the mean - weighted by its
+    count column when the rows have one (2026-10-13, R45: a mean of means let 1 order count as much as 99)."""
+    work = df.copy()
+    work[measure] = pd.to_numeric(work[measure], errors="coerce")
+    work = work.dropna(subset=[measure])
+    if additive is None:
+        additive = _additive(measure, df[measure])
+    if additive:
+        return work.groupby(keys, as_index=False, dropna=False)[measure].sum()
+    w = weight_column(work, measure, exclude=keys) if work.duplicated(subset=keys).any() else None
+    if w is None:
+        return work.groupby(keys, as_index=False, dropna=False)[measure].mean()
+    work["__w"] = pd.to_numeric(work[w], errors="coerce").fillna(0)
+    work["__vw"] = work[measure] * work["__w"]
+    g = work.groupby(keys, as_index=False, dropna=False)[["__vw", "__w"]].sum()
+    g[measure] = g["__vw"] / g["__w"].where(g["__w"] != 0)
+    return g[keys + [measure]]
 
 
 def chart_payload(df: pd.DataFrame, dim: str, measure: str, series: str | None = None, currency: str | None = "USD",
@@ -322,10 +428,7 @@ def chart_payload(df: pd.DataFrame, dim: str, measure: str, series: str | None =
     largest first otherwise. Returns (payload, chart_type, note)."""
     from .analysis import table_payload
     keys = [dim] + ([series] if series else [])
-    work = df[keys + [measure]].copy()
-    work[measure] = pd.to_numeric(work[measure], errors="coerce")
-    agg = "sum" if _additive(measure) else "mean"
-    work = work.dropna(subset=[measure]).groupby(keys, as_index=False, dropna=False)[measure].agg(agg)
+    work = aggregate(df, keys, measure)  # 2026-10-13 (R45): weighted when the measure is an average
     note = None
     calendar = _is_calendar(work[dim].tolist())
     if calendar:
@@ -353,7 +456,7 @@ def details_payload(df: pd.DataFrame, currency: str | None = "USD", limit: int =
     # calendar order for a month / weekday column
     dim = next((c["name"] for c in p["columns"] if c.get("dtype") != "number" and _is_calendar([r.get(c["name"]) for r in rows])), None)
     if dim:
-        rows = sorted(rows, key=lambda r: calendar_position(r.get(dim)) or 99)
+        rows = sorted(rows, key=lambda r: sort_key(r.get(dim)))
     return {**p, "rows": rows}
 
 
@@ -468,9 +571,7 @@ def supporting_visuals(plan: dict, tables: dict, used: set, currency: str | None
                 others = [d for d in dims if d not in (year, month)]
                 series = next((d for d in others if 1 < df[d].nunique() <= 6), None)
                 keys = [year, month] + ([series] if series else [])
-                work = df[keys + [measure]].copy()
-                work[measure] = pd.to_numeric(work[measure], errors="coerce")
-                work = work.groupby(keys, as_index=False)[measure].agg("sum" if _additive(measure) else "mean")
+                work = aggregate(df, keys, measure)
                 mnum = work[month].map(_month_number)
                 work = work[mnum.notna()]
                 work["period"] = [f"{int(y):04d}-{int(m):02d}-01" for y, m in zip(work[year], mnum[mnum.notna()])]
@@ -504,7 +605,8 @@ def supporting_visuals(plan: dict, tables: dict, used: set, currency: str | None
             nominal.sort(key=lambda d: (not named(d), not (2 < df[d].nunique() <= 15), -min(df[d].nunique(), 12)))
             dim = nominal[0]
             series = next((d for d in dims if d not in (dim,) and 1 < df[d].nunique() <= 4), None)
-            if not _additive(measure) and df.duplicated(subset=[dim] + ([series] if series else [])).any():
+            if not _additive(measure, df[measure]) and weight_column(df, measure, [dim]) is None \
+                    and df.duplicated(subset=[dim] + ([series] if series else [])).any():
                 series = None
                 if df.duplicated(subset=[dim]).any():
                     continue  # averages cannot be re-added; leave it to the evidence tab
@@ -711,11 +813,22 @@ def polish_answer(answer: dict, idx: list[tuple[float, str]], currency: str | No
 # ---- direction of the question -----------------------------------------------
 
 _LOW = re.compile(r"\b(lowest|low|least|worst|weakest|bottom|poorest|slowest|smallest|minimum|min|fewest|underperform\w*|"
-                  r"low[- ]performing|drop(ped)?|declin\w+)\b", re.I)
+                  r"low[- ]performing|drop(ped|s)?|declin\w+|fell|fall(en|ing|s)?|decreas\w+|shrank|lost the most)\b", re.I)
 _HIGH = re.compile(r"\b(highest|best|top|most|largest|biggest|strongest|maximum|max|leading|peak|perform(s|ed)? (good|well|best))\b", re.I)
+# 2026-10-13 (R45): "top" and "most" only say "rank them"; the word that says WHICH end wins. "top 5 worst
+# performing stores", "top 10 products with the least returns" and "which stores dropped the most" ask for
+# the low end (the biggest decline). Only an explicit high superlative competes with a low word.
+_STRONG_HIGH = re.compile(r"\b(highest|best|largest|biggest|strongest|maximum|max|leading|peak|grew the most|"
+                          r"rose the most|increased the most|perform(s|ed)? (good|well|best))\b", re.I)
+_NOT_LOW = re.compile(r"\bat least\b|\bat (the )?(very )?least\b|\bleast \d", re.I)
 
 
 def question_rank(question: str) -> str:
-    q = question or ""
-    lo, hi = len(_LOW.findall(q)), len(_HIGH.findall(q))
-    return "lowest" if lo > hi else "highest"
+    q = _NOT_LOW.sub(" ", question or "")
+    lo = len(_LOW.findall(q))
+    if not lo:
+        return "highest"
+    strong = len(_STRONG_HIGH.findall(q))
+    if not strong:
+        return "lowest"
+    return "lowest" if lo > strong else "highest"
