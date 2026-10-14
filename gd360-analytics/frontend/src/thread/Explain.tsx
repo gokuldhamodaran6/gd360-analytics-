@@ -13,6 +13,7 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { Explanation, ExplainTarget, projectsApi } from "../api/projects";
 import { CloseIcon, GdMark, Spinner } from "./parts";
+import { fmtNumber } from "../lib/numberFormat";
 
 type IconProps = { size?: number; className?: string };
 
@@ -160,7 +161,7 @@ export function ExplainPanel({ target, title, className = "" }: { target: Explai
         <GdMark size={20} />
         <span className="text-ui font-semibold text-text">GD360</span>
         <span className="truncate">
-          {s.loading ? "· reading the numbers already here…" : s.data ? `· from the numbers on screen${s.data.seconds != null ? ` · ${Math.max(0.1, s.data.seconds).toFixed(1)} s` : ""} · nothing re-run` : ""}
+          {s.loading ? "· reading the numbers already here…" : s.data ? `· from the numbers on screen${s.data.seconds != null ? ` · ${fmtNumber(Math.max(0.1, s.data.seconds), 1)} s` : ""} · nothing re-run` : ""}
         </span>
         <span className="flex-1" />
         <button type="button" onClick={() => c.close(target)} className="ui-focus w-7 h-7 rounded-[8px] grid place-items-center text-muted hover:text-text" aria-label="Hide the explanation">
@@ -230,16 +231,18 @@ export function ExplainBody({ e, onFollowup, onAskAbout, onRunInstead }: {
 
 /** An explanation as a reply in the conversation column. */
 export function ExplainTurn({
-  e, runNumber, onOpen, onFollowup, onRunInstead, canEdit,
+  e, runNumber, runTitle, onOpen, onFollowup, onRunInstead, canEdit,
 }: {
-  e: Explanation; runNumber: number; onOpen: () => void; onFollowup: (q: string) => void; onRunInstead: () => void; canEdit: boolean;
+  e: Explanation; runNumber?: number; runTitle?: string; onOpen: () => void; onFollowup: (q: string) => void; onRunInstead: () => void; canEdit: boolean;
 }) {
   const asked = e.question || `Explain ${e.target.kind === "answer" ? "the answer" : `“${e.title}”`}`;
+  // 2026-10-13 (R45): name the answer by its short title - the thread never shows "Q1"/"Q3", and never "Q0"
+  const about = runTitle ? `“${runTitle}”` : runNumber && runNumber > 0 ? `question ${runNumber}` : "the answer";
   return (
     <div className="flex flex-col gap-3" data-explain-turn={e.id || ""}>
       <div className="self-end max-w-[88%] flex flex-col items-end gap-1">
         <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-faint inline-flex items-center gap-1.5">
-          <SparkIcon size={10} /> About Q{runNumber}
+          <SparkIcon size={10} /> <span className="truncate max-w-[260px] normal-case tracking-normal" title={runTitle}>About {about}</span>
         </span>
         <div className="bg-surface2 rounded-[16px_16px_4px_16px] px-4 py-3 text-[15px] leading-[22px] text-text">{asked}</div>
       </div>
@@ -247,7 +250,7 @@ export function ExplainTurn({
         <div className="flex items-center gap-2 text-caption text-muted">
           <GdMark />
           <span className="text-ui font-semibold text-text">GD360</span>
-          <span className="truncate">· explained from Q{runNumber}'s numbers{e.seconds != null ? ` · ${Math.max(0.1, e.seconds).toFixed(1)} s` : ""}</span>
+          <span className="truncate">· explained from that answer's numbers{e.seconds != null ? ` · ${fmtNumber(Math.max(0.1, e.seconds), 1)} s` : ""}</span>
         </div>
         <ExplainBody e={e} onFollowup={canEdit ? onFollowup : undefined} onRunInstead={canEdit && e.question ? onRunInstead : undefined} />
         <button type="button" onClick={onOpen} className="ui-focus self-start text-ui font-medium text-kind-answer hover:underline">

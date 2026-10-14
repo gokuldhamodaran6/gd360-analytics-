@@ -13,6 +13,7 @@ import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { Project, ProjectRun, ProjectSource, projectsApi, ThreadPlan, ThreadPlanBlock, ThreadPlanMode } from "../api/projects";
 import { CheckIcon, CloseIcon, Spinner } from "./parts";
+import { useFocusTrap } from "./a11y";
 
 function errorText(e: any, fallback: string): string {
   const d = e?.response?.data?.detail;
@@ -76,6 +77,9 @@ export function originTone(origin: string): { fg: string; bg: string; label: str
 }
 
 function Modal({ open, onClose, busy, children, width }: { open: boolean; onClose: () => void; busy: boolean; children: ReactNode; width: number }) {
+  // 2026-10-13 (R45): focus moves in, Tab stays inside, focus returns on close
+  const box = useRef<HTMLDivElement>(null);
+  useFocusTrap(open, box);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -92,8 +96,8 @@ function Modal({ open, onClose, busy, children, width }: { open: boolean; onClos
         if (e.target === e.currentTarget && !busy) onClose();
       }}
     >
-      <div role="dialog" aria-modal="true" aria-labelledby="thread-dash-title" data-thread-dashboard-dialog=""
-        className="w-full rounded-[24px] border border-border-strong bg-surface shadow-pop flex flex-col transition-[max-width] duration-200" style={{ maxWidth: width }}>
+      <div ref={box} role="dialog" aria-modal="true" aria-labelledby="thread-dash-title" data-thread-dashboard-dialog=""
+        className="outline-none w-full rounded-[24px] border border-border-strong bg-surface shadow-pop flex flex-col transition-[max-width] duration-200" style={{ maxWidth: width }}>
         {children}
       </div>
     </div>,
@@ -522,7 +526,6 @@ export function CreateFromThreadDialog({
                   <span className="w-4 h-4 rounded-[4px] grid place-items-center text-[rgb(var(--color-base))]" style={{ background: on ? "rgb(var(--color-kind-answer))" : "transparent", boxShadow: on ? undefined : "inset 0 0 0 1.5px rgb(var(--color-border-strong))" }}>
                     {on && <CheckIcon size={10} />}
                   </span>
-                  <span className="font-mono text-[10.5px] text-muted">Q{numberOf(r.id)}</span>
                   <span className="truncate max-w-[220px]">{shortTitle(r)}</span>
                 </button>
               );

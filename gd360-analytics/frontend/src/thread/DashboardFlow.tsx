@@ -18,6 +18,8 @@ import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { MakeDashboardResult, Project, ProjectRun, projectsApi, ThreadDashboard } from "../api/projects";
 import { CheckIcon, CloseIcon, GridIcon, Spinner } from "./parts";
+import { useFocusTrap } from "./a11y";
+import { truncateWords } from "../project/errors";
 
 function errorText(e: any, fallback: string): string {
   const d = e?.response?.data?.detail;
@@ -44,7 +46,7 @@ function usePhase(active: boolean): string {
 /** A short page name for an answer: its plan's title, else its question. */
 export function shortTitle(run: ProjectRun): string {
   const t = (run.plan?.title || run.question || "").trim().replace(/\?$/, "");
-  return t.length > 48 ? `${t.slice(0, 46).trimEnd()}…` : t || "Answer";
+  return t ? truncateWords(t, 48) : "Answer";
 }
 
 export const isAnswered = (r: ProjectRun) => r.status === "done" && Boolean(r.result?.answer) && !r.result?.answer_stale;
@@ -339,6 +341,9 @@ export function PlacementToast({ flow }: { flow: ReturnType<typeof useDashboardF
 // ---- the modals --------------------------------------------------------------------
 
 function Modal({ open, onClose, busy, labelledBy, children, width = 720 }: { open: boolean; onClose: () => void; busy: boolean; labelledBy: string; children: ReactNode; width?: number }) {
+  // 2026-10-13 (R45): focus moves into the dialog, Tab stays inside it, and returns to the button that opened it
+  const box = useRef<HTMLDivElement>(null);
+  useFocusTrap(open, box);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -356,10 +361,11 @@ function Modal({ open, onClose, busy, labelledBy, children, width = 720 }: { ope
       }}
     >
       <div
+        ref={box}
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelledBy}
-        className="w-full rounded-[24px] border border-border-strong bg-surface shadow-pop flex flex-col"
+        className="w-full rounded-[24px] border border-border-strong bg-surface shadow-pop flex flex-col outline-none"
         style={{ maxWidth: width }}
       >
         {children}
@@ -382,7 +388,6 @@ export function AddToDashboardDialog({
   dashboard,
   flow,
   onNew,
-  numberOf,
 }: {
   open: boolean;
   onClose: () => void;
@@ -391,7 +396,8 @@ export function AddToDashboardDialog({
   dashboard: ThreadDashboard | null;
   flow: ReturnType<typeof useDashboardFlow>;
   onNew: () => void;
-  numberOf: (runId: string) => number;
+  /** kept for callers; the dialog names the answer by its short title (R45) */
+  numberOf?: (runId: string) => number;
 }) {
   const busy = Boolean(flow.placing);
   // close once the answer has been added (the toast takes over)
@@ -408,7 +414,8 @@ export function AddToDashboardDialog({
     <Modal open={open} onClose={onClose} busy={busy} labelledBy="add-dash-title" width={560}>
       <div className="px-6 pt-6 pb-2 flex gap-4 items-start">
         <div className="flex-1 min-w-0 flex flex-col gap-1.5">
-          <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">Q{numberOf(run.id)} · {shortTitle(run)}</span>
+          {/* R45: the answer's own short title, never a "Q3" the thread doesn't show */}
+          <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted truncate" title={run.question}>{shortTitle(run)}</span>
           <h2 id="add-dash-title" className="m-0 text-[20px] font-semibold text-text">Put this answer on a dashboard</h2>
         </div>
         <button type="button" onClick={onClose} disabled={busy} aria-label="Close" className="ui-focus w-9 h-9 rounded-[10px] grid place-items-center text-muted hover:text-text disabled:opacity-40">
