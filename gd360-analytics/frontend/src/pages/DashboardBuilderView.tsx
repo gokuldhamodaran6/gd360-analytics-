@@ -1018,6 +1018,16 @@ function PageFrame({
   style?: React.CSSProperties;
   children: React.ReactNode;
 }) {
+  // 2026-10-14 (R46): on the conversation's canvas (frontend/src/chat/Canvas.tsx) the dashboard is shown
+  // inside the chat page, so ?embed=1 drops the app's own sidebar and top bar - the canvas has its own chrome.
+  const embed = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("embed") === "1";
+  if (embed) {
+    return (
+      <div className="dash-shell flex-1 min-w-0 min-h-screen flex flex-col bg-base" style={style} data-embed="">
+        {children}
+      </div>
+    );
+  }
   return (
     <div className="flex">
       <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />

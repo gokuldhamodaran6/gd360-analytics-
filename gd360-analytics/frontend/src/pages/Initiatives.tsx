@@ -1,6 +1,7 @@
 // 2026-10-10: Initiatives hub - every event, webinar, campaign, account-based
 // push, hire and build in one place: what needs you today, how each one is
 // pacing against its targets, and one line to plan the next.
+import ThemeToggle from "../components/ThemeToggle";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
@@ -66,7 +67,8 @@ export default function Initiatives() {
             <h1 className="m-0 text-[24px] font-semibold tracking-tight text-text">Initiatives</h1>
             <p className="m-0 text-ui text-secondary max-w-[640px]">Events, webinars, campaigns, account-based marketing, hiring and product builds - planned with you, tracked automatically, measured against their targets.</p>
           </div>
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-2 flex-wrap items-center">
+            <ThemeToggle />
             <Link to="/accounts" className="btn-secondary text-sm inline-flex items-center gap-2" data-go-accounts="">
               <KindGlyph kind="abm" size={15} /> Accounts{hub ? <span className="text-muted tabular-nums">{hub.counts.accounts.toLocaleString()}</span> : null}
             </Link>

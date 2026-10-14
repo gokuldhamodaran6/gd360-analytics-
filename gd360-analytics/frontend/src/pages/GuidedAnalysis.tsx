@@ -31,6 +31,7 @@
 // with no new question tab (thread/Explain.tsx).
 //
 // /g/:projectId - a Conversation with kind "guided"; ?run=<id> opens one question.
+import ThemeToggle from "../components/ThemeToggle";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
@@ -495,6 +496,7 @@ export default function GuidedAnalysis() {
             </div>
             <div className="flex gap-2 flex-wrap items-center">
               <NotificationBell />
+              <ThemeToggle />
               <button
                 type="button"
                 className="btn-secondary text-sm"

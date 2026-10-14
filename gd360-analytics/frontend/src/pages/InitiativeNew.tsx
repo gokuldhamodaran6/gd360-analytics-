@@ -3,6 +3,7 @@
 // from earlier initiatives), roles, phases with dated tasks, the tools and
 // why, and the scope it is measured on. Everything is editable before it
 // is created.
+import ThemeToggle from "../components/ThemeToggle";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
@@ -106,9 +107,12 @@ export default function InitiativeNew() {
             <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted"><Link to="/initiatives" className="hover:text-text">Initiatives</Link> / New</span>
             <h1 className="m-0 text-[22px] font-semibold tracking-tight text-text">Plan an initiative</h1>
           </div>
-          <button type="button" className="btn-primary text-sm" disabled={!plan || busy || creating} onClick={create} data-create-initiative="">
-            {creating ? "Creating…" : "Create initiative"}
-          </button>
+          <div className="flex gap-2 items-center">
+            <ThemeToggle />
+            <button type="button" className="btn-primary text-sm" disabled={!plan || busy || creating} onClick={create} data-create-initiative="">
+              {creating ? "Creating…" : "Create initiative"}
+            </button>
+          </div>
         </header>
 
         <div className="px-4 sm:px-8 py-6 pb-24 flex gap-6 flex-wrap items-start">

@@ -14,6 +14,13 @@
 // every question and GD360's reply, live while it plans and runs. Right:
 // the selected question's Plan, Sources (each query as it runs), Results
 // (the answer drawn) and Evidence (every table and the query behind it).
+// 2026-10-13 (R45, flows that never confuse): the route is keyed by answer
+// (App.tsx), so nothing leaks from one answer into the next; a no-data answer
+// takes follow-ups with no source picker; the header title is the question cut
+// at a word (with a tooltip) and renamable in place; a failed load says so with
+// Retry; the thread shows a compact summary while the right pane shows the full
+// answer once; errors are human sentences (project/errors.ts); dialogs, the
+// Share popover and the tabs work from the keyboard.
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
@@ -27,10 +34,15 @@ import ScopePicker, { Scope } from "../spaces/ScopePicker";
 import { ThreadComposer } from "../thread/parts";
 import {
   AddToDashboardCard, AddToDashboardDialog, CombineNudgeCard, CreateFromThreadDialog, isAnswered, PlacementToast,
-  primaryDashboard, threadPrompt, useDashboardFlow,
+  primaryDashboard, shortTitle, threadPrompt, useDashboardFlow,
 } from "../thread/DashboardFlow";
 import { EvidenceTab, PlanTab, ResultsTab, SourcesTab } from "../project/RunPanels";
-import { AnalystProgress, isAnalystRun } from "../project/AnalystAnswer";
+import { friendlyError } from "../project/errors";
+import { displayTitle, planLine, shareText, titleIsQuestion } from "../thread/answerText";
+import { menuKeyDown, rovingIndex, useFocusTrap } from "../thread/a11y";
+import { fmtNumber } from "../lib/numberFormat";
+import { AnalystNext, AnalystProgress, isAnalystRun } from "../project/AnalystAnswer";
+import ThemeToggle from "../components/ThemeToggle";
 import { NotificationBell } from "../components/NotificationCenter";
 import { AboutChip, AboutChipView, ExplainProvider, ExplainTurn, scrollToTarget, timeline, useExplainController } from "../thread/Explain";
 import { autoRunPreference, timeAgo } from "../project/format";
@@ -41,8 +53,8 @@ type TabId = "plan" | "sources" | "results" | "evidence";
 const ACTIVE = new Set(["planning", "running"]);
 
 function errorText(e: any, fallback: string): string {
-  const d = e?.response?.data?.detail;
-  return typeof d === "string" && d.trim() ? d : fallback;
+  // R45: never raw engine text - one human sentence (project/errors.ts)
+  return friendlyError(e?.response?.data?.detail, fallback).text;
 }
 
 function defaultTab(run: ProjectRun | null): TabId {
@@ -68,6 +80,9 @@ export default function ProjectWorkspace() {
   const [followCheck, setFollowCheck] = useState<QuestionCheck | null>(null);
   const keptWords = useRef<string[]>([]);
   const [notFound, setNotFound] = useState(false);
+  // R45: the first load failed (not a 404) - the page says so, with Retry
+  const [loadError, setLoadError] = useState("");
+  const [attempt, setAttempt] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [createFocus, setCreateFocus] = useState<string | null>(null);
   const [createLayout, setCreateLayout] = useState<"pages" | "merge" | "latest" | undefined>(undefined);
@@ -87,6 +102,10 @@ export default function ProjectWorkspace() {
   const threadEnd = useRef<HTMLDivElement>(null);
   const threadPane = useRef<HTMLDivElement>(null);
   const shareRef = useRef<HTMLDivElement>(null);
+  const sharePop = useRef<HTMLDivElement>(null);
+  const dashMenuPop = useRef<HTMLDivElement>(null);
+  useFocusTrap(shareOpen, sharePop, { trap: false });
+  useFocusTrap(dashMenuOpen, dashMenuPop, { trap: false });
 
   useEffect(() => {
     if (!shareOpen) return;
@@ -129,7 +148,11 @@ export default function ProjectWorkspace() {
       return p;
     } catch (e: any) {
       if (e?.response?.status === 404) setNotFound(true);
-      else setError(errorText(e, "Couldn't load this project."));
+      else {
+        const msg = errorText(e, "Couldn't load this answer. Check your connection and try again.");
+        setLoadError(msg);
+        setError(msg);
+      }
       return null;
     }
   }, [projectId]);
@@ -150,14 +173,18 @@ export default function ProjectWorkspace() {
     (async () => {
       const p = await loadProject();
       if (!p || !alive) return;
+      setLoadError("");
+      setError("");
       await Promise.all(p.runs.map((r) => loadRun(r.id)));
-      if (!selected && p.runs.length) setSelected(p.runs[p.runs.length - 1].id);
+      if (!alive) return;
+      // a ?run= from another answer (a stale link) falls back to this answer's latest question
+      setSelected((cur) => (cur && p.runs.some((r) => r.id === cur) ? cur : p.runs.length ? p.runs[p.runs.length - 1].id : null));
     })();
     return () => {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
+  }, [projectId, attempt]);
 
   const ordered = useMemo(() => {
     const ids = project?.runs.map((r) => r.id) || [];
@@ -211,10 +238,15 @@ export default function ProjectWorkspace() {
   };
 
   // the follow-up box asks across the thread's sources (the same picker as Home)
+  // R45: an answer with no data (worked out from the question) has no picker -
+  // its follow-ups are asked on the same (no) data, never "Pick at least one source."
   const pickerLoaded = useRef(false);
+  const hasSources = Boolean(project?.space_id) || (project?.source_ids || []).length > 0;
   useEffect(() => {
     if (!project) return;
-    setScope((cur) => cur || (project.space_id ? { kind: "space", spaceId: project.space_id } : { kind: "sources", ids: project.source_ids }));
+    const own = (project.source_ids || []).length;
+    setScope((cur) => cur || (project.space_id ? { kind: "space", spaceId: project.space_id } : own ? { kind: "sources", ids: project.source_ids } : null));
+    if (!project.space_id && !own) return;
     if (pickerLoaded.current) return;
     pickerLoaded.current = true;
     projectsApi.sources(project.workspace_id || undefined).then(setAllSources).catch(() => setAllSources(project.sources));
@@ -228,7 +260,8 @@ export default function ProjectWorkspace() {
     const same = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
     if (scope.kind === "space") return scope.spaceId !== project.space_id ? { space_id: scope.spaceId } : {};
     if (scope.kind === "sources") {
-      if (!scope.ids.length) return null;
+      // nothing ticked: only a problem when the thread HAS sources to choose from
+      if (!scope.ids.length) return (project.source_ids || []).length ? null : {};
       return project.space_id || !same(scope.ids, project.source_ids) ? { source_ids: scope.ids } : {};
     }
     const all = (allSources || []).map((x) => x.id);
@@ -298,7 +331,7 @@ export default function ProjectWorkspace() {
       }
       const r = await loadRun(out.run_id);
       const p = await loadProject();
-      if (p && (change.space_id || change.source_ids)) setScope(p.space_id ? { kind: "space", spaceId: p.space_id } : { kind: "sources", ids: p.source_ids });
+      if (p && (change.space_id || change.source_ids)) setScope(p.space_id ? { kind: "space", spaceId: p.space_id } : p.source_ids.length ? { kind: "sources", ids: p.source_ids } : null);
       if (r) select(r.id);
     } catch (e: any) {
       setError(errorText(e, "Couldn't ask that. Please try again."));
@@ -368,7 +401,13 @@ export default function ProjectWorkspace() {
     }
   };
   const studioHref = deeperSource && current ? "guided" : null;
-  const canCreate = !!project?.can_edit && current?.status === "done";
+  // R45: a dashboard is made from the thread's finished answers - on data, or
+  // (with no data) from Analyst answers (scenario/static blocks). Viewers and
+  // a no-data thread with no Analyst answer never see the button.
+  const answered = ordered.filter(isAnswered);
+  const dashAnswered = answered.filter((r) => hasSources || isAnalystRun(r));
+  const showCreate = Boolean(project?.can_edit) && (hasSources || ordered.some((r) => isAnalystRun(r)));
+  const canCreate = showCreate && dashAnswered.length > 0;
 
   // Dashboards -> "From an answer" lands here with ?create=1.
   useEffect(() => {
@@ -383,9 +422,8 @@ export default function ProjectWorkspace() {
 
   const dashboards = project?.dashboards || [];
   const flow = useDashboardFlow(projectId, project, loadProject);
-  const answered = ordered.filter(isAnswered);
   const numberOf = (id: string) => ordered.findIndex((r) => r.id === id) + 1;
-  const prompt = threadPrompt(project, ordered, !!project?.can_edit);
+  const prompt = showCreate ? threadPrompt(project, ordered.filter((r) => hasSources || isAnalystRun(r)), !!project?.can_edit) : null;
   const primary = primaryDashboard(project);
   const placedRuns = new Set((project?.placements || []).flatMap((p) => p.run_ids || []));
   const openCreate = (focusId?: string | null, layout?: "pages" | "merge" | "latest") => {
@@ -396,13 +434,34 @@ export default function ProjectWorkspace() {
   // "Create dashboard": add to the thread's dashboard when it already holds
   // an earlier answer, else GD360 asks how to build a new one.
   const createDashboard = () => {
-    if (!current || !isAnswered(current)) {
-      if (answered.length) openCreate(answered[answered.length - 1].id);
+    if (!canCreate) return;
+    if (!current || !dashAnswered.some((r) => r.id === current.id)) {
+      if (dashAnswered.length) openCreate(dashAnswered[dashAnswered.length - 1].id);
       return;
     }
     if (primary && !placedRuns.has(current.id)) setAddDialogOpen(true);
     else openCreate(current.id);
   };
+
+  if (!project && loadError && !notFound) {
+    return (
+      <div className="min-h-screen grid place-items-center bg-base px-6" data-answer-load-error="">
+        <div role="alert" className="max-w-[420px] text-center flex flex-col items-center gap-3">
+          <span className="w-10 h-10 rounded-full grid place-items-center bg-danger-fill text-danger" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M12 8v5M12 16.5v.01" /><circle cx="12" cy="12" r="9" /></svg>
+          </span>
+          <div className="text-section font-semibold text-text">This answer didn't load</div>
+          <p className="m-0 text-ui text-secondary leading-relaxed">{loadError}</p>
+          <div className="flex gap-2 mt-1">
+            <button type="button" className="btn-primary text-sm" autoFocus onClick={() => { setLoadError(""); setError(""); setAttempt((n) => n + 1); }} data-answer-retry="">
+              Retry
+            </button>
+            <Link to="/" className="btn-secondary text-sm">Go home</Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (notFound) {
     return (
@@ -425,7 +484,7 @@ export default function ProjectWorkspace() {
             onClose={() => setCreateOpen(false)}
             projectId={projectId}
             project={project}
-            answered={answered}
+            answered={dashAnswered}
             numberOf={numberOf}
             focusRunId={createFocus || current?.id}
             startLayout={createLayout}
@@ -462,7 +521,10 @@ export default function ProjectWorkspace() {
               </span>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
+              {/* 2026-10-14 (R46): the same thread in the GD360 2.0 conversation */}
+              {projectId && <Link to={`/chat/${projectId}`} className="btn-secondary text-sm" data-open-in-chat="">Open in chat</Link>}
               <NotificationBell />
+              <ThemeToggle />
               {activeRun ? (
                 <button type="button" className="btn-secondary text-sm" onClick={() => stop(activeRun.id)}>Stop</button>
               ) : (
@@ -495,7 +557,10 @@ export default function ProjectWorkspace() {
                       </div>
                     )}
                   </div>
-                  {project?.can_edit && current?.status === "done" && (
+                  {/* R44: an alert only helps on data that refreshes - not on a worked-out
+                      what-if or an uploaded file that never changes */}
+                  {project?.can_edit && current?.status === "done" && !isAnalystRun(current)
+                    && (project?.sources || []).some((s) => !STATIC_KINDS.has(s.kind)) && (
                     <Link to={`/automations/new?project=${projectId}&run=${current.id}`} className="btn-secondary text-sm">
                       Set an alert
                     </Link>
@@ -578,8 +643,10 @@ export default function ProjectWorkspace() {
                     canEdit={!!project?.can_edit}
                     busy={busy || !!activeRun}
                     next={
-                      current?.id === r.id && r.status === "done" && project?.can_edit && !isAnalystRun(r) ? (
+                      current?.id === r.id && r.status === "done" && project?.can_edit ? (
+                        isAnalystRun(r) ? <AnalystNext run={r} onAsk={(q) => ask(q)} disabled={busy || !!activeRun} /> : (
                         <WhatNext studioHref={studioHref} studioSource={project?.sources.length && project.sources.length > 1 ? `${project.sources.length} sources` : deeperSource?.name || null} onGuided={startGuided} guiding={guiding} onCreate={createDashboard} />
+                        )
                       ) : null
                     }
                   />
@@ -664,6 +731,9 @@ export default function ProjectWorkspace() {
     </ChartThemeProvider>
   );
 }
+
+// uploaded files: a snapshot that never refreshes on its own
+const STATIC_KINDS = new Set(["csv", "excel", "xlsx", "xls", "json", "parquet", "file"]);
 
 function progressPct(run: ProjectRun): number {
   if (run.status === "planning") return 12;

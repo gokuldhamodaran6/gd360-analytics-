@@ -2,6 +2,7 @@
 // outreach, the people, tracking (links, landing pages, A/B, connected
 // data), campaigns, the daily log, and results against targets. The
 // assistant answers and acts from the side.
+import ThemeToggle from "../components/ThemeToggle";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
@@ -121,6 +122,7 @@ export default function InitiativeDetail() {
             </div>
             {i && (
               <div className="flex gap-2 flex-wrap items-center">
+                <ThemeToggle />
                 <button type="button" className="btn-secondary text-sm inline-flex items-center gap-2" onClick={() => setAssistant(true)} data-open-assistant="">
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z" /><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" /></svg>
                   Ask about this
