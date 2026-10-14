@@ -302,7 +302,7 @@ function buildSpec(shape: Shape, sourceName: string | null | undefined, extra: P
     // "" keeps describeSpecShort from printing " · undefined"; the grid
     // never treats a view block as runnable (it is not the stored block).
     table: sourceName || "",
-    time: shape.time && shape.grain ? { column: shape.time, grain: shape.grain } : null,
+    time: shape.time && shape.grain ? { column: shape.time, grain: shape.grain === "hour" ? "day" : shape.grain } : null,
     group_by: shape.dimensions,
     measures: shape.measures,
     ...extra,

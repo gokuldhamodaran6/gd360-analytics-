@@ -1,4 +1,5 @@
 import type { BlockResult, BlockSpec, BlockSpecMeasure, DashboardBlock } from "../api/client";
+import { axisTitle, meaningFromName, roundHalfUp, unitLabel, type Meaning } from "../lib/numberFormat";
 
 // 2026-10-07 (dashboard polish round): the ONE place a dashboard number,
 // a column name and a block description are turned into words. Everything
@@ -36,6 +37,13 @@ export type ValueFormat = {
   // Picked by GD360 (backend or client), not by the owner.
   inferred: boolean;
   currency: string;
+  // 2026-10-13 (R45, units everywhere): what the number IS (lib/numberFormat
+  // Meaning - the backend's config.meaning(s), else read off the column's
+  // name) and the unit written after a plain number: "min" -> "21.1 min",
+  // "%" -> "92.5%" (a percent stored in points). Both optional: a format
+  // without them writes exactly what it always did.
+  meaning?: Meaning | null;
+  unit?: string | null;
 };
 
 export const NUMBER_FORMATS: NumberFormat[] = ["number", "percent", "currency", "compact"];
@@ -103,9 +111,13 @@ function digits(abs: number, decimals: number | null, maxDefault: number): { min
   return { minimumFractionDigits: 0, maximumFractionDigits: abs >= 1000 ? 0 : maxDefault };
 }
 
+// 2026-10-13 (R45, one rounding): every number is rounded half-up through
+// lib/numberFormat.roundHalfUp BEFORE Intl writes it (Intl rounds the binary
+// value: 21.075 is 21.07499... there, "21.07" beside the backend's "21.08").
 function plain(abs: number, decimals: number | null, maxDefault: number, locale?: string): string {
-  if (decimals !== null) return abs.toLocaleString(locale, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
-  return abs.toLocaleString(locale, { maximumFractionDigits: abs >= 1000 ? 0 : maxDefault });
+  if (decimals !== null) return roundHalfUp(abs, decimals).toLocaleString(locale, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  const d = abs >= 1000 ? 0 : maxDefault;
+  return roundHalfUp(abs, d).toLocaleString(locale, { maximumFractionDigits: d });
 }
 
 const UNITS: [number, string][] = [[1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "K"]];
@@ -132,9 +144,9 @@ function compact(abs: number, decimals: number | null, minUnit = 1e3, locale?: s
     if (size < minUnit) break;
     if (abs < size) continue;
     const scaled = abs / size;
-    const rounded = Number(scaled.toFixed(digits));
-    if (rounded >= 1000 && i > 0) return `${(abs / UNITS[i - 1][0]).toLocaleString(undefined, { minimumFractionDigits: decimals ?? 0, maximumFractionDigits: digits })}${UNITS[i - 1][1]}`;
-    return `${scaled.toLocaleString(undefined, { minimumFractionDigits: decimals ?? 0, maximumFractionDigits: digits })}${suffix}`;
+    const rounded = roundHalfUp(scaled, digits);
+    if (rounded >= 1000 && i > 0) return `${roundHalfUp(abs / UNITS[i - 1][0], digits).toLocaleString(undefined, { minimumFractionDigits: decimals ?? 0, maximumFractionDigits: digits })}${UNITS[i - 1][1]}`;
+    return `${rounded.toLocaleString(undefined, { minimumFractionDigits: decimals ?? 0, maximumFractionDigits: digits })}${suffix}`;
   }
   return plain(abs, decimals, abs >= 100 ? 1 : 2);
 }
@@ -143,6 +155,10 @@ function compact(abs: number, decimals: number | null, minUnit = 1e3, locale?: s
 // puts it, its separators, its compact unit.
 function localCurrency(abs: number, code: string, decimals: number | null, locale: string, mode: "plain" | "compact", minUnit = 1e3): string {
   const currency = /^[A-Za-z]{3}$/.test(code || "") ? code.toUpperCase() : "USD";
+  if (mode !== "compact" || abs < minUnit) {
+    const dd = digits(abs, decimals, mode === "compact" ? (abs >= 100 ? 1 : 2) : 2);
+    abs = roundHalfUp(abs, dd.maximumFractionDigits);
+  }
   if (mode === "compact" && abs >= minUnit) {
     return compactUnits(intl(locale, { style: "currency", currency, currencyDisplay: "narrowSymbol", notation: "compact", compactDisplay: "short", minimumFractionDigits: decimals ?? 0, maximumFractionDigits: decimals ?? 1 }).format(abs), locale);
   }
@@ -176,35 +192,39 @@ export function formatValueWith(settings: NumberSettings, v: unknown, fmt: Value
   if (v === null || v === undefined || v === "") return "—";
   const n = typeof v === "number" ? (Number.isFinite(v) ? v : null) : null;
   if (n === null) return typeof v === "object" ? JSON.stringify(v) : String(v);
-  const sign = n < 0 ? MINUS : "";
   const abs = Math.abs(n);
   const d = fmt.decimals;
   const locale = settings.locale;
+  // 2026-10-13 (R45): a value that rounds to zero is never signed ("0.0%", not "−0.0%").
+  const signed = (body: string) => (n < 0 && /[1-9]/.test(body) ? `${MINUS}${body}` : body);
+  const unit = fmt.unit ? (fmt.unit === "%" ? "%" : ` ${fmt.unit}`) : "";
+  // A unit's own default precision: "21.1 min", "92.5%" (one decimal under a hundred).
+  const unitMax = unit ? 1 : 2;
   switch (fmt.format) {
     case "percent": {
       const p = abs * 100;
-      const body = d !== null ? p.toLocaleString(locale, { minimumFractionDigits: d, maximumFractionDigits: d }) : p.toLocaleString(locale, { maximumFractionDigits: p >= 1000 ? 0 : 1 });
-      return `${sign}${body}%`;
+      const body = d !== null ? roundHalfUp(p, d).toLocaleString(locale, { minimumFractionDigits: d, maximumFractionDigits: d }) : roundHalfUp(p, p >= 1000 ? 0 : 1).toLocaleString(locale, { maximumFractionDigits: p >= 1000 ? 0 : 1 });
+      return signed(`${body}%`);
     }
     case "currency": {
       // The block's own currency when its owner set one, else the dashboard's.
       const code = fmt.currency || settings.currency;
       if (locale) {
-        if (style === "compact") return `${sign}${localCurrency(abs, code, d, locale, "compact")}`;
-        if (style === "auto" && abs >= 1e6) return `${sign}${localCurrency(abs, code, d, locale, "compact", 1e6)}`;
-        return `${sign}${localCurrency(abs, code, d, locale, "plain")}`;
+        if (style === "compact") return signed(localCurrency(abs, code, d, locale, "compact"));
+        if (style === "auto" && abs >= 1e6) return signed(localCurrency(abs, code, d, locale, "compact", 1e6));
+        return signed(localCurrency(abs, code, d, locale, "plain"));
       }
       const sym = currencySymbol(code);
-      if (style === "compact") return `${sign}${sym}${compact(abs, d)}`;
-      if (style === "auto" && abs >= 1e6) return `${sign}${sym}${compact(abs, d, 1e6)}`;
-      return `${sign}${sym}${plain(abs, d, 2)}`;
+      if (style === "compact") return signed(`${sym}${compact(abs, d)}`);
+      if (style === "auto" && abs >= 1e6) return signed(`${sym}${compact(abs, d, 1e6)}`);
+      return signed(`${sym}${plain(abs, d, 2)}`);
     }
     case "compact":
-      return style === "full" ? `${sign}${plain(abs, d, 2, locale)}` : `${sign}${compact(abs, d, 1e3, locale)}`;
+      return signed(`${style === "full" ? plain(abs, d, unitMax, locale) : compact(abs, d, 1e3, locale)}${unit}`);
     default: {
-      if (style === "compact") return `${sign}${compact(abs, d, 1e3, locale)}`;
-      if (style === "auto" && abs >= 1e6) return `${sign}${compact(abs, d, 1e6, locale)}`;
-      return `${sign}${plain(abs, d, 2, locale)}`;
+      if (style === "compact") return signed(`${compact(abs, d, 1e3, locale)}${unit}`);
+      if (style === "auto" && abs >= 1e6) return signed(`${compact(abs, d, 1e6, locale)}${unit}`);
+      return signed(`${plain(abs, d, unitMax, locale)}${unit}`);
     }
   }
 }
@@ -216,13 +236,15 @@ export type DeltaInput = { current?: number | null; prior?: number | null; abs?:
 export function formatDelta(delta: DeltaInput, fmt: ValueFormat = PLAIN_FORMAT): string {
   const abs = typeof delta.abs === "number" ? delta.abs : typeof delta.current === "number" && typeof delta.prior === "number" ? delta.current - delta.prior : null;
   const signOf = (n: number) => (n > 0 ? "+" : n < 0 ? MINUS : "");
-  if (fmt.format === "percent") {
+  if (fmt.format === "percent" || fmt.unit === "%") {
     if (abs === null) return "";
-    const pts = Number((abs * 100).toFixed(1));
+    // A rate's movement is in percentage points (stored as a fraction, or already in points).
+    const pts = roundHalfUp(fmt.unit === "%" ? abs : abs * 100, 1);
     return `${signOf(pts)}${Math.abs(pts).toLocaleString(SETTINGS.locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} pts`;
   }
   if (typeof delta.pct === "number" && Number.isFinite(delta.pct)) {
-    return `${signOf(delta.pct)}${Math.abs(delta.pct).toLocaleString(SETTINGS.locale, { maximumFractionDigits: 1 })}%`;
+    const p = roundHalfUp(delta.pct, 1);
+    return `${signOf(p)}${Math.abs(p).toLocaleString(SETTINGS.locale, { maximumFractionDigits: 1 })}%`;
   }
   if (abs === null) return "";
   return `${signOf(abs)}${formatValue(Math.abs(abs), fmt, "compact")}`;
@@ -312,10 +334,147 @@ export function measureAliases(result: BlockResult | null | undefined, spec?: Bl
   return (spec?.measures || []).map((m) => m.alias).filter(Boolean);
 }
 
+// ---- meanings (2026-10-13, R45: units everywhere) ----------------------------
+
+const UNIT_ROLES = new Set(["money", "percent", "duration"]);
+const DURATION_WORD: Record<string, string> = { min: "Minutes", h: "Hours", s: "Seconds", ms: "Milliseconds", days: "Days", weeks: "Weeks", months: "Months" };
+
+function validMeaning(m: unknown): Meaning | null {
+  if (!m || typeof m !== "object" || Array.isArray(m)) return null;
+  const x = m as Record<string, unknown>;
+  if (typeof x.role !== "string" || !x.role) return null;
+  return {
+    role: x.role,
+    unit: typeof x.unit === "string" ? x.unit : null,
+    currency: typeof x.currency === "string" ? x.currency : null,
+    scale: x.scale === "fraction" || x.scale === "points" ? x.scale : null,
+  };
+}
+
+/** The meaning the backend sent for a column of this block (config.meanings
+ *  by column or alias; config.meaning for a KPI's one number), or null. */
+export function configMeaning(cfg: any, column: string | null | undefined, first = false): Meaning | null {
+  if (!cfg || typeof cfg !== "object") return null;
+  const map = cfg.meanings && typeof cfg.meanings === "object" ? cfg.meanings : null;
+  if (column && map) {
+    const hit = validMeaning(map[column]);
+    if (hit) return hit;
+    const lower = String(column).toLowerCase();
+    const key = Object.keys(map).find((k) => k.toLowerCase() === lower);
+    if (key) return validMeaning(map[key]);
+  }
+  return first ? validMeaning(cfg.meaning) : null;
+}
+
+const COUNT_LIKE = /(^|[^a-z])(count|counts|number|num|qty|quantity|users|customers|orders|sessions|rows|visits|bookings|units|items)([^a-z]|$)/i;
+
+/** A meaning read off a measure's name and values when the backend sent
+ *  none - only ever one that adds a unit a reader needs (minutes, a percent
+ *  in points, money); everything else stays a plain number. */
+export function derivedMeaning(name: string, values: unknown[], agg?: string | null): Meaning | null {
+  const a = String(agg || "").toLowerCase();
+  if (a === "count" || a === "count_distinct") return { role: "count" };
+  const m = meaningFromName(name, values);
+  if (m.role === "duration") return m;
+  if (m.role === "percent" && !COUNT_LIKE.test(name)) return m;
+  if (m.role === "money" && looksLikeMoneyName(name)) return { role: "money", currency: null, unit: null };
+  return null;
+}
+
+/** A meaning as the ValueFormat that writes it ("$963", "21.1 min", "92.5%"),
+ *  keeping the owner's decimals. */
+export function meaningFormat(m: Meaning, values: unknown[], base: Pick<ValueFormat, "decimals" | "currency" | "inferred"> = { decimals: null, currency: "", inferred: true }): ValueFormat {
+  const out: ValueFormat = { format: "number", decimals: base.decimals, inferred: base.inferred, currency: base.currency, meaning: m };
+  switch (m.role) {
+    case "money":
+      return { ...out, format: "currency", currency: m.currency && /^[A-Za-z]{3}$/.test(m.currency) ? m.currency.toUpperCase() : base.currency };
+    case "percent": {
+      const nums = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+      const fraction = m.scale === "fraction" || (m.scale !== "points" && nums.length > 0 && nums.every((v) => Math.abs(v) <= 1));
+      return fraction ? { ...out, format: "percent" } : { ...out, unit: "%" };
+    }
+    case "duration": {
+      const u = m.unit || "";
+      return { ...out, unit: u ? unitLabel(m) || u : null };
+    }
+    case "count": {
+      const whole = values.every((v) => v === null || v === undefined || (typeof v === "number" && Number.isInteger(v)));
+      return { ...out, decimals: base.decimals ?? (whole ? 0 : null) };
+    }
+    default:
+      return out;
+  }
+}
+
+/** What a format says its numbers are (for axis titles and units). */
+export function meaningOfFormat(fmt: ValueFormat | null | undefined): Meaning {
+  if (!fmt) return {};
+  if (fmt.meaning && fmt.meaning.role) {
+    // The meaning, with the currency the number is actually written in.
+    if (fmt.format === "currency") return { ...fmt.meaning, role: "money", currency: fmt.currency || fmt.meaning.currency || SETTINGS.currency };
+    return fmt.meaning;
+  }
+  if (fmt.format === "currency") return { role: "money", currency: fmt.currency || SETTINGS.currency };
+  if (fmt.format === "percent") return { role: "percent", unit: "%", scale: "fraction" };
+  if (fmt.unit === "%") return { role: "percent", unit: "%", scale: "points" };
+  if (fmt.unit) return { role: "duration", unit: fmt.unit };
+  return {};
+}
+
+/** The short unit a reader sees next to an axis ("min", "%", "$", ""). */
+export function formatUnit(fmt: ValueFormat | null | undefined): string {
+  const m = meaningOfFormat(fmt);
+  if (m.role === "money") return currencySymbol(m.currency || SETTINGS.currency).trim();
+  return unitLabel(m);
+}
+
+/** "Waiting time (min)", "Revenue ($)" - a value axis title that always
+ *  carries its unit (a title that already ends in one keeps it). */
+export function valueAxisTitle(label: string, fmt: ValueFormat | null | undefined): string {
+  const clean = String(label || "").trim();
+  const u = formatUnit(fmt);
+  if (!u) return clean || "Value";
+  if (/\([^)]{1,12}\)\s*$/.test(clean)) return clean;
+  // "Avg wait minutes" -> "Avg wait (min)": the unit word is not said twice.
+  const trimmed = clean.replace(/[\s_]+(minutes?|mins?|hours?|hrs?|seconds?|secs?|days?|pct|percent(age)?|%|usd|eur|gbp|inr)$/i, "").trim();
+  return axisTitle(trimmed || clean || "Value", { role: "measure" }) + ` (${u})`;
+}
+
+/** The one title of an axis several series share: their names when two,
+ *  else the quantity they share ("Minutes", "Amount ($)", "Percent (%)"). */
+export function sharedAxisTitle(names: string[], formats: (ValueFormat | null | undefined)[]): string {
+  const u = formatUnit(formats[0]);
+  if (names.length === 2) return u ? `${names[0]} and ${names[1].charAt(0).toLowerCase()}${names[1].slice(1)} (${u})` : `${names[0]} and ${names[1].charAt(0).toLowerCase()}${names[1].slice(1)}`;
+  const m = meaningOfFormat(formats[0]);
+  if (m.role === "duration") return DURATION_WORD[m.unit || ""] || (u ? `Duration (${u})` : "Duration");
+  if (m.role === "money") return `Amount (${u})`;
+  if (m.role === "percent") return "Percent (%)";
+  if (m.role === "count") return "Count";
+  return "Value";
+}
+
+/** Whether a measure's values may be added up (summed across a hidden
+ *  dimension, divided into shares of a whole): sums and counts are; an
+ *  average, a rate, a percent, a duration per item are not. Unknown
+ *  aggregation with no telling meaning: additive (what charts always did). */
+export function isAdditiveMeasure(agg: string | null | undefined, fmt: ValueFormat | null | undefined): boolean {
+  const a = String(agg || "").toLowerCase();
+  const m = meaningOfFormat(fmt);
+  if (m.role === "percent" || m.role === "rate") return false;
+  if (a === "sum" || a === "count") return true;
+  if (a === "avg" || a === "min" || a === "max" || a === "count_distinct" || a === "median") return false;
+  if (m.role === "duration") return false;
+  return true;
+}
+
 /** The format of every measure of a block: config.format / config.decimals
  *  describe the block's first measure (a KPI, a gauge, a one-measure chart);
  *  every other measure - and the first when config.format is absent - is
- *  inferred on its own from its spec and the values that came back. */
+ *  inferred on its own from its spec and the values that came back.
+ *  2026-10-13 (R45): then each measure's MEANING - the backend's
+ *  config.meanings / config.meaning, else read off its name - decides its
+ *  unit: "21.1 min", "$963", "92.5%". An owner's explicit format wins over
+ *  an inferred meaning; the meaning still names the axis. */
 export function measureFormats(block: Pick<DashboardBlock, "config" | "title"> | null | undefined, result: BlockResult | null | undefined): Record<string, ValueFormat> {
   const cfg = block?.config || {};
   const spec: BlockSpec | null = (cfg.spec && typeof cfg.spec === "object" ? cfg.spec : null) || result?.spec || null;
@@ -323,20 +482,40 @@ export function measureFormats(block: Pick<DashboardBlock, "config" | "title"> |
   // "" = the dashboard's currency (appearance.currency), resolved when the number is written.
   const currency = typeof cfg.currency === "string" && /^[A-Za-z]{3}$/.test(cfg.currency) ? cfg.currency.toUpperCase() : "";
   const chosen = validFormat(cfg.format);
+  const ownerChosen = Boolean(chosen) && !cfg.format_inferred;
   const decimals = validDecimals(cfg.decimals);
   const out: Record<string, ValueFormat> = {};
   aliases.forEach((alias, i) => {
-    if (i === 0 && chosen) {
-      out[alias] = { format: chosen, decimals, inferred: Boolean(cfg.format_inferred), currency };
-      return;
-    }
     const m = spec?.measures?.find((x) => x.alias === alias) || null;
     const values: unknown[] = [];
     for (const row of result?.rows || []) values.push(row[alias]);
     for (const row of result?.sparkline?.rows || []) values.push(row[alias]);
     for (const row of result?.prior?.rows || []) values.push(row[alias]);
-    const inferred = inferMeasureFormat(m, values, aliases.length === 1 ? block?.title : null);
-    out[alias] = { format: inferred ?? "number", decimals: i === 0 ? decimals : null, inferred: Boolean(inferred), currency };
+    let fmt: ValueFormat;
+    if (i === 0 && chosen) {
+      fmt = { format: chosen, decimals, inferred: Boolean(cfg.format_inferred), currency };
+    } else {
+      const inferred = inferMeasureFormat(m, values, aliases.length === 1 ? block?.title : null);
+      fmt = { format: inferred ?? "number", decimals: i === 0 ? decimals : null, inferred: Boolean(inferred), currency };
+    }
+    const explicit = configMeaning(cfg, alias, i === 0) || (m?.column ? configMeaning(cfg, m.column) : null);
+    const meaning = explicit || derivedMeaning(alias, values, m?.agg) || (m?.column && m.column !== alias ? derivedMeaning(m.column, values, m.agg) : null);
+    if (meaning) {
+      if (i === 0 && ownerChosen) {
+        // The owner said how to write it; the meaning only names the axis
+        // (and adds a unit to a plain number).
+        fmt = { ...fmt, meaning, unit: fmt.format === "number" || fmt.format === "compact" ? meaningFormat(meaning, values).unit ?? null : null };
+      } else if (explicit || fmt.format === "number" || (meaning.role === "money" && fmt.format !== "percent")) {
+        // A backend meaning wins over a guess; a derived one only fills in
+        // what the plain number was missing (a percent the [0, 1] test
+        // already found stays a percent).
+        const base = meaningFormat(meaning, values, { decimals: fmt.decimals, currency: fmt.currency, inferred: true });
+        fmt = UNIT_ROLES.has(meaning.role || "") || meaning.role === "count" ? base : { ...fmt, meaning };
+      } else {
+        fmt = { ...fmt, meaning };
+      }
+    }
+    out[alias] = fmt;
   });
   return out;
 }
@@ -347,7 +526,10 @@ export function blockFormat(block: Pick<DashboardBlock, "config" | "title"> | nu
   const first = Object.keys(formats)[0];
   if (first) return formats[first];
   const cfg = block?.config || {};
-  return { ...PLAIN_FORMAT, format: validFormat(cfg.format) ?? "number", decimals: validDecimals(cfg.decimals), inferred: Boolean(cfg.format_inferred) };
+  const base: ValueFormat = { ...PLAIN_FORMAT, format: validFormat(cfg.format) ?? "number", decimals: validDecimals(cfg.decimals), inferred: Boolean(cfg.format_inferred) };
+  const meaning = validMeaning(cfg.meaning);
+  if (meaning && !validFormat(cfg.format)) return meaningFormat(meaning, [], { decimals: base.decimals, currency: "", inferred: true });
+  return meaning ? { ...base, meaning } : base;
 }
 
 /** A column of table cells reads best with one number of decimals: whole
@@ -358,6 +540,7 @@ export function blockFormat(block: Pick<DashboardBlock, "config" | "title"> | nu
 export function columnFormat(fmt: ValueFormat, values: unknown[]): ValueFormat {
   if (fmt.decimals !== null) return fmt;
   if (fmt.format === "percent") return { ...fmt, decimals: 1 };
+  if (fmt.unit) return { ...fmt, decimals: values.every((v) => typeof v !== "number" || Number.isInteger(v)) ? 0 : 1 };
   let any = false, fractional = false, smallest = Infinity;
   for (const v of values) {
     if (typeof v !== "number" || !Number.isFinite(v)) continue;
@@ -456,9 +639,10 @@ function unitOf(format: NumberFormat): string {
  *  8x apart), would flatten the smaller one to a line at zero - those get
  *  one panel each, stacked on a shared x axis. More than four panels is a
  *  table's job. Never a second y scale. */
-export function chartArrangement(measures: { maxAbs: number; format: NumberFormat }[], hasSeriesDimension = false): ChartArrangement {
+export function chartArrangement(measures: { maxAbs: number; format: NumberFormat; unit?: string | null }[], hasSeriesDimension = false): ChartArrangement {
   if (hasSeriesDimension || measures.length < 2) return "single";
-  const units = new Set(measures.map((m) => unitOf(m.format)));
+  // 2026-10-13 (R45): minutes beside a count is two units too - never one axis.
+  const units = new Set(measures.map((m) => `${unitOf(m.format)}|${m.unit || ""}`));
   const sizes = measures.map((m) => Math.abs(m.maxAbs)).filter((v) => Number.isFinite(v) && v > 0);
   const apart = sizes.length > 1 && Math.max(...sizes) / Math.min(...sizes) > SCALE_RATIO;
   if (units.size > 1 || apart) return measures.length > MAX_PANELS ? "table" : "multiples";
