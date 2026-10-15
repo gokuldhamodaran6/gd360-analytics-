@@ -4,19 +4,46 @@ import type { ProjectRun } from "./projects";
 import type { Space } from "./spaces";
 
 export type Chip = { key: string; ok: boolean; label: string; detail?: string | null };
-export type TurnKind = "knowledge" | "data" | "guided" | "dashboard" | "document" | "automation" | "chat" | "check" | "explain" | "dashboard_edit" | "model" | "team";
+export type TurnKind = "knowledge" | "data" | "guided" | "dashboard" | "document" | "automation" | "chat" | "check" | "explain" | "dashboard_edit" | "model" | "team" | "analysis";
 export type TurnStatus = "working" | "steps" | "done" | "failed" | "needs_input" | "confirm";
 export type Artifact = {
-  type: "dashboard" | "document" | "automation" | "model" | "space";
+  type: "dashboard" | "document" | "automation" | "model" | "space" | "analysis";
   id: string; name?: string; title?: string; url?: string; page_id?: string | null; words?: number; refresh?: boolean; score?: string | null;
+  recipe?: string; figures?: number; scored?: number | null;
   rules?: string[]; invite_link?: string | null;
   sentence?: { when?: string; do?: string; tell?: string; tell_sentence?: string }; next_run_at?: string | null;
   live?: { kind: string; label: string; url: string; views: number } | null;
 };
 export type TrailItem = { label: string; status?: string | null; sql?: string | null; ms?: number | null };
+export type Source = { n?: number; title: string; url: string; domain?: string };
+// 2026-10-15 (R48): the analysis runner's typed result (backend/app/services/agent/analysis.py)
+export type Signal = {
+  column: string; label: string; kind: "numeric" | "categorical" | "flat"; direction?: string; group: string; group_n: number; group_rate: number;
+  compare: string; compare_n: number; compare_rate: number; lift?: number | null; diff_pp: number; importance?: number | null; rank?: number | null;
+  values?: { value: string; n: number; rate: number }[];
+};
+export type Tier = { key: "high" | "medium" | "low"; label: string; count: number; rule: string; hist_rate: number; band_n: number; action: string };
+export type Analysis = {
+  recipe: "outcome" | "segment" | "signal"; question: string; title?: string;
+  table: { source_id: string; source: string; table: string; rows_used: number; sampled: boolean; columns: number; entities: string };
+  target: { column: string; positive: string; verb: string; noun: string; label: string };
+  baseline: { n: number; positives: number; rate: number; existing: number };
+  has_dates: boolean; id_column?: string | null; signals: Signal[]; signals_total: number;
+  importance: { column: string; label: string; value: number }[];
+  segments: { label: string; rate: number; n: number; highlight: boolean }[];
+  model?: { algorithm: string; test_n: number; train_n: number; ap: number; auc: number; baseline_ap: number; pr_curve: [number, number][]; point: { recall: number; precision: number }; features: number; folds: number; leaks: { column: string; reason: string }[]; excluded: number } | null;
+  tiers?: Tier[] | null;
+  risk_list?: { columns: string[]; rows: Record<string, any>[]; total_high: number } | null;
+  by_dimension?: { column: string; label: string; values: { value: string; n: number; positives: number; rate: number; vs_all_pp: number }[] } | null;
+  focus?: Signal | null;
+  recommendations: { n: string; title: string; body: string; reach: number; reach_note: string }[];
+  method: { steps: { label: string; detail?: string; ms?: number }[]; formulas: string[]; code: string };
+  prose?: { headline: string; summary: string[]; limitation: string; signals_note?: string; tiers_note?: string; written_by: string; replaced: { field: string; numbers: string[] }[] };
+  elapsed_s?: number;
+};
 export type Turn = {
   id: string; kind: TurnKind; status: TurnStatus; question: string; created_at: string; finished_at?: string | null;
-  text?: string | null; sources?: { title: string; url: string }[]; grounded?: boolean | null;
+  text?: string | null; sources?: Source[]; grounded?: boolean | null; normalized?: string | null; analysis?: Analysis | null;
   chips: Chip[]; verdict?: "ok" | "warn" | "fail" | "pending"; artifacts: Artifact[]; trail: TrailItem[];
   elapsed_s?: number | null; error?: string | null; intent_by?: string | null; mode?: "analyst" | "engine";
   run_id?: string | null; run?: ProjectRun | null; guided_project_id?: string | null;
