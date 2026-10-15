@@ -6,6 +6,7 @@ import ThemeToggle from "../components/ThemeToggle";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
+import TopNav from "../components/TopNav";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { errorText, Initiative, initiativesApi } from "../api/initiatives";
 import { Banner, daysLabel, fmtDate, HealthPill, KindBadge, Tabs } from "../initiatives/ui";
@@ -87,6 +88,7 @@ export default function InitiativeDetail() {
       <div className="dash-shell flex min-h-screen">
         <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
         <div className="flex-1 min-w-0 flex flex-col" data-event-os="">
+          <TopNav breadcrumb={[{ label: "Initiatives", to: "/initiatives" }, { label: i?.title || "Initiative" }]} />
           {error && <div className="px-4 sm:px-8 pt-4"><Banner kind="error" onClose={() => setError("")}>{error}</Banner></div>}
           <EventShell i={i} reload={load} onError={setError} />
         </div>
@@ -98,7 +100,8 @@ export default function InitiativeDetail() {
     <div className="dash-shell flex min-h-screen">
       <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
       <div className="flex-1 min-w-0 flex flex-col">
-        <header className="px-4 sm:px-8 pt-16 lg:pt-6 border-b border-border flex flex-col gap-4" data-initiative-header="">
+        <TopNav breadcrumb={[{ label: "Initiatives", to: "/initiatives" }, { label: i?.title || "Initiative" }]} />
+        <header className="px-4 sm:px-8 pt-6 border-b border-border flex flex-col gap-4" data-initiative-header="">
           <div className="flex flex-wrap justify-between items-start gap-4">
             <div className="flex flex-col gap-2 min-w-0 flex-[1_1_420px]">
               <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">

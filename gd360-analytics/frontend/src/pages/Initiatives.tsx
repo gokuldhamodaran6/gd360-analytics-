@@ -5,6 +5,7 @@ import ThemeToggle from "../components/ThemeToggle";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
+import TopNav from "../components/TopNav";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { Hub, initiativesApi, InitiativeSummary, Kind, errorText } from "../api/initiatives";
 import { eventApi } from "../api/eventos";
@@ -61,7 +62,8 @@ export default function Initiatives() {
     <div className="dash-shell flex min-h-screen">
       <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
       <div className="flex-1 min-w-0 flex flex-col">
-        <header className="flex flex-wrap justify-between items-end gap-4 px-4 sm:px-8 pt-16 lg:pt-7 pb-5 border-b border-border">
+        <TopNav breadcrumb={[{ label: "Initiatives" }]} />
+        <header className="flex flex-wrap justify-between items-end gap-4 px-4 sm:px-8 pt-7 pb-5 border-b border-border">
           <div className="flex flex-col gap-1.5 min-w-0">
             <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">Plan · Run · Prove</span>
             <h1 className="m-0 text-[24px] font-semibold tracking-tight text-text">Initiatives</h1>

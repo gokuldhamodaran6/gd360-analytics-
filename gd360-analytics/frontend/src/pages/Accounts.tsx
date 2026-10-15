@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
+import TopNav from "../components/TopNav";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { AccountRow, downloadBlob, errorText, gtmApi, Icp, ImportPreview, Overview, Profile } from "../api/initiatives";
 import { Banner, CopyField, Empty, Field, fmt, fmtDate, Funnel, Heat, Section, Sheet, StackBars, Stat, Tabs, Tier } from "../initiatives/ui";
@@ -36,7 +37,8 @@ export default function Accounts() {
     <div className="dash-shell flex min-h-screen">
       <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
       <div className="flex-1 min-w-0 flex flex-col">
-        <header className="px-4 sm:px-8 pt-16 lg:pt-6 border-b border-border flex flex-col gap-4">
+        <TopNav breadcrumb={[{ label: "Initiatives", to: "/initiatives" }, { label: "Accounts" }]} />
+        <header className="px-4 sm:px-8 pt-6 border-b border-border flex flex-col gap-4">
           <div className="flex flex-wrap justify-between items-end gap-3">
             <div className="flex flex-col gap-1.5">
               <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted"><Link to="/initiatives" className="hover:text-text">Initiatives</Link> / Accounts</span>

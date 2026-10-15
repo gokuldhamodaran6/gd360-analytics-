@@ -7,6 +7,7 @@ import ThemeToggle from "../components/ThemeToggle";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
+import TopNav from "../components/TopNav";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { Catalog, errorText, initiativesApi, Kind, PlanDraft } from "../api/initiatives";
 import { Banner, fmtDate, KIND_LABEL, KindBadge, KindGlyph, Section, tone } from "../initiatives/ui";
@@ -102,7 +103,8 @@ export default function InitiativeNew() {
     <div className="dash-shell flex min-h-screen">
       <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
       <div className="flex-1 min-w-0 flex flex-col">
-        <header className="px-4 sm:px-8 pt-16 lg:pt-6 pb-4 border-b border-border flex flex-wrap justify-between items-end gap-3">
+        <TopNav breadcrumb={[{ label: "Initiatives", to: "/initiatives" }, { label: "New" }]} />
+        <header className="px-4 sm:px-8 pt-6 pb-4 border-b border-border flex flex-wrap justify-between items-end gap-3">
           <div className="flex flex-col gap-1.5">
             <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted"><Link to="/initiatives" className="hover:text-text">Initiatives</Link> / New</span>
             <h1 className="m-0 text-[22px] font-semibold tracking-tight text-text">Plan an initiative</h1>

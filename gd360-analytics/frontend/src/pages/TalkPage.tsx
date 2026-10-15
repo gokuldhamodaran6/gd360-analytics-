@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
+import TopNav from "../components/TopNav";
 import { assistantApi, type Talk } from "../api/assistant";
 import { cardFromSaved, EulivCardView } from "../components/EulivCards";
 import { OrbGlyph, openEuliv } from "../components/Euliv";
@@ -91,7 +92,8 @@ export default function TalkPage() {
     <div className="dash-shell flex min-h-screen">
       <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
       <div className="flex-1 min-w-0 flex flex-col">
-        <header className="px-4 sm:px-8 pt-16 lg:pt-6 pb-5 border-b border-border flex flex-wrap items-center gap-4" data-talk-header="">
+        <TopNav breadcrumb={[{ label: "Library", to: "/library" }, { label: "Talk" }]} />
+        <header className="px-4 sm:px-8 pt-6 pb-5 border-b border-border flex flex-wrap items-center gap-4" data-talk-header="">
           <span className="w-11 h-11 rounded-full gd-orb shrink-0" aria-hidden="true" />
           <div className="flex-1 min-w-[220px] flex flex-col gap-1">
             <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">

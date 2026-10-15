@@ -185,7 +185,7 @@ export default function ProjectDashboard() {
                 <div className="flex items-end justify-between gap-4 flex-wrap">
                   <div className="flex flex-col gap-2 min-w-0">
                     {dash.project_id && (
-                      <Link to={`/p/${dash.project_id}`} className="font-mono text-caption text-muted uppercase hover:text-text truncate">
+                      <Link to={`/chat/${dash.project_id}`} className="font-mono text-caption text-muted uppercase hover:text-text truncate">
                         ← Made from answer “{dash.question}”
                       </Link>
                     )}

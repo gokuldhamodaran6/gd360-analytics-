@@ -8,6 +8,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
+import { v2Api, type ConversationRow } from "../api/v2";
+import { when } from "../chat/ChatHome";
+import "../chat/chat.css";
 import TopNav from "../components/TopNav";
 import BrandTile from "../components/BrandTile";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
@@ -166,13 +169,9 @@ export default function SpacePage() {
     setBusy(true);
     setAskError("");
     try {
-      const out = await projectsApi.create({
-        question: q,
-        space_id: space.id,
-        workspace_id: space.workspace_id || activeWorkspaceId || undefined,
-        auto_run: autoRunPreference(),
-      });
-      navigate(`/p/${out.project_id}?run=${out.run_id}`);
+      // 2026-10-15 (R50): a question asked in a Space opens as a conversation filed in that Space
+      const out = await v2Api.start({ message: q, space_id: space.id, workspace_id: space.workspace_id || activeWorkspaceId || null });
+      navigate(`/chat/${out.conversation.id}`);
     } catch (e: any) {
       setAskError(errorText(e, "Couldn't start that question. Please try again."));
       setBusy(false);
@@ -498,6 +497,39 @@ export default function SpacePage() {
           </Card>
         )}
       </div>
+      <SpaceConversations spaceId={space.id} workspaceId={activeWorkspaceId} />
     </>,
+  );
+}
+
+
+// 2026-10-15 (R50): the conversations filed in this Space - the same rows as Home's Recent.
+function SpaceConversations({ spaceId, workspaceId }: { spaceId: string; workspaceId: string }) {
+  const [rows, setRows] = useState<ConversationRow[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    v2Api.list(workspaceId || null).then((list) => live && setRows(list.filter((c) => c.space_id === spaceId))).catch(() => live && setRows([]));
+    return () => { live = false; };
+  }, [spaceId, workspaceId]);
+  if (!rows || rows.length === 0) return null;
+  return (
+    <section className="flex flex-col gap-1.5" aria-labelledby="space-convs" data-space-conversations="">
+      <div className="flex items-baseline justify-between">
+        <h2 id="space-convs" className="m-0 font-mono text-[11px] uppercase tracking-[0.12em] text-muted font-normal">Conversations in this Space · {rows.length}</h2>
+        <Link to="/library" className="c2-link">Library</Link>
+      </div>
+      <div className="c2-recent">
+        {rows.slice(0, 12).map((c) => (
+          <Link key={c.id} to={`/chat/${c.id}`} className="c2-rc">
+            <span style={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
+              <span className="t">{c.title}</span>
+              {c.headline && <span className="h">{c.headline}</span>}
+            </span>
+            <span className="k"><span className="dot" style={{ background: c.space_color || "rgb(var(--color-border-strong))" }} />{c.work || "conversation"}</span>
+            <span className="d">{when(c.last_at)}</span>
+          </Link>
+        ))}
+      </div>
+    </section>
   );
 }

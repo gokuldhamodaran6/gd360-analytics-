@@ -492,14 +492,22 @@ function ThresholdFields({ draft, set, opts }: { draft: Draft; set: (p: Partial<
       ? opts?.questions.find((q) => q.id === (t.target as any).run_id)?.kpis || []
       : opts?.project_dashboards.find((d) => d.id === (t.target as any).dashboard_id)?.kpis || [];
   const kpi = kpis.find((k) => k.key === t.kpi);
-  const pct = (!!kpi && (kpi.kind === "percent" || kpi.kind === "ratio" || /%$/.test(kpi.display || ""))) || (t.target.kind === "board" && t.unit === "%");
+  const seg = (t.target as any).kind === "segments" ? (t.target as any) : null;
+  const pct = (!!kpi && (kpi.kind === "percent" || kpi.kind === "ratio" || /%$/.test(kpi.display || ""))) || (t.target.kind === "board" && t.unit === "%") || !!seg;
   const upd = (patch: Partial<typeof t>) => set({ trigger: { ...t, ...patch } as Trigger });
   // 2026-10-11 (Explain & Alerts): an alert set up on a dashboard watches one
   // of its number tiles - which tile is chosen on the dashboard itself.
   const board = t.target.kind === "board" ? t.target : null;
   return (
     <div className="flex flex-col gap-4">
-      {board ? (
+      {seg ? (
+        // 2026-10-15 (R50): an alert on every segment's rate, set up in a conversation
+        <div className="flex flex-wrap items-center gap-3 rounded-ctl border border-border bg-subtle px-3 py-2.5" data-segments-target="">
+          <span className="text-ui text-text">
+            Watching <b className="font-semibold">{t.kpi_label || "the highest segment rate"}</b> across every group of {(seg.dims || []).length} column{(seg.dims || []).length === 1 ? "" : "s"} in {seg.table}
+          </span>
+        </div>
+      ) : board ? (
         <div className="flex flex-wrap items-center gap-3 rounded-ctl border border-border bg-subtle px-3 py-2.5" data-board-target="">
           <span className="text-ui text-text">
             Watching <b className="font-semibold">{t.kpi_label || board.label || "a number"}</b> on a dashboard

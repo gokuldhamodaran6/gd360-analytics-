@@ -90,8 +90,33 @@ function MiniTile({ tile }: { tile: PreviewTile }) {
   );
 }
 
+// 2026-10-15 (R50): a designed board is drawn in its own theme - a hero tile, KPI tiles and a chart row.
+function BoardThumb({ board, compact = false }: { board: NonNullable<DashboardSummary["board"]>; compact?: boolean }) {
+  const p = board.palette;
+  return (
+    <div aria-hidden="true" data-thumb="board" className={`${compact ? "h-full" : "h-[118px] border-b border-border"} p-2.5 grid gap-[4px]`}
+      style={{ background: p.bg, gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gridTemplateRows: "1fr 1fr 1.2fr" }}>
+      <span style={{ background: p.card, gridColumn: "1 / 3", gridRow: "1 / 3", borderRadius: 5, position: "relative", overflow: "hidden" }}>
+        <svg viewBox="0 0 100 40" preserveAspectRatio="none" style={{ position: "absolute", left: "8%", right: "8%", bottom: "12%", width: "84%", height: "45%" }}>
+          <polyline points="0,32 20,26 40,28 60,16 80,19 100,6" fill="none" stroke={p.accent} strokeWidth="3" vectorEffect="non-scaling-stroke" />
+        </svg>
+        <span style={{ position: "absolute", left: "10%", top: "16%", width: "38%", height: 5, borderRadius: 3, background: p.ink, opacity: 0.75 }} />
+      </span>
+      {[0, 1, 2, 3].map((i) => (
+        <span key={i} style={{ background: p.card, borderRadius: 5, position: "relative" }}>
+          <span style={{ position: "absolute", left: "14%", top: "40%", width: `${50 + i * 8}%`, height: 4, borderRadius: 3, background: p.ink, opacity: 0.55 }} />
+        </span>
+      ))}
+      <span style={{ background: p.card, gridColumn: "1 / 5", borderRadius: 5, display: "flex", alignItems: "flex-end", gap: 4, padding: "6px 10px" }}>
+        {[70, 45, 85, 30, 55, 40, 65].map((h, i) => <span key={i} style={{ flex: 1, height: `${h}%`, borderRadius: 2, background: i === 2 ? p.warn : p.accent, opacity: i === 2 ? 1 : 0.8 }} />)}
+      </span>
+    </div>
+  );
+}
+
 // The dashboard's own first page, drawn to scale from its tile layout (the top of it).
-function Thumb({ preview, classic, compact = false }: { preview?: PreviewTile[]; classic: boolean; compact?: boolean }) {
+function Thumb({ preview, classic, compact = false, board }: { preview?: PreviewTile[]; classic: boolean; compact?: boolean; board?: DashboardSummary["board"] }) {
+  if (board) return <BoardThumb board={board} compact={compact} />;
   const ROWS = compact ? 12 : 14;
   const tiles = (preview || []).filter((t) => t.y < ROWS).map((t) => ({ ...t, h: Math.min(t.h, ROWS - t.y), w: Math.min(t.w, 12 - t.x) }));
   return (
@@ -305,7 +330,7 @@ function DashboardCard({
     return (
       <div className="dash-card flex items-stretch overflow-hidden" data-dashboard-card="">
         <Link to={href} tabIndex={-1} aria-hidden="true" className="hidden sm:block w-[132px] shrink-0 border-r border-border">
-          <Thumb preview={d.preview} classic={classic} compact />
+          <Thumb preview={d.preview} classic={classic} compact board={d.board} />
         </Link>
         {body}
       </div>
@@ -314,7 +339,7 @@ function DashboardCard({
   return (
     <div className="dash-card overflow-hidden flex flex-col" data-dashboard-card="">
       <Link to={href} tabIndex={-1} aria-hidden="true">
-        <Thumb preview={d.preview} classic={classic} />
+        <Thumb preview={d.preview} classic={classic} board={d.board} />
       </Link>
       {body}
     </div>

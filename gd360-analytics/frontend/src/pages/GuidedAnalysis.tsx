@@ -35,6 +35,7 @@ import ThemeToggle from "../components/ThemeToggle";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
+import TopNav from "../components/TopNav";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { ChartThemeProvider, useChartTheme } from "../dashboard/theme/ChartThemeContext";
 import { resolveWorkspaceChart } from "../lib/workspaceChart";
@@ -469,7 +470,8 @@ export default function GuidedAnalysis() {
       <div className="dash-shell flex min-h-screen">
         <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
         <div className="flex-1 min-w-0 flex flex-col lg:h-screen">
-          <header className="flex flex-wrap justify-between items-center gap-4 pl-14 pr-4 sm:pr-7 lg:pl-7 py-4 border-b border-border bg-base" data-guided-header="">
+          <TopNav breadcrumb={[{ label: "Library", to: "/library" }, { label: "Guided analysis" }]} />
+          <header className="flex flex-wrap justify-between items-center gap-4 px-4 sm:px-7 py-4 border-b border-border bg-base" data-guided-header="">
             <div className="flex flex-col gap-2 min-w-0 flex-[1_1_420px]">
               <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">
                 <Link to="/library?type=analysis" className="hover:text-text">Library</Link> / Guided Analysis
