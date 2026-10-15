@@ -140,7 +140,7 @@ function DashboardCard({
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(d.name);
   const [note, setNote] = useState("");
-  const classic = d.layout_version !== 2;
+  const classic = d.layout_version !== 2 && d.layout_version !== 4;
   const href = dashboardHref(d);
   const madeKind = d.source_kind === "answer" || d.source_kind === "analysis" ? d.source_kind : null;
   const madeHref = madeKind ? sourceHref(madeKind, d.source_id, d.source_datasource_id) : null;
@@ -388,8 +388,8 @@ export default function Dashboards() {
   const stamp = (d: DashboardSummary) => new Date(d.updated_at || d.created_at).getTime();
   // Full dashboards first, then classic ones; within each, the chosen order.
   const ordered = [...shown].sort((a, b) => {
-    const ca = a.layout_version === 2 ? 0 : 1;
-    const cb = b.layout_version === 2 ? 0 : 1;
+    const ca = a.layout_version === 2 || a.layout_version === 4 ? 0 : 1;
+    const cb = b.layout_version === 2 || b.layout_version === 4 ? 0 : 1;
     if (ca !== cb) return ca - cb;
     if (sort === "name") return a.name.localeCompare(b.name);
     if (sort === "oldest") return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
@@ -496,7 +496,7 @@ export default function Dashboards() {
                 ))}
               </div>
             )}
-            {ordered.some((d) => d.layout_version !== 2) && (
+            {ordered.some((d) => d.layout_version !== 2 && d.layout_version !== 4) && (
               <p className="m-0 text-caption text-muted">
                 <KindPill kind="dashboard" className="h-[18px] px-1.5 text-[10.5px] mr-1.5 align-[1px]">Classic</KindPill>
                 dashboards are from before every dashboard became the full kind. Upgrade keeps the same link, name and sharing.
