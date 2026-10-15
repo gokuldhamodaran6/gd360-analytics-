@@ -293,6 +293,8 @@ def _kpi_text(kpi: dict | None) -> str:
 def threshold_text(db: Session, trigger: dict) -> str:
     op, value = trigger.get("op"), trigger.get("value")
     kpi = trigger.get("kpi_label") or "the number"
+    if re.match(r"^(Highest|Lowest)\b", kpi):
+        kpi = "the " + kpi[:1].lower() + kpi[1:]  # R50: "Check if the highest segment churn rate goes above 25%"
     unit = trigger.get("unit") or ""
     v = f"{_num_text(value)}{unit}"
     if op == "below":
@@ -540,6 +542,10 @@ def validate(db: Session, user: models.User, body: dict, existing: models.Automa
         if target.get("kind") == "board":
             keys += ("page_id", "block_id", "den_block_id", "ratio_as", "window", "label")
             kpi = dict(kpi, kind=kpi.get("kind") or "number")
+        if target.get("kind") == "segments":
+            # R50: the line is kept with the target so each check lists every segment over it
+            keys += ("source_id", "table", "outcome", "positive", "dims", "min_n", "line")
+            target = dict(target, line=value)
         clean = {
             "type": "threshold", "target": {k: target.get(k) for k in keys if target.get(k)},
             "kpi": key, "kpi_label": kpi.get("label"), "op": trig["op"], "value": value,
@@ -659,6 +665,8 @@ def _snapshot_for_target(db: Session, user: models.User, target: dict) -> tuple[
         except dashboard_watch.WatchError as e:
             raise AutomationError(str(e))
         return {"kpis": [dashboard_watch.as_kpi(ev)]}, {"name": ev["dashboard"]["name"], "link": ev["link"]}
+    if kind == "segments":
+        return _segments_snapshot(db, user, target, AutomationError)
     if kind == "project_run":
         r = db.get(models.ProjectRun, target.get("run_id") or "")
         if not _run_visible(db, r, user) or r.status != "done":
@@ -666,6 +674,19 @@ def _snapshot_for_target(db: Session, user: models.User, target: dict) -> tuple[
         res = r.result or {}
         return {"kpis": res.get("kpis") or []}, {"name": r.question, "link": f"/p/{r.conversation_id}?run={r.id}"}
     raise AutomationError("Pick what the number comes from.")
+
+
+def _segments_snapshot(db: Session, user: models.User, target: dict, err) -> tuple[dict, dict]:
+    """2026-10-15 (R50): the outcome rate in every segment (services/agent/segment_watch.py)."""
+    from .agent import segment_watch
+    ds = db.get(models.DataSource, target.get("source_id") or "")
+    if not _ds_visible(db, ds, user):
+        raise err("The data this alert watches no longer exists or isn't shared with you.")
+    try:
+        ev = segment_watch.evaluate(db, user, target, target.get("line"))
+    except segment_watch.WatchError as e:
+        raise err(str(e))
+    return {"kpis": ev["kpis"]}, ev["info"]
 
 
 def target_kpis(db: Session, user: models.User, target: dict) -> list[dict]:
@@ -677,6 +698,8 @@ def _fresh_snapshot(db: Session, user: models.User, target: dict) -> tuple[dict,
     """Re-runs the target's plan now (no language model) for a threshold check."""
     from .project_engine.dashboards import refresh as refresh_dashboard3, rerun_snapshot
     kind = target.get("kind")
+    if kind == "segments":
+        return _segments_snapshot(db, user, target, StepFailed)
     if kind == "board":
         from . import dashboard_watch
         try:

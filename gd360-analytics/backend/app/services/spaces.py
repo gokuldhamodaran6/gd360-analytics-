@@ -213,7 +213,9 @@ def space_out(db: Session, space: models.Space, user: models.User) -> dict:
         "workspace_id": space.workspace_id, "owner_id": space.owner_id, "can_edit": can_edit(db, space, user),
         "source_ids": [ds.id for ds in sources], "sources": [source_out(ds) for ds in sources],
         "stats": {"sources": len(sources), "dashboards": dashboards,
-                  "projects": len([c for c in convs if c.kind == "project"])},
+                  "projects": len([c for c in convs if c.kind == "project"]),
+                  # R50: every conversation filed here (Home's Space cards count these)
+                  "conversations": len([c for c in convs if c.kind in ("project", "guided")])},
         "fresh": {"status": fresh["status"], "text": fresh["text"], "last_synced_at": fresh["last_synced_at"]},
         "created_at": space.created_at, "updated_at": space.updated_at,
     }
