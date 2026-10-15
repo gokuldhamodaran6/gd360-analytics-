@@ -200,7 +200,7 @@ export default function CommandPalette() {
     navigate(`/workspace/${c.datasource_id}?conversation=${c.id}`);
   };
   const openDashboard = (d: DashboardSummary) => {
-    navigate(d.layout_version === 3 ? `/project-dashboards/${d.id}` : d.layout_version === 2 ? `/dashboard-builder/${d.id}` : `/dashboards/${d.id}`);
+    navigate(d.layout_version === 4 ? `/boards/${d.id}` : d.layout_version === 3 ? `/project-dashboards/${d.id}` : d.layout_version === 2 ? `/dashboard-builder/${d.id}` : `/dashboards/${d.id}`);
   };
   const openDatasource = (ds: DataSourceSummary) => {
     navigate(`/?intent=guided&source=${encodeURIComponent(ds.id)}`);
