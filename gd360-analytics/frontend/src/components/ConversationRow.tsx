@@ -445,7 +445,7 @@ export default function ConversationRow({
       {conversation.pinned && (
         <PinIcon filled className="w-3 h-3 text-accent shrink-0 rotate-[20deg]" />
       )}
-      <span title={conversation.title} className={`truncate ${variant === "card" ? "font-medium text-sm" : "text-sm"} ${active ? "text-text font-semibold" : ""}`}>
+      <span title={conversation.title} className={`${variant === "card" ? "line-clamp-2 font-medium text-sm leading-snug" : "truncate text-sm"} ${active ? "text-text font-semibold" : ""}`}>
         {conversation.title}
       </span>
       {/* Attribution (2026-09-23, roles & attribution round): only shown

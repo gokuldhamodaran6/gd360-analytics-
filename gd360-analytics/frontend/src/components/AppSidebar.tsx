@@ -14,7 +14,8 @@ import { ChipCloseIcon, SourceDot } from "./ChatPanel";
 // drawer behave exactly as they did.
 import { ClockIcon, DatabaseIcon, FlaskIcon, GridIcon, NetworkIcon, PaletteIcon, ShieldCheckIcon, SidebarIcon } from "../ui";
 import { BrandKitSheet } from "../dashboard/theme/BrandKitSheet";
-import { Space, spacesApi } from "../api/spaces";
+import { eulivAvailable, openEuliv } from "./Euliv";
+import "../shell/shell.css";
 
 // 2026-09-23: the persistent left nav rail from the workspace-structure
 // revamp, modeled on the reference screenshots Gokul shared (a "Data
@@ -1072,293 +1073,71 @@ export function ConnectDataPopup({
   );
 }
 
-function MenuIcon({ className = "w-5 h-5" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 6h18M3 12h18M3 18h18" />
-    </svg>
-  );
+// ===========================================================================================
+// 2026-10-15 (R50, GD360 3.0): the one shell. Every signed-in page renders this rail - a 72 px column of
+// labelled icons (mockup boards 01 and 06) - and, on phones, a bottom tab bar instead. The "G" mark opens the
+// workspace menu (switch, create, invite, brand kit, domain); "More" holds the rest of the product. The older
+// 240 px sidebar with its own Spaces list and drawer is gone: Spaces live on Home and on the Data page.
+// ===========================================================================================
+
+const GX = {
+  home: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z" /></svg>,
+  plus: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>,
+  lib: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 5h16v14H4zM8 5v14M4 10h16" /></svg>,
+  grid: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" /><rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" /></svg>,
+  db: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><ellipse cx="12" cy="6" rx="7" ry="3" /><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3" /></svg>,
+  bolt: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 3L5 14h6l-1 7 8-11h-6l1-7z" /></svg>,
+  mic: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></svg>,
+  more: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="5" cy="12" r="1.4" /><circle cx="12" cy="12" r="1.4" /><circle cx="19" cy="12" r="1.4" /></svg>,
+  gear: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></svg>,
+  team: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4a3.5 3.5 0 0 1 0 7M21.5 20a6.5 6.5 0 0 0-5-6.3" /></svg>,
+  ml: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="6" cy="6" r="2.2" /><circle cx="18" cy="6" r="2.2" /><circle cx="12" cy="18" r="2.2" /><path d="M7.8 7.4l3.2 8.6M16.2 7.4L13 16M8.2 6h7.6" /></svg>,
+  target: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="4.5" /><path d="M12 12 19 5M16 5h3v3" /></svg>,
+  flask: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6A2 2 0 0 0 19 18l-5-9V3" /></svg>,
+  shield: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" /><path d="M9 12l2 2 4-4" /></svg>,
+  help: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01" /></svg>,
+  palette: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.3-1.7-.4-1 .2-2.3 1.6-2.3H17a4 4 0 0 0 4-4c0-5.5-4-10-9-10z" /><circle cx="7.5" cy="11" r="1" /><circle cx="11" cy="7" r="1" /><circle cx="16" cy="8.5" r="1" /></svg>,
+  globe: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z" /></svg>,
+  check: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>,
+  invite: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="10" cy="8" r="3.5" /><path d="M3.5 20a6.5 6.5 0 0 1 13 0M19 8v6M16 11h6" /></svg>,
+};
+
+type RailMenu = { kind: "ws" | "more"; x: number; y: number; sheet: boolean } | null;
+
+/** Where each place in the product is "on" - one list, used by the rail and the phone tabs. */
+export function railActive(pathname: string): string {
+  const p = pathname;
+  if (p === "/") return "home";
+  if (p.startsWith("/chat")) return "new";
+  if (p.startsWith("/library") || p.startsWith("/projects") || p.startsWith("/p/") || p.startsWith("/g/") || p.startsWith("/v/") || p.startsWith("/workspace/")) return "library";
+  if (p.startsWith("/dashboards") || p.startsWith("/boards") || p.startsWith("/dashboard-builder") || p.startsWith("/project-dashboards")) return "dashboards";
+  if (p.startsWith("/data") || p.startsWith("/spaces") || p.startsWith("/connect")) return "data";
+  if (p.startsWith("/automations") || p.startsWith("/jobs")) return "automations";
+  if (p.startsWith("/profile") || p.startsWith("/settings")) return "settings";
+  return "more";
 }
 
-// 2026-09-25e (responsive pass): the workspace switcher + three nav links,
-// extracted so the exact same content renders both in the desktop static
-// rail below AND in the new mobile drawer (see AppSidebar below) without
-// keeping two copies of this markup in sync by hand. `onNavigate` is fired
-// after every Link click - a no-op on desktop, closes the drawer on
-// mobile.
-function HomeIcon({ className = "w-[18px] h-[18px]" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-4.5v-6h-5v6H5a1 1 0 0 1-1-1z" />
-    </svg>
-  );
-}
-
-function SidebarNav({
-  workspaces,
-  activeWorkspaceId,
-  pathname,
-  onSwitch,
-  onOpenCreate,
-  onOpenInvite,
-  onOpenBrandKit,
-  onNavigate,
-  collapsed = false,
-  onToggleCollapse,
-  spaces = null,
-}: {
-  workspaces: WorkspaceSummary[];
-  activeWorkspaceId: string;
-  pathname: string;
-  onSwitch: (id: string) => void;
-  onOpenCreate: () => void;
-  onOpenInvite: () => void;
-  onOpenBrandKit: () => void;
-  onNavigate: () => void;
-  // 2026-09-28 (collapsible icon rail): both desktop-only. `collapsed`
-  // defaults false and `onToggleCollapse` defaults undefined, so the
-  // mobile drawer's own call site (which never passes either) renders
-  // exactly as it always has - full labels, no toggle button. The desktop
-  // rail's call site is the only one that passes real values for these.
-  collapsed?: boolean;
-  onToggleCollapse?: () => void;
-  // 2026-10-09 (round 15): the workspace's Spaces, listed under the nav
-  // (null while loading - the section stays hidden until they arrive).
-  spaces?: Space[] | null;
-}) {
-  // 2026-10-08 (round 11): "/" is now Home (one question box); the full
-  // Projects library moved to /projects, and a multi-source project (/p/:id)
-  // counts as being in Projects.
-  const onHome = pathname === "/";
-  // 2026-10-10: "Projects" is now Library (/library); an answer (/p/:id) and
-  // a Studio analysis (/workspace/:id) both live in it.
-  const onProjects =
-    pathname.startsWith("/library") || pathname.startsWith("/projects") || pathname.startsWith("/p/") || pathname.startsWith("/workspace/");
-
-  // Shared class builder for the six nav links below: expanded keeps
-  // today's icon+label row exactly as it was; collapsed centers just the
-  // icon in the narrow rail and adds a native title attribute so hovering
-  // still shows the label (cheap, accessible, no new dependency).
-  // 2026-10-06 (design-system kit): System.dc.html's rail - muted stroke
-  // icons, the active one in brand ink on the brand tint (no more solid
-  // brand fill with white icon), 40 px square hit targets when collapsed.
-  const linkClass = (active: boolean) =>
-    `ui-focus flex items-center gap-2.5 rounded-ctl text-ui font-medium transition-colors ${
-      collapsed ? "justify-center w-10 h-10 mx-auto" : "px-2.5 h-9"
-    } ${active ? "bg-tint text-brand-ink" : "text-muted hover:bg-subtle hover:text-text"}`;
-
-  return (
-    <>
-      <WorkspaceSwitcher
-        workspaces={workspaces}
-        activeWorkspaceId={activeWorkspaceId}
-        onSwitch={onSwitch}
-        onOpenCreate={onOpenCreate}
-        onOpenInvite={onOpenInvite}
-        onOpenBrandKit={onOpenBrandKit}
-        collapsed={collapsed}
-      />
-
-      <nav aria-label="Primary" className={`mt-1 space-y-0.5 ${collapsed ? "px-2" : "px-3"}`}>
-        <Link to="/" onClick={onNavigate} title={collapsed ? "Home" : undefined} className={linkClass(onHome)}>
-          <HomeIcon />
-          {!collapsed && "Home"}
-        </Link>
-        <Link to="/library" onClick={onNavigate} title={collapsed ? "Library" : undefined} className={linkClass(onProjects)} data-nav="library">
-          <ProjectsIcon />
-          {!collapsed && "Library"}
-        </Link>
-        <Link
-          to="/dashboards"
-          onClick={onNavigate}
-          title={collapsed ? "Dashboards" : undefined}
-          className={linkClass(
-            // 2026-09-25d (elite pass): /dashboard-builder/:id (the pages+
-            // blocks editor - see App.tsx's own routing comment for why
-            // it's a deliberately different path prefix from /dashboards)
-            // is still, conceptually, "being in Dashboards" - now that it
-            // also renders this sidebar, it should highlight the same nav
-            // item rather than leaving nothing active while editing one.
-            pathname.startsWith("/dashboards") || pathname.startsWith("/dashboard-builder") || pathname.startsWith("/project-dashboards")
-          )}
-        >
-          <DashboardsIcon />
-          {!collapsed && "Dashboards"}
-        </Link>
-        {/* 2026-10-10: Initiatives (+ Accounts) - plan, run and prove events,
-            campaigns, account-based marketing, hiring and product builds. */}
-        <Link
-          to="/initiatives"
-          onClick={onNavigate}
-          title={collapsed ? "Initiatives" : undefined}
-          className={linkClass(pathname.startsWith("/initiatives") || pathname.startsWith("/accounts"))}
-          data-nav="initiatives"
-        >
-          <InitiativesIcon />
-          {!collapsed && (
-            <span className="flex-1 flex items-center justify-between gap-2">
-              Initiatives
-              <span className="text-[9.5px] font-mono tracking-[0.08em] px-1.5 py-[1px] rounded border border-tint-border text-primary">PRO</span>
-            </span>
-          )}
-        </Link>
-        <Link
-          to="/automations"
-          onClick={onNavigate}
-          title={collapsed ? "Automations" : undefined}
-          className={linkClass(pathname.startsWith("/jobs") || pathname.startsWith("/automations"))}
-        >
-          <JobsIcon />
-          {!collapsed && "Automations"}
-        </Link>
-        <Link
-          to="/data"
-          onClick={onNavigate}
-          title={collapsed ? "Data" : undefined}
-          className={linkClass(pathname.startsWith("/data"))}
-        >
-          <DataSourcesIcon />
-          {!collapsed && "Data"}
-        </Link>
-        {/* 2026-09-28 (ML Models round): the real ML feature, right after
-            Data Sources - see MLModelsIcon's own comment for why. */}
-        <Link
-          to="/ml-models"
-          onClick={onNavigate}
-          title={collapsed ? "ML Studio" : undefined}
-          className={linkClass(pathname.startsWith("/ml-models") || pathname.startsWith("/ml-studio") || pathname.startsWith("/experiments"))}
-        >
-          <MLModelsIcon />
-          {!collapsed && "ML Studio"}
-        </Link>
-        {/* 2026-10-08 (round 13): Experiments now lives inside ML Studio
-            (its page links there), per the v2 navigation. */}
-        {/* Phase 5, Batch A (2026-09-28, data governance & quality): the
-            audit log/access-review page is owner-only (the backend 403s a
-            non-owner - see routers/governance.py), and `workspaces` here
-            already carries the current signed-in person's own `role` in
-            each one (see WorkspaceSummary), so this link is gated on being
-            the ACTIVE workspace's owner rather than always shown - no
-            invasive prop plumbing needed, both `workspaces` and
-            `activeWorkspaceId` are already passed into this component. */}
-        {/* 2026-10-10 (round 19): the Trust Center (/trust) - owners and admins. */}
-        {["owner", "admin"].includes(workspaces.find((w) => w.id === activeWorkspaceId)?.role || "") && (
-          <Link
-            to="/trust"
-            onClick={onNavigate}
-            title={collapsed ? "Trust Center" : undefined}
-            className={linkClass(pathname.startsWith("/governance") || pathname.startsWith("/trust"))}
-            data-nav="trust"
-          >
-            <GovernanceIcon />
-            {!collapsed && "Trust Center"}
-          </Link>
-        )}
-      </nav>
-
-      {/* 2026-10-09 (round 15): Spaces - up to six, each a colour dot and its
-          name, linking to its page (/spaces/:id); "All spaces" opens the
-          Spaces tab of the Data page. Collapsed rail: just the dots, with
-          the name as a tooltip. */}
-      {spaces && (spaces.length > 0 || !collapsed) && (
-        <nav aria-label="Spaces" className={`mt-5 ${collapsed ? "px-2 space-y-0.5" : "px-3 space-y-0.5"}`}>
-          {!collapsed && (
-            <div className="px-2.5 pb-1 font-mono text-[10.5px] uppercase tracking-caps text-faint">Spaces</div>
-          )}
-          {collapsed && <div className="mx-auto mb-1 w-6 border-t border-border" aria-hidden="true" />}
-          {spaces.slice(0, 6).map((sp) => {
-            const active = pathname === `/spaces/${sp.id}`;
-            return (
-              <Link
-                key={sp.id}
-                to={`/spaces/${sp.id}`}
-                onClick={onNavigate}
-                title={collapsed ? sp.name : undefined}
-                aria-label={collapsed ? sp.name : undefined}
-                aria-current={active ? "page" : undefined}
-                className={`ui-focus flex items-center gap-2.5 rounded-ctl text-ui transition-colors ${
-                  collapsed ? "justify-center w-10 h-9 mx-auto" : "px-2.5 h-8"
-                } ${active ? "bg-subtle text-text font-medium" : "text-muted hover:bg-subtle hover:text-text"}`}
-              >
-                <span className="w-2 h-2 rounded-[3px] shrink-0" style={{ background: sp.color }} aria-hidden="true" />
-                {!collapsed && <span className="truncate">{sp.name}</span>}
-              </Link>
-            );
-          })}
-          {!collapsed && (
-            <Link
-              to="/data?tab=spaces"
-              onClick={onNavigate}
-              className="ui-focus flex items-center gap-2.5 px-2.5 h-8 rounded-ctl text-caption text-muted hover:bg-subtle hover:text-text transition-colors"
-            >
-              {spaces.length === 0 ? "+ Group sources into a Space" : spaces.length > 6 ? `All spaces (${spaces.length})` : "All spaces"}
-            </Link>
-          )}
-        </nav>
-      )}
-
-      {/* 2026-09-23, round three (Gokul's own explicit ask): the sidebar's
-          own "+ Connect data" shortcut is gone - adding data now happens in
-          exactly one place, the Data Sources page (/data), instead of two
-          different entry points that could drift out of sync. The Data
-          Sources link two lines up is how a person gets there.
-          ConnectDataPopup itself stays exported from this file - it's still
-          used by pages/NewProject.tsx's own "Connect data" button. */}
-      <div className="flex-1" />
-
-      {/* 2026-09-28 (collapsible icon rail): a single, always-visible,
-          discoverable collapse/expand control, pinned to the bottom of the
-          nav column - a common, well-understood placement for this pattern
-          (Notion/Linear/Vercel-style icon rails). Only rendered when a
-          handler is actually passed in, which today is desktop only - the
-          mobile drawer's own call site never passes `onToggleCollapse`, so
-          it never grows this button. Manual/user-controlled only: nothing
-          in this file ever calls this on its own based on route/page. */}
-      {/* 2026-10-10: Help & support lives here, not floating over every page. */}
-      <div className={`shrink-0 pb-1 ${collapsed ? "px-2" : "px-3"}`}>
-        <button
-          type="button"
-          onClick={() => { onNavigate(); window.dispatchEvent(new Event("gd360:open-help")); }}
-          title={collapsed ? "Help & support" : undefined}
-          aria-label="Help & support"
-          data-nav="help"
-          className={`ui-focus flex items-center gap-2.5 rounded-ctl text-ui font-medium text-muted hover:text-text hover:bg-subtle transition-colors ${
-            collapsed ? "justify-center w-10 h-10 mx-auto" : "w-full px-2.5 h-9"
-          }`}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="9" />
-            <path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3" />
-            <path d="M12 17h.01" />
-          </svg>
-          {!collapsed && "Help & support"}
-        </button>
-      </div>
-      {onToggleCollapse && (
-        <div className={`shrink-0 pb-3 ${collapsed ? "px-2" : "px-3"}`}>
-          <button
-            type="button"
-            onClick={onToggleCollapse}
-            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            className={`ui-focus flex items-center gap-2.5 rounded-ctl text-ui font-medium text-muted hover:text-text hover:bg-subtle transition-colors ${
-              collapsed ? "justify-center w-10 h-10 mx-auto" : "w-full px-2.5 h-9"
-            }`}
-          >
-            <SidebarIcon size={16} />
-            {!collapsed && "Collapse"}
-          </button>
-        </div>
-      )}
-    </>
-  );
-}
-
-function InitiativesIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden className="shrink-0">
-      <circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="4.5" /><path d="M12 12 19 5M16 5h3v3" />
-    </svg>
+function MenuPanel({ menu, onClose, children, label }: { menu: NonNullable<RailMenu>; onClose: () => void; children: React.ReactNode; label: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number }>({ left: menu.x, top: menu.y });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || menu.sheet) return;
+    const h = el.offsetHeight, w = el.offsetWidth;
+    setPos({ left: Math.min(menu.x, window.innerWidth - w - 12), top: Math.max(12, Math.min(menu.y, window.innerHeight - h - 12)) });
+  }, [menu]);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node) && !(e.target as HTMLElement).closest("[data-gx-menu-trigger]")) onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [onClose]);
+  return createPortal(
+    <div ref={ref} className={`gx-menu${menu.sheet ? " sheet" : ""}`} role="menu" aria-label={label} style={menu.sheet ? undefined : { left: pos.left, top: pos.top }} data-gx-menu={menu.kind}>
+      {children}
+    </div>,
+    document.body,
   );
 }
 
@@ -1368,197 +1147,127 @@ export default function AppSidebar({
   onWorkspaceSwitch,
   onWorkspaceCreated,
 }: {
-  // The account's real workspaces and which one is active right now - both
-  // owned by whichever page renders this sidebar (see lib/useWorkspaceNav),
-  // since switching workspace also has to refetch that page's own content,
-  // not just this sidebar.
+  // The account's real workspaces and which one is active right now - both owned by whichever page renders
+  // this rail (see lib/useWorkspaceNav), since switching workspace also has to refetch that page's content.
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string;
   onWorkspaceSwitch: (id: string) => void;
   onWorkspaceCreated: (ws: WorkspaceSummary) => void;
 }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const { user } = useAuth();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [showBrandKit, setShowBrandKit] = useState(false);
-  // 2026-09-25e (responsive pass): this used to just be "hidden lg:flex" -
-  // every page that renders this sidebar (Dashboard, Dashboards,
-  // DataSources, NewProject, DashboardBuilderView) genuinely had NO way to
-  // get from Projects to Dashboards to Data Sources on a phone; the sidebar
-  // just vanished below `lg` with nothing replacing it. This turns it into
-  // a real off-canvas drawer instead: same WorkspaceSwitcher + nav links,
-  // opened from a small fixed menu button, closed by its own X, the
-  // backdrop, Escape, or picking a destination. Kept entirely self-
-  // contained in this one file (its own open/close state, its own trigger
-  // button rendered here) rather than threading a new prop through every
-  // caller and TopNav.tsx - lower risk, and every page gets the fix with no
-  // changes of its own.
-  const [mobileOpen, setMobileOpen] = useState(false);
+  const [menu, setMenu] = useState<RailMenu>(null);
+  useEffect(() => setMenu(null), [location.pathname]);
 
-  // 2026-09-28 (collapsible icon rail, round 2): desktop-only. Starts from
-  // this route's own default (see isDashboardsPath above) - expanded on
-  // Dashboards, collapsed everywhere else, the analysis canvas
-  // (Workspace.tsx) included. The toggle button still lets a person flip
-  // it for the page they're currently on (setCollapsed below), but the
-  // effect right after this re-applies the route's own default every time
-  // location.pathname actually changes - so navigating to a new page
-  // always starts from that page's sensible default again, rather than
-  // carrying over whatever was manually picked on the page before it.
-  const [collapsed, setCollapsed] = useState<boolean>(() => !isDashboardsPath(location.pathname));
-
+  // the top bar's workspace name opens the same menu (components/TopNav.tsx)
   useEffect(() => {
-    setCollapsed(!isDashboardsPath(location.pathname));
-    // Deliberately only re-runs on an actual navigation (pathname change),
-    // not on every render - this is what lets the toggle button below
-    // still override the state WHILE the person stays on one page, without
-    // this effect immediately snapping it back.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.pathname]);
-
-  const toggleCollapsed = () => setCollapsed((prev) => !prev);
-
-  useEffect(() => setMobileOpen(false), [location.pathname]);
-
-  // 2026-10-09 (round 15): the Spaces listed under the nav. Loaded per
-  // workspace, and again whenever the route lands on /data or /spaces
-  // (where Spaces are made, renamed or removed) - one cheap GET. A page can
-  // also ask for a refresh with window.dispatchEvent(new Event("gd360:spaces-changed")).
-  const [spaces, setSpaces] = useState<Space[] | null>(null);
-  const [spacesTick, setSpacesTick] = useState(0);
-  const spacesRoute = location.pathname.startsWith("/data") || location.pathname.startsWith("/spaces") ? location.pathname : "";
-  useEffect(() => {
-    const bump = () => setSpacesTick((n) => n + 1);
-    window.addEventListener("gd360:spaces-changed", bump);
-    return () => window.removeEventListener("gd360:spaces-changed", bump);
+    const open = (e: Event) => {
+      const d = (e as CustomEvent).detail || {};
+      setMenu({ kind: "ws", x: Number(d.x) || 80, y: Number(d.y) || 64, sheet: window.innerWidth <= 760 });
+    };
+    window.addEventListener("gx:open-workspace-menu", open);
+    return () => window.removeEventListener("gx:open-workspace-menu", open);
   }, []);
-  useEffect(() => {
-    if (!activeWorkspaceId) return;
-    let live = true;
-    spacesApi
-      .list(activeWorkspaceId)
-      .then((list) => live && setSpaces(list))
-      .catch(() => live && setSpaces((prev) => prev ?? []));
-    return () => {
-      live = false;
-    };
-  }, [activeWorkspaceId, spacesRoute, spacesTick]);
 
-  useEffect(() => {
-    if (!mobileOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMobileOpen(false);
-    };
-    document.addEventListener("keydown", onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [mobileOpen]);
+  const on = railActive(location.pathname);
+  const active = workspaces.find((w) => w.id === activeWorkspaceId) || workspaces[0];
+  const isAdmin = ["owner", "admin"].includes(active?.role || "");
+  const openAt = (kind: "ws" | "more", el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    const sheet = window.innerWidth <= 760;
+    setMenu((m) => (m?.kind === kind ? null : { kind, x: sheet ? 8 : r.right + 10, y: sheet ? 0 : r.top, sheet }));
+  };
+  const close = () => setMenu(null);
+  const go = (to: string) => { close(); navigate(to); };
+
+  const primary = [
+    { key: "home", label: "Home", to: "/", icon: GX.home },
+    { key: "new", label: "New", to: "/chat", icon: GX.plus },
+    { key: "library", label: "Library", to: "/library", icon: GX.lib },
+    { key: "dashboards", label: "Dashboards", to: "/dashboards", icon: GX.grid },
+    { key: "data", label: "Data", to: "/data", icon: GX.db },
+    { key: "automations", label: "Automate", to: "/automations", icon: GX.bolt },
+  ];
 
   return (
     <>
-      {/* Mobile-only trigger - below `lg` this is the sole way to reach
-          this nav, so it stays fixed/reachable from anywhere on the page
-          rather than only from the top of it. */}
-      <button
-        type="button"
-        onClick={() => setMobileOpen(true)}
-        aria-label="Open menu"
-        className="ui-focus lg:hidden fixed top-2.5 left-3 z-30 w-9 h-9 rounded-ctl bg-surface border border-border shadow-card flex items-center justify-center text-secondary hover:bg-subtle hover:text-text transition-colors"
-      >
-        <MenuIcon />
-      </button>
+      <nav className="gx-rail" aria-label="Main" data-gx-rail="" data-sidebar-rail="rail">
+        <button type="button" className="gx-logo" data-gx-menu-trigger="" data-gx-ws="" aria-haspopup="menu" aria-expanded={menu?.kind === "ws"}
+          aria-label={`Workspace: ${active?.name || "Personal Workspace"}. Switch or manage`} title={active?.name || "Workspace"}
+          onClick={(e) => openAt("ws", e.currentTarget)}>
+          {active && !active.is_personal ? active.name.charAt(0).toUpperCase() : "G"}
+        </button>
+        {primary.map((it) => (
+          <Link key={it.key} to={it.to} className={`gx-ri${on === it.key ? " on" : ""}`} aria-current={on === it.key ? "page" : undefined} data-nav={it.key}>
+            {it.icon}{it.label}
+          </Link>
+        ))}
+        <span className="gx-spacer" />
+        {eulivAvailable() && <button type="button" className="gx-ri" onClick={() => openEuliv()} aria-label="Talk to EuLiv, the voice assistant" data-nav="euliv">{GX.mic}EuLiv</button>}
+        <button type="button" className={`gx-ri${on === "more" ? " on" : ""}`} data-gx-menu-trigger="" aria-haspopup="menu" aria-expanded={menu?.kind === "more"}
+          onClick={(e) => openAt("more", e.currentTarget)} data-nav="more">{GX.more}More</button>
+        <Link to="/profile" className={`gx-ri${on === "settings" ? " on" : ""}`} aria-current={on === "settings" ? "page" : undefined} data-nav="settings">{GX.gear}Settings</Link>
+      </nav>
 
-      {/* Mobile drawer - always mounted below `lg` (not conditionally
-          rendered) so open/close animate via CSS transitions instead of an
-          abrupt mount/unmount; inert and aria-hidden while closed. */}
-      <div
-        className={`lg:hidden fixed inset-0 z-40 transition-opacity duration-300 ${
-          mobileOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
-        }`}
-        aria-hidden={!mobileOpen}
-      >
-        <div className="absolute inset-0 bg-black/60" onClick={() => setMobileOpen(false)} />
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Navigation"
-          className={`absolute left-0 top-0 h-full w-72 max-w-[85vw] bg-surface border-r border-border shadow-2xl flex flex-col transition-transform duration-300 ${
-            mobileOpen ? "translate-x-0" : "-translate-x-full"
-          }`}
-        >
-          <div className="flex items-center justify-end px-3 pt-3 shrink-0">
-            <button
-              type="button"
-              onClick={() => setMobileOpen(false)}
-              aria-label="Close menu"
-              className="ui-focus p-1.5 rounded-ctl text-muted hover:text-text hover:bg-subtle transition-colors"
-            >
-              <CloseIcon />
+      <nav className="gx-tabs" aria-label="Main" data-gx-tabs="">
+        {primary.filter((it) => ["home", "new", "library", "dashboards"].includes(it.key)).map((it) => (
+          <Link key={it.key} to={it.to} className={`gx-tab${on === it.key ? " on" : ""}`} aria-current={on === it.key ? "page" : undefined}>{it.icon}{it.label}</Link>
+        ))}
+        <button type="button" className={`gx-tab${["more", "data", "automations", "settings"].includes(on) ? " on" : ""}`} data-gx-menu-trigger="" aria-haspopup="menu"
+          aria-expanded={menu?.kind === "more"} onClick={(e) => openAt("more", e.currentTarget)} data-gx-tab-more="">{GX.more}More</button>
+      </nav>
+
+      {menu?.kind === "ws" && (
+        <MenuPanel menu={menu} onClose={close} label="Workspace">
+          <div className="hd">Your workspaces</div>
+          {workspaces.map((ws) => (
+            <button key={ws.id} type="button" role="menuitem" onClick={() => { close(); onWorkspaceSwitch(ws.id); }}>
+              <span className="ws">{ws.is_personal ? "G" : ws.name.charAt(0).toUpperCase()}</span>
+              <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ws.name}{ws.role === "viewer" ? " · View only" : ""}</span>
+              {ws.id === activeWorkspaceId && <span className="meta" style={{ color: "rgb(var(--color-primary))" }}>{GX.check}</span>}
             </button>
-          </div>
-          <SidebarNav
-            workspaces={workspaces}
-            activeWorkspaceId={activeWorkspaceId}
-            pathname={location.pathname}
-            onSwitch={onWorkspaceSwitch}
-            onOpenCreate={() => {
-              setMobileOpen(false);
-              setShowCreateModal(true);
-            }}
-            onOpenInvite={() => {
-              setMobileOpen(false);
-              setShowInviteModal(true);
-            }}
-            onOpenBrandKit={() => {
-              setMobileOpen(false);
-              setShowBrandKit(true);
-            }}
-            onNavigate={() => setMobileOpen(false)}
-            spaces={spaces}
-          />
-        </div>
-      </div>
+          ))}
+          <div className="sep" />
+          <button type="button" role="menuitem" onClick={() => { close(); setShowCreateModal(true); }}>{GX.plus}Create workspace</button>
+          <button type="button" role="menuitem" disabled={!!active?.is_personal}
+            title={active?.is_personal ? "Personal Workspace is just for you - create or switch to a team workspace to invite people" : undefined}
+            onClick={() => { close(); setShowInviteModal(true); }}>{GX.invite}Invite teammates</button>
+          <button type="button" role="menuitem" data-open-brand-kit="" onClick={() => { close(); setShowBrandKit(true); }}>{GX.palette}Brand kit…</button>
+          <button type="button" role="menuitem" data-open-domain="" onClick={() => go("/settings/domains")}>{GX.globe}Company domain…</button>
+        </MenuPanel>
+      )}
 
-      {/* Desktop: fixed rail, static in the flow at `lg` and up. Width now
-          toggles between the full 240px rail and a 56px icon-only strip
-          (2026-09-28, collapsible icon rail - see the `collapsed` state
-          above; 64 -> 56 px on 2026-10-06 to match the design system's
-          rail) - `transition-[width]` animates the change instead of a
-          jump-cut. Still `shrink-0`, so every page's own sibling
-          `flex-1 min-w-0` content column reflows automatically with no
-          changes needed anywhere else. */}
-      <div
-        className={`hidden lg:flex shrink-0 h-screen sticky top-0 border-r border-border bg-surface flex-col transition-[width] duration-200 ${
-          collapsed ? "w-14 cursor-e-resize" : "w-60"
-        }`}
-        data-sidebar-rail={collapsed ? "collapsed" : "expanded"}
-        // 2026-10-10: a click anywhere on the collapsed rail that is not a
-        // link or button opens it - the whole strip is the target.
-        onClick={(e) => {
-          if (!collapsed) return;
-          const el = e.target as HTMLElement;
-          if (el.closest("a,button,input,select,textarea,[role='menu'],[role='dialog']")) return;
-          setCollapsed(false);
-        }}
-      >
-        <SidebarNav
-          workspaces={workspaces}
-          activeWorkspaceId={activeWorkspaceId}
-          pathname={location.pathname}
-          onSwitch={onWorkspaceSwitch}
-          onOpenCreate={() => setShowCreateModal(true)}
-          onOpenInvite={() => setShowInviteModal(true)}
-          onOpenBrandKit={() => setShowBrandKit(true)}
-          onNavigate={() => {}}
-          collapsed={collapsed}
-          onToggleCollapse={toggleCollapsed}
-          spaces={spaces}
-        />
-      </div>
+      {menu?.kind === "more" && (
+        <MenuPanel menu={menu} onClose={close} label="More">
+          {menu.sheet && (
+            <>
+              <button type="button" role="menuitem" onClick={() => go("/data")}>{GX.db}Data and Spaces</button>
+              <button type="button" role="menuitem" onClick={() => go("/automations")}>{GX.bolt}Automations</button>
+              {eulivAvailable() && <button type="button" role="menuitem" onClick={() => { close(); openEuliv(); }}>{GX.mic}Talk to EuLiv</button>}
+              <div className="sep" />
+            </>
+          )}
+          <div className="hd">More of GD360</div>
+          <button type="button" role="menuitem" onClick={() => go("/ml-models")}>{GX.ml}ML Studio</button>
+          <button type="button" role="menuitem" onClick={() => go("/initiatives")}>{GX.target}Initiatives<span className="meta">Pro</span></button>
+          <button type="button" role="menuitem" onClick={() => go("/experiments")}>{GX.flask}Experiments</button>
+          {isAdmin && <button type="button" role="menuitem" onClick={() => go("/trust")} data-nav="trust">{GX.shield}Trust Center</button>}
+          <div className="sep" />
+          <button type="button" role="menuitem" disabled={!!active?.is_personal} onClick={() => { close(); setShowInviteModal(true); }}
+            title={active?.is_personal ? "Switch to a team workspace to invite people" : undefined}>{GX.team}Team and invites</button>
+          <button type="button" role="menuitem" data-nav="help" onClick={() => { close(); window.dispatchEvent(new Event("gd360:open-help")); }}>{GX.help}Help and support</button>
+          {menu.sheet && (
+            <>
+              <button type="button" role="menuitem" onClick={() => go("/profile")}>{GX.gear}Settings</button>
+              <button type="button" role="menuitem" onClick={() => setMenu({ kind: "ws", x: 8, y: 0, sheet: true })}><span className="ws">G</span>Switch workspace<span className="meta">{active?.name}</span></button>
+            </>
+          )}
+        </MenuPanel>
+      )}
 
       {showCreateModal && (
         <CreateWorkspaceModal
@@ -1570,11 +1279,7 @@ export default function AppSidebar({
         />
       )}
       {showInviteModal && user && (
-        <InviteMembersModal
-          workspaceId={activeWorkspaceId}
-          currentUserId={user.id}
-          onClose={() => setShowInviteModal(false)}
-        />
+        <InviteMembersModal workspaceId={activeWorkspaceId} currentUserId={user.id} onClose={() => setShowInviteModal(false)} />
       )}
       {showBrandKit && activeWorkspaceId && (
         <BrandKitSheet

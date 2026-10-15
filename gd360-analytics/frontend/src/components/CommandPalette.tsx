@@ -194,7 +194,7 @@ export default function CommandPalette() {
 
   const openConversation = (c: ConversationSummary) => {
     // 2026-10-08 (round 11): a multi-source Project opens its own page
-    if (c.kind === "project") return navigate(`/p/${c.id}`);
+    if (c.kind === "project") return navigate(`/chat/${c.id}`);
     if (c.kind === "guided") return navigate(`/g/${c.id}`);
     if (!c.datasource_id) return;
     navigate(`/workspace/${c.datasource_id}?conversation=${c.id}`);

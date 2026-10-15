@@ -1,6 +1,10 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useTheme } from "../api/ThemeContext";
+import { v2Api, type PlanSummary } from "../api/v2";
+import { useWorkspaceNav } from "../lib/useWorkspaceNav";
+import "../shell/shell.css";
 import { useAuth } from "../api/AuthContext";
 import ThemeToggle from "./ThemeToggle";
 import { NotificationBell } from "./NotificationCenter";
@@ -142,58 +146,143 @@ export function Breadcrumb({ items }: { items: Crumb[] }) {
   return <KitBreadcrumb items={toItems(items)} renderLink={renderRouterLink} />;
 }
 
+// 2026-10-15 (R50, GD360 3.0): the one top bar (mockup boards 01 and 06) - "Workspace / Page" on the left,
+// the page's own actions, then the plan, search, alerts, theme and your avatar. Every signed-in page renders it,
+// the conversation and the dashboards included, so the product reads as one thing.
+const PAGE_LABELS: [RegExp, string][] = [
+  [/^\/$/, "Home"], [/^\/chat\/?$/, "New conversation"], [/^\/chat\//, "Conversation"], [/^\/(library|projects|p\/|g\/|v\/|workspace\/)/, "Library"],
+  [/^\/(dashboards|boards|dashboard-builder|project-dashboards)/, "Dashboards"], [/^\/(data|connect)/, "Data"], [/^\/spaces/, "Spaces"],
+  [/^\/(automations|jobs)/, "Automations"], [/^\/profile/, "Settings"], [/^\/settings\/domains/, "Company domain"], [/^\/(ml-models|ml-studio)/, "ML Studio"],
+  [/^\/experiments/, "Experiments"], [/^\/initiatives/, "Initiatives"], [/^\/accounts/, "Accounts"], [/^\/(trust|governance)/, "Trust Center"], [/^\/admin/, "Admin"],
+];
+export function pageLabel(pathname: string): string {
+  return PAGE_LABELS.find(([re]) => re.test(pathname))?.[1] || "GD360";
+}
+
+let planCache: { at: number; p: Promise<PlanSummary | null> } | null = null;
+function loadPlan(): Promise<PlanSummary | null> {
+  if (planCache && Date.now() - planCache.at < 60_000) return planCache.p;
+  const p = v2Api.plan().catch(() => null);
+  planCache = { at: Date.now(), p };
+  return p;
+}
+export function forgetPlan() { planCache = null; }
+
+function PlanChip() {
+  const [plan, setPlan] = useState<PlanSummary | null>(null);
+  const navigate = useNavigate();
+  useEffect(() => { let live = true; void loadPlan().then((p) => live && setPlan(p)); return () => { live = false; }; }, []);
+  if (!plan) return null;
+  const q = plan.meters.find((m) => m.key === "questions_per_day");
+  const text = q && q.limit ? `${plan.label} plan · ${q.used} of ${q.limit} questions today` : `${plan.label} plan`;
+  return <button type="button" className="gx-sc gx-hide-md" onClick={() => navigate("/?plan=1")} title="Plan and usage" data-gx-plan="">{text}</button>;
+}
+
+function ThemeIcon() {
+  const { theme, toggleTheme } = useTheme();
+  return (
+    <button type="button" className="gx-sc ic" onClick={toggleTheme} aria-label={theme === "dark" ? "Switch to light" : "Switch to dark"} title="Theme" data-c2-theme-toggle="">
+      {theme === "dark"
+        ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></svg>
+        : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>}
+    </button>
+  );
+}
+
+function Avatar2() {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const isAdmin = !!user?.email && ADMIN_EMAILS.includes(user.email.toLowerCase());
+  const label = user?.full_name || user?.email || "Account";
+  const initial = (label.trim()[0] || "G").toUpperCase();
+  const itemClass = "ui-focus-inset w-full flex items-center gap-2.5 px-3 py-2 text-ui text-left hover:bg-subtle transition-colors";
+  return (
+    <Popover align="end" width={232} haspopup="menu" role="menu" ariaLabel="Account"
+      trigger={(api) => (
+        <button type="button" data-popover-trigger="" aria-label={`Account menu for ${label}`} {...api.props} className="gx-av" data-gx-avatar="">{initial}</button>
+      )}>
+      {({ close }) => (
+        <div className="py-1.5">
+          <div className="px-3 pb-1.5 pt-1">
+            <div className="text-ui font-medium truncate">{user?.full_name || "Signed in"}</div>
+            {user?.email && <div className="text-caption text-muted truncate">{user.email}</div>}
+          </div>
+          <div className="border-t border-border my-1" />
+          <button type="button" role="menuitem" className={itemClass} onClick={() => { close(); navigate("/?plan=1"); }}>
+            <CreditCardIcon size={15} className="text-muted" /> Plan and usage
+          </button>
+          <button type="button" role="menuitem" className={itemClass} onClick={() => { close(); navigate("/profile"); }}>
+            <SettingsIcon size={15} className="text-muted" /> Account settings
+          </button>
+          {isAdmin && (
+            <button type="button" role="menuitem" className={itemClass} onClick={() => { close(); navigate("/admin"); }}>
+              <ShieldIcon size={15} className="text-muted" /> Admin
+            </button>
+          )}
+          <div className="border-t border-border my-1" />
+          <button type="button" role="menuitem" className={`${itemClass} text-danger`} onClick={() => { close(); logout(); }}>
+            <LogoutIcon size={15} /> Sign out
+          </button>
+        </div>
+      )}
+    </Popover>
+  );
+}
+
 export default function TopNav({
   onConnectData,
-  hideLogo = false,
   breadcrumb,
+  title,
   leading,
   actions,
+  hidePlan = false,
 }: {
   onConnectData?: () => void;
-  // True on any page that already renders its own branding via
-  // AppSidebar.tsx - avoids the logo showing twice on screen at once.
+  /** kept for older call sites; the rail carries the mark now */
   hideLogo?: boolean;
   breadcrumb?: Crumb[];
+  /** the page's own title in place of the route's name (a conversation's title, clickable to rename) */
+  title?: ReactNode;
   leading?: ReactNode;
   actions?: ReactNode;
+  hidePlan?: boolean;
 }) {
+  const { pathname } = useLocation();
+  const { workspaces, activeWorkspaceId } = useWorkspaceNav();
+  const ws = workspaces.find((w) => w.id === activeWorkspaceId);
   const { user } = useAuth();
-  const isAdmin = !!user?.email && ADMIN_EMAILS.includes(user.email.toLowerCase());
-  const wordmark =
-    !breadcrumb?.length && !hideLogo ? (
-      <Link to="/" className="ui-focus flex shrink-0 items-center gap-2.5 rounded">
-        <span className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-ctl bg-primary text-body font-bold text-on-primary">G</span>
-        <span className="text-section font-semibold text-text">GD360 Analytics</span>
-      </Link>
-    ) : null;
-
+  const first = (user?.full_name || "").trim().split(" ")[0];
+  const wsName = ws ? (ws.is_personal ? (first ? `${first}'s workspace` : "Personal workspace") : ws.name) : first ? `${first}'s workspace` : "Workspace";
+  const crumbs: Crumb[] = breadcrumb && breadcrumb.length ? breadcrumb : title ? [] : [{ label: pageLabel(pathname) }];
   return (
-    <TopBar
-      // `clearMobileMenu` clears the mobile menu button AppSidebar pins top-left.
-      clearMobileMenu
-      breadcrumb={breadcrumb && breadcrumb.length > 0 ? toItems(breadcrumb) : undefined}
-      renderLink={renderRouterLink}
-      leading={
-        <>
-          {wordmark}
-          {leading}
-        </>
-      }
-      search={<TopBarSearch onOpen={() => window.dispatchEvent(new Event("gd360:open-command-palette"))} />}
-      actions={
-        <>
-          {actions}
-          {onConnectData && (
-            <Button variant="primary" onClick={onConnectData}>
-              + Connect data
-            </Button>
-          )}
-          <TalkButton variant="icon" />
-          <NotificationBell />
-          <ThemeToggle />
-        </>
-      }
-      avatar={<AccountMenu isAdmin={isAdmin} />}
-    />
+    <header className="gx-top" data-gx-top="">
+      <nav className="gx-crumbs" aria-label="Breadcrumb">
+        <button type="button" className="ws" data-gx-menu-trigger="" data-gx-ws-crumb="" title="Switch or manage workspace"
+          onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); window.dispatchEvent(new CustomEvent("gx:open-workspace-menu", { detail: { x: r.left, y: r.bottom + 8 } })); }}>
+          {wsName}
+        </button>
+        {crumbs.map((c, i) => (
+          <span key={i} style={{ display: "contents" }}>
+            <span className={`sl${i === 0 ? " first" : ""}`} aria-hidden="true">/</span>
+            {c.to ? <Link to={c.to}>{c.label}</Link> : <span className={`cur${i === crumbs.length - 1 && crumbs.length > 1 ? " strong" : ""}`} aria-current="page">{c.label}</span>}
+          </span>
+        ))}
+        {title && (<><span className="sl first" aria-hidden="true">/</span><span className="cur strong" style={{ display: "inline-flex", alignItems: "center", gap: 10, minWidth: 0 }}>{title}</span></>)}
+      </nav>
+      {leading}
+      <span style={{ flex: 1 }} />
+      <div className="gx-acts">
+        {actions}
+        {onConnectData && <button type="button" className="gx-sc" onClick={onConnectData}>+ Connect data</button>}
+        {!hidePlan && <PlanChip />}
+        <button type="button" className="gx-sc ic gx-hide-sm" aria-label="Search everything (Ctrl+K)" title="Search · Ctrl+K" data-gx-search=""
+          onClick={() => window.dispatchEvent(new Event("gd360:open-command-palette"))}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
+        </button>
+        <span className="gx-hide-sm"><NotificationBell /></span>
+        <ThemeIcon />
+        <Avatar2 />
+      </div>
+    </header>
   );
 }
