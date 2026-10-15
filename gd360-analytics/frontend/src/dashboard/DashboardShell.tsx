@@ -7,6 +7,7 @@ import {
   providerDisplayName,
 } from "../ui";
 import { downloadText, isDataBlock, isLegacyBlock, resultOk, rowsToCsv, safeFilename } from "./blockData";
+import { downloadOffice } from "./officeExport";
 import { BlockGrid, type BlockGridProps } from "./BlockGrid";
 import { EditSheets } from "./edit/EditSheets";
 import { CONTEXT_ROW_CLASS, EditToolbar } from "./edit/EditToolbar";
@@ -54,6 +55,8 @@ export type DashboardShellProps = {
   // `appearance` (WarehouseDashboardFields) is the dashboard's resolved
   // look; absent = the product defaults.
   dashboard: WarehouseDashboardFields & { name: string; datasource_name?: string | null };
+  // 2026-10-14 (R47): set by the signed-in editor so Export can offer Excel / PowerPoint of the page
+  dashboardId?: string;
   page: DashboardBuilderPage | undefined;
   run: DashboardRun;
   source: RunSource;
@@ -213,8 +216,17 @@ function loadPdfPref(): { theme: PdfTheme; orientation: PdfOrientation } {
   }
 }
 
-function ExportMenu({ page, run, exportApis, mode, onPdf, pdfBusy }: { page: DashboardBuilderPage | undefined; run: DashboardRun; exportApis: React.MutableRefObject<Record<string, ChartExportApi | null>>; mode: "warehouse" | "file"; onPdf: (theme: PdfTheme, orientation: PdfOrientation) => void; pdfBusy: boolean }) {
+function ExportMenu({ page, run, exportApis, mode, onPdf, pdfBusy, dashboardId }: { page: DashboardBuilderPage | undefined; run: DashboardRun; exportApis: React.MutableRefObject<Record<string, ChartExportApi | null>>; mode: "warehouse" | "file"; onPdf: (theme: PdfTheme, orientation: PdfOrientation) => void; pdfBusy: boolean; dashboardId?: string }) {
   const [pdfPref, setPdfPref] = useState(loadPdfPref);
+  // 2026-10-14 (R47): the page as a working Excel workbook (live totals) or a PowerPoint deck (native charts)
+  const [officeBusy, setOfficeBusy] = useState<"xlsx" | "pptx" | null>(null);
+  const [officeErr, setOfficeErr] = useState<string | null>(null);
+  const signedIn = (() => { try { return Boolean(localStorage.getItem("gd360_token")); } catch { return false; } })();
+  const office = async (kind: "xlsx" | "pptx") => {
+    if (!dashboardId) return;
+    setOfficeBusy(kind); setOfficeErr(null);
+    try { await downloadOffice(dashboardId, page?.id, kind, pdfPref.theme === "dark" ? "dark" : "light"); } catch (e: any) { setOfficeErr(e?.response?.data?.detail || "Couldn't build the file."); } finally { setOfficeBusy(null); }
+  };
   const setPref = (next: Partial<typeof pdfPref>) => {
     const merged = { ...pdfPref, ...next };
     setPdfPref(merged);
@@ -269,6 +281,20 @@ function ExportMenu({ page, run, exportApis, mode, onPdf, pdfBusy }: { page: Das
               </div>
             );
           })}
+          {signedIn && dashboardId && (
+            <>
+              <div className="my-1 border-t border-subtle" />
+              <div className="flex flex-col gap-2 px-3 pb-2 pt-1.5" data-office-options="">
+                <div className="text-caption font-medium uppercase tracking-caps text-muted">This page as a file</div>
+                <div className="flex gap-2">
+                  <Button variant="secondary" size="sm" loading={officeBusy === "xlsx"} data-download-xlsx="" onClick={() => void office("xlsx")}>Excel · live totals</Button>
+                  <Button variant="secondary" size="sm" loading={officeBusy === "pptx"} data-download-pptx="" onClick={() => void office("pptx")}>PowerPoint</Button>
+                </div>
+                <span className="text-caption text-muted">Every block's rows, with SUM formulas and a Summary sheet that references them; the deck has one editable chart per block.</span>
+                {officeErr && <span className="text-caption text-danger">{officeErr}</span>}
+              </div>
+            </>
+          )}
           <div className="my-1 border-t border-subtle" />
           {/* The whole dashboard as a PDF file, in the theme picked here:
               the same layout as on screen, never re-flowed for paper. */}
@@ -390,7 +416,7 @@ export function DashboardShell(props: DashboardShellProps) {
 }
 
 function ShellBody({
-  dashboard, page, run, source, mode, parameters, owner, fetchSql, onEditDashboard, headerExtra, onUpgradeBlocks, beforeContent, afterContent, hideRail = false, className, style,
+  dashboard, dashboardId, page, run, source, mode, parameters, owner, fetchSql, onEditDashboard, headerExtra, onUpgradeBlocks, beforeContent, afterContent, hideRail = false, className, style,
   view = "dashboard", onViewChange, canvasOwner = null, comments = null, contextRow, subtitleExtra, editing = null, appearance, onOpenAppearance, dataRefresh = null,
   freshness: freshnessProps = null, emptyPage,
 }: DashboardShellProps & { appearance: DashboardAppearance }) {
@@ -612,7 +638,7 @@ function ShellBody({
               options={[{ value: "dashboard", label: "Dashboard" }, { value: "canvas", label: "Canvas" }]}
             />
           )}
-          <ExportMenu page={page} run={run} exportApis={exportApis} mode={mode} onPdf={downloadPdf} pdfBusy={pdfStage !== null} />
+          <ExportMenu page={page} run={run} exportApis={exportApis} mode={mode} onPdf={downloadPdf} pdfBusy={pdfStage !== null} dashboardId={dashboardId} />
           {!editing && <CommentsButton />}
         </div>
   );
