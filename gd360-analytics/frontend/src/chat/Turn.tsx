@@ -50,7 +50,20 @@ function Trail({ turn, open }: { turn: TurnT; open: boolean }) {
   );
 }
 
-const ART_ICON: Record<string, string> = { dashboard: "▦", document: "▤", automation: "⚡", model: "◎", space: "▣" };
+const ART_ICON: Record<string, string> = { dashboard: "▦", document: "▤", automation: "⚡", model: "◎", space: "▣", analysis: "◔" };
+
+/** [n] citation markers become small numbered chips. */
+export function Cited({ text }: { text: string }) {
+  const parts = text.split(/(\[\d+\])/g);
+  return <>{parts.map((p, i) => { const m = /^\[(\d+)\]$/.exec(p); return m ? <sup key={i} className="c2-cite">{m[1]}</sup> : <span key={i}>{p}</span>; })}</>;
+}
+
+/** The first sentence in bold, the rest plain - the one-sentence answer pattern. */
+export function Lead({ text }: { text: string }) {
+  const m = /^(.+?[.!?])(\s+[\s\S]*)?$/.exec(text.trim());
+  if (!m) return <p className="prose">{text}</p>;
+  return <p className="prose"><b>{m[1]}</b>{m[2] || ""}</p>;
+}
 
 export function ArtifactCard({ a, onOpen }: { a: Artifact; onOpen?: () => void }) {
   const title = a.name || a.title || "Open";
@@ -58,12 +71,13 @@ export function ArtifactCard({ a, onOpen }: { a: Artifact; onOpen?: () => void }
     : a.type === "document" ? `Document${a.words ? ` · ${a.words} words` : ""}`
     : a.type === "model" ? `Model${a.score ? ` · ${a.score} on held-out rows` : ""}`
     : a.type === "space" ? `Space${a.rules?.length ? ` · ${a.rules.length} data rule${a.rules.length !== 1 ? "s" : ""}` : ""}`
+    : a.type === "analysis" ? `Analysis${a.figures ? ` · ${a.figures} figure${a.figures !== 1 ? "s" : ""}` : ""}${a.scored ? ` · scored ${a.scored.toLocaleString()} rows` : ""}`
     : `Automation${a.next_run_at ? ` · next ${new Date(a.next_run_at).toLocaleString()}` : ""}`;
   const inner = (
     <>
       <span className="ic" aria-hidden="true">{ART_ICON[a.type] || "▣"}</span>
       <span style={{ display: "flex", flexDirection: "column", minWidth: 0 }}><span className="t">{title}</span><span className="m">{meta}</span></span>
-      <span style={{ marginLeft: "auto", color: "rgb(var(--color-muted))", fontSize: 13 }}>{a.type === "dashboard" || a.type === "document" ? "Open on canvas ›" : "Open ›"}</span>
+      <span style={{ marginLeft: "auto", color: "rgb(var(--color-muted))", fontSize: 13 }}>{a.type === "dashboard" || a.type === "document" || a.type === "analysis" ? "Open on canvas ›" : "Open ›"}</span>
     </>
   );
   if (a.type === "automation" || a.type === "model" || a.type === "space") return <a className="c2-art" href={a.url || "#"} data-c2-artifact={a.type}>{inner}</a>;
@@ -174,14 +188,16 @@ export function TurnView({
         {turn.kind === "check" && turn.check && turn.status === "needs_input" && (
           <FollowupCheck check={turn.check} busy={busy} onClose={() => undefined} onPick={onPickCheck} />
         )}
-        {turn.text && !(turn.kind === "check") && <p className="prose">{turn.text}</p>}
+        {turn.text && !(turn.kind === "check") && (turn.kind === "analysis" || turn.kind === "dashboard" || turn.kind === "dashboard_edit" || turn.kind === "document" || turn.kind === "automation" || turn.kind === "team" ? <Lead text={turn.text} />
+          : turn.kind === "knowledge" ? <p className="prose"><Cited text={turn.text} /></p> : <p className="prose">{turn.text}</p>)}
         {turn.kind === "knowledge" && (turn.sources || []).length > 0 && (
-          <div className="c2-src" data-c2-sources="">
+          <div className="c2-srcs" data-c2-sources="">
             {(turn.sources || []).map((s, i) => (
-              <a key={s.url} href={s.url} target="_blank" rel="noreferrer"><span className="n">{i + 1}</span><span>{s.title}</span></a>
+              <a key={s.url} href={s.url} target="_blank" rel="noreferrer" className="c2-srcc"><span className="n">{s.n ?? i + 1}</span><span className="t">{s.title}</span><span className="d">{s.domain || s.url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0]}</span></a>
             ))}
           </div>
         )}
+        {turn.kind === "analysis" && turn.status === "needs_input" && turn.text && <div className="c2-next"><button type="button" className="c2-nx sm" onClick={() => onAsk(turn.question)}>Try again</button></div>}
         {showRun && <DataAnswer run={run!} onAsk={onAsk} chips={turn.status === "done" ? <Chips chips={turn.chips} /> : null} />}
         {turn.kind === "guided" && run && turn.guided_project_id && (
           <GuidedSteps run={run} projectId={turn.guided_project_id} onChanged={onRunChanged} onAsk={onAsk} />

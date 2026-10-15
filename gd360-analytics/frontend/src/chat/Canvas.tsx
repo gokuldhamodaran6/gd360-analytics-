@@ -8,16 +8,19 @@ import { v2Api } from "../api/v2";
 import { downloadOffice } from "../dashboard/officeExport";
 import { AnalystMethod, isAnalystRun } from "../project/AnalystAnswer";
 import { layoutSql } from "../project/RunPanels";
+import { AnalysisMethod, AnalysisView } from "./AnalysisView";
 import { Markdown } from "./Markdown";
 
 export type CanvasItem =
   | { type: "dashboard"; id: string; name: string; url: string; pageId?: string | null }
   | { type: "document"; id: string; turnId: string; title: string; markdown: string; conversationId: string; flagged?: string[] }
-  | { type: "method"; turn: Turn };
+  | { type: "method"; turn: Turn }
+  | { type: "analysis"; turn: Turn };
 
 export function canvasFromArtifact(a: Artifact, turn: Turn, conversationId: string): CanvasItem | null {
   if (a.type === "dashboard") return { type: "dashboard", id: a.id, name: a.name || "Dashboard", url: a.url || `/dashboard-builder/${a.id}`, pageId: a.page_id };
   if (a.type === "document" && turn.document) return { type: "document", id: a.id, turnId: turn.id, title: turn.document.title, markdown: turn.document.markdown, conversationId, flagged: turn.document.flagged };
+  if (a.type === "analysis" && turn.analysis) return { type: "analysis", turn };
   return null;
 }
 
@@ -73,7 +76,7 @@ function DataPane({ dashboardId, pageId }: { dashboardId: string; pageId?: strin
   );
 }
 
-export function Canvas({ item, onClose, version = 0, run }: { item: CanvasItem; onClose: () => void; version?: number; run?: ProjectRun | null }) {
+export function Canvas({ item, onClose, version = 0, run, onAsk, onOpenMethod }: { item: CanvasItem; onClose: () => void; version?: number; run?: ProjectRun | null; onAsk?: (q: string) => void; onOpenMethod?: (t: Turn) => void }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(item.type === "document" ? item.markdown : "");
   const [copied, setCopied] = useState(false);
@@ -83,11 +86,11 @@ export function Canvas({ item, onClose, version = 0, run }: { item: CanvasItem; 
   const [view, setView] = useState<"live" | "data">("live");
   useEffect(() => { if (item.type === "document") { setText(item.markdown); setEditing(false); } setView("live"); }, [item]);
   useEffect(() => { setFrameKey((k) => k + 1); }, [version]);
-  const title = item.type === "dashboard" ? item.name : item.type === "document" ? item.title : `How I worked it out · ${item.turn.question}`;
+  const title = item.type === "dashboard" ? item.name : item.type === "document" ? item.title : item.type === "analysis" ? (item.turn.analysis?.title || "Analysis") : `How I worked it out · ${item.turn.question}`;
   const download = async () => {
-    if (item.type !== "document") return;
-    const safe = item.title.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 60) || "document";
-    const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+    if (item.type !== "document" && item.type !== "analysis") return;
+    const safe = title.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 60) || "document";
+    const blob = new Blob([item.type === "analysis" ? (item.turn.document?.markdown || "") : text], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = `${safe}.md`; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
@@ -132,6 +135,14 @@ export function Canvas({ item, onClose, version = 0, run }: { item: CanvasItem; 
             <a href={`${item.url}`} target="_blank" rel="noreferrer" title="Open full-screen">Open ⤡</a>
           </>
         )}
+        {item.type === "analysis" && (
+          <>
+            <span style={{ color: "rgb(var(--color-muted))" }}>· {item.turn.analysis?.baseline.n.toLocaleString()} rows{item.turn.analysis?.model ? " · model tested" : ""}</span>
+            <span style={{ flex: 1 }} />
+            {onOpenMethod && <button type="button" onClick={() => onOpenMethod(item.turn)} data-c2-open-method="">Method &amp; code</button>}
+            <button type="button" onClick={() => void download()} title="Download as Markdown">Download</button>
+          </>
+        )}
         {item.type === "document" && (
           <>
             <button type="button" onClick={() => setEditing((e) => !e)}>{editing ? "Preview" : "Edit"}</button>
@@ -155,12 +166,18 @@ export function Canvas({ item, onClose, version = 0, run }: { item: CanvasItem; 
             </div>
           )
         )}
+        {item.type === "analysis" && item.turn.analysis && (
+          <div className="an-wrap" data-c2-analysis-canvas="">
+            <AnalysisView a={item.turn.analysis} onAsk={onAsk} onOpenMethod={onOpenMethod ? () => onOpenMethod(item.turn) : undefined} />
+          </div>
+        )}
+        {item.type === "method" && item.turn.kind === "analysis" && item.turn.analysis && <AnalysisMethod a={item.turn.analysis} />}
         {item.type === "method" && analyst && run && (
           <div className="c2-doc" style={{ maxWidth: "none" }} data-c2-notebook="">
             <AnalystMethod run={run} />
           </div>
         )}
-        {item.type === "method" && !analyst && (
+        {item.type === "method" && !analyst && item.turn.kind !== "analysis" && (
           <div className="c2-doc">
             <h1 style={{ fontSize: 24 }}>How I worked it out</h1>
             <p style={{ color: "rgb(var(--color-secondary))" }}>{item.turn.question}</p>

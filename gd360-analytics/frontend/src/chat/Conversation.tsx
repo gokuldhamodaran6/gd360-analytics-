@@ -92,7 +92,7 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
   useEffect(() => {
     for (const t of turns) {
       if (t.status !== "done" || openedRef.current.has(t.id)) continue;
-      const a = (t.artifacts || []).find((x) => x.type === "dashboard" || x.type === "document");
+      const a = (t.artifacts || []).find((x) => x.type === "dashboard" || x.type === "document" || x.type === "analysis");
       if (a) {
         openedRef.current.add(t.id);
         const item = canvasFromArtifact(a, t, conversationId);
@@ -156,7 +156,7 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
   return (
     <AskContext.Provider value={(q: string) => void send(q)}>
       <div className="c2-col" data-c2-conversation={conversationId}>
-        <div className="c2-main" style={{ flex: 1, minHeight: 0 }}>
+        <div className={`c2-main${canvas ? " has-canvas" : ""}`} style={{ flex: 1, minHeight: 0 }}>
           <div className="c2-col" style={{ minHeight: 0 }}>
         <div className="c2-head">
           <button type="button" className="title" onClick={rename} title="Rename" style={{ background: "transparent", border: 0, font: "inherit", cursor: "pointer", color: "inherit", padding: 0, textAlign: "left" }}>{title}</button>
@@ -192,7 +192,8 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
               </div>
             </div>
           </div>
-          {canvas && <Canvas item={canvas} onClose={() => setCanvas(null)} version={canvasVersion} run={canvas.type === "method" && canvas.turn.run_id ? runs[canvas.turn.run_id] : null} />}
+          {canvas && <Canvas item={canvas} onClose={() => setCanvas(null)} version={canvasVersion} run={canvas.type === "method" && canvas.turn.run_id ? runs[canvas.turn.run_id] : null}
+            onAsk={(q) => void send(q)} onOpenMethod={(tt) => setCanvas({ type: "method", turn: tt })} />}
         </div>
       </div>
     </AskContext.Provider>
