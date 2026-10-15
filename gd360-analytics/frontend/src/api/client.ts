@@ -1577,6 +1577,8 @@ export type DashboardSummary = {
   block_count?: number;
   preview?: { t: string; x: number; y: number; w: number; h: number; c?: string | null }[];
   refresh_interval?: RefreshInterval;
+  // 2026-10-15 (R50): a designed board's theme and pages (thumbnail in its own colours)
+  board?: { theme: string; theme_label: string; pages: string[]; palette: { bg: string; card: string; ink: string; accent: string; warn: string; mode: string }; outcome: boolean; entities?: string } | null;
 };
 
 export type SavedChart = {

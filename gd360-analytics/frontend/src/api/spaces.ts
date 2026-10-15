@@ -28,7 +28,7 @@ export type Space = {
   can_edit: boolean;
   source_ids: string[];
   sources: SpaceSource[];
-  stats: { sources: number; dashboards: number; projects: number };
+  stats: { sources: number; dashboards: number; projects: number; conversations?: number };
   fresh: { status: "ok" | "warning" | "syncing"; text: string; last_synced_at?: string | null };
   created_at: string;
   updated_at?: string;

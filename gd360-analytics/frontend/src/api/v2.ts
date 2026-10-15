@@ -51,11 +51,22 @@ export type Turn = {
   model_summary?: { label: string; metric: string; test_score?: number | null; baseline?: { name?: string; score?: number }; drivers: string[]; leaks: string[]; rows?: number; target?: string; table?: string } | null;
   document?: { title: string; markdown: string; flagged: string[] } | null;
   placements?: { dashboard_id: string; dashboard_name: string; page_id?: string | null }[];
+  // 2026-10-15 (R50): the action cards - a dashboard edit (was / now) and a dashboard build (its pages)
+  edit?: { before: BoardCardState | { name: string; theme: string; accent?: string | null }; after: BoardCardState; changes: string[]; undo: boolean; dashboard_id: string } | null;
+  built?: { pages: string[]; name: string; theme: string; typo?: string | null; dashboard_id: string } | null;
 };
+export type BoardCardState = {
+  name: string; theme: string; theme_label: string; accent?: string | null; pages: string[];
+  palette: { bg: string; card: string; ink: string; accent: string; warn: string; mode: string };
+};
+export type FirstCheck = { text: string; over?: { dim_label: string; value: string; rate: number; n: number }[]; groups?: number; columns?: number; overall?: number };
 export type AutomationConfirm = {
   kind: "automation"; ok: boolean; body: any; issues: string[]; needs: string[]; note?: string | null;
   sentence: { when: string; do: string; tell: string; tell_sentence?: string };
   watch?: { question: string; run_id: string } | null;
+  // R50: the alert card - what it watches, what it would say right now, where it sends
+  watches?: string | null; first_check?: FirstCheck | null; sends?: string | null;
+  threshold?: { value: number | null; unit: string; op: string } | null;
 };
 export type TeamConfirm = {
   kind: "team"; ok: boolean; body: { name: string; access: string; member_ids: string[]; source_ids: string[]; workspace_id: string | null; hidden: any[]; rows: any[] };
@@ -74,6 +85,7 @@ export type Conversation = {
 export type ConversationRow = {
   id: string; title: string; created_at: string; space_id: string | null; pinned: boolean; last_at: string; headline?: string | null;
   v2: boolean; kind: string; mine: boolean;
+  space_name?: string | null; space_color?: string | null; work?: string;
 };
 export type PlanMeter = { key: string; label: string; used: number; limit: number | null; near: boolean; over: boolean };
 export type PlanSummary = {
@@ -103,6 +115,8 @@ export const v2Api = {
   turn: (id: string, turnId: string) => api.get<Turn>(`/v2/conversations/${id}/turns/${turnId}`).then((r) => r.data),
   confirm: (id: string, turnId: string, approve: boolean, edits?: any) =>
     api.post<Turn>(`/v2/conversations/${id}/turns/${turnId}/confirm`, { approve, edits }).then((r) => r.data),
+  revise: (id: string, turnId: string, edits: Record<string, unknown>) =>
+    api.post<Turn>(`/v2/conversations/${id}/turns/${turnId}/revise`, { approve: true, edits }).then((r) => r.data),
   dashboard: (id: string, body: { run_ids?: string[]; name?: string }) => api.post<Turn>(`/v2/conversations/${id}/dashboard`, body).then((r) => r.data),
   documentUrl: (id: string, turnId: string) => `${api.defaults.baseURL}/v2/conversations/${id}/documents/${turnId}.md`,
   dashboardData: (dashboardId: string, pageId?: string | null) => api.get<DashboardData>(`/v2/dashboards/${dashboardId}/data`, { params: pageId ? { page_id: pageId } : {} }).then((r) => r.data),
