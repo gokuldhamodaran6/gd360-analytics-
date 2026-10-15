@@ -65,7 +65,10 @@ export function Cited({ text }: { text: string }) {
 
 /** The first sentence in bold, the rest plain - the one-sentence answer pattern. */
 export function Lead({ text }: { text: string }) {
-  const m = /^(.+?[.!?])(\s+[\s\S]*)?$/.exec(text.trim());
+  const t = text.trim();
+  // R50: "Done. Retention pulse now uses ..." / "On it. Confirm below to ..." - the opener and the sentence after it are one bold line
+  const opener = /^((?:Done|On it|OK|Got it)[.!]\s+.+?[.!?])(\s+[\s\S]*)?$/.exec(t);
+  const m = opener || /^(.+?[.!?])(\s+[\s\S]*)?$/.exec(t);
   if (!m) return <p className="prose">{text}</p>;
   return <p className="prose"><b>{m[1]}</b>{m[2] || ""}</p>;
 }
@@ -132,44 +135,129 @@ export function ModelSummary({ turn }: { turn: TurnT }) {
   );
 }
 
-export function ConfirmCard({ turn, busy, onDecide }: { turn: TurnT; busy: boolean; onDecide: (approve: boolean) => void }) {
+const ACT_ICON = {
+  bell: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10 21h4" /></svg>,
+  clock: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></svg>,
+  grid: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" /><rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" /></svg>,
+  chart: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 19l5-7 4 4 7-9M4 5v14h16" /></svg>,
+};
+
+/** R50 (board 06): an alert or a schedule, exactly as it will run - nothing runs before Confirm. */
+export function ConfirmCard({ turn, busy, onDecide, onRevise }: { turn: TurnT; busy: boolean; onDecide: (approve: boolean) => void; onRevise?: (edits: Record<string, unknown>) => Promise<void> | void }) {
   const c = turn.confirm;
+  const [editing, setEditing] = useState(false);
+  const [line, setLine] = useState<string>(() => (c && c.kind === "automation" && c.threshold?.value != null ? String(c.threshold.value) : ""));
   if (!c) return null;
   if (c.kind === "team") return <TeamCard c={c} turn={turn} busy={busy} onDecide={onDecide} />;
   const s = c.sentence || ({} as any);
   const body = c.body || {};
   const trig = body.trigger || {};
+  const alert = trig.type === "threshold";
+  const unit = c.threshold?.unit || "";
   return (
-    <div className="c2-card" data-c2-confirm="automation">
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ width: 34, height: 34, borderRadius: 10, background: "rgb(var(--color-warning-fill))", color: "rgb(var(--color-warning))", display: "grid", placeItems: "center" }}>⚡</span>
-        <div style={{ display: "flex", flexDirection: "column" }}>
-          <span style={{ fontSize: 15, fontWeight: 600 }}>{body.name || "Automation"}</span>
-          <span style={{ fontSize: 12.5, color: "rgb(var(--color-muted))" }}>{trig.type === "threshold" ? "an alert" : "a schedule"} · nothing runs until you confirm</span>
-        </div>
+    <div className="c2-act" data-c2-confirm="automation" data-c2-alert={alert ? "" : undefined}>
+      <div className="h">
+        <span className="ic">{alert ? ACT_ICON.bell : ACT_ICON.clock}</span>
+        <span style={{ minWidth: 0 }}>{alert ? "Alert" : "Schedule"} · {body.name || "Automation"}</span>
+        <span className="t">Not yet running</span>
       </div>
-      <div>
-        <div className="c2-row"><span>When</span><span>{s.when}</span></div>
-        {c.watch && <div className="c2-row"><span>Watching</span><span>“{c.watch.question}”</span></div>}
-        <div className="c2-row"><span>Do</span><span>{s.do}</span></div>
-        <div className="c2-row"><span>Tell</span><span>{s.tell}{c.needs?.includes("slack") ? " · Slack can be added on the automation page after saving" : ""}</span></div>
-        {c.note && <div className="c2-row"><span>Note</span><span>{c.note}</span></div>}
+      <div className="kv">
+        <span className="k">Watches</span><span className="v" data-c2-watches="">{c.watches || (c.watch ? `“${c.watch.question}”` : s.do)}</span>
+        <span className="k">When</span><span className="v">{s.when}</span>
+        {!alert && <><span className="k">Does</span><span className="v">{s.do}</span></>}
+        <span className="k">Sends</span><span className="v">{c.sends || s.tell}{c.needs?.includes("slack") ? " · Slack can be added on the automation page after saving" : ""}</span>
+        {c.first_check?.text && <><span className="k">First check</span><span className="v" data-c2-first-check="">Now · {c.first_check.text}</span></>}
+        {c.note && <><span className="k">Note</span><span className="v">{c.note}</span></>}
       </div>
       {turn.error && <div className="c2-err">{turn.error}</div>}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <button type="button" className="c2-nx dark" disabled={busy} onClick={() => onDecide(true)} data-c2-confirm-yes="">Confirm and start</button>
-        <button type="button" className="c2-nx ghost" disabled={busy} onClick={() => onDecide(false)}>Cancel</button>
+      {editing && alert && (
+        <form className="c2-line" onSubmit={async (e) => { e.preventDefault(); await onRevise?.({ value: line }); setEditing(false); }} data-c2-line-form="">
+          <label htmlFor={`line-${turn.id}`}>Alert when it {trig.op === "below" ? "drops below" : "passes"}</label>
+          <span className="in"><input id={`line-${turn.id}`} type="number" step="any" inputMode="decimal" value={line} onChange={(e) => setLine(e.target.value)} autoFocus />{unit && <span>{unit}</span>}</span>
+          <button type="submit" className="c2-btn" disabled={busy || !line.trim()}>Update</button>
+          <button type="button" className="c2-btn ghost" onClick={() => setEditing(false)}>Cancel</button>
+        </form>
+      )}
+      <div className="row">
+        <button type="button" className="c2-btn dark" disabled={busy} onClick={() => onDecide(true)} data-c2-confirm-yes="">Confirm</button>
+        {alert && onRevise && !editing && <button type="button" className="c2-btn" disabled={busy} onClick={() => setEditing(true)} data-c2-change-line="">Change the threshold</button>}
+        <button type="button" className="c2-btn" disabled={busy} onClick={() => onDecide(false)} data-c2-confirm-no="">Not now</button>
       </div>
     </div>
   );
 }
 
+function themeLabel(k?: string) { return k ? k.charAt(0).toUpperCase() + k.slice(1) : ""; }
+
+/** R50 (board 06): what an edit changed - the new look, was / now, Undo. */
+export function EditCard({ turn, onAsk, onOpen }: { turn: TurnT; onAsk: (q: string) => void; onOpen: () => void }) {
+  const e = turn.edit;
+  if (!e) return null;
+  const a = e.after;
+  const p = a.palette;
+  const at = turn.finished_at ? new Date(/Z$/.test(turn.finished_at) ? turn.finished_at : `${turn.finished_at}Z`) : null;
+  const was: string[] = [];
+  if (e.before.name && e.before.name !== a.name) was.push(`was “${e.before.name}”`);
+  if (e.before.theme !== a.theme || (e.before as any).accent !== a.accent) was.push(`theme ${themeLabel(e.before.theme)}${(e.before as any).accent ? " + colour" : ""} → ${a.theme_label}${a.accent ? ` + ${a.accent.toUpperCase()}` : ""}`);
+  was.push(`${a.pages.length} pages`);
+  return (
+    <div className="c2-act" data-c2-edit-card="">
+      <div className="h"><span className="ic">{ACT_ICON.grid}</span>{e.undo ? "Dashboard restored" : "Dashboard updated"}<span className="t">{at && !Number.isNaN(at.getTime()) ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }) : ""}</span></div>
+      <div className="prev">
+        <div className="mini" aria-hidden="true" style={{ background: p.bg }}>
+          <span style={{ background: p.card }} /><span style={{ background: p.card }} /><span style={{ background: p.card }} />
+          <span style={{ background: p.accent, gridColumn: "1 / 3" }} /><span style={{ background: p.card }} />
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+          <span style={{ fontSize: 16, fontWeight: 600 }} data-c2-edit-name="">{a.name}</span>
+          <span style={{ fontSize: 13, color: "rgb(var(--color-muted))" }}>{was.join(" · ")}</span>
+        </div>
+        <button type="button" className="c2-linkbtn" onClick={onOpen}>View dashboard →</button>
+      </div>
+      {!e.undo && (
+        <div className="row">
+          <button type="button" className="c2-btn" onClick={() => onAsk("undo")} data-c2-undo="">Undo</button>
+          {!a.accent && <button type="button" className="c2-btn" onClick={() => onAsk("use our brand colours instead")} data-c2-brand="">Use our brand colours instead</button>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** R50 (board 06): a dashboard build - its pages, ticked as they are ready; the typo it understood. */
+export function BuiltCard({ turn, onOpen }: { turn: TurnT; onOpen: () => void }) {
+  const working = turn.status === "working";
+  const b = turn.built;
+  const pages = b?.pages || [];
+  const steps = working ? (turn.trail || []).map((t) => t.label) : [];
+  return (
+    <div className="c2-act" data-c2-built="">
+      <div className="h">
+        <span className="ic">{ACT_ICON.chart}</span>
+        <span style={{ minWidth: 0 }}>Dashboard{b ? ` · ${b.name}` : ""}</span>
+        {(b?.typo || turn.normalized) && <span className="t">typo understood{b?.typo ? `: ${b.typo}` : ""}</span>}
+      </div>
+      <div className="tiles">
+        {working && steps.map((l, i) => <div key={i} className={`tile ${i === 0 ? "now" : "wait"}`}>{l}{i === 0 ? " …" : ""}</div>)}
+        {!working && pages.map((pg) => <div key={pg} className="tile done">{pg} <span aria-hidden="true">✓</span></div>)}
+      </div>
+      {!working && b && (
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          <span style={{ fontSize: 13, color: "rgb(var(--color-muted))" }}>{b.theme} theme · live on your data</span>
+          <button type="button" className="c2-linkbtn" onClick={onOpen} data-c2-view-board="">View dashboard →</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function TurnView({
-  turn, run, conversationId, onAsk, onOpenArtifact, onOpenMethod, onConfirm, onPickCheck, onRunChanged, onMakeDashboard, busy,
+  turn, run, conversationId, onAsk, onOpenArtifact, onOpenMethod, onConfirm, onPickCheck, onRunChanged, onMakeDashboard, busy, onRevise,
 }: {
   turn: TurnT; run?: ProjectRun | null; conversationId: string; onAsk: (q: string) => void;
   onOpenArtifact: (a: Artifact, t: TurnT) => void; onOpenMethod: (t: TurnT) => void; onConfirm: (t: TurnT, approve: boolean) => void;
   onPickCheck: (q: string, kept?: string) => void; onRunChanged: (r: ProjectRun) => void; onMakeDashboard: (t: TurnT) => void; busy: boolean;
+  onRevise?: (t: TurnT, edits: Record<string, unknown>) => Promise<void> | void;
 }) {
   const [open, setOpen] = useState(false);
   const secs = useElapsed(turn);
@@ -208,9 +296,16 @@ export function TurnView({
           <GuidedSteps run={run} projectId={turn.guided_project_id} onChanged={onRunChanged} onAsk={onAsk} />
         )}
         {turn.kind === "guided" && !run && working && <span className="c2-working"><span className="c2-spin" /> Planning the steps…</span>}
-        {turn.status === "confirm" && <ConfirmCard turn={turn} busy={busy} onDecide={(ok) => onConfirm(turn, ok)} />}
+        {turn.status === "confirm" && <ConfirmCard turn={turn} busy={busy} onDecide={(ok) => onConfirm(turn, ok)} onRevise={onRevise ? (e) => onRevise(turn, e) : undefined} />}
         {turn.kind === "model" && turn.status === "done" && <ModelSummary turn={turn} />}
-        {(turn.artifacts || []).map((a) => <ArtifactCard key={a.id} a={a} onOpen={() => onOpenArtifact(a, turn)} />)}
+        {turn.kind === "dashboard_edit" && turn.status === "done" && turn.edit && (
+          <EditCard turn={turn} onAsk={onAsk} onOpen={() => { const a = (turn.artifacts || [])[0]; if (a) onOpenArtifact({ ...a, refresh: false } as Artifact, turn); }} />
+        )}
+        {turn.kind === "dashboard" && (turn.built || (working && (turn.trail || []).length > 0)) && (
+          <BuiltCard turn={turn} onOpen={() => { const a = (turn.artifacts || [])[0]; if (a) onOpenArtifact(a, turn); }} />
+        )}
+        {(turn.artifacts || []).filter(() => !(turn.kind === "dashboard_edit" && turn.edit) && !(turn.kind === "dashboard" && turn.built))
+          .map((a) => <ArtifactCard key={a.id} a={a} onOpen={() => onOpenArtifact(a, turn)} />)}
         {turn.status === "done" && !showRun && <Chips chips={turn.chips} />}
         {(turn.status === "done" && (isData || turn.kind === "guided") && run?.status === "done") && (
           <div className="c2-next">
@@ -219,7 +314,6 @@ export function TurnView({
               <button key={p.dashboard_id} type="button" className="c2-nx sm" onClick={() => onOpenArtifact({ type: "dashboard", id: p.dashboard_id, name: p.dashboard_name, url: `/dashboard-builder/${p.dashboard_id}`, page_id: p.page_id }, turn)}>Open “{p.dashboard_name}”</button>
             ))}
             {((turn.trail || []).some((t) => t.sql) || turn.mode === "analyst") && <button type="button" className="c2-nx sm ghost" onClick={() => onOpenMethod(turn)}>How I worked it out</button>}
-            <a className="c2-nx sm ghost" href={`/p/${conversationId}?run=${turn.run_id}`}>Classic view</a>
           </div>
         )}
       </div>

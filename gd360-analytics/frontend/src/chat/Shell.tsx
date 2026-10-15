@@ -1,12 +1,10 @@
 // 2026-10-14 (R46, GD360 2.0): the chat-first shell - a 64px rail, a Spaces sidebar (never a chat list),
 // and the column the page renders into. Light-first; the theme toggle is in every header.
 import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { useAuth } from "../api/AuthContext";
 import { useTheme } from "../api/ThemeContext";
 import { v2Api, type Home } from "../api/v2";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
-import { openEuliv } from "../components/Euliv";
+import AppSidebar from "../components/AppSidebar";
 import "./chat.css";
 
 type HomeCtx = { home: Home | null; reload: () => Promise<void>; workspaceId: string; spaceId: string | null; setSpaceId: (id: string | null) => void };
@@ -36,16 +34,13 @@ export function ThemeButton() {
   );
 }
 
-const SIDE_KEY = "gd360_c2_sidebar";
-
-export function Shell({ children, active = "chat" }: { children: ReactNode; active?: "chat" | "home" }) {
-  const { user } = useAuth();
+// 2026-10-15 (R50): the chat surface renders the same rail and top bar as every other page (components/AppSidebar.tsx,
+// components/TopNav.tsx). The 248 px Spaces sidebar is gone: Spaces are on Home, with their real counts.
+export function Shell({ children }: { children: ReactNode; active?: "chat" | "home" }) {
   const { setTheme } = useTheme();
-  const { activeWorkspaceId } = useWorkspaceNav();
+  const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
   const [home, setHome] = useState<Home | null>(null);
   const [spaceId, setSpaceId] = useState<string | null>(null);
-  const [open, setOpen] = useState<boolean>(() => { try { return localStorage.getItem(SIDE_KEY) !== "closed"; } catch { return true; } });
-  const navigate = useNavigate();
 
   useEffect(() => {
     // light-first, like the conversation design: only until the person picks a theme themselves
@@ -58,67 +53,12 @@ export function Shell({ children, active = "chat" }: { children: ReactNode; acti
   }, [activeWorkspaceId]);
   useEffect(() => { void reload(); }, [reload]);
 
-  const toggle = () => { setOpen((o) => { try { localStorage.setItem(SIDE_KEY, o ? "closed" : "open"); } catch { /* fine */ } return !o; }); };
-  const spaces = home?.spaces || [];
-  const countFor = (sid: string | null) => (home?.conversations || []).filter((c) => !sid || c.space_id === sid).length;
-
   return (
     <Ctx.Provider value={{ home, reload, workspaceId: activeWorkspaceId || "", spaceId, setSpaceId }}>
-      <div className={`c2 c2-shell ${open ? "" : "sidebar-closed"}`} data-c2-shell="">
-        <nav className="c2-rail" aria-label="Main">
-          <Link to="/chat" className="c2-logo" aria-label="GD360 home">G</Link>
-          <Link to="/chat" aria-label="New conversation" title="New conversation" className={active === "home" ? "on" : ""}>{I.plus}</Link>
-          <button type="button" aria-label="Spaces" title="Spaces" className={active === "chat" ? "on" : ""} onClick={toggle}>{I.chat}</button>
-          <Link to="/library" aria-label="Library" title="Library">{I.lib}</Link>
-          <Link to="/dashboards" aria-label="Dashboards" title="Dashboards">{I.grid}</Link>
-          <Link to="/data" aria-label="Data" title="Data">{I.db}</Link>
-          <Link to="/automations" aria-label="Automations" title="Automations">{I.bolt}</Link>
-          <button type="button" aria-label="Talk to EuLiv" title="Talk to EuLiv" onClick={() => openEuliv()}>{I.mic}</button>
-          <span style={{ flex: 1 }} />
-          <Link to="/profile" aria-label="Account" title={user?.email || "Account"}>{I.user}</Link>
-        </nav>
-        <aside className="c2-side" aria-label="Spaces" aria-hidden={!open}>
-          <div className="c2-side-in">
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 10px 6px" }}>
-              <span style={{ fontSize: 15, fontWeight: 600 }}>{home?.user?.first_name ? `${home.user.first_name}'s GD360` : "GD360"}</span>
-              <button type="button" className="c2-nx ghost sm" onClick={toggle} aria-label="Hide sidebar" style={{ padding: "0 6px" }}>{I.side}</button>
-            </div>
-            <span className="c2-eb hd">Spaces</span>
-            <button type="button" className={`c2-sp ${spaceId === null ? "on" : ""}`} onClick={() => setSpaceId(null)}>
-              <span className="dot" style={{ background: "rgb(var(--color-text))" }} /><span className="t">Everything</span><span className="c">{countFor(null)}</span>
-            </button>
-            {spaces.map((s) => (
-              <button key={s.id} type="button" className={`c2-sp ${spaceId === s.id ? "on" : ""}`} onClick={() => setSpaceId(spaceId === s.id ? null : s.id)} title={s.name}>
-                <span className="dot" style={{ background: s.color || "rgb(var(--color-primary))" }} /><span className="t">{s.name}</span><span className="c">{countFor(s.id)}</span>
-              </button>
-            ))}
-            <Link to="/data?tab=spaces" className="c2-sp" style={{ color: "rgb(var(--color-muted))" }}><span style={{ width: 9 }}>+</span><span className="t">New Space</span></Link>
-            {spaces.length === 0 && (
-              <span style={{ padding: "6px 10px", fontSize: 13, color: "rgb(var(--color-muted))", lineHeight: 1.5 }}>A Space is a team's room: its data, its glossary, its library.</span>
-            )}
-            <span className="c2-eb hd">Library</span>
-            <Link to="/library" className="c2-sp"><span className="t">Conversations</span><span className="c">{home?.conversations.length ?? ""}</span></Link>
-            <Link to="/dashboards" className="c2-sp"><span className="t">Dashboards</span><span className="c">{home?.spaces.reduce((n, s) => n + (s.stats?.dashboards || 0), 0) || ""}</span></Link>
-            <Link to="/automations" className="c2-sp"><span className="t">Automations</span></Link>
-            <Link to="/data" className="c2-sp"><span className="t">Data</span><span className="c">{home?.sources.length ?? ""}</span></Link>
-            <span className="c2-eb hd">Team</span>
-            <Link to="/accounts" className="c2-sp"><span className="t">People and access</span><span className="c">Invite</span></Link>
-            {home?.plan && (
-              <div style={{ marginTop: "auto", padding: "14px 10px 4px" }}>
-                <button type="button" className="c2-meter" style={{ width: "100%", background: "transparent", border: 0, textAlign: "left", cursor: "pointer", padding: 0, font: "inherit" }} onClick={() => navigate("/chat?plan=1")} title="Plan and usage">
-                  <span>{home.plan.label} plan · {home.plan.all_features ? "every feature" : ""}</span>
-                  {home.plan.meters.filter((m) => m.key === "questions_per_day").map((m) => (
-                    <span key={m.key} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                      <span>{m.used}{m.limit ? ` of ${m.limit}` : ""} questions today</span>
-                      {m.limit ? <span className="bar"><i style={{ width: `${Math.min(100, (100 * m.used) / m.limit)}%` }} /></span> : null}
-                    </span>
-                  ))}
-                </button>
-              </div>
-            )}
-          </div>
-        </aside>
-        <div className="c2-main">{children}</div>
+      <div className="c2 gx-frame" data-c2-shell="">
+        <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={(id) => switchWorkspace(id)}
+          onWorkspaceCreated={(ws) => handleWorkspaceCreated(ws)} />
+        <div className="c2-main gx-main">{children}</div>
       </div>
     </Ctx.Provider>
   );

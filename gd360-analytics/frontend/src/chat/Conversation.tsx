@@ -6,7 +6,8 @@ import { v2Api, type Artifact, type Conversation as ConvT, type Mode, type Turn 
 import { AskContext } from "../project/WaysForward";
 import { Canvas, canvasFromArtifact, type CanvasItem } from "./Canvas";
 import { Composer } from "./Composer";
-import { Shell, ThemeButton, useHome } from "./Shell";
+import { Shell, useHome } from "./Shell";
+import TopNav from "../components/TopNav";
 import { TurnView } from "./Turn";
 
 const MODE_KEY = "gd360_c2_mode";
@@ -105,7 +106,14 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
     }
   }, [turns, conversationId]);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [turns.length, busy]);
+  // R50: land on the latest turn - again once the canvas has opened and the column has narrowed
+  useEffect(() => {
+    // the composer is sticky at the bottom: scroll the page itself to its end so it never sits over the last turn
+    const toEnd = () => { const el = document.scrollingElement || document.documentElement; el.scrollTo({ top: el.scrollHeight }); };
+    toEnd();
+    const id = window.setTimeout(toEnd, 450);
+    return () => window.clearTimeout(id);
+  }, [turns.length, busy, !!canvas, turns[turns.length - 1]?.status]);
 
   const send = useCallback(async (q: string, extra: { accepted?: string[]; intent?: string | null } = {}) => {
     const message = q.trim();
@@ -126,6 +134,10 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
   const onConfirm = async (t: TurnT, approve: boolean) => {
     setBusy(true);
     try { setTurn(await v2Api.confirm(conversationId, t.id, approve)); void reloadHome(); } catch (e: any) { setError(e?.response?.data?.detail || "Couldn't confirm."); } finally { setBusy(false); }
+  };
+  const onRevise = async (t: TurnT, edits: Record<string, unknown>) => {
+    setBusy(true); setError(null);
+    try { setTurn(await v2Api.revise(conversationId, t.id, edits)); } catch (e: any) { setError(e?.response?.data?.detail || "Couldn't change that."); } finally { setBusy(false); }
   };
   const onMakeDashboard = async (t: TurnT) => {
     setBusy(true);
@@ -150,25 +162,27 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
 
   if (loadErr) {
     return (
-      <div className="c2-col"><div className="c2-head"><ThemeButton /></div><div className="c2-body"><div className="c2-thread"><div className="c2-err">{loadErr}</div><Link to="/chat" className="c2-nx" style={{ alignSelf: "flex-start" }}>Start a new conversation</Link></div></div></div>
+      <div className="c2-col"><TopNav /><div className="c2-body"><div className="c2-thread"><div className="c2-err">{loadErr}</div><Link to="/chat" className="c2-nx" style={{ alignSelf: "flex-start" }}>Start a new conversation</Link></div></div></div>
     );
   }
   return (
     <AskContext.Provider value={(q: string) => void send(q)}>
       <div className="c2-col" data-c2-conversation={conversationId}>
+        <TopNav hidePlan
+          title={<>
+            <button type="button" onClick={rename} title="Rename" data-c2-title=""
+              style={{ background: "transparent", border: 0, font: "inherit", fontWeight: 600, cursor: "pointer", color: "inherit", padding: 0, textAlign: "left", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</button>
+            {conv?.space_name && <span className="c2-chip gx-hide-sm" style={{ height: 26, flex: "0 0 auto" }}><span style={{ width: 8, height: 8, borderRadius: 4, background: conv.space_color || "rgb(var(--color-primary))" }} />{conv.space_name}</span>}
+          </>}
+          actions={<>
+            {conv && conv.dashboards.length > 0 && !canvas && (
+              <button type="button" className="gx-sc" data-c2-open-dashboard="" onClick={() => { const d = conv.dashboards[conv.dashboards.length - 1]; setCanvas(d.layout_version === 4 ? { type: "board", id: d.id, name: d.name } : { type: "dashboard", id: d.id, name: d.name, url: `/dashboard-builder/${d.id}` }); }}>Open dashboard</button>
+            )}
+            <button type="button" className="gx-sc gx-hide-sm" onClick={() => { void navigator.clipboard?.writeText(window.location.href).catch(() => undefined); }} title="Copy link">Share</button>
+          </>}
+        />
         <div className={`c2-main${canvas ? " has-canvas" : ""}`} style={{ flex: 1, minHeight: 0 }}>
           <div className="c2-col" style={{ minHeight: 0 }}>
-        <div className="c2-head">
-          <button type="button" className="title" onClick={rename} title="Rename" style={{ background: "transparent", border: 0, font: "inherit", cursor: "pointer", color: "inherit", padding: 0, textAlign: "left" }}>{title}</button>
-          {conv?.space_name && <span className="c2-chip" style={{ height: 26 }}><span style={{ width: 8, height: 8, borderRadius: 4, background: conv.space_color || "rgb(var(--color-primary))" }} />{conv.space_name}</span>}
-          <span style={{ flex: 1 }} />
-          {conv && conv.dashboards.length > 0 && !canvas && (
-            <button type="button" className="c2-nx sm" onClick={() => { const d = conv.dashboards[conv.dashboards.length - 1]; setCanvas(d.layout_version === 4 ? { type: "board", id: d.id, name: d.name } : { type: "dashboard", id: d.id, name: d.name, url: `/dashboard-builder/${d.id}` }); }}>Open dashboard</button>
-          )}
-          <Link to={`/p/${conversationId}`} className="c2-nx sm ghost" title="The classic project page for this conversation">Classic view</Link>
-          <button type="button" className="c2-nx sm" onClick={() => { void navigator.clipboard?.writeText(window.location.href); }} title="Copy link">Share</button>
-          <ThemeButton />
-        </div>
             <div className="c2-body">
               <div className="c2-thread" data-c2-thread="">
                 {!conv && <span className="c2-working"><span className="c2-spin" /> Opening…</span>}
@@ -181,6 +195,7 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
                     onPickCheck={(q, k) => { if (k) kept.current = [...kept.current, k]; void send(q); }}
                     onRunChanged={setRun}
                     onMakeDashboard={onMakeDashboard}
+                    onRevise={onRevise}
                   />
                 ))}
                 {error && <div className="c2-err" data-c2-send-error="">{error}</div>}
