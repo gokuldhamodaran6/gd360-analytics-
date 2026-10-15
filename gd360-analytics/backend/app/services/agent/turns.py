@@ -21,7 +21,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from ... import models
 from ...database import SessionLocal
 from .. import ai_engine, ai_meter
-from . import analysis, automations_tool, dashboard_tool, documents, intents, knowledge, model_tool, plans, team_tool, truth_guard, writer
+from . import analysis, automations_tool, board, dashboard_tool, documents, intents, knowledge, model_tool, plans, team_tool, truth_guard, writer
 
 KINDS = ("knowledge", "data", "guided", "dashboard", "document", "automation", "chat", "check", "explain", "dashboard_edit", "model", "team", "analysis")
 
@@ -190,6 +190,55 @@ def _do_automation(db: Session, msg: models.Message, user: models.User) -> None:
 
 
 def _do_dashboard(db: Session, msg: models.Message, user: models.User) -> None:
+    """R49: a dashboard is a designed board (services/agent/board.py) built from the conversation's table and,
+    when there is one, its analysis. The older block builder is only the fallback when a board cannot be built."""
+    st = _state(msg)
+    conv = db.get(models.Conversation, msg.conversation_id)
+    an = _last_analysis(db, conv)
+    source_id = ((an or {}).get("analysis") or {}).get("table", {}).get("source_id") or (list(conv.source_ids or []) or [None])[0]
+    table = ((an or {}).get("analysis") or {}).get("table", {}).get("table")
+    if source_id is None:
+        _set_state(db, msg, status="needs_input", text="Choose the data first: a dashboard is built from a table. Pick a source in the box below and ask again.",
+                   finished_at=datetime.utcnow().isoformat() + "Z")
+        return
+    _set_state(db, msg, trail=[{"label": "Reading the table"}, {"label": "Designing the pages"}, {"label": "Computing every block"}])
+    try:
+        dash = board.create(db, user, conv, source_id, table, question=st.get("question") or "", analysis_result=(an or {}).get("analysis"),
+                            name=st.get("name"))
+    except Exception as e:  # noqa: BLE001 - the old builder still gives a dashboard
+        traceback.print_exc()
+        print(f"[agent.board] designed board failed, falling back to the block builder: {e}")
+        return _do_dashboard_blocks(db, msg, user)
+    spec = dash.board_spec or {}
+    pages = [p["name"] for p in spec.get("pages") or []]
+    artifact = {"type": "dashboard", "id": dash.id, "name": dash.name, "url": f"/boards/{dash.id}", "board": True, "pages": len(pages)}
+    src = (spec.get("source") or {}).get("name") or "your data"
+    _set_state(db, msg, status="done", artifacts=[artifact],
+               text=f"“{dash.name}” is on the right: {len(pages)} pages ({', '.join(pages)}), computed live on {src}. "
+                    f"Change it by saying so: {_board_hints(spec)}.",
+               chips=[{"key": "live", "ok": True, "label": f"Live on {src} · {spec.get('rows_at_build', 0):,} rows"}]
+               + ([{"key": "model", "ok": True, "label": f"Risk scores from a model tested on held-out rows · AP {spec['model']['ap']}"}] if spec.get("model") else []),
+               trail=[{"label": f"Read {src} · {spec.get('rows_at_build', 0):,} rows"}, {"label": "Designed " + ", ".join(pages)},
+                      {"label": "Wrote the definitions behind every number"}],
+               finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+def _board_hints(spec: dict) -> str:
+    """Three edits that make sense on THIS board."""
+    fl = [f for f in spec.get("filters") or [] if f.get("column") and not str(f.get("key", "")).startswith("__")]
+    hints = ["“make it navy”"]
+    dims = [f["label"].lower() for f in fl]
+    if spec.get("outcome"):
+        hints.append(f"“add {spec['outcome']['noun']} by {dims[-1] if dims else 'segment'}”")
+    else:
+        m = next((b.get("column") for p in spec.get("pages") or [] for b in p.get("blocks") or [] if b.get("kind") == "g_measure"), None)
+        hints.append(f"“add {analysis.label_of(m) if m else 'revenue'} by {dims[-1] if dims else 'region'}”")
+    if fl and fl[0].get("values"):
+        hints.append(f"“filter to {fl[0]['values'][0]}”")
+    return ", ".join(hints)
+
+
+def _do_dashboard_blocks(db: Session, msg: models.Message, user: models.User) -> None:
     st = _state(msg)
     conv = db.get(models.Conversation, msg.conversation_id)
     from ...routers import projects as projects_router
@@ -245,7 +294,7 @@ def _current_dashboard(db: Session, conv: models.Conversation, user: models.User
     """The dashboard this conversation is working on: the latest one made from it (or added to)."""
     from ...routers.projects import _thread_dashboards
     rows = _thread_dashboards(db, conv, user)
-    rows = [r for r in rows if r.get("layout_version") == 2 and r.get("can_edit")]
+    rows = [r for r in rows if r.get("layout_version") in (2, 4) and r.get("can_edit")]
     if not rows:
         return None
     return db.get(models.Dashboard, rows[-1]["id"])
@@ -258,6 +307,22 @@ def _do_dashboard_edit(db: Session, msg: models.Message, user: models.User) -> N
     if dash is None:
         _set_state(db, msg, status="needs_input", text="There is no dashboard in this conversation yet. Say “make this a dashboard” first.",
                    finished_at=datetime.utcnow().isoformat() + "Z")
+        return
+    if (dash.layout_version or 0) == 4:
+        src = (dash.board_spec or {}).get("source") or {}
+        try:
+            df, _s = board.frame(db, user, src.get("source_id"), src.get("table"))
+            out = board.apply_edit(db, user, dash, st["question"], [str(c) for c in df.columns],
+                                   numeric={str(c) for c in df.columns if str(df[c].dtype) not in ("object", "string", "category", "bool")})
+        except ValueError as e:
+            _set_state(db, msg, status="needs_input", text=str(e), finished_at=datetime.utcnow().isoformat() + "Z")
+            return
+        artifact = {"type": "dashboard", "id": dash.id, "name": dash.name, "url": f"/boards/{dash.id}", "board": True, "page_id": out.get("page_id"), "refresh": True}
+        ch = out["changes"]
+        tail = " The dashboard on the right is back to how it was." if ch and ch[0].startswith("undid") else " The dashboard on the right shows it; say “undo” to go back."
+        _set_state(db, msg, status="done", text="Done: " + "; ".join(ch) + "." + tail,
+                   artifacts=[artifact], chips=[{"key": "applied", "ok": True, "label": f"{len(ch)} change{'s' if len(ch) != 1 else ''} applied"}],
+                   trail=[{"label": c} for c in ch], finished_at=datetime.utcnow().isoformat() + "Z")
         return
     try:
         out = dashboard_tool.apply(db, user, dash, st["question"], conv)
@@ -422,10 +487,12 @@ def send(db: Session, conv: models.Conversation, user: models.User, text: str, *
             pass
     names, cols = _source_names(db, conv)
     last = _last_turn_kind(db, conv)
-    has_dash = _current_dashboard(db, conv, user) is not None
+    cur_dash = _current_dashboard(db, conv, user)
+    has_dash = cur_dash is not None
+    edit_fn = board.wants_edit if cur_dash is not None and (cur_dash.layout_version or 0) == 4 else dashboard_tool.wants_edit
     decision = {"intent": intent, "by": "person", "reason": "chosen on the card", "text": text} if intent in KINDS else \
         intents.route(text, has_sources=has_sources, source_names=names, column_names=cols, last_kind=last, mode=mode, has_dashboard=has_dash,
-                      wants_team=team_tool.wants_team, wants_edit=dashboard_tool.wants_edit)
+                      wants_team=team_tool.wants_team, wants_edit=edit_fn)
     kind = decision["intent"]
     if kind == "dashboard_edit" and not has_dash:
         kind = "dashboard"
@@ -579,10 +646,16 @@ def _run_turn(db: Session, run: models.ProjectRun, conv: models.Conversation, us
 
 def _message_turn(db: Session, msg: models.Message, conv: models.Conversation, user: models.User) -> dict:
     st = _state(msg)
+    elapsed = st.get("elapsed_s")
+    if elapsed is None and st.get("finished_at") and st.get("started_at"):
+        try:
+            elapsed = round((datetime.fromisoformat(st["finished_at"].rstrip("Z")) - datetime.fromisoformat(st["started_at"].rstrip("Z"))).total_seconds(), 1)
+        except ValueError:
+            elapsed = None
     out = {"id": msg.id, "kind": st.get("kind"), "status": st.get("status"), "question": st.get("question"),
            "created_at": msg.created_at, "finished_at": st.get("finished_at"), "text": st.get("text"), "sources": st.get("sources") or [],
            "grounded": st.get("grounded"), "chips": st.get("chips") or [], "verdict": "ok", "artifacts": st.get("artifacts") or [],
-           "trail": st.get("trail") or [], "elapsed_s": st.get("elapsed_s"), "error": st.get("error"), "confirm": st.get("confirm"),
+           "trail": st.get("trail") or [], "elapsed_s": elapsed, "error": st.get("error"), "confirm": st.get("confirm"),
            "check": st.get("check"), "explain": st.get("explain"), "document": st.get("document"), "issues": st.get("issues") or [],
            "run_id": st.get("run_id"), "guided_project_id": st.get("guided_project_id"), "intent_by": st.get("intent_by"),
            "normalized": st.get("normalized"), "analysis": st.get("analysis") if st.get("kind") == "analysis" else None}

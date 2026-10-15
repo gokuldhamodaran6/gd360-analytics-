@@ -275,6 +275,7 @@ def _categorical_signal(df: pd.DataFrame, col: str, y: pd.Series, base_rate: flo
         return None
     lab = label_of(col)
     return {"column": col, "label": lab, "kind": "categorical", "direction": "category",
+            "value": str(hi), "compare_value": str(lo),
             "group": f"{lab} = {hi}", "group_n": int(stats.loc[hi, "n"]), "group_rate": _pct(stats.loc[hi, "rate"]),
             "compare": f"{lab} = {lo}", "compare_n": int(stats.loc[lo, "n"]), "compare_rate": _pct(stats.loc[lo, "rate"]),
             "lift": round(float(stats.loc[hi, "rate"] / stats.loc[lo, "rate"]), 1) if stats.loc[lo, "rate"] > 0 else None,
@@ -466,8 +467,9 @@ def run(db: Session, user: models.User, conv: models.Conversation, question: str
     return analyse(df, entry, sampled, question, spec)
 
 
-def analyse(df: pd.DataFrame, entry: dict, sampled: bool, question: str, spec: dict | None = None) -> dict:
-    """The recipe on a frame already loaded (tests call this directly)."""
+def analyse(df: pd.DataFrame, entry: dict, sampled: bool, question: str, spec: dict | None = None, keep_scores: bool = False) -> dict:
+    """The recipe on a frame already loaded (tests call this directly). keep_scores=True adds "_scores", the
+    out-of-fold score of every row (aligned with df), for the dashboard builder - never stored in a turn."""
     spec = dict(spec or {})
     t0 = time.time()
     steps: list[dict] = []
@@ -588,6 +590,8 @@ def analyse(df: pd.DataFrame, entry: dict, sampled: bool, question: str, spec: d
         "elapsed_s": round(time.time() - t0, 1),
     }
     result["findings"] = _findings(result)
+    if keep_scores and model and model.get("oof") is not None:
+        result["_scores"] = model["oof"]
     return result
 
 
