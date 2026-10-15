@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..database import get_db
 from ..deps import get_current_user
+from ..services import automations as automations_svc
 from ..services import spaces as spaces_service
 from ..services.agent import analysis, board, examples, exports, plans, turns, web
 from ..services.project_engine.catalog import accessible_sources
@@ -97,9 +98,9 @@ def _first_name(user: models.User) -> str:
 
 @router.get("/home")
 def home(workspace_id: str | None = None, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    convs = turns.list_conversations(db, user, workspace_id, limit=40)  # first: it files conversations into Spaces
     spaces = [spaces_service.space_out(db, s, user) for s in spaces_service.list_spaces(db, user, workspace_id)]
     sources = [projects._source_summary(db, ds, user) for ds in accessible_sources(db, user, workspace_id)]
-    convs = turns.list_conversations(db, user, workspace_id, limit=40)
     src_rows = accessible_sources(db, user, workspace_id)
     return {
         "user": {"id": user.id, "first_name": _first_name(user), "email": user.email},
@@ -343,6 +344,17 @@ def confirm_turn(conversation_id: str, turn_id: str, payload: ConfirmRequest, db
                  user: models.User = Depends(get_current_user)):
     conv = _conv(db, conversation_id, user, edit=True)
     return turns.confirm(db, conv, user, turn_id, approve=payload.approve, edits=payload.edits)
+
+
+@router.post("/conversations/{conversation_id}/turns/{turn_id}/revise")
+def revise_turn(conversation_id: str, turn_id: str, payload: ConfirmRequest, db: Session = Depends(get_db),
+                user: models.User = Depends(get_current_user)):
+    """R50: change a card (an alert's line) before confirming it."""
+    conv = _conv(db, conversation_id, user, edit=True)
+    try:
+        return turns.revise(db, conv, user, turn_id, payload.edits or {})
+    except automations_svc.AutomationError as e:
+        raise HTTPException(400, str(e))
 
 
 @router.post("/conversations/{conversation_id}/dashboard", status_code=201)

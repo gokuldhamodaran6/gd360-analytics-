@@ -133,6 +133,29 @@ def _source_ref(conv: models.Conversation | None, user: models.User, db: Session
     }
 
 
+def _board_extras(d: models.Dashboard, srcs: list[dict]) -> dict:
+    """R50: a designed board computes live on open - its card shows its pages and its own colours."""
+    from ..services.agent import board as board_svc
+    spec = d.board_spec or {}
+    key = spec.get("theme") or "ink"
+    pal = board_svc.THEMES.get(key, board_svc.THEMES["ink"]) | ({"accent": spec["accent"]} if spec.get("accent") else {})
+    built = None
+    try:
+        built = datetime.fromisoformat(str(spec.get("built_at") or "").replace("Z", "+00:00")).replace(tzinfo=None) if spec.get("built_at") else None
+    except ValueError:
+        built = None
+    pages = [p.get("name") for p in spec.get("pages") or []]
+    return {
+        "sources": srcs, "data_mode": data_mode([s["kind"] for s in srcs]) if srcs else None, "published": False,
+        "data_at": built, "updated_at": max([t for t in (d.created_at, built) if t] or [d.created_at]),
+        "page_count": len(pages), "block_count": sum(len(p.get("blocks") or []) for p in spec.get("pages") or []),
+        "preview": [], "refresh_interval": "off",
+        "board": {"theme": key, "theme_label": board_svc.THEMES.get(key, board_svc.THEMES["ink"])["label"], "pages": pages,
+                  "palette": {k: pal[k] for k in ("bg", "card", "ink", "accent", "warn", "mode")},
+                  "outcome": bool(spec.get("outcome")), "entities": spec.get("entities")},
+    }
+
+
 def _list_extras(db: Session, dashboards: list[models.Dashboard]) -> dict[str, dict]:
     """Round 35: sources, freshness, published, last computed and a thumbnail layout for every
     dashboard in the list - a handful of set queries, not one request per card."""
@@ -208,6 +231,9 @@ def _list_extras(db: Session, dashboards: list[models.Dashboard]) -> dict[str, d
         srcs = [{"id": s, "name": ds_map[s].name, "kind": ds_map[s].kind, "live": is_live(ds_map[s].kind)}
                 for s in src_ids[d.id] if s in ds_map]
         at = data_at.get(d.id)
+        if d.layout_version == 4:
+            out[d.id] = _board_extras(d, srcs)
+            continue
         if d.layout_version == 3 and getattr(d, "snapshot_at", None):
             at = max(at, d.snapshot_at) if at else d.snapshot_at
         if d.layout_version == 1:
