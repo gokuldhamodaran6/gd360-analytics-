@@ -85,6 +85,15 @@ def _conv(db: Session, conversation_id: str, user: models.User, edit: bool = Fal
     return projects._project(db, conversation_id, user, edit=edit)
 
 
+def _first_name(user: models.User) -> str:
+    """2026-10-15 (R48): a name, capitalised when it had to come from the email."""
+    full = (user.full_name or "").strip()
+    if full:
+        return full.split(" ")[0]
+    stem = (user.email or "").split("@")[0].split(".")[0].split("_")[0]
+    return stem[:1].upper() + stem[1:] if stem else ""
+
+
 @router.get("/home")
 def home(workspace_id: str | None = None, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     spaces = [spaces_service.space_out(db, s, user) for s in spaces_service.list_spaces(db, user, workspace_id)]
@@ -92,7 +101,7 @@ def home(workspace_id: str | None = None, db: Session = Depends(get_db), user: m
     convs = turns.list_conversations(db, user, workspace_id, limit=40)
     src_rows = accessible_sources(db, user, workspace_id)
     return {
-        "user": {"id": user.id, "first_name": (user.full_name or user.email or "").split(" ")[0].split("@")[0], "email": user.email},
+        "user": {"id": user.id, "first_name": _first_name(user), "email": user.email},
         "spaces": spaces, "sources": sources, "conversations": convs,
         "plan": plans.summary(db, user, workspace_id), "web": web.available(), "web_provider": web.provider(),
         "examples": examples.for_sources(src_rows, web.available()),
