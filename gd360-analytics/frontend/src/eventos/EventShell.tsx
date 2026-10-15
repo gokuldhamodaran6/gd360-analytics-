@@ -82,7 +82,7 @@ export default function EventShell({ i, reload, onError }: { i: Initiative; relo
 
   return (
     <>
-      <header className="px-4 sm:px-8 pt-16 lg:pt-6 border-b border-border flex flex-col gap-4 relative overflow-hidden" data-event-header="">
+      <header className="px-4 sm:px-8 pt-6 border-b border-border flex flex-col gap-4 relative overflow-hidden" data-event-header="">
         <div className="pointer-events-none absolute -top-24 right-0 w-[640px] h-[260px] opacity-70"
           style={{ background: "radial-gradient(closest-side, rgb(var(--color-primary) / 0.10), transparent)" }} />
         <div className="flex flex-wrap justify-between items-start gap-5 relative">
