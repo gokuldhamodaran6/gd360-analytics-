@@ -4,11 +4,12 @@ import type { ProjectRun } from "./projects";
 import type { Space } from "./spaces";
 
 export type Chip = { key: string; ok: boolean; label: string; detail?: string | null };
-export type TurnKind = "knowledge" | "data" | "guided" | "dashboard" | "document" | "automation" | "chat" | "check" | "explain";
+export type TurnKind = "knowledge" | "data" | "guided" | "dashboard" | "document" | "automation" | "chat" | "check" | "explain" | "dashboard_edit" | "model" | "team";
 export type TurnStatus = "working" | "steps" | "done" | "failed" | "needs_input" | "confirm";
 export type Artifact = {
-  type: "dashboard" | "document" | "automation";
-  id: string; name?: string; title?: string; url?: string; page_id?: string | null; words?: number;
+  type: "dashboard" | "document" | "automation" | "model" | "space";
+  id: string; name?: string; title?: string; url?: string; page_id?: string | null; words?: number; refresh?: boolean; score?: string | null;
+  rules?: string[]; invite_link?: string | null;
   sentence?: { when?: string; do?: string; tell?: string; tell_sentence?: string }; next_run_at?: string | null;
   live?: { kind: string; label: string; url: string; views: number } | null;
 };
@@ -19,7 +20,8 @@ export type Turn = {
   chips: Chip[]; verdict?: "ok" | "warn" | "fail" | "pending"; artifacts: Artifact[]; trail: TrailItem[];
   elapsed_s?: number | null; error?: string | null; intent_by?: string | null; mode?: "analyst" | "engine";
   run_id?: string | null; run?: ProjectRun | null; guided_project_id?: string | null;
-  confirm?: AutomationConfirm | null; check?: any; explain?: any; issues?: string[];
+  confirm?: AutomationConfirm | TeamConfirm | null; check?: any; explain?: any; issues?: string[];
+  model_summary?: { label: string; metric: string; test_score?: number | null; baseline?: { name?: string; score?: number }; drivers: string[]; leaks: string[]; rows?: number; target?: string; table?: string } | null;
   document?: { title: string; markdown: string; flagged: string[] } | null;
   placements?: { dashboard_id: string; dashboard_name: string; page_id?: string | null }[];
 };
@@ -28,6 +30,14 @@ export type AutomationConfirm = {
   sentence: { when: string; do: string; tell: string; tell_sentence?: string };
   watch?: { question: string; run_id: string } | null;
 };
+export type TeamConfirm = {
+  kind: "team"; ok: boolean; body: { name: string; access: string; member_ids: string[]; source_ids: string[]; workspace_id: string | null; hidden: any[]; rows: any[] };
+  members: { user_id: string; name: string; role: string }[]; to_invite: string[]; invite_link?: string | null;
+  sources: { id: string; name: string; kind: string }[]; hidden: { source_id: string; source: string; column: string }[];
+  rows: { source_id: string; source: string; column: string; values: string[]; who: string; role: string }[]; issues: string[]; note?: string | null; limits: string[];
+};
+export type BlockData = { id: string; title: string; type: string; columns: string[]; rows: Record<string, unknown>[]; row_count: number; kpi: { label: string; value: number | null; display: string } | null; definition?: string | null };
+export type DashboardData = { dashboard: { id: string; name: string }; page: { id: string; name: string }; source: { id: string; name: string; kind: string } | null; blocks: BlockData[] };
 export type SourceSummary = { id: string; name: string; kind: string; label?: string; mode?: string; freshness?: any; tables?: any[]; workspace_id?: string | null };
 export type Conversation = {
   id: string; title: string; created_at: string; source_ids: string[]; sources: SourceSummary[]; workspace_id: string | null;
@@ -46,7 +56,7 @@ export type PlanSummary = {
 };
 export type Home = {
   user: { id: string; first_name: string; email: string }; spaces: Space[]; sources: SourceSummary[];
-  conversations: ConversationRow[]; plan: PlanSummary; web: boolean; web_provider: string;
+  conversations: ConversationRow[]; plan: PlanSummary; web: boolean; web_provider: string; examples?: string[];
 };
 export type Mode = "auto" | "quick" | "guided";
 
@@ -68,4 +78,6 @@ export const v2Api = {
     api.post<Turn>(`/v2/conversations/${id}/turns/${turnId}/confirm`, { approve, edits }).then((r) => r.data),
   dashboard: (id: string, body: { run_ids?: string[]; name?: string }) => api.post<Turn>(`/v2/conversations/${id}/dashboard`, body).then((r) => r.data),
   documentUrl: (id: string, turnId: string) => `${api.defaults.baseURL}/v2/conversations/${id}/documents/${turnId}.md`,
+  dashboardData: (dashboardId: string, pageId?: string | null) => api.get<DashboardData>(`/v2/dashboards/${dashboardId}/data`, { params: pageId ? { page_id: pageId } : {} }).then((r) => r.data),
+  publicPlans: () => api.get<{ plans: PlanSummary["plans"]; all_features: boolean; enforced: boolean }>("/v2/plans").then((r) => r.data),
 };
