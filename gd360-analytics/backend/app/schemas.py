@@ -660,6 +660,8 @@ class DashboardOut(BaseModel):
     preview: list[dict] = []
     # round 35b: its auto-refresh ("off" | "realtime" | "5m" | ... | "daily")
     refresh_interval: str = "off"
+    # 2026-10-15 (R50): a designed board (layout_version 4) - its theme and pages, for a thumbnail in its own colours
+    board: Optional[dict] = None
 
 
 class SavedChartOut(BaseModel):
