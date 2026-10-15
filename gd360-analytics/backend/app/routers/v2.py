@@ -18,7 +18,8 @@ GET /projects/runs/{id}, exactly as the classic page does.
 """
 from __future__ import annotations
 
-from datetime import date
+import json
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
@@ -29,7 +30,7 @@ from .. import models
 from ..database import get_db
 from ..deps import get_current_user
 from ..services import spaces as spaces_service
-from ..services.agent import examples, exports, plans, turns, web
+from ..services.agent import analysis, board, examples, exports, plans, turns, web
 from ..services.project_engine.catalog import accessible_sources
 from . import projects
 
@@ -171,6 +172,104 @@ def _definition(b: dict) -> str | None:
     parts = [p for p in (ms, f"by {gb}" if gb else "", f"per {t.get('grain')} of {t.get('column')}" if isinstance(t, dict) and t.get("column") else "",
                          f"from {spec.get('table')}" if spec.get("table") else "") if p]
     return " · ".join(parts) or None
+
+
+# ---- 2026-10-15 (R49): designed boards ---------------------------------------------------------
+
+class BoardRun(BaseModel):
+    page_id: str | None = None
+    filters: dict | None = None
+
+
+class BoardPatch(BaseModel):
+    name: str | None = Field(default=None, max_length=80)
+    theme: str | None = None
+    default_filters: dict | None = None
+
+
+def _board(db: Session, board_id: str, user: models.User, edit: bool = False) -> models.Dashboard:
+    from .dashboards import _can_edit, _can_view
+    d = db.get(models.Dashboard, board_id)
+    if d is None or (d.layout_version or 0) != 4 or not _can_view(db, d, user):
+        raise HTTPException(404, "This dashboard isn't here, or isn't shared with you.")
+    if edit and not _can_edit(db, d, user):
+        raise HTTPException(403, "You can view this dashboard but not change it.")
+    try:
+        d.last_viewed_at = datetime.utcnow()
+        db.commit()
+    except Exception:  # noqa: BLE001 - a view stamp never blocks the page
+        db.rollback()
+    return d
+
+
+def _filters_arg(filters: str | None) -> dict | None:
+    if not filters:
+        return None
+    try:
+        v = json.loads(filters)
+        return v if isinstance(v, dict) else None
+    except ValueError:
+        return None
+
+
+@router.get("/boards/{board_id}")
+def get_board(board_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    from .dashboards import _can_edit
+    d = _board(db, board_id, user)
+    return board.summary(d) | {"can_edit": _can_edit(db, d, user)}
+
+
+@router.post("/boards/{board_id}/run")
+def run_board(board_id: str, payload: BoardRun, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user)
+    try:
+        return board.compute(db, user, d, payload.page_id, payload.filters)
+    except analysis.AnalysisError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.patch("/boards/{board_id}")
+def patch_board(board_id: str, payload: BoardPatch, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    from sqlalchemy.orm.attributes import flag_modified
+    d = _board(db, board_id, user, edit=True)
+    spec = dict(d.board_spec or {})
+    if payload.name and payload.name.strip():
+        d.name = payload.name.strip()[:80]
+        spec["title"] = d.name
+    if payload.theme:
+        if payload.theme not in board.THEMES:
+            raise HTTPException(400, "Unknown theme.")
+        spec["theme"] = payload.theme
+        spec.pop("accent", None)
+    if payload.default_filters is not None:
+        spec["default_filters"] = {k: v for k, v in payload.default_filters.items() if v not in (None, "", "All")}
+    d.board_spec = spec
+    flag_modified(d, "board_spec")
+    db.commit()
+    return board.summary(d)
+
+
+@router.post("/boards/{board_id}/refresh")
+def refresh_board(board_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user)
+    board.forget((d.board_spec or {}).get("source", {}).get("source_id") or "")
+    return {"ok": True}
+
+
+@router.get("/boards/{board_id}/export.xlsx")
+def board_xlsx(board_id: str, filters: str | None = None, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user)
+    data = board.workbook(db, user, d, _filters_arg(filters))
+    return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{_safe(d.name)}.xlsx"'})
+
+
+@router.get("/boards/{board_id}/export.pptx")
+def board_pptx(board_id: str, filters: str | None = None, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user)
+    data = board.deck(db, user, d, _filters_arg(filters))
+    return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    headers={"Content-Disposition": f'attachment; filename="{_safe(d.name)}.pptx"'})
 
 
 @router.get("/plan")
