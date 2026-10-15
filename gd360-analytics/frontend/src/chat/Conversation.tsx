@@ -31,6 +31,7 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
   const [conv, setConv] = useState<ConvT | null>(null);
   const [runs, setRuns] = useState<Record<string, ProjectRun>>({});
   const [canvas, setCanvas] = useState<CanvasItem | null>(null);
+  const [canvasVersion, setCanvasVersion] = useState(0);
   const [text, setText] = useState("");
   const [mode, setMode] = useState<Mode>(loadMode);
   const [busy, setBusy] = useState(false);
@@ -87,7 +88,7 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
     return () => clearInterval(id);
   }, [turns, runs, conversationId, loadRun, setTurn, load, reloadHome]);
 
-  // a finished dashboard or document opens on the canvas by itself, once
+  // a finished dashboard or document opens on the canvas by itself, once; an edit refreshes the open one
   useEffect(() => {
     for (const t of turns) {
       if (t.status !== "done" || openedRef.current.has(t.id)) continue;
@@ -95,7 +96,11 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
       if (a) {
         openedRef.current.add(t.id);
         const item = canvasFromArtifact(a, t, conversationId);
-        if (item && t === turns[turns.length - 1]) setCanvas(item);
+        if (!item) continue;
+        if (a.refresh) {
+          setCanvas((cur) => (cur && cur.type === "dashboard" && cur.id === a.id ? { ...cur, name: a.name || cur.name } : item));
+          setCanvasVersion((v) => v + 1);
+        } else if (t === turns[turns.length - 1]) setCanvas(item);
       }
     }
   }, [turns, conversationId]);
@@ -187,7 +192,7 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
               </div>
             </div>
           </div>
-          {canvas && <Canvas item={canvas} onClose={() => setCanvas(null)} />}
+          {canvas && <Canvas item={canvas} onClose={() => setCanvas(null)} version={canvasVersion} run={canvas.type === "method" && canvas.turn.run_id ? runs[canvas.turn.run_id] : null} />}
         </div>
       </div>
     </AskContext.Provider>

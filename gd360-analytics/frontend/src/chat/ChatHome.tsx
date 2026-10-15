@@ -114,7 +114,7 @@ function HomeBody() {
             scope={<ScopePicker scope={scope} onChange={setScope} sources={sources} spaces={spaces} variant="compact" placement="below" disabled={busy} />} />
           {error && <div className="c2-err">{error}</div>}
           <div className="ex" data-c2-examples="">
-            {examples(hasData, !!home?.web).map((q) => (
+            {(home?.examples?.length ? home.examples : examples(hasData, !!home?.web)).map((q) => (
               <button key={q} type="button" className="c2-nx sm" onClick={() => void start(q)} disabled={busy}>{q}</button>
             ))}
           </div>

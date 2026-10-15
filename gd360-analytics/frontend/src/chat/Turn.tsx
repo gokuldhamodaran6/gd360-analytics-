@@ -2,7 +2,7 @@
 // the trust chips (only what was verified), sources, the picture, artifact cards, confirm cards.
 import { useEffect, useState } from "react";
 import type { ProjectRun } from "../api/projects";
-import type { Artifact, Chip, Turn as TurnT } from "../api/v2";
+import type { Artifact, Chip, TeamConfirm, Turn as TurnT } from "../api/v2";
 import { FollowupCheck } from "../components/QuestionCheck";
 import { layoutSql } from "../project/RunPanels";
 import { DataAnswer } from "./DataAnswer";
@@ -50,25 +50,73 @@ function Trail({ turn, open }: { turn: TurnT; open: boolean }) {
   );
 }
 
-const ART_ICON: Record<string, string> = { dashboard: "▦", document: "▤", automation: "⚡" };
+const ART_ICON: Record<string, string> = { dashboard: "▦", document: "▤", automation: "⚡", model: "◎", space: "▣" };
 
 export function ArtifactCard({ a, onOpen }: { a: Artifact; onOpen?: () => void }) {
   const title = a.name || a.title || "Open";
-  const meta = a.type === "dashboard" ? (a.live ? `Live · ${a.live.label}` : "Dashboard · live on your data") : a.type === "document" ? `Document${a.words ? ` · ${a.words} words` : ""}` : `Automation${a.next_run_at ? ` · next ${new Date(a.next_run_at).toLocaleString()}` : ""}`;
+  const meta = a.type === "dashboard" ? (a.live ? `Live · ${a.live.label}` : "Dashboard · live on your data")
+    : a.type === "document" ? `Document${a.words ? ` · ${a.words} words` : ""}`
+    : a.type === "model" ? `Model${a.score ? ` · ${a.score} on held-out rows` : ""}`
+    : a.type === "space" ? `Space${a.rules?.length ? ` · ${a.rules.length} data rule${a.rules.length !== 1 ? "s" : ""}` : ""}`
+    : `Automation${a.next_run_at ? ` · next ${new Date(a.next_run_at).toLocaleString()}` : ""}`;
   const inner = (
     <>
       <span className="ic" aria-hidden="true">{ART_ICON[a.type] || "▣"}</span>
       <span style={{ display: "flex", flexDirection: "column", minWidth: 0 }}><span className="t">{title}</span><span className="m">{meta}</span></span>
-      <span style={{ marginLeft: "auto", color: "rgb(var(--color-muted))", fontSize: 13 }}>{a.type === "automation" ? "Open ›" : "Open on canvas ›"}</span>
+      <span style={{ marginLeft: "auto", color: "rgb(var(--color-muted))", fontSize: 13 }}>{a.type === "dashboard" || a.type === "document" ? "Open on canvas ›" : "Open ›"}</span>
     </>
   );
-  if (a.type === "automation") return <a className="c2-art" href={a.url || `/automations/${a.id}`} data-c2-artifact={a.type}>{inner}</a>;
+  if (a.type === "automation" || a.type === "model" || a.type === "space") return <a className="c2-art" href={a.url || "#"} data-c2-artifact={a.type}>{inner}</a>;
   return <button type="button" className="c2-art" onClick={onOpen} data-c2-artifact={a.type}>{inner}</button>;
+}
+
+export function TeamCard({ c, turn, busy, onDecide }: { c: TeamConfirm; turn: TurnT; busy: boolean; onDecide: (approve: boolean) => void }) {
+  return (
+    <div className="c2-card" data-c2-confirm="team">
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ width: 34, height: 34, borderRadius: 10, background: "rgb(var(--color-tint))", color: "rgb(var(--color-primary))", display: "grid", placeItems: "center" }}>▣</span>
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          <span style={{ fontSize: 15, fontWeight: 600 }}>{c.body.name}</span>
+          <span style={{ fontSize: 12.5, color: "rgb(var(--color-muted))" }}>{c.members.length} member{c.members.length !== 1 ? "s" : ""} · {c.sources.length} source{c.sources.length !== 1 ? "s" : ""} · {c.hidden.length + c.rows.length} data rule{c.hidden.length + c.rows.length !== 1 ? "s" : ""}</span>
+        </div>
+      </div>
+      <div>
+        <div className="c2-row"><span>Members</span><span>{c.members.map((m) => `${m.name} (${m.role})`).join(", ") || "only you"}{c.to_invite.length ? ` · to invite: ${c.to_invite.join(", ")}` : ""}</span></div>
+        <div className="c2-row"><span>Sources</span><span>{c.sources.map((s) => s.name).join(", ") || "none"}</span></div>
+        <div className="c2-row"><span>Hidden</span><span>{c.hidden.length ? c.hidden.map((h) => `${h.column} (${h.source})`).join(", ") : "nothing hidden"}</span></div>
+        {c.rows.length > 0 && <div className="c2-row"><span>Rows</span><span>{c.rows.map((r) => `${r.column} limited to ${r.values.join(", ")} on ${r.source} for ${r.role}s`).join("; ")}</span></div>}
+        <div className="c2-row"><span>Applies to</span><span style={{ color: "rgb(var(--color-muted))" }}>{c.limits.join(" ")}</span></div>
+        {c.note && <div className="c2-row"><span>Note</span><span>{c.note}</span></div>}
+      </div>
+      {turn.error && <div className="c2-err">{turn.error}</div>}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button type="button" className="c2-nx dark" disabled={busy} onClick={() => onDecide(true)} data-c2-confirm-yes="">Create the team</button>
+        <button type="button" className="c2-nx ghost" disabled={busy} onClick={() => onDecide(false)}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+export function ModelSummary({ turn }: { turn: TurnT }) {
+  const m = turn.model_summary;
+  if (!m) return null;
+  return (
+    <div className="c2-card" data-c2-model="">
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
+        <div className="c2-meter"><span>Held-out {m.metric}</span><span className="c2-mono" style={{ fontSize: 22, fontWeight: 600, color: "rgb(var(--color-text))" }}>{m.test_score != null ? (Math.abs(m.test_score) < 10 ? m.test_score.toFixed(3) : m.test_score.toLocaleString()) : "—"}</span></div>
+        {m.baseline?.score != null && <div className="c2-meter"><span>{m.baseline.name || "Baseline"}</span><span className="c2-mono" style={{ fontSize: 22, fontWeight: 600, color: "rgb(var(--color-text))" }}>{Math.abs(m.baseline.score) < 10 ? m.baseline.score.toFixed(3) : m.baseline.score.toLocaleString()}</span></div>}
+        {m.rows != null && <div className="c2-meter"><span>Rows learned from</span><span className="c2-mono" style={{ fontSize: 22, fontWeight: 600, color: "rgb(var(--color-text))" }}>{Number(m.rows).toLocaleString()}</span></div>}
+      </div>
+      {m.drivers.length > 0 && <div style={{ fontSize: 13.5, color: "rgb(var(--color-secondary))" }}><b style={{ color: "rgb(var(--color-text))" }}>Drivers:</b> {m.drivers.join(", ")}</div>}
+      {m.leaks.length > 0 && <div style={{ fontSize: 13.5, color: "rgb(var(--color-secondary))" }}><b style={{ color: "rgb(var(--color-text))" }}>Removed as leaks:</b> {m.leaks.join(", ")}</div>}
+    </div>
+  );
 }
 
 export function ConfirmCard({ turn, busy, onDecide }: { turn: TurnT; busy: boolean; onDecide: (approve: boolean) => void }) {
   const c = turn.confirm;
   if (!c) return null;
+  if (c.kind === "team") return <TeamCard c={c} turn={turn} busy={busy} onDecide={onDecide} />;
   const s = c.sentence || ({} as any);
   const body = c.body || {};
   const trig = body.trigger || {};
@@ -140,6 +188,7 @@ export function TurnView({
         )}
         {turn.kind === "guided" && !run && working && <span className="c2-working"><span className="c2-spin" /> Planning the steps…</span>}
         {turn.status === "confirm" && <ConfirmCard turn={turn} busy={busy} onDecide={(ok) => onConfirm(turn, ok)} />}
+        {turn.kind === "model" && turn.status === "done" && <ModelSummary turn={turn} />}
         {(turn.artifacts || []).map((a) => <ArtifactCard key={a.id} a={a} onOpen={() => onOpenArtifact(a, turn)} />)}
         {turn.status === "done" && !showRun && <Chips chips={turn.chips} />}
         {(turn.status === "done" && (isData || turn.kind === "guided") && run?.status === "done") && (
@@ -148,7 +197,7 @@ export function TurnView({
             {(turn.placements || []).map((p) => (
               <button key={p.dashboard_id} type="button" className="c2-nx sm" onClick={() => onOpenArtifact({ type: "dashboard", id: p.dashboard_id, name: p.dashboard_name, url: `/dashboard-builder/${p.dashboard_id}`, page_id: p.page_id }, turn)}>Open “{p.dashboard_name}”</button>
             ))}
-            {(turn.trail || []).some((t) => t.sql) && <button type="button" className="c2-nx sm ghost" onClick={() => onOpenMethod(turn)}>How I worked it out</button>}
+            {((turn.trail || []).some((t) => t.sql) || turn.mode === "analyst") && <button type="button" className="c2-nx sm ghost" onClick={() => onOpenMethod(turn)}>How I worked it out</button>}
             <a className="c2-nx sm ghost" href={`/p/${conversationId}?run=${turn.run_id}`}>Classic view</a>
           </div>
         )}
