@@ -57,6 +57,7 @@ pyarrow==19.0.1
 # in services/connectors.py SnowflakeConnector.
 snowflake-connector-python[pandas]==4.7.5
 openpyxl==3.1.5
+python-pptx==1.0.2
 python-calamine==0.8.2
 # Bumped from 2.32.3: snowflake-connector-python 4.7.5 requires
 # requests>=2.32.4, and google-cloud-bigquery's own requests floor
