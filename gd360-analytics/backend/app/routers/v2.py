@@ -29,7 +29,7 @@ from .. import models
 from ..database import get_db
 from ..deps import get_current_user
 from ..services import spaces as spaces_service
-from ..services.agent import plans, turns, web
+from ..services.agent import examples, exports, plans, turns, web
 from ..services.project_engine.catalog import accessible_sources
 from . import projects
 
@@ -90,11 +90,78 @@ def home(workspace_id: str | None = None, db: Session = Depends(get_db), user: m
     spaces = [spaces_service.space_out(db, s, user) for s in spaces_service.list_spaces(db, user, workspace_id)]
     sources = [projects._source_summary(db, ds, user) for ds in accessible_sources(db, user, workspace_id)]
     convs = turns.list_conversations(db, user, workspace_id, limit=40)
+    src_rows = accessible_sources(db, user, workspace_id)
     return {
         "user": {"id": user.id, "first_name": (user.full_name or user.email or "").split(" ")[0].split("@")[0], "email": user.email},
         "spaces": spaces, "sources": sources, "conversations": convs,
         "plan": plans.summary(db, user, workspace_id), "web": web.available(), "web_provider": web.provider(),
+        "examples": examples.for_sources(src_rows, web.available()),
     }
+
+
+@router.get("/plans")
+def public_plans():
+    """The four plans, for the pricing page. Every feature on every plan; limits differ."""
+    return {"plans": {k: {"label": v["label"], "who": v["who"], "price": v["price"], "limits": v["limits"], "model_tier": v["model_tier"],
+                          "support": v["support"]} for k, v in plans.PLANS.items()},
+            "all_features": True, "enforced": bool(plans.settings.PLAN_ENFORCE)}
+
+
+def _dash_page(db: Session, user: models.User, dashboard_id: str, page_id: str | None):
+    from .dashboard_builder import _get_dashboard_v2
+    d = _get_dashboard_v2(db, user, dashboard_id, require_edit=False)
+    pages = sorted(d.pages, key=lambda p: p.position)
+    page = next((p for p in pages if p.id == page_id), None) if page_id else (pages[0] if pages else None)
+    if page is None:
+        raise HTTPException(404, "Page not found.")
+    return d, page
+
+
+def _safe(name: str) -> str:
+    return "".join(c if c.isalnum() or c in " -_" else "" for c in (name or "dashboard")).strip().replace(" ", "-")[:60] or "dashboard"
+
+
+@router.get("/dashboards/{dashboard_id}/export.xlsx")
+def export_xlsx(dashboard_id: str, page_id: str | None = None, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d, page = _dash_page(db, user, dashboard_id, page_id)
+    blocks = exports.page_blocks(db, user, d, page)
+    data = exports.workbook(d, page, blocks)
+    return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{_safe(d.name)}.xlsx"'})
+
+
+@router.get("/dashboards/{dashboard_id}/export.pptx")
+def export_pptx(dashboard_id: str, page_id: str | None = None, theme: str = "light", db: Session = Depends(get_db),
+                user: models.User = Depends(get_current_user)):
+    d, page = _dash_page(db, user, dashboard_id, page_id)
+    blocks = exports.page_blocks(db, user, d, page)
+    data = exports.deck(d, page, blocks, theme="dark" if theme == "dark" else "light")
+    return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    headers={"Content-Disposition": f'attachment; filename="{_safe(d.name)}.pptx"'})
+
+
+@router.get("/dashboards/{dashboard_id}/data")
+def dashboard_data(dashboard_id: str, page_id: str | None = None, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Get the data: every block's rows as the page shows them, with the definition behind each."""
+    d, page = _dash_page(db, user, dashboard_id, page_id)
+    blocks = exports.page_blocks(db, user, d, page)
+    ds = db.get(models.DataSource, d.datasource_id) if d.datasource_id else None
+    return {"dashboard": {"id": d.id, "name": d.name}, "page": {"id": page.id, "name": page.name},
+            "source": {"id": ds.id, "name": ds.name, "kind": ds.kind} if ds else None,
+            "blocks": [{"id": b["id"], "title": b["title"], "type": b["type"], "columns": b["columns"], "rows": b["rows"][:500],
+                        "row_count": len(b["rows"]), "kpi": b["kpi"], "definition": _definition(b)} for b in blocks]}
+
+
+def _definition(b: dict) -> str | None:
+    spec = b.get("spec") or {}
+    if not isinstance(spec, dict) or not spec:
+        return None
+    ms = ", ".join(f"{m.get('agg', '')}({m.get('column') or m.get('expr') or ''}) as {m.get('alias')}" for m in (spec.get("measures") or []) if isinstance(m, dict))
+    gb = ", ".join(spec.get("group_by") or [])
+    t = spec.get("time") or {}
+    parts = [p for p in (ms, f"by {gb}" if gb else "", f"per {t.get('grain')} of {t.get('column')}" if isinstance(t, dict) and t.get("column") else "",
+                         f"from {spec.get('table')}" if spec.get("table") else "") if p]
+    return " · ".join(parts) or None
 
 
 @router.get("/plan")
