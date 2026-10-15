@@ -9,7 +9,7 @@ export type TurnStatus = "working" | "steps" | "done" | "failed" | "needs_input"
 export type Artifact = {
   type: "dashboard" | "document" | "automation" | "model" | "space" | "analysis";
   id: string; name?: string; title?: string; url?: string; page_id?: string | null; words?: number; refresh?: boolean; score?: string | null;
-  recipe?: string; figures?: number; scored?: number | null;
+  recipe?: string; figures?: number; scored?: number | null; board?: boolean; pages?: number;
   rules?: string[]; invite_link?: string | null;
   sentence?: { when?: string; do?: string; tell?: string; tell_sentence?: string }; next_run_at?: string | null;
   live?: { kind: string; label: string; url: string; views: number } | null;
