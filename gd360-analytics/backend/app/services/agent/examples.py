@@ -8,6 +8,7 @@ import re
 
 from ... import models
 from ..semantics import human_name
+from .analysis import OUTCOME_NAMES, label_of, _entities
 
 _MONEY = re.compile(r"revenue|sales|amount|spend|cost|price|profit|margin|total|net|gross|adr|fee|value|budget", re.I)
 _COUNT = re.compile(r"count|orders|bookings|sessions|users|customers|visits|clicks|units|qty|quantity|leads|tickets", re.I)
@@ -42,10 +43,26 @@ def for_sources(sources: list[models.DataSource], web: bool) -> list[str]:
         measures = [n for n, t in cols if (_NUM_TYPES.search(t) and not _ID.search(n)) and (_MONEY.search(n) or _COUNT.search(n))]
         measures = measures or [n for n, t in cols if _NUM_TYPES.search(t) and not _ID.search(n) and not _DATE.search(n)]
         dims = [n for n, t in cols if _TEXT_TYPES.search(t) and _DIM.search(n) and not _ID.search(n)]
+        _pri = ("category", "segment", "plan", "product", "region", "channel", "country", "city", "store", "hotel", "campaign", "team", "type", "status")
+        dims.sort(key=lambda n: next((i for i, w in enumerate(_pri) if w in n.lower()), len(_pri)))
         dates = [n for n, t in cols if _DATE_TYPES.search(t) or (_DATE.search(n) and not _NUM_TYPES.search(t))]
         yesno = [n for n, t in cols if _YESNO.search(n)]
-        m = human_name(measures[0]).lower() if measures else None
-        d = human_name(dims[0]).lower() if dims else None
+        outcome = [n for n, t in cols if OUTCOME_NAMES.search(n) and not _NUM_TYPES.search(t)]
+        ent = _entities([n for n, _ in cols], ds.name or "")
+        d = label_of(dims[0]) if dims else None
+        if outcome:
+            # 2026-10-15 (R48): an outcome column leads with the analysis questions, in plain words
+            noun = "churn" if re.search(r"churn|attrit|lapse", outcome[0], re.I) else "the outcome"
+            out.append(f"Why are {ent} leaving, and who is likely to leave next?" if noun == "churn" else f"What drives {label_of(outcome[0])}, and who is most at risk?")
+            if d:
+                out.append(f"Which {d} loses the most {ent}?" if noun == "churn" else f"How does {label_of(outcome[0])} differ by {d}?")
+            sig = next((n for n, t in cols if _NUM_TYPES.search(t) and not _ID.search(n) and re.search(r"inactive|contact|transaction|trans|usage|visits|tenure|months", n, re.I)), None)
+            if sig:
+                out.append(f"Does {label_of(sig)} predict {noun if noun == 'churn' else label_of(outcome[0])}?")
+            out.append("Build a retention dashboard" if noun == "churn" else "Build a dashboard for this")
+            break
+        money = [n for n in measures if _MONEY.search(n)]
+        m = label_of(money[0]) if money else (human_name(measures[0]).lower() if measures else None)
         if m and d:
             out.append(f"{m.capitalize()} by {d}")
         if m and dates:
@@ -53,14 +70,20 @@ def for_sources(sources: list[models.DataSource], web: bool) -> list[str]:
         elif m:
             out.append(f"What drives {m}?")
         if yesno and len(out) < 4:
-            out.append(f"Predict which rows will {human_name(yesno[0]).lower().replace('is ', '').replace('has ', '')}")
+            out.append(f"Predict which {ent} will {human_name(yesno[0]).lower().replace('is ', '').replace('has ', '')}")
         if len(out) >= 4:
             break
     if not out:
         out = ["What if I add two baristas at the morning rush?", "NPV of a $50k machine returning $14k a year for 5 years at 8%"]
     if web:
         out.append("Who is the chief minister of Tamil Nadu?")
-    out.append("Alert me if " + (f"{human_name(measures[0]).lower()} drops 10%" if sources and measures else "churn goes above 3%"))
+    first = next((ds for ds in sources[:3] if _columns(ds)), None)
+    first_cols = _columns(first) if first else []
+    if any(OUTCOME_NAMES.search(n) for n, _ in first_cols):
+        out.append("Alert me if churn in any segment passes 25%")
+    else:
+        money = [n for n, t in first_cols if _NUM_TYPES.search(t) and not _ID.search(n) and _MONEY.search(n)]
+        out.append("Alert me if " + (f"{label_of(money[0])} drops 10%" if money else "churn goes above 3%"))
     seen, uniq = set(), []
     for q in out:
         if q.lower() not in seen:

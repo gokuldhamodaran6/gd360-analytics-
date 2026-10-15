@@ -45,12 +45,51 @@ def available() -> bool:
 
 
 _SYSTEM = (
-    "GD360 KNOWLEDGE. You answer a world question for a business user in plain prose: the answer first, in one or two "
+    "GD360 KNOWLEDGE. You answer ONE world question for a business user in plain prose: the answer first, in one or two "
     "sentences, then the key facts that support it (at most four short sentences). Use the live search results; prefer "
-    "official and recent sources; give dates for anything that changes (office holders, prices, laws, rankings). "
+    "official, reputable and recent sources (government, major news, encyclopedias, company sites) over forums and social "
+    "posts; give dates for anything that changes (office holders, prices, laws, rankings). "
     "If sources disagree or the answer may have changed, say so in one sentence. Never invent a source. "
+    "Answer only the latest question: earlier questions in the conversation are context, never something to answer again. "
     "No headings, no bullet lists, no markdown tables; plain sentences only. Today is {today}."
 )
+
+# 2026-10-15 (R48): forums and social posts are not evidence for a fact answer; they are dropped from the sources
+EXCLUDED_DOMAINS = ("quora.com", "reddit.com", "facebook.com", "instagram.com", "tiktok.com", "pinterest.com", "x.com", "twitter.com",
+                    "threads.net", "answers.com", "brainly", "scribd.com", "slideshare.net")
+PRETTY = {"wikipedia.org": "Wikipedia", "thehindu.com": "The Hindu", "indianexpress.com": "The Indian Express", "timesofindia.indiatimes.com": "The Times of India",
+          "ndtv.com": "NDTV", "bbc.com": "BBC", "bbc.co.uk": "BBC", "reuters.com": "Reuters", "hindustantimes.com": "Hindustan Times", "news18.com": "News18",
+          "thenewsminute.com": "The News Minute", "dtnext.in": "DT Next", "deccanherald.com": "Deccan Herald", "livemint.com": "Mint", "economictimes.indiatimes.com": "The Economic Times",
+          "britannica.com": "Britannica", "youtube.com": "YouTube", "tn.gov.in": "Government of Tamil Nadu", "eci.gov.in": "Election Commission of India",
+          "pib.gov.in": "Press Information Bureau", "india.gov.in": "Government of India", "bloomberg.com": "Bloomberg", "theguardian.com": "The Guardian",
+          "nytimes.com": "The New York Times", "apnews.com": "AP News", "cnn.com": "CNN", "aljazeera.com": "Al Jazeera", "forbes.com": "Forbes"}
+
+
+def _domain(url: str) -> str:
+    m = re.match(r"https?://([^/]+)", url or "")
+    host = (m.group(1) if m else url or "").lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def _pretty_title(title: str | None, url: str) -> str:
+    dom = _domain(url)
+    t = (title or "").strip()
+    for k, v in PRETTY.items():
+        if dom == k or dom.endswith("." + k):
+            return v if (not t or t == dom or t.endswith(k) or len(t) < 4) else t
+    if not t or t == dom:
+        return dom or "source"
+    return t
+
+
+def _history_context(history: list[dict]) -> str:
+    if not history:
+        return ""
+    lines = []
+    for h in history[-6:]:
+        who = "Person" if h.get("role") == "user" else "Assistant"
+        lines.append(f"{who}: {str(h.get('content') or '')[:300]}")
+    return "\n\nEarlier in this conversation (context only - do NOT answer these again):\n" + "\n".join(lines)
 
 
 def _clean(text: str) -> str:
@@ -62,16 +101,12 @@ def _clean(text: str) -> str:
 
 def _gemini(question: str, history: list[dict], today: date) -> dict:
     model = settings.GEMINI_MODEL
-    contents = []
-    for h in history[-6:]:
-        contents.append({"role": "user" if h.get("role") == "user" else "model", "parts": [{"text": str(h.get("content") or "")[:2000]}]})
-    contents.append({"role": "user", "parts": [{"text": question}]})
     resp = ai_engine.requests.post(
         GEMINI_NATIVE.format(model=model),
         headers={"x-goog-api-key": settings.GEMINI_API_KEY.strip(), "Content-Type": "application/json"},
         json={
-            "system_instruction": {"parts": [{"text": _SYSTEM.format(today=today.isoformat())}]},
-            "contents": contents,
+            "system_instruction": {"parts": [{"text": _SYSTEM.format(today=today.isoformat()) + _history_context(history)}]},
+            "contents": [{"role": "user", "parts": [{"text": question}]}],
             "tools": [{"google_search": {}}],
             "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1200},
         },
@@ -83,21 +118,58 @@ def _gemini(question: str, history: list[dict], today: date) -> dict:
     cand = (body.get("candidates") or [{}])[0]
     text = "".join(p.get("text") or "" for p in (cand.get("content") or {}).get("parts") or [])
     meta = cand.get("groundingMetadata") or {}
+    # sources: numbered, titled, forums dropped; citations placed from groundingSupports
+    chunks = list(meta.get("groundingChunks") or [])
+    keep: dict[int, int] = {}  # chunk index -> citation number
     sources = []
     seen = set()
-    for ch in meta.get("groundingChunks") or []:
+    for i, ch in enumerate(chunks):
         w = ch.get("web") or {}
         url, title = w.get("uri"), w.get("title")
-        if url and url not in seen:
-            seen.add(url)
-            sources.append({"title": title or url, "url": url})
+        if not url or url in seen:
+            continue
+        dom = _domain(url)
+        tdom = _domain(title or "") if title and "." in (title or "") and " " not in (title or "") else ""
+        if any(dom == d or dom.endswith("." + d) or (tdom and (tdom == d or tdom.endswith("." + d))) for d in EXCLUDED_DOMAINS):
+            continue
+        seen.add(url)
+        keep[i] = len(sources) + 1
+        sources.append({"n": len(sources) + 1, "title": _pretty_title(title, title if tdom else url), "url": url, "domain": tdom or dom})
+    text = _cite(text, list(meta.get("groundingSupports") or []), keep)
     queries = list(meta.get("webSearchQueries") or [])
     try:
         ai_engine._meter_usage({"usage": {"prompt_tokens": (body.get("usageMetadata") or {}).get("promptTokenCount", 0),
                                           "completion_tokens": (body.get("usageMetadata") or {}).get("candidatesTokenCount", 0)}})
     except Exception:  # noqa: BLE001 - metering never affects the answer
         pass
-    return {"text": _clean(text), "sources": sources[:8], "grounded": bool(sources), "queries": queries[:4], "provider": "gemini"}
+    return {"text": _clean(text), "sources": sources[:8], "grounded": bool(sources) or bool(chunks), "queries": queries[:4], "provider": "gemini",
+            "dropped": len(chunks) - len(sources)}
+
+
+def _cite(text: str, supports: list[dict], keep: dict[int, int]) -> str:
+    """[n] after each sentence the grounding metadata ties to a kept source (highest end index first so offsets hold)."""
+    if not supports or not keep:
+        return text
+    raw = text.encode("utf-8")
+    marks: list[tuple[int, str]] = []
+    for sp in supports:
+        seg = sp.get("segment") or {}
+        end = seg.get("endIndex")
+        nums = sorted({keep[i] for i in (sp.get("groundingChunkIndices") or []) if i in keep})
+        if end is None or not nums:
+            continue
+        marks.append((int(end), "".join(f"[{n}]" for n in nums[:3])))
+    if not marks:
+        return text
+    marks.sort(key=lambda m: -m[0])
+    done = set()
+    for end, mark in marks:
+        if end in done or end > len(raw):
+            continue
+        done.add(end)
+        raw = raw[:end] + mark.encode("utf-8") + raw[end:]
+    out = raw.decode("utf-8", errors="ignore")
+    return re.sub(r"(\[\d+\])(\1)+", r"\1", out)
 
 
 def _tavily(question: str, history: list[dict], today: date) -> dict:
@@ -109,21 +181,21 @@ def _tavily(question: str, history: list[dict], today: date) -> dict:
     results = (resp.json() or {}).get("results") or []
     pages = [{"title": r.get("title") or r.get("url"), "url": r.get("url"), "content": str(r.get("content") or "")[:1500]}
              for r in results if r.get("url")]
-    msgs = [{"role": "system", "content": _SYSTEM.format(today=today.isoformat())}]
-    for h in history[-6:]:
-        msgs.append({"role": "user" if h.get("role") == "user" else "assistant", "content": str(h.get("content") or "")[:2000]})
+    pages = [p for p in pages if not any(_domain(p["url"]) == d or _domain(p["url"]).endswith("." + d) for d in EXCLUDED_DOMAINS)]
+    for i, p in enumerate(pages):
+        p["n"] = i + 1
+    msgs = [{"role": "system", "content": _SYSTEM.format(today=today.isoformat()) + _history_context(history)
+             + " Cite a source after the sentence it supports as [n], using the n of the search result."}]
     msgs.append({"role": "user", "content": f"Question: {question}\n\nSearch results (JSON):\n{json.dumps(pages, ensure_ascii=False)}"})
     text = ai_engine._call_llm_resilient(msgs, max_tokens=900)
-    return {"text": _clean(text), "sources": [{"title": p["title"], "url": p["url"]} for p in pages], "grounded": bool(pages),
-            "queries": [question], "provider": "tavily"}
+    return {"text": _clean(text), "sources": [{"n": p["n"], "title": _pretty_title(p["title"], p["url"]), "url": p["url"], "domain": _domain(p["url"])} for p in pages],
+            "grounded": bool(pages), "queries": [question], "provider": "tavily"}
 
 
 def _model_only(question: str, history: list[dict], today: date) -> dict:
     msgs = [{"role": "system", "content": _SYSTEM.format(today=today.isoformat()) +
              " You have NO live search in this deployment: answer from what you know, and if the fact can change over "
-             "time say clearly that it should be checked against a current source."}]
-    for h in history[-6:]:
-        msgs.append({"role": "user" if h.get("role") == "user" else "assistant", "content": str(h.get("content") or "")[:2000]})
+             "time say clearly that it should be checked against a current source." + _history_context(history)}]
     msgs.append({"role": "user", "content": question})
     text = ai_engine._call_llm_resilient(msgs, max_tokens=900)
     return {"text": _clean(text), "sources": [], "grounded": False, "queries": [], "provider": "none"}

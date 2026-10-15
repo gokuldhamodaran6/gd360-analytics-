@@ -30,6 +30,9 @@ def answer(question: str, history: list[dict] | None = None, today: date | None 
         n = len(out.get("sources") or [])
         chips.append({"key": "sources", "ok": True, "label": f"{n} source{'s' if n != 1 else ''} read", "detail": "Answered from live web pages."})
         chips.append({"key": "as_of", "ok": True, "label": f"As of {(today or date.today()).strftime('%b %d, %Y')}"})
+        if out.get("dropped"):
+            chips.append({"key": "forums", "ok": True, "label": f"{out['dropped']} forum or social page{'s' if out['dropped'] != 1 else ''} not used",
+                          "detail": "Quora, Reddit, Instagram and similar pages are not evidence for a fact answer."})
     else:
         chips.append({"key": "unverified", "ok": False, "label": "From the model's knowledge, not checked online",
                       "detail": out.get("note") or "No live search is configured for this deployment."})

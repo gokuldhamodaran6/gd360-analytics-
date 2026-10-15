@@ -21,9 +21,9 @@ from sqlalchemy.orm.attributes import flag_modified
 from ... import models
 from ...database import SessionLocal
 from .. import ai_engine, ai_meter
-from . import automations_tool, dashboard_tool, documents, intents, knowledge, model_tool, plans, team_tool, truth_guard
+from . import analysis, automations_tool, dashboard_tool, documents, intents, knowledge, model_tool, plans, team_tool, truth_guard, writer
 
-KINDS = ("knowledge", "data", "guided", "dashboard", "document", "automation", "chat", "check", "explain", "dashboard_edit", "model", "team")
+KINDS = ("knowledge", "data", "guided", "dashboard", "document", "automation", "chat", "check", "explain", "dashboard_edit", "model", "team", "analysis")
 
 
 # ---- helpers ------------------------------------------------------------------
@@ -125,7 +125,7 @@ def _knowledge_turns(db: Session, conv: models.Conversation) -> list[dict]:
 def _do_knowledge(db: Session, msg: models.Message, user: models.User) -> None:
     st = _state(msg)
     conv = db.get(models.Conversation, msg.conversation_id)
-    hist = _history(db, conv)[:-2] if conv else []
+    hist = [h for h in (_history(db, conv) if conv else []) if h.get("content") != st["question"]]
     today = date.fromisoformat(st["today"]) if st.get("today") else date.today()
     out = knowledge.answer(st["question"], hist, today)
     _set_state(db, msg, status="done", text=out["text"], sources=out["sources"], grounded=out["grounded"], chips=out["chips"],
@@ -195,8 +195,12 @@ def _do_dashboard(db: Session, msg: models.Message, user: models.User) -> None:
     from ...routers import projects as projects_router
     last = _last_run(db, conv)
     if last is None:
-        _set_state(db, msg, status="needs_input", text="Ask the question you want on the dashboard first; the dashboard is built from an answer.",
-                   finished_at=datetime.utcnow().isoformat() + "Z")
+        an = _last_analysis(db, conv)
+        if an is None:
+            _set_state(db, msg, status="needs_input", text="Ask the question you want on the dashboard first; the dashboard is built from an answer.",
+                       finished_at=datetime.utcnow().isoformat() + "Z")
+            return
+        _dashboard_from_analysis(db, msg, user, conv, an)
         return
     run_ids = st.get("run_ids") or None
     try:
@@ -212,6 +216,28 @@ def _do_dashboard(db: Session, msg: models.Message, user: models.User) -> None:
                     "Change anything by saying it (\"add a chart of revenue by city\", \"make it dark\"), or open it full-screen.",
                chips=[{"key": "live", "ok": True, "label": f"Live on {out.get('datasource_name') or 'your data'}"}],
                trail=[{"label": "Chose the blocks from the answer"}, {"label": "Checked every block against the columns"}, {"label": "Built the pages"}],
+               finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+def _dashboard_from_analysis(db: Session, msg: models.Message, user: models.User, conv: models.Conversation, an: dict) -> None:
+    """R48: a dashboard built from the analysis's table and question (the designed dashboard spec is R49)."""
+    from ...routers import dashboard_builder as dbr
+    r = an["analysis"]
+    ds = db.get(models.DataSource, r["table"]["source_id"])
+    if ds is None:
+        _set_state(db, msg, status="needs_input", text="The analysis's table is no longer connected.", finished_at=datetime.utcnow().isoformat() + "Z")
+        return
+    goal = f"{r.get('title') or an.get('question')}: {r['target']['noun']} rate by segment, the signals ({', '.join(s['label'] for s in r['signals'][:4])}), and {r['table']['entities']} at risk"
+    try:
+        dash, page_ids = dbr.build_dashboard_from_goal(db, user, ds, goal, name=(r.get("title") or "Analysis dashboard")[:80], conversation_id=conv.id)
+    except HTTPException as e:
+        _set_state(db, msg, status="failed", error=str(e.detail), finished_at=datetime.utcnow().isoformat() + "Z")
+        return
+    artifact = {"type": "dashboard", "id": dash.id, "name": dash.name, "url": f"/dashboard-builder/{dash.id}", "page_id": page_ids[0] if page_ids else None}
+    _set_state(db, msg, status="done", artifacts=[artifact],
+               text=f"“{dash.name}” is on the canvas, computed live on {ds.name}. Change anything by saying it (\"make it dark\", \"rename it\"), or open it full-screen.",
+               chips=[{"key": "live", "ok": True, "label": f"Live on {ds.name}"}],
+               trail=[{"label": "Took the table and signals from the analysis"}, {"label": "Built the pages"}],
                finished_at=datetime.utcnow().isoformat() + "Z")
 
 
@@ -270,7 +296,57 @@ def _do_team(db: Session, msg: models.Message, user: models.User) -> None:
         _set_state(db, msg, status="needs_input", text=d["issues"][0], issues=d["issues"], finished_at=datetime.utcnow().isoformat() + "Z")
 
 
-_TOOLS = {"knowledge": _do_knowledge, "chat": _do_chat, "document": _do_document, "automation": _do_automation, "dashboard": _do_dashboard,
+def _last_analysis(db: Session, conv: models.Conversation) -> dict | None:
+    rows = (db.query(models.Message).filter(models.Message.conversation_id == conv.id, models.Message.action == "v2:analysis")
+            .order_by(models.Message.created_at.desc()).all())
+    for m in rows:
+        st = _state(m)
+        if st.get("status") == "done" and st.get("analysis"):
+            return st
+    return None
+
+
+def _do_analysis(db: Session, msg: models.Message, user: models.User) -> None:
+    st = _state(msg)
+    conv = db.get(models.Conversation, msg.conversation_id)
+    spec = {k: st.get(k) for k in ("recipe", "table", "target", "dimension", "feature") if st.get(k)}
+    _set_state(db, msg, trail=[{"label": "Reading the table"}, {"label": "Finding the outcome and the signals"}, {"label": "Training and testing a model"}])
+    try:
+        r = analysis.run(db, user, conv, st["question"], spec)
+    except analysis.AnalysisError as e:
+        _set_state(db, msg, status="needs_input", text=str(e), trail=[], finished_at=datetime.utcnow().isoformat() + "Z")
+        return
+    prose = writer.write(r)
+    ttl = writer.title(r)
+    ent = r["table"]["entities"]
+    chips = [{"key": "rows", "ok": True, "label": (f"All {r['baseline']['n']:,} {ent} read" if not r["table"]["sampled"] else f"A fair sample of {r['baseline']['n']:,} {ent} read"),
+              "detail": f"{r['table']['source']} · {r['table']['table']}"}]
+    if r.get("model"):
+        chips.append({"key": "validation", "ok": True, "label": f"Held-out test · AP {r['model']['ap']}",
+                      "detail": f"{r['model']['test_n']:,} rows the model never saw · AUC {r['model']['auc']} · random would score {r['model']['baseline_ap']}"})
+        if r["model"].get("leaks"):
+            chips.append({"key": "leaks", "ok": True, "label": f"{len(r['model']['leaks'])} leaking column{'s' if len(r['model']['leaks']) != 1 else ''} removed",
+                          "detail": ", ".join(l["column"][:40] for l in r["model"]["leaks"][:4])})
+    chips.append({"key": "numbers" if not prose["replaced"] else "rewritten", "ok": True, "label": "Every number in the text is in the findings" if not prose["replaced"]
+                  else f"{len(prose['replaced'])} sentence{'s' if len(prose['replaced']) != 1 else ''} rewritten from the findings",
+                  "detail": None if not prose["replaced"] else "The model wrote a number the data did not support; the template sentence is shown instead."})
+    if not r.get("has_dates"):
+        chips.append({"key": "dates", "ok": True, "label": "No dates in the data: a snapshot, not a trend", "detail": "Scores say who resembles past cases, not when."})
+    text = writer.chat_text(r, prose)
+    r["prose"] = prose
+    r["title"] = ttl
+    if conv is not None and (conv.title or "").strip() in ((st.get("question") or "").strip()[:80], "New conversation", ""):
+        conv.title = ttl[:80]  # a written title instead of the question cut mid-word
+        db.commit()
+    artifact = {"type": "analysis", "id": msg.id, "name": ttl, "recipe": r["recipe"], "figures": 4 if r.get("model") else 1,
+                "scored": (r.get("baseline") or {}).get("existing") if r.get("tiers") else None}
+    trail = [{"label": s["label"] + (f" · {s['detail']}" if s.get("detail") else ""), "ms": s.get("ms")} for s in r["method"]["steps"]]
+    _set_state(db, msg, status="done", text=text, analysis=r, artifacts=[artifact], chips=chips, trail=trail, elapsed_s=r.get("elapsed_s"),
+               document={"title": ttl, "markdown": writer.markdown(r, prose, ttl), "flagged": []},
+               finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+_TOOLS = {"knowledge": _do_knowledge, "analysis": _do_analysis, "chat": _do_chat, "document": _do_document, "automation": _do_automation, "dashboard": _do_dashboard,
           "dashboard_edit": _do_dashboard_edit, "model": _do_model, "team": _do_team}
 
 
@@ -284,7 +360,7 @@ def new_conversation(db: Session, user: models.User, *, question: str, space_id:
     # DATA question (a conversation that opens with "who is the chief minister" must not be tied to
     # whichever source matched that sentence best)
     probe = intents.route(question, has_sources=True, source_names=[], last_kind=None) if not (space_id or source_ids) else {"intent": "data"}
-    if space_id or source_ids or probe["intent"] in ("data", "dashboard"):
+    if space_id or source_ids or probe["intent"] in ("data", "dashboard", "analysis", "model"):
         try:
             ids, space = projects_router._scope_ids(db, user, source_ids, space_id, workspace_id, question)
         except HTTPException as e:
@@ -337,7 +413,7 @@ def send(db: Session, conv: models.Conversation, user: models.User, text: str, *
         try:
             ids, _space = projects_router._scope_ids(db, user, None, None, conv.workspace_id, text)
             probe = intents.route(text, has_sources=True, source_names=[], last_kind=None)
-            if probe["intent"] in ("data", "dashboard") and ids:
+            if probe["intent"] in ("data", "dashboard", "analysis", "model") and ids:
                 conv.source_ids, conv.datasource_id = ids, ids[0]
                 db.commit()
                 has_sources = True
@@ -346,31 +422,32 @@ def send(db: Session, conv: models.Conversation, user: models.User, text: str, *
             pass
     names, cols = _source_names(db, conv)
     last = _last_turn_kind(db, conv)
-    decision = {"intent": intent, "by": "person", "reason": "chosen on the card"} if intent in KINDS else \
-        intents.route(text, has_sources=has_sources, source_names=names, column_names=cols, last_kind=last, mode=mode)
+    has_dash = _current_dashboard(db, conv, user) is not None
+    decision = {"intent": intent, "by": "person", "reason": "chosen on the card", "text": text} if intent in KINDS else \
+        intents.route(text, has_sources=has_sources, source_names=names, column_names=cols, last_kind=last, mode=mode, has_dashboard=has_dash,
+                      wants_team=team_tool.wants_team, wants_edit=dashboard_tool.wants_edit)
     kind = decision["intent"]
-    if intent not in KINDS:
-        if team_tool.wants_team(text):
-            kind, decision = "team", {"intent": "team", "by": "rule", "reason": "creates a team or data rules"}
-        elif model_tool.wants_model(text) and kind in ("data", "knowledge", "guided"):
-            kind, decision = "model", {"intent": "model", "by": "rule", "reason": "asks for a prediction model"}
-        elif kind != "dashboard" and dashboard_tool.wants_edit(text) and _current_dashboard(db, conv, user) is not None \
-                and not re.search(r"\b(new|another|second) dashboard\b", text, re.I):
-            kind, decision = "dashboard_edit", {"intent": "dashboard_edit", "by": "rule", "reason": "changes the dashboard on the canvas"}
+    if kind == "dashboard_edit" and not has_dash:
+        kind = "dashboard"
     if kind == "data" and mode == "guided":
         kind = "guided"
-    if kind in ("data", "guided") and not has_sources:
+    if kind == "analysis" and mode == "guided":
+        kind = "guided"
+    if kind in ("data", "guided", "analysis") and not has_sources:
         # the Analyst works from the question alone (what-if, simulation); anything else is a world question
         from ..project_engine import analyst as _analyst
         if not _analyst._ROUTE.search(text):
             kind = "knowledge"
             decision = {"intent": "knowledge", "by": "rule", "reason": "no data connected"}
+        else:
+            kind = "data"
     if kind == "data":
         return _start_data(db, conv, user, text, today, accepted, context_run_id, decision)
     if kind == "guided":
         return _start_guided(db, conv, user, text, decision)
     msg = _new_turn(db, conv, kind, text, today=(today or date.today()).isoformat(), timezone=timezone, intent_by=decision.get("by"),
-                    intent_reason=decision.get("reason"))
+                    intent_reason=decision.get("reason"), normalized=decision.get("text") if decision.get("normalized") else None,
+                    **({"recipe": decision.get("recipe")} if kind == "analysis" else {}))
     _bg(_TOOLS[kind], msg.id, user.id)
     return _message_turn(db, msg, conv, user)
 
@@ -507,7 +584,8 @@ def _message_turn(db: Session, msg: models.Message, conv: models.Conversation, u
            "grounded": st.get("grounded"), "chips": st.get("chips") or [], "verdict": "ok", "artifacts": st.get("artifacts") or [],
            "trail": st.get("trail") or [], "elapsed_s": st.get("elapsed_s"), "error": st.get("error"), "confirm": st.get("confirm"),
            "check": st.get("check"), "explain": st.get("explain"), "document": st.get("document"), "issues": st.get("issues") or [],
-           "run_id": st.get("run_id"), "guided_project_id": st.get("guided_project_id"), "intent_by": st.get("intent_by")}
+           "run_id": st.get("run_id"), "guided_project_id": st.get("guided_project_id"), "intent_by": st.get("intent_by"),
+           "normalized": st.get("normalized"), "analysis": st.get("analysis") if st.get("kind") == "analysis" else None}
     if st.get("kind") == "model" and st.get("model_id") and st.get("status") == "working":
         try:
             ms = model_tool.status(db, user, st["model_id"])
@@ -590,8 +668,18 @@ def list_conversations(db: Session, user: models.User, workspace_id: str | None 
         last = (db.query(models.ProjectRun).filter(models.ProjectRun.conversation_id == c.id)
                 .order_by(models.ProjectRun.created_at.desc()).first())
         ans = ((last.result or {}).get("answer") or {}) if last else {}
+        headline, last_at = ans.get("headline"), (last.created_at if last else c.created_at)
+        lm = (db.query(models.Message).filter(models.Message.conversation_id == c.id, models.Message.action.like("v2:%"))
+              .order_by(models.Message.created_at.desc()).first())
+        if lm is not None and (last is None or (lm.created_at or datetime.min) > (last.created_at or datetime.min)):
+            lst = _state(lm)
+            last_at = lm.created_at or last_at
+            if lst.get("kind") == "analysis" and (lst.get("analysis") or {}).get("prose"):
+                headline = lst["analysis"]["prose"].get("headline")
+            elif lst.get("kind") in ("knowledge", "dashboard", "dashboard_edit", "document", "automation", "team") and lst.get("text"):
+                headline = str(lst["text"]).split(". ")[0][:140]
         out.append({"id": c.id, "title": c.title, "created_at": c.created_at, "space_id": c.space_id, "pinned": bool(c.pinned),
-                    "last_at": (last.created_at if last else c.created_at), "headline": ans.get("headline"), "v2": is_v2(c),
+                    "last_at": last_at, "headline": headline, "v2": is_v2(c),
                     "kind": c.kind, "mine": c.owner_id == user.id})
         if len(out) >= limit:
             break
