@@ -71,6 +71,7 @@ export function conversationHref(c: { id: string; kind?: string | null; datasour
 /** Where a dashboard opens, whatever its storage generation. */
 export function dashboardHref(d: { id: string; layout_version?: number | null }): string {
   if (d.layout_version === 2) return `/dashboard-builder/${d.id}`;
+  if (d.layout_version === 4) return `/boards/${d.id}`;
   if (d.layout_version === 3) return `/project-dashboards/${d.id}`;
   return `/dashboards/${d.id}`;
 }
