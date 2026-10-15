@@ -221,3 +221,5 @@ button.bd-chip { cursor: pointer; }
 @media (max-width: 700px) {
   .bd-top, .bd-filters, .bd-body { padding-left: 16px; padding-right: 16px; }
 }
+/* R50: full screen, the board's own bar sits under the one top bar */
+[data-bd-page-full] .bd-top { top: 60px; }
