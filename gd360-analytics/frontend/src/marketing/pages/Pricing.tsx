@@ -2,8 +2,9 @@
 // Markup, inline styles and motion are kept exactly as designed; the
 // page's CSS (animations, hover states) lives in marketing.css, scoped
 // under .mkt-pricing.
-import { FormEvent, Fragment, useState } from "react";
+import { FormEvent, Fragment, useEffect, useState } from "react";
 import { api } from "../../api/client";
+import { v2Api, type PlanSummary } from "../../api/v2";
 import { errorText } from "../shared";
 import { A, useMarketingPage } from "../shared";
 import "../marketing.css";
@@ -128,6 +129,58 @@ function vals(state: any, setState: (patch: any) => void): any {
     R.mBar = { name: __p.name, price: __p.price === "Custom" ? "Custom" : __p.price + " / user", note: __p.note, href: __p.href, cta: __p.cta };
     return R;
   
+}
+
+// 2026-10-14 (R47): the four launch plans, read from the same table the app enforces (services/agent/plans.py).
+// Every feature is on every plan; plans differ by limits, governance and where it runs.
+const PLAN_ORDER = ["free", "pro", "team", "enterprise"] as const;
+const PLAN_COPY: Record<string, { for: string; items: string[]; cta: string; href: string }> = {
+  free: { for: "Individuals, students, anyone trying it.", items: ["Chat, charts, models, voice, documents", "3 sources · 200k rows per source", "40 questions a day", "5 dashboards · 2 automations"], cta: "Start free", href: "/start?plan=free" },
+  pro: { for: "Professionals and freelancers.", items: ["Strongest models, fair-use questions", "10 sources · 5M rows per source", "Unlimited dashboards and automations", "Publish under your own logo"], cta: "Start with Pro", href: "/start?plan=pro" },
+  team: { for: "Teams, SMB to mid-market.", items: ["Teams, Spaces, roles, shared library", "Column and row rules per team", "Certified glossary, lineage, audit log", "Warehouse connectors · custom domain"], cta: "Start a team trial", href: "/start?plan=team" },
+  enterprise: { for: "Enterprises, public sector, regulated.", items: ["SSO, SCIM, MFA, SIEM export", "Runs in our cloud, your cloud or your warehouse", "Data residency and retention policy", "Implementation by GD360 consulting · SLA"], cta: "Book a demo", href: "#enterprise" },
+};
+function priceOf(p: { price: Record<string, any> }): { big: string; small: string } {
+  const pr = p.price || {};
+  if (pr.usd_month === 0) return { big: "$0", small: "forever" };
+  if (typeof pr.usd_month === "number") return { big: `$${pr.usd_month}`, small: `per month · or ₹${(pr.inr_month || 0).toLocaleString("en-IN")}` };
+  if (typeof pr.usd_seat_month === "number") return { big: `$${pr.usd_seat_month}`, small: `per seat / month · ${pr.min_seats || 3}+ seats` };
+  return { big: "Platform fee", small: "+ seats · annual" };
+}
+function PlansGrid() {
+  const [plans, setPlans] = useState<PlanSummary["plans"] | null>(null);
+  const [enforced, setEnforced] = useState(false);
+  useEffect(() => { v2Api.publicPlans().then((d) => { setPlans(d.plans); setEnforced(d.enforced); }).catch(() => setPlans(null)); }, []);
+  if (!plans) return null;
+  return (
+    <section style={{ padding: "0 24px 72px" }} data-mkt-plans="">
+      <div style={{ maxWidth: "1280px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "22px" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: "space-between", gap: "12px" }}>
+          <h2 style={{ margin: 0, fontSize: "clamp(26px, 3vw, 36px)", fontWeight: 800, letterSpacing: "-0.03em" }}>One product. Every feature on every plan.</h2>
+          <span style={{ color: "#A3B0AC", fontSize: "15px" }}>Plans differ by limits, governance and where it runs, never by hiding a capability.{enforced ? "" : " Limits are not enforced during early access."}</span>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: "14px" }}>
+          {PLAN_ORDER.map((k) => {
+            const p = plans[k]; if (!p) return null;
+            const c = PLAN_COPY[k]; const pr = priceOf(p); const hot = k === "team";
+            return (
+              <div key={k} data-mkt-plan={k} style={{ borderRadius: "22px", padding: "24px", display: "flex", flexDirection: "column", gap: "12px", background: hot ? "#0E1A16" : "#0B0F10", border: `1px solid ${hot ? "#1E5A45" : "#1F2729"}` }}>
+                <span style={{ fontSize: "12px", letterSpacing: "0.12em", textTransform: "uppercase", color: hot ? "#43E5A0" : "#6F7C78", fontFamily: "Geist Mono, ui-monospace, monospace" }}>{p.who}</span>
+                <span style={{ fontSize: "22px", fontWeight: 700 }}>{p.label}</span>
+                <span><span style={{ fontSize: "34px", fontWeight: 800, letterSpacing: "-0.03em" }}>{pr.big}</span> <span style={{ color: "#6F7C78", fontSize: "13px" }}>{pr.small}</span></span>
+                <span style={{ color: "#A3B0AC", fontSize: "14px" }}>{c.for}</span>
+                <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "7px", fontSize: "14px", color: "#C9D1CD" }}>
+                  {c.items.map((it) => <li key={it} style={{ display: "grid", gridTemplateColumns: "14px 1fr", gap: "8px" }}><span style={{ color: "#43E5A0" }}>·</span><span>{it}</span></li>)}
+                </ul>
+                <span style={{ marginTop: "auto", fontSize: "12.5px", color: "#6F7C78" }}>{p.limits.questions_per_day ? `${p.limits.questions_per_day} questions a day` : "Unlimited questions at fair use"} · {p.limits.seats ? `${p.limits.seats} ${p.limits.seats === 1 ? "person" : "people"}` : "unlimited people"} · {p.support}</span>
+                <A href={c.href} className={hot ? "gd-ea-go" : "gd-ghost"} style={{ textAlign: "center" }}>{c.cta}</A>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </section>
+  );
 }
 
 export default function MarketingPricing() {
@@ -292,14 +345,14 @@ export default function MarketingPricing() {
       <section className="mk-m-hero" style={{ position: "relative", padding: "104px 24px 64px", textAlign: "center", overflow: "hidden" }}>
         <div className="gd-tba-glow" aria-hidden="true"></div>
         <div style={{ position: "relative", maxWidth: "980px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "26px", alignItems: "center" }}>
-          <span className="gd-soon-chip gd-soon-chip-lg mk-w mk-d1" style={{ alignSelf: "center" }}><span className="gd-ea-dot gd-ea-dot-amber"></span>{"PRICING · TO BE ANNOUNCED"}</span>
+          <span className="gd-soon-chip gd-soon-chip-lg mk-w mk-d1" style={{ alignSelf: "center" }}><span className="gd-ea-dot"></span>{"PRICING · FREE, PRO, TEAM, ENTERPRISE"}</span>
           <h1 className="mk-m-h1" style={{ margin: "0", fontWeight: "900", fontSize: "clamp(48px, 8vw, 120px)", lineHeight: "0.92", letterSpacing: "-0.055em", textWrap: "balance" }}>
-            <span className="mk-w mk-d2">{"Pricing soon."}</span>
+            <span className="mk-w mk-d2">{"Every feature."}</span>
             <br />
-            <span className="mk-w mk-d3"><span className="mk-sheen">{"Access now."}</span></span>
+            <span className="mk-w mk-d3"><span className="mk-sheen">{"Four ways to buy it."}</span></span>
           </h1>
           <p className="mk-w mk-d4" style={{ margin: "0", fontSize: "clamp(17px, 1.8vw, 21px)", lineHeight: "1.55", color: "#A3B0AC", maxWidth: "560px" }}>
-            {"Plans are on the way. Until then, every feature is free."}
+            {"A student on Free gets the same assistant as a bank on Enterprise. What grows with the plan is people, data, governance and where it runs."}
           </p>
           <div className="mk-m-cta mk-w mk-d5" style={{ display: "flex", gap: "12px", flexWrap: "wrap", justifyContent: "center" }}>
             <A href="/start" className="gd-ea-go">{"Start early access →"}</A>
@@ -307,6 +360,7 @@ export default function MarketingPricing() {
           </div>
         </div>
       </section>
+      <PlansGrid />
       {" "}
       <section style={{ padding: "0 24px 96px" }}>
         <div style={{ maxWidth: "1280px", margin: "0 auto" }}>
