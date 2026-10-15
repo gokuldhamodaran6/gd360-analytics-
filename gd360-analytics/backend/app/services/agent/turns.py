@@ -9,6 +9,7 @@ state in chart_spec["v2"]. `turns_of` merges both in time order for the page.
 """
 from __future__ import annotations
 
+import re
 import threading
 import traceback
 from datetime import date, datetime
@@ -20,9 +21,9 @@ from sqlalchemy.orm.attributes import flag_modified
 from ... import models
 from ...database import SessionLocal
 from .. import ai_engine, ai_meter
-from . import automations_tool, documents, intents, knowledge, plans, truth_guard
+from . import automations_tool, dashboard_tool, documents, intents, knowledge, model_tool, plans, team_tool, truth_guard
 
-KINDS = ("knowledge", "data", "guided", "dashboard", "document", "automation", "chat", "check", "explain")
+KINDS = ("knowledge", "data", "guided", "dashboard", "document", "automation", "chat", "check", "explain", "dashboard_edit", "model", "team")
 
 
 # ---- helpers ------------------------------------------------------------------
@@ -214,7 +215,63 @@ def _do_dashboard(db: Session, msg: models.Message, user: models.User) -> None:
                finished_at=datetime.utcnow().isoformat() + "Z")
 
 
-_TOOLS = {"knowledge": _do_knowledge, "chat": _do_chat, "document": _do_document, "automation": _do_automation, "dashboard": _do_dashboard}
+def _current_dashboard(db: Session, conv: models.Conversation, user: models.User) -> models.Dashboard | None:
+    """The dashboard this conversation is working on: the latest one made from it (or added to)."""
+    from ...routers.projects import _thread_dashboards
+    rows = _thread_dashboards(db, conv, user)
+    rows = [r for r in rows if r.get("layout_version") == 2 and r.get("can_edit")]
+    if not rows:
+        return None
+    return db.get(models.Dashboard, rows[-1]["id"])
+
+
+def _do_dashboard_edit(db: Session, msg: models.Message, user: models.User) -> None:
+    st = _state(msg)
+    conv = db.get(models.Conversation, msg.conversation_id)
+    dash = _current_dashboard(db, conv, user)
+    if dash is None:
+        _set_state(db, msg, status="needs_input", text="There is no dashboard in this conversation yet. Say “make this a dashboard” first.",
+                   finished_at=datetime.utcnow().isoformat() + "Z")
+        return
+    try:
+        out = dashboard_tool.apply(db, user, dash, st["question"], conv)
+    except HTTPException as e:
+        _set_state(db, msg, status="needs_input", text=str(e.detail), finished_at=datetime.utcnow().isoformat() + "Z")
+        return
+    artifact = {"type": "dashboard", "id": dash.id, "name": out["name"], "url": f"/dashboard-builder/{dash.id}", "page_id": out.get("page_id"), "refresh": True}
+    _set_state(db, msg, status="done", text="Done: " + "; ".join(out["changes"]) + ". The canvas shows the change.",
+               artifacts=[artifact], chips=[{"key": "applied", "ok": True, "label": f"{len(out['changes'])} change{'s' if len(out['changes']) != 1 else ''} applied"}],
+               trail=[{"label": c} for c in out["changes"]], finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+def _do_model(db: Session, msg: models.Message, user: models.User) -> None:
+    st = _state(msg)
+    conv = db.get(models.Conversation, msg.conversation_id)
+    out = model_tool.start(db, user, st["question"], conv)
+    if not out.get("ok"):
+        _set_state(db, msg, status="needs_input", text=out.get("issue") or "I couldn't set up the model.", finished_at=datetime.utcnow().isoformat() + "Z")
+        return
+    spec = out.get("spec") or {}
+    _set_state(db, msg, status="working", model_id=out["model_id"], model_spec=spec,
+               text=f"Training a {spec.get('problem_type', 'model').replace('_', ' ')} model on “{spec.get('target')}” from {spec.get('table') or 'your data'}. "
+                    "I hold back rows it never sees to score it honestly, and remove any column that leaks the answer.",
+               trail=[{"label": "Read the question into a model spec"}, {"label": "Checked the plan on the data" + ((" · " + " ".join(map(str, rt)) if isinstance(rt := out.get("plan", {}).get("rows_text"), list) else (" · " + str(rt)) if rt else ""))},
+                      {"label": "Training in the queue"}])
+
+
+def _do_team(db: Session, msg: models.Message, user: models.User) -> None:
+    st = _state(msg)
+    conv = db.get(models.Conversation, msg.conversation_id)
+    d = team_tool.draft(db, user, st["question"], workspace_id=conv.workspace_id)
+    if d["ok"]:
+        _set_state(db, msg, status="confirm", text="Here is the team. Confirm and I create the Space and its data rules; nothing changes until you do.",
+                   confirm={"kind": "team", **d}, chips=[], finished_at=datetime.utcnow().isoformat() + "Z")
+    else:
+        _set_state(db, msg, status="needs_input", text=d["issues"][0], issues=d["issues"], finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+_TOOLS = {"knowledge": _do_knowledge, "chat": _do_chat, "document": _do_document, "automation": _do_automation, "dashboard": _do_dashboard,
+          "dashboard_edit": _do_dashboard_edit, "model": _do_model, "team": _do_team}
 
 
 # ---- entry points -----------------------------------------------------------------
@@ -292,6 +349,14 @@ def send(db: Session, conv: models.Conversation, user: models.User, text: str, *
     decision = {"intent": intent, "by": "person", "reason": "chosen on the card"} if intent in KINDS else \
         intents.route(text, has_sources=has_sources, source_names=names, column_names=cols, last_kind=last, mode=mode)
     kind = decision["intent"]
+    if intent not in KINDS:
+        if team_tool.wants_team(text):
+            kind, decision = "team", {"intent": "team", "by": "rule", "reason": "creates a team or data rules"}
+        elif model_tool.wants_model(text) and kind in ("data", "knowledge", "guided"):
+            kind, decision = "model", {"intent": "model", "by": "rule", "reason": "asks for a prediction model"}
+        elif kind != "dashboard" and dashboard_tool.wants_edit(text) and _current_dashboard(db, conv, user) is not None \
+                and not re.search(r"\b(new|another|second) dashboard\b", text, re.I):
+            kind, decision = "dashboard_edit", {"intent": "dashboard_edit", "by": "rule", "reason": "changes the dashboard on the canvas"}
     if kind == "data" and mode == "guided":
         kind = "guided"
     if kind in ("data", "guided") and not has_sources:
@@ -383,6 +448,29 @@ def confirm(db: Session, conv: models.Conversation, user: models.User, message_i
                    text=f"Done. {s.get('when') or ''} {s.get('do') or ''} {s.get('tell_sentence') or ''}".strip(),
                    chips=[{"key": "automation", "ok": True, "label": "Watching" if (body.get("trigger") or {}).get("type") == "threshold" else "Scheduled"}])
         return _message_turn(db, msg, conv, user)
+    if card.get("kind") == "team":
+        body = dict(card.get("body") or {})
+        if edits and edits.get("name"):
+            body["name"] = str(edits["name"])[:60]
+        try:
+            created = team_tool.create(db, user, body)
+        except HTTPException as e:
+            _set_state(db, msg, status="confirm", error=str(e.detail))
+            return _message_turn(db, msg, conv, user)
+        made = created.get("rules_made") or []
+        skipped = created.get("rules_skipped") or []
+        text = f"“{created['name']}” is ready as a Space with {len(body.get('source_ids') or [])} source{'s' if len(body.get('source_ids') or []) != 1 else ''}"
+        text += f" and {len(made)} data rule{'s' if len(made) != 1 else ''}." if made else "."
+        if skipped:
+            text += " Not applied: " + "; ".join(skipped[:3]) + "."
+        if card.get("to_invite"):
+            text += " Invite " + ", ".join(card["to_invite"]) + " with the workspace link; they join as members."
+        _set_state(db, msg, status="done", confirm=None, error=None,
+                   artifacts=[{"type": "space", "id": created["space_id"], "name": created["name"], "url": created["url"],
+                               "rules": made, "invite_link": card.get("invite_link")}],
+                   text=text, chips=[{"key": "team", "ok": True, "label": f"{len(made)} rule{'s' if len(made) != 1 else ''} enforced on every answer"}] if made
+                   else [{"key": "team", "ok": True, "label": "Space created"}])
+        return _message_turn(db, msg, conv, user)
     raise HTTPException(400, "Unknown card.")
 
 
@@ -420,6 +508,24 @@ def _message_turn(db: Session, msg: models.Message, conv: models.Conversation, u
            "trail": st.get("trail") or [], "elapsed_s": st.get("elapsed_s"), "error": st.get("error"), "confirm": st.get("confirm"),
            "check": st.get("check"), "explain": st.get("explain"), "document": st.get("document"), "issues": st.get("issues") or [],
            "run_id": st.get("run_id"), "guided_project_id": st.get("guided_project_id"), "intent_by": st.get("intent_by")}
+    if st.get("kind") == "model" and st.get("model_id") and st.get("status") == "working":
+        try:
+            ms = model_tool.status(db, user, st["model_id"])
+        except Exception as e:  # noqa: BLE001 - the page keeps polling
+            print(f"[agent.model] status skipped: {e}")
+            ms = {"status": "working", "text": st.get("text"), "chips": []}
+        if ms["status"] in ("done", "failed"):
+            st = _set_state(db, msg, status=ms["status"], text=ms.get("text"), chips=ms.get("chips") or [],
+                            artifacts=[ms["artifact"]] if ms.get("artifact") else [], model_summary=ms.get("summary"),
+                            error=ms.get("text") if ms["status"] == "failed" else None, finished_at=datetime.utcnow().isoformat() + "Z",
+                            trail=(st.get("trail") or []) + [{"label": "Scored on held-out rows"}, {"label": "Checked for leaking columns"}])
+            out.update({"status": st["status"], "text": st.get("text"), "chips": st.get("chips") or [], "artifacts": st.get("artifacts") or [],
+                        "error": st.get("error"), "finished_at": st.get("finished_at"), "trail": st.get("trail") or []})
+        else:
+            out["text"] = ms.get("text") or out["text"]
+            if ms.get("trail"):
+                out["trail"] = (st.get("trail") or []) + ms["trail"]
+        out["model_summary"] = st.get("model_summary")
     if st.get("kind") == "guided" and st.get("run_id"):
         run = db.get(models.ProjectRun, st["run_id"])
         if run is not None:
