@@ -489,6 +489,7 @@ export default function ConversationRow({
             : "pl-3 pr-3 border-border hover:bg-surface2"
         }`}
         onClick={handleCardClick}
+        data-conversation-row={conversation.id}
       >
         {activeBar}
         {checkbox}
@@ -520,6 +521,7 @@ export default function ConversationRow({
           : "hover:shadow-glow"
       }`}
       onClick={handleCardClick}
+      data-conversation-row={conversation.id}
     >
       {activeBar}
       <div className={`flex items-start gap-3 ${active ? "pl-1.5" : ""}`}>
