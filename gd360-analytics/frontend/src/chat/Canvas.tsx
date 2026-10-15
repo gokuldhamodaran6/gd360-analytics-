@@ -8,6 +8,7 @@ import { v2Api } from "../api/v2";
 import { downloadOffice } from "../dashboard/officeExport";
 import { AnalystMethod, isAnalystRun } from "../project/AnalystAnswer";
 import { layoutSql } from "../project/RunPanels";
+import { BoardView } from "../board/BoardView";
 import { AnalysisMethod, AnalysisView } from "./AnalysisView";
 import { Markdown } from "./Markdown";
 
@@ -15,9 +16,11 @@ export type CanvasItem =
   | { type: "dashboard"; id: string; name: string; url: string; pageId?: string | null }
   | { type: "document"; id: string; turnId: string; title: string; markdown: string; conversationId: string; flagged?: string[] }
   | { type: "method"; turn: Turn }
-  | { type: "analysis"; turn: Turn };
+  | { type: "analysis"; turn: Turn }
+  | { type: "board"; id: string; name: string };
 
 export function canvasFromArtifact(a: Artifact, turn: Turn, conversationId: string): CanvasItem | null {
+  if (a.type === "dashboard" && (a.board || (a.url || "").startsWith("/boards/"))) return { type: "board", id: a.id, name: a.name || "Dashboard" };
   if (a.type === "dashboard") return { type: "dashboard", id: a.id, name: a.name || "Dashboard", url: a.url || `/dashboard-builder/${a.id}`, pageId: a.page_id };
   if (a.type === "document" && turn.document) return { type: "document", id: a.id, turnId: turn.id, title: turn.document.title, markdown: turn.document.markdown, conversationId, flagged: turn.document.flagged };
   if (a.type === "analysis" && turn.analysis) return { type: "analysis", turn };
@@ -86,7 +89,7 @@ export function Canvas({ item, onClose, version = 0, run, onAsk, onOpenMethod }:
   const [view, setView] = useState<"live" | "data">("live");
   useEffect(() => { if (item.type === "document") { setText(item.markdown); setEditing(false); } setView("live"); }, [item]);
   useEffect(() => { setFrameKey((k) => k + 1); }, [version]);
-  const title = item.type === "dashboard" ? item.name : item.type === "document" ? item.title : item.type === "analysis" ? (item.turn.analysis?.title || "Analysis") : `How I worked it out · ${item.turn.question}`;
+  const title = item.type === "dashboard" || item.type === "board" ? item.name : item.type === "document" ? item.title : item.type === "analysis" ? (item.turn.analysis?.title || "Analysis") : `How I worked it out · ${item.turn.question}`;
   const download = async () => {
     if (item.type !== "document" && item.type !== "analysis") return;
     const safe = title.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 60) || "document";
@@ -108,7 +111,7 @@ export function Canvas({ item, onClose, version = 0, run, onAsk, onOpenMethod }:
     <aside className="c2-canvas" aria-label="Canvas" data-c2-canvas={item.type}>
       <div className="chrome">
         <button type="button" onClick={onClose} aria-label="Close canvas" title="Close">×</button>
-        <span className="t" title={title}>{title}</span>
+        {item.type === "board" ? <span className="t" style={{ color: "rgb(var(--color-muted))", fontWeight: 500 }}>Dashboard · live on your data</span> : <span className="t" title={title}>{title}</span>}
         {item.type === "dashboard" && <span style={{ color: "rgb(var(--color-muted))" }}>· live</span>}
         <span style={{ flex: 1 }} />
         {item.type === "dashboard" && (
@@ -166,6 +169,7 @@ export function Canvas({ item, onClose, version = 0, run, onAsk, onOpenMethod }:
             </div>
           )
         )}
+        {item.type === "board" && <BoardView id={item.id} embedded version={version} onAsk={onAsk} />}
         {item.type === "analysis" && item.turn.analysis && (
           <div className="an-wrap" data-c2-analysis-canvas="">
             <AnalysisView a={item.turn.analysis} onAsk={onAsk} onOpenMethod={onOpenMethod ? () => onOpenMethod(item.turn) : undefined} />

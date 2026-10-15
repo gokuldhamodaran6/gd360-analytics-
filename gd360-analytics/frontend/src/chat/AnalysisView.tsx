@@ -12,7 +12,8 @@ function HBars({ rows, max, unit, color, baseline, baselineLabel, title, sub, ar
   rows: { label: string; value: number; muted?: boolean; note?: string }[]; max: number; unit?: string; color: string;
   baseline?: number | null; baselineLabel?: string; title: string; sub?: string; ariaLabel: string;
 }) {
-  const W = 430, L = 158, R = 44, rowH = 30, top = 18;
+  const hasNote = rows.some((r) => r.note);
+  const W = 430, L = 158, R = hasNote ? 104 : 44, rowH = 30, top = 18;
   const H = top + rows.length * rowH + 30;
   const x = (v: number) => L + (Math.max(0, Math.min(v, max)) / max) * (W - L - R);
   const ticks = max >= 20 ? [0, max / 4, max / 2, (3 * max) / 4, max] : [0, max / 2, max];

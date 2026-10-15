@@ -212,7 +212,7 @@
   .c2-canvas { position: relative; top: 0; height: auto; min-height: 70vh; border-radius: 20px; margin: 0 16px 16px; min-width: 0; }
 }
 @media (max-width: 760px) {
-  .c2-shell { grid-template-columns: 0 0 minmax(0, 1fr); }
+  .c2-shell, .c2-shell.sidebar-closed { grid-template-columns: minmax(0, 1fr); }
   .c2-rail, .c2-side { display: none; }
   .c2-head, .c2-body { padding-left: 16px; padding-right: 16px; }
   .c2-home { padding: 40px 16px; }

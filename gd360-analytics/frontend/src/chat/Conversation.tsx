@@ -98,7 +98,7 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
         const item = canvasFromArtifact(a, t, conversationId);
         if (!item) continue;
         if (a.refresh) {
-          setCanvas((cur) => (cur && cur.type === "dashboard" && cur.id === a.id ? { ...cur, name: a.name || cur.name } : item));
+          setCanvas((cur) => (cur && (cur.type === "dashboard" || cur.type === "board") && cur.id === a.id ? { ...cur, name: a.name || cur.name } : item));
           setCanvasVersion((v) => v + 1);
         } else if (t === turns[turns.length - 1]) setCanvas(item);
       }
@@ -163,7 +163,7 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
           {conv?.space_name && <span className="c2-chip" style={{ height: 26 }}><span style={{ width: 8, height: 8, borderRadius: 4, background: conv.space_color || "rgb(var(--color-primary))" }} />{conv.space_name}</span>}
           <span style={{ flex: 1 }} />
           {conv && conv.dashboards.length > 0 && !canvas && (
-            <button type="button" className="c2-nx sm" onClick={() => setCanvas({ type: "dashboard", id: conv.dashboards[0].id, name: conv.dashboards[0].name, url: `/dashboard-builder/${conv.dashboards[0].id}` })}>Open dashboard</button>
+            <button type="button" className="c2-nx sm" onClick={() => { const d = conv.dashboards[conv.dashboards.length - 1]; setCanvas(d.layout_version === 4 ? { type: "board", id: d.id, name: d.name } : { type: "dashboard", id: d.id, name: d.name, url: `/dashboard-builder/${d.id}` }); }}>Open dashboard</button>
           )}
           <Link to={`/p/${conversationId}`} className="c2-nx sm ghost" title="The classic project page for this conversation">Classic view</Link>
           <button type="button" className="c2-nx sm" onClick={() => { void navigator.clipboard?.writeText(window.location.href); }} title="Copy link">Share</button>

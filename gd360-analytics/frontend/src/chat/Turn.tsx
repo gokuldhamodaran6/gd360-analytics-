@@ -18,6 +18,11 @@ function useElapsed(turn: TurnT): number {
   }, [working]);
   if (turn.elapsed_s != null && !working) return Math.max(0, Math.round(turn.elapsed_s));
   const start = new Date(turn.created_at).getTime();
+  if (!working && turn.finished_at) {
+    const end = new Date(turn.finished_at.endsWith("Z") ? turn.finished_at : `${turn.finished_at}Z`).getTime();
+    const begin = new Date(turn.created_at.endsWith("Z") || /[+-]\d\d:?\d\d$/.test(turn.created_at) ? turn.created_at : `${turn.created_at}Z`).getTime();
+    if (Number.isFinite(end - begin)) return Math.max(0, Math.round((end - begin) / 1000));
+  }
   return Math.max(0, Math.round((now - start) / 1000));
 }
 
