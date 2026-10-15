@@ -40,6 +40,8 @@ import HomePage from "./pages/Home";
 // 2026-10-14 (R46, GD360 2.0): the chat-first conversation surface
 import ChatHome from "./chat/ChatHome";
 import ConversationPage from "./chat/Conversation";
+// 2026-10-15 (R49): designed dashboards
+import BoardPage from "./board/BoardPage";
 import ProjectWorkspace from "./pages/ProjectWorkspace";
 import GuidedAnalysis from "./pages/GuidedAnalysis";
 import TalkPage from "./pages/TalkPage";
@@ -154,6 +156,7 @@ export default function App() {
       <Route path="/home" element={<Protected><HomePage /></Protected>} />
       <Route path="/chat" element={<Protected><ChatHome /></Protected>} />
       <Route path="/chat/:conversationId" element={<Protected><ConversationPage /></Protected>} />
+      <Route path="/boards/:boardId" element={<Protected><BoardPage /></Protected>} />
       <Route path="/library" element={<Protected><Dashboard /></Protected>} />
       <Route path="/projects" element={<RedirectKeepingQuery to="/library" />} />
       {/* 2026-10-13 (R45): keyed by the answer's id, so moving from one answer to another (command
