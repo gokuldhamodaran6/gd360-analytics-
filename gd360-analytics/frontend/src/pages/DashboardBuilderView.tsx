@@ -15,6 +15,7 @@ import {
   DashboardShell, isEmptyBlock, readEditFromUrl, useComments, useDashboardEditor, useDashboardRun, useDashboardViewMode, useEditMode, type CanvasOwnerActions, type RunSource,
 } from "../dashboard";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
+import { useTransientTheme } from "../api/ThemeContext";
 import { brandingBackgroundImageStyle, brandingStyleVars, hexToRgbTriple, useBrandingAsset } from "../lib/branding";
 import { ConfirmDialog, InfoIcon as KitInfoIcon, MergeIcon as KitMergeIcon, MoreIcon, PaletteIcon as KitPaletteIcon, Popover, Sheet, WarningIcon, buttonClasses, cn } from "../ui";
 import { MenuRow } from "../dashboard/menu";
@@ -1158,6 +1159,16 @@ function DashboardBuilderViewBody({
   handleWorkspaceCreated: (ws: WorkspaceSummary) => void;
 }) {
   const isEditing = dash.can_edit && editing;
+  // 2026-10-14 (R47): on the conversation's canvas (?embed=1) the dashboard shows in ITS theme
+  // (appearance.theme_default, as the published link does) - "make it dark" in the chat is visible at once.
+  const setTransientTheme = useTransientTheme();
+  const embedded = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("embed") === "1";
+  const themeDefault = dash.appearance?.theme_default;
+  useEffect(() => {
+    if (!embedded || (themeDefault !== "light" && themeDefault !== "dark")) return;
+    setTransientTheme(themeDefault);
+    return () => setTransientTheme(null);
+  }, [embedded, themeDefault, setTransientTheme]);
   // 2026-10-10 (round 19): "Publish to company domain" - also opened by
   // ?publish=domain (the Domains settings page's "Edit" link).
   const [domainOpen, setDomainOpen] = useState(() => {
@@ -1533,6 +1544,7 @@ function DashboardBuilderViewBody({
       )}
       <DashboardShell
         dashboard={shellDash}
+        dashboardId={dash.id}
         page={activePage}
         run={run}
         source={source}
