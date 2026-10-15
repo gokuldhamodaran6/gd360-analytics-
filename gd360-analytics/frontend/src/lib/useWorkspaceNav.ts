@@ -119,10 +119,21 @@ export function useWorkspaceNav() {
   // Projects page, dashboards on the Dashboards page, etc.) - this hook
   // only owns the workspace selection itself, not what any one page does
   // with it.
+  // 2026-10-15 (R50): the top bar and the rail each read this hook; a switch made in one reaches the other
+  useEffect(() => {
+    const on = (e: Event) => {
+      const id = (e as CustomEvent).detail?.id;
+      if (typeof id === "string") setActiveWorkspaceId(id);
+    };
+    window.addEventListener("gd360:workspace-switched", on);
+    return () => window.removeEventListener("gd360:workspace-switched", on);
+  }, []);
+
   const switchWorkspace = (id: string, onSwitched?: (id: string) => void) => {
     if (id === activeWorkspaceId) return;
     setActiveWorkspaceId(id);
     try { localStorage.setItem(ACTIVE_WORKSPACE_KEY, id); } catch { /* per-viewer convenience only */ }
+    try { window.dispatchEvent(new CustomEvent("gd360:workspace-switched", { detail: { id } })); } catch { /* fine */ }
     onSwitched?.(id);
   };
 

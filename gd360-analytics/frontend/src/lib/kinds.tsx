@@ -19,18 +19,19 @@ import { Link } from "react-router-dom";
 // (/v/:id). Its own look: the Euliv orb.
 export type Kind = "answer" | "analysis" | "dashboard" | "talk";
 
-export const KIND_LABEL: Record<Kind, string> = { answer: "Quick answer", analysis: "Analysis", dashboard: "Dashboard", talk: "Talk" };
+// 2026-10-15 (R50): an "answer" is a conversation now (it opens at /chat/:id with its analyses, dashboards and alerts)
+export const KIND_LABEL: Record<Kind, string> = { answer: "Conversation", analysis: "Analysis", dashboard: "Dashboard", talk: "Talk" };
 
 /** What Library and Home call each kind - the words on Home's switch ("Quick answer", "Guided"). */
 export const LIBRARY_LABEL: Record<"answer" | "analysis" | "talk", { one: string; many: string }> = {
-  answer: { one: "Quick answer", many: "Quick answers" },
+  answer: { one: "Conversation", many: "Conversations" },
   analysis: { one: "Analysis", many: "Analyses" },
   talk: { one: "Talk", many: "Talks" },
 };
 
 /** The pill on a Library / Home row: "Quick answer", "Guided" (a Guided Analysis) or "Analysis" (an older one). */
 export function conversationLabel(c: { kind?: string | null }): string {
-  if (c.kind === "project") return "Quick answer";
+  if (c.kind === "project") return "Conversation";
   if (c.kind === "guided") return "Guided";
   if (c.kind === "voice") return "Talk";
   return "Analysis";
@@ -62,7 +63,7 @@ export function conversationKind(c: { kind?: string | null }): Kind {
 /** Where a Library item opens. A Guided Analysis ("guided") opens its step
  *  notebook; an older one-source analysis opens Studio. */
 export function conversationHref(c: { id: string; kind?: string | null; datasource_id?: string | null }): string | null {
-  if (c.kind === "project") return `/p/${c.id}`;
+  if (c.kind === "project") return `/chat/${c.id}`; // R50: answers open in their conversation
   if (c.kind === "guided") return `/g/${c.id}`;
   if (c.kind === "voice") return `/v/${c.id}`;
   return c.datasource_id ? `/workspace/${c.datasource_id}?conversation=${c.id}` : null;
@@ -79,7 +80,7 @@ export function dashboardHref(d: { id: string; layout_version?: number | null })
 /** Where a dashboard's "Made from ..." link opens. */
 export function sourceHref(kind: string | null | undefined, id: string | null | undefined, datasourceId?: string | null): string | null {
   if (!id) return null;
-  if (kind === "answer") return `/p/${id}`;
+  if (kind === "answer") return `/chat/${id}`;
   if (kind === "analysis" && datasourceId) return `/workspace/${datasourceId}?conversation=${id}`;
   // a Guided Analysis carries no single workspace source
   if (kind === "analysis") return `/g/${id}`;
@@ -179,7 +180,7 @@ export function MadeFromLink({
       className="ui-focus inline-flex max-w-full items-center gap-1.5 h-[26px] pl-1 pr-2.5 rounded-full border border-border bg-surface text-ui text-secondary hover:text-text hover:border-border-strong"
       title={`Open the ${KIND_LABEL[kind].toLowerCase()} this dashboard was made from`}
     >
-      <KindPill kind={kind} className="h-[18px] px-1.5 text-[10.5px]">Made from {KIND_LABEL[kind].toLowerCase()}</KindPill>
+      <KindPill kind={kind} className="h-[18px] px-1.5 text-[10.5px]">Made from {kind === "answer" ? "a conversation" : KIND_LABEL[kind].toLowerCase()}</KindPill>
       <span className="truncate">{title}</span>
     </Link>
   );
