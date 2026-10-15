@@ -21,7 +21,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from ... import models
 from ...database import SessionLocal
 from .. import ai_engine, ai_meter
-from . import analysis, automations_tool, board, dashboard_tool, documents, intents, knowledge, model_tool, plans, team_tool, truth_guard, writer
+from . import analysis, automations_tool, board, dashboard_tool, documents, intents, knowledge, model_tool, plans, segment_watch, team_tool, truth_guard, writer
 
 KINDS = ("knowledge", "data", "guided", "dashboard", "document", "automation", "chat", "check", "explain", "dashboard_edit", "model", "team", "analysis")
 
@@ -177,16 +177,47 @@ def _do_automation(db: Session, msg: models.Message, user: models.User) -> None:
     conv = db.get(models.Conversation, msg.conversation_id)
     from ...routers.projects import _thread_dashboards
     dashboards = _thread_dashboards(db, conv, user)
-    d = automations_tool.draft(db, user, st["question"], last_run=_last_run(db, conv), dashboards=dashboards,
-                               timezone=st.get("timezone") or "UTC", workspace_id=conv.workspace_id)
+    last_run = _last_run(db, conv)
+    # R50: "churn in any segment passes 25%" watches every segment of the conversation's table
+    seg = None
+    if segment_watch.wants_segments(st["question"]) or last_run is None:
+        seg = segment_watch.find(db, user, conv, _last_analysis(db, conv))
+    d = automations_tool.draft(db, user, st["question"], last_run=last_run, dashboards=dashboards,
+                               timezone=st.get("timezone") or "UTC", workspace_id=conv.workspace_id, segments_target=seg)
     if d["ok"]:
-        text = "Here is the automation. Confirm and it starts; nothing runs until you do."
+        text = _alert_sentence(d) if (d["body"].get("trigger") or {}).get("type") == "threshold" else \
+            "Here is the automation. Confirm and it starts; nothing runs until you do."
         status = "confirm"
     else:
         text = d["issues"][0]
         status = "needs_input"
     _set_state(db, msg, status=status, text=text, confirm={"kind": "automation", **d} if d["ok"] else None,
                issues=d["issues"], chips=[], finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+def _cap(s: str) -> str:
+    return s[:1].upper() + s[1:] if s else s
+
+
+def _alert_sentence(d: dict) -> str:
+    """R50: one bold sentence that says exactly what will happen (board 06)."""
+    s = d.get("sentence") or {}
+    trig = (d.get("body") or {}).get("trigger") or {}
+    when = (s.get("when") or "").rstrip(".")
+    if (trig.get("target") or {}).get("kind") == "segments":
+        fc = d.get("first_check") or {}
+        groups = fc.get("groups")
+        line = trig.get("value")
+        what = f"watch {groups} segments" if groups else "watch every segment"
+        sched = automations_tool.svc.schedule_text(trig.get("check") or {}) if trig.get("check") else ""
+        if sched.startswith(("Every", "On ")):
+            sched = sched[:1].lower() + sched[1:]
+        elif sched:
+            sched = "on " + sched
+        verb = "passes" if trig.get("op") != "below" else "drops below"
+        return (f"On it. Confirm below to {what} {sched} and message you when any {verb} {line:g}%.".replace("  ", " ")
+                if isinstance(line, (int, float)) else "Confirm below and I start watching.")
+    return f"On it. Confirm below and I start checking: {when[:1].lower() + when[1:] if when else 'on the schedule shown'}. Nothing runs until you do."
 
 
 def _do_dashboard(db: Session, msg: models.Message, user: models.User) -> None:
@@ -213,7 +244,14 @@ def _do_dashboard(db: Session, msg: models.Message, user: models.User) -> None:
     pages = [p["name"] for p in spec.get("pages") or []]
     artifact = {"type": "dashboard", "id": dash.id, "name": dash.name, "url": f"/boards/{dash.id}", "board": True, "pages": len(pages)}
     src = (spec.get("source") or {}).get("name") or "your data"
+    typo = None
+    if st.get("normalized") and st.get("question"):
+        q0, q1 = re.findall(r"[A-Za-z]+", st["question"]), re.findall(r"[A-Za-z]+", st["normalized"])
+        fixed = [(a, b) for a, b in zip(q0, q1) if a.lower() != b.lower()]
+        typo = f"{fixed[0][0]} → {fixed[0][1]}" if fixed else None
+    _written_title(db, conv, st.get("question") or "", dash.name)
     _set_state(db, msg, status="done", artifacts=[artifact],
+               built={"pages": pages, "name": dash.name, "theme": card_state_label(spec), "typo": typo, "dashboard_id": dash.id},
                text=f"“{dash.name}” is on the right: {len(pages)} pages ({', '.join(pages)}), computed live on {src}. "
                     f"Change it by saying so: {_board_hints(spec)}.",
                chips=[{"key": "live", "ok": True, "label": f"Live on {src} · {spec.get('rows_at_build', 0):,} rows"}]
@@ -221,6 +259,10 @@ def _do_dashboard(db: Session, msg: models.Message, user: models.User) -> None:
                trail=[{"label": f"Read {src} · {spec.get('rows_at_build', 0):,} rows"}, {"label": "Designed " + ", ".join(pages)},
                       {"label": "Wrote the definitions behind every number"}],
                finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+def card_state_label(spec: dict) -> str:
+    return board.THEMES.get(spec.get("theme") or "ink", board.THEMES["ink"])["label"]
 
 
 def _board_hints(spec: dict) -> str:
@@ -319,8 +361,30 @@ def _do_dashboard_edit(db: Session, msg: models.Message, user: models.User) -> N
             return
         artifact = {"type": "dashboard", "id": dash.id, "name": dash.name, "url": f"/boards/{dash.id}", "board": True, "page_id": out.get("page_id"), "refresh": True}
         ch = out["changes"]
-        tail = " The dashboard on the right is back to how it was." if ch and ch[0].startswith("undid") else " The dashboard on the right shows it; say “undo” to go back."
-        _set_state(db, msg, status="done", text="Done: " + "; ".join(ch) + "." + tail,
+        after, before = out.get("after") or {}, out.get("before") or {}
+        n = len(after.get("pages") or [])
+        if out.get("undo"):
+            text = (f"Done. “{after.get('name')}” is back to how it was, on the {after.get('theme_label')} theme"
+                    + (f" with {str(after['accent']).upper()}" if after.get("accent") else "") + ". Say “undo” again to go back further.")
+        else:
+            # R50: one bold sentence that says exactly what changed (board 06)
+            renamed = after.get("name") != before.get("name")
+            look = None
+            if after.get("accent") and after.get("accent") != before.get("accent"):
+                look = f"your colour {str(after['accent']).upper()}"
+            elif after.get("theme") != before.get("theme"):
+                look = f"the {after.get('theme_label')} theme"
+            bits = []
+            if look:
+                bits.append(f"{after.get('name')} now uses {look} on all {n} pages" + (f" (renamed from “{before.get('name')}”)" if renamed else ""))
+            elif renamed:
+                bits.append(f"the dashboard is now called “{after.get('name')}”")
+            other = [c for c in ch if not c.startswith(("renamed", "theme set", "accent colour"))]
+            lead = ("Done. " + _cap(bits[0]) + ".") if bits else ("Done: " + "; ".join(other or ch) + ".")
+            if bits and other:
+                lead += " Also " + "; ".join(other) + "."
+            text = lead + (" The exports follow it." if bits else " The dashboard on the right shows it.")
+        _set_state(db, msg, status="done", text=text, edit={"before": before, "after": after, "changes": ch, "undo": bool(out.get("undo")), "dashboard_id": dash.id},
                    artifacts=[artifact], chips=[{"key": "applied", "ok": True, "label": f"{len(ch)} change{'s' if len(ch) != 1 else ''} applied"}],
                    trail=[{"label": c} for c in ch], finished_at=datetime.utcnow().isoformat() + "Z")
         return
@@ -400,7 +464,7 @@ def _do_analysis(db: Session, msg: models.Message, user: models.User) -> None:
     text = writer.chat_text(r, prose)
     r["prose"] = prose
     r["title"] = ttl
-    if conv is not None and (conv.title or "").strip() in ((st.get("question") or "").strip()[:80], "New conversation", ""):
+    if conv is not None and (conv.title or "").strip().lower() in ((st.get("question") or "").strip()[:80].lower(), "new conversation", ""):
         conv.title = ttl[:80]  # a written title instead of the question cut mid-word
         db.commit()
     artifact = {"type": "analysis", "id": msg.id, "name": ttl, "recipe": r["recipe"], "figures": 4 if r.get("model") else 1,
@@ -435,12 +499,98 @@ def new_conversation(db: Session, user: models.User, *, question: str, space_id:
     first = db.get(models.DataSource, ids[0]) if ids else None
     conv = models.Conversation(owner_id=user.id, datasource_id=ids[0] if ids else None, kind="project", source_ids=ids,
                                workspace_id=workspace_id or (first.workspace_id if first else None),
-                               title=question.strip()[:80] or "New conversation", space_id=space.id if space else None,
+                               title=(question.strip()[:1].upper() + question.strip()[1:])[:80] or "New conversation", space_id=space.id if space else None,
                                thread_meta={"v2": True, "created_v2_at": datetime.utcnow().isoformat() + "Z"})
     db.add(conv)
     db.commit()
     db.refresh(conv)
+    file_into_space(db, user, conv)
     return conv
+
+
+def _space_map(db: Session, user: models.User, workspace_id: str | None) -> dict[str, models.Space]:
+    """source id -> the Space it is filed under (the first Space listing it)."""
+    from .. import spaces as spaces_service
+    out: dict[str, models.Space] = {}
+    for sp in spaces_service.list_spaces(db, user, workspace_id):
+        for sid in spaces_service.space_source_ids(db, user, sp.id):
+            out.setdefault(sid, sp)
+    return out
+
+
+def file_into_space(db: Session, user: models.User, conv: models.Conversation, smap: dict | None = None) -> None:
+    """R50: a conversation on a Space's data is filed in that Space, so Spaces count their conversations and Home
+    labels each one with its Space. A conversation already in a Space, or without data, is left alone."""
+    if conv.space_id or not conv.source_ids:
+        return
+    smap = smap if smap is not None else _space_map(db, user, conv.workspace_id)
+    votes: dict[str, int] = {}
+    for sid in conv.source_ids or []:
+        sp = smap.get(sid)
+        if sp is not None:
+            votes[sp.id] = votes.get(sp.id, 0) + 1
+    if votes:
+        conv.space_id = max(votes.items(), key=lambda kv: kv[1])[0]
+        db.commit()
+
+
+def _headline(db: Session, c: models.Conversation, lm: models.Message) -> str | None:
+    """R50: the line under a conversation's title on Home - its finding when it has one (the analysis headline),
+    otherwise what was made: "Dashboard · 5 pages", "Every day at 8:00 AM · 22 segments watched"."""
+    rows = (db.query(models.Message).filter(models.Message.conversation_id == c.id, models.Message.action.like("v2:%"))
+            .order_by(models.Message.created_at.desc()).limit(25).all())
+    for m in rows:
+        st = _state(m)
+        if st.get("kind") == "analysis" and st.get("status") == "done" and (st.get("analysis") or {}).get("prose", {}).get("headline"):
+            return str(st["analysis"]["prose"]["headline"])[:160]
+    st = _state(lm)
+    kind, arts = st.get("kind"), st.get("artifacts") or []
+    if kind in ("dashboard", "dashboard_edit"):
+        a = next((x for x in arts if x.get("type") == "dashboard"), None)
+        d = db.get(models.Dashboard, a["id"]) if a and a.get("id") else None
+        if d is not None:
+            n = len((d.board_spec or {}).get("pages") or []) if d.layout_version == 4 else None
+            return f"{d.name} · dashboard" + (f" · {n} pages" if n else "")
+    if kind == "automation":
+        a = next((x for x in arts if x.get("type") == "automation"), None)
+        sent = (a or {}).get("sentence") or (st.get("confirm") or {}).get("sentence") or {}
+        fc = (st.get("confirm") or {}).get("first_check") or {}
+        when = sent.get("when")
+        if a and when:
+            return f"{when} · watching"
+        if st.get("status") == "confirm":
+            return "Waiting for your confirm" + (f" · {fc['groups']} segments" if fc.get("groups") else "")
+    if kind == "document" and (st.get("document") or {}).get("title"):
+        return f"Document · {st['document']['title']}"[:160]
+    if st.get("text"):
+        return str(st["text"]).split(". ")[0][:140]
+    return None
+
+
+def _written_title(db: Session, conv: models.Conversation, question: str, title: str | None) -> None:
+    """R50: a conversation still named after its first sentence takes the name of what it made."""
+    if not title or conv is None:
+        return
+    cur = (conv.title or "").strip().lower()
+    if cur in ((question or "").strip()[:80].lower(), "new conversation", ""):
+        conv.title = title.strip()[:80]
+        db.commit()
+
+
+_WORK = (("analysis", "analysis"), ("model", "model"), ("guided", "guided analysis"), ("dashboard", "dashboard"), ("dashboard_edit", "dashboard"),
+         ("automation", "automation"), ("document", "document"), ("team", "team"), ("knowledge", "world question"), ("chat", "chat"))
+
+
+def _work_label(kinds: set[str], has_runs: bool) -> str:
+    """R50: what a conversation holds, in two words at most: "analysis + dashboard"."""
+    seen: list[str] = []
+    for k, lab in _WORK:
+        if k in kinds and lab not in seen:
+            seen.append(lab)
+    if has_runs and "answer" not in seen:
+        seen.insert(0 if not seen else 1, "answer")
+    seen = [x for x in seen if x != "chat"] or seen
+    return " + ".join(seen[:2]) if seen else "conversation"
 
 
 def _source_names(db: Session, conv: models.Conversation) -> tuple[list[str], list[str]]:
@@ -481,6 +631,7 @@ def send(db: Session, conv: models.Conversation, user: models.User, text: str, *
             if probe["intent"] in ("data", "dashboard", "analysis", "model") and ids:
                 conv.source_ids, conv.datasource_id = ids, ids[0]
                 db.commit()
+                file_into_space(db, user, conv)
                 has_sources = True
                 _save_meta(db, conv, _meta(conv) | {"sources_picked_for": text[:120]})
         except HTTPException:
@@ -562,6 +713,50 @@ def _start_guided(db, conv, user, text, decision) -> dict:
     return _message_turn(db, msg, conv, user)
 
 
+def _done_sentence(s: dict) -> str:
+    """R50: "Done. Every day at 8:00 AM I check if ..., and notify you in GD360 the moment it happens." """
+    when = (s.get("when") or "").strip().rstrip(".")
+    do = (s.get("do") or "").strip().rstrip(".")
+    do = do[:1].lower() + do[1:] if do else do
+    tell = (s.get("tell_sentence") or "").strip().rstrip(".")
+    parts = [p for p in (f"{when} I {do}" if when and do else (when or do), tell) if p]
+    return ("Done. " + ", and ".join(parts) + ".") if parts else "Done."
+
+
+def revise(db: Session, conv: models.Conversation, user: models.User, message_id: str, edits: dict) -> dict:
+    """R50: "Change the threshold" on an alert card - the line moves, the first check and the sentence are redone,
+    and the card still waits for Confirm."""
+    msg = db.get(models.Message, message_id)
+    if msg is None or msg.conversation_id != conv.id:
+        raise HTTPException(404, "That card is not in this conversation.")
+    st = _state(msg)
+    card = dict(st.get("confirm") or {})
+    if st.get("status") != "confirm" or card.get("kind") != "automation":
+        raise HTTPException(400, "There is nothing to change on this turn.")
+    body = dict(card.get("body") or {})
+    trig = dict(body.get("trigger") or {})
+    if trig.get("type") != "threshold":
+        raise HTTPException(400, "Only an alert has a line to change.")
+    try:
+        value = float(str((edits or {}).get("value")).replace("%", "").strip())
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Enter the line as a number, like 20.")
+    trig["value"] = value
+    body["trigger"] = trig
+    fields = automations_tool.svc.validate(db, user, body)
+    tg = fields.get("trigger") or trig
+    card.update(body=body, sentence=automations_tool.svc.sentence(db, fields),
+                first_check=automations_tool.first_check_for(db, user, tg),
+                threshold={"value": value, "unit": tg.get("unit") or "", "op": tg.get("op")})
+    if (tg.get("target") or {}).get("kind") == "segments":
+        card["watches"] = segment_watch.watches_text(tg["target"], (card.get("first_check") or {}).get("groups"), (card.get("first_check") or {}).get("entities"))
+    nm = str(body.get("name") or "")
+    if re.match(r"^Segment .+ (above|below) [\d.]+%$", nm):
+        body["name"] = re.sub(r"[\d.]+%$", f"{value:g}%", nm)
+    _set_state(db, msg, confirm=card, text=_alert_sentence(card), error=None)
+    return _message_turn(db, msg, conv, user)
+
+
 def confirm(db: Session, conv: models.Conversation, user: models.User, message_id: str, *, approve: bool, edits: dict | None = None) -> dict:
     """The person confirmed (or declined) a card: today, an automation."""
     msg = db.get(models.Message, message_id)
@@ -586,10 +781,11 @@ def confirm(db: Session, conv: models.Conversation, user: models.User, message_i
             _set_state(db, msg, status="confirm", error=str(e.detail))
             return _message_turn(db, msg, conv, user)
         s = created.get("sentence") or {}
+        _written_title(db, conv, st.get("question") or "", created.get("name"))
         _set_state(db, msg, status="done", confirm=None, error=None,
                    artifacts=[{"type": "automation", "id": created["id"], "name": created["name"], "url": f"/automations/{created['id']}",
                                "sentence": s, "next_run_at": created.get("next_run_at")}],
-                   text=f"Done. {s.get('when') or ''} {s.get('do') or ''} {s.get('tell_sentence') or ''}".strip(),
+                   text=_done_sentence(s),
                    chips=[{"key": "automation", "ok": True, "label": "Watching" if (body.get("trigger") or {}).get("type") == "threshold" else "Scheduled"}])
         return _message_turn(db, msg, conv, user)
     if card.get("kind") == "team":
@@ -658,7 +854,8 @@ def _message_turn(db: Session, msg: models.Message, conv: models.Conversation, u
            "trail": st.get("trail") or [], "elapsed_s": elapsed, "error": st.get("error"), "confirm": st.get("confirm"),
            "check": st.get("check"), "explain": st.get("explain"), "document": st.get("document"), "issues": st.get("issues") or [],
            "run_id": st.get("run_id"), "guided_project_id": st.get("guided_project_id"), "intent_by": st.get("intent_by"),
-           "normalized": st.get("normalized"), "analysis": st.get("analysis") if st.get("kind") == "analysis" else None}
+           "normalized": st.get("normalized"), "analysis": st.get("analysis") if st.get("kind") == "analysis" else None,
+           "edit": st.get("edit"), "built": st.get("built")}
     if st.get("kind") == "model" and st.get("model_id") and st.get("status") == "working":
         try:
             ms = model_tool.status(db, user, st["model_id"])
@@ -731,6 +928,8 @@ def list_conversations(db: Session, user: models.User, workspace_id: str | None 
     q = db.query(models.Conversation).filter(models.Conversation.kind.in_(("project", "guided")))
     rows = q.order_by(models.Conversation.created_at.desc()).limit(400).all()
     out = []
+    smap = None
+    spaces: dict[str, models.Space | None] = {}
     for c in rows:
         if c.kind == "guided" and not is_v2(c):
             continue
@@ -745,15 +944,24 @@ def list_conversations(db: Session, user: models.User, workspace_id: str | None 
         lm = (db.query(models.Message).filter(models.Message.conversation_id == c.id, models.Message.action.like("v2:%"))
               .order_by(models.Message.created_at.desc()).first())
         if lm is not None and (last is None or (lm.created_at or datetime.min) > (last.created_at or datetime.min)):
-            lst = _state(lm)
             last_at = lm.created_at or last_at
-            if lst.get("kind") == "analysis" and (lst.get("analysis") or {}).get("prose"):
-                headline = lst["analysis"]["prose"].get("headline")
-            elif lst.get("kind") in ("knowledge", "dashboard", "dashboard_edit", "document", "automation", "team") and lst.get("text"):
-                headline = str(lst["text"]).split(". ")[0][:140]
-        out.append({"id": c.id, "title": c.title, "created_at": c.created_at, "space_id": c.space_id, "pinned": bool(c.pinned),
+            headline = _headline(db, c, lm) or headline
+        if not c.space_id and c.source_ids and c.owner_id == user.id:
+            if smap is None:
+                smap = _space_map(db, user, workspace_id)
+            file_into_space(db, user, c, smap)
+        sp = None
+        if c.space_id:
+            if c.space_id not in spaces:
+                spaces[c.space_id] = db.get(models.Space, c.space_id)
+            sp = spaces[c.space_id]
+        kinds = {str(a).split(":", 1)[1] for (a,) in db.query(models.Message.action).filter(
+            models.Message.conversation_id == c.id, models.Message.action.like("v2:%")).distinct().all() if a}
+        out.append({"id": c.id, "title": (c.title[:1].upper() + c.title[1:]) if c.title else c.title, "created_at": c.created_at, "space_id": c.space_id, "pinned": bool(c.pinned),
                     "last_at": last_at, "headline": headline, "v2": is_v2(c),
-                    "kind": c.kind, "mine": c.owner_id == user.id})
+                    "kind": c.kind, "mine": c.owner_id == user.id,
+                    "space_name": sp.name if sp is not None else None, "space_color": sp.color if sp is not None else None,
+                    "work": _work_label(kinds, last is not None)})
         if len(out) >= limit:
             break
     out.sort(key=lambda x: (not x["pinned"], -(x["last_at"] or datetime.min).timestamp()))

@@ -35,6 +35,8 @@ def _columns(ds: models.DataSource) -> list[tuple[str, str]]:
 
 
 def for_sources(sources: list[models.DataSource], web: bool) -> list[str]:
+    # R50: a table with a yes/no outcome (churn, cancellation) leads - its questions are the richest
+    sources = sorted(sources, key=lambda ds: 0 if any(OUTCOME_NAMES.search(n) for n, _ in _columns(ds)) else 1)
     out: list[str] = []
     for ds in sources[:3]:
         cols = _columns(ds)
@@ -89,4 +91,4 @@ def for_sources(sources: list[models.DataSource], web: bool) -> list[str]:
         if q.lower() not in seen:
             seen.add(q.lower())
             uniq.append(q)
-    return uniq[:6]
+    return uniq[:5] if len(uniq) <= 5 else uniq[:4] + [uniq[-1]]  # R50: five, the alert last

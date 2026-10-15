@@ -135,7 +135,10 @@ def route(question: str, *, has_sources: bool, source_names: list[str] | None = 
         return base | {"intent": "model", "by": "rule", "reason": "asks to train a model"}
     if AUTOMATION.search(q):
         return base | {"intent": "automation", "by": "rule", "reason": "asks to be told when something happens"}
-    if has_dashboard and wants_edit and wants_edit(q) and not DASHBOARD.search(q) and not re.search(r"\b(new|another|second) dashboard\b", q, re.I):
+    # R50: "make the dashbaord navy and call it Retention pulse" changes the open one - "the/this/my dashboard"
+    # with an edit is an edit, even though "make ... dashboard" also reads like a request for one
+    if has_dashboard and wants_edit and wants_edit(q) and (not DASHBOARD.search(q) or re.search(r"\b(the|this|that|my|our|its)\s+dashboards?\b", q, re.I)) \
+            and not re.search(r"\b(new|another|second|separate)\s+dashboards?\b", q, re.I):
         return base | {"intent": "dashboard_edit", "by": "rule", "reason": "changes the dashboard on the canvas"}
     if DASHBOARD.search(q):
         return base | {"intent": "dashboard", "by": "rule", "reason": "asks for a dashboard"}

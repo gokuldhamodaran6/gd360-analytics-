@@ -912,6 +912,7 @@ def apply_edit(db: Session, user: models.User, dash: models.Dashboard, text: str
                numeric: set[str] | None = None) -> dict:
     """Returns {changes[], page_id?}. Raises ValueError with a plain sentence when nothing matched."""
     spec = copy.deepcopy(dash.board_spec or {})
+    before = {"name": dash.name, "theme": spec.get("theme") or "ink", "accent": spec.get("accent")}
     t = (text or "").strip()
     tl = t.lower()
     changes: list[str] = []
@@ -928,7 +929,8 @@ def apply_edit(db: Session, user: models.User, dash: models.Dashboard, text: str
         dash.name = (restored.get("title") or dash.name)[:80]
         flag_modified(dash, "board_spec")
         db.commit()
-        return {"changes": [f"undid “{prev.get('_label') or 'the last change'}”"], "page_id": None}
+        return {"changes": [f"undid “{prev.get('_label') or 'the last change'}”"], "page_id": None, "undo": True,
+                "before": before, "after": card_state(dash)}
     snapshot = copy.deepcopy({k: v for k, v in spec.items() if k not in ("model", "_history")})
     m = re.search(r"\b(?:rename(?: it)?(?: to)?|call it|name it|title it)\s+[\"“']?(.+?)[\"”']?\s*$", t, re.I)
     if m:
@@ -939,9 +941,19 @@ def apply_edit(db: Session, user: models.User, dash: models.Dashboard, text: str
             spec["title"] = new[:80]
             changes.append(f"renamed to “{new[:80]}”")
     hexm = re.search(r"#([0-9a-f]{6})\b", tl)
-    if hexm and re.search(r"\b(brand|colou?r|accent)\b", tl):
-        spec["accent"] = "#" + hexm.group(1)
-        changes.append(f"accent colour set to #{hexm.group(1).upper()}")
+    kit_hex = None
+    if not hexm and re.search(r"\b(our|my|the|company|workspace)\s+brand\b|\bbrand colou?rs?\b", tl):
+        # R50: "use our brand colours" - the workspace brand kit's colour, or a plain question when there is none
+        ws = db.get(models.Workspace, dash.workspace_id) if dash.workspace_id else None
+        kit = (ws.brand_kit if ws is not None else None) or {}
+        kit_hex = kit.get("brand_primary_color") or kit.get("brand_accent_color") if isinstance(kit, dict) else None
+        if not kit_hex:
+            raise ValueError("Your workspace has no brand colour saved yet. Say it once, like “use our brand colour #0A7C5A”, "
+                             "or add it to the brand kit in the workspace menu.")
+    if hexm and re.search(r"\b(brand|colou?r|accent)\b", tl) or kit_hex:
+        hx = ("#" + hexm.group(1)) if hexm else str(kit_hex)
+        spec["accent"] = hx
+        changes.append(f"accent colour set to {hx.upper()}" + (" from your brand kit" if kit_hex and not hexm else ""))
     else:
         for key, pat in THEME_WORDS.items():
             if re.search(pat, tl) and re.search(r"\b(make|switch|change|use|set|theme|turn|go)\b", tl):
@@ -1007,7 +1019,17 @@ def apply_edit(db: Session, user: models.User, dash: models.Dashboard, text: str
     dash.board_spec = spec
     flag_modified(dash, "board_spec")
     db.commit()
-    return {"changes": changes, "page_id": page_id}
+    return {"changes": changes, "page_id": page_id, "before": before, "after": card_state(dash)}
+
+
+def card_state(dash: models.Dashboard) -> dict:
+    """R50: what the "Dashboard updated" card shows - name, theme, palette, pages."""
+    spec = dash.board_spec or {}
+    key = spec.get("theme") or "ink"
+    pal = THEMES.get(key, THEMES["ink"]) | ({"accent": spec["accent"]} if spec.get("accent") else {})
+    return {"name": dash.name, "theme": key, "theme_label": THEMES.get(key, THEMES["ink"])["label"], "accent": spec.get("accent"),
+            "palette": {k: pal[k] for k in ("bg", "card", "ink", "accent", "warn", "mode")},
+            "pages": [p["name"] for p in spec.get("pages") or []]}
 
 
 # ---- create ---------------------------------------------------------------------------------------
