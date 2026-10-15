@@ -311,6 +311,7 @@ _NEW_COLUMNS = [
     ("folders", "kind", "TEXT"),
     ("dashboard_pages", "datasource_id", "TEXT"),
     ("dashboards", "last_viewed_at", "TIMESTAMP"),
+    ("dashboards", "board_spec", "JSON"),
     ("dashboard_shares", "last_viewed_at", "TIMESTAMP"),
     # 2026-10-12 (round 38, team comments): see models.DashboardComment.
     ("dashboard_comments", "mention_user_ids", "JSON"),

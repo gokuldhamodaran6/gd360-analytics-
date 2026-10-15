@@ -42,6 +42,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # 2026-10-15 (R49): downloads (Excel, PowerPoint, CSV) carry their file name; the browser can read it only when exposed
+    expose_headers=["Content-Disposition"],
 )
 
 

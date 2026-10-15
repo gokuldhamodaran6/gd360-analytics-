@@ -894,6 +894,9 @@ class Dashboard(Base):
     # 2026-10-12 (round 35b): when someone last opened it - an auto-refresh schedule pauses itself
     # after 7 days with no viewers (no warehouse bill for a dashboard nobody reads)
     last_viewed_at = Column(DateTime, nullable=True)
+    # 2026-10-15 (R49): layout_version 4 = a designed board (services/agent/board.py): the spec of its pages,
+    # blocks, filters, theme and definitions, computed live on its data source by GET /v2/boards/{id}/run.
+    board_spec = Column(JSON, nullable=True)
 
     owner = relationship("User", back_populates="dashboards")
     charts = relationship("SavedChart", back_populates="dashboard", cascade="all, delete-orphan")
