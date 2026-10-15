@@ -1413,3 +1413,81 @@ input[type="radio"] {
   outline-offset: 3px;
   border-radius: var(--radius-ctl, 10px);
 }
+
+/* ============================================================
+   2026-10-15 (R50, GD360 3.0): ONE design system. Every page - Home, the
+   conversation, Library, Dashboards, Data, Automations, Settings - reads
+   the same tokens: ink #0B0F0E, one accent #0A7C5A, hairlines #E3E6E4,
+   white ground, Geist. These override the older Obsidian / warm-off-white
+   values above (same variable names, so every component follows). The
+   chat surface (.c2) already used exactly these values.
+   ============================================================ */
+:root {
+  --color-base: 11 15 14;
+  --color-surface: 18 24 22;
+  --color-surface2: 22 28 25;
+  --color-border: 28 35 32;
+  --color-border-strong: 38 48 44;
+  --color-subtle: 22 28 25;
+  --color-primary: 75 227 163;
+  --color-on-primary: 11 15 14;
+  --color-accent: 75 227 163;
+  --color-brand-ink: 75 227 163;
+  --color-text: 243 245 244;
+  --color-secondary: 201 209 205;
+  --color-muted: 138 148 143;
+  --color-faint: 90 100 96;
+  --color-tint: 19 35 32;
+  --color-tint-border: 36 65 58;
+  --color-good: 75 227 163;
+  --color-good-fill: 19 35 32;
+  --color-good-border: 36 65 58;
+  --chart-grid: 28 35 32;
+  --chart-axis: 38 48 44;
+  --glow-1: transparent;
+  --glow-2: transparent;
+  --gx-rail: 14 19 17;
+  --gx-ink: 243 245 244;
+  --gx-panel: 18 24 22;
+}
+:root[data-theme="light"] {
+  --color-base: 255 255 255;
+  --color-surface: 255 255 255;
+  --color-surface2: 245 246 247;
+  --color-border: 227 230 228;
+  --color-border-strong: 213 219 216;
+  --color-subtle: 242 243 242;
+  --color-primary: 10 124 90;
+  --color-on-primary: 255 255 255;
+  --color-accent: 10 124 90;
+  --color-brand-ink: 10 124 90;
+  --color-text: 11 15 14;
+  --color-secondary: 61 71 68;
+  --color-muted: 94 106 102;
+  --color-faint: 160 170 166;
+  --color-tint: 230 244 238;
+  --color-tint-border: 196 228 214;
+  --color-good: 10 124 90;
+  --color-good-fill: 230 244 238;
+  --color-good-border: 196 228 214;
+  --color-warning: 138 93 0;
+  --color-warning-fill: 255 244 223;
+  --color-warning-border: 240 214 160;
+  --color-danger: 181 67 44;
+  --color-danger-fill: 251 237 233;
+  --color-danger-border: 240 200 190;
+  --color-kind-answer: 10 124 90;
+  --color-kind-answer-fill: 230 244 238;
+  --color-kind-answer-border: 196 228 214;
+  --chart-grid: 236 238 237;
+  --chart-axis: 213 219 216;
+  --shadow-card: 0 1px 2px rgb(11 15 14 / 0.04);
+  --shadow-pop: 0 12px 40px rgb(11 15 14 / 0.12), 0 1px 2px rgb(11 15 14 / 0.06);
+  --glow-1: transparent;
+  --glow-2: transparent;
+  --gx-rail: 255 255 255;
+  --gx-ink: 11 15 14;
+  --gx-panel: 245 246 247;
+}
+body { background: rgb(var(--color-base)); font-family: "Geist", system-ui, sans-serif; }
+.dash-shell { background: rgb(var(--color-base)); }

@@ -14,7 +14,6 @@ import DashboardView from "./pages/DashboardView";
 import DashboardBuilderView from "./pages/DashboardBuilderView";
 import PublicDashboardView from "./pages/PublicDashboardView";
 import DataSources from "./pages/DataSources";
-import MLModels from "./pages/MLModels";
 import MLStudio from "./pages/MLStudio";
 import MLStudioNew from "./pages/MLStudioNew";
 import MLStudioProject from "./pages/MLStudioProject";
@@ -36,13 +35,11 @@ import HelpSnowflake from "./pages/HelpSnowflake";
 import ConnectResourcePicker from "./pages/ConnectResourcePicker";
 import PrivacyPolicy from "./pages/PrivacyPolicy";
 import InviteJoin from "./pages/InviteJoin";
-import HomePage from "./pages/Home";
 // 2026-10-14 (R46, GD360 2.0): the chat-first conversation surface
 import ChatHome from "./chat/ChatHome";
 import ConversationPage from "./chat/Conversation";
 // 2026-10-15 (R49): designed dashboards
 import BoardPage from "./board/BoardPage";
-import ProjectWorkspace from "./pages/ProjectWorkspace";
 import GuidedAnalysis from "./pages/GuidedAnalysis";
 import TalkPage from "./pages/TalkPage";
 import Initiatives from "./pages/Initiatives";
@@ -153,7 +150,9 @@ export default function App() {
       {/* 2026-10-08 (round 11): multi-source Projects and their dashboards. */}
       {/* 2026-10-10 (Clarity Blueprint): "Projects" is now Library - every
           answer and analysis, labelled. Old /projects links still land there. */}
-      <Route path="/home" element={<Protected><HomePage /></Protected>} />
+      {/* 2026-10-15 (R50): one Home. The older one-question page and the classic answer page are retired;
+          their links land on Home and on the conversation. */}
+      <Route path="/home" element={<Navigate to="/" replace />} />
       <Route path="/chat" element={<Protected><ChatHome /></Protected>} />
       <Route path="/chat/:conversationId" element={<Protected><ConversationPage /></Protected>} />
       <Route path="/boards/:boardId" element={<Protected><BoardPage /></Protected>} />
@@ -161,7 +160,7 @@ export default function App() {
       <Route path="/projects" element={<RedirectKeepingQuery to="/library" />} />
       {/* 2026-10-13 (R45): keyed by the answer's id, so moving from one answer to another (command
           palette, a notification) starts clean - no questions, sources or answer from the last one. */}
-      <Route path="/p/:projectId" element={<Protected><KeyedProjectWorkspace /></Protected>} />
+      <Route path="/p/:projectId" element={<Protected><ClassicToConversation /></Protected>} />
       <Route path="/g/:projectId" element={<Protected><GuidedAnalysis /></Protected>} />
       {/* 2026-10-11 (round 24): a saved talk with Euliv */}
       <Route path="/v/:talkId" element={<Protected><TalkPage /></Protected>} />
@@ -214,7 +213,7 @@ export default function App() {
       {/* 2026-10-08 (round 13): ML Studio - goal -> plan -> training ->
           results. The older gallery + wizard stays at /ml-models/classic. */}
       <Route path="/ml-models" element={<Protected><MLStudio /></Protected>} />
-      <Route path="/ml-models/classic" element={<Protected><MLModels /></Protected>} />
+      <Route path="/ml-models/classic" element={<Navigate to="/ml-models" replace />} />
       <Route path="/ml-studio/new" element={<Protected><MLStudioNew /></Protected>} />
       <Route path="/ml-studio/:id" element={<Protected><MLStudioProject /></Protected>} />
       <Route path="/ml-models/:id" element={<Protected><MLModelDetail /></Protected>} />
@@ -288,10 +287,10 @@ export default function App() {
 }
 
 // 2026-10-10: a moved page keeps its query string (e.g. /projects?type=answer).
-// 2026-10-13 (R45): a fresh ProjectWorkspace per answer (see the /p/:projectId route).
-function KeyedProjectWorkspace() {
+// 2026-10-15 (R50): the classic answer page (/p/:id) is retired - every answer opens in its conversation.
+function ClassicToConversation() {
   const { projectId = "" } = useParams();
-  return <ProjectWorkspace key={projectId} />;
+  return <Navigate to={`/chat/${projectId}`} replace />;
 }
 
 function RedirectKeepingQuery({ to }: { to: string }) {
