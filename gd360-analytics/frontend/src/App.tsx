@@ -40,6 +40,8 @@ import ChatHome from "./chat/ChatHome";
 import ConversationPage from "./chat/Conversation";
 // 2026-10-15 (R49): designed dashboards
 import BoardPage from "./board/BoardPage";
+// 2026-10-15 (R51): block documents
+import DocPage from "./doc/DocPage";
 import GuidedAnalysis from "./pages/GuidedAnalysis";
 import TalkPage from "./pages/TalkPage";
 import Initiatives from "./pages/Initiatives";
@@ -156,6 +158,7 @@ export default function App() {
       <Route path="/chat" element={<Protected><ChatHome /></Protected>} />
       <Route path="/chat/:conversationId" element={<Protected><ConversationPage /></Protected>} />
       <Route path="/boards/:boardId" element={<Protected><BoardPage /></Protected>} />
+      <Route path="/docs/:docId" element={<Protected><DocPage /></Protected>} />
       <Route path="/library" element={<Protected><Dashboard /></Protected>} />
       <Route path="/projects" element={<RedirectKeepingQuery to="/library" />} />
       {/* 2026-10-13 (R45): keyed by the answer's id, so moving from one answer to another (command
