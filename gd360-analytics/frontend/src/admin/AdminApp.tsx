@@ -23,6 +23,7 @@ const Flags = lazy(() => import("./screens/Flags"));
 const Health = lazy(() => import("./screens/Health"));
 const Access = lazy(() => import("./screens/Access"));
 const Trust = lazy(() => import("./screens/Trust"));
+const Quality = lazy(() => import("./screens/Quality"));
 
 const I = {
   main: "M3 3h8v8H3zM13 3h8v5h-8zM13 10h8v11h-8zM3 13h8v8H3z",
@@ -39,6 +40,7 @@ const I = {
   health: "M22 12h-4l-3 9L9 3l-3 9H2",
   access: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10zM9 12l2 2 4-4",
   trust: "M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4",
+  quality: "M9 11l3 3 8-8M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11",
 };
 
 type NavItem = [string, string, keyof typeof I, string?];
@@ -49,7 +51,7 @@ const NAV: [string, NavItem[]][] = [
   ["Support", [["/admin/support", "Inbox & SLAs", "support", "support"]]],
   ["Revenue", [["/admin/plans", "Plans & entitlements", "plans", "overrides"], ["/admin/pricing-lab", "Pricing lab & forecast", "revenue"]]],
   ["Product", [["/admin/product", "Funnels & retention", "product"], ["/admin/ai", "AI usage & cost", "ai"], ["/admin/flags", "Flags & announcements", "flags"]]],
-  ["Platform", [["/admin/health", "System health", "health", "health"]]],
+  ["Platform", [["/admin/health", "System health", "health", "health"], ["/admin/quality", "Quality checks", "quality"]]],
   ["Trust", [["/admin/access", "Staff access & audit", "access", "access"], ["/admin/trust", "Security & privacy", "trust", "trust"]]],
 ];
 
@@ -142,6 +144,7 @@ function Shell({ me }: { me: Me }) {
             <Route path="health" element={<Health />} />
             <Route path="access" element={<Access />} />
             <Route path="trust" element={<Trust />} />
+            <Route path="quality" element={<Quality />} />
             <Route path="*" element={<Navigate to="/admin" replace />} />
           </Routes>
         </Suspense>
