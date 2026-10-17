@@ -4,182 +4,96 @@
 // under .mkt-pricing.
 import { FormEvent, Fragment, useEffect, useState } from "react";
 import { api } from "../../api/client";
-import { v2Api, type PlanSummary } from "../../api/v2";
+import { v2Api } from "../../api/v2";
+import { CompareTable, PlanCards, type Catalog } from "../../plans/PlanParts";
 import { errorText } from "../shared";
 import { A, useMarketingPage } from "../shared";
 import "../marketing.css";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function vals(state: any, setState: (patch: any) => void): any {
-
-    const s = state || {};
-    const annual = !!s.annual;
-    const money = (n) => "$" + (Number.isInteger(n) ? n.toLocaleString("en-US") : n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-    const T = [
-      { id: "plus", name: "Plus", m: null, for: "For individuals who want answers every day.", lead: "INCLUDES", min: 1, chats: 200, src: 5,
-        limits: [{ k: "AI chats / month", v: "200", pct: 20 }, { k: "Data sources", v: "5", pct: 20 }, { k: "Users", v: "1", pct: 6 }],
-        items: ["Every database, files and Google Sheets", "5 dashboards with daily refresh", "ML Studio — 5 trainings a month", "2 automations", "Answers with proof, password-protected links"], cta: "Coming soon", href: "/start" },
-      { id: "team", name: "Team", m: null, popular: true, for: "For teams that run on many tools and work together.", lead: "EVERYTHING IN PLUS, AND", min: 3, chats: 500, src: 25,
-        limits: [{ k: "AI chats / user / month", v: "500", pct: 50 }, { k: "Data sources", v: "25", pct: 60 }, { k: "Users", v: "3 or more", pct: 40 }],
-        items: ["Snowflake, BigQuery and synced apps — ads, store, CRM, social", "Spaces for every team", "ML Studio — all 21 kinds, 50 trainings", "20 automations, hourly refresh", "Row and column access rules"], cta: "Coming soon", href: "/start" },
-      { id: "business", name: "Business", m: null, for: "For companies with several teams and higher volumes.", lead: "EVERYTHING IN TEAM, AND", min: 10, chats: 2000, src: 0,
-        limits: [{ k: "AI chats / user / month", v: "2,000", pct: 85 }, { k: "Data sources", v: "Unlimited", pct: 100 }, { k: "Users", v: "10 or more", pct: 70 }],
-        items: ["Unlimited dashboards, Spaces and automations", "Higher daily warehouse budget", "Custom domain for shared dashboards", "Refresh every 15 minutes", "Priority support"], cta: "Coming soon", href: "/start" },
-      { id: "enterprise", name: "Enterprise", m: null, for: "For company-wide roll-outs with security review.", lead: "EVERYTHING IN BUSINESS, AND", min: 0,
-        limits: [{ k: "AI chats", v: "Custom", pct: 100 }, { k: "Data sources", v: "Unlimited", pct: 100 }, { k: "Users", v: "Unlimited", pct: 100 }],
-        items: ["Custom limits and terms", "Security review and governance support", "Guided onboarding for every team", "Named contact and custom terms"], cta: "Book a demo", href: "#enterprise" }
-    ];
-    const unit = (t) => annual ? Math.round((t.m * 10 / 12) * 100) / 100 : t.m;
-    const plans = T.map((t) => {
-      const custom = t.m == null;
-      return {
-        ...t, popular: !!t.popular, href: t.href === "/start" ? "/start?plan=" + t.id + (annual ? "&billing=annual" : "") : t.href,
-        price: custom ? "Custom" : money(unit(t)),
-        per: custom ? "" : "/ user / month",
-        note: custom ? "Annual agreement, invoiced" : (annual ? money(t.m * 10) + " per user, billed yearly" : "Billed monthly, cancel any time") + (t.min > 1 ? " · minimum " + t.min + " users" : ""),
-        wrap: t.popular ? "shine" : "",
-        border: t.popular ? "transparent" : "#1F2729", bg: t.popular ? "#0E1A16" : "#0B0F10",
-        ctaBg: t.popular ? "#43E5A0" : "transparent", ctaInk: t.popular ? "#04140D" : "#E8EEEC", ctaBorder: t.popular ? "#43E5A0" : "#2A3436"
-      };
-    });
-    const pick = T.find((t) => t.id === (s.calc || "team")) || T[1];
-    const users = Math.max(pick.min, s.users || 1);
-    const perUser = unit(pick);
-    const total = Math.round(perUser * users * 100) / 100;
-    const Y = "✓", N = "—";
-    const cell = (t, i) => ({ t, c: t === N ? "#4B5A57" : (t === Y ? "#43E5A0" : "#E8EEEC"), bg: i === 1 ? "#0F1A16" : "transparent" });
-    const row = (f, v) => ({ f, v: v.map(cell) });
-    const R = {
-      isMonthly: annual ? "false" : "true", isAnnual: annual ? "true" : "false",
-      setMonthly: () => setState({ annual: false }), setAnnual: () => setState({ annual: true }),
-      mBg: annual ? "transparent" : "#43E5A0", mInk: annual ? "#A3B0AC" : "#04140D",
-      aBg: annual ? "#43E5A0" : "transparent", aInk: annual ? "#04140D" : "#A3B0AC",
-      plans,
-      calcHref: "/start?plan=" + pick.id + "&users=" + users + (annual ? "&billing=annual" : ""),
-      calcPlans: T.filter((t) => t.m != null).map((t) => {
-        const on = t.id === pick.id;
-        return { name: t.name, unit: money(unit(t)), on: on ? "true" : "false",
-          pick: () => setState({ calc: t.id, users: Math.max(t.min, (state && state.users) || 1) }),
-          border: on ? "#43E5A0" : "#2A3436", bg: on ? "#132320" : "#0E1213", ink: on ? "#43E5A0" : "#E8EEEC" };
-      }),
-      users,
-      less: () => setState({ users: Math.max(pick.min, users - 1) }),
-      more: () => setState({ users: Math.min(500, users + 1) }),
-      minNote: pick.min > 1 ? "minimum " + pick.min : "",
-      calcLabel: pick.name + " · " + users + (users === 1 ? " user" : " users") + (annual ? " · billed yearly" : " · billed monthly"),
-      total: money(total),
-      totalNote: annual ? money(Math.round(total * 12)) + " a year — you save " + money(Math.round(pick.m * users * 2)) : "Pay yearly and save " + money(Math.round(pick.m * users * 2)) + " a year",
-      chatsTotal: (pick.chats * users).toLocaleString("en-US") + " AI chats a month for your workspace",
-      sourcesTotal: pick.src ? pick.src + " data sources" : "Unlimited data sources",
-      groups: [
-        { g: "USAGE", rows: [
-          row("Price per user / month", ["TBA", "TBA", "TBA", "TBA"]),
-          row("Users", ["1", "3 or more", "10 or more", "Unlimited"]),
-          row("AI chats per month", ["200", "500 per user", "2,000 per user", "Custom"]),
-          row("Data sources", ["5", "25", "Unlimited", "Unlimited"]),
-          row("ML Studio trainings per month", ["5", "50", "250", "Custom"]),
-          row("Dashboards", ["5", "50", "Unlimited", "Unlimited"]),
-          row("Automations", ["2", "20", "Unlimited", "Unlimited"])
-        ]},
-        { g: "SOURCES", rows: [
-          row("Files, CSV, Excel and Google Sheets", [Y, Y, Y, Y]),
-          row("Databases: Postgres, MySQL, SQL Server, MongoDB, Supabase", [Y, Y, Y, Y]),
-          row("Warehouses: Snowflake and BigQuery", [N, Y, Y, Y]),
-          row("Synced apps: ads, GA4, store, CRM, social pages", [N, Y, Y, Y]),
-          row("REST API connector", [N, Y, Y, Y]),
-          row("Warehouse cost budget per day", [N, "Standard", "High", "Custom"])
-        ]},
-        { g: "WORK TOGETHER", rows: [
-          row("Spaces for each team", [N, Y, Y, Y]),
-          row("Row and column access rules", [N, Y, Y, Y]),
-          row("Scheduled refresh", ["Daily", "Hourly", "Every 15 min", "Every 15 min"]),
-          row("Password-protected links", [Y, Y, Y, Y]),
-          row("Custom domain for shared dashboards", [N, N, Y, Y]),
-          row("Dashboard viewers at no extra cost", [N, Y, Y, Y])
-        ]},
-        { g: "TRUST AND SUPPORT", rows: [
-          row("Answers with linked queries and number check", [Y, Y, Y, Y]),
-          row("Read-only connections, encrypted credentials", [Y, Y, Y, Y]),
-          row("Support", ["Email", "Email", "Priority", "Named contact"]),
-          row("Security review and guided onboarding", [N, N, N, Y])
-        ]}
-      ],
+    const R: any = {
       entItems: ["A live demo on your own sources", "Custom limits and terms", "Security review, governance and access design", "Guided roll-out for every team", "A named contact and custom terms"],
-      faq: [
-        { q: "Is early access really free?", a: "Yes. Every feature, no card." },
-        { q: "When is pricing announced?", a: "Soon. Early-access users hear first." },
-        { q: "What happens to my work at launch?", a: "Nothing moves. Sources, dashboards and models stay." },
-        { q: "Any usage limits?", a: "Fair use only. We'll reach out before anything changes." },
-        { q: "Who should book a demo?", a: "Teams rolling GD360 out company-wide." }
-      ]
     };
-
     const __menu = !!(state && state.menu);
     R.menu = __menu;
     R.menuExpanded = __menu ? "true" : "false";
     R.openMenu = () => setState({ menu: true });
     R.closeMenu = () => setState({ menu: false });
     R.menuLinks = [{ t: "Product", href: "/#see" }, { t: "Platform", href: "/#platform" }, { t: "Solutions", href: "/#teams" }, { t: "Security", href: "/#security" }, { t: "Pricing", href: "/pricing" }, { t: "About", href: "/about" }].map((x, i) => ({ ...x, cls: "ml" + (i + 1) }));
-    const __ids = ["plus", "team", "business", "enterprise"];
-    const __mi = Math.max(0, __ids.indexOf((state && state.mplan) || "team"));
-    R.mTabs = R.plans.map((p, i) => ({ name: p.name, on: i === __mi ? "true" : "false", pick: () => setState({ mplan: __ids[i] }), bg: i === __mi ? "#43E5A0" : "transparent", ink: i === __mi ? "#04140D" : "#A3B0AC" }));
-    R.mPlans = [R.plans[__mi]];
-    R.mGroups = R.groups.map((g) => ({ g: g.g, rows: g.rows.map((r) => ({ f: r.f, t: r.v[__mi].t, c: r.v[__mi].c })) }));
-    const __p = R.plans[__mi];
-    R.mBar = { name: __p.name, price: __p.price === "Custom" ? "Custom" : __p.price + " / user", note: __p.note, href: __p.href, cta: __p.cta };
     return R;
   
 }
 
-// 2026-10-14 (R47): the four launch plans, read from the same table the app enforces (services/agent/plans.py).
-// Every feature is on every plan; plans differ by limits, governance and where it runs.
-const PLAN_ORDER = ["free", "pro", "team", "enterprise"] as const;
-const PLAN_COPY: Record<string, { for: string; items: string[]; cta: string; href: string }> = {
-  free: { for: "Individuals, students, anyone trying it.", items: ["Chat, charts, models, voice, documents", "3 sources · 200k rows per source", "40 questions a day", "5 dashboards · 2 automations"], cta: "Start free", href: "/start?plan=free" },
-  pro: { for: "Professionals and freelancers.", items: ["Strongest models, fair-use questions", "10 sources · 5M rows per source", "Unlimited dashboards and automations", "Publish under your own logo"], cta: "Start with Pro", href: "/start?plan=pro" },
-  team: { for: "Teams, SMB to mid-market.", items: ["Teams, Spaces, roles, shared library", "Column and row rules per team", "Certified glossary, lineage, audit log", "Warehouse connectors · custom domain"], cta: "Start a team trial", href: "/start?plan=team" },
-  enterprise: { for: "Enterprises, public sector, regulated.", items: ["SSO, SCIM, MFA, SIEM export", "Runs in our cloud, your cloud or your warehouse", "Data residency and retention policy", "Implementation by GD360 consulting · SLA"], cta: "Book a demo", href: "#enterprise" },
-};
-function priceOf(p: { price: Record<string, any> }): { big: string; small: string } {
-  const pr = p.price || {};
-  if (pr.usd_month === 0) return { big: "$0", small: "forever" };
-  if (typeof pr.usd_month === "number") return { big: `$${pr.usd_month}`, small: `per month · or ₹${(pr.inr_month || 0).toLocaleString("en-IN")}` };
-  if (typeof pr.usd_seat_month === "number") return { big: `$${pr.usd_seat_month}`, small: `per seat / month · ${pr.min_seats || 3}+ seats` };
-  return { big: "Platform fee", small: "+ seats · annual" };
-}
-function PlansGrid() {
-  const [plans, setPlans] = useState<PlanSummary["plans"] | null>(null);
+// 2026-10-17 (R52): the plans in the one design system (src/plans), from the catalog the app meters - the same cards
+// and table the in-app Plan & usage page shows, so the two can never disagree. The early-access promise is said once.
+function PlansPublic() {
+  const [plans, setPlans] = useState<Catalog | null>(null);
   const [enforced, setEnforced] = useState(false);
+  const [seats, setSeats] = useState(5);
   useEffect(() => { v2Api.publicPlans().then((d) => { setPlans(d.plans); setEnforced(d.enforced); }).catch(() => setPlans(null)); }, []);
-  if (!plans) return null;
+  const team = plans?.team?.price || {};
+  const per = typeof team.usd_seat_month === "number" ? team.usd_seat_month : null;
+  const min = team.min_seats || 3;
+  const n = Math.max(min, seats);
   return (
-    <section style={{ padding: "0 24px 72px" }} data-mkt-plans="">
-      <div style={{ maxWidth: "1280px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "22px" }}>
-        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", justifyContent: "space-between", gap: "12px" }}>
-          <h2 style={{ margin: 0, fontSize: "clamp(26px, 3vw, 36px)", fontWeight: 800, letterSpacing: "-0.03em" }}>One product. Every feature on every plan.</h2>
-          <span style={{ color: "#A3B0AC", fontSize: "15px" }}>Plans differ by limits, governance and where it runs, never by hiding a capability.{enforced ? "" : " Limits are not enforced during early access."}</span>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: "14px" }}>
-          {PLAN_ORDER.map((k) => {
-            const p = plans[k]; if (!p) return null;
-            const c = PLAN_COPY[k]; const pr = priceOf(p); const hot = k === "team";
-            return (
-              <div key={k} data-mkt-plan={k} style={{ borderRadius: "22px", padding: "24px", display: "flex", flexDirection: "column", gap: "12px", background: hot ? "#0E1A16" : "#0B0F10", border: `1px solid ${hot ? "#1E5A45" : "#1F2729"}` }}>
-                <span style={{ fontSize: "12px", letterSpacing: "0.12em", textTransform: "uppercase", color: hot ? "#43E5A0" : "#6F7C78", fontFamily: "Geist Mono, ui-monospace, monospace" }}>{p.who}</span>
-                <span style={{ fontSize: "22px", fontWeight: 700 }}>{p.label}</span>
-                <span><span style={{ fontSize: "34px", fontWeight: 800, letterSpacing: "-0.03em" }}>{pr.big}</span> <span style={{ color: "#6F7C78", fontSize: "13px" }}>{pr.small}</span></span>
-                <span style={{ color: "#A3B0AC", fontSize: "14px" }}>{c.for}</span>
-                <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "7px", fontSize: "14px", color: "#C9D1CD" }}>
-                  {c.items.map((it) => <li key={it} style={{ display: "grid", gridTemplateColumns: "14px 1fr", gap: "8px" }}><span style={{ color: "#43E5A0" }}>·</span><span>{it}</span></li>)}
-                </ul>
-                <span style={{ marginTop: "auto", fontSize: "12.5px", color: "#6F7C78" }}>{p.limits.questions_per_day ? `${p.limits.questions_per_day} questions a day` : "Unlimited questions at fair use"} · {p.limits.seats ? `${p.limits.seats} ${p.limits.seats === 1 ? "person" : "people"}` : "unlimited people"} · {p.support}</span>
-                <A href={c.href} className={hot ? "gd-ea-go" : "gd-ghost"} style={{ textAlign: "center" }}>{c.cta}</A>
-              </div>
-            );
-          })}
-        </div>
+    <div className="pl pl-dark" data-pl-public="">
+      <div className="pl-pub">
+        <section className="pl-hero" aria-labelledby="pl-h1">
+          <span className="pl-eb">Pricing</span>
+          <h1 id="pl-h1">Every feature on every plan.</h1>
+          <p>Plans differ by people, data, governance and where it runs, never by hiding a capability. {enforced ? "" : "During early access every account has the whole product free; these prices apply at launch, and you hear first."}</p>
+          <div className="pl-row">
+            <A href="/start" className="pl-btn p">Start free</A>
+            <A href="#enterprise" className="pl-btn">Talk to us</A>
+          </div>
+        </section>
+        {plans && (
+          <section aria-label="Plans" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+            <PlanCards plans={plans} enforced={enforced} action={(k) => <A href={k === "enterprise" ? "#enterprise" : `/start?plan=${k}`} className={`pl-btn${k === "team" ? " p" : ""}`}>{k === "free" ? "Start free" : k === "enterprise" ? "Talk to us" : `Start with ${plans[k].label}`}</A>} />
+          </section>
+        )}
+        {plans && (
+          <section aria-labelledby="pl-cmp" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <h2 id="pl-cmp" style={{ fontSize: "clamp(24px, 3vw, 34px)", fontWeight: 800 }}>Limits side by side</h2>
+            <CompareTable plans={plans} />
+          </section>
+        )}
+        {per != null && (
+          <section aria-labelledby="pl-calc" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <h2 id="pl-calc" style={{ fontSize: "clamp(24px, 3vw, 34px)", fontWeight: 800 }}>What Team costs</h2>
+            <div className="pl-calc" data-pl-calc="">
+              <label style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <span style={{ fontSize: 15 }}><b>{n}</b> people <span style={{ color: "var(--pl-ink3)" }}>· {min} or more</span></span>
+                <input type="range" min={min} max={200} value={n} onChange={(e) => setSeats(Number(e.target.value))} aria-label="People on the Team plan" />
+              </label>
+              <div className="tot" data-pl-total="">${(per * n).toLocaleString("en-US")}<span>a month at launch · ${per} a person</span></div>
+            </div>
+          </section>
+        )}
       </div>
-    </section>
+    </div>
+  );
+}
+
+function PlansFaq() {
+  const faq = [
+    ["Is early access really free?", "Yes. Every feature, no card, no trial clock."],
+    ["When do these prices apply?", "At launch. Early-access users hear first, with notice, before anything about their account changes."],
+    ["Are the limits enforced now?", "No. Your Plan & usage page shows what you use against the plan, so nothing surprises you later."],
+    ["What happens to my work at launch?", "Nothing moves. Sources, dashboards, documents and models stay where they are."],
+    ["Who should talk to us?", "Teams rolling GD360 out company-wide, and anyone who needs it in their own cloud or warehouse."],
+  ];
+  return (
+    <div className="pl pl-dark">
+      <div className="pl-pub" style={{ paddingTop: 0, paddingBottom: 96 }}>
+        <section aria-labelledby="pl-faq" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <span className="pl-eb">Questions</span>
+          <h2 id="pl-faq" style={{ fontSize: "clamp(28px, 3.6vw, 44px)", fontWeight: 800 }}>Short answers.</h2>
+          <div className="pl-faq">{faq.map(([q, a]) => <div key={q}><b>{q}</b><span>{a}</span></div>)}</div>
+        </section>
+      </div>
+    </div>
   );
 }
 
@@ -342,63 +256,7 @@ export default function MarketingPricing() {
         </>
       )}
       {" "}
-      <section className="mk-m-hero" style={{ position: "relative", padding: "104px 24px 64px", textAlign: "center", overflow: "hidden" }}>
-        <div className="gd-tba-glow" aria-hidden="true"></div>
-        <div style={{ position: "relative", maxWidth: "980px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "26px", alignItems: "center" }}>
-          <span className="gd-soon-chip gd-soon-chip-lg mk-w mk-d1" style={{ alignSelf: "center" }}><span className="gd-ea-dot"></span>{"PRICING · FREE, PRO, TEAM, ENTERPRISE"}</span>
-          <h1 className="mk-m-h1" style={{ margin: "0", fontWeight: "900", fontSize: "clamp(48px, 8vw, 120px)", lineHeight: "0.92", letterSpacing: "-0.055em", textWrap: "balance" }}>
-            <span className="mk-w mk-d2">{"Every feature."}</span>
-            <br />
-            <span className="mk-w mk-d3"><span className="mk-sheen">{"Four ways to buy it."}</span></span>
-          </h1>
-          <p className="mk-w mk-d4" style={{ margin: "0", fontSize: "clamp(17px, 1.8vw, 21px)", lineHeight: "1.55", color: "#A3B0AC", maxWidth: "560px" }}>
-            {"A student on Free gets the same assistant as a bank on Enterprise. What grows with the plan is people, data, governance and where it runs."}
-          </p>
-          <div className="mk-m-cta mk-w mk-d5" style={{ display: "flex", gap: "12px", flexWrap: "wrap", justifyContent: "center" }}>
-            <A href="/start" className="gd-ea-go">{"Start early access →"}</A>
-            <A href="#enterprise" className="gd-ghost">{"Enterprise? Talk to us"}</A>
-          </div>
-        </div>
-      </section>
-      <PlansGrid />
-      {" "}
-      <section style={{ padding: "0 24px 96px" }}>
-        <div style={{ maxWidth: "1280px", margin: "0 auto" }}>
-          <div className="gd-ea gd-ea-xl" style={{ flexDirection: "column", flexWrap: "nowrap", alignItems: "stretch" }}>
-            <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "flex-end", gap: "24px" }}>
-              <div className="gd-ea-copy" style={{ flex: "1 1 460px" }}>
-                <span className="gd-ea-eyebrow"><span className="gd-ea-dot"></span>{"EARLY ACCESS · INCLUDED TODAY"}</span>
-                <h2 className="gd-ea-title">{"Everything. "}<span className="mk-sheen">{"Free."}</span></h2>
-                <p className="gd-ea-text">{"No card. No trial clock. Nothing locked."}</p>
-              </div>
-            </div>
-            <div className="gd-feat">
-              <div className="gd-feat-item"><span className="gd-feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z" /></svg></span><span className="gd-feat-t">{"Ask anything"}</span><span className="gd-feat-d">{"Plain-English questions. Proven answers."}</span></div>
-              <div className="gd-feat-item"><span className="gd-feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0zM12 17v5" /></svg></span><span className="gd-feat-t">{"71 connectors"}</span><span className="gd-feat-d">{"Warehouses, databases, files and apps."}</span></div>
-              <div className="gd-feat-item"><span className="gd-feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 3h8v8H3zM13 3h8v5h-8zM13 10h8v11h-8zM3 13h8v8H3z" /></svg></span><span className="gd-feat-t">{"Dashboards"}</span><span className="gd-feat-d">{"Build, share, refresh."}</span></div>
-              <div className="gd-feat-item"><span className="gd-feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></svg></span><span className="gd-feat-t">{"Spaces"}</span><span className="gd-feat-d">{"A home for every team."}</span></div>
-              <div className="gd-feat-item"><span className="gd-feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z" /></svg></span><span className="gd-feat-t">{"ML Studio"}</span><span className="gd-feat-d">{"21 model types from one sentence."}</span></div>
-              <div className="gd-feat-item"><span className="gd-feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 2 3 14h9l-1 8 10-12h-9z" /></svg></span><span className="gd-feat-t">{"Automations"}</span><span className="gd-feat-d">{"Alerts and reports on schedule."}</span></div>
-              <div className="gd-feat-item"><span className="gd-feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 11l3 3 8-8M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9" /></svg></span><span className="gd-feat-t">{"Data quality"}</span><span className="gd-feat-d">{"Checks, rules and access control."}</span></div>
-              <div className="gd-feat-item"><span className="gd-feat-ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4" /></svg></span><span className="gd-feat-t">{"Secure by default"}</span><span className="gd-feat-d">{"Read-only. Encrypted. Audited."}</span></div>
-            </div>
-          </div>
-        </div>
-      </section>
-      {" "}
-      <section style={{ padding: "0 24px 104px" }}>
-        <div style={{ maxWidth: "1280px", margin: "0 auto", display: "flex", flexDirection: "column", gap: "28px" }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-            <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>{"WHAT'S NEXT"}</span>
-            <h2 style={{ margin: "0", fontWeight: "800", fontSize: "clamp(32px, 4.4vw, 58px)", lineHeight: "1", letterSpacing: "-0.045em" }}>{"No surprises."}</h2>
-          </div>
-            <ol className="gd-steps">
-              <li><span className="gd-step-n">{"01 · TODAY"}</span><span className="gd-step-t">{"Use everything"}</span><span className="gd-step-d">{"The full product, free."}</span></li>
-              <li><span className="gd-step-n">{"02 · BEFORE LAUNCH"}</span><span className="gd-step-t">{"Hear first"}</span><span className="gd-step-d">{"Early users get plans first, with notice."}</span></li>
-              <li><span className="gd-step-n">{"03 · AT LAUNCH"}</span><span className="gd-step-t">{"Keep it all"}</span><span className="gd-step-d">{"Pick a plan. Your work stays put."}</span></li>
-            </ol>
-        </div>
-      </section>
+      <PlansPublic />
       {" "}
       <section id="enterprise" style={{ padding: "0 24px 104px" }}>
         {" "}
@@ -518,41 +376,7 @@ export default function MarketingPricing() {
         {" "}
       </section>
       {" "}
-      <section style={{ padding: "0 24px 112px" }}>
-        {" "}
-        <div style={{ maxWidth: "1280px", margin: "0 auto", display: "flex", flexWrap: "wrap", gap: "48px" }}>
-          {" "}
-          <div style={{ flex: "1 1 320px", display: "flex", flexDirection: "column", gap: "16px" }}>
-            <span className="mk-mono" style={{ fontSize: "12.5px", letterSpacing: "0.16em", color: "#43E5A0" }}>
-              {"QUESTIONS"}
-            </span>
-            <h2 style={{ margin: "0", fontWeight: "800", fontSize: "clamp(32px, 4vw, 52px)", lineHeight: "1", letterSpacing: "-0.045em" }}>
-              {"Short answers."}
-            </h2>
-          </div>
-          {" "}
-          <div style={{ flex: "1 1 640px", display: "flex", flexDirection: "column", borderTop: "1px solid #1F2729" }}>
-            {" "}
-            {(V.faq || []).map((f: any, i1: number) => (
-              <Fragment key={i1}>
-                {" "}
-                <div style={{ padding: "22px 0", borderBottom: "1px solid #1F2729", display: "flex", flexDirection: "column", gap: "8px" }}>
-                  <span style={{ fontWeight: "700", fontSize: "17.5px" }}>
-                    {f.q}
-                  </span>
-                  <span style={{ color: "#A3B0AC", fontSize: "15.5px", lineHeight: "1.65" }}>
-                    {f.a}
-                  </span>
-                </div>
-                {" "}
-              </Fragment>
-            ))}
-            {" "}
-          </div>
-          {" "}
-        </div>
-        {" "}
-      </section>
+      <PlansFaq />
       {" "}
       <footer style={{ borderTop: "1px solid #141A1B", padding: "56px 24px 36px", background: "#050707" }}>
         {" "}
