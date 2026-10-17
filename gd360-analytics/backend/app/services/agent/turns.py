@@ -22,10 +22,10 @@ from sqlalchemy.orm.attributes import flag_modified
 from ... import models
 from ...database import SessionLocal
 from .. import ai_engine, ai_meter
-from . import analysis, automations_tool, board, dashboard_tool, docblocks, docexport, documents, intents, knowledge, model_tool, plans, segment_watch, team_tool, truth_guard, writer
+from . import analysis, automations_tool, board, budgets, dashboard_tool, docblocks, docexport, documents, followups, intents, knowledge, model_tool, plans, segment_watch, team_tool, truth_guard, writer
 
 KINDS = ("knowledge", "data", "guided", "dashboard", "document", "automation", "chat", "check", "explain", "dashboard_edit", "model", "team", "analysis",
-         "document_edit")
+         "document_edit", "list", "whatif")
 
 
 # ---- helpers ------------------------------------------------------------------
@@ -50,6 +50,14 @@ def _state(msg: models.Message) -> dict:
 
 
 def _set_state(db: Session, msg: models.Message, **changes) -> dict:
+    # R52: a turn stopped by its time budget stays stopped - a late result from the worker is dropped
+    if "timed_out" not in changes and msg.id is not None:
+        try:
+            db.refresh(msg)
+        except Exception:  # noqa: BLE001 - a new or detached row: nothing stored to protect yet
+            pass
+        if _state(msg).get("timed_out") and _state(msg).get("status") == "failed":
+            return _state(msg)
     st = _state(msg) | changes
     msg.chart_spec = {"v2": st}
     flag_modified(msg, "chart_spec")
@@ -90,7 +98,36 @@ def _bg(fn, message_id: str, user_id: str) -> None:
         finally:
             ai_meter.reset_context(token)
             db.close()
+    kind = None
+    try:
+        with SessionLocal() as _db:
+            m0 = _db.get(models.Message, message_id)
+            kind = _state(m0).get("kind") if m0 is not None else None
+    except Exception:  # noqa: BLE001
+        kind = None
+    limit = budgets.hard(kind)
+    timer = threading.Timer(limit, _time_out, args=(message_id,)) if limit else None
+    if timer is not None:
+        timer.daemon = True
+        timer.start()
     threading.Thread(target=run, daemon=True, name=f"v2-{message_id[:8]}").start()
+
+
+def _time_out(message_id: str) -> None:
+    """The hard stop: a turn still working past three times its target fails with a plain sentence."""
+    db = SessionLocal()
+    try:
+        msg = db.get(models.Message, message_id)
+        if msg is not None and _state(msg).get("status") == "working":
+            kind = _state(msg).get("kind")
+            print(f"[agent.budget] {kind} turn {message_id[:8]} stopped after {budgets.hard(kind)} s")
+            _set_state(db, msg, status="failed", timed_out=True, error=budgets.timeout_text(kind), text=None,
+                       finished_at=datetime.utcnow().isoformat() + "Z")
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+        db.rollback()
+    finally:
+        db.close()
 
 
 def _history(db: Session, conv: models.Conversation, limit: int = 8) -> list[dict]:
@@ -496,7 +533,7 @@ def _do_model(db: Session, msg: models.Message, user: models.User) -> None:
 def _do_team(db: Session, msg: models.Message, user: models.User) -> None:
     st = _state(msg)
     conv = db.get(models.Conversation, msg.conversation_id)
-    d = team_tool.draft(db, user, st["question"], workspace_id=conv.workspace_id)
+    d = team_tool.draft(db, user, st["question"], workspace_id=conv.workspace_id, source_ids=list(conv.source_ids or []), conversation_id=conv.id)
     if d["ok"]:
         _set_state(db, msg, status="confirm", text="Here is the team. Confirm and I create the Space and its data rules; nothing changes until you do.",
                    confirm={"kind": "team", **d}, chips=[], finished_at=datetime.utcnow().isoformat() + "Z")
@@ -541,6 +578,7 @@ def _do_analysis(db: Session, msg: models.Message, user: models.User) -> None:
     if not r.get("has_dates"):
         chips.append({"key": "dates", "ok": True, "label": "No dates in the data: a snapshot, not a trend", "detail": "Scores say who resembles past cases, not when."})
     text = writer.chat_text(r, prose)
+    every = (r.get("risk_list") or {}).pop("_all", None)  # R52: kept for "show them as a list", not sent to the page
     r["prose"] = prose
     r["title"] = ttl
     if conv is not None and (conv.title or "").strip().lower() in ((st.get("question") or "").strip()[:80].lower(), "new conversation", ""):
@@ -549,12 +587,74 @@ def _do_analysis(db: Session, msg: models.Message, user: models.User) -> None:
     artifact = {"type": "analysis", "id": msg.id, "name": ttl, "recipe": r["recipe"], "figures": 4 if r.get("model") else 1,
                 "scored": (r.get("baseline") or {}).get("existing") if r.get("tiers") else None}
     trail = [{"label": s["label"] + (f" · {s['detail']}" if s.get("detail") else ""), "ms": s.get("ms")} for s in r["method"]["steps"]]
-    _set_state(db, msg, status="done", text=text, analysis=r, artifacts=[artifact], chips=chips, trail=trail, elapsed_s=r.get("elapsed_s"),
+    _set_state(db, msg, status="done", text=text, analysis=r, artifacts=[artifact], chips=chips, trail=trail, elapsed_s=r.get("elapsed_s"), risk_rows=every,
                document={"title": ttl, "markdown": writer.markdown(r, prose, ttl), "flagged": []},
                finished_at=datetime.utcnow().isoformat() + "Z")
 
 
-_TOOLS = {"knowledge": _do_knowledge, "analysis": _do_analysis, "chat": _do_chat, "document": _do_document, "automation": _do_automation, "dashboard": _do_dashboard,
+def _last_analysis_msg(db: Session, conv: models.Conversation) -> models.Message | None:
+    rows = (db.query(models.Message).filter(models.Message.conversation_id == conv.id, models.Message.action == "v2:analysis")
+            .order_by(models.Message.created_at.desc()).all())
+    return next((m for m in rows if _state(m).get("status") == "done" and _state(m).get("analysis")), None)
+
+
+def _do_list(db: Session, msg: models.Message, user: models.User) -> None:
+    """R52: "show the 135 high-risk customers as a list" - the tier's rows from the analysis, no re-run."""
+    st = _state(msg)
+    conv = db.get(models.Conversation, msg.conversation_id)
+    am = _last_analysis_msg(db, conv)
+    a = _state(am).get("analysis") if am else None
+    if not a or not a.get("tiers"):
+        _set_state(db, msg, status="needs_input", text="There is no risk list yet. Ask who is likely to leave first; the list comes from that analysis.",
+                   finished_at=datetime.utcnow().isoformat() + "Z")
+        return
+    rows = _state(am).get("risk_rows")
+    if not rows:  # an analysis from before R52 kept only the top 50: score again, same recipe
+        _set_state(db, msg, trail=[{"label": "Scoring every current row again"}])
+        r = analysis.run(db, user, conv, a.get("question") or st["question"], {"recipe": "outcome", "table": (a.get("table") or {}).get("table"),
+                                                                               "target": (a.get("target") or {}).get("column")})
+        rows = (r.get("risk_list") or {}).pop("_all", None) or {}
+        _set_state(db, am, risk_rows=rows)
+    lst = followups.build_list(a, rows, st.get("question") or "")
+    msg_rows = lst["rows"]
+    _set_state(db, msg, status="done", text=followups.list_text(lst), list={**lst, "rows": msg_rows[:500]}, list_all=msg_rows,
+               artifacts=[{"type": "list", "id": msg.id, "name": lst["title"], "rows": lst["total"]}],
+               chips=[{"key": "rows", "ok": True, "label": f"{lst['shown']:,} of {lst['total']:,} {lst['title'].lower()}",
+                       "detail": "Scored by a model that never saw each row (out of fold)"},
+                      {"key": "basis", "ok": True, "label": "From the analysis above, nothing recomputed"}],
+               trail=[{"label": f"Took the {lst['title'].lower()} from the analysis · {lst['total']:,} rows"}],
+               finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+def _do_whatif(db: Session, msg: models.Message, user: models.User) -> None:
+    """R52: "what if churn fell by a quarter in the low-usage band" - arithmetic on the analysis's groups, assumptions stated."""
+    st = _state(msg)
+    conv = db.get(models.Conversation, msg.conversation_id)
+    an = _last_analysis(db, conv)
+    a = (an or {}).get("analysis") or {}
+    q = st.get("question") or ""
+    band = None
+    if followups.group_phrase(q) and followups._band(a, q) is None and (a.get("table") or {}).get("source_id"):
+        try:  # a group named by a value in the table, not one of the analysis's signals ("Blue card holders")
+            from .. import ml_studio
+            df, _e, _s = ml_studio.load_frame(db, user, a["table"]["source_id"], a["table"]["table"], cap=analysis.MAX_ROWS)
+            band = followups.band_from_frame(df, a, q)
+        except Exception as e:  # noqa: BLE001 - then the sentence asks for a group it can find
+            print(f"[agent.whatif] table lookup skipped: {e}")
+    out = followups.whatif(a, q, band)
+    if not out["ok"]:
+        _set_state(db, msg, status="needs_input", text=out["text"], finished_at=datetime.utcnow().isoformat() + "Z")
+        return
+    c = out["card"]
+    _set_state(db, msg, status="done", text=out["text"], whatif=c,
+               chips=[{"key": "numbers", "ok": True, "label": "Every number from the analysis above" if band is None else "Every number read from the table just now"},
+                      {"key": "assumptions", "ok": True, "label": f"{len(c['assumptions'])} assumptions stated, not findings",
+                       "detail": " ".join(c["assumptions"])}],
+               trail=[{"label": f"Took {c['group']} from the analysis · {c['group_n']:,} {c['entities']}"}, {"label": f"Applied the change {c['change']['label']}"}],
+               finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+_TOOLS = {"list": _do_list, "whatif": _do_whatif, "knowledge": _do_knowledge, "analysis": _do_analysis, "chat": _do_chat, "document": _do_document, "automation": _do_automation, "dashboard": _do_dashboard,
           "dashboard_edit": _do_dashboard_edit, "model": _do_model, "team": _do_team, "document_edit": _do_document_edit}
 
 
@@ -725,7 +825,16 @@ def send(db: Session, conv: models.Conversation, user: models.User, text: str, *
     if intent not in KINDS and docblocks.wants_edit(text) and _latest_doc(db, conv) is not None:
         doc_edit = (last in ("document", "document_edit")) if re.match(r"^\s*undo\b", text, re.I) else \
             (last in ("document", "document_edit") or bool(re.search(r"\b(brief|doc|document|report|memo|summary)\b", text, re.I)))
+    # R52: follow-ups to an analysis answered from it - the risk list, a what-if
+    follow = None
+    if intent not in KINDS and not doc_edit and (followups.wants_list(text) or followups.wants_whatif(text)) and not team_tool.wants_team(text):
+        an = _last_analysis(db, conv)
+        if an and followups.wants_list(text) and (an.get("analysis") or {}).get("tiers"):
+            follow = {"intent": "list", "by": "rule", "reason": "a list from the analysis above"}
+        elif an and followups.wants_whatif(text):
+            follow = {"intent": "whatif", "by": "rule", "reason": "a what-if on the analysis above"}
     decision = {"intent": intent, "by": "person", "reason": "chosen on the card", "text": text} if intent in KINDS else \
+        follow if follow else \
         {"intent": "document_edit", "by": "rule", "reason": "changes the document on the canvas"} if doc_edit else \
         intents.route(text, has_sources=has_sources, source_names=names, column_names=cols, last_kind=last, mode=mode, has_dashboard=has_dash,
                       wants_team=team_tool.wants_team, wants_edit=edit_fn)
@@ -888,6 +997,10 @@ def confirm(db: Session, conv: models.Conversation, user: models.User, message_i
         text += f" and {len(made)} data rule{'s' if len(made) != 1 else ''}." if made else "."
         if skipped:
             text += " Not applied: " + "; ".join(skipped[:3]) + "."
+        if body.get("conversation_id") == conv.id and created.get("space_id"):
+            conv.space_id = created["space_id"]  # R52: "share this with the team" - the conversation moves into its Space
+            db.commit()
+            text += " This conversation is in it now."
         if card.get("to_invite"):
             text += " Invite " + ", ".join(card["to_invite"]) + " with the workspace link; they join as members."
         _set_state(db, msg, status="done", confirm=None, error=None,
@@ -903,6 +1016,18 @@ def confirm(db: Session, conv: models.Conversation, user: models.User, message_i
 
 def _run_turn(db: Session, run: models.ProjectRun, conv: models.Conversation, user: models.User, full: bool) -> dict:
     from ...routers.projects import _run_out
+    if run.status in ("planning", "running") and run.auto_run and run.created_at is not None and \
+            _stale(run.created_at.isoformat(), budgets.hard("data"), grace=0):  # step-by-step runs wait for the person: no stop
+        from ..project_engine import executor
+        try:
+            executor.request_stop(run.id)
+            run.error_message = budgets.timeout_text("data")
+            if run.status == "planning":
+                run.status, run.finished_at = "stopped", datetime.utcnow()
+            db.commit()
+            print(f"[agent.budget] data run {run.id[:8]} stopped after {budgets.hard('data')} s")
+        except Exception:  # noqa: BLE001
+            db.rollback()
     out = _run_out(run, full=False)
     status = {"done": "done", "failed": "failed", "stopped": "failed", "needs_input": "needs_input", "replaced": "done"}.get(run.status, "working")
     guard = truth_guard.chips_for_run(run) if run.status == "done" else {"chips": [], "verdict": "pending"}
@@ -919,14 +1044,88 @@ def _run_turn(db: Session, run: models.ProjectRun, conv: models.Conversation, us
     return {
         "id": run.id, "kind": "data", "status": status, "question": run.question, "created_at": out["created_at"],
         "finished_at": out["finished_at"], "run_id": run.id, "run": out, "text": None, "chips": guard["chips"], "verdict": guard["verdict"],
-        "artifacts": [], "trail": trail, "elapsed_s": out.get("duration_seconds"), "error": out.get("error"),
+        "artifacts": [], "trail": trail, "elapsed_s": out.get("duration_seconds"), "error": out.get("error"), "budget_s": budgets.budget("data"),
         "intent_by": (plan.get("v2_intent") or {}).get("by"), "mode": "analyst" if plan.get("mode") == "analyst" else "engine",
         "placements": [p for p in ((_meta(conv).get("placements") or {}).values()) if run.id in (p.get("run_ids") or [])],
     }
 
 
+def _viewer_rules(db: Session, user: models.User | None, source_id: str | None) -> dict | None:
+    """R52: None when this person sees the source unrestricted; else {"hidden": {columns}, "rows": bool} from the data rules
+    on their role - stored rows (a risk list) are cut the same way a live query would be."""
+    if user is None or not source_id:
+        return None
+    from .. import data_access_rules
+    ds = db.get(models.DataSource, source_id)
+    if ds is None:
+        return None
+    role = data_access_rules.resolve_restriction_role(db, ds, user)
+    if role is None:
+        return None
+    rules = db.query(models.DataAccessRule).filter(models.DataAccessRule.datasource_id == ds.id, models.DataAccessRule.role == role).all()
+    if not rules:
+        return None
+    return {"hidden": {r.column_name for r in rules if r.kind == "column"}, "rows": any(r.kind == "row" for r in rules)}
+
+
+def _cut_rows(rows: list[dict], a: dict, rules: dict) -> list[dict] | None:
+    if rules.get("rows"):
+        return None  # row rules need columns the stored list does not carry: show nothing rather than too much
+    id_col = (a.get("risk_list") or {}).get("id_column") or a.get("id_column")
+    hidden_labels = {s.get("label") for s in (a.get("signals") or []) if s.get("column") in rules["hidden"]}
+    out = []
+    for r in rows:
+        r2 = {k: v for k, v in r.items() if k not in hidden_labels}
+        if id_col and id_col in rules["hidden"]:
+            r2["id"] = "hidden"
+        out.append(r2)
+    return out
+
+
+def list_for(db: Session, msg: models.Message, user: models.User | None, full: bool = False) -> dict | None:
+    """The list a turn holds, as this person may see it (full=True: every stored row, for the download)."""
+    st = _state(msg)
+    lst = st.get("list")
+    if not lst:
+        return None
+    rows = (st.get("list_all") or lst.get("rows") or []) if full else (lst.get("rows") or [])
+    conv = db.get(models.Conversation, msg.conversation_id)
+    an = _last_analysis(db, conv) if conv else None
+    a = (an or {}).get("analysis") or {}
+    rules = _viewer_rules(db, user, (a.get("table") or {}).get("source_id"))
+    if rules:
+        rows = _cut_rows(rows, a, rules)
+        if rows is None:
+            return {**lst, "rows": [], "shown": 0, "restricted": "Your data rules on this source hide this list."}
+        return {**lst, "rows": rows, "restricted": "Some columns are hidden by your data rules."}
+    return {**lst, "rows": rows}
+
+
+def _stale(started: str | None, limit: int | None, grace: int = 30) -> bool:
+    if not started or not limit:
+        return False
+    try:
+        return (datetime.utcnow() - datetime.fromisoformat(started.rstrip("Z"))).total_seconds() > limit + grace
+    except ValueError:
+        return False
+
+
+def _analysis_for(db: Session, st: dict, user: models.User | None) -> dict | None:
+    a = st.get("analysis")
+    if not a or not (a.get("risk_list") or {}).get("rows"):
+        return a
+    rules = _viewer_rules(db, user, (a.get("table") or {}).get("source_id"))
+    if not rules:
+        return a
+    rows = _cut_rows(a["risk_list"]["rows"], a, rules) or []
+    return {**a, "risk_list": {**a["risk_list"], "rows": rows}}
+
+
 def _message_turn(db: Session, msg: models.Message, conv: models.Conversation, user: models.User) -> dict:
     st = _state(msg)
+    if st.get("status") == "working" and _stale(st.get("started_at"), budgets.hard(st.get("kind"))):
+        # the worker is gone (a restart) or stuck: the same hard stop the timer gives
+        st = _set_state(db, msg, status="failed", timed_out=True, error=budgets.timeout_text(st.get("kind")), finished_at=datetime.utcnow().isoformat() + "Z")
     elapsed = st.get("elapsed_s")
     if elapsed is None and st.get("finished_at") and st.get("started_at"):
         try:
@@ -939,8 +1138,9 @@ def _message_turn(db: Session, msg: models.Message, conv: models.Conversation, u
            "trail": st.get("trail") or [], "elapsed_s": elapsed, "error": st.get("error"), "confirm": st.get("confirm"),
            "check": st.get("check"), "explain": st.get("explain"), "document": st.get("document"), "issues": st.get("issues") or [],
            "run_id": st.get("run_id"), "guided_project_id": st.get("guided_project_id"), "intent_by": st.get("intent_by"),
-           "normalized": st.get("normalized"), "analysis": st.get("analysis") if st.get("kind") == "analysis" else None,
-           "edit": st.get("edit"), "built": st.get("built")}
+           "normalized": st.get("normalized"), "analysis": _analysis_for(db, st, user) if st.get("kind") == "analysis" else None,
+           "edit": st.get("edit"), "built": st.get("built"), "list": list_for(db, msg, user) if st.get("list") else None, "whatif": st.get("whatif"),
+           "budget_s": budgets.budget(st.get("kind")), "timed_out": st.get("timed_out")}
     if st.get("kind") == "model" and st.get("model_id") and st.get("status") == "working":
         try:
             ms = model_tool.status(db, user, st["model_id"])

@@ -357,6 +357,9 @@ def _fit_model(df: pd.DataFrame, feats: list[str], y: pd.Series, budget_left: fl
             "importance": imp, "oof": oof, "features": len(feats), "folds": 5 if not big else 3}
 
 
+ALL_ROWS_CAP = 5000
+
+
 def _tiers(df: pd.DataFrame, y: pd.Series, oof: np.ndarray, id_col: str | None, signals: list[dict], entities: str, verb: str) -> tuple[list[dict], dict]:
     score = pd.Series(oof, index=df.index)
     yv = y.astype(int)
@@ -372,10 +375,9 @@ def _tiers(df: pd.DataFrame, y: pd.Series, oof: np.ndarray, id_col: str | None, 
                       "action": ("review this week" if key == "high" else "targeted offer" if key == "medium" else "no action")})
     # the rows to act on first: existing rows by score, with the signals they trip
     top_signals = [s for s in signals[:4] if "_mask" in s]
-    order = score[existing].sort_values(ascending=False).head(50).index
     cols = ["id", "score"] + [s["label"] for s in top_signals]
-    rows = []
-    for idx in order:
+
+    def row_of(idx) -> dict:
         row = {"id": str(df.at[idx, id_col]) if id_col else str(idx), "score": round(float(score[idx]), 2), "signals": []}
         for s in top_signals:
             try:
@@ -386,8 +388,15 @@ def _tiers(df: pd.DataFrame, y: pd.Series, oof: np.ndarray, id_col: str | None, 
             row[s["label"]] = (float(v) if isinstance(v, (int, float, np.integer, np.floating)) and not pd.isna(v) else str(v))
             if tripped:
                 row["signals"].append(s["group"])
-        rows.append(row)
-    return tiers, {"columns": cols, "rows": rows, "total_high": tiers[0]["count"]}
+        return row
+
+    ranked = score[existing].sort_values(ascending=False)
+    rows = [row_of(idx) for idx in ranked.head(50).index]
+    # R52: every current row in the high and medium tiers (the list a person asks for: "the 135 high-risk customers
+    # as a list"). Kept under "_all", which turns.py moves out of the analysis the page receives.
+    every = {"high": [row_of(idx) for idx in ranked[ranked >= 0.70].head(ALL_ROWS_CAP).index],
+             "medium": [row_of(idx) for idx in ranked[(ranked >= 0.30) & (ranked < 0.70)].head(ALL_ROWS_CAP).index]}
+    return tiers, {"columns": cols, "rows": rows, "total_high": tiers[0]["count"], "id_column": id_col, "_all": every}
 
 
 # ---- recommendations ------------------------------------------------------------------
@@ -512,7 +521,14 @@ def analyse(df: pd.DataFrame, entry: dict, sampled: bool, question: str, spec: d
 
     model = None
     if recipe in ("outcome", "signal") and len(df) >= 200:
-        model = _fit_model(df, feats, y.fillna(False), BUDGET_S - (time.time() - t0))
+        # R52 (time budgets): one OpenMP thread. On a small server with other work running, the default thread pool
+        # busy-waits against everything else and a 2-second fit took a minute; single-threaded it stays at seconds.
+        try:
+            from threadpoolctl import threadpool_limits
+            with threadpool_limits(limits=1):
+                model = _fit_model(df, feats, y.fillna(False), BUDGET_S - (time.time() - t0))
+        except ImportError:
+            model = _fit_model(df, feats, y.fillna(False), BUDGET_S - (time.time() - t0))
         rank = {d["column"]: i for i, d in enumerate(model["importance"])}
         for sgl in signals:
             sgl["importance"] = next((d["value"] for d in model["importance"] if d["column"] == sgl["column"]), None)

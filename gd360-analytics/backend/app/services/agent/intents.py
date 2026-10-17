@@ -88,9 +88,11 @@ WORLD_WORDS = re.compile(
 # the analysis recipes
 OUTCOME_Q = re.compile(r"\b(why|reasons?|drivers?|what drives|what (causes|explains)|predict|likely to|at risk|risk|retain|retention|recommend|prevent|"
                        r"reduce|stop|who (will|is|are|might) (going to )?(leave|churn|cancel|stop|default)|leav(e|ing)|lose|losing)\b", re.I)
-OUTCOME_WORD = re.compile(r"\b(churn|churned|attrition|attrited|cancel+(ed|ation|ing)?|leav(e|ing)|left|lost|lose|losing|default|defaulted|convert(ed|s|ion)?|fraud|renew(al|ed)?|lapse[ds]?)\b", re.I)
-SEGMENT_Q = re.compile(r"\bwhich\b.{0,60}\b(loses?|lost|has|have|had|is|are|show|shows|churns?)\b.{0,40}\b(most|least|highest|lowest|biggest|worst|best)\b|\b(by|per|across)\s+(card|income|region|segment|category|plan|tier|gender|age|product|channel|country|city|team|department|type|group)\b", re.I)
+OUTCOME_WORD = re.compile(r"\b(churn|churned|attrition|attrited|cancel+(s|ed|ation|ing)?|leav(e|ing)|left|lost|lose|losing|default|defaulted|convert(ed|s|ion)?|fraud|renew(al|ed)?|lapse[ds]?)\b", re.I)
+SEGMENT_Q = re.compile(r"\bwhich\b.{0,60}\b(loses?|lost|has|have|had|is|are|show|shows|churns?|cancels?|leaves?|defaults?|converts?|renews?)\b.{0,40}\b(most|least|highest|lowest|biggest|worst|best)\b|\b(by|per|across)\s+(card|income|region|segment|category|plan|tier|gender|age|product|channel|country|city|team|department|type|group)\b", re.I)
 SIGNAL_Q = re.compile(r"\b(does|do|is|are|did|can|could|how (much|well) does)\b.{0,50}\b(predict|affect|drive|matter|relate|correlate|explain|cause|lead to|associated|influence|impact)\b", re.I)
+MEASURE_Q = re.compile(r"\b(revenue|sales|sold|amount|spend|spent|price|prices|profit|cost|costs|units|orders|volume|adr|margin|average|total|sum|"
+                       r"mean|median|month|months|monthly|week|weekly|day|daily|year|yearly|quarter|trend|trended|over time)\b", re.I)
 OUTCOME_COL = re.compile(r"churn|attrit|exit|cancel|lost|left|retain|status|flag|outcome|default|fraud|convert|renew|active|lapse|closed", re.I)
 
 
@@ -100,6 +102,10 @@ def analysis_spec(question: str, column_names: list[str] | None) -> dict | None:
     cols = list(column_names or [])
     has_outcome = any(OUTCOME_COL.search(c) for c in cols)
     if not OUTCOME_WORD.search(q) and not has_outcome:
+        return None
+    # R52: "which month had the lowest revenue" on a table that also has an outcome column is a question about revenue,
+    # not about the outcome - the analysis recipes need the outcome named when another measure or a time unit is
+    if not OUTCOME_WORD.search(q) and MEASURE_Q.search(q):
         return None
     if SIGNAL_Q.search(q) and OUTCOME_WORD.search(q):
         return {"recipe": "signal"}

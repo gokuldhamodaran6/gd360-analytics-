@@ -24,7 +24,10 @@ TEAM = re.compile(
     r"\b(create|make|set ?up|start|add|build)\b.{0,40}\b(team|space|group|room)\b"
     r"|\b(give|grant|allow)\b.{0,30}\baccess\b.{0,30}\b(to|for)\b"
     r"|\b(hide|mask|restrict|block)\b.{0,30}\b(column|columns|emails?|phones?|card numbers?|salar(y|ies)|ssn|pan|aadhaar)\b"
-    r"|\bonly sees?\b|\bcan only see\b", re.I)
+    r"|\bonly sees?\b|\bcan only see\b"
+    r"|\bshare\b.{0,60}\bteam\b", re.I)  # R52: "share this with the Retention team without customer IDs"
+SHARE_THIS = re.compile(r"\bshare\s+(this|it|the (analysis|conversation|brief|dashboard|answer|work))\b", re.I)
+_ID_COL = re.compile(r"(^|_)(id|ids|uuid|guid)$|^id_|_id_|clientnum|client_?num|customer_?(id|no|num|number)|account_?(id|no|num|number)|member_?(id|no)|^cust_?id", re.I)
 
 _SYSTEM = (
     "GD360 TEAM DRAFTER. Read the sentence into a team draft. Reply with JSON only:\n"
@@ -36,7 +39,7 @@ _SYSTEM = (
 
 _HIDE_WORDS = {"email": ["email", "e_mail", "mail"], "phone": ["phone", "mobile", "tel"], "card": ["card", "card_number", "cc"],
                "salary": ["salary", "pay", "wage"], "address": ["address", "street"], "name": ["name"], "ssn": ["ssn"], "pan": ["pan"],
-               "aadhaar": ["aadhaar", "aadhar"], "dob": ["dob", "birth"]}
+               "aadhaar": ["aadhaar", "aadhar"], "dob": ["dob", "birth"], "id": ["ids", " id", "identifier", "clientnum", "client number", "customer number"]}
 
 
 def wants_team(text: str) -> bool:
@@ -52,17 +55,23 @@ def _model_draft(text: str) -> dict:
 def _rule_draft(text: str) -> dict:
     t = text.strip()
     d: dict = {"name": "", "members": [], "sources": [], "hidden_columns": [], "row_rules": [], "note": ""}
-    m = re.search(r"\b(?:create|make|set ?up|start|build)\s+(?:a |an |the )?(?:new )?([A-Z][\w&' -]{1,40}?)\s+(?:team|space|group)\b", t)
+    m = re.search(r"\b(?:create|make|set ?up|start|build)\s+(?:a |an |the )?(?:new )?([A-Z][\w&' -]{1,40}?)\s+(?:team|space|group)\b", t) \
+        or re.search(r"\b(?:with|to|for)\s+(?:the |a |an |our |my )?(?:new )?([A-Z][\w&'-]{1,30}(?: [A-Z][\w&'-]{1,30})?)\s+(?:team|space|group)\b", t)
     if m:
         d["name"] = m.group(1).strip()
+    m = re.search(r"\bwithout\s+(?:the |any |their )?(.+?)(?:\.|;|,|$)", t, re.I)
+    if m:
+        d["hidden_columns"] = [x.strip() for x in re.split(r",|\bor\b|\band\b", m.group(1)) if x.strip()]
     m = re.search(r"\bwith\s+(.+?)(?:\.|,? (?:they|who|that|which) |$)", t, re.I)
+    if m and re.search(r"\b(team|space|group)\b", m.group(1), re.I) and not re.search(r"\bteam with\b", t, re.I):
+        m = None  # "share this with the Retention team" names the team, not its members
     if m:
         d["members"] = [x.strip() for x in re.split(r",|\band\b", m.group(1)) if x.strip() and not re.search(r"\b(data|source|access)\b", x, re.I)]
     m = re.search(r"\b(?:can )?(?:use|see|access)\s+(.+?)\s+(?:data|sources?|but|and nothing|$)", t, re.I)
     if m:
         d["sources"] = [x.strip() for x in re.split(r",|\band\b", m.group(1)) if x.strip()]
     m = re.search(r"\b(?:but )?not\s+(.+?)(?:\.|;|$)", t, re.I)
-    if m:
+    if m and not d.get("hidden_columns"):
         d["hidden_columns"] = [x.strip() for x in re.split(r",|\bor\b|\band\b", m.group(1)) if x.strip()]
     for who, col_val in re.findall(r"\b([A-Z][a-z]+)\s+(?:only sees?|can only see)\s+(.+?)(?:\.|;|$)", t):
         d["row_rules"].append({"column": "", "values": [col_val.strip()], "who": who})
@@ -93,7 +102,8 @@ def _columns_of(ds: models.DataSource) -> list[str]:
     return cols
 
 
-def draft(db: Session, user: models.User, text: str, *, workspace_id: str | None, use_model: bool = True) -> dict:
+def draft(db: Session, user: models.User, text: str, *, workspace_id: str | None, use_model: bool = True,
+          source_ids: list[str] | None = None, conversation_id: str | None = None) -> dict:
     from ..project_engine.catalog import accessible_sources
     d: dict = {}
     if use_model:
@@ -133,7 +143,9 @@ def draft(db: Session, user: models.User, text: str, *, workspace_id: str | None
         else:
             issues.append(f"I couldn't find a data source called “{sname}”.")
     if not sources_out and not (d.get("sources")):
-        sources_out = [{"id": s.id, "name": s.name, "kind": s.kind} for s in all_sources[:3]]
+        # R52: "share this ..." - the conversation's own sources first
+        own = [s for s in all_sources if s.id in (source_ids or [])]
+        sources_out = [{"id": s.id, "name": s.name, "kind": s.kind} for s in (own or all_sources[:3])]
     # hidden columns: resolve words to real column names on each chosen source
     hidden_out = []
     for ds_ref in sources_out:
@@ -144,7 +156,8 @@ def draft(db: Session, user: models.User, text: str, *, workspace_id: str | None
             keys = [k for k, alts in _HIDE_WORDS.items() if any(a in w for a in alts)] or [re.sub(r"[^a-z0-9]+", "_", w)]
             for c in cols:
                 cl = c.lower()
-                if any(k in cl for k in keys) or any(a in cl for k in keys for a in _HIDE_WORDS.get(k, [])):
+                hit = any(_ID_COL.search(cl) if k == "id" else (k in cl or any(a.strip() in cl for a in _HIDE_WORDS.get(k, []))) for k in keys)
+                if hit:
                     if not any(h["column"] == c and h["source_id"] == ds.id for h in hidden_out):
                         hidden_out.append({"source_id": ds.id, "source": ds.name, "column": c})
     if d.get("hidden_columns") and not hidden_out:
@@ -166,11 +179,12 @@ def draft(db: Session, user: models.User, text: str, *, workspace_id: str | None
     name = (d.get("name") or "").strip() or "New team"
     body = {"name": name[:60], "access": "members" if members_out else "workspace" if ws else "private",
             "member_ids": [m["user_id"] for m in members_out], "source_ids": [s["id"] for s in sources_out], "workspace_id": ws.id if ws else None,
-            "hidden": hidden_out, "rows": rows_out}
+            "hidden": hidden_out, "rows": rows_out,
+            "conversation_id": conversation_id if (conversation_id and SHARE_THIS.search(text or "")) else None}
     if not sources_out:
         issues.append("Connect a data source first; a team needs data to work on.")
     invite = f"/invite/{ws.invite_token}" if (ws is not None and getattr(ws, 'invite_token', None) and to_invite) else None
-    return {"ok": not issues, "body": body, "members": members_out, "to_invite": to_invite, "invite_link": invite, "sources": sources_out,
+    return {"ok": not issues, "body": body, "shares_conversation": bool(body.get("conversation_id")), "members": members_out, "to_invite": to_invite, "invite_link": invite, "sources": sources_out,
             "hidden": hidden_out, "rows": rows_out, "issues": issues, "note": str(d.get("note") or "").strip() or None,
             "limits": ["Rules apply to everyone with the member or viewer role on a source, not to one named person.",
                        "A hidden column is removed from every answer and dashboard for those roles; it is not masked."]}
