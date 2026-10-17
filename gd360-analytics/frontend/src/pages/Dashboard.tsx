@@ -1236,6 +1236,11 @@ export default function Dashboard() {
                       <span className="font-mono text-[11px] text-muted">{n}</span>
                     </button>
                   ))}
+                  {/* 2026-10-17 (R52): documents have their own list */}
+                  <button type="button" role="tab" aria-selected={false} onClick={() => navigate("/library/documents")} data-type-tab="documents"
+                    className="h-[34px] px-3 max-sm:px-2.5 rounded-[7px] text-sm inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 text-muted hover:text-text">
+                    <span aria-hidden="true" style={{ fontSize: 12 }}>▤</span>Documents
+                  </button>
                 </div>
                 <div className="relative flex-1 min-w-0 sm:max-w-xs">
                   <SearchIcon className="w-4 h-4 text-muted absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
