@@ -2,7 +2,7 @@
 // the trust chips (only what was verified), sources, the picture, artifact cards, confirm cards.
 import { useEffect, useState } from "react";
 import type { ProjectRun } from "../api/projects";
-import type { Artifact, Chip, TeamConfirm, Turn as TurnT } from "../api/v2";
+import { downloadTurnList, type Artifact, type Chip, type TeamConfirm, type Turn as TurnT } from "../api/v2";
 import { FollowupCheck } from "../components/QuestionCheck";
 import { layoutSql } from "../project/RunPanels";
 import { DataAnswer } from "./DataAnswer";
@@ -110,6 +110,7 @@ export function TeamCard({ c, turn, busy, onDecide }: { c: TeamConfirm; turn: Tu
         <div className="c2-row"><span>Hidden</span><span>{c.hidden.length ? c.hidden.map((h) => `${h.column} (${h.source})`).join(", ") : "nothing hidden"}</span></div>
         {c.rows.length > 0 && <div className="c2-row"><span>Rows</span><span>{c.rows.map((r) => `${r.column} limited to ${r.values.join(", ")} on ${r.source} for ${r.role}s`).join("; ")}</span></div>}
         <div className="c2-row"><span>Applies to</span><span style={{ color: "rgb(var(--color-muted))" }}>{c.limits.join(" ")}</span></div>
+        {c.shares_conversation && <div className="c2-row"><span>Shares</span><span>This conversation moves into the team's Space</span></div>}
         {c.note && <div className="c2-row"><span>Note</span><span>{c.note}</span></div>}
       </div>
       {turn.error && <div className="c2-err">{turn.error}</div>}
@@ -172,6 +173,79 @@ export function DocCard({ a, turn, onOpen, onAsk }: { a: Artifact; turn: TurnT; 
 }
 
 /** R50 (board 06): an alert or a schedule, exactly as it will run - nothing runs before Confirm. */
+// 2026-10-17 (R52): "the 135 high-risk customers as a list" - a table of the tier with the signals each row trips,
+// Excel and CSV of every row. Nothing is recomputed; the rows were scored when the analysis ran.
+const fmtCell = (v: unknown) => typeof v === "number" ? (Number.isInteger(v) ? v.toLocaleString("en-US") : v.toLocaleString("en-US", { maximumFractionDigits: 3 })) : Array.isArray(v) ? v.join(" · ") : String(v ?? "");
+export function ListCard({ turn, conversationId }: { turn: TurnT; conversationId: string }) {
+  const l = turn.list!;
+  const [all, setAll] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const cols = l.columns;
+  const rows = all ? l.rows : l.rows.slice(0, 8);
+  const dl = async (k: "xlsx" | "csv") => { setBusy(k); try { await downloadTurnList(conversationId, turn.id, k, l.title); } finally { setBusy(null); } };
+  const head = (c: string) => c === "id" ? l.id_label : c === "score" ? "Score" : c === "tier" ? "Tier" : c.charAt(0).toUpperCase() + c.slice(1);
+  return (
+    <div className="c2-card c2-list" data-c2-list="">
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <span style={{ fontSize: 15, fontWeight: 600 }}>{l.title}</span>
+          <span style={{ fontSize: 12.5, color: "rgb(var(--color-muted))" }}>{l.total.toLocaleString("en-US")} rows · {l.rule} · highest score first</span>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button type="button" className="c2-nx sm dark" disabled={!!busy || !l.rows.length} onClick={() => void dl("xlsx")} data-c2-list-xlsx="">{busy === "xlsx" ? "Preparing…" : "Excel"}</button>
+          <button type="button" className="c2-nx sm" disabled={!!busy || !l.rows.length} onClick={() => void dl("csv")} data-c2-list-csv="">CSV</button>
+        </div>
+      </div>
+      {l.restricted && <span style={{ fontSize: 12.5, color: "rgb(var(--color-warning))" }}>{l.restricted}</span>}
+      {rows.length > 0 && (
+        <div className="c2-list-scroll" style={{ maxHeight: all ? 420 : undefined }}>
+          <table className="c2-list-t">
+            <thead><tr>{cols.map((c) => <th key={c} className={c === "score" ? "num" : undefined}>{head(c)}</th>)}<th>Why</th></tr></thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={`${r.id}-${i}`}>
+                  {cols.map((c) => <td key={c} className={c === "score" || typeof r[c] === "number" ? "num" : undefined}>{c === "score" ? Number(r[c]).toFixed(2) : fmtCell(r[c])}</td>)}
+                  <td className="why">{(r.signals || []).join(" · ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {l.rows.length > 8 && <button type="button" className="c2-link" style={{ alignSelf: "flex-start", background: "none", border: 0, padding: 0, cursor: "pointer" }} onClick={() => setAll((a) => !a)} data-c2-list-all="">
+        {all ? "Show fewer" : `Show all ${l.rows.length.toLocaleString("en-US")}${l.total > l.rows.length ? ` of ${l.total.toLocaleString("en-US")} (every row is in the Excel)` : ""}`}</button>}
+    </div>
+  );
+}
+
+// "What if churn fell by a quarter in the low-usage band?" - before and after, and the assumptions, labelled as such.
+export function WhatIfCard({ turn }: { turn: TurnT }) {
+  const w = turn.whatif!;
+  const pct = (v: number) => `${v.toLocaleString("en-US", { maximumFractionDigits: 1 })}%`;
+  const n = (v: number) => v.toLocaleString("en-US");
+  const Row = ({ k, a, b }: { k: string; a: string; b: string }) => (
+    <div className="c2-wi-r"><span>{k}</span><span className="num">{a}</span><span className="num">{b}</span></div>
+  );
+  return (
+    <div className="c2-card c2-wi" data-c2-whatif="">
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <span style={{ fontSize: 15, fontWeight: 600 }}>{w.noun.charAt(0).toUpperCase() + w.noun.slice(1)} down {w.change.label.replace(/^by /, "by ")}: {w.group.charAt(0).toUpperCase() + w.group.slice(1)}</span>
+        <span style={{ fontSize: 12.5, color: "rgb(var(--color-muted))" }}>{n(w.group_n)} {w.entities} in the group · about {n(w.saved)} fewer</span>
+      </div>
+      <div className="c2-wi-t">
+        <div className="c2-wi-r h"><span /><span>Today</span><span>If it happened</span></div>
+        <Row k={`${w.noun.charAt(0).toUpperCase() + w.noun.slice(1)} rate in the group`} a={pct(w.before.group_rate)} b={pct(w.after.group_rate)} />
+        <Row k={`${w.entities.charAt(0).toUpperCase() + w.entities.slice(1)} lost in the group`} a={n(w.before.group_count)} b={n(w.after.group_count)} />
+        <Row k={`Overall ${w.noun}`} a={pct(w.before.overall_rate)} b={pct(w.after.overall_rate)} />
+      </div>
+      <div className="c2-wi-as" data-c2-assumptions="">
+        <span className="c2-eb">Assumptions, not findings</span>
+        <ul>{w.assumptions.map((a) => <li key={a}>{a}</li>)}</ul>
+      </div>
+    </div>
+  );
+}
+
 export function ConfirmCard({ turn, busy, onDecide, onRevise }: { turn: TurnT; busy: boolean; onDecide: (approve: boolean) => void; onRevise?: (edits: Record<string, unknown>) => Promise<void> | void }) {
   const c = turn.confirm;
   const [editing, setEditing] = useState(false);
@@ -302,6 +376,9 @@ export function TurnView({
           <button type="button" className={`c2-w ${open ? "open" : ""}`} onClick={() => setOpen((o) => !o)} data-c2-worked="">
             <svg className="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M9 18l6-6-6-6" /></svg>
             {working ? <><span className="c2-spin" /> Working · {secs} s</> : secs < 1 ? "Worked for under a second" : `Worked for ${secs} second${secs === 1 ? "" : "s"}`}
+            {turn.budget_s && secs > turn.budget_s && !turn.timed_out && (
+              <span className="c2-over" data-c2-over="">{working ? ` · longer than usual (under ${turn.budget_s} s is the aim)` : ` · over the ${turn.budget_s} s target`}</span>
+            )}
             {turn.mode === "analyst" && !working ? " · the Analyst" : ""}
           </button>
         )}
@@ -310,7 +387,7 @@ export function TurnView({
         {turn.kind === "check" && turn.check && turn.status === "needs_input" && (
           <FollowupCheck check={turn.check} busy={busy} onClose={() => undefined} onPick={onPickCheck} />
         )}
-        {turn.text && !(turn.kind === "check") && (turn.kind === "analysis" || turn.kind === "dashboard" || turn.kind === "dashboard_edit" || turn.kind === "document" || turn.kind === "document_edit" || turn.kind === "automation" || turn.kind === "team" ? <Lead text={turn.text} />
+        {turn.text && !(turn.kind === "check") && (turn.kind === "analysis" || turn.kind === "dashboard" || turn.kind === "dashboard_edit" || turn.kind === "document" || turn.kind === "document_edit" || turn.kind === "automation" || turn.kind === "team" || turn.kind === "list" || turn.kind === "whatif" ? <Lead text={turn.text} />
           : turn.kind === "knowledge" ? <p className="prose"><Cited text={turn.text} /></p> : <p className="prose">{turn.text}</p>)}
         {turn.kind === "knowledge" && (turn.sources || []).length > 0 && (
           <div className="c2-srcs" data-c2-sources="">
@@ -327,13 +404,16 @@ export function TurnView({
         {turn.kind === "guided" && !run && working && <span className="c2-working"><span className="c2-spin" /> Planning the steps…</span>}
         {turn.status === "confirm" && <ConfirmCard turn={turn} busy={busy} onDecide={(ok) => onConfirm(turn, ok)} onRevise={onRevise ? (e) => onRevise(turn, e) : undefined} />}
         {turn.kind === "model" && turn.status === "done" && <ModelSummary turn={turn} />}
+        {turn.kind === "list" && turn.status === "done" && turn.list && <ListCard turn={turn} conversationId={conversationId} />}
+        {turn.kind === "whatif" && turn.status === "done" && turn.whatif && <WhatIfCard turn={turn} />}
+        {turn.timed_out && turn.status === "failed" && <div className="c2-next"><button type="button" className="c2-nx sm" onClick={() => onAsk(turn.question)} data-c2-retry="">Ask again</button></div>}
         {turn.kind === "dashboard_edit" && turn.status === "done" && turn.edit && (
           <EditCard turn={turn} onAsk={onAsk} onOpen={() => { const a = (turn.artifacts || [])[0]; if (a) onOpenArtifact({ ...a, refresh: false } as Artifact, turn); }} />
         )}
         {turn.kind === "dashboard" && (turn.built || (working && (turn.trail || []).length > 0)) && (
           <BuiltCard turn={turn} onOpen={() => { const a = (turn.artifacts || [])[0]; if (a) onOpenArtifact(a, turn); }} />
         )}
-        {(turn.artifacts || []).filter(() => !(turn.kind === "dashboard_edit" && turn.edit) && !(turn.kind === "dashboard" && turn.built))
+        {(turn.artifacts || []).filter((a) => a.type !== "list" && !(turn.kind === "dashboard_edit" && turn.edit) && !(turn.kind === "dashboard" && turn.built))
           .map((a) => (a.type === "document" && a.doc_id
             ? <DocCard key={a.id} a={a} turn={turn} onAsk={onAsk} onOpen={() => onOpenArtifact({ ...a, refresh: false } as Artifact, turn)} />
             : <ArtifactCard key={a.id} a={a} onOpen={() => onOpenArtifact(a, turn)} />))}

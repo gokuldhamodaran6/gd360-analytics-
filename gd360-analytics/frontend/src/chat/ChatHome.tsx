@@ -4,7 +4,7 @@
 // written title, the finding under it, its Space and what it holds ("analysis + dashboard"), and when.
 // "/chat" (the rail's New) is the same box on its own - no Spaces, no Recent - ready to type.
 import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { ProjectSource } from "../api/projects";
 import { v2Api, type ConversationRow, type Mode, type PlanSummary } from "../api/v2";
 import TopNav from "../components/TopNav";
@@ -40,37 +40,6 @@ export function when(iso: string, now = Date.now()): string {
   if (sameDay) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
   if (days < 6) return d.toLocaleDateString([], { weekday: "short" });
   return d.toLocaleDateString([], { month: "short", day: "numeric" });
-}
-
-function PlanPanel({ plan, onClose }: { plan: PlanSummary; onClose: () => void }) {
-  return (
-    <div className="c2-card" data-c2-plan="">
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ fontSize: 16, fontWeight: 600 }}>{plan.label} plan</span>
-        <span className="c2-chip" style={{ height: 24 }}>every feature</span>
-        <span style={{ flex: 1 }} />
-        <button type="button" className="c2-nx sm ghost" onClick={onClose}>Close</button>
-      </div>
-      <p style={{ margin: 0, fontSize: 14, color: "rgb(var(--color-secondary))", lineHeight: 1.55 }}>
-        Plans differ by limits, governance and where it runs, never by hiding a capability.{plan.enforced ? "" : " Limits are shown, not enforced, until billing is switched on."}
-      </p>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 10 }}>
-        {plan.meters.map((m) => (
-          <div key={m.key} className="c2-meter">
-            <span>{m.label}</span>
-            <span style={{ color: "rgb(var(--color-text))", fontSize: 15, fontWeight: 600 }} className="c2-mono">{m.used}{m.limit ? ` / ${m.limit}` : ""}</span>
-            <span className="bar"><i style={{ width: m.limit ? `${Math.min(100, (100 * m.used) / m.limit)}%` : "0%" }} /></span>
-          </div>
-        ))}
-      </div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", fontSize: 13, color: "rgb(var(--color-muted))" }}>
-        {Object.entries(plan.plans).map(([k, p]) => (
-          <span key={k} className="c2-chip" style={{ background: k === plan.plan ? "rgb(var(--color-tint))" : undefined, color: k === plan.plan ? "rgb(var(--color-primary))" : undefined }}>{p.label} · {p.who}</span>
-        ))}
-        <Link to="/pricing" className="c2-nx sm ghost">Compare plans</Link>
-      </div>
-    </div>
-  );
 }
 
 export default function ChatHome() {
@@ -153,7 +122,7 @@ function HomeBody() {
             ))}
           </div>
         </div>
-        {showPlan && home?.plan && <PlanPanel plan={home.plan} onClose={() => setParams({})} />}
+        {showPlan && <Navigate to="/settings/plan" replace />}
         {!isNew && spaces.length > 0 && (
           <section style={{ display: "flex", flexDirection: "column", gap: 14 }} aria-labelledby="hd-spaces">
             <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}><h2 className="c2-eb" id="hd-spaces">Spaces</h2><Link to="/data?tab=spaces" className="c2-link">Manage</Link></div>

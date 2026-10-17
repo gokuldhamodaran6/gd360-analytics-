@@ -345,3 +345,22 @@
 .c2-main.has-canvas .c2-act { padding: 16px; }
 .c2-main.has-canvas .c2-act .kv { grid-template-columns: 92px minmax(0, 1fr); gap: 6px 12px; font-size: 13.5px; }
 .c2-main.has-canvas .c2-btn { height: 36px; padding: 0 14px; font-size: 13.5px; }
+
+/* 2026-10-17 (R52): the risk list, the what-if, the time-budget note */
+.c2-over { color: rgb(var(--color-warning)); }
+.c2-list-scroll { overflow: auto; border: 1px solid rgb(var(--color-subtle)); border-radius: 12px; }
+.c2-list-t { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.c2-list-t th { position: sticky; top: 0; background: rgb(var(--color-surface)); text-align: left; font-weight: 600; color: rgb(var(--color-muted)); padding: 8px 10px; border-bottom: 1px solid rgb(var(--color-border)); white-space: nowrap; }
+.c2-list-t td { padding: 7px 10px; border-bottom: 1px solid rgb(var(--color-subtle)); white-space: nowrap; }
+.c2-list-t .num { text-align: right; }
+.c2-list-t td.why { color: rgb(var(--color-secondary)); }
+.c2-list-t tr:last-child td { border-bottom: 0; }
+.c2-wi-t { display: flex; flex-direction: column; }
+.c2-wi-r { display: grid; grid-template-columns: minmax(0, 1fr) 90px 110px; gap: 10px; padding: 8px 0; border-top: 1px solid rgb(var(--color-subtle)); font-size: 14px; font-variant-numeric: tabular-nums; }
+.c2-wi-r .num { text-align: right; }
+.c2-wi-r.h { border-top: 0; font-size: 12px; color: rgb(var(--color-muted)); }
+.c2-wi-r.h span { text-align: right; }
+.c2-wi-r span:first-child { overflow-wrap: anywhere; }
+.c2-wi-as { background: rgb(var(--c2-panel)); border-radius: 12px; padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; }
+.c2-wi-as ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.55; color: rgb(var(--color-secondary)); }
+@media (max-width: 520px) { .c2-wi-r { grid-template-columns: minmax(0, 1fr) 64px 84px; font-size: 13px; } }
