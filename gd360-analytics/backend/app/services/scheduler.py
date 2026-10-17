@@ -494,5 +494,8 @@ def start_scheduler() -> None:
     # scheduled tick is skipped rather than piling up a second one running
     # concurrently against the same rows.
     _scheduler.add_job(_tick, "interval", seconds=60, id="gd360_dashboard_refresh_tick", max_instances=1)
+    # 2026-10-17 (R52): the nightly quality check on the live model (services/quality.py), 02:10 UTC
+    from . import quality
+    _scheduler.add_job(quality.nightly_tick, "cron", hour=2, minute=10, id="gd360_nightly_quality", max_instances=1, misfire_grace_time=3600)
     _scheduler.start()
     logger.info("[scheduler] started - checking for due dashboard refreshes every 60 seconds.")

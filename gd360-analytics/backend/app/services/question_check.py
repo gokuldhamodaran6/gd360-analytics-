@@ -1687,7 +1687,9 @@ def _what(q: str, qw: set[str], topic: str | None) -> str:
     if topic and meas:
         base = TOPIC_LABEL[topic]
         lead = [m for m in meas if m not in base][:2]
-        return f"your {base} {' and '.join(lead)}".strip() if lead else f"your {base} numbers"
+        # R52: "your customers numbers" -> "your customer numbers"
+        noun = base[:-1] if (" " not in base and base.endswith("s") and not base.endswith("ss")) else base
+        return f"your {base} {' and '.join(lead)}".strip() if lead else f"your {noun} numbers"
     if meas:
         return "your " + " and ".join(meas[:2])
     if topic:
