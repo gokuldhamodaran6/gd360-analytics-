@@ -42,6 +42,8 @@ import ConversationPage from "./chat/Conversation";
 import BoardPage from "./board/BoardPage";
 // 2026-10-15 (R51): block documents
 import DocPage from "./doc/DocPage";
+import PlanPage from "./plans/PlanPage";
+import LibraryDocs from "./doc/LibraryDocs";
 import GuidedAnalysis from "./pages/GuidedAnalysis";
 import TalkPage from "./pages/TalkPage";
 import Initiatives from "./pages/Initiatives";
@@ -160,6 +162,7 @@ export default function App() {
       <Route path="/boards/:boardId" element={<Protected><BoardPage /></Protected>} />
       <Route path="/docs/:docId" element={<Protected><DocPage /></Protected>} />
       <Route path="/library" element={<Protected><Dashboard /></Protected>} />
+      <Route path="/library/documents" element={<Protected><LibraryDocs /></Protected>} />
       <Route path="/projects" element={<RedirectKeepingQuery to="/library" />} />
       {/* 2026-10-13 (R45): keyed by the answer's id, so moving from one answer to another (command
           palette, a notification) starts clean - no questions, sources or answer from the last one. */}
@@ -251,6 +254,7 @@ export default function App() {
       {/* 2026-10-10 (round 19): Governance became the Trust Center. */}
       <Route path="/governance" element={<RedirectKeepingQuery to="/trust" />} />
       <Route path="/trust" element={<Protected><TrustCenter /></Protected>} />
+      <Route path="/settings/plan" element={<Protected><PlanPage /></Protected>} />
       <Route path="/settings/domains" element={<Protected><DomainSettings /></Protected>} />
       {/* 2026-10-10: Mission Control — the internal admin portal (src/admin). */}
       <Route path="/admin/*" element={<Protected><AdminApp /></Protected>} />
