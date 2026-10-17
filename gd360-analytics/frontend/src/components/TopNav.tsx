@@ -96,7 +96,7 @@ function AccountMenu({ isAdmin }: { isAdmin: boolean }) {
               {user?.email && <div className="text-caption text-muted truncate">{user.email}</div>}
             </div>
             <div className="border-t border-border my-1" />
-            <button type="button" role="menuitem" className={itemClass} onClick={() => { close(); setShowPlan(true); }}>
+            <button type="button" role="menuitem" className={itemClass} onClick={() => { close(); navigate("/settings/plan"); }}>
               <CreditCardIcon size={15} className="text-muted" /> My Subscription
             </button>
             <button type="button" role="menuitem" className={itemClass} onClick={() => { close(); navigate("/profile"); }}>
@@ -175,7 +175,7 @@ function PlanChip() {
   if (!plan) return null;
   const q = plan.meters.find((m) => m.key === "questions_per_day");
   const text = q && q.limit ? `${plan.label} plan · ${q.used} of ${q.limit} questions today` : `${plan.label} plan`;
-  return <button type="button" className="gx-sc gx-hide-md" onClick={() => navigate("/?plan=1")} title="Plan and usage" data-gx-plan="">{text}</button>;
+  return <button type="button" className="gx-sc gx-hide-md" onClick={() => navigate("/settings/plan")} title="Plan and usage" data-gx-plan="">{text}</button>;
 }
 
 function ThemeIcon() {
@@ -208,7 +208,7 @@ function Avatar2() {
             {user?.email && <div className="text-caption text-muted truncate">{user.email}</div>}
           </div>
           <div className="border-t border-border my-1" />
-          <button type="button" role="menuitem" className={itemClass} onClick={() => { close(); navigate("/?plan=1"); }}>
+          <button type="button" role="menuitem" className={itemClass} onClick={() => { close(); navigate("/settings/plan"); }} data-gx-plan-menu="">
             <CreditCardIcon size={15} className="text-muted" /> Plan and usage
           </button>
           <button type="button" role="menuitem" className={itemClass} onClick={() => { close(); navigate("/profile"); }}>

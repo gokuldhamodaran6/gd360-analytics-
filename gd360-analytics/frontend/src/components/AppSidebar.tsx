@@ -1207,7 +1207,7 @@ export default function AppSidebar({
           </Link>
         ))}
         <span className="gx-spacer" />
-        {eulivAvailable() && <button type="button" className="gx-ri" onClick={() => openEuliv()} aria-label="Talk to EuLiv, the voice assistant" data-nav="euliv">{GX.mic}EuLiv</button>}
+        {eulivAvailable() && <button type="button" className="gx-ri" onClick={() => openEuliv()} aria-label="Talk to Euliv, the voice assistant" data-nav="euliv">{GX.mic}Euliv</button>}
         <button type="button" className={`gx-ri${on === "more" ? " on" : ""}`} data-gx-menu-trigger="" aria-haspopup="menu" aria-expanded={menu?.kind === "more"}
           onClick={(e) => openAt("more", e.currentTarget)} data-nav="more">{GX.more}More</button>
         <Link to="/profile" className={`gx-ri${on === "settings" ? " on" : ""}`} aria-current={on === "settings" ? "page" : undefined} data-nav="settings">{GX.gear}Settings</Link>
@@ -1247,7 +1247,7 @@ export default function AppSidebar({
             <>
               <button type="button" role="menuitem" onClick={() => go("/data")}>{GX.db}Data and Spaces</button>
               <button type="button" role="menuitem" onClick={() => go("/automations")}>{GX.bolt}Automations</button>
-              {eulivAvailable() && <button type="button" role="menuitem" onClick={() => { close(); openEuliv(); }}>{GX.mic}Talk to EuLiv</button>}
+              {eulivAvailable() && <button type="button" role="menuitem" onClick={() => { close(); openEuliv(); }}>{GX.mic}Talk to Euliv</button>}
               <div className="sep" />
             </>
           )}

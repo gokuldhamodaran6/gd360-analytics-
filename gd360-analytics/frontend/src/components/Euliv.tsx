@@ -548,6 +548,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
   const session = useRef(0);
   const control = useRef<{ finish?: () => void }>({});
   const proven = useRef(false); // the mic has heard this person in this conversation
+  const typedLast = useRef(false); // R52: the person's last turn was typed or tapped, not spoken
   // round 28: talking over Euliv only when its voice can't reach the mic (headphones), or when turned on
   const [headset, setHeadset] = useState(false);
   const headsetRef = useRef(false);
@@ -611,7 +612,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
     // round 28: on speakers Euliv does NOT listen while it talks - its own voice would come back as "you".
     // Interrupt with a tap / Space; with headphones (or "talk over Euliv" on) just talk.
     // round 31: speakers too - but only for a short interrupt ("wait", "Euliv", "no", "change it"), like "Hey Siri"
-    const barge = settingsRef.current.handsFree && canListen && !micTrouble.current
+    const barge = settingsRef.current.handsFree && canListen && !micTrouble.current && !typedLast.current
       ? bargeListen({
           gate: talkOver() ? undefined : isInterrupt,
           // everything Euliv is saying now, and said in the last few seconds - its echo isn't the person
@@ -653,6 +654,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
     }
     setPhase("listening");
     setCaption("");
+    typedLast.current = false;
     const heard = await listenOnce({
       onInterim: (t) => s === session.current && setCaption(t),
       onLevel: (l) => s === session.current && setLevel(l),
@@ -673,6 +675,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
     echoes.current = 0;
     if (heard.text) {
       proven.current = true;
+      typedLast.current = false;
       micTrouble.current = false;
       unclear.current = 0;
       return handle(heard.text, heard.alts);
@@ -721,7 +724,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
 
   const afterReply = useCallback(async (spokeOk: boolean | null) => {
     if (!alive.current || spokeOk === null) return;
-    if (spokeOk && settingsRef.current.handsFree && canListen && !micTrouble.current) {
+    if (spokeOk && settingsRef.current.handsFree && canListen && !micTrouble.current && !typedLast.current) {
       // a breath after speaking, so the tail of Euliv's own voice isn't heard as the person
       // (round 27: and never while the computer's voice is still playing)
       const s = session.current;
@@ -1027,6 +1030,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
   const sendTyped = (text: string) => {
     const t = text.trim();
     if (!t || phase === "thinking") return;
+    typedLast.current = true; // R52: a typed talk stays typed - Euliv doesn't open the microphone after it answers
     interrupt();
     setTyped("");
     void handle(t);
@@ -1034,6 +1038,7 @@ function EulivPanel({ first, talkId, settings, wakeProblem, onClose }: { first?:
 
   const pick = (text: string) => {
     if (phase === "thinking") return;
+    typedLast.current = true;
     interrupt();
     void handle(text);
   };
