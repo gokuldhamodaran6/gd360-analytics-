@@ -155,7 +155,12 @@ def _keep(state: TurnState, **upd) -> TurnState:
 
 def _start(db: Session, user: models.User, question: str, source_ids: list[str] | None, workspace_id: str | None,
            state: TurnState, picked: list[dict] | None = None, brief: dict | None = None, say: str | None = None) -> dict:
-    """A new question -> a Quick-answer project."""
+    """A new question -> a Quick-answer project. R52: a question about an outcome ("why are customers leaving") goes to
+    the same analysis the chat runs (services/agent/analysis.py) in a GD360 conversation, so Euliv and the chat give
+    one answer, not two."""
+    v2 = _start_analysis(db, user, question, source_ids, workspace_id, state, picked, say)
+    if v2 is not None:
+        return v2
     try:
         out = projects.create_project(
             projects.CreateProjectRequest(question=question, source_ids=source_ids or None,
@@ -176,9 +181,77 @@ def _start(db: Session, user: models.User, question: str, source_ids: list[str] 
                   sources=picked or [])
 
 
+def _start_analysis(db: Session, user: models.User, question: str, source_ids: list[str] | None, workspace_id: str | None,
+                    state: TurnState, picked: list[dict] | None, say: str | None) -> dict | None:
+    from ..services.agent import intents as v2intents, team_tool, turns as v2turns
+    ids = [i for i in (source_ids or []) if i]
+    if not ids:
+        return None
+    cols: list[str] = []
+    for i in ids:
+        ds = db.get(models.DataSource, i)
+        if ds is not None:
+            cols += team_tool._columns_of(ds)  # noqa: SLF001
+    if not v2intents.analysis_spec(v2intents.normalize(question), cols):
+        return None
+    try:
+        conv = v2turns.new_conversation(db, user, question=question, space_id=None, source_ids=ids, workspace_id=workspace_id)
+        t = v2turns.send(db, conv, user, question)
+    except HTTPException as e:
+        return _reply(_err_text(e), "chat", _keep(state))
+    tid = t.get("run_id") or t["id"]  # an analysis is a conversation turn; anything the router sent elsewhere may be a run
+    names = eu.names_text(picked or [])
+    st = _keep(state, project_id=conv.id, last_run_id=tid)
+    return _reply(say or (f"On it - looking at {names}." if names else "On it."), "run", st, run_id=tid, project_id=conv.id,
+                  question=question, sources=picked or [])
+
+
+def _answer_turn(db: Session, user: models.User, turn_id: str) -> dict | None:
+    """R52: Euliv's answer when the work was a GD360 conversation turn (an analysis), not a project run."""
+    from ..services import workspace_access
+    from ..services.agent import turns as v2turns
+    msg = db.get(models.Message, turn_id)
+    if msg is None or not (msg.action or "").startswith("v2:"):
+        return None
+    conv = db.get(models.Conversation, msg.conversation_id)
+    if conv is None or not workspace_access.can_access_conversation(db, conv, user):
+        return None
+    t = v2turns._message_turn(db, msg, conv, user)  # noqa: SLF001
+    link = f"/chat/{conv.id}"
+    if t.get("status") == "working":
+        trail = [x.get("label") for x in t.get("trail") or [] if x.get("label")]
+        return {"status": "working", "stage": trail[0] if trail else "Working it out", "done": 0, "total": len(trail), "link": link}
+    if t.get("status") in ("failed", "needs_input"):
+        say = (t.get("text") or t.get("error") or "I couldn't work that one out from your data.").strip()
+        return {"status": t["status"], "say": say, "speak": eu.speakable(eu.first_sentences(say, 2, 260)), "link": link, "project_id": conv.id,
+                "missing": say[:600] if t["status"] == "needs_input" else None}
+    text = (t.get("text") or "").strip()
+    a = t.get("analysis") or {}
+    head = ((a.get("prose") or {}).get("headline") or "").strip()
+    body = text[len(head):].strip() if head and text.startswith(head) else text
+    body = " ".join(x for x in _sentences(body) if "on the right" not in x.lower())  # the chat's canvas isn't here: the link opens it
+    say = _no_repeats([head] + _sentences(body)[:2], 2) or "Here's what I found."
+    kpis: list[dict] = []
+    nxt = ["Show the high-risk customers as a list", "Write a one-page brief", "Build a dashboard"] if a.get("tiers") else []
+    return {"status": "done", "say": say, "speak": eu.speakable(eu.first_sentences(say, 2, 260)), "link": link, "project_id": conv.id,
+            "card": {"headline": head or None, "answer": body[:900] or None, "kpis": kpis, "next_questions": nxt,
+                     "sources_used": [str((a.get("table") or {}).get("source"))] if (a.get("table") or {}).get("source") else [], "question": t.get("question"), "period": None}}
+
+
 def _follow_up(db: Session, user: models.User, question: str, state: TurnState,
                source_ids: list[str] | None = None, brief: dict | None = None) -> dict | None:
     """A follow-up in the conversation's project; None when it should be a new question."""
+    from ..services import workspace_access
+    from ..services.agent import turns as v2turns
+    conv = db.get(models.Conversation, state.project_id) if state.project_id else None
+    if conv is not None and v2turns.is_v2(conv) and workspace_access.can_edit_conversation(db, conv, user):
+        # R52: the talk is on a GD360 conversation (an analysis) - the follow-up goes to the same router the chat uses
+        try:
+            t = v2turns.send(db, conv, user, question)
+        except HTTPException as e:
+            return _reply(_err_text(e), "chat", state)
+        tid = t.get("run_id") or t["id"]
+        return _reply("On it.", "run", _keep(state, last_run_id=tid), run_id=tid, project_id=conv.id, question=question)
     try:
         out = projects.ask(
             state.project_id,
@@ -1344,6 +1417,10 @@ def answer(run_id: str, talk_id: str | None = None, db: Session = Depends(get_db
 
 
 def _answer(db: Session, user: models.User, run_id: str) -> dict:
+    if db.get(models.ProjectRun, run_id) is None:
+        t = _answer_turn(db, user, run_id)
+        if t is not None:
+            return t
     run, conv = projects._run(db, run_id, user)  # noqa: SLF001 - same access rules as the thread page
     link = f"/chat/{conv.id}"  # R46: the answer opens in the GD360 2.0 conversation
     steps = run.steps or []

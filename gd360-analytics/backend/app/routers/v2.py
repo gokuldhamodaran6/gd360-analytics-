@@ -348,6 +348,27 @@ def get_turn(conversation_id: str, turn_id: str, db: Session = Depends(get_db), 
     raise HTTPException(404, "Turn not found.")
 
 
+@router.get("/conversations/{conversation_id}/turns/{turn_id}/export.{kind}")
+def export_list(conversation_id: str, turn_id: str, kind: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """R52: a list turn ("the 135 high-risk customers") as Excel or CSV - every stored row, cut by the viewer's data rules."""
+    from ..services.agent import followups
+    conv = _conv(db, conversation_id, user)
+    msg = db.get(models.Message, turn_id)
+    if msg is None or msg.conversation_id != conv.id or kind not in ("xlsx", "csv"):
+        raise HTTPException(404, "Turn not found.")
+    lst = turns.list_for(db, msg, user, full=True)
+    if not lst:
+        raise HTTPException(404, "This turn has no list.")
+    if lst.get("restricted") and not lst.get("rows"):
+        raise HTTPException(403, lst["restricted"])
+    name = "".join(c if c.isalnum() or c in " -_" else "" for c in str(lst.get("title") or "list")).strip().replace(" ", "-")[:60] or "list"
+    if kind == "xlsx":
+        body, mt = followups.list_xlsx(lst), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    else:
+        body, mt = followups.list_csv(lst), "text/csv; charset=utf-8"
+    return Response(content=body, media_type=mt, headers={"Content-Disposition": f'attachment; filename="{name}.{kind}"'})
+
+
 @router.post("/conversations/{conversation_id}/turns/{turn_id}/confirm")
 def confirm_turn(conversation_id: str, turn_id: str, payload: ConfirmRequest, db: Session = Depends(get_db),
                  user: models.User = Depends(get_current_user)):
@@ -417,6 +438,22 @@ def _doc_out(d: models.DocDocument, user: models.User, db: Session) -> dict:
 
 def _doc_err(e: Exception):
     raise HTTPException(400, str(e))
+
+
+@router.get("/documents")
+def list_documents(workspace_id: str | None = None, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """R52: the Library's Documents tab - the documents this person wrote, newest first (a teammate's open from their
+    conversation, as before)."""
+    q = db.query(models.DocDocument).filter(models.DocDocument.owner_id == user.id)
+    if workspace_id:
+        q = q.filter(models.DocDocument.workspace_id == workspace_id)
+    out = []
+    for d in q.order_by(models.DocDocument.updated_at.desc()).limit(300).all():
+        sm = docblocks.summary(d, user)
+        conv = db.get(models.Conversation, d.conversation_id) if d.conversation_id else None
+        out.append({k: sm[k] for k in ("id", "title", "conversation_id", "created_at", "updated_at", "edited_by_person", "figures", "tables", "words", "pages")}
+                   | {"conversation_title": conv.title if conv else None})
+    return {"documents": out}
 
 
 @router.get("/documents/{doc_id}")
