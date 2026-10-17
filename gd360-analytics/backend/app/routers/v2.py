@@ -31,7 +31,7 @@ from ..database import get_db
 from ..deps import get_current_user
 from ..services import automations as automations_svc
 from ..services import spaces as spaces_service
-from ..services.agent import analysis, board, examples, exports, plans, turns, web
+from ..services.agent import analysis, board, docblocks, docexport, examples, exports, plans, turns, web
 from ..services.project_engine.catalog import accessible_sources
 from . import projects
 
@@ -64,6 +64,15 @@ class MessageRequest(BaseModel):
 class ConfirmRequest(BaseModel):
     approve: bool = True
     edits: dict | None = None
+
+
+class DocPatch(BaseModel):
+    title: str | None = None
+
+
+class BlockEdit(BaseModel):
+    instruction: str | None = None
+    text: str | None = None
 
 
 class DashboardFromRequest(BaseModel):
@@ -379,3 +388,127 @@ def download_document(conversation_id: str, turn_id: str, db: Session = Depends(
     name = "".join(c if c.isalnum() or c in " -_" else "" for c in str(doc.get("title") or "document")).strip().replace(" ", "-")[:60] or "document"
     return Response(content=doc["markdown"], media_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{name}.md"'})
+
+
+# ---- R51: block documents -------------------------------------------------------------------
+
+def _doc(db: Session, doc_id: str, user: models.User, edit: bool = False) -> models.DocDocument:
+    """A document is seen by whoever can open its conversation, changed by whoever can edit it (404 otherwise)."""
+    from ..services import workspace_access
+    d = db.get(models.DocDocument, doc_id)
+    if d is None:
+        raise HTTPException(404, "Document not found.")
+    if d.owner_id == user.id:
+        return d
+    conv = db.get(models.Conversation, d.conversation_id) if d.conversation_id else None
+    ok = conv is not None and (workspace_access.can_edit_conversation(db, conv, user) if edit else workspace_access.can_access_conversation(db, conv, user))
+    if not ok:
+        raise HTTPException(404, "Document not found.")
+    return d
+
+
+def _doc_out(d: models.DocDocument, user: models.User, db: Session) -> dict:
+    from ..services import workspace_access
+    out = docblocks.summary(d, user)
+    conv = db.get(models.Conversation, d.conversation_id) if d.conversation_id else None
+    out["can_edit"] = d.owner_id == user.id or (conv is not None and workspace_access.can_edit_conversation(db, conv, user))
+    return out
+
+
+def _doc_err(e: Exception):
+    raise HTTPException(400, str(e))
+
+
+@router.get("/documents/{doc_id}")
+def get_document(doc_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    return _doc_out(_doc(db, doc_id, user), user, db)
+
+
+@router.patch("/documents/{doc_id}")
+def patch_document(doc_id: str, payload: DocPatch, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _doc(db, doc_id, user, edit=True)
+    try:
+        if payload.title is not None:
+            docblocks.rename(db, d, payload.title)
+    except docblocks.DocError as e:
+        _doc_err(e)
+    return _doc_out(d, user, db)
+
+
+@router.post("/documents/{doc_id}/blocks/{block_id}/edit")
+def edit_document_block(doc_id: str, block_id: str, payload: BlockEdit, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Ask for one block to change: "add a graph for this below", "make it shorter", "rewrite: ...", "remove"."""
+    d = _doc(db, doc_id, user, edit=True)
+    try:
+        change = docblocks.edit_block(db, user, d, block_id, payload.instruction or "")
+    except docblocks.DocError as e:
+        _doc_err(e)
+    return {"change": change, "document": _doc_out(d, user, db)}
+
+
+@router.put("/documents/{doc_id}/blocks/{block_id}")
+def type_document_block(doc_id: str, block_id: str, payload: BlockEdit, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """The person typed over a block on the page."""
+    d = _doc(db, doc_id, user, edit=True)
+    try:
+        docblocks.type_over(db, d, block_id, payload.text or "")
+    except docblocks.DocError as e:
+        _doc_err(e)
+    return _doc_out(d, user, db)
+
+
+@router.post("/documents/{doc_id}/blocks/{block_id}/accept")
+def accept_document_block(doc_id: str, block_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _doc(db, doc_id, user, edit=True)
+    try:
+        docblocks.accept(db, d, block_id)
+    except docblocks.DocError as e:
+        _doc_err(e)
+    return _doc_out(d, user, db)
+
+
+@router.post("/documents/{doc_id}/undo")
+def undo_document(doc_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _doc(db, doc_id, user, edit=True)
+    try:
+        label = docblocks.undo(db, d)
+    except docblocks.DocError as e:
+        _doc_err(e)
+    return {"undid": label, "document": _doc_out(d, user, db)}
+
+
+@router.post("/documents/{doc_id}/shorter")
+def shorten_document(doc_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _doc(db, doc_id, user, edit=True)
+    try:
+        docblocks.shorten_all(db, d)
+    except docblocks.DocError as e:
+        _doc_err(e)
+    return _doc_out(d, user, db)
+
+
+def _doc_file(d: models.DocDocument, user: models.User, db: Session, kind: str) -> Response:
+    out = _doc_out(d, user, db)
+    name = "".join(c if c.isalnum() or c in " -_" else "" for c in str(d.title or "document")).strip().replace(" ", "-")[:60] or "document"
+    if kind == "docx":
+        body, mt = docexport.docx_bytes(out), "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    elif kind == "pdf":
+        body, mt = docexport.pdf_bytes(out), "application/pdf"
+    else:
+        body, mt = docexport.markdown(out).encode("utf-8"), "text/markdown; charset=utf-8"
+    return Response(content=body, media_type=mt, headers={"Content-Disposition": f'attachment; filename="{name}.{kind}"'})
+
+
+@router.get("/documents/{doc_id}/export.docx")
+def document_docx(doc_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    return _doc_file(_doc(db, doc_id, user), user, db, "docx")
+
+
+@router.get("/documents/{doc_id}/export.pdf")
+def document_pdf(doc_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    return _doc_file(_doc(db, doc_id, user), user, db, "pdf")
+
+
+@router.get("/documents/{doc_id}/export.md")
+def document_md(doc_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    return _doc_file(_doc(db, doc_id, user), user, db, "md")
