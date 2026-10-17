@@ -1109,7 +1109,7 @@ export function railActive(pathname: string): string {
   const p = pathname;
   if (p === "/") return "home";
   if (p.startsWith("/chat")) return "new";
-  if (p.startsWith("/library") || p.startsWith("/projects") || p.startsWith("/p/") || p.startsWith("/g/") || p.startsWith("/v/") || p.startsWith("/workspace/")) return "library";
+  if (p.startsWith("/library") || p.startsWith("/docs/") || p.startsWith("/projects") || p.startsWith("/p/") || p.startsWith("/g/") || p.startsWith("/v/") || p.startsWith("/workspace/")) return "library";
   if (p.startsWith("/dashboards") || p.startsWith("/boards") || p.startsWith("/dashboard-builder") || p.startsWith("/project-dashboards")) return "dashboards";
   if (p.startsWith("/data") || p.startsWith("/spaces") || p.startsWith("/connect")) return "data";
   if (p.startsWith("/automations") || p.startsWith("/jobs")) return "automations";

@@ -150,7 +150,7 @@ export function Breadcrumb({ items }: { items: Crumb[] }) {
 // the page's own actions, then the plan, search, alerts, theme and your avatar. Every signed-in page renders it,
 // the conversation and the dashboards included, so the product reads as one thing.
 const PAGE_LABELS: [RegExp, string][] = [
-  [/^\/$/, "Home"], [/^\/chat\/?$/, "New conversation"], [/^\/chat\//, "Conversation"], [/^\/(library|projects|p\/|g\/|v\/|workspace\/)/, "Library"],
+  [/^\/$/, "Home"], [/^\/chat\/?$/, "New conversation"], [/^\/chat\//, "Conversation"], [/^\/(library|docs\/|projects|p\/|g\/|v\/|workspace\/)/, "Library"],
   [/^\/(dashboards|boards|dashboard-builder|project-dashboards)/, "Dashboards"], [/^\/(data|connect)/, "Data"], [/^\/spaces/, "Spaces"],
   [/^\/(automations|jobs)/, "Automations"], [/^\/profile/, "Settings"], [/^\/settings\/domains/, "Company domain"], [/^\/(ml-models|ml-studio)/, "ML Studio"],
   [/^\/experiments/, "Experiments"], [/^\/initiatives/, "Initiatives"], [/^\/accounts/, "Accounts"], [/^\/(trust|governance)/, "Trust Center"], [/^\/admin/, "Admin"],
