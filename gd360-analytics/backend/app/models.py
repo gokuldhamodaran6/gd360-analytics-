@@ -3609,3 +3609,26 @@ class EventAction(Base):
     decided_by = Column(String, nullable=True)
     decided_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class DocDocument(Base):
+    """2026-10-15 (R51): a written document made in a conversation - a list of typed blocks (heading, paragraph,
+    figure, table, callout, sources), each with its own id so one block can be edited by asking ("add a graph for
+    this below", "make it shorter") or by typing. `sources` are the steps and answers its source chips point at;
+    `meta.allowed` the numbers it may state (every figure is re-checked against them); `history` the last versions
+    of `blocks` for undo. Exports (Word, PDF, Markdown) are built from the same blocks."""
+    __tablename__ = "doc_documents"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True)
+    conversation_id = Column(String, nullable=True, index=True)
+    message_id = Column(String, nullable=True)
+    title = Column(String, nullable=False)
+    blocks = Column(JSON, nullable=False, default=list)
+    sources = Column(JSON, nullable=True)
+    meta = Column(JSON, nullable=True)
+    history = Column(JSON, nullable=True)
+    edited_by_person = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
