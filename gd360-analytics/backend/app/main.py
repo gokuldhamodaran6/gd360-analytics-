@@ -10,7 +10,7 @@ from .routers import (
     auth, datasources, chat, dashboards, dashboard_builder, dashboard_comments, admin, conversations, goku,
     connections, workspaces, folders, jobs, experiments, quality_checks, governance,
     data_access_rules, ml_models, metric_definitions, transforms, pipelines, projects, apps, automations, ml_studio,
-    spaces, site, admin_v2, admin_ops, admin_biz, inapp, guided, initiatives, gtm, gtm_public,
+    spaces, site, admin_v2, admin_ops, admin_biz, admin_quality, inapp, guided, initiatives, gtm, gtm_public,
     ops, trust, domains, notifications, dashboard_ai, assistant, eventos, eventos_public, v2,
 )
 from .services.scheduler import start_scheduler
@@ -274,6 +274,7 @@ app.include_router(spaces.router)
 # 2026-10-09: the public website (Enterprise demo requests)
 app.include_router(site.router)
 # 2026-10-10: Mission Control (admin portal v2) and the in-app announcements/flags it publishes.
+app.include_router(admin_quality.router)  # 2026-10-17 (R52): Mission Control > Quality
 app.include_router(admin_v2.router)
 app.include_router(admin_ops.router)
 app.include_router(admin_biz.router)

@@ -3632,3 +3632,21 @@ class DocDocument(Base):
     edited_by_person = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class QualityRun(Base):
+    """2026-10-17 (R52): one run of the nightly quality check (services/quality.py) - the 12-question set plus four on
+    two more datasets, asked of the live model, each answer checked and timed against its budget."""
+    __tablename__ = "quality_runs"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    trigger = Column(String, nullable=False, default="nightly")   # nightly | manual
+    started_by = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="running")    # running | done | failed
+    provider = Column(String, nullable=True)
+    model = Column(String, nullable=True)
+    summary = Column(JSON, nullable=True)
+    results = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    finished_at = Column(DateTime, nullable=True)
