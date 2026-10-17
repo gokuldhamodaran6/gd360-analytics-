@@ -99,7 +99,8 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
         const item = canvasFromArtifact(a, t, conversationId);
         if (!item) continue;
         if (a.refresh) {
-          setCanvas((cur) => (cur && (cur.type === "dashboard" || cur.type === "board") && cur.id === a.id ? { ...cur, name: a.name || cur.name } : item));
+          setCanvas((cur) => (cur && (cur.type === "dashboard" || cur.type === "board") && cur.id === a.id ? { ...cur, name: a.name || cur.name }
+            : cur && cur.type === "doc" && cur.id === a.doc_id ? { ...cur, title: a.title || cur.title } : item));
           setCanvasVersion((v) => v + 1);
         } else if (t === turns[turns.length - 1]) setCanvas(item);
       }
@@ -208,7 +209,14 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
             </div>
           </div>
           {canvas && <Canvas item={canvas} onClose={() => setCanvas(null)} version={canvasVersion} run={canvas.type === "method" && canvas.turn.run_id ? runs[canvas.turn.run_id] : null}
-            onAsk={(q) => void send(q)} onOpenMethod={(tt) => setCanvas({ type: "method", turn: tt })} />}
+            onAsk={(q) => void send(q)} onOpenMethod={(tt) => setCanvas({ type: "method", turn: tt })}
+            onSource={(src) => {
+              // a source chip opens the step it points at: the analysis on the canvas, or the turn in the thread
+              const t = turns.find((x) => x.id === src.turn_id);
+              if (t && t.kind === "analysis" && t.analysis) { setCanvas({ type: "analysis", turn: t }); return; }
+              if (src.kind === "dashboard" && src.turn_id) { setCanvas({ type: "board", id: src.turn_id, name: src.label.replace(/^Dashboard · /, "") }); return; }
+              document.querySelector(`[data-c2-turn-id="${src.turn_id}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+            }} />}
         </div>
       </div>
     </AskContext.Provider>

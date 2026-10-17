@@ -7,6 +7,8 @@ import { FollowupCheck } from "../components/QuestionCheck";
 import { layoutSql } from "../project/RunPanels";
 import { DataAnswer } from "./DataAnswer";
 import { GuidedSteps } from "./GuidedSteps";
+import { docsApi } from "../api/docs";
+import "../doc/doc.css";
 
 function useElapsed(turn: TurnT): number {
   const working = turn.status === "working";
@@ -142,6 +144,33 @@ const ACT_ICON = {
   chart: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 19l5-7 4 4 7-9M4 5v14h16" /></svg>,
 };
 
+/** R51 (board 05): the document a turn wrote - its page, its size, Word / PDF / shorter. */
+export function DocCard({ a, turn, onOpen, onAsk }: { a: Artifact; turn: TurnT; onOpen: () => void; onAsk: (q: string) => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const at = turn.finished_at ? new Date(/Z$/.test(turn.finished_at) ? turn.finished_at : `${turn.finished_at}Z`) : null;
+  const mins = at ? (Date.now() - at.getTime()) / 60000 : 0;
+  const ago = !at || Number.isNaN(at.getTime()) ? "" : mins < 1.5 ? "Just now" : mins < 60 ? `${Math.round(mins)} min ago` : at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  const dl = async (kind: "docx" | "pdf") => { if (!a.doc_id) return; setBusy(kind); try { await docsApi.download(a.doc_id, kind, a.title); } catch { /* the card stays usable */ } finally { setBusy(null); } };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }} data-c2-doc-card="">
+      <button type="button" className="c2-doccard" onClick={onOpen} data-c2-artifact="document">
+        <span className="pg" aria-hidden="true"><span /><span style={{ width: "90%" }} /><span style={{ width: "85%" }} /><span style={{ width: "70%" }} /></span>
+        <span style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
+          <span className="t">{a.title || "Document"}</span>
+          <span className="m">Document · {a.pages || 1} page{(a.pages || 1) !== 1 ? "s" : ""} · {a.figures || 0} figure{(a.figures || 0) !== 1 ? "s" : ""}</span>
+          {ago && <span className="m">{ago}</span>}
+        </span>
+        <span style={{ marginLeft: "auto", color: "rgb(var(--color-muted))", fontSize: 13, whiteSpace: "nowrap" }}>Open ›</span>
+      </button>
+      <div className="c2-next">
+        <button type="button" className="c2-btn" onClick={() => void dl("docx")} disabled={!!busy} data-c2-doc-word="">{busy === "docx" ? "Building…" : "Download Word"}</button>
+        <button type="button" className="c2-btn" onClick={() => void dl("pdf")} disabled={!!busy} data-c2-doc-pdf="">{busy === "pdf" ? "Building…" : "Download PDF"}</button>
+        <button type="button" className="c2-btn" onClick={() => onAsk("make the document shorter")} data-c2-doc-shorter="">Make it shorter</button>
+      </div>
+    </div>
+  );
+}
+
 /** R50 (board 06): an alert or a schedule, exactly as it will run - nothing runs before Confirm. */
 export function ConfirmCard({ turn, busy, onDecide, onRevise }: { turn: TurnT; busy: boolean; onDecide: (approve: boolean) => void; onRevise?: (edits: Record<string, unknown>) => Promise<void> | void }) {
   const c = turn.confirm;
@@ -266,7 +295,7 @@ export function TurnView({
   const showRun = isData && run;
   const canDash = isData && run?.status === "done" && (run.result?.visuals || []).length > 0 && !(turn.placements || []).length;
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 18 }} data-c2-turn={turn.kind} data-c2-status={turn.status}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }} data-c2-turn={turn.kind} data-c2-status={turn.status} data-c2-turn-id={turn.id}>
       {turn.question && <div className="c2-u">{turn.question}</div>}
       <div className="c2-a">
         {(turn.kind !== "chat") && (
@@ -281,7 +310,7 @@ export function TurnView({
         {turn.kind === "check" && turn.check && turn.status === "needs_input" && (
           <FollowupCheck check={turn.check} busy={busy} onClose={() => undefined} onPick={onPickCheck} />
         )}
-        {turn.text && !(turn.kind === "check") && (turn.kind === "analysis" || turn.kind === "dashboard" || turn.kind === "dashboard_edit" || turn.kind === "document" || turn.kind === "automation" || turn.kind === "team" ? <Lead text={turn.text} />
+        {turn.text && !(turn.kind === "check") && (turn.kind === "analysis" || turn.kind === "dashboard" || turn.kind === "dashboard_edit" || turn.kind === "document" || turn.kind === "document_edit" || turn.kind === "automation" || turn.kind === "team" ? <Lead text={turn.text} />
           : turn.kind === "knowledge" ? <p className="prose"><Cited text={turn.text} /></p> : <p className="prose">{turn.text}</p>)}
         {turn.kind === "knowledge" && (turn.sources || []).length > 0 && (
           <div className="c2-srcs" data-c2-sources="">
@@ -305,7 +334,9 @@ export function TurnView({
           <BuiltCard turn={turn} onOpen={() => { const a = (turn.artifacts || [])[0]; if (a) onOpenArtifact(a, turn); }} />
         )}
         {(turn.artifacts || []).filter(() => !(turn.kind === "dashboard_edit" && turn.edit) && !(turn.kind === "dashboard" && turn.built))
-          .map((a) => <ArtifactCard key={a.id} a={a} onOpen={() => onOpenArtifact(a, turn)} />)}
+          .map((a) => (a.type === "document" && a.doc_id
+            ? <DocCard key={a.id} a={a} turn={turn} onAsk={onAsk} onOpen={() => onOpenArtifact({ ...a, refresh: false } as Artifact, turn)} />
+            : <ArtifactCard key={a.id} a={a} onOpen={() => onOpenArtifact(a, turn)} />))}
         {turn.status === "done" && !showRun && <Chips chips={turn.chips} />}
         {(turn.status === "done" && (isData || turn.kind === "guided") && run?.status === "done") && (
           <div className="c2-next">
