@@ -17,7 +17,11 @@ export type Doc = {
   checked: number; flagged: string[]; can_undo: boolean; history: { label: string; at: string }[]; can_edit?: boolean;
 };
 
+export type DocRow = { id: string; title: string; conversation_id: string | null; conversation_title: string | null; created_at: string; updated_at: string;
+  edited_by_person: boolean; figures: number; tables: number; words: number; pages: number };
+
 export const docsApi = {
+  list: () => api.get<{ documents: DocRow[] }>("/v2/documents").then((r) => r.data.documents),
   get: (id: string) => api.get<Doc>(`/v2/documents/${id}`).then((r) => r.data),
   rename: (id: string, title: string) => api.patch<Doc>(`/v2/documents/${id}`, { title }).then((r) => r.data),
   editBlock: (id: string, blockId: string, instruction: string) =>

@@ -4,10 +4,10 @@ import type { ProjectRun } from "./projects";
 import type { Space } from "./spaces";
 
 export type Chip = { key: string; ok: boolean; label: string; detail?: string | null };
-export type TurnKind = "knowledge" | "data" | "guided" | "dashboard" | "document" | "automation" | "chat" | "check" | "explain" | "dashboard_edit" | "model" | "team" | "analysis" | "document_edit";
+export type TurnKind = "knowledge" | "data" | "guided" | "dashboard" | "document" | "automation" | "chat" | "check" | "explain" | "dashboard_edit" | "model" | "team" | "analysis" | "document_edit" | "list" | "whatif";
 export type TurnStatus = "working" | "steps" | "done" | "failed" | "needs_input" | "confirm";
 export type Artifact = {
-  type: "dashboard" | "document" | "automation" | "model" | "space" | "analysis";
+  type: "dashboard" | "document" | "automation" | "model" | "space" | "analysis" | "list";
   id: string; name?: string; title?: string; url?: string; page_id?: string | null; words?: number; refresh?: boolean; score?: string | null;
   doc_id?: string;
   recipe?: string; figures?: number; scored?: number | null; board?: boolean; pages?: number;
@@ -55,6 +55,25 @@ export type Turn = {
   // 2026-10-15 (R50): the action cards - a dashboard edit (was / now) and a dashboard build (its pages)
   edit?: { before: BoardCardState | { name: string; theme: string; accent?: string | null }; after: BoardCardState; changes: string[]; undo: boolean; dashboard_id: string } | null;
   built?: { pages: string[]; name: string; theme: string; typo?: string | null; dashboard_id: string } | null;
+  // 2026-10-17 (R52): the risk list and the what-if, answered from the analysis; time budgets
+  list?: RiskList | null; whatif?: WhatIf | null; budget_s?: number | null; timed_out?: boolean | null;
+};
+export type RiskList = {
+  title: string; tier: string; rule: string; id_label: string; columns: string[]; rows: Record<string, any>[]; total: number; shown: number;
+  asked?: number | null; note?: string | null; entities: string; restricted?: string | null;
+};
+export type WhatIfSide = { group_rate: number; group_count: number; overall_rate: number; overall_count: number };
+export type WhatIf = {
+  group: string; group_n: number; column?: string | null; before: WhatIfSide; after: WhatIfSide; saved: number; noun: string; entities: string;
+  change: { kind: "relative" | "points"; amount: number; label: string }; assumptions: string[];
+};
+export const downloadTurnList = async (conversationId: string, turnId: string, kind: "xlsx" | "csv", name: string) => {
+  const res = await api.get(`/v2/conversations/${conversationId}/turns/${turnId}/export.${kind}`, { responseType: "blob" });
+  const url = URL.createObjectURL(res.data as Blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = `${(name || "list").replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 60) || "list"}.${kind}`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
 };
 export type BoardCardState = {
   name: string; theme: string; theme_label: string; accent?: string | null; pages: string[];
@@ -74,6 +93,7 @@ export type TeamConfirm = {
   members: { user_id: string; name: string; role: string }[]; to_invite: string[]; invite_link?: string | null;
   sources: { id: string; name: string; kind: string }[]; hidden: { source_id: string; source: string; column: string }[];
   rows: { source_id: string; source: string; column: string; values: string[]; who: string; role: string }[]; issues: string[]; note?: string | null; limits: string[];
+  shares_conversation?: boolean;
 };
 export type BlockData = { id: string; title: string; type: string; columns: string[]; rows: Record<string, unknown>[]; row_count: number; kpi: { label: string; value: number | null; display: string } | null; definition?: string | null };
 export type DashboardData = { dashboard: { id: string; name: string }; page: { id: string; name: string }; source: { id: string; name: string; kind: string } | null; blocks: BlockData[] };
