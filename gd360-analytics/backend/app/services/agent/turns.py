@@ -9,6 +9,7 @@ state in chart_spec["v2"]. `turns_of` merges both in time order for the page.
 """
 from __future__ import annotations
 
+import json
 import re
 import threading
 import traceback
@@ -21,9 +22,10 @@ from sqlalchemy.orm.attributes import flag_modified
 from ... import models
 from ...database import SessionLocal
 from .. import ai_engine, ai_meter
-from . import analysis, automations_tool, board, dashboard_tool, documents, intents, knowledge, model_tool, plans, segment_watch, team_tool, truth_guard, writer
+from . import analysis, automations_tool, board, dashboard_tool, docblocks, docexport, documents, intents, knowledge, model_tool, plans, segment_watch, team_tool, truth_guard, writer
 
-KINDS = ("knowledge", "data", "guided", "dashboard", "document", "automation", "chat", "check", "explain", "dashboard_edit", "model", "team", "analysis")
+KINDS = ("knowledge", "data", "guided", "dashboard", "document", "automation", "chat", "check", "explain", "dashboard_edit", "model", "team", "analysis",
+         "document_edit")
 
 
 # ---- helpers ------------------------------------------------------------------
@@ -157,7 +159,84 @@ def _do_chat(db: Session, msg: models.Message, user: models.User) -> None:
     _set_state(db, msg, status="done", text=text, chips=[], finished_at=datetime.utcnow().isoformat() + "Z")
 
 
+def _latest_doc(db: Session, conv: models.Conversation) -> models.DocDocument | None:
+    return (db.query(models.DocDocument).filter(models.DocDocument.conversation_id == conv.id)
+            .order_by(models.DocDocument.created_at.desc()).first())
+
+
+def _doc_state(doc: models.DocDocument) -> tuple[dict, dict, list[dict]]:
+    s = docblocks.summary(doc)
+    md = docexport.markdown(s)
+    artifact = {"type": "document", "id": doc.message_id or doc.id, "doc_id": doc.id, "title": doc.title, "words": s["words"],
+                "pages": s["pages"], "figures": s["figures"]}
+    chips = ([{"key": "numbers", "ok": True, "label": f"{s['checked']} figures re-checked against the data"}] if not s["flagged"]
+             else [{"key": "numbers", "ok": False, "label": f"{len(s['flagged'])} figure{'s' if len(s['flagged']) != 1 else ''} to check",
+                    "detail": ", ".join(s["flagged"])}])
+    chips.append({"key": "sources", "ok": True, "label": f"{len(s['sources'])} source{'s' if len(s['sources']) != 1 else ''}"})
+    return {"title": doc.title, "markdown": md, "flagged": s["flagged"], "doc_id": doc.id}, artifact, chips
+
+
 def _do_document(db: Session, msg: models.Message, user: models.User) -> None:
+    """R51: a block document built from what the conversation found (services/agent/docblocks.py)."""
+    st = _state(msg)
+    conv = db.get(models.Conversation, msg.conversation_id)
+    today = date.fromisoformat(st["today"]) if st.get("today") else date.today()
+    _set_state(db, msg, trail=[{"label": "Reading what this conversation found"}, {"label": "Writing the blocks"}, {"label": "Checking every figure"}])
+    try:
+        doc = docblocks.create(db, user, conv, msg.id, st.get("question") or "", today)
+    except docblocks.DocError as e:
+        _set_state(db, msg, status="needs_input", text=str(e), finished_at=datetime.utcnow().isoformat() + "Z")
+        return
+    except Exception as e:  # noqa: BLE001 - the older writer still gives a document
+        traceback.print_exc()
+        print(f"[agent.docblocks] block document failed, falling back to the markdown writer: {e}")
+        return _do_document_markdown(db, msg, user)
+    document, artifact, chips = _doc_state(doc)
+    mat_bits = []
+    if (doc.meta or {}).get("analysis_turn"):
+        mat_bits.append("the analysis" + (" and its risk scores" if any(b["type"] == "table" and "Tier" in json.dumps(b.get("columns")) for b in doc.blocks) else ""))
+    n_ans = len({x.get("turn_id") for x in doc.sources or [] if x.get("kind") in ("answer", "web")})
+    if n_ans:
+        mat_bits.append(f"{n_ans} answer{'s' if n_ans != 1 else ''}")
+    _written_title(db, conv, st.get("question") or "", doc.title)
+    _set_state(db, msg, status="done",
+               text=f"Done. I wrote “{doc.title}” from {' and '.join(mat_bits) or 'this conversation'}; every figure in it links back to the step that produced it. "
+                    "Click any paragraph on the right to change it.",
+               document=document, artifacts=[artifact], chips=chips,
+               trail=[{"label": f"Read {len(doc.sources or [])} sources from this conversation"}, {"label": f"Wrote {len(doc.blocks)} blocks"},
+                      {"label": "Re-checked every figure against the data"}],
+               finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+def _do_document_edit(db: Session, msg: models.Message, user: models.User) -> None:
+    """R51: "make the brief shorter", "rename it to ...", "undo" on the document of this conversation."""
+    st = _state(msg)
+    conv = db.get(models.Conversation, msg.conversation_id)
+    doc = _latest_doc(db, conv)
+    if doc is None:
+        _set_state(db, msg, status="needs_input", text="There is no document in this conversation yet. Say “write a brief from this” first.",
+                   finished_at=datetime.utcnow().isoformat() + "Z")
+        return
+    q = st.get("question") or ""
+    try:
+        if re.match(r"^\s*undo\b", q, re.I):
+            what = "undid “" + docblocks.undo(db, doc) + "”"
+        elif m := re.search(r"\b(?:rename|call|title)\s+(?:it|the (?:brief|doc|document|report|memo|summary))\s+(?:to\s+)?[\"“']?(.+?)[\"”']?\s*$", q, re.I):
+            docblocks.rename(db, doc, m.group(1).strip().rstrip("."))
+            what = f"renamed it “{doc.title}”"
+        else:
+            what = docblocks.shorten_all(db, doc)
+    except docblocks.DocError as e:
+        _set_state(db, msg, status="needs_input", text=str(e), finished_at=datetime.utcnow().isoformat() + "Z")
+        return
+    document, artifact, chips = _doc_state(doc)
+    artifact["refresh"] = True
+    s = docblocks.summary(doc)
+    _set_state(db, msg, status="done", text=f"Done: {what}. “{doc.title}” is now {s['pages']} page{'s' if s['pages'] != 1 else ''} with {s['figures']} figure{'s' if s['figures'] != 1 else ''}; say “undo” to go back.",
+               document=document, artifacts=[artifact], chips=chips, trail=[{"label": what}], finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+def _do_document_markdown(db: Session, msg: models.Message, user: models.User) -> None:
     st = _state(msg)
     conv = db.get(models.Conversation, msg.conversation_id)
     runs = _done_runs(db, conv)
@@ -476,7 +555,7 @@ def _do_analysis(db: Session, msg: models.Message, user: models.User) -> None:
 
 
 _TOOLS = {"knowledge": _do_knowledge, "analysis": _do_analysis, "chat": _do_chat, "document": _do_document, "automation": _do_automation, "dashboard": _do_dashboard,
-          "dashboard_edit": _do_dashboard_edit, "model": _do_model, "team": _do_team}
+          "dashboard_edit": _do_dashboard_edit, "model": _do_model, "team": _do_team, "document_edit": _do_document_edit}
 
 
 # ---- entry points -----------------------------------------------------------------
@@ -641,7 +720,13 @@ def send(db: Session, conv: models.Conversation, user: models.User, text: str, *
     cur_dash = _current_dashboard(db, conv, user)
     has_dash = cur_dash is not None
     edit_fn = board.wants_edit if cur_dash is not None and (cur_dash.layout_version or 0) == 4 else dashboard_tool.wants_edit
+    # R51: "make the brief shorter", "rename the doc ...", "undo" right after a document - the document on the canvas changes
+    doc_edit = False
+    if intent not in KINDS and docblocks.wants_edit(text) and _latest_doc(db, conv) is not None:
+        doc_edit = (last in ("document", "document_edit")) if re.match(r"^\s*undo\b", text, re.I) else \
+            (last in ("document", "document_edit") or bool(re.search(r"\b(brief|doc|document|report|memo|summary)\b", text, re.I)))
     decision = {"intent": intent, "by": "person", "reason": "chosen on the card", "text": text} if intent in KINDS else \
+        {"intent": "document_edit", "by": "rule", "reason": "changes the document on the canvas"} if doc_edit else \
         intents.route(text, has_sources=has_sources, source_names=names, column_names=cols, last_kind=last, mode=mode, has_dashboard=has_dash,
                       wants_team=team_tool.wants_team, wants_edit=edit_fn)
     kind = decision["intent"]
