@@ -4,11 +4,12 @@ import type { ProjectRun } from "./projects";
 import type { Space } from "./spaces";
 
 export type Chip = { key: string; ok: boolean; label: string; detail?: string | null };
-export type TurnKind = "knowledge" | "data" | "guided" | "dashboard" | "document" | "automation" | "chat" | "check" | "explain" | "dashboard_edit" | "model" | "team" | "analysis";
+export type TurnKind = "knowledge" | "data" | "guided" | "dashboard" | "document" | "automation" | "chat" | "check" | "explain" | "dashboard_edit" | "model" | "team" | "analysis" | "document_edit";
 export type TurnStatus = "working" | "steps" | "done" | "failed" | "needs_input" | "confirm";
 export type Artifact = {
   type: "dashboard" | "document" | "automation" | "model" | "space" | "analysis";
   id: string; name?: string; title?: string; url?: string; page_id?: string | null; words?: number; refresh?: boolean; score?: string | null;
+  doc_id?: string;
   recipe?: string; figures?: number; scored?: number | null; board?: boolean; pages?: number;
   rules?: string[]; invite_link?: string | null;
   sentence?: { when?: string; do?: string; tell?: string; tell_sentence?: string }; next_run_at?: string | null;
