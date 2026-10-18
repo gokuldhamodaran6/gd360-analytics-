@@ -142,7 +142,7 @@ def create(body: CreateRequest, db: Session = Depends(get_db), user: models.User
     p = body.plan or {}
     kind = p.get("kind") if p.get("kind") in catalog.KINDS else "custom"
     # re-validate whatever came back from the page
-    plan = planner.validate(p, body.brief or p.get("title") or "", kind, {}, p.get("key_date"), {})
+    plan = planner.validate(p, body.brief or p.get("title") or "", kind, {}, p.get("key_date"), {"from_page": True})
     # dates the person edited on the page win over the scheduled ones
     raw_tasks = [t for t in (p.get("tasks") or []) if isinstance(t, dict) and str(t.get("title") or "").strip()]
     if len(raw_tasks) == len(plan["tasks"]):
@@ -165,10 +165,17 @@ def create(body: CreateRequest, db: Session = Depends(get_db), user: models.User
     )
     db.add(i)
     db.flush()
+    from ..services.autopilot import contract as ap_contract, rules as ap_rules
     for n, t in enumerate(plan["tasks"]):
         db.add(models.InitiativeTask(initiative_id=i.id, phase_id=t.get("phase"), title=t["title"], detail=t.get("detail"),
                                      due_on=t.get("due_on"), tool_key=t.get("tool"), position=n, origin="planner",
-                                     owner_name=(t.get("owner") or None)))
+                                     owner_name=(t.get("owner") or None),
+                                     auto_rule=t.get("auto_rule") if isinstance(t.get("auto_rule"), dict) else ap_rules.infer(t["title"], t.get("tool"))))
+    if p.get("audience_type"):
+        i.details = {**(i.details or {}), "audience_type": str(p["audience_type"])[:30]}
+    db.flush()
+    ap_contract.ensure(db, i)  # R53: the tracking contract, written once
+    ap_rules.assign(db, i)
     for n, it in enumerate(plan.get("board_items") or []):
         db.add(models.InitiativeItem(initiative_id=i.id, title=it["title"], group_name=it.get("group"), stage=it["stage"],
                                      position=n))
@@ -182,11 +189,18 @@ def create(body: CreateRequest, db: Session = Depends(get_db), user: models.User
 
 # ================================================================== detail ==
 
+def _closes_on(t: models.InitiativeTask) -> str | None:
+    from ..services.autopilot import rules as ap_rules
+    r = t.auto_rule or {}
+    return ap_rules.label(r) if r.get("kind") and r.get("kind") != "none" else None
+
+
 def _task(t: models.InitiativeTask) -> dict:
     a = dict(t.approval or {})
     return {"id": t.id, "phase_id": t.phase_id, "title": t.title, "detail": t.detail, "owner_name": t.owner_name,
             "due_on": t.due_on, "status": t.status, "tool_key": t.tool_key, "position": t.position, "origin": t.origin,
             "done_at": _iso(t.done_at), "evidence": t.evidence or [], "approval": a or None,
+            "auto_rule": t.auto_rule, "completed_by": t.completed_by, "evidence_id": t.evidence_id, "closes_on": _closes_on(t),
             "approval_link": f"{app_url()}/a/{t.approval_token}" if t.approval_token else None}
 
 
@@ -375,6 +389,7 @@ class TaskBody(BaseModel):
     phase_id: str | None = None
     tool_key: str | None = None
     position: int | None = None
+    auto_rule: dict | None = None  # R53: {"kind": "post" | ... | "none"} - the evidence that closes it
 
 
 def _task_of(db: Session, i: models.Initiative, task_id: str) -> models.InitiativeTask:
@@ -395,6 +410,8 @@ def add_task(initiative_id: str, body: TaskBody, db: Session = Depends(get_db), 
     t = models.InitiativeTask(initiative_id=i.id, title=body.title.strip(), detail=body.detail, owner_name=body.owner_name,
                               due_on=_date(body.due_on), phase_id=body.phase_id or ((i.phases or [{}])[0].get("id")),
                               tool_key=body.tool_key if body.tool_key in catalog.TOOLS else None, position=n + 1, origin="you")
+    from ..services.autopilot import rules as ap_rules
+    t.auto_rule = ap_rules.infer(t.title, t.tool_key)
     db.add(t)
     i.updated_at = datetime.utcnow()
     db.commit()
@@ -412,9 +429,11 @@ def patch_task(initiative_id: str, task_id: str, body: TaskBody, db: Session = D
             raise HTTPException(422, "Unknown status.")
         if data["status"] == "done" and t.status != "done":
             t.done_at = datetime.utcnow()
+            t.completed_by = "you"
             tracking.log(db, i, f"Done: {t.title}", author(user), kind="milestone", task_id=t.id)
         elif data["status"] != "done":
             t.done_at = None
+            t.completed_by = None
         if data["status"] == "blocked" and t.status != "blocked":
             tracking.log(db, i, f"Blocked: {t.title}", author(user), kind="risk", task_id=t.id)
         t.status = data["status"]
@@ -429,6 +448,15 @@ def patch_task(initiative_id: str, task_id: str, body: TaskBody, db: Session = D
         t.tool_key = data["tool_key"] if data["tool_key"] in catalog.TOOLS else None
     if "position" in data and data["position"] is not None:
         t.position = data["position"]
+    if isinstance(data.get("auto_rule"), dict):
+        from ..services.autopilot import rules as ap_rules
+        k = str(data["auto_rule"].get("kind") or "none")
+        if k not in {x[0] for x in ap_rules.INFER} | {"count", "none"}:
+            raise HTTPException(422, "Unknown rule.")
+        r = {"kind": k}
+        if k == "count":
+            r.update({"metric": str(data["auto_rule"].get("metric") or "registrations")[:40], "n": float(data["auto_rule"].get("n") or 1)})
+        t.auto_rule = r
     i.updated_at = datetime.utcnow()
     db.commit()
     return _task(t)

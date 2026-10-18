@@ -175,6 +175,8 @@ class RegisterBody(BaseModel):
     visitor_id: str | None = Field(default=None, max_length=64)
     ref: str | None = Field(default=None, max_length=20)  # a team member's personal invite link
     source: str | None = Field(default=None, max_length=60)  # utm_source / ?src= on the registration link
+    utm_campaign: str | None = Field(default=None, max_length=120)  # R53: the tracking contract's gd-{code}
+    gclid: str | None = Field(default=None, max_length=200)  # R53: sent back to Google Ads as a conversion
     hp: str | None = None  # honeypot: real people never fill it
 
 
@@ -221,7 +223,8 @@ def register(token: str, body: RegisterBody, request: Request, db: Session = Dep
         gtm.record(db, i.workspace_id, "registered", account_id=c.account_id, contact_id=c.id, initiative_id=i.id,
                    channel="registration page",
                    detail={"consent": body.consent, "consent_at": datetime.utcnow().isoformat() if body.consent else None,
-                           "consent_source": "registration page", "ref": body.ref}, visitor_id=body.visitor_id)
+                           "consent_source": "registration page", "ref": body.ref, "source": body.source,
+                           "utm_campaign": body.utm_campaign}, visitor_id=body.visitor_id)
         if body.consent:
             gtm.record(db, i.workspace_id, "newsletter_signup", account_id=c.account_id, contact_id=c.id,
                        initiative_id=i.id, channel="registration page", rescore=False)
@@ -242,6 +245,10 @@ def register(token: str, body: RegisterBody, request: Request, db: Session = Dep
     db.commit()
     if not already and email_configured():
         _confirmation(i, c.email, body.name, ticket_code)
+    if not already:
+        # R53: the registration goes back to the ad platforms that brought it (Meta / LinkedIn / Google), when set up
+        from ..services.autopilot import hooks as ap_hooks
+        threading.Thread(target=ap_hooks.on_registration, args=(i.id, c.email, body.gclid, body.source), daemon=True).start()
     return {"ok": True, "already": bool(already), "ticket": ticket_code,
             "join_url": (i.details or {}).get("join_url") if i.kind == "webinar" else None}
 
