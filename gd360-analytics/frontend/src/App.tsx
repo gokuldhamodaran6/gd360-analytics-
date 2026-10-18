@@ -51,6 +51,8 @@ import InitiativeNew from "./pages/InitiativeNew";
 import InitiativeDetail from "./pages/InitiativeDetail";
 import Accounts from "./pages/Accounts";
 import { ApprovePage, EventRegister, RepPage, WalkInCapture } from "./pages/PublicInitiative";
+import AutopilotSetup from "./pages/AutopilotSetup";
+import EventsLanding from "./pages/EventsLanding";
 import { SharedEvent, SignGoal, SponsorPublic, SurveyPage, TicketPage } from "./eventos/PublicPages";
 import StaffApp from "./eventos/StaffApp";
 import ProjectDashboard from "./pages/ProjectDashboard";
@@ -173,6 +175,9 @@ export default function App() {
       {/* 2026-10-10: Initiatives + Accounts, and their public no-login pages */}
       <Route path="/initiatives" element={<Protected><Initiatives /></Protected>} />
       <Route path="/initiatives/new" element={<Protected><InitiativeNew /></Protected>} />
+      <Route path="/initiatives/autopilot" element={<Protected><AutopilotSetup /></Protected>} />
+      <Route path="/events" element={<EventsLanding />} />
+      <Route path="/events/app" element={<Protected><Initiatives events /></Protected>} />
       <Route path="/initiatives/:initiativeId" element={<Protected><InitiativeDetail /></Protected>} />
       <Route path="/accounts" element={<Protected><Accounts /></Protected>} />
       <Route path="/e/:token" element={<EventRegister />} />
