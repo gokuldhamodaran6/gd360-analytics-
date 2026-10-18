@@ -122,11 +122,26 @@ export function Meter({ t, compact = false }: { t: Target; compact?: boolean }) 
       </div>
       {!compact && (
         <span className="text-caption text-muted">
-          {t.key === "social_reach" || t.key === "social_engagements" ? "From the team's logged updates" : t.auto ? "Counted by GD360" : "Updated by the owner"}{t.why ? ` · ${t.why}` : ""}
+          <TruthLabel t={t} />{t.why ? ` · ${t.why}` : ""}
         </span>
       )}
     </div>
   );
+}
+
+/** R53: every number says how true it is - counted by GD360, matched from a source, typed by a person, or not connected. */
+export function truthText(t: Pick<Target, "truth" | "from" | "auto" | "key">): string {
+  if (t.truth === "counted") return "Counted by GD360";
+  if (t.truth === "matched") return `Matched${t.from ? ` from ${t.from.replace(/^synced /, "").replace(/ matched by the contract$/, "")}` : ""}`;
+  if (t.truth === "typed") return "Typed by you";
+  if (t.truth === "modelled") return "Modelled";
+  if (t.truth === "none") return "Not connected yet";
+  return t.key === "social_reach" || t.key === "social_engagements" ? "From the team's logged updates" : t.auto ? "Counted by GD360" : "Updated by the owner";
+}
+
+export function TruthLabel({ t }: { t: Pick<Target, "truth" | "from" | "auto" | "key"> }) {
+  const cls = t.truth === "typed" ? "text-warning" : t.truth === "none" ? "text-muted italic" : "";
+  return <span className={cls} data-truth={t.truth || (t.auto ? "counted" : "typed")} title={t.from || undefined}>{truthText(t)}</span>;
 }
 
 export function Section({ title, sub, actions, children, className = "", id, tight = false }: {

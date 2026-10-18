@@ -1,6 +1,13 @@
 import { useMemo, useState } from "react";
+import { ClosedBy } from "../autopilot/kit";
 import { errorText, Initiative, initiativesApi, Task } from "../api/initiatives";
 import { Banner, CopyField, Field, fmtDate, Section, Sheet, todayIso } from "./ui";
+
+const RULES: [string, string][] = [
+  ["none", "Only by hand (or approval)"], ["post", "A matched post goes out"], ["first_spend", "The first ad spend on its INIT- campaign"],
+  ["page_live", "The landing page gets its first visit"], ["first_registration", "The first registration comes in"], ["email_sent", "A GD360 email goes out"],
+  ["meeting", "A meeting is logged"], ["deal", "A matched deal appears"], ["sessions", "Sessions arrive from its UTM campaign"],
+];
 
 type Props = { i: Initiative; reload: () => void; onError: (s: string) => void };
 
@@ -93,6 +100,8 @@ export default function PlanTab({ i, reload, onError }: Props) {
                         {t.evidence.length > 0 && <span className="text-caption text-muted">{t.evidence.length} deliverable{t.evidence.length > 1 ? "s" : ""}</span>}
                         {t.origin === "walk-in" && <span className="text-caption text-series-2">From walk-in</span>}
                         {t.origin === "assistant" && <span className="text-caption text-muted">Added by the assistant</span>}
+                        {t.status === "done" ? <ClosedBy by={t.completed_by} /> : t.closes_on && !t.auto_rule?.paused
+                          ? <span className="text-caption text-muted" data-closes-on="">Closes on {t.closes_on}</span> : null}
                       </span>
                     </button>
                     <span className="text-caption text-secondary w-[110px] truncate">{t.owner_name || <span className="text-muted">No owner</span>}</span>
@@ -149,6 +158,18 @@ function TaskSheet({ i, t, onClose, reload, onError }: { i: Initiative; t: Task;
           {STATUS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</select></Field>
       </div>
       <Field label="Notes"><textarea className="input min-h-[80px]" value={form.detail} onChange={(e) => setForm({ ...form, detail: e.target.value })} disabled={!i.can_edit} /></Field>
+
+      <div className="rounded-ctl border border-border p-3 flex flex-col gap-2" data-task-rule="">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <span className="text-ui font-medium text-text">Closes itself when</span>
+          {t.status === "done" && <ClosedBy by={t.completed_by} />}
+        </div>
+        <select className="input !py-2 text-ui" value={t.auto_rule?.paused ? "none" : (t.auto_rule?.kind || "none")} disabled={!i.can_edit || busy} aria-label="Closes itself when" data-rule-select=""
+          onChange={(e) => run(() => initiativesApi.patchTask(i.id, t.id, { auto_rule: { kind: e.target.value } } as any), "Rule saved.")}>
+          {RULES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+        </select>
+        <span className="text-caption text-muted">{t.auto_rule?.paused ? "Paused because a close was undone - pick a rule to switch it back on." : "The Tracker closes it when this evidence arrives (your policy can make it ask first). Every close can be undone."}</span>
+      </div>
 
       <div className="border-t border-border pt-4 flex flex-col gap-3">
         <div>
