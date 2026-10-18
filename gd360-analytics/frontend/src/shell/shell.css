@@ -87,6 +87,9 @@
   .gx-top { padding: 0 14px; gap: 8px; }
   .gx-hide-sm { display: none !important; }
   .gx-crumbs .ws, .gx-crumbs .sl.first { display: none; }
+  /* 2026-10-17 (R53): on a phone only the page you are on - a long title no longer pushes the avatar off screen */
+  .gx-crumbs > span:not(:last-child), .gx-crumbs .sl { display: none !important; }
+  .gx-crumbs { flex: 1 1 auto; }
   .c2-foot { bottom: calc(64px + env(safe-area-inset-bottom, 0px)) !important; }
   .gx-menu.sheet { left: 8px !important; right: 8px !important; bottom: calc(70px + env(safe-area-inset-bottom, 0px)) !important; top: auto !important; min-width: 0; }
 }
