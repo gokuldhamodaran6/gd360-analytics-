@@ -2891,6 +2891,10 @@ class InitiativeTask(Base):
     position = Column(Integer, default=0)
     origin = Column(String, default="planner")  # planner|you|assistant
     done_at = Column(DateTime, nullable=True)
+    # 2026-10-17 (R53): {kind, metric?, n?, source?} - the evidence that closes this task by itself
+    auto_rule = Column(JSON, nullable=True)
+    completed_by = Column(String, nullable=True)   # you|approval|evidence|autopilot
+    evidence_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -3650,3 +3654,107 @@ class QualityRun(Base):
     error = Column(Text, nullable=True)
     started_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     finished_at = Column(DateTime, nullable=True)
+
+
+
+# ============================================================================
+# 2026-10-17 (R53): Initiatives Autopilot - the business brain, the tracking contract, evidence, daily numbers and
+# the agent's actions (services/autopilot). Every number an initiative shows comes from evidence or says "typed by you".
+
+class BusinessProfile(Base):
+    """One per workspace: what GD360 knows about the business - website, what it sells, voice, audiences, its numbers
+    from every connected source (each with its source) and what past initiatives taught. The planner reads it."""
+    __tablename__ = "business_profiles"
+
+    workspace_id = Column(String, primary_key=True)
+    website = Column(String, nullable=True)
+    about = Column(Text, nullable=True)
+    products = Column(JSON, nullable=True)     # ["..."]
+    voice = Column(Text, nullable=True)
+    audiences = Column(JSON, nullable=True)    # {customers: {...}, investors: {...}, partners: {...}, candidates: {...}}
+    facts = Column(JSON, nullable=True)        # [{key, label, value, unit, source, as_of}]
+    sources = Column(JSON, nullable=True)      # [{kind, name, tables, rows, last_90d}]
+    industry = Column(String, nullable=True)   # an industry pack key
+    edited = Column(JSON, nullable=True)       # which fields the person wrote (never overwritten by a refresh)
+    integrations = Column(JSON, nullable=True)  # digests, webhooks, conversions APIs (secrets encrypted)
+    refreshed_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class InitiativeContract(Base):
+    """The tracking contract: the names, tags and links that make an initiative's evidence findable without typing."""
+    __tablename__ = "initiative_contracts"
+
+    initiative_id = Column(String, ForeignKey("initiatives.id", ondelete="CASCADE"), primary_key=True)
+    code = Column(String, nullable=False, index=True)          # e.g. Q4LAUNCH: ads named INIT-Q4LAUNCH-*
+    hashtag = Column(String, nullable=True)
+    utm_campaign = Column(String, nullable=True)
+    keywords = Column(JSON, nullable=True)
+    mapped = Column(JSON, nullable=True)        # {"ads": [...campaign ids or names], "posts": [...urls]}
+    bindings = Column(JSON, nullable=True)      # {target_key: {source, how, truth}}
+    data = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class InitiativeEvidence(Base):
+    """One piece of evidence: a post, an ad day, sessions from a UTM campaign, a deal, a registration, a page going
+    live - with how it was matched, how sure, and whether a person confirmed it."""
+    __tablename__ = "initiative_evidence"
+    __table_args__ = (UniqueConstraint("initiative_id", "source", "external_id", name="uq_initiative_evidence"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id", ondelete="CASCADE"), nullable=False, index=True)
+    kind = Column(String, nullable=False)        # post|ad|web|deal|registration|email|page|meeting|mention
+    source = Column(String, nullable=False)      # Instagram, Meta ads, GA4, HubSpot, GD360 ...
+    external_id = Column(String, nullable=False)
+    title = Column(String, nullable=True)
+    text = Column(Text, nullable=True)
+    url = Column(String, nullable=True)
+    media_url = Column(String, nullable=True)
+    numbers = Column(JSON, nullable=True)        # {reach, engagements, spend, clicks, sessions, conversions, amount}
+    matched_by = Column(String, nullable=True)   # hashtag|link|code|utm|naming rule|keyword|mapped|vision|counted
+    confidence = Column(Float, nullable=True)
+    why = Column(String, nullable=True)
+    state = Column(String, nullable=False, default="auto")  # auto|review|confirmed|rejected
+    occurred_at = Column(DateTime, nullable=True, index=True)
+    decided_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class InitiativeMetricDaily(Base):
+    """A target's value at the end of each day - what the pace forecast and the lift are computed from."""
+    __tablename__ = "initiative_metric_daily"
+    __table_args__ = (UniqueConstraint("initiative_id", "day", "key", name="uq_initiative_metric_day"),)
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    initiative_id = Column(String, ForeignKey("initiatives.id", ondelete="CASCADE"), nullable=False, index=True)
+    day = Column(String, nullable=False)     # YYYY-MM-DD
+    key = Column(String, nullable=False)
+    value = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AgentAction(Base):
+    """Something an Autopilot agent proposed or did - with the policy that allowed it, and how to undo it."""
+    __tablename__ = "agent_actions"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    workspace_id = Column(String, nullable=True, index=True)
+    initiative_id = Column(String, nullable=True, index=True)
+    agent = Column(String, nullable=False)       # Planner|Tracker|Matcher|Pacer|Mixer|Demand|Ops|Follow-up|Prover
+    kind = Column(String, nullable=False)        # attach|close_task|reminder|email|budget|digest|...
+    title = Column(String, nullable=False)
+    detail = Column(Text, nullable=True)
+    impact = Column(String, nullable=True)
+    cost = Column(Float, nullable=True)
+    state = Column(String, nullable=False, default="proposed")  # proposed|done|undone|dismissed|failed
+    auto = Column(Boolean, default=False)        # done by policy without asking
+    reversible = Column(Boolean, default=True)
+    payload = Column(JSON, nullable=True)
+    undo = Column(JSON, nullable=True)
+    result = Column(Text, nullable=True)
+    key = Column(String, nullable=True, index=True)  # dedupe: one live proposal per key
+    decided_by = Column(String, nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

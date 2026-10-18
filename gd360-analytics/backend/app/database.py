@@ -43,6 +43,10 @@ def init_db():
 # creates any table that doesn't exist yet; this list is only for a new
 # COLUMN on a table that already exists in production.
 _NEW_COLUMNS = [
+    # 2026-10-17 (R53): tasks that close themselves from evidence
+    ("initiative_tasks", "auto_rule", "JSON"),
+    ("initiative_tasks", "completed_by", "TEXT"),
+    ("initiative_tasks", "evidence_id", "TEXT"),
     ("messages", "code", "TEXT"),
     ("messages", "action", "TEXT"),
     ("messages", "chart_type", "TEXT"),
