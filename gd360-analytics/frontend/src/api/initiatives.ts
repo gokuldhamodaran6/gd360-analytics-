@@ -5,7 +5,10 @@ import { api, API_URL } from "./client";
 
 export type Kind = "event" | "webinar" | "campaign" | "abm" | "hiring" | "product" | "custom";
 export type Health = { state: "ok" | "watch" | "risk" | "done"; label: string };
-export type Target = { key: string; label: string; target: number | null; unit: string; actual: number | null; auto: boolean; why?: string | null; pct?: number | null };
+export type Target = { key: string; label: string; target: number | null; unit: string; actual: number | null; auto: boolean; why?: string | null; pct?: number | null;
+  /** R53: how true the number is, where it comes from, and (in drafts) where the target came from. */
+  truth?: "counted" | "matched" | "typed" | "none" | "modelled" | null; from?: string | null;
+  source?: { kind: "history" | "brain" | "benchmark" | "assumption"; label: string } | null };
 
 export type InitiativeSummary = {
   id: string; title: string; kind: Kind; kind_label: string; department: string | null; status: string;
@@ -34,6 +37,9 @@ export type Task = {
   id: string; phase_id: string | null; title: string; detail: string | null; owner_name: string | null; due_on: string | null;
   status: "todo" | "doing" | "review" | "done" | "blocked"; tool_key: string | null; position: number; origin: string;
   done_at: string | null; evidence: Evidence[]; approval: Approval | null; approval_link: string | null;
+  /** R53: the evidence that closes it, and who closed it (you / evidence / approval / autopilot). */
+  auto_rule?: { kind: string; metric?: string; n?: number; paused?: boolean; why?: string } | null; completed_by?: string | null; evidence_id?: string | null;
+  closes_on?: string | null;
 };
 
 export type Item = {
@@ -87,10 +93,12 @@ export type PlanDraft = {
   title: string; kind: Kind; department: string | null; summary: string; strategy: string[]; key_date: string | null;
   location: string | null; budget: number | null; questions: { key: string; question: string; options: string[] }[];
   details: Record<string, string>; audience: Audience | null; targets: Target[]; phases: Phase[];
-  tasks: { title: string; phase: string; offset: number; tool: string | null; detail: string | null; due_on: string; owner?: string }[];
+  tasks: { title: string; phase: string; offset: number; tool: string | null; detail: string | null; due_on: string; owner?: string; auto_rule?: { kind: string } | null; closes_on?: string | null }[];
   tools: { key: string; why: string }[]; board_items: { title: string; group: string | null; stage: string }[];
   roles: Role[]; assumptions: string[]; learned: string[]; history_count: number; ai: boolean; compressed?: boolean; starts_on?: string;
   scope?: { regions?: string[]; channels?: string[] };
+  /** R53: who it's for, and what the business brain gave the planner. */
+  audience_type?: string | null; brain?: { facts: number; sources: string[]; about: string | null } | null;
 };
 
 export type Catalog = {
