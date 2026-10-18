@@ -178,26 +178,62 @@ def compute(db: Session, i: models.Initiative) -> dict:
     totals = tracking.update_totals(db, i.id)
     values["social_reach"] = totals.get("reach") or None
     values["social_engagements"] = (totals.get("engagements", 0) + totals.get("comments", 0) + totals.get("shares", 0)) or None
+    # 2026-10-17 (R53): numbers evidence stands behind replace typed ones, and every number says how true it is
+    truth: dict[str, str] = {"social_reach": "typed", "social_engagements": "typed"}
+    try:
+        from ..autopilot import evidence as ap_ev
+        ev = ap_ev.values(db, i)
+    except Exception:  # noqa: BLE001 - evidence never breaks the numbers
+        db.rollback()
+        ev = {}
+    for k in ("social_reach", "social_engagements", "ad_spend", "ad_conversions", "utm_sessions", "pipeline_value", "revenue", "posts_matched", "deals_sourced"):
+        if ev.get(k) is not None:
+            values[k] = ev[k]
+            truth[k] = "matched"
+    results = values.get("registrations") or values.get("landing_conversions") or values.get("ad_conversions")
+    if values.get("ad_spend") and results:
+        values["cost_per_lead"] = round(float(values["ad_spend"]) / float(results), 2)
+        truth["cost_per_lead"] = "matched"
+    # GD360's own invite emails count as invites (audit #9): every email sent from GD360 for an event or webinar is one
+    if i.kind in ("event", "webinar") and camp_ids:
+        sent_to = {e for (e,) in db.query(models.GtmCampaignSend.email).filter(models.GtmCampaignSend.campaign_id.in_(camp_ids),
+                                                                               models.GtmCampaignSend.status == "sent").distinct()}
+        values["invites_sent"] = (values.get("invites_sent") or 0) + len(sent_to)
+    values["_truth"] = truth
     return {"links": links, "update_totals": totals, "values": values, "tasks_total": len(tasks), "tasks_done": done, "board": Counter(it.stage for it in items)}
 
 
 def targets_with_actuals(i: models.Initiative, values: dict) -> list[dict]:
+    from ..autopilot.contract import SOURCES
     out = []
+    tr = values.get("_truth") or {}
     for t in i.targets or []:
         key = t.get("key")
         meta = catalog.METRICS.get(key) or {}
         auto = bool(meta.get("auto")) and t.get("auto", True) is not False
         actual = values.get(key) if auto else t.get("actual")
+        # R53: how true the number is - counted by GD360, matched evidence, or typed by a person (amber)
+        if auto and actual is None and t.get("actual") is not None:
+            actual, truth = t.get("actual"), "typed"
+        elif not auto:
+            truth = "typed" if actual is not None else "none"
+        elif actual is None:
+            truth = "none"
+        else:
+            truth = tr.get(key) or SOURCES.get(key, ("counted", ""))[0]
         target = t.get("target")
         pct = None
         try:
             if actual is not None and target:
                 pct = round(100 * float(actual) / float(target), 1)
+                if key in catalog.LOWER_IS_BETTER:  # R53: at or under the target is 100%; over it falls
+                    pct = 100.0 if float(actual) <= float(target) else round(100 * float(target) / float(actual), 1)
         except (TypeError, ValueError):
             pct = None
         out.append({"key": key, "label": t.get("label") or catalog.metric_label(key), "target": target,
                     "unit": t.get("unit") or meta.get("unit") or "count", "actual": actual, "auto": auto,
-                    "why": t.get("why"), "pct": pct})
+                    "why": t.get("why"), "pct": pct, "truth": truth, "source": t.get("source"),
+                    "from": SOURCES.get(key, ("typed", "typed by you"))[1]})
     return out
 
 

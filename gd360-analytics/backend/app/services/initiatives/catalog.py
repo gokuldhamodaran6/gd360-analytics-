@@ -144,11 +144,20 @@ METRICS = {
     "invites_sent": {"label": "Personal invites sent", "unit": "count", "auto": True},
     "replies": {"label": "Replies to personal outreach", "unit": "count", "auto": True},
     "reply_rate": {"label": "Outreach reply rate", "unit": "pct", "auto": True},
-    "pipeline_value": {"label": "Pipeline created", "unit": "money", "auto": False},
-    "revenue": {"label": "Revenue won", "unit": "money", "auto": False},
-    "cost_per_lead": {"label": "Cost per lead", "unit": "money", "auto": False},
+    # 2026-10-17 (R53): read from connected sources by the tracking contract (HubSpot deals, ad spend), typed only
+    # when nothing is connected
+    "pipeline_value": {"label": "Pipeline created", "unit": "money", "auto": True},
+    "revenue": {"label": "Revenue won", "unit": "money", "auto": True},
+    "cost_per_lead": {"label": "Cost per lead", "unit": "money", "auto": True},
+    "ad_spend": {"label": "Ad spend", "unit": "money", "auto": True},
+    "utm_sessions": {"label": "Website sessions from the campaign", "unit": "count", "auto": True},
     "nps": {"label": "Satisfaction score", "unit": "count", "auto": False},
 }
+
+# 2026-10-17 (R53): targets where less is better (a cost, a budget) and numbers that don't pile up over time (a ratio,
+# a score) - pace and proof treat them differently from counts.
+LOWER_IS_BETTER = {"cost_per_lead", "ad_spend"}
+NOT_CUMULATIVE = {"cost_per_lead", "nps"}
 
 
 def metric_label(key: str) -> str:

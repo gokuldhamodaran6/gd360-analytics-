@@ -62,6 +62,11 @@ Reply with ONE JSON object only:
 }}
 
 Rules:
+- CONTEXT.business is what GD360 knows about this business (about, products, audiences, facts with their source,
+  industry benchmarks). Build the plan for THIS business. Base each target on a fact, the HISTORY, or a benchmark and
+  say which in "why"; if none applies, say "assumption" in "why". Never invent a number as if it were theirs.
+- CONTEXT.audience_type says who this is for (customers, investors, partners, candidates, students, donors, press).
+  Only customer work targets customer accounts ("audience": tiers); otherwise "audience": null.
 - Offsets are days relative to key_date (negative = before) for dated work;
   days from the start otherwise. 8-18 tasks, each a concrete action.
 - Ask at most 3 questions, only ones whose answer would change the plan,
@@ -100,6 +105,16 @@ def _context(db: Session, workspace_id: str | None, kind: str | None) -> dict:
     conns = [c.provider for c in db.query(models.GtmConnection).filter(models.GtmConnection.workspace_id == workspace_id)]
     if conns:
         ctx["connected"] = conns
+    # 2026-10-17 (R53): the business brain - what the business is, its audiences, every source's numbers with where
+    # they come from, and the industry pack's benchmark ranges
+    try:
+        from ..autopilot import brain
+        bp = brain.get(db, workspace_id, refresh_if_older_h=72)
+        ctx["business"] = brain.for_planner(bp, kind)
+        ctx["_bp"] = bp
+    except Exception as e:  # noqa: BLE001 - a plan always comes back
+        db.rollback()
+        logger.warning("[initiatives] business brain skipped: %s", e)
     return ctx
 
 
@@ -108,7 +123,10 @@ def draft(db: Session, workspace_id: str | None, brief: str, kind: str | None = 
     explicit = kind in catalog.KINDS
     kind = kind if explicit else catalog.guess_kind(brief)
     ctx = _context(db, workspace_id, kind)
-    user = {"brief": brief, "kind_hint": kind, "answers": answers or {}, "key_date": key_date, "context": ctx}
+    from ..autopilot import brain as _brain
+    ctx["audience_type"] = _brain.audience_type(" ".join([brief or ""] + [str(v) for v in (answers or {}).values()]))
+    user = {"brief": brief, "kind_hint": kind, "answers": answers or {}, "key_date": key_date,
+            "context": {k: v for k, v in ctx.items() if not k.startswith("_")}}
     if previous:
         user["current_plan"] = {k: previous.get(k) for k in ("title", "kind", "summary", "key_date", "targets",
                                                               "phases", "tasks", "tools", "audience")}
@@ -126,6 +144,18 @@ def draft(db: Session, workspace_id: str | None, brief: str, kind: str | None = 
         raw["kind"] = kind  # the person chose it
     plan = validate(raw or {}, brief, kind, answers or {}, key_date, ctx, fallback=raw is None)
     plan["ai"] = raw is not None
+    # R53: every target cites its source (your history, a brain fact, an industry benchmark) or says "assumption"
+    bp = ctx.get("_bp")
+    plan["targets"] = _brain.cite(plan["targets"], plan["kind"], bp, ctx.get("history"))
+    plan["audience_type"] = ctx.get("audience_type")
+    if bp is not None:
+        from ..autopilot import packs as _packs
+        plan["brain"] = {"facts": len(bp.facts or []), "sources": [x["name"] for x in (bp.sources or [])][:8], "about": bp.about,
+                         "industry": (_packs.PACKS.get(bp.industry or "") or {}).get("label")}
+    from ..autopilot import rules as _rules
+    for t in plan["tasks"]:
+        t["auto_rule"] = _rules.infer(t["title"], t.get("tool"))
+        t["closes_on"] = _rules.label(t["auto_rule"])
     return plan
 
 
@@ -212,9 +242,10 @@ def validate(raw: dict, brief: str, kind: str, answers: dict, key_date: str | No
         ph = remap.get(t.get("phase")) or (t.get("phase") if any(p["id"] == t.get("phase") for p in phases) else None)
         tool = t.get("tool") if t.get("tool") in catalog.TOOLS else None
         tasks.append({"title": _str(t["title"], 200), "phase": ph or phases[0]["id"],
-                      "offset": _int(t.get("offset"), -365, 365), "tool": tool, "detail": _str(t.get("detail"), 600)})
-    if len(tasks) < 3:
-        tasks = [dict(t) for t in tpl["tasks"]]
+                      "offset": _int(t.get("offset"), -365, 365), "tool": tool, "detail": _str(t.get("detail"), 600),
+                      **({"auto_rule": t["auto_rule"]} if isinstance(t.get("auto_rule"), dict) else {})})
+    if len(tasks) < 3 and not (ctx.get("from_page") and isinstance(raw.get("tasks"), list)):
+        tasks = [dict(t) for t in tpl["tasks"]]  # R53 (audit #14): what the person kept on the page is kept, even when short
 
     # targets
     targets = []
@@ -231,10 +262,10 @@ def validate(raw: dict, brief: str, kind: str, answers: dict, key_date: str | No
         seen.add(key)
         targets.append({"key": key, "label": catalog.metric_label(key) if key in catalog.METRICS else _str(t.get("label"), 60) or key.replace("_", " ").capitalize(),
                         "target": val, "unit": (catalog.METRICS.get(key) or {}).get("unit") or "count",
-                        "auto": bool((catalog.METRICS.get(key) or {}).get("auto")),
-                        "why": _str(t.get("why"), 200)})
+                        "auto": bool((catalog.METRICS.get(key) or {}).get("auto")) and t.get("auto", True) is not False,
+                        "why": _str(t.get("why"), 200), **({"source": t["source"]} if isinstance(t.get("source"), dict) else {})})
     learned = [x for x in (_str(v, 240) for v in (raw.get("learned") or [])) if x]
-    if not targets:
+    if not targets and not (ctx.get("from_page") and isinstance(raw.get("targets"), list)):
         targets, learned_tpl = _template_targets(tpl_kind, tpl, avgs)
         learned = learned or learned_tpl
     targets = targets[:8]
@@ -265,8 +296,10 @@ def validate(raw: dict, brief: str, kind: str, answers: dict, key_date: str | No
     if audience:
         audience = {"tiers": [x for x in (audience.get("tiers") or []) if x in ("A", "B", "C")]}
         audience = audience if audience["tiers"] else None
-    if audience is None and tpl_kind in ("abm", "campaign", "event", "webinar"):
+    if audience is None and tpl_kind in ("abm", "campaign", "event", "webinar") and (ctx.get("audience_type") or "customers") == "customers":
         audience = {"tiers": ["A", "B"]} if (ctx.get("accounts") or {}).get("total") else None
+    if (ctx.get("audience_type") or "customers") != "customers":
+        audience = None  # R53 (audit #13): an investor pitch does not target customer Tier A+B
 
     items = []
     stages = meta["stages"]

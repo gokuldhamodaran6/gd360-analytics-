@@ -499,6 +499,7 @@ def decide(t: models.InitiativeTask, decision: str, by: str, note: str | None) -
     t.approval = a
     if a["state"] == "approved":
         t.status, t.done_at = "done", datetime.utcnow()
+        t.completed_by = "approval"
     else:
         t.status = "doing"
     return a
