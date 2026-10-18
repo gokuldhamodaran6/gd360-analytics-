@@ -465,6 +465,14 @@ def _tick() -> None:
             logger.warning("[scheduler] event scans failed: %s", e)
             db.rollback()
 
+        # 2026-10-17 (R53): Initiatives Autopilot - evidence, task closes, snapshots, digests, webinar 360.
+        from .autopilot import tick as autopilot_tick
+        try:
+            autopilot_tick(db, datetime.utcnow())
+        except Exception as e:  # noqa: BLE001 - never stops the loop
+            logger.warning("[scheduler] autopilot tick failed: %s", e)
+            db.rollback()
+
         # 2026-10-10 (round 19): company-domain viewers' Monday emails.
         from .domains import send_due_subscriptions
         try:
