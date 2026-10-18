@@ -26,9 +26,13 @@ import SponsorsTab from "./Sponsors";
 import ReportTab from "./Report";
 import SetupTab from "./Setup";
 import PeopleTab from "./People";
+import PaceTab from "../autopilot/PaceTab";
+import { SoloCard, Webinar360Tab } from "../autopilot/EventExtras";
+import { Calibration } from "../autopilot/ProofTab";
+import { autopilotApi } from "../api/autopilot";
 
 export type EvTab = "overview" | "success" | "growth" | "buzz" | "demand" | "live" | "sponsors" | "report" | "plan" | "people" | "team"
-  | "campaigns" | "links" | "log" | "setup";
+  | "campaigns" | "links" | "log" | "setup" | "autopilot" | "w360";
 
 export default function EventShell({ i, reload, onError }: { i: Initiative; reload: () => void; onError: (s: string) => void }) {
   const [params, setParams] = useSearchParams();
@@ -38,6 +42,8 @@ export default function EventShell({ i, reload, onError }: { i: Initiative; relo
   const [err, setErr] = useState("");
   const [share, setShare] = useState(false);
   const [assistant, setAssistant] = useState(false);
+  const [decisions, setDecisions] = useState(0);
+  useEffect(() => { autopilotApi.one(i.id).then((r) => setDecisions(r.decisions.total)).catch(() => undefined); }, [i.id, tab]);
 
   const loadOv = useCallback(() => {
     eventApi.overview(i.id).then(setOv).catch((e) => setErr(errorText(e, "Couldn't load the event.")));
@@ -69,7 +75,9 @@ export default function EventShell({ i, reload, onError }: { i: Initiative; relo
     { id: "demand", label: "Demand" },
     { id: "live", label: live ? "● Live" : "Live" },
     ...(ev?.physical !== false ? [{ id: "sponsors" as EvTab, label: "Sponsors" }] : []),
+    ...(ev?.online || i.kind === "webinar" ? [{ id: "w360" as EvTab, label: "Webinar 360" }] : []),
     { id: "report", label: "Report" },
+    { id: "autopilot", label: "Autopilot", badge: decisions || null },
     { id: "plan", label: "Plan", badge: i.overdue || null },
     { id: "people", label: "People" },
     { id: "team", label: "Team" },
@@ -135,7 +143,9 @@ export default function EventShell({ i, reload, onError }: { i: Initiative; relo
         {current === "demand" && <DemandTab i={i} />}
         {current === "live" && <LiveTab i={i} />}
         {current === "sponsors" && <SponsorsTab i={i} />}
-        {current === "report" && <ReportTab i={i} />}
+        {current === "report" && <>{ev?.mode === "solo" && <SoloCard i={i} />}<ReportTab i={i} /><EventCalibration i={i} /></>}
+        {current === "w360" && <Webinar360Tab i={i} />}
+        {current === "autopilot" && <PaceTab i={i} reload={() => { reload(); loadOv(); }} />}
         {current === "plan" && <PlanTab i={i} reload={reload} onError={onError} />}
         {current === "people" && <PeopleTab i={i} />}
         {current === "team" && <TeamTab i={i} onError={onError} />}
@@ -195,6 +205,12 @@ function ShareSheet({ open, onClose, i, ov, onChanged }: { open: boolean; onClos
       ))}
     </Sheet>
   );
+}
+
+function EventCalibration({ i }: { i: Initiative }) {
+  const [c, setC] = useState<any>(null);
+  useEffect(() => { autopilotApi.proof(i.id).then((p) => setC(p.calibration)).catch(() => setC(null)); }, [i.id]);
+  return c ? <Calibration c={c} /> : null;
 }
 
 export function useInitiativeStatus(i: Initiative, onChanged: () => void) {
