@@ -36,6 +36,8 @@ export default function InitiativeNew() {
   const [regions, setRegions] = useState("");
   const [channels, setChannels] = useState<string[]>([]);
   const started = useRef(false);
+  // R53 (audit #15): what the person changed by hand survives answering a question.
+  const edits = useRef<{ title?: string; targets: Record<string, number | null>; removed: Set<string>; added: PlanDraft["targets"]; tasks: boolean }>({ targets: {}, removed: new Set(), added: [], tasks: false });
 
   useEffect(() => { initiativesApi.catalog().then(setCatalog).catch(() => undefined); }, []);
 
@@ -49,6 +51,14 @@ export default function InitiativeNew() {
         answers: opts.answersOverride || answers, key_date: keyDate || null,
         previous: opts.instruction && plan ? plan : undefined, instruction: opts.instruction,
       });
+      const e = edits.current;
+      const keep = !opts.instruction && plan;
+      if (keep) {
+        if (e.title) p.title = e.title;
+        p.targets = p.targets.filter((t) => !e.removed.has(t.key)).map((t) => (t.key in e.targets ? { ...t, target: e.targets[t.key] } : t));
+        for (const a of e.added) if (!p.targets.some((t) => t.key === a.key)) p.targets.push({ ...a, target: e.targets[a.key] ?? a.target });
+        if (e.tasks) { p.tasks = plan!.tasks; p.phases = plan!.phases; }
+      } else edits.current = { targets: {}, removed: new Set(), added: [], tasks: false };
       setPlan(p);
       if (!kind) setKind(p.kind);
       if (!keyDate && p.key_date) setKeyDate(p.key_date);
@@ -94,10 +104,15 @@ export default function InitiativeNew() {
     return plan.phases.map((p) => ({ ...p, tasks: plan.tasks.map((t, idx) => ({ ...t, idx })).filter((t) => t.phase === p.id) }));
   }, [plan]);
 
-  const setTask = (idx: number, patch: Partial<PlanDraft["tasks"][number]>) =>
+  const setTask = (idx: number, patch: Partial<PlanDraft["tasks"][number]>) => {
+    edits.current.tasks = true;
     setPlan((p) => (p ? { ...p, tasks: p.tasks.map((t, i) => (i === idx ? { ...t, ...patch } : t)) } : p));
-  const setTarget = (idx: number, value: string) =>
-    setPlan((p) => (p ? { ...p, targets: p.targets.map((t, i) => (i === idx ? { ...t, target: value === "" ? null : Number(value) } : t)) } : p));
+  };
+  const setTarget = (idx: number, value: string) => {
+    const v = value === "" ? null : Number(value);
+    if (plan?.targets[idx]) edits.current.targets[plan.targets[idx].key] = v;
+    setPlan((p) => (p ? { ...p, targets: p.targets.map((t, i) => (i === idx ? { ...t, target: v } : t)) } : p));
+  };
 
   return (
     <div className="dash-shell flex min-h-screen">
@@ -194,7 +209,7 @@ export default function InitiativeNew() {
                     <span className="ml-auto text-caption text-muted">{plan.ai ? "Written by GD360's planner" : "GD360's standard plan for this kind"}{plan.history_count ? ` · learned from ${plan.history_count} earlier` : ""}</span>
                   </div>
                   <input className="input !text-[20px] !font-semibold !py-2 !px-2.5 !bg-transparent !border-transparent hover:!border-border focus:!border-primary" value={plan.title}
-                    onChange={(e) => setPlan({ ...plan, title: e.target.value })} aria-label="Title" data-plan-title="" />
+                    onChange={(e) => { edits.current.title = e.target.value; setPlan({ ...plan, title: e.target.value }); }} aria-label="Title" data-plan-title="" />
                   <div className="flex gap-4 flex-wrap text-ui text-secondary">
                     {(keyDate || plan.key_date) && <span>{kind === "hiring" ? "Start" : kind === "product" ? "Launch" : "Date"}: <b className="text-text font-medium">{fmtDate(keyDate || plan.key_date, true)}</b></span>}
                     {plan.location && <span>Where: <b className="text-text font-medium">{plan.location}</b></span>}
@@ -202,6 +217,12 @@ export default function InitiativeNew() {
                     <span>{plan.tasks.length} tasks · {plan.targets.length} targets</span>
                   </div>
                   <p className="m-0 text-body text-text leading-relaxed">{plan.summary}</p>
+                  {(plan.audience_type || plan.brain) && (
+                    <div className="flex gap-x-4 gap-y-1 flex-wrap text-caption text-secondary" data-plan-brain="">
+                      {plan.audience_type && <span>For: <b className="text-text font-medium" data-audience-type={plan.audience_type}>{plan.audience_type}</b></span>}
+                      {plan.brain && <span>Built from {plan.brain.facts} facts about your business{plan.brain.sources.length ? ` (${plan.brain.sources.join(", ")})` : ""} · <Link to="/initiatives/autopilot" className="text-brand-ink hover:underline">Business brain</Link></span>}
+                    </div>
+                  )}
                   {plan.strategy.length > 0 && (
                     <ul className="m-0 pl-0 list-none grid gap-2 sm:grid-cols-2">
                       {plan.strategy.map((s) => <li key={s} className="flex gap-2 text-ui text-secondary"><span className="mt-[7px] w-1.5 h-1.5 rounded-full bg-primary shrink-0" />{s}</li>)}
@@ -227,9 +248,11 @@ export default function InitiativeNew() {
                         <div className="flex items-center gap-2">
                           <input type="number" min={0} className="input !py-1.5 !w-[120px] tabular-nums" value={t.target ?? ""} onChange={(e) => setTarget(idx, e.target.value)} aria-label={`${t.label} target`} />
                           <span className="text-caption text-muted">{t.unit === "pct" ? "%" : t.unit === "money" ? "USD" : ""}</span>
-                          <button type="button" className="ml-auto text-caption text-muted hover:text-danger" onClick={() => setPlan({ ...plan, targets: plan.targets.filter((_, i) => i !== idx) })}>Remove</button>
+                          <button type="button" className="ml-auto text-caption text-muted hover:text-danger" onClick={() => { edits.current.removed.add(t.key); setPlan({ ...plan, targets: plan.targets.filter((_, i) => i !== idx) }); }}>Remove</button>
                         </div>
                         {t.why && <span className="text-caption text-muted">{t.why}</span>}
+                        {t.source && <span className={`text-caption ${t.source.kind === "assumption" ? "text-warning" : "text-secondary"}`} data-target-source={t.source.kind}>
+                          {t.source.kind === "history" ? "From your past initiatives" : t.source.kind === "brain" ? "From your business numbers" : t.source.kind === "benchmark" ? "Industry benchmark" : "Assumption - change it if you know better"}: {t.source.label}</span>}
                       </div>
                     ))}
                   </div>
@@ -239,7 +262,9 @@ export default function InitiativeNew() {
                         const k = e.target.value;
                         if (!k) return;
                         const m = catalog.metrics[k];
-                        setPlan({ ...plan, targets: [...plan.targets, { key: k, label: m.label, unit: m.unit, auto: m.auto, target: null, actual: null }] });
+                        const nt = { key: k, label: m.label, unit: m.unit, auto: m.auto, target: null, actual: null };
+                        edits.current.added.push(nt); edits.current.removed.delete(k);
+                        setPlan({ ...plan, targets: [...plan.targets, nt] });
                       }}>
                       <option value="">+ Add a target</option>
                       {Object.entries(catalog.metrics).filter(([k]) => !plan.targets.some((t) => t.key === k)).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
@@ -297,10 +322,11 @@ export default function InitiativeNew() {
                             <li key={t.idx} className="flex items-center gap-2 px-3 py-2 flex-wrap sm:flex-nowrap">
                               <input className="flex-1 min-w-[180px] bg-transparent text-ui text-text outline-none border-b border-transparent focus:border-primary py-1" value={t.title}
                                 onChange={(e) => setTask(t.idx, { title: e.target.value })} aria-label="Task" />
+                              {(t as any).closes_on && <span className="text-[11px] text-muted shrink-0" title="The Tracker closes it when this arrives" data-task-closes="">closes on {(t as any).closes_on}</span>}
                               {t.tool && catalog?.tools[t.tool] && <span className="text-[11px] px-2 h-[22px] inline-flex items-center rounded-full bg-surface2 text-secondary shrink-0">{catalog.tools[t.tool].name}</span>}
                               <input className="bg-transparent text-caption text-secondary w-[120px] outline-none" placeholder="Owner" value={t.owner || ""} onChange={(e) => setTask(t.idx, { owner: e.target.value })} aria-label="Owner" />
                               <input type="date" className="bg-transparent text-caption text-secondary outline-none w-[132px]" value={t.due_on} onChange={(e) => setTask(t.idx, { due_on: e.target.value })} aria-label="Due" />
-                              <button type="button" className="text-muted hover:text-danger text-caption" aria-label="Remove task" onClick={() => setPlan({ ...plan, tasks: plan.tasks.filter((_, i) => i !== t.idx) })}>✕</button>
+                              <button type="button" className="text-muted hover:text-danger text-caption" aria-label="Remove task" onClick={() => { edits.current.tasks = true; setPlan({ ...plan, tasks: plan.tasks.filter((_, i) => i !== t.idx) }); }}>✕</button>
                             </li>
                           ))}
                         </ul>

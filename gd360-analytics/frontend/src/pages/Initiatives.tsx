@@ -10,6 +10,8 @@ import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import { Hub, initiativesApi, InitiativeSummary, Kind, errorText } from "../api/initiatives";
 import { eventApi } from "../api/eventos";
 import { Banner, daysLabel, Empty, fmtDate, HealthPill, KIND_LABEL, KindBadge, KindGlyph, KindTile, Meter, Section, Stat, tone } from "../initiatives/ui";
+import { autopilotApi, Brain, Decisions } from "../api/autopilot";
+import { DecisionsPanel } from "../autopilot/kit";
 
 const STARTERS: { kind: Kind; label: string; brief: string }[] = [
   { kind: "event", label: "Event", brief: "Host an in-person customer event" },
@@ -21,7 +23,8 @@ const STARTERS: { kind: Kind; label: string; brief: string }[] = [
   { kind: "custom", label: "Anything else", brief: "" },
 ];
 
-export default function Initiatives() {
+// 2026-10-17 (R53): `events` renders the same hub as GD360 Events - only events and webinars, its own name.
+export default function Initiatives({ events = false }: { events?: boolean } = {}) {
   const { workspaces, activeWorkspaceId, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
   const nav = useNavigate();
   const [hub, setHub] = useState<Hub | null>(null);
@@ -37,40 +40,50 @@ export default function Initiatives() {
     catch (e) { setError(errorText(e, "Couldn't create the sample event.")); setSampleBusy(null); }
   };
 
+  const [decisions, setDecisions] = useState<Decisions | null>(null);
+  const [brain, setBrain] = useState<Brain | null>(null);
+  const loadDecisions = () => { if (activeWorkspaceId) autopilotApi.decisions(activeWorkspaceId).then(setDecisions).catch(() => undefined); };
   useEffect(() => {
     if (!activeWorkspaceId) return;
     setHub(null);
     initiativesApi.hub(activeWorkspaceId).then(setHub).catch((e) => setError(errorText(e, "Couldn't load initiatives.")));
-  }, [activeWorkspaceId]);
+    loadDecisions();
+    autopilotApi.brain(activeWorkspaceId).then(setBrain).catch(() => undefined);
+  }, [activeWorkspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const start = (k?: Kind, b?: string) => {
     const text = (b ?? brief).trim();
     const p = new URLSearchParams();
     if (text) p.set("brief", text);
-    if (k || kind) p.set("kind", (k || kind) as string);
+    if (k || kind || events) p.set("kind", (k || kind || "event") as string);
     nav(`/initiatives/new?${p.toString()}`);
   };
 
   const list = useMemo(() => {
-    const all = hub?.initiatives || [];
+    const all = (hub?.initiatives || []).filter((i) => !events || i.kind === "event" || i.kind === "webinar");
     return all.filter((i) => (filter === "all" ? true : filter === "done" ? i.status === "done" : i.status !== "done"))
       .filter((i) => !dept || (i.department || "Other") === dept);
-  }, [hub, filter, dept]);
+  }, [hub, filter, dept, events]);
   const departments = useMemo(() => Array.from(new Set((hub?.initiatives || []).map((i) => i.department || "Other"))).sort(), [hub]);
 
   return (
     <div className="dash-shell flex min-h-screen">
       <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
       <div className="flex-1 min-w-0 flex flex-col">
-        <TopNav breadcrumb={[{ label: "Initiatives" }]} />
+        <TopNav breadcrumb={[{ label: events ? "GD360 Events" : "Initiatives" }]} />
         <header className="flex flex-wrap justify-between items-end gap-4 px-4 sm:px-8 pt-7 pb-5 border-b border-border">
           <div className="flex flex-col gap-1.5 min-w-0">
-            <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">Plan · Run · Prove</span>
-            <h1 className="m-0 text-[24px] font-semibold tracking-tight text-text">Initiatives</h1>
-            <p className="m-0 text-ui text-secondary max-w-[640px]">Events, webinars, campaigns, account-based marketing, hiring and product builds - planned with you, tracked automatically, measured against their targets.</p>
+            <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">Plan · Run · Prove{events ? " · GD360 Events" : ""}</span>
+            <h1 className="m-0 text-[24px] font-semibold tracking-tight text-text">{events ? "Events" : "Initiatives"}</h1>
+            <p className="m-0 text-ui text-secondary max-w-[640px]">{events ? "In-person events, webinars, online events and meetups - registration, check-in, buzz, the live floor, Webinar 360 and the A–Z report, tracked by themselves."
+              : "Events, webinars, campaigns, account-based marketing, hiring and product builds - planned with you, tracked automatically, measured against their targets."}</p>
           </div>
           <div className="flex gap-2 flex-wrap items-center">
             <ThemeToggle />
+            <Link to="/initiatives/autopilot" className="btn-secondary text-sm inline-flex items-center gap-2" data-go-autopilot="">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></svg>
+              Autopilot
+            </Link>
             <Link to="/accounts" className="btn-secondary text-sm inline-flex items-center gap-2" data-go-accounts="">
               <KindGlyph kind="abm" size={15} /> Accounts{hub ? <span className="text-muted tabular-nums">{hub.counts.accounts.toLocaleString()}</span> : null}
             </Link>
@@ -92,7 +105,7 @@ export default function Initiatives() {
               <button type="submit" className="btn-primary text-sm shrink-0" disabled={!brief.trim() && !kind}>Plan it</button>
             </form>
             <div className="flex gap-2 flex-wrap" role="group" aria-label="Kind of initiative">
-              {STARTERS.map((s) => {
+              {STARTERS.filter((s) => !events || s.kind === "event" || s.kind === "webinar").map((s) => {
                 const on = kind === s.kind;
                 const c = tone(s.kind);
                 return (
@@ -109,6 +122,17 @@ export default function Initiatives() {
             </div>
           </section>
 
+          {decisions && decisions.total > 0 && <DecisionsPanel d={decisions} canEdit onChanged={loadDecisions} showInitiative />}
+          {brain && !events && (
+            <section className="rounded-card border border-border bg-surface p-4 sm:p-5 flex flex-wrap items-center gap-4 justify-between" data-brain-card="">
+              <div className="min-w-0 flex-[1_1_420px]">
+                <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">Business brain</span>
+                <div className="text-ui text-text mt-0.5">{brain.about || "Tell GD360 what you do, and every plan starts from it."}</div>
+                <div className="text-caption text-muted mt-0.5">{brain.industry_label ? `${brain.industry_label} · ` : ""}{brain.facts.length} facts from {brain.sources.length} source{brain.sources.length === 1 ? "" : "s"}{brain.website ? ` · ${brain.website.replace(/^https?:\/\//, "")}` : ""}</div>
+              </div>
+              <Link to="/initiatives/autopilot" className="btn-secondary text-sm shrink-0" data-open-brain="">{brain.about ? "Open" : "Set it up"}</Link>
+            </section>
+          )}
           <section className="relative overflow-hidden rounded-card border border-border bg-surface p-5 sm:p-6 flex flex-wrap items-center gap-5" data-event-sample="">
             <div className="pointer-events-none absolute -right-16 -top-20 w-[420px] h-[240px]" style={{ background: "radial-gradient(closest-side, rgb(var(--color-primary) / 0.14), transparent)" }} />
             <div className="flex flex-col gap-1 min-w-0 flex-[1_1_380px] relative">

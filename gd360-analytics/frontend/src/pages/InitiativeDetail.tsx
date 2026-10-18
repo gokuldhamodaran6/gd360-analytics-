@@ -2,6 +2,8 @@
 // outreach, the people, tracking (links, landing pages, A/B, connected
 // data), campaigns, the daily log, and results against targets. The
 // assistant answers and acts from the side.
+// 2026-10-17 (R53): five tabs - Plan, Evidence, Pace, People, Proof. The old
+// nine screens live inside them (old ?tab= links still open the right one).
 import ThemeToggle from "../components/ThemeToggle";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -21,9 +23,21 @@ import UpdatesTab from "../initiatives/UpdatesTab";
 import ResultsTab from "../initiatives/ResultsTab";
 import Assistant from "../initiatives/Assistant";
 import EventShell from "../eventos/EventShell";
+import { Seg } from "../eventos/kit";
+import EvidenceTab from "../autopilot/EvidenceTab";
+import PaceTab from "../autopilot/PaceTab";
+import ProofTab from "../autopilot/ProofTab";
+import { DecisionsPanel } from "../autopilot/kit";
+import { autopilotApi, Decisions } from "../api/autopilot";
 
-type TabId = "overview" | "plan" | "board" | "team" | "audience" | "tracking" | "campaigns" | "updates" | "results";
+type TabId = "plan" | "evidence" | "pace" | "people" | "proof";
+type Legacy = "overview" | "plan" | "board" | "team" | "audience" | "tracking" | "campaigns" | "updates" | "results";
 const PEOPLE_KINDS = new Set(["event", "webinar", "campaign", "abm"]);
+/** Old tab ids (links in emails, the hub, the account drawer) -> the tab and the view inside it. */
+const LEGACY: Record<Legacy, [TabId, string]> = {
+  overview: ["plan", "overview"], plan: ["plan", "tasks"], board: ["plan", "board"], team: ["people", "team"], audience: ["people", "audience"],
+  tracking: ["evidence", "links"], campaigns: ["people", "campaigns"], updates: ["evidence", "log"], results: ["proof", "results"],
+};
 
 export default function InitiativeDetail() {
   const { initiativeId = "" } = useParams();
@@ -34,7 +48,18 @@ export default function InitiativeDetail() {
   const [error, setError] = useState("");
   const [notFound, setNotFound] = useState(false);
   const [assistant, setAssistant] = useState(false);
-  const tab = (params.get("tab") as TabId) || "overview";
+  const raw = params.get("tab") || "";
+  const [tab, view] = ((): [TabId, string] => {
+    const v = params.get("view") || "";
+    if (["evidence", "pace", "people", "proof"].includes(raw)) return [raw as TabId, v];
+    if (raw === "plan" && v) return ["plan", v];
+    if (raw in LEGACY) return LEGACY[raw as Legacy];
+    return ["plan", v || "overview"];
+  })();
+  const [decisions, setDecisions] = useState<Decisions | null>(null);
+  const loadDecisions = useCallback(() => {
+    autopilotApi.one(initiativeId).then((r) => setDecisions(r.decisions)).catch(() => undefined);
+  }, [initiativeId]);
 
   const load = useCallback(() => {
     initiativesApi.get(initiativeId).then((x) => { setI(x); setNotFound(false); }).catch((e) => {
@@ -43,28 +68,36 @@ export default function InitiativeDetail() {
     });
   }, [initiativeId]);
   useEffect(load, [load]);
+  useEffect(() => { if (i && i.kind !== "event" && i.kind !== "webinar") loadDecisions(); }, [i?.id, i?.kind, tab, loadDecisions]); // eslint-disable-line react-hooks/exhaustive-deps
+  const reloadAll = () => { load(); loadDecisions(); };
 
-  const setTab = (t: TabId) => {
+  const go = (t: TabId, v?: string) => {
     const p = new URLSearchParams(params);
-    if (t === "overview") p.delete("tab");
-    else p.set("tab", t);
+    if (t === "plan" && (!v || v === "overview")) { p.delete("tab"); p.delete("view"); }
+    else { p.set("tab", t); if (v) p.set("view", v); else p.delete("view"); }
     setParams(p, { replace: true });
     window.scrollTo({ top: 0 });
   };
+  const setTab = (t: TabId) => go(t);
+  /** OverviewTab and older screens still ask for the old ids. */
+  const goLegacy = (t: Legacy | TabId) => { if (t in LEGACY) { const [a, b] = LEGACY[t as Legacy]; go(a, b); } else go(t as TabId); };
 
   const people = i ? PEOPLE_KINDS.has(i.kind) : false;
   const overdue = i?.tasks.filter((t) => t.status !== "done" && t.due_on && t.due_on < new Date().toISOString().slice(0, 10)).length || 0;
+  const review = decisions ? decisions.review.length : 0;
   const tabs: { id: TabId; label: string; badge?: number | null }[] = i ? [
-    { id: "overview", label: "Overview" },
     { id: "plan", label: "Plan", badge: overdue || null },
-    { id: "board", label: i.board.label, badge: i.items.length || null },
-    { id: "team", label: "Team & outreach" },
-    ...(people ? [{ id: "audience" as TabId, label: "People" }] : []),
-    { id: "tracking", label: "Tracking", badge: i.tracking_plan.filter((r) => r.state === "setup").length || null },
-    ...(people || i.kind === "product" ? [{ id: "campaigns" as TabId, label: "Campaigns", badge: i.campaigns.length || null }] : []),
-    { id: "updates", label: "Today & updates" },
-    { id: "results", label: "Results" },
+    { id: "evidence", label: "Evidence", badge: review || null },
+    { id: "pace", label: "Pace", badge: decisions ? (decisions.actions.length + decisions.approvals.length) || null : null },
+    { id: "people", label: people ? "People" : "Team" },
+    { id: "proof", label: "Proof" },
   ] : [];
+  const planViews = i ? [{ id: "overview", label: "Overview" }, { id: "tasks", label: "Tasks", badge: overdue || null }, { id: "board", label: i.board.label, badge: i.items.length || null }] : [];
+  const evViews = i ? [{ id: "evidence", label: "Evidence", badge: review || null }, { id: "links", label: "Links & pages", badge: i.tracking_plan.filter((r) => r.state === "setup").length || null }, { id: "log", label: "Log" }] : [];
+  const peopleViews = i ? [{ id: "team", label: "Team & outreach" }, ...(people ? [{ id: "audience", label: "People" }] : []),
+    ...(people || i.kind === "product" ? [{ id: "campaigns", label: "Campaigns", badge: i.campaigns.length || null }] : [])] : [];
+  const proofViews = [{ id: "proof", label: "Proof" }, { id: "results", label: "Targets & numbers" }];
+  const pick = (views: { id: string }[], v: string, d: string) => (views.some((x) => x.id === v) ? v : d);
 
   if (notFound) {
     return (
@@ -136,7 +169,7 @@ export default function InitiativeDetail() {
               </div>
             )}
           </div>
-          {i && <Tabs tabs={tabs} value={tabs.some((t) => t.id === tab) ? tab : "overview"} onChange={setTab} label="Initiative sections" />}
+          {i && <Tabs tabs={tabs} value={tabs.some((t) => t.id === tab) ? tab : "plan"} onChange={setTab} label="Initiative sections" />}
         </header>
 
         <main className="px-4 sm:px-8 py-6 pb-20 flex flex-col gap-5 min-w-0">
@@ -144,15 +177,43 @@ export default function InitiativeDetail() {
           {i && !i.can_edit && <Banner>You have view access to this workspace - ask an owner for edit access to make changes.</Banner>}
           {!i ? <div className="grid gap-4">{[160, 260].map((h, k) => <div key={k} className="rounded-card bg-surface2 animate-pulse" style={{ height: h }} />)}</div> : (
             <>
-              {tab === "overview" && <OverviewTab i={i} goto={setTab} reload={load} onError={setError} />}
-              {tab === "plan" && <PlanTab i={i} reload={load} onError={setError} />}
-              {tab === "board" && <BoardTab i={i} reload={load} onError={setError} />}
-              {tab === "team" && <TeamTab i={i} onError={setError} />}
-              {tab === "audience" && people && <AudienceTab i={i} reload={load} onError={setError} />}
-              {tab === "tracking" && <TrackingTab i={i} reload={load} onError={setError} />}
-              {tab === "campaigns" && <CampaignsPanel workspaceId={i.workspace_id} initiative={i} onChanged={load} onError={setError} />}
-              {tab === "updates" && <UpdatesTab i={i} reload={load} onError={setError} />}
-              {tab === "results" && <ResultsTab i={i} reload={load} onError={setError} />}
+              {tab === "plan" && (() => {
+                const v = pick(planViews, view, "overview");
+                return (<>
+                  <div className="overflow-x-auto [scrollbar-width:none]"><Seg items={planViews} value={v} onChange={(x) => go("plan", x)} label="Plan views" /></div>
+                  {v === "overview" && decisions && decisions.total > 0 && <DecisionsPanel d={decisions} canEdit={i.can_edit} onChanged={reloadAll} />}
+                  {v === "overview" && <OverviewTab i={i} goto={goLegacy} reload={load} onError={setError} />}
+                  {v === "tasks" && <PlanTab i={i} reload={reloadAll} onError={setError} />}
+                  {v === "board" && <BoardTab i={i} reload={load} onError={setError} />}
+                </>);
+              })()}
+              {tab === "evidence" && (() => {
+                const v = pick(evViews, view, "evidence");
+                return (<>
+                  <div className="overflow-x-auto [scrollbar-width:none]"><Seg items={evViews} value={v} onChange={(x) => go("evidence", x)} label="Evidence views" /></div>
+                  {v === "evidence" && <EvidenceTab i={i} reload={reloadAll} />}
+                  {v === "links" && <TrackingTab i={i} reload={load} onError={setError} />}
+                  {v === "log" && <UpdatesTab i={i} reload={load} onError={setError} />}
+                </>);
+              })()}
+              {tab === "pace" && <PaceTab i={i} reload={reloadAll} />}
+              {tab === "people" && (() => {
+                const v = pick(peopleViews, view, "team");
+                return (<>
+                  {peopleViews.length > 1 && <div className="overflow-x-auto [scrollbar-width:none]"><Seg items={peopleViews} value={v} onChange={(x) => go("people", x)} label="People views" /></div>}
+                  {v === "team" && <TeamTab i={i} onError={setError} />}
+                  {v === "audience" && people && <AudienceTab i={i} reload={load} onError={setError} />}
+                  {v === "campaigns" && <CampaignsPanel workspaceId={i.workspace_id} initiative={i} onChanged={load} onError={setError} />}
+                </>);
+              })()}
+              {tab === "proof" && (() => {
+                const v = pick(proofViews, view, "proof");
+                return (<>
+                  <div className="overflow-x-auto [scrollbar-width:none]"><Seg items={proofViews} value={v} onChange={(x) => go("proof", x)} label="Proof views" /></div>
+                  {v === "proof" && <ProofTab i={i} />}
+                  {v === "results" && <ResultsTab i={i} reload={load} onError={setError} />}
+                </>);
+              })()}
             </>
           )}
         </main>

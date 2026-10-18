@@ -54,6 +54,7 @@ export function EventRegister() {
     let vid: string | undefined;
     try { vid = localStorage.getItem("gd360_vid") || undefined; } catch { /* none */ }
     try { setDone(await publicGtm.register(token, { ...f, ref: params.get("ref") || undefined, visitor_id: vid,
+      utm_campaign: params.get("utm_campaign") || undefined, gclid: params.get("gclid") || undefined,
       source: params.get("utm_source") || params.get("src") || (document.referrer && !document.referrer.includes(window.location.host) ? new URL(document.referrer).hostname.replace(/^www\./, "") : undefined) })); } catch (e) { setErr(errorText(e)); } finally { setBusy(false); }
   };
   return (
