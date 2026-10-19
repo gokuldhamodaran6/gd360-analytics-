@@ -2,27 +2,37 @@
    tab bar. Every signed-in page renders it (components/AppSidebar.tsx + components/TopNav.tsx); the chat
    surface, boards, Library, Data, Automations and Settings look like one product (mockup boards 01 and 06). */
 
+/* 2026-10-19 (R55, brand v2 "Studio" rail): 64 px, icons only (names in tooltips and for screen readers), the GD360
+   mark on top, a bordered New, the active place raised, and you - your workspace menu - at the bottom. */
 .gx-rail {
-  width: 72px; flex: 0 0 72px; height: 100vh; position: sticky; top: 0; z-index: 30;
-  background: rgb(var(--gx-rail)); border-right: 1px solid rgb(var(--color-border) / .75);
-  display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 14px 0 12px; box-sizing: border-box;
-  overflow-y: auto; overflow-x: visible; scrollbar-width: none; font-family: "Geist", system-ui, sans-serif;
+  width: 64px; flex: 0 0 64px; height: 100vh; position: sticky; top: 0; z-index: 30;
+  background: rgb(var(--gx-rail)); border-right: 1px solid rgb(var(--color-border));
+  display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 14px 0 14px; box-sizing: border-box;
+  overflow-y: auto; overflow-x: hidden; scrollbar-width: none; font-family: "Geist", system-ui, sans-serif;
 }
 .gx-rail::-webkit-scrollbar { display: none; }
-.gx-ri {
-  width: 56px; min-height: 52px; border-radius: 14px; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 4px; color: rgb(var(--color-muted)); font-size: 10.5px; font-weight: 500; letter-spacing: .01em; background: transparent; border: 0;
-  font-family: inherit; text-decoration: none; cursor: pointer; flex: 0 0 auto; padding: 0; line-height: 1.1;
+.gx-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.gx-mark { display: block; width: 34px; height: 34px; margin-bottom: 10px; flex: 0 0 auto; border-radius: 9px; }
+.gx-mark svg { display: block; }
+.gx-new {
+  width: 40px; height: 40px; border-radius: 12px; border: 1px solid rgb(var(--color-border-strong)); background: rgb(var(--color-surface));
+  color: rgb(var(--color-text)); display: grid; place-items: center; margin-bottom: 8px; flex: 0 0 auto; text-decoration: none; position: relative;
 }
-.gx-ri svg { width: 20px; height: 20px; flex: 0 0 auto; }
-.gx-ri:hover { background: rgb(var(--color-subtle)); color: rgb(var(--color-text)); }
-.gx-ri.on { background: rgb(var(--color-subtle)); color: rgb(var(--color-text)); }
-.gx-ri:focus-visible, .gx-logo:focus-visible, .gx-tab:focus-visible, .gx-top button:focus-visible, .gx-top a:focus-visible, .gx-menu button:focus-visible, .gx-menu a:focus-visible {
+.gx-new svg { width: 19px; height: 19px; }
+.gx-new:hover, .gx-new.on { border-color: rgb(var(--color-primary)); color: rgb(var(--color-primary)); }
+.gx-ri {
+  width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; position: relative;
+  color: rgb(var(--color-muted)); background: transparent; border: 0; font-family: inherit; text-decoration: none; cursor: pointer; flex: 0 0 auto; padding: 0;
+}
+.gx-ri svg { width: 19px; height: 19px; flex: 0 0 auto; }
+.gx-ri:hover { background: rgb(var(--color-surface)); color: rgb(var(--color-text)); }
+.gx-ri.on { background: rgb(var(--color-surface)); color: rgb(var(--color-text)); box-shadow: 0 0 0 1px rgb(var(--color-border)); }
+.gx-ri:focus-visible, .gx-logo:focus-visible, .gx-new:focus-visible, .gx-mark:focus-visible, .gx-tab:focus-visible, .gx-top button:focus-visible, .gx-top a:focus-visible, .gx-menu button:focus-visible, .gx-menu a:focus-visible {
   outline: 2px solid rgb(var(--color-primary)); outline-offset: 2px;
 }
 .gx-logo {
-  width: 36px; height: 36px; border-radius: 10px; background: rgb(var(--gx-ink)); color: rgb(var(--color-base)); display: grid; place-items: center;
-  font-weight: 700; font-size: 13px; margin-bottom: 10px; border: 0; cursor: pointer; font-family: inherit; flex: 0 0 auto;
+  width: 30px; height: 30px; border-radius: 50%; background: linear-gradient(135deg, rgb(var(--color-series-1)), rgb(var(--color-primary)));
+  color: #fff; display: grid; place-items: center; font-weight: 600; font-size: 11px; margin-top: 8px; border: 0; cursor: pointer; font-family: inherit; flex: 0 0 auto;
 }
 .gx-spacer { flex: 1 1 auto; min-height: 8px; }
 
