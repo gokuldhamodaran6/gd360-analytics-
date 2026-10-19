@@ -1,6 +1,6 @@
 // R54: Automate data - describe a data job in one sentence; every flow you have.
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import AppSidebar from "../components/AppSidebar";
 import TopNav from "../components/TopNav";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
@@ -19,7 +19,8 @@ export default function Flows() {
   const { workspaces, activeWorkspaceId: ws, switchWorkspace, handleWorkspaceCreated } = useWorkspaceNav();
   const navigate = useNavigate();
   const [items, setItems] = useState<FlowItem[] | null>(null);
-  const [text, setText] = useState("");
+  const [params] = useSearchParams();
+  const [text, setText] = useState(() => params.get("q") || "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [picker, setPicker] = useState<{ message: string; options: SourceOption[] } | null>(null);
