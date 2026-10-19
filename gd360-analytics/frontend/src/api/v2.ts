@@ -49,6 +49,8 @@ export type Turn = {
   elapsed_s?: number | null; error?: string | null; intent_by?: string | null; mode?: "analyst" | "engine";
   run_id?: string | null; run?: ProjectRun | null; guided_project_id?: string | null;
   confirm?: AutomationConfirm | TeamConfirm | ReportStepsConfirm | null; check?: any; explain?: any; issues?: string[];
+  /** R58: a question card closed by the next message (its text) */
+  settled?: string | null;
   model_summary?: { label: string; metric: string; test_score?: number | null; baseline?: { name?: string; score?: number }; drivers: string[]; leaks: string[]; rows?: number; target?: string; table?: string } | null;
   document?: { title: string; markdown: string; flagged: string[] } | null;
   placements?: { dashboard_id: string; dashboard_name: string; page_id?: string | null }[];
@@ -139,7 +141,9 @@ export const v2Api = {
   get: (id: string) => api.get<Conversation>(`/v2/conversations/${id}`).then((r) => r.data),
   update: (id: string, body: { title?: string; pinned?: boolean }) => api.patch(`/v2/conversations/${id}`, body).then((r) => r.data),
   send: (id: string, body: { message: string; mode?: Mode; accepted?: string[]; context_run_id?: string | null; intent?: string | null;
-    source_ids?: string[] | null; space_id?: string | null; length?: ReportLength | null }) =>
+    source_ids?: string[] | null; space_id?: string | null; length?: ReportLength | null;
+    /** R58: a card's Explain (answered from the run on screen) and what a card's Ask is about */
+    explain_target?: Record<string, unknown> | null; about_target?: Record<string, unknown> | null }) =>
     api.post<Turn>(`/v2/conversations/${id}/messages`, { ...body, today: today(), timezone: tz() }).then((r) => r.data),
   turn: (id: string, turnId: string) => api.get<Turn>(`/v2/conversations/${id}/turns/${turnId}`).then((r) => r.data),
   confirm: (id: string, turnId: string, approve: boolean, edits?: any) =>
