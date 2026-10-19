@@ -861,7 +861,8 @@ def _source_names(db: Session, conv: models.Conversation) -> tuple[list[str], li
 
 def send(db: Session, conv: models.Conversation, user: models.User, text: str, *, mode: str = "auto", today: date | None = None,
          accepted: list[str] | None = None, context_run_id: str | None = None, timezone: str = "UTC", intent: str | None = None,
-         length: str | None = None) -> dict:
+         length: str | None = None, explain_target: dict | None = None, about_target: dict | None = None,
+         fresh_sources: bool = False) -> dict:
     """Routes one message and starts its tool. Returns the new turn (see turns_of)."""
     from ...routers import projects as projects_router
     text = (text or "").strip()
@@ -871,6 +872,16 @@ def send(db: Session, conv: models.Conversation, user: models.User, text: str, *
         plans.can(db, user, "questions_per_day", 1, conv.workspace_id)
     except plans.PlanLimit as e:
         raise HTTPException(402, str(e))
+    # R58: a question card still waiting ("Did you mean 2026?") is settled by whatever the person sends next
+    _settle_checks(db, conv, text)
+    # R58: Explain - the card's Explain button, or a short "why / what does this mean" about the answer on screen -
+    # is answered from the numbers already computed: no plan, no query, a few seconds
+    if intent == "explain" or explain_target or (intent not in KINDS and not fresh_sources and _explains(db, conv, text, about_target)):
+        out = _start_explain(db, conv, user, text, explain_target or about_target, context_run_id)
+        if out is not None:
+            return out
+        if intent == "explain":
+            intent = None  # nothing computed to explain yet: the question is routed like any other
     has_sources = bool(conv.source_ids)
     if not has_sources and conv.space_id is None and not _meta(conv).get("sources_chosen"):
         # a conversation started without data: a data-sounding question picks its sources now
@@ -935,6 +946,56 @@ def send(db: Session, conv: models.Conversation, user: models.User, text: str, *
                     **({"recipe": decision.get("recipe")} if kind == "analysis" else {}),
                     **({"length": length if length in report.LENGTHS else "standard"} if kind == "document" else {}))
     _bg(_TOOLS[kind], msg.id, user.id)
+    return _message_turn(db, msg, conv, user)
+
+
+def _settle_checks(db: Session, conv: models.Conversation, text: str) -> None:
+    """R58: a "Before I start" card nobody answered is closed by the next message - its buttons would start a second run."""
+    open_checks = (db.query(models.Message).filter(models.Message.conversation_id == conv.id, models.Message.action == "v2:check").all())
+    for m in open_checks:
+        st = _state(m)
+        if st.get("status") == "needs_input":
+            _set_state(db, m, status="done", settled=text[:160], finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+def _explains(db: Session, conv: models.Conversation, text: str, about_target: dict | None) -> bool:
+    """R58: a message that only asks to understand the answer on screen. A card's Ask ("About the chart ...: why?")
+    is judged without its prefix; a typed one has to be short and point at what is there ("explain why", "what does
+    this mean"). New data ("split it by region", "forecast 2027") is never an explanation."""
+    from .. import explain as explain_svc
+    about, rest = explain_svc.strip_about(text)
+    if not (about or about_target):
+        # typed in the box: only when it points at what is on screen ("explain this", "why is it so high?", "explain why")
+        if len(text.split()) > 12 or not (explain_svc._DEICTIC.search(text)  # noqa: SLF001
+                                           or re.match(r"^\s*(please\s+)?(explain|why|what does (it|this|that) mean)\b[\s?.!]*(why|it|this|that)?[\s?.!]*$", text, re.I)):
+            return False
+    if explain_svc.route_heuristic(text) != "explain":
+        return False
+    last = _last_run(db, conv)
+    return bool(last is not None and last.status == "done" and (last.result or {}).get("answer"))
+
+
+def _start_explain(db: Session, conv: models.Conversation, user: models.User, text: str, target: dict | None,
+                   run_id: str | None) -> dict | None:
+    """The answer (or one card of it) explained from what was computed. None when there is nothing to explain yet."""
+    from ...routers import projects as projects_router
+    from .. import explain as explain_svc
+    run = projects_router._explain_context(db, conv, run_id)  # noqa: SLF001
+    if run is None or not (run.result or {}).get("answer"):
+        return None
+    if target is None:
+        ctx, _ = explain_svc.run_context(run.result or {}, projects_router._currency_of(run))  # noqa: SLF001
+        target = explain_svc._guess_target(explain_svc.strip_about(text)[1] or text, ctx)  # noqa: SLF001
+    try:
+        ex = explain_svc.explain_run(run.result or {}, target, text, projects_router._currency_of(run))  # noqa: SLF001
+    except explain_svc.ExplainError:
+        return None
+    item = projects_router._keep_explain(db, conv, run, ex, user)  # noqa: SLF001
+    prose = " ".join([str(ex.get("headline") or "")] + [str(p.get("text") or "") for p in (ex.get("points") or []) if isinstance(p, dict)]
+                     + [str(ex.get("takeaway") or "")]).strip()
+    msg = _new_turn(db, conv, "explain", text, status="done", explain=item, text=prose, run_id=run.id,
+                    chips=[{"key": "basis", "ok": True, "label": "Explained from the numbers on screen, no new query"}],
+                    elapsed_s=ex.get("seconds"), finished_at=datetime.utcnow().isoformat() + "Z")
     return _message_turn(db, msg, conv, user)
 
 
@@ -1222,7 +1283,7 @@ def _message_turn(db: Session, msg: models.Message, conv: models.Conversation, u
            "created_at": msg.created_at, "finished_at": st.get("finished_at"), "text": st.get("text"), "sources": st.get("sources") or [],
            "grounded": st.get("grounded"), "chips": st.get("chips") or [], "verdict": "ok", "artifacts": st.get("artifacts") or [],
            "trail": st.get("trail") or [], "elapsed_s": elapsed, "error": st.get("error"), "confirm": st.get("confirm"),
-           "check": st.get("check"), "explain": st.get("explain"), "document": st.get("document"), "issues": st.get("issues") or [],
+           "check": st.get("check"), "settled": st.get("settled"), "explain": st.get("explain"), "document": st.get("document"), "issues": st.get("issues") or [],
            "run_id": st.get("run_id"), "guided_project_id": st.get("guided_project_id"), "intent_by": st.get("intent_by"),
            "normalized": st.get("normalized"), "analysis": _analysis_for(db, st, user) if st.get("kind") == "analysis" else None,
            "edit": st.get("edit"), "built": st.get("built"), "list": list_for(db, msg, user) if st.get("list") else None, "whatif": st.get("whatif"),
