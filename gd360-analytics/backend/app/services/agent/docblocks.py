@@ -342,6 +342,10 @@ def _texts(blocks: list[dict]) -> list[str]:
             out.append(plain(b.get("text") or ""))
         elif b["type"] == "table":
             out += [" ".join(str(v) for v in row.values()) for row in b.get("rows") or []]
+        elif b["type"] == "list":
+            out += [plain(str(x)) for x in b.get("items") or []]
+        elif b["type"] == "kpis":
+            out += [str(k.get("value") or "") for k in b.get("items") or []]
     return out
 
 
@@ -617,12 +621,15 @@ def summary(doc: models.DocDocument, user: models.User | None = None) -> dict:
     blocks = doc.blocks or []
     ck = check(doc)
     words = sum(len(plain(b.get("text") or "").split()) for b in blocks) + sum(
-        len(" ".join(str(v) for v in row.values()).split()) for b in blocks if b["type"] == "table" for row in b.get("rows") or [])
+        len(" ".join(str(v) for v in row.values()).split()) for b in blocks if b["type"] == "table" for row in b.get("rows") or []) + sum(
+        len(plain(str(x)).split()) for b in blocks if b["type"] == "list" for x in b.get("items") or [])
     return {"id": doc.id, "title": doc.title, "blocks": blocks, "sources": doc.sources or [], "conversation_id": doc.conversation_id,
             "message_id": doc.message_id, "created_at": doc.created_at, "updated_at": doc.updated_at, "edited_by_person": bool(doc.edited_by_person),
             "figures": sum(1 for b in blocks if b["type"] == "figure"), "tables": sum(1 for b in blocks if b["type"] == "table"),
             "words": words, "pages": max(1, round(words / 450 + 0.35 * sum(1 for b in blocks if b["type"] == "figure"))),
             "checked": ck["checked"], "flagged": ck["flagged"], "can_undo": bool(doc.history),
+            # R57: a report written section by section - its length, the sections and where the writing is
+            "report": {k: v for k, v in ((doc.meta or {}).get("report") or {}).items() if k in ("length", "status", "sections", "added", "flagged")} or None,
             "history": [{"label": h.get("label"), "at": h.get("at")} for h in (doc.history or [])][-8:]}
 
 

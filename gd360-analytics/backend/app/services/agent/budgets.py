@@ -18,14 +18,20 @@ TARGETS: dict[str, int] = {
 NO_HARD_STOP = {"model", "guided"}
 
 
-def budget(kind: str | None) -> int | None:
+# R57: a report is written section by section - the target follows its length
+REPORT_TARGETS = {"brief": 40, "standard": 120, "detailed": 300}
+
+
+def budget(kind: str | None, length: str | None = None) -> int | None:
+    if (kind or "") == "document" and length in REPORT_TARGETS:
+        return REPORT_TARGETS[length]
     return TARGETS.get(kind or "")
 
 
-def hard(kind: str | None) -> int | None:
+def hard(kind: str | None, length: str | None = None) -> int | None:
     if (kind or "") in NO_HARD_STOP:
         return None
-    t = budget(kind)
+    t = budget(kind, length)
     return max(90, 3 * t) if t else 180
 
 
@@ -37,8 +43,8 @@ def words(seconds: int | float) -> str:
     return f"{m:.0f} minutes" if abs(m - round(m)) < 0.05 else f"{m:.1f} minutes"
 
 
-def timeout_text(kind: str | None) -> str:
-    h, t = hard(kind) or 180, budget(kind) or 60
+def timeout_text(kind: str | None, length: str | None = None) -> str:
+    h, t = hard(kind, length) or 180, budget(kind, length) or 60
     what = {"data": "this answer", "analysis": "this analysis", "dashboard": "this dashboard", "document": "this document",
             "knowledge": "this answer", "list": "this list"}.get(kind or "", "this")
     return (f"I stopped after {words(h)}: {what} usually takes under {words(t)}, so something is stuck. "

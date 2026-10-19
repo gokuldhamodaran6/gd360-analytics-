@@ -16,7 +16,43 @@ from .docblocks import plain
 INK = (11, 15, 14)
 MUTED = (94, 106, 102)
 LINE = (221, 226, 224)
-TONE = {"bad": (194, 65, 12), "good": (10, 124, 90), "neutral": (154, 165, 160)}
+TONE = {"bad": (194, 65, 12), "good": (10, 124, 90), "neutral": (154, 165, 160), "main": (47, 111, 228), "top": (31, 85, 192)}
+
+
+def nice_axis(vmax: float) -> tuple[float, float]:
+    """R57: an axis that fits any scale - (top, step) with 4-6 round steps (0, 2M, 4M, 6M, 8M; never 799k ticks)."""
+    import math
+    if not vmax or vmax <= 0:
+        return 1.0, 0.25
+    raw = vmax / 5
+    mag = 10 ** math.floor(math.log10(raw))
+    step = next(m * mag for m in (1, 2, 2.5, 5, 10) if m * mag >= raw)
+    return math.ceil(vmax / step - 1e-9) * step, step
+
+
+def tick_text(v: float, unit: str = "") -> str:
+    a = abs(v)
+    if a >= 1e9:
+        body = f"{v / 1e9:g}B"
+    elif a >= 1e6:
+        body = f"{v / 1e6:g}M"
+    elif a >= 1e4:
+        body = f"{v / 1e3:g}K"
+    else:
+        body = f"{v:g}"
+    return body + (unit or "")
+
+
+def bar_text(b: dict, unit: str = "") -> str:
+    return str(b.get("display") or tick_text(float(b["value"]), unit))
+
+
+def _ticks(top: float, step: float) -> list[float]:
+    out, k = [], 0.0
+    while k <= top + 1e-9 and len(out) < 12:
+        out.append(round(k, 10))
+        k += step
+    return out
 
 
 def _src_text(doc: dict, cites: list[str]) -> str:
@@ -41,31 +77,65 @@ def _font(size: int, bold: bool = False):
         return ImageFont.load_default()
 
 
+def line_png(fig: dict, width: int = 1400) -> bytes:
+    """R57: a series over time as a line, the first and last points labelled."""
+    pts = fig.get("bars") or []
+    h, left, right, top, bottom = 560, 130, 60, 40, 80
+    im = Image.new("RGB", (width, h), (255, 255, 255))
+    d = ImageDraw.Draw(im)
+    f_ax, f_val = _font(22), _font(24, True)
+    vals = [float(p["value"]) for p in pts]
+    lo = min(0.0, min(vals))
+    top_v, step = nice_axis(max(vals) - lo if lo < 0 else max(vals))
+    pw, ph = width - left - right, h - top - bottom
+
+    def xy(i: int, v: float) -> tuple[float, float]:
+        x = left + (pw * i / max(1, len(pts) - 1))
+        return x, top + ph * (1 - (v - lo) / (top_v or 1))
+
+    for k in _ticks(top_v, step):
+        y = xy(0, k + lo)[1]
+        d.line([(left, y), (left + pw, y)], fill=(240, 242, 241), width=2)
+        d.text((left - 14, y), tick_text(k + lo, fig.get("unit") or ""), fill=MUTED, font=f_ax, anchor="rm")
+    d.line([xy(i, v) for i, v in enumerate(vals)], fill=TONE["main"], width=5, joint="curve")
+    every = max(1, len(pts) // 8)
+    for i, p in enumerate(pts):
+        if i % every == 0 or i == len(pts) - 1:
+            d.text((xy(i, 0)[0], top + ph + 18), str(p["label"])[:10], fill=MUTED, font=f_ax, anchor="ma")
+    for i in (0, len(pts) - 1):
+        x, y = xy(i, vals[i])
+        d.ellipse([x - 7, y - 7, x + 7, y + 7], fill=TONE["main"])
+        d.text((x + (12 if i == 0 else -12), y - 14), bar_text(pts[i], fig.get("unit") or ""), fill=INK, font=f_val, anchor="ld" if i == 0 else "rd")
+    buf = io.BytesIO()
+    im.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
 def chart_png(fig: dict, width: int = 1400) -> bytes:
     """A horizontal bar chart to scale, with the baseline as a dashed line and each value labelled."""
+    if fig.get("kind") == "line":
+        return line_png(fig, width)
     bars = fig.get("bars") or []
-    row_h, top, left, right = 64, 70, 430, 150
+    row_h, top, left, right = 64, 70, 430, 190
     h = top + row_h * len(bars) + 70
     im = Image.new("RGB", (width, h), (255, 255, 255))
     d = ImageDraw.Draw(im)
     f_lab, f_val, f_ax = _font(26), _font(26, True), _font(22)
-    vmax = max([b["value"] for b in bars] + [(fig.get("baseline") or {}).get("value") or 0, 1e-9])
-    step = 10 if vmax > 30 else 5 if vmax > 10 else 1
-    vmax = (int(vmax / step) + 1) * step
+    vmax, step = nice_axis(max([b["value"] for b in bars] + [(fig.get("baseline") or {}).get("value") or 0, 1e-9]))
     plot_w = width - left - right
     x0 = left
 
     def xs(v: float) -> float:
-        return x0 + plot_w * (v / vmax)
+        return x0 + plot_w * (max(0.0, v) / vmax)
 
-    for k in range(0, int(vmax) + 1, step):
+    for k in _ticks(vmax, step):
         d.line([(xs(k), top - 10), (xs(k), top + row_h * len(bars))], fill=(240, 242, 241), width=2)
-        d.text((xs(k), top + row_h * len(bars) + 14), f"{k}", fill=MUTED, font=f_ax, anchor="ma")
+        d.text((xs(k), top + row_h * len(bars) + 14), tick_text(k, fig.get("unit") or ""), fill=MUTED, font=f_ax, anchor="ma")
     for i, b in enumerate(bars):
         y = top + i * row_h + 14
-        d.text((left - 18, y + 17), str(b["label"]), fill=INK, font=f_lab, anchor="rm")
+        d.text((left - 18, y + 17), str(b["label"])[:32], fill=INK, font=f_lab, anchor="rm")
         d.rounded_rectangle([x0, y, max(x0 + 4, xs(b["value"])), y + 36], radius=8, fill=TONE.get(b.get("tone"), TONE["neutral"]))
-        d.text((xs(b["value"]) + 12, y + 18), f"{b['value']}", fill=INK, font=f_val, anchor="lm")
+        d.text((xs(b["value"]) + 12, y + 18), bar_text(b, fig.get("unit") or ""), fill=INK, font=f_val, anchor="lm")
     base = fig.get("baseline") or {}
     if base.get("value") is not None:
         bx = xs(base["value"])
@@ -99,13 +169,19 @@ def markdown(doc: dict) -> str:
             out += [f"> **{b.get('label') or 'Note'}.** {plain(b['text'])}", ""]
         elif t == "figure":
             out += [f"**{b['title']}** · {b.get('subtitle') or ''}", "", "| Group | Value |", "|---|---:|"]
-            out += [f"| {x['label']} | {x['value']}{b.get('unit') or ''} |" for x in b.get("bars") or []]
+            out += [f"| {x['label']} | {bar_text(x, b.get('unit') or '')} |" for x in b.get("bars") or []]
             out += [""] + ([f"_{src}_", ""] if src else [])
         elif t == "table":
             cols = b.get("columns") or []
             out += ["| " + " | ".join(c["label"] for c in cols) + " |", "|" + "|".join("---:" if c.get("align") == "right" else "---" for c in cols) + "|"]
             out += ["| " + " | ".join(str(row.get(c["key"], "")) for c in cols) + " |" for row in b.get("rows") or []]
-            out += [""]
+            out += ([f"_{b['note']}_"] if b.get("note") else []) + [""]
+        elif t == "list":
+            out += [f"- {x}" for x in b.get("items") or []] + [""]
+        elif t == "kpis":
+            items = b.get("items") or []
+            out += ["| " + " | ".join(str(k.get("label") or "") for k in items) + " |", "|" + "|".join("---:" for _ in items) + "|",
+                    "| " + " | ".join(f"**{k.get('value') or ''}**" for k in items) + " |", ""]
         elif t == "sources":
             srcs = doc.get("sources") or []
             if srcs:
@@ -189,6 +265,26 @@ def docx_bytes(doc: dict) -> bytes:
             r.font.color.rgb = RGBColor(0x8A, 0x5D, 0x00)
             r2 = p.add_run(plain(b["text"]))
             r2.font.color.rgb = RGBColor(0x8A, 0x5D, 0x00)
+        elif t == "list":
+            for x in b.get("items") or []:
+                p = d.add_paragraph(style="List Bullet")
+                add_text(p, str(x))
+        elif t == "kpis":
+            items = b.get("items") or []
+            if items:
+                tb = d.add_table(rows=2, cols=len(items))
+                for j, k in enumerate(items):
+                    c0 = tb.rows[0].cells[j]
+                    c0.text = ""
+                    r0 = c0.paragraphs[0].add_run(str(k.get("label") or ""))
+                    r0.font.size = Pt(9)
+                    r0.font.color.rgb = RGBColor(*MUTED)
+                    c1 = tb.rows[1].cells[j]
+                    c1.text = ""
+                    r1 = c1.paragraphs[0].add_run(str(k.get("value") or ""))
+                    r1.bold = True
+                    r1.font.size = Pt(16)
+                d.add_paragraph()
         elif t == "figure":
             p = d.add_paragraph()
             r = p.add_run(b["title"])
@@ -307,28 +403,73 @@ def pdf_bytes(doc: dict) -> bytes:
                 story.append(Paragraph(esc("Source: " + src), sty["src"]))
         elif t == "callout":
             story.append(Paragraph(f"<b>{esc(b.get('label') or 'Note')}.</b> {esc(plain(b['text']))}", sty["call"]))
+        elif t == "list":
+            for x in b.get("items") or []:
+                story.append(Paragraph(rich(str(x)), sty["p"], bulletText="•"))
+            story.append(Spacer(1, 4))
+        elif t == "kpis":
+            items = b.get("items") or []
+            if items:
+                data = [[Paragraph(esc(str(k.get("label") or "")), sty["cellh"]) for k in items],
+                        [Paragraph(f"<b>{esc(str(k.get('value') or ''))}</b>", ParagraphStyle("kv", fontName="Helvetica-Bold", fontSize=15, leading=19, textColor=ink)) for k in items]]
+                tb = Table(data, colWidths=[W / len(items)] * len(items))
+                tb.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.5, colors.Color(*(v / 255 for v in LINE))),
+                                        ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.Color(*(v / 255 for v in LINE))),
+                                        ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
+                story.append(tb)
+                story.append(Spacer(1, 8))
+        elif t == "figure" and b.get("kind") == "line":
+            pts = b.get("bars") or []
+            h, left, top, bot = 170, 46, 14, 26
+            dw = Drawing(W, h)
+            vals = [float(x["value"]) for x in pts] or [0.0]
+            lo = min(0.0, min(vals))
+            vmax, step = nice_axis(max(vals) - lo if lo < 0 else max(vals))
+            pw, ph = W - left - 12, h - top - bot
+
+            def lxy(i: int, v: float) -> tuple[float, float]:
+                return left + pw * i / max(1, len(pts) - 1), bot + ph * ((v - lo) / (vmax or 1))
+
+            for k in _ticks(vmax, step):
+                y = lxy(0, k + lo)[1]
+                dw.add(Line(left, y, left + pw, y, strokeColor=colors.Color(240 / 255, 242 / 255, 241 / 255), strokeWidth=0.6))
+                dw.add(String(left - 4, y - 2.5, tick_text(k + lo, b.get("unit") or ""), fontName="Helvetica", fontSize=7, fillColor=muted, textAnchor="end"))
+            main = colors.Color(*(v / 255 for v in TONE["main"]))
+            for i in range(len(pts) - 1):
+                x1, y1 = lxy(i, vals[i])
+                x2, y2 = lxy(i + 1, vals[i + 1])
+                dw.add(Line(x1, y1, x2, y2, strokeColor=main, strokeWidth=1.8))
+            every = max(1, len(pts) // 8)
+            for i, x in enumerate(pts):
+                if i % every == 0 or i == len(pts) - 1:
+                    dw.add(String(lxy(i, 0)[0], bot - 14, str(x["label"])[:10], fontName="Helvetica", fontSize=7, fillColor=muted, textAnchor="middle"))
+            parts = [Paragraph(f"<b>{esc(b['title'])}</b>", sty["p"])]
+            if b.get("subtitle"):
+                parts.append(Paragraph(esc(b["subtitle"]), sty["src"]))
+            parts.append(dw)
+            if src:
+                parts.append(Paragraph(esc("Source: " + src), sty["src"]))
+            story.append(KeepTogether(parts))
         elif t == "figure":
             bars = b.get("bars") or []
             row_h, top, left = 22, 26, 150
             h = top + row_h * len(bars) + 26
             dw = Drawing(W, h)
-            vmax = max([x["value"] for x in bars] + [(b.get("baseline") or {}).get("value") or 0, 1e-9])
-            step = 10 if vmax > 30 else 5 if vmax > 10 else 1
-            vmax = (int(vmax / step) + 1) * step
-            pw = W - left - 40
+            vmax, step = nice_axis(max([x["value"] for x in bars] + [(b.get("baseline") or {}).get("value") or 0, 1e-9]))
+            pw = W - left - 60
 
             def xs(v: float) -> float:
-                return left + pw * (v / vmax)
+                return left + pw * (max(0.0, v) / vmax)
 
             ybot = 20
-            for k in range(0, int(vmax) + 1, step):
-                dw.add(String(xs(k), ybot - 12, f"{k}", fontName="Helvetica", fontSize=7, fillColor=muted, textAnchor="middle"))
+            for k in _ticks(vmax, step):
+                dw.add(String(xs(k), ybot - 12, tick_text(k, b.get("unit") or ""), fontName="Helvetica", fontSize=7, fillColor=muted, textAnchor="middle"))
             for i, x in enumerate(bars):
                 y = h - top - (i + 1) * row_h + 4
                 c = TONE.get(x.get("tone"), TONE["neutral"])
                 dw.add(String(left - 6, y + 4, str(x["label"])[:34], fontName="Helvetica", fontSize=8, fillColor=ink, textAnchor="end"))
                 dw.add(Rect(left, y, max(2, xs(x["value"]) - left), 13, fillColor=colors.Color(*(v / 255 for v in c)), strokeColor=None, rx=3, ry=3))
-                dw.add(String(xs(x["value"]) + 4, y + 3.5, f"{x['value']}", fontName="Helvetica-Bold", fontSize=8, fillColor=ink))
+                dw.add(String(xs(x["value"]) + 4, y + 3.5, bar_text(x, b.get("unit") or ""), fontName="Helvetica-Bold", fontSize=8, fillColor=ink))
             base = b.get("baseline") or {}
             if base.get("value") is not None:
                 bx = xs(base["value"])
@@ -357,6 +498,8 @@ def pdf_bytes(doc: dict) -> bytes:
             tb.setStyle(TableStyle(style))
             story.append(tb)
             story.append(Spacer(1, 6))
+            if b.get("note"):
+                story.append(Paragraph(esc(b["note"]), sty["src"]))
             if src:
                 story.append(Paragraph(esc("Source: " + src), sty["src"]))
         elif t == "sources":

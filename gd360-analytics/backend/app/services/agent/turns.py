@@ -22,7 +22,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from ... import models
 from ...database import SessionLocal
 from .. import ai_engine, ai_meter
-from . import analysis, automations_tool, board, budgets, dashboard_tool, docblocks, docexport, documents, followups, intents, knowledge, model_tool, plans, segment_watch, team_tool, truth_guard, writer
+from . import analysis, automations_tool, board, budgets, dashboard_tool, docblocks, docexport, documents, followups, intents, knowledge, model_tool, plans, report, segment_watch, team_tool, truth_guard, writer
 
 KINDS = ("knowledge", "data", "guided", "dashboard", "document", "automation", "chat", "check", "explain", "dashboard_edit", "model", "team", "analysis",
          "document_edit", "list", "whatif")
@@ -98,14 +98,15 @@ def _bg(fn, message_id: str, user_id: str) -> None:
         finally:
             ai_meter.reset_context(token)
             db.close()
-    kind = None
+    kind, length = None, None
     try:
         with SessionLocal() as _db:
             m0 = _db.get(models.Message, message_id)
             kind = _state(m0).get("kind") if m0 is not None else None
+            length = _state(m0).get("length") if m0 is not None else None
     except Exception:  # noqa: BLE001
         kind = None
-    limit = budgets.hard(kind)
+    limit = budgets.hard(kind, length)
     timer = threading.Timer(limit, _time_out, args=(message_id,)) if limit else None
     if timer is not None:
         timer.daemon = True
@@ -120,8 +121,12 @@ def _time_out(message_id: str) -> None:
         msg = db.get(models.Message, message_id)
         if msg is not None and _state(msg).get("status") == "working":
             kind = _state(msg).get("kind")
-            print(f"[agent.budget] {kind} turn {message_id[:8]} stopped after {budgets.hard(kind)} s")
-            _set_state(db, msg, status="failed", timed_out=True, error=budgets.timeout_text(kind), text=None,
+            length = _state(msg).get("length")
+            started = _state(msg).get("started_at")
+            if started and not _stale(started, max(1, (budgets.hard(kind, length) or 180) - 5), grace=0):
+                return  # R57: restarted after the person's OK - a newer timer holds this turn
+            print(f"[agent.budget] {kind} turn {message_id[:8]} stopped after {budgets.hard(kind, length)} s")
+            _set_state(db, msg, status="failed", timed_out=True, error=budgets.timeout_text(kind, length), text=None,
                        finished_at=datetime.utcnow().isoformat() + "Z")
     except Exception:  # noqa: BLE001
         traceback.print_exc()
@@ -213,14 +218,78 @@ def _doc_state(doc: models.DocDocument) -> tuple[dict, dict, list[dict]]:
     return {"title": doc.title, "markdown": md, "flagged": s["flagged"], "doc_id": doc.id}, artifact, chips
 
 
-def _do_document(db: Session, msg: models.Message, user: models.User) -> None:
-    """R51: a block document built from what the conversation found (services/agent/docblocks.py)."""
+def _report_turn_done(db: Session, msg: models.Message, conv: models.Conversation, doc: models.DocDocument, length: str) -> None:
+    st = _state(msg)
+    document, artifact, chips = _doc_state(doc)
+    s = docblocks.summary(doc)
+    rep = (doc.meta or {}).get("report") or {}
+    n_sec = len(rep.get("sections") or [])
+    added = rep.get("added") or []
+    _written_title(db, conv, st.get("question") or "", doc.title)
+    _set_state(db, msg, status="done",
+               text=f"Done. “{doc.title}” is a {report.LENGTHS[length]['label'].lower()} report: {n_sec} sections, about {s['pages']} page{'s' if s['pages'] != 1 else ''}, "
+                    f"{s['figures']} chart{'s' if s['figures'] != 1 else ''}. Every number links back to the step it came from"
+                    + (f", including the {len(added)} step{'s' if len(added) != 1 else ''} added for it" if added else "") + ". Click any paragraph on the right to change it.",
+               document=document, artifacts=[artifact], chips=chips, report=st.get("report") and {**st["report"], "done": st["report"].get("total"), "current": None},
+               trail=[{"label": t} for t in (st.get("report") or {}).get("log") or []][-8:] + [{"label": "Checked every number against its step"}],
+               finished_at=datetime.utcnow().isoformat() + "Z")
+
+
+def _do_report(db: Session, msg: models.Message, user: models.User, length: str) -> None:
+    """R57: a Standard or Detailed report, written section by section (services/agent/report.py)."""
     st = _state(msg)
     conv = db.get(models.Conversation, msg.conversation_id)
     today = date.fromisoformat(st["today"]) if st.get("today") else date.today()
+    log: list[str] = list((st.get("report") or {}).get("log") or [])
+
+    def on_progress(label: str, doc: models.DocDocument | None = None, total: int | None = None, done: int | None = None):
+        log.append(label)
+        cur = dict(_state(msg).get("report") or {})
+        cur.update({"length": length, "current": label, "log": log[-12:]})
+        if total is not None:
+            cur["total"] = total
+        if done is not None:
+            cur["done"] = done
+        changes: dict = {"report": cur, "trail": [{"label": x} for x in log[-6:]]}
+        if doc is not None and not _state(msg).get("artifacts"):
+            changes["artifacts"] = [{"type": "document", "id": msg.id, "doc_id": doc.id, "title": doc.title, "writing": True}]
+        _set_state(db, msg, **changes)
+
+    approved = {"approve": True, "skip": False}.get(st.get("report_steps") or "", None)
+    try:
+        doc = report.write(db, user, conv, msg, st.get("question") or "", length, today, approved=approved, on_progress=on_progress)
+    except report.NeedsSteps as e:
+        have = len(report.step_tables(e.base))
+        _set_state(db, msg, status="confirm",
+                   confirm={"kind": "report_steps", "length": length, "have": have, "steps": e.add, "run_id": e.base.id},
+                   text=f"A {report.LENGTHS[length]['label'].lower()} report needs {len(e.add)} more step{'s' if len(e.add) != 1 else ''} than the {have} "
+                        f"this conversation has. Check them before they run:",
+                   finished_at=None)
+        return
+    except docblocks.DocError as e:
+        _set_state(db, msg, status="needs_input", text=str(e), finished_at=datetime.utcnow().isoformat() + "Z")
+        return
+    _report_turn_done(db, msg, conv, doc, length)
+
+
+def _do_document(db: Session, msg: models.Message, user: models.User) -> None:
+    """R51: a block document built from what the conversation found (services/agent/docblocks.py).
+    R57: the length the person asked for - Brief stays the one-page block brief; Standard and Detailed are written
+    section by section from the steps (report.py). An outcome analysis keeps its own brief."""
+    st = _state(msg)
+    conv = db.get(models.Conversation, msg.conversation_id)
+    today = date.fromisoformat(st["today"]) if st.get("today") else date.today()
+    length = st.get("length") or report.length_of(st.get("question")) or "standard"
+    if length not in report.LENGTHS:
+        length = "standard"
+    if st.get("length") != length:
+        _set_state(db, msg, length=length)
+    if length != "brief" and report.base_run(db, conv) is not None or (length != "brief" and not _last_analysis(db, conv) and (conv.source_ids or [])
+                                                                        and not _knowledge_turns(db, conv)):
+        return _do_report(db, msg, user, length)
     _set_state(db, msg, trail=[{"label": "Reading what this conversation found"}, {"label": "Writing the blocks"}, {"label": "Checking every figure"}])
     try:
-        doc = docblocks.create(db, user, conv, msg.id, st.get("question") or "", today)
+        doc = docblocks.create(db, user, conv, msg.id, (st.get("question") or "") + (" (one page)" if length == "brief" else ""), today)
     except docblocks.DocError as e:
         _set_state(db, msg, status="needs_input", text=str(e), finished_at=datetime.utcnow().isoformat() + "Z")
         return
@@ -791,7 +860,8 @@ def _source_names(db: Session, conv: models.Conversation) -> tuple[list[str], li
 
 
 def send(db: Session, conv: models.Conversation, user: models.User, text: str, *, mode: str = "auto", today: date | None = None,
-         accepted: list[str] | None = None, context_run_id: str | None = None, timezone: str = "UTC", intent: str | None = None) -> dict:
+         accepted: list[str] | None = None, context_run_id: str | None = None, timezone: str = "UTC", intent: str | None = None,
+         length: str | None = None) -> dict:
     """Routes one message and starts its tool. Returns the new turn (see turns_of)."""
     from ...routers import projects as projects_router
     text = (text or "").strip()
@@ -856,10 +926,14 @@ def send(db: Session, conv: models.Conversation, user: models.User, text: str, *
     if kind == "data":
         return _start_data(db, conv, user, text, today, accepted, context_run_id, decision)
     if kind == "guided":
-        return _start_guided(db, conv, user, text, decision)
+        # R57: Guided analysis runs in the conversation's own steps engine (the canvas), not as a separate project
+        return _start_data(db, conv, user, text, today, accepted, context_run_id, decision, guided=True)
+    if kind == "document" and not length:
+        length = report.length_of(text)
     msg = _new_turn(db, conv, kind, text, today=(today or date.today()).isoformat(), timezone=timezone, intent_by=decision.get("by"),
                     intent_reason=decision.get("reason"), normalized=decision.get("text") if decision.get("normalized") else None,
-                    **({"recipe": decision.get("recipe")} if kind == "analysis" else {}))
+                    **({"recipe": decision.get("recipe")} if kind == "analysis" else {}),
+                    **({"length": length if length in report.LENGTHS else "standard"} if kind == "document" else {}))
     _bg(_TOOLS[kind], msg.id, user.id)
     return _message_turn(db, msg, conv, user)
 
@@ -869,13 +943,13 @@ def _last_turn_kind(db: Session, conv: models.Conversation) -> str | None:
     return ts[-1]["kind"] if ts else None
 
 
-def _start_data(db, conv, user, text, today, accepted, context_run_id, decision) -> dict:
+def _start_data(db, conv, user, text, today, accepted, context_run_id, decision, guided: bool = False) -> dict:
     from ...routers import projects as projects_router
     if context_run_id is None:
         last = _last_run(db, conv)
         context_run_id = last.id if last else None
-    payload = projects_router.AskRequest(question=text, auto_run=True, route=True, understand=True, accepted=accepted or [],
-                                         context_run_id=context_run_id, today=(today or date.today()).isoformat())
+    payload = projects_router.AskRequest(question=text, auto_run=not guided, route=not guided, understand=True, accepted=accepted or [],
+                                         context_run_id=context_run_id, today=(today or date.today()).isoformat(), guided=guided)
     out = projects_router.ask(conv.id, payload, db=db, user=user)
     if out.get("kind") == "run":
         run = db.get(models.ProjectRun, out["run_id"])
@@ -959,10 +1033,17 @@ def confirm(db: Session, conv: models.Conversation, user: models.User, message_i
     st = _state(msg)
     if st.get("status") != "confirm" or not st.get("confirm"):
         raise HTTPException(400, "There is nothing to confirm on this turn.")
-    if not approve:
+    if not approve and (st.get("confirm") or {}).get("kind") != "report_steps":
         _set_state(db, msg, status="done", confirm=None, text="Cancelled. Nothing was set up.")
         return _message_turn(db, msg, conv, user)
     card = st["confirm"]
+    if card.get("kind") == "report_steps":
+        # R57: the steps a detailed report needs - added and run after the person's OK, or the report without them
+        _set_state(db, msg, status="working", confirm=None, error=None, report_steps="approve" if approve else "skip",
+                   started_at=datetime.utcnow().isoformat() + "Z",
+                   text=None)
+        _bg(_TOOLS["document"], msg.id, user.id)
+        return _message_turn(db, msg, conv, user)
     if card.get("kind") == "automation":
         from ...routers import automations as automations_router
         body = dict(card.get("body") or {})
@@ -1030,6 +1111,10 @@ def _run_turn(db: Session, run: models.ProjectRun, conv: models.Conversation, us
             db.rollback()
     out = _run_out(run, full=False)
     status = {"done": "done", "failed": "failed", "stopped": "failed", "needs_input": "needs_input", "replaced": "done"}.get(run.status, "working")
+    plan0 = run.plan if isinstance(run.plan, dict) else {}
+    guided_v2 = bool(plan0.get("guided_v2"))
+    if guided_v2 and run.status == "planned" and not out.get("busy"):
+        status = "steps"  # R57: the steps wait for the person's OK on the canvas
     guard = truth_guard.chips_for_run(run) if run.status == "done" else {"chips": [], "verdict": "pending"}
     plan = run.plan if isinstance(run.plan, dict) else {}
     trail = []
@@ -1046,6 +1131,7 @@ def _run_turn(db: Session, run: models.ProjectRun, conv: models.Conversation, us
         "finished_at": out["finished_at"], "run_id": run.id, "run": out, "text": None, "chips": guard["chips"], "verdict": guard["verdict"],
         "artifacts": [], "trail": trail, "elapsed_s": out.get("duration_seconds"), "error": out.get("error"), "budget_s": budgets.budget("data"),
         "intent_by": (plan.get("v2_intent") or {}).get("by"), "mode": "analyst" if plan.get("mode") == "analyst" else "engine",
+        "guided": guided_v2,
         "placements": [p for p in ((_meta(conv).get("placements") or {}).values()) if run.id in (p.get("run_ids") or [])],
     }
 
@@ -1123,9 +1209,9 @@ def _analysis_for(db: Session, st: dict, user: models.User | None) -> dict | Non
 
 def _message_turn(db: Session, msg: models.Message, conv: models.Conversation, user: models.User) -> dict:
     st = _state(msg)
-    if st.get("status") == "working" and _stale(st.get("started_at"), budgets.hard(st.get("kind"))):
+    if st.get("status") == "working" and _stale(st.get("started_at"), budgets.hard(st.get("kind"), st.get("length"))):
         # the worker is gone (a restart) or stuck: the same hard stop the timer gives
-        st = _set_state(db, msg, status="failed", timed_out=True, error=budgets.timeout_text(st.get("kind")), finished_at=datetime.utcnow().isoformat() + "Z")
+        st = _set_state(db, msg, status="failed", timed_out=True, error=budgets.timeout_text(st.get("kind"), st.get("length")), finished_at=datetime.utcnow().isoformat() + "Z")
     elapsed = st.get("elapsed_s")
     if elapsed is None and st.get("finished_at") and st.get("started_at"):
         try:
@@ -1140,7 +1226,8 @@ def _message_turn(db: Session, msg: models.Message, conv: models.Conversation, u
            "run_id": st.get("run_id"), "guided_project_id": st.get("guided_project_id"), "intent_by": st.get("intent_by"),
            "normalized": st.get("normalized"), "analysis": _analysis_for(db, st, user) if st.get("kind") == "analysis" else None,
            "edit": st.get("edit"), "built": st.get("built"), "list": list_for(db, msg, user) if st.get("list") else None, "whatif": st.get("whatif"),
-           "budget_s": budgets.budget(st.get("kind")), "timed_out": st.get("timed_out")}
+           "budget_s": budgets.budget(st.get("kind"), st.get("length")), "timed_out": st.get("timed_out"),
+           "length": st.get("length"), "report": st.get("report")}
     if st.get("kind") == "model" and st.get("model_id") and st.get("status") == "working":
         try:
             ms = model_tool.status(db, user, st["model_id"])

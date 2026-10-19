@@ -65,7 +65,11 @@ DASHBOARD = re.compile(
 DOCUMENT = re.compile(
     r"\b(write|draft|prepare|produce|make|create|put together|compose)\b.{0,50}\b(report|document|memo|brief|write-?up|summary|"
     r"review|doc|one-?pager|note for|email to|slides?|presentation)\b"
-    r"|\b(board|exec|executive|weekly|monthly)\s+(review|report|summary|update)\b", re.I)
+    r"|\b(board|exec|executive|weekly|monthly)\s+(review|report|summary|update)\b"
+    # R57: "give me a summary in doc", "a detailed report of 2024 sales", "send it as a PDF"
+    r"|\b(give|send|get|need|want|show)\b.{0,40}\b(report|document|doc|memo|write-?up|one-?pager)\b"
+    r"|\b(in|as|into)\s+(a\s+|the\s+)?(doc|document|word|pdf|report|memo)\b"
+    r"|\b(detailed|full|complete|in-?depth|comprehensive|thorough)\s+(report|write-?up|document|doc|summary)\b", re.I)
 DEFINITION = re.compile(
     r"^\s*(define|definition of|meaning of|what does)\b|\bwhat (is|are) (an?|the)?\s*[\w&-]+( (ratio|rate|margin|index|score|model|method|law|act|tax|rule))?\??\s*$"
     r"|\bwhat does \w+ (mean|stand for)\b|\bexplain the (term|concept|difference between)\b", re.I)
