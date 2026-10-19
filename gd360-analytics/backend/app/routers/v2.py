@@ -65,6 +65,10 @@ class MessageRequest(BaseModel):
     source_ids: list[str] | None = None
     space_id: str | None = None
     length: str | None = Field(default=None, max_length=12)
+    # R58: Explain on a studio card ({"kind": "visual"|"step"|"kpis"|"answer"|"cause", "index"/"id"}), and what a card's
+    # Ask is about - both answered from the run on screen (context_run_id)
+    explain_target: dict | None = None
+    about_target: dict | None = None
 
 
 class ConfirmRequest(BaseModel):
@@ -460,7 +464,9 @@ def send_message(conversation_id: str, payload: MessageRequest, db: Session = De
     if not turns.is_v2(conv):
         meta = dict(conv.thread_meta or {}) | {"v2": True}
         turns._save_meta(db, conv, meta)
+    fresh = False
     if payload.source_ids is not None or payload.space_id:
+        fresh = set(payload.source_ids or []) != set(conv.source_ids or []) or (payload.space_id or None) != (conv.space_id or None)
         # R57: the sources picked in the follow-up box - earlier answers keep what they used
         ids, space = projects._scope_ids(db, user, payload.source_ids or None, payload.space_id, conv.workspace_id, payload.message)
         conv.source_ids, conv.datasource_id = ids, (ids[0] if ids else None)
@@ -468,7 +474,11 @@ def send_message(conversation_id: str, payload: MessageRequest, db: Session = De
         db.commit()
         turns._save_meta(db, conv, dict(conv.thread_meta or {}) | {"sources_chosen": True})
     return turns.send(db, conv, user, payload.message, mode=payload.mode, today=_today(payload.today), accepted=payload.accepted,
-                      context_run_id=payload.context_run_id, timezone=payload.timezone, intent=payload.intent, length=payload.length)
+                      context_run_id=payload.context_run_id, timezone=payload.timezone, intent=payload.intent, length=payload.length,
+                      explain_target=payload.explain_target if isinstance(payload.explain_target, dict) else None,
+                      # new sources mean new data: a question asked with them is never "explain what is on screen"
+                      about_target=None if fresh else (payload.about_target if isinstance(payload.about_target, dict) else None),
+                      fresh_sources=fresh)
 
 
 @router.get("/conversations/{conversation_id}/turns/{turn_id}")
