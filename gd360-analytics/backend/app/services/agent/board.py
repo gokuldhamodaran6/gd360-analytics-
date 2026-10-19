@@ -37,13 +37,15 @@ MAX_ROWS = 150_000
 SCORES_MAX = 60_000
 
 THEMES = {
+    # 2026-10-19 (R56): "studio" is GD360's own look (brand v2) and the default for new dashboards
+    "studio": {"label": "Studio", "mode": "light", "accent": "#2F6FE4", "warn": "#C2362C", "good": "#1C7A44", "bg": "#F3F4F3", "card": "#FFFFFF", "ink": "#121514"},
     "ink": {"label": "Ink", "mode": "light", "accent": "#2F5BFF", "warn": "#F26B3A", "good": "#15803D", "bg": "#F5F6F8", "card": "#FFFFFF", "ink": "#0B0F14"},
     "forest": {"label": "Forest", "mode": "dark", "accent": "#8FD3B4", "warn": "#F4A261", "good": "#8FD3B4", "bg": "#0F2E22", "card": "#163A2C", "ink": "#F2F7F4"},
     "navy": {"label": "Navy", "mode": "dark", "accent": "#7FB3F5", "warn": "#F4A261", "good": "#7FD4A8", "bg": "#0E1B33", "card": "#16264A", "ink": "#EEF3FB"},
     "graphite": {"label": "Graphite", "mode": "dark", "accent": "#A5B4FC", "warn": "#FB923C", "good": "#4ADE80", "bg": "#0F1115", "card": "#181B21", "ink": "#F3F4F6"},
     "sand": {"label": "Sand", "mode": "light", "accent": "#B45309", "warn": "#B91C1C", "good": "#15803D", "bg": "#F7F4EE", "card": "#FFFFFF", "ink": "#1C1917"},
 }
-THEME_WORDS = {"ink": r"\b(ink|light|white|default)\b", "forest": r"\b(forest|green)\b", "navy": r"\b(navy|blue|dark blue)\b",
+THEME_WORDS = {"studio": r"\b(studio|gd360|standard|default)\b", "ink": r"\b(ink|light|white)\b", "forest": r"\b(forest|green)\b", "navy": r"\b(navy|blue|dark blue)\b",
                "graphite": r"\b(graphite|dark|black|night)\b", "sand": r"\b(sand|warm|beige|cream)\b"}
 
 MONEY = re.compile(r"amt|amount|revenue|sales|spend|price|cost|profit|margin|limit|bal(ance)?\b|_bal|value|fee|income_amt|adr|gmv|payment|discount|tax|tip|wage|salary|payroll|cogs|refund", re.I)
@@ -227,7 +229,7 @@ def _title_for(outcome: dict | None, entities: str, source_name: str, measures: 
 
 
 def design(db: Session, user: models.User, source_id: str, table: str | None, *, question: str = "", analysis_result: dict | None = None,
-           theme: str = "ink", name: str | None = None) -> dict:
+           theme: str = "studio", name: str | None = None) -> dict:
     tables = ml_studio.source_tables(db, user, [source_id])
     if not tables:
         raise analysis.AnalysisError("Connect a table first; there is nothing to build a dashboard from.")
@@ -243,7 +245,7 @@ def design(db: Session, user: models.User, source_id: str, table: str | None, *,
         t = (entry["table"] or "").lower()
         entities = next((pl for w, pl in (("order", "orders"), ("booking", "bookings"), ("customer", "customers"), ("transaction", "transactions"),
                                          ("invoice", "invoices"), ("ticket", "tickets"), ("employee", "employees"), ("session", "sessions")) if w in t), "rows")
-    spec: dict = {"version": 1, "theme": theme if theme in THEMES else "ink", "entities": entities,
+    spec: dict = {"version": 1, "theme": theme if theme in THEMES else "studio", "entities": entities,
                   "source": {"source_id": entry["source_id"], "table": entry["table"], "name": entry["source"]},
                   "rows_at_build": int(len(df)), "sampled": bool(sampled), "built_at": datetime.utcnow().isoformat() + "Z",
                   "question": question[:300]}
@@ -498,6 +500,10 @@ def _block(df: pd.DataFrame, spec: dict, b: dict, base: pd.DataFrame) -> dict:
     out = {"id": b["id"], "kind": kind, "span": b.get("span", 6), "h": b.get("h", 1), "hero": bool(b.get("hero"))}
     if b.get("title"):
         out["title"] = b["title"]
+    if kind == "note":
+        # R56: a note typed on the canvas - words only, no numbers computed
+        out.update(type="note", title=b.get("title") or "Note", text=b.get("text") or "")
+        return out
     if kind.startswith("o_"):
         o = spec["outcome"]
         noun, verb = o["noun"], o["verb"]
@@ -1035,8 +1041,10 @@ def card_state(dash: models.Dashboard) -> dict:
 # ---- create ---------------------------------------------------------------------------------------
 
 def create(db: Session, user: models.User, conv: models.Conversation | None, source_id: str, table: str | None, *, question: str = "",
-           analysis_result: dict | None = None, name: str | None = None, theme: str = "ink") -> models.Dashboard:
+           analysis_result: dict | None = None, name: str | None = None, theme: str = "studio") -> models.Dashboard:
     spec = design(db, user, source_id, table, question=question, analysis_result=analysis_result, theme=theme, name=name)
+    # R56: a new dashboard is a draft only its owner sees until "Publish" on its canvas
+    spec["draft"] = True
     ds = db.get(models.DataSource, source_id)
     dash = models.Dashboard(owner_id=user.id, workspace_id=(ds.workspace_id if ds else None) or (conv.workspace_id if conv else None),
                             name=spec["title"][:80], layout_version=4, source_conversation_id=conv.id if conv else None)
@@ -1061,7 +1069,11 @@ def summary(dash: models.Dashboard) -> dict:
                    "filters": spec.get("filters") or [], "default_filters": spec.get("default_filters") or {},
                    "pages": [{"id": p["id"], "name": p["name"], "blurb": p.get("blurb"), "kind": p.get("kind") or "page"} for p in spec.get("pages") or []],
                    "definitions": spec.get("definitions") or [], "about": spec.get("about") or [], "model": model or None,
-                   "built_at": spec.get("built_at"), "sampled": spec.get("sampled"), "conversation_id": dash.source_conversation_id})
+                   "built_at": spec.get("built_at"), "sampled": spec.get("sampled"), "conversation_id": dash.source_conversation_id,
+                   # R56: the canvas status line, Undo and the "changed just now" outlines
+                   "draft": bool(spec.get("draft")), "published_at": spec.get("published_at"), "edited_at": spec.get("_edited_at"),
+                   "can_undo": bool(spec.get("_history")), "versions": len(spec.get("_history") or []),
+                   "changed": {k: v for k, v in (spec.get("_changed") or {}).items()}})
 
 
 # ---- exports from the same computed pages ---------------------------------------------------------

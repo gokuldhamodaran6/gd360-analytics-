@@ -180,7 +180,10 @@ def _topic(r: dict | None, first_question: str | None) -> str:
                 "fraud": "Fraud"}.get(noun, _cap(noun.strip("“”")))
     q = (first_question or "").strip().rstrip("?")
     q = re.sub(r"^(what|why|how|which|who|show|give|tell)( me)?\s+(is|are|was|were|did|does|do)?\s*", "", q, flags=re.I)
-    return _cap(q[:48]) or "Findings"
+    if len(q) > 48:
+        # R56: cut at a word, never mid-word ("…transaction amou")
+        q = q[:48].rsplit(" ", 1)[0].rstrip(",;:-") or q[:48]
+    return _cap(q) or "Findings"
 
 
 def _src(sources: list[dict], **kw) -> str:
@@ -501,6 +504,47 @@ def type_over(db: Session, doc: models.DocDocument, block_id: str, text: str) ->
         doc.title = t[:160]
     doc.blocks = blocks
     _save(db, doc, person=True)
+
+
+def restyle(db: Session, doc: models.DocDocument, block_id: str, to: str) -> None:
+    """R56 (Doc studio toolbar): a paragraph becomes a heading, or a heading a paragraph."""
+    i, b = _find(doc, block_id)
+    if to not in ("heading", "paragraph"):
+        raise DocError("A part can be a heading or a paragraph.")
+    if b["type"] not in ("paragraph", "heading"):
+        raise DocError("Only a heading or a paragraph changes style.")
+    if b["type"] == to:
+        return
+    _snapshot(doc, f"made it a {to}")
+    blocks = copy.deepcopy(doc.blocks)
+    text = plain(b.get("text") or "")
+    if to == "heading":
+        blocks[i] = {"id": b["id"], "type": "heading", "text": text[:160], "level": 2}
+    else:
+        blocks[i] = {"id": b["id"], "type": "paragraph", "text": bold_numbers(text), "cites": b.get("cites") or []}
+    doc.blocks = blocks
+    _save(db, doc, person=True)
+
+
+def insert_text(db: Session, doc: models.DocDocument, after_id: str | None, kind: str, text: str) -> str:
+    """R56: a heading or a paragraph the person writes, placed after a block (or before the sources)."""
+    t = (text or "").strip()
+    if not t:
+        raise DocError("Write the words first.")
+    if kind not in ("heading", "paragraph"):
+        raise DocError("Add a heading or a paragraph.")
+    blocks = list(copy.deepcopy(doc.blocks or []))
+    if after_id:
+        pos = _find(doc, after_id)[0] + 1
+    else:
+        pos = next((k for k, x in enumerate(blocks) if x.get("type") == "sources"), len(blocks))
+    _snapshot(doc, f"added a {kind}")
+    bid = _bid()
+    blocks.insert(pos, {"id": bid, "type": "heading", "text": t[:160], "level": 2} if kind == "heading"
+                  else {"id": bid, "type": "paragraph", "text": bold_numbers(t), "cites": []})
+    doc.blocks = blocks
+    _save(db, doc, person=True)
+    return bid
 
 
 def accept(db: Session, doc: models.DocDocument, block_id: str) -> None:
