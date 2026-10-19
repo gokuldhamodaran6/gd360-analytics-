@@ -454,8 +454,9 @@ def _breakdown(spec: dict, tables: dict, facts: _Facts) -> dict:
     df = tables.get(spec.get("table"))
     if df is None or not len(df):
         raise AnalysisError("The breakdown table is empty.")
-    dim = _col(df, spec.get("dimension_column"))
-    val = _col(df, spec.get("value_column"))
+    # R57: a plan that names them "dimension" / "metric" means the same columns
+    dim = _col(df, spec.get("dimension_column") or spec.get("dimension"))
+    val = _col(df, spec.get("value_column") or spec.get("metric"))
     if not dim or not val:
         raise AnalysisError("The breakdown needs a dimension column and a value column.")
     spec = {**spec, "dimension_column": dim, "value_column": val}
@@ -651,7 +652,21 @@ def run_analysis(spec: dict, tables: dict[str, pd.DataFrame]) -> dict:
     elif atype in ("breakdown", "comparison"):
         out = _breakdown(spec, tables, facts)
     else:
-        out = _lookup(spec, tables, facts)
+        out = None
+        # R57: a "lookup" whose table is a dimension with its metric (several rows) reads as a breakdown - the
+        # answer then names who leads and by how much instead of "Here is the result."
+        df = (tables or {}).get(spec.get("table"))
+        dim = _col(df, spec.get("dimension_column") or spec.get("dimension")) if df is not None else None
+        val = _col(df, spec.get("value_column") or spec.get("metric")) if df is not None else None
+        if df is not None and len(df) > 1 and dim and val and dim != val:
+            try:
+                out = _breakdown({**spec, "dimension_column": dim, "value_column": val, "rank": spec.get("rank") or "highest"}, tables, facts)
+                atype = "breakdown"
+            except Exception:  # noqa: BLE001 - the plain lookup is always there
+                out = None
+                facts.items.clear()
+        if out is None:
+            out = _lookup(spec, tables, facts)
     if atype != "explain_change" and (spec or {}).get("table"):
         for f in facts.items:
             f.setdefault("table", spec["table"])

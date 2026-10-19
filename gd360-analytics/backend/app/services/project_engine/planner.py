@@ -293,6 +293,9 @@ def validate_plan(raw: dict, catalog: Catalog) -> tuple[dict, list[str]]:
         problems.append("The plan has no step that can run.")
 
     a = plan["analysis"]
+    # R57: "rank" / "top" / "ranking" are a breakdown read from the top - not an unknown type
+    if str(a.get("type") or "").lower() in ("rank", "ranking", "top", "top_n", "leaderboard"):
+        a["type"] = "breakdown"
     atype = a.get("type") if a.get("type") in ANALYSIS_TYPES else None
     if not atype:
         a["type"] = "lookup"

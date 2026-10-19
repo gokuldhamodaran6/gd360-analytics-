@@ -147,11 +147,14 @@ def plan_run(db: Session, run_id: str) -> None:
     conv = db.get(models.Conversation, run.conversation_id)
     user = db.get(models.User, run.owner_id)
     catalog = build_catalog(db, user, list(conv.source_ids or []))
-    guided = bool(conv and conv.kind == "guided")
+    # R57: "Guided analysis" asked in a conversation - the same step-by-step engine as a Guided Analysis page
+    guided_v2 = bool(isinstance(run.plan, dict) and run.plan.get("guided_v2"))
+    guided = bool(conv and conv.kind == "guided") or guided_v2
+    keep = {k: v for k, v in (run.plan or {}).items() if k in ("guided_v2", "v2_intent", "report")} if isinstance(run.plan, dict) else {}
     # 2026-10-13 (R43): questions that need a model, a scenario, a simulation, maths SQL can't hold - or no
     # data at all - go to the Analyst (writes and runs Python, checks itself, decision-first answer)
     from . import analyst
-    if not run.note and analyst.wants_analyst(run.question, catalog, conv.kind if conv else "project"):
+    if not run.note and analyst.wants_analyst(run.question, catalog, "guided" if guided else (conv.kind if conv else "project")):
         _run_analyst(db, run, catalog, user)
         return
     previous = None
@@ -189,6 +192,7 @@ def plan_run(db: Session, run_id: str) -> None:
          "restricted": s.restricted, "tables": len(s.tables)}
         for s in catalog.sources
     ]
+    plan.update(keep)
     run.plan = plan
     run.steps = initial_steps(plan)
     if not plan.get("can_answer", True) and not guided:
