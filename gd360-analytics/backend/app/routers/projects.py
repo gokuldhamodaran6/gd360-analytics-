@@ -125,6 +125,8 @@ class AskRequest(BaseModel):
     understand: bool = False
     accepted: list[str] = Field(default_factory=list, max_length=10)
     today: str | None = Field(default=None, max_length=10)
+    # R57: "Guided analysis" in a conversation - planned, then run one step at a time with the person's OK
+    guided: bool = False
 
 
 class ExplainRequest(BaseModel):
@@ -300,6 +302,8 @@ def _run_out(run: models.ProjectRun, full: bool = True) -> dict:
         "headline": ans.get("headline"),
         # 2026-10-10 (Guided Analysis): a step or the answer is being worked on
         "busy": _guided_busy(run.id),
+        # R57: a Guided analysis asked in a conversation (step by step, each step waits for the person's OK)
+        "guided": bool(isinstance(run.plan, dict) and run.plan.get("guided_v2")),
         "duration_seconds": (
             round(((run.finished_at or datetime.utcnow()) - (run.started_at or run.created_at)).total_seconds(), 1)
             if run.started_at else None
@@ -380,10 +384,13 @@ def _clean_brief(brief: dict | None) -> dict | None:
 
 
 def _new_run(db: Session, conv: models.Conversation, user: models.User, question: str, auto_run: bool,
-             note: str | None = None, replaced_plan: dict | None = None, brief: dict | None = None) -> models.ProjectRun:
+             note: str | None = None, replaced_plan: dict | None = None, brief: dict | None = None,
+             extra: dict | None = None) -> models.ProjectRun:
     plan = {"replaced_plan": replaced_plan} if replaced_plan else None
     if brief:
         plan = (plan or {}) | {"brief": brief}
+    if extra:
+        plan = (plan or {}) | extra
     run = models.ProjectRun(
         conversation_id=conv.id, owner_id=user.id, question=question.strip(), status="planning",
         auto_run=auto_run, note=note, plan=plan,
@@ -407,7 +414,7 @@ def recover_interrupted_runs() -> None:
             c.id for c in db.query(models.Conversation.id).filter(models.Conversation.kind == "guided").all()
         }
         for r in stuck:
-            if r.conversation_id in guided_ids and r.status == "running" and r.steps:
+            if (r.conversation_id in guided_ids or (r.plan or {}).get("guided_v2")) and r.status == "running" and r.steps:
                 # a guided analysis that was writing its answer: its steps are
                 # all still there - go back to the steps
                 r.status = "planned"
@@ -718,7 +725,7 @@ def ask(project_id: str, payload: AskRequest, db: Session = Depends(get_db), use
                     "source_ids": conv.source_ids or [], **_space_ref(db, conv, user)}
     # 2026-10-11 (Explain & Alerts): "explain this chart" is answered from the
     # answer on screen - no new run - unless the sources are changing.
-    if payload.route and same_sources and not (analyst_followup and not payload.explain_target):
+    if payload.route and same_sources and not payload.guided and not (analyst_followup and not payload.explain_target):
         done = _explain_context(db, conv, payload.context_run_id)
         if done is not None:
             from ..services import explain as explain_svc
@@ -746,7 +753,7 @@ def ask(project_id: str, payload: AskRequest, db: Session = Depends(get_db), use
         db.commit()
     # A Guided Analysis follow-up continues the same analysis: planned step
     # by step (mode "guided"), or run straight through to the answer ("answer").
-    auto = (payload.mode == "answer") if conv.kind == "guided" else payload.auto_run
+    auto = (payload.mode == "answer") if conv.kind == "guided" else (False if payload.guided else payload.auto_run)
     brief = _clean_brief(payload.brief)
     if payload.understand and not brief and not same_sources:
         understood = _understand_followup(db, user, conv, payload)
@@ -755,7 +762,7 @@ def ask(project_id: str, payload: AskRequest, db: Session = Depends(get_db), use
                     "source_ids": conv.source_ids or [], **_space_ref(db, conv, user)}
     if not brief and understood:
         brief = understood.get("brief")
-    run = _new_run(db, conv, user, payload.question, auto, brief=brief)
+    run = _new_run(db, conv, user, payload.question, auto, brief=brief, extra={"guided_v2": True} if payload.guided else None)
     executor.start_planning(run.id)
     return {"project_id": conv.id, "kind": "run", "run_id": run.id, "source_ids": conv.source_ids or [], **_space_ref(db, conv, user)}
 

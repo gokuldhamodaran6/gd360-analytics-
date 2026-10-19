@@ -49,6 +49,8 @@ class StartRequest(BaseModel):
     today: str | None = Field(default=None, max_length=10)
     timezone: str = Field(default="UTC", max_length=64)
     intent: str | None = None
+    # R57: a report's length (brief | standard | detailed); None reads it from the words
+    length: str | None = Field(default=None, max_length=12)
 
 
 class MessageRequest(BaseModel):
@@ -59,6 +61,10 @@ class MessageRequest(BaseModel):
     today: str | None = Field(default=None, max_length=10)
     timezone: str = Field(default="UTC", max_length=64)
     intent: str | None = None
+    # R57: the follow-up box's own source picker - the thread's sources change with the question
+    source_ids: list[str] | None = None
+    space_id: str | None = None
+    length: str | None = Field(default=None, max_length=12)
 
 
 class ConfirmRequest(BaseModel):
@@ -417,7 +423,7 @@ def start(payload: StartRequest, db: Session = Depends(get_db), user: models.Use
     conv = turns.new_conversation(db, user, question=payload.message, space_id=payload.space_id, source_ids=payload.source_ids,
                                   workspace_id=payload.workspace_id)
     turn = turns.send(db, conv, user, payload.message, mode=payload.mode, today=_today(payload.today), timezone=payload.timezone,
-                      intent=payload.intent)
+                      intent=payload.intent, length=payload.length)
     return {"conversation": turns.conversation_out(db, conv, user), "turn": turn}
 
 
@@ -454,8 +460,15 @@ def send_message(conversation_id: str, payload: MessageRequest, db: Session = De
     if not turns.is_v2(conv):
         meta = dict(conv.thread_meta or {}) | {"v2": True}
         turns._save_meta(db, conv, meta)
+    if payload.source_ids is not None or payload.space_id:
+        # R57: the sources picked in the follow-up box - earlier answers keep what they used
+        ids, space = projects._scope_ids(db, user, payload.source_ids or None, payload.space_id, conv.workspace_id, payload.message)
+        conv.source_ids, conv.datasource_id = ids, (ids[0] if ids else None)
+        conv.space_id = space.id if space else None
+        db.commit()
+        turns._save_meta(db, conv, dict(conv.thread_meta or {}) | {"sources_chosen": True})
     return turns.send(db, conv, user, payload.message, mode=payload.mode, today=_today(payload.today), accepted=payload.accepted,
-                      context_run_id=payload.context_run_id, timezone=payload.timezone, intent=payload.intent)
+                      context_run_id=payload.context_run_id, timezone=payload.timezone, intent=payload.intent, length=payload.length)
 
 
 @router.get("/conversations/{conversation_id}/turns/{turn_id}")

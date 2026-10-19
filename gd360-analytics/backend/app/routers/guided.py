@@ -16,6 +16,9 @@ Instant Answer. These endpoints drive it one step at a time:
   POST   /guided/runs/{run_id}/finish                   write the answer from the steps that ran
   POST   /guided/runs/{run_id}/rework                   (R56) re-run every step of a conversation answer, then rewrite it
 
+2026-10-19 (R57): a question asked as "Guided analysis" in a conversation is a run with plan["guided_v2"] - it goes
+step by step here (the first step runs by itself, each later one after "Looks right") until the answer is written.
+
 2026-10-19 (R56): a conversation (v2) answer is edited the same way on the Analysis canvas. Its edits then
 rewrite the answer straight away (guided.rework) - there is no separate "approve" or "write the answer" there.
 """
@@ -67,10 +70,18 @@ def _v2(conv: models.Conversation) -> bool:
     return bool((conv.thread_meta or {}).get("v2")) and conv.kind != "guided"
 
 
+def _stepwise(conv: models.Conversation | None, run: models.ProjectRun) -> bool:
+    """R57: a Guided analysis asked in a conversation goes step by step (each step waits for the person's OK) until
+    its answer is written; after that its edits rewrite the answer straight away, like any conversation answer."""
+    if conv is None or not _v2(conv):
+        return True
+    return bool((run.plan or {}).get("guided_v2")) and run.status != "done"
+
+
 def _job(db: Session, run: models.ProjectRun, step_id: str | None):
-    """The background job after a step changed: a guided analysis runs that step; a conversation answer reworks."""
+    """The background job after a step changed: a step-by-step analysis runs that step; a written answer reworks."""
     conv = db.get(models.Conversation, run.conversation_id)
-    if conv is not None and _v2(conv):
+    if not _stepwise(conv, run):
         return guided.rework, (step_id,)
     return guided.run_step, (step_id,)
 
@@ -165,7 +176,7 @@ def remove_step(run_id: str, step_id: str, db: Session = Depends(get_db), user: 
     except guided.GuidedError as e:
         raise HTTPException(400, str(e))
     conv = db.get(models.Conversation, run.conversation_id)
-    if conv is not None and _v2(conv):
+    if not _stepwise(conv, run):
         _start(run, guided.rework, None, db=db)
     return _out(db, run)
 
@@ -186,7 +197,10 @@ def add_step(run_id: str, payload: AddStepRequest, db: Session = Depends(get_db)
 @router.post("/runs/{run_id}/run-rest")
 def run_rest(run_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     run = _guided_run(db, run_id, user)
-    _start(run, guided.run_rest)
+    conv = db.get(models.Conversation, run.conversation_id)
+    # R57: "Looks right, run the rest" in a conversation - what ran is approved, the rest runs, then the answer
+    nxt = next((s for s in run.steps or [] if s.get("status") != "done"), None)
+    _start(run, guided._run_all if conv is not None and _v2(conv) else guided.run_rest, db=db, show=nxt["id"] if nxt else None)
     return _out(db, run)
 
 
