@@ -12,6 +12,7 @@ from .routers import (
     data_access_rules, ml_models, metric_definitions, transforms, pipelines, projects, apps, automations, ml_studio,
     spaces, site, admin_v2, admin_ops, admin_biz, admin_quality, autopilot, inapp, guided, initiatives, gtm, gtm_public,
     ops, trust, domains, notifications, dashboard_ai, assistant, eventos, eventos_public, v2,
+    flows,
 )
 from .services.scheduler import start_scheduler
 
@@ -215,6 +216,7 @@ async def company_domain_cors(request: Request, call_next):
     return response
 
 
+app.include_router(flows.router)
 app.include_router(auth.router)
 app.include_router(datasources.router)
 app.include_router(chat.router)
@@ -343,6 +345,8 @@ def on_startup():
     projects.recover_interrupted_runs()
     from .services.automations import recover_interrupted as recover_automation_runs
     recover_automation_runs()
+    from .services.flows.runner import recover_interrupted as recover_flow_runs
+    recover_flow_runs()
     from .services.ml_studio import recover_interrupted as recover_ml_jobs
     recover_ml_jobs()
     # 2026-10-12 (round 39): ML Studio runs go through a queue. Inline mode (the

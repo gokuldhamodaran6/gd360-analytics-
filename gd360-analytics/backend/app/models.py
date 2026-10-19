@@ -3758,3 +3758,84 @@ class AgentAction(Base):
     decided_by = Column(String, nullable=True)
     decided_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class DataFlow(Base):
+    """R54 (Automate data): a data job described in plain words - read some
+    sources, fix their mistakes, combine them, check the result and save it as
+    one clean table (a managed CSV data source) on a schedule.
+
+    spec (JSON) - see services/flows/spec.py for the full shape:
+      {"sources": [{"alias", "datasource_id", "table", "label"}],
+       "steps": [{"id", "kind": "clean"|"combine"|"compute"|"keep", ...}],
+       "checks": [{"id", "kind": "unique"|"min"|"max"|"not_empty"|"ready_by", ...}],
+       "output": {"name"},
+       "schedule": {"time": "06:00", "days": [0..6], "timezone", "on_change"},
+       "policy": {"hold_above": 50, "flag_to": [user ids], "alert_to": [user ids], "daily_summary": true}}
+    thread (JSON): the conversation on the left of the Studio -
+      [{"id", "role": "user"|"gd360", "kind", "text", "data", "at"}]
+    pending_fix (JSON): a repair GD360 proposed after a held or failed run,
+      waiting for approval - {"id", "run_id", "cause", "summary", "changes", "diff", "created_at"}.
+    """
+    __tablename__ = "data_flows"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True, index=True)
+    name = Column(String, nullable=False)
+    request = Column(Text, nullable=True)
+    status = Column(String, nullable=False, default="draft")  # draft | tested | live | paused
+    enabled = Column(Boolean, default=False, nullable=False)
+    spec = Column(JSON, nullable=False, default=dict)
+    version = Column(Integer, nullable=False, default=1)
+    profile = Column(JSON, nullable=True)
+    thread = Column(JSON, nullable=False, default=list)
+    pending_fix = Column(JSON, nullable=True)
+    output_datasource_id = Column(String, nullable=True, index=True)
+    next_run_at = Column(DateTime, nullable=True, index=True)
+    last_run_at = Column(DateTime, nullable=True)
+    last_status = Column(String, nullable=True)   # success | held | failed
+    last_run_id = Column(String, nullable=True)
+    last_good_columns = Column(JSON, nullable=True)  # {alias: {column: share filled}} from the last good run
+    fingerprints = Column(JSON, nullable=True)       # {datasource_id: str} seen at the last run
+    last_change_check_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DataFlowRun(Base):
+    """One run of a DataFlow. A test run never saves the output table; a
+    held run stopped before saving because a check failed too often."""
+    __tablename__ = "data_flow_runs"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    flow_id = Column(String, ForeignKey("data_flows.id", ondelete="CASCADE"), nullable=False, index=True)
+    owner_id = Column(String, ForeignKey("users.id"), nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    reason = Column(String, nullable=False)  # test | manual | schedule | change | fix
+    status = Column(String, nullable=False, default="running")  # running | success | held | failed
+    published = Column(Boolean, default=False, nullable=False)
+    stats = Column(JSON, nullable=False, default=dict)
+    checks = Column(JSON, nullable=False, default=list)
+    events = Column(JSON, nullable=False, default=list)
+    flagged = Column(JSON, nullable=True)
+    set_aside = Column(JSON, nullable=True)
+    examples = Column(JSON, nullable=True)
+    preview = Column(JSON, nullable=True)
+    deliveries = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class DataFlowVersion(Base):
+    """Every saved change to a DataFlow's spec, so any change can be undone."""
+    __tablename__ = "data_flow_versions"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    flow_id = Column(String, ForeignKey("data_flows.id", ondelete="CASCADE"), nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    spec = Column(JSON, nullable=False)
+    note = Column(String, nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
