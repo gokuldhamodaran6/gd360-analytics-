@@ -48,7 +48,7 @@ export type Turn = {
   chips: Chip[]; verdict?: "ok" | "warn" | "fail" | "pending"; artifacts: Artifact[]; trail: TrailItem[];
   elapsed_s?: number | null; error?: string | null; intent_by?: string | null; mode?: "analyst" | "engine";
   run_id?: string | null; run?: ProjectRun | null; guided_project_id?: string | null;
-  confirm?: AutomationConfirm | TeamConfirm | null; check?: any; explain?: any; issues?: string[];
+  confirm?: AutomationConfirm | TeamConfirm | ReportStepsConfirm | null; check?: any; explain?: any; issues?: string[];
   model_summary?: { label: string; metric: string; test_score?: number | null; baseline?: { name?: string; score?: number }; drivers: string[]; leaks: string[]; rows?: number; target?: string; table?: string } | null;
   document?: { title: string; markdown: string; flagged: string[] } | null;
   placements?: { dashboard_id: string; dashboard_name: string; page_id?: string | null }[];
@@ -57,6 +57,8 @@ export type Turn = {
   built?: { pages: string[]; name: string; theme: string; typo?: string | null; dashboard_id: string } | null;
   // 2026-10-17 (R52): the risk list and the what-if, answered from the analysis; time budgets
   list?: RiskList | null; whatif?: WhatIf | null; budget_s?: number | null; timed_out?: boolean | null;
+  // R57: a Guided analysis in the conversation (steps wait for the person's OK); a report's length and progress
+  guided?: boolean; length?: ReportLength | null; report?: ReportProgress | null;
 };
 export type RiskList = {
   title: string; tier: string; rule: string; id_label: string; columns: string[]; rows: Record<string, any>[]; total: number; shown: number;
@@ -80,6 +82,8 @@ export type BoardCardState = {
   palette: { bg: string; card: string; ink: string; accent: string; warn: string; mode: string };
 };
 export type FirstCheck = { text: string; over?: { dim_label: string; value: string; rate: number; n: number }[]; groups?: number; columns?: number; overall?: number };
+// R57: the steps a detailed report needs, shown before they run
+export type ReportStepsConfirm = { kind: "report_steps"; length: ReportLength; have: number; steps: { instruction: string; why?: string }[]; run_id: string };
 export type AutomationConfirm = {
   kind: "automation"; ok: boolean; body: any; issues: string[]; needs: string[]; note?: string | null;
   sentence: { when: string; do: string; tell: string; tell_sentence?: string };
@@ -119,6 +123,9 @@ export type Home = {
   conversations: ConversationRow[]; plan: PlanSummary; web: boolean; web_provider: string; examples?: string[];
 };
 export type Mode = "auto" | "quick" | "guided";
+// R57: a report's length - Brief (1 page), Standard (3-4 pages), Detailed (8-12 pages)
+export type ReportLength = "brief" | "standard" | "detailed";
+export type ReportProgress = { length?: ReportLength; current?: string | null; total?: number; done?: number; log?: string[] };
 
 const tz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; } };
 const today = () => new Date().toISOString().slice(0, 10);
@@ -126,12 +133,13 @@ const today = () => new Date().toISOString().slice(0, 10);
 export const v2Api = {
   home: (workspaceId?: string | null) => api.get<Home>("/v2/home", { params: workspaceId ? { workspace_id: workspaceId } : {} }).then((r) => r.data),
   plan: () => api.get<PlanSummary>("/v2/plan").then((r) => r.data),
-  start: (body: { message: string; space_id?: string | null; source_ids?: string[] | null; workspace_id?: string | null; mode?: Mode; intent?: string | null }) =>
+  start: (body: { message: string; space_id?: string | null; source_ids?: string[] | null; workspace_id?: string | null; mode?: Mode; intent?: string | null; length?: ReportLength | null }) =>
     api.post<{ conversation: Conversation; turn: Turn }>("/v2/conversations", { ...body, today: today(), timezone: tz() }).then((r) => r.data),
   list: (workspaceId?: string | null) => api.get<{ conversations: ConversationRow[] }>("/v2/conversations", { params: workspaceId ? { workspace_id: workspaceId } : {} }).then((r) => r.data.conversations),
   get: (id: string) => api.get<Conversation>(`/v2/conversations/${id}`).then((r) => r.data),
   update: (id: string, body: { title?: string; pinned?: boolean }) => api.patch(`/v2/conversations/${id}`, body).then((r) => r.data),
-  send: (id: string, body: { message: string; mode?: Mode; accepted?: string[]; context_run_id?: string | null; intent?: string | null }) =>
+  send: (id: string, body: { message: string; mode?: Mode; accepted?: string[]; context_run_id?: string | null; intent?: string | null;
+    source_ids?: string[] | null; space_id?: string | null; length?: ReportLength | null }) =>
     api.post<Turn>(`/v2/conversations/${id}/messages`, { ...body, today: today(), timezone: tz() }).then((r) => r.data),
   turn: (id: string, turnId: string) => api.get<Turn>(`/v2/conversations/${id}/turns/${turnId}`).then((r) => r.data),
   confirm: (id: string, turnId: string, approve: boolean, edits?: any) =>

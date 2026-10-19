@@ -192,6 +192,8 @@ export type ProjectRun = {
   headline: string | null;
   // 2026-10-10 (Guided Analysis): a step or the answer is being worked on
   busy?: boolean;
+  // R57: a Guided analysis asked in a conversation - step by step, each step waits for the person's OK
+  guided?: boolean;
   duration_seconds: number | null;
   // 2026-10-11 (Ask Journey): what the conversation column shows without
   // the full run

@@ -1,20 +1,25 @@
 // 2026-10-15 (R51): block documents - backend/app/routers/v2.py /v2/documents, services/agent/docblocks.py.
 import { api } from "./client";
 
-export type DocBar = { label: string; value: number; n?: number; tone?: "bad" | "good" | "neutral" };
+export type DocBar = { label: string; value: number; n?: number; tone?: "bad" | "good" | "neutral" | "main" | "top"; display?: string };
 export type DocBlock =
   | { id: string; type: "title" | "byline"; text: string }
   | { id: string; type: "heading"; text: string; level?: number }
   | { id: string; type: "paragraph"; text: string; cites?: string[] }
   | { id: string; type: "callout"; text: string; tone?: string; label?: string; cites?: string[] }
-  | { id: string; type: "figure"; kind: "bars"; title: string; subtitle?: string; unit?: string; bars: DocBar[]; baseline?: { value: number; label: string } | null; cites?: string[]; pending?: boolean }
-  | { id: string; type: "table"; columns: { key: string; label: string; align?: string }[]; rows: Record<string, any>[]; cites?: string[] }
+  | { id: string; type: "figure"; kind: "bars" | "line"; title: string; subtitle?: string; unit?: string; bars: DocBar[]; baseline?: { value: number; label: string } | null; cites?: string[]; pending?: boolean }
+  | { id: string; type: "table"; columns: { key: string; label: string; align?: string }[]; rows: Record<string, any>[]; cites?: string[]; note?: string | null }
+  // R57: the report's findings and method (a list), and its key numbers (kpis)
+  | { id: string; type: "list"; items: string[]; cites?: string[] }
+  | { id: string; type: "kpis"; items: { label: string; value: string; note?: string | null }[]; cites?: string[] }
   | { id: string; type: "sources" };
 export type DocSource = { id: string; kind: string; label: string; turn_id?: string; step?: string; url?: string };
 export type Doc = {
   id: string; title: string; blocks: DocBlock[]; sources: DocSource[]; conversation_id: string | null; message_id: string | null;
   created_at: string; updated_at: string; edited_by_person: boolean; figures: number; tables: number; words: number; pages: number;
   checked: number; flagged: string[]; can_undo: boolean; history: { label: string; at: string }[]; can_edit?: boolean;
+  // R57: a report written section by section
+  report?: { length: "brief" | "standard" | "detailed"; status: "writing" | "done"; sections: { id: string; title: string; status: "waiting" | "writing" | "done" }[]; added?: string[]; flagged?: string[] } | null;
 };
 
 export type DocRow = { id: string; title: string; conversation_id: string | null; conversation_title: string | null; created_at: string; updated_at: string;
