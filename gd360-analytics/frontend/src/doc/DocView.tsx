@@ -2,7 +2,7 @@
 // click: add a graph for it below, make it shorter, rewrite it, type over it, remove it. Figures are drawn to scale
 // from the table; each paragraph carries chips naming the step its numbers came from. History undoes, Download gives
 // Word, PDF or Markdown built from the same blocks, Share copies the page's link.
-import { Fragment, KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, KeyboardEvent, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { docsApi, type Doc, type DocBlock, type DocSource } from "../api/docs";
 import "./doc.css";
 
@@ -16,11 +16,22 @@ const I = {
   send: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" /></svg>,
 };
 
-export function Rich({ text }: { text: string }) {
+export function Rich({ text, onNumber }: { text: string; onNumber?: (n: string) => void }) {
   const parts = (text || "").split(/\*\*(.+?)\*\*/g);
-  return <>{parts.map((p, i) => (i % 2 ? <b key={i}>{p}</b> : <Fragment key={i}>{p}</Fragment>))}</>;
+  // R56: *words* in italics; in the Doc studio a bold number is a live number - click it to see where it came from
+  const ital = (t: string, k: number) => t.split(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g).map((q, j) => (j % 2 ? <i key={`${k}-${j}`}>{q}</i> : <Fragment key={`${k}-${j}`}>{q}</Fragment>));
+  return <>{parts.map((p, i) => (i % 2
+    ? (onNumber && /\d/.test(p) ? <button key={i} type="button" className="dc-num" title="Where this number came from" onClick={(e) => { e.stopPropagation(); onNumber(p); }} data-dc-num="">{p}</button> : <b key={i}>{p}</b>)
+    : <Fragment key={i}>{ital(p, i)}</Fragment>))}</>;
 }
 const plain = (t: string) => (t || "").replace(/\*\*(.+?)\*\*/g, "$1");
+
+/** R56: what the Doc studio adds - the selected part reported up, green on what just changed, the comment margin,
+ *  live numbers, and a counter for each part's comments. */
+export type DocStudioBits = {
+  onSelect: (blockId: string | null, b: DocBlock | null) => void; changed: Record<string, number>; aside?: ReactNode;
+  comments?: Record<string, number>; onComment?: (blockId: string) => void; onDoc?: (d: Doc) => void; editing?: { id: string; mode: "type" | "rewrite" } | null;
+};
 
 function when(iso: string): string {
   const d = new Date(/Z$|[+-]\d\d:?\d\d$/.test(iso) ? iso : `${iso}Z`);
@@ -86,8 +97,17 @@ export function DocFigure({ b }: { b: Extract<DocBlock, { type: "figure" }> }) {
 
 type Sel = { id: string; mode: "menu" | "rewrite" | "type" } | null;
 
-export function DocView({ id, embedded = false, version = 0, onSource, onChanged }: {
-  id: string; embedded?: boolean; version?: number; onSource?: (s: DocSource) => void; onChanged?: (d: Doc) => void;
+/** R56: a table cell as a person writes it - no float noise ("37,477,024.60000008" is 37,477,024.6). */
+function cellText(v: unknown): string {
+  if (typeof v === "number") return Number.isInteger(v) ? v.toLocaleString("en-US") : v.toLocaleString("en-US", { maximumFractionDigits: Math.abs(v) >= 100 ? 0 : 2 });
+  const t = String(v ?? "");
+  const m = /^-?[\d,]+\.\d{4,}$/.exec(t.trim());
+  if (m) { const n = Number(t.replace(/,/g, "")); if (Number.isFinite(n)) return n.toLocaleString("en-US", { maximumFractionDigits: Math.abs(n) >= 100 ? 0 : 2 }); }
+  return t;
+}
+
+export function DocView({ id, embedded = false, version = 0, onSource, onChanged, studio }: {
+  id: string; embedded?: boolean; version?: number; onSource?: (s: DocSource) => void; onChanged?: (d: Doc) => void; studio?: DocStudioBits;
 }) {
   const [doc, setDoc] = useState<Doc | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -103,6 +123,9 @@ export function DocView({ id, embedded = false, version = 0, onSource, onChanged
     try { setDoc(await docsApi.get(id)); setErr(null); } catch (e: any) { setErr(e?.response?.status === 404 ? "This document isn't here, or isn't shared with you." : "Couldn't open the document."); }
   }, [id]);
   useEffect(() => { void load(); }, [load, version]);
+  useEffect(() => { if (doc) studio?.onDoc?.(doc); }, [doc]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { studio?.onSelect(sel?.id || null, sel && doc ? doc.blocks.find((x) => x.id === sel.id) || null : null); }, [sel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (studio?.editing) { setSel({ id: studio.editing.id, mode: studio.editing.mode }); const b = doc?.blocks.find((x) => x.id === studio.editing!.id); setDraft(studio.editing.mode === "type" && b && "text" in b ? plain(b.text) : ""); } }, [studio?.editing]); // eslint-disable-line react-hooks/exhaustive-deps
   const flash = (text: string, tone: "ok" | "bad" = "ok") => {
     setNote({ text, tone });
     window.clearTimeout(noteT.current);
@@ -176,7 +199,7 @@ export function DocView({ id, embedded = false, version = 0, onSource, onChanged
 
   return (
     <div className={`dc-wrap${embedded ? " embedded" : ""}`} data-dc-doc={doc.id} onClick={() => sel?.mode === "menu" && setSel(null)}>
-      <div className="dc-bar" data-dc-bar="">
+      {!studio && <div className="dc-bar" data-dc-bar="">
         <div className="tt">
           <span className="t" title={doc.title}>{doc.title}</span>
           <span className="m">Created {when(doc.created_at)}{doc.edited_by_person ? " · edited by you" : ""} · {doc.pages} page{doc.pages !== 1 ? "s" : ""} · {doc.figures} figure{doc.figures !== 1 ? "s" : ""}</span>
@@ -196,34 +219,41 @@ export function DocView({ id, embedded = false, version = 0, onSource, onChanged
         </span>
         <button type="button" className="gx-sc gx-hide-sm" onClick={() => void dl("docx")} data-dc-word="">Open in Word</button>
         <button type="button" className="gx-sc dark" onClick={() => void share()} data-dc-share="">{copied === "link" ? "Link copied" : "Share doc"}</button>
-      </div>
+      </div>}
       {note && <div className={`dc-note ${note.tone}`} role="status" data-dc-note="">{note.text}{note.tone === "ok" && doc.can_undo && <button type="button" onClick={() => void undo()}>Undo</button>}</div>}
-      <div className="dc-scroll">
+      <div className={`dc-scroll${studio ? " studio" : ""}`}>
         <article className="dc-page" data-dc-page="">
           {doc.blocks.map((b) => {
             const selected = sel?.id === b.id;
             const common = { key: b.id, "data-dc-block": b.type, "data-dc-id": b.id } as any;
+            const ch = studio && studio.changed[b.id] && Date.now() - studio.changed[b.id] < 10 * 60 * 1000 ? " changed" : "";
+            const nc = studio?.comments?.[b.id] || 0;
+            const cm = nc > 0 ? <button type="button" className="dc-cmt" onClick={(e) => { e.stopPropagation(); studio?.onComment?.(b.id); }} title={`${nc} comment${nc === 1 ? "" : "s"}`} data-dc-cmt-count="">{nc}</button> : null;
+            const firstCite = "cites" in b && b.cites && b.cites.length ? doc.sources.find((x) => x.id === b.cites![0]) : null;
+            const onNum = studio && firstCite ? () => { if (firstCite.url) window.open(firstCite.url, "_blank", "noopener"); else onSource?.(firstCite); } : undefined;
             if (b.type === "title") {
               return <div {...common} className={`dc-b dc-title${selected ? " on" : ""}`} role={editable ? "button" : undefined} tabIndex={editable ? 0 : undefined} onClick={(e) => { e.stopPropagation(); pick(b); }} onKeyDown={(e) => onKey(e, b)}>{renderPop(b)}<h1>{b.text}</h1></div>;
             }
             if (b.type === "byline") return <p {...common} className="dc-byline">{b.text}</p>;
             if (b.type === "heading") {
-              return <div {...common} className={`dc-b${selected ? " on" : ""}`} role={editable ? "button" : undefined} tabIndex={editable ? 0 : undefined} onClick={(e) => { e.stopPropagation(); pick(b); }} onKeyDown={(e) => onKey(e, b)}>{renderPop(b)}<h2>{plain(b.text)}</h2></div>;
+              return <div {...common} className={`dc-b${selected ? " on" : ""}${ch}`} role={editable ? "button" : undefined} tabIndex={editable ? 0 : undefined} onClick={(e) => { e.stopPropagation(); pick(b); }} onKeyDown={(e) => onKey(e, b)}>{renderPop(b)}<h2>{plain(b.text)}</h2>{cm}</div>;
             }
             if (b.type === "paragraph") {
               return (
-                <div {...common} className={`dc-b dc-p${selected ? " on" : ""}`} role={editable ? "button" : undefined} tabIndex={editable ? 0 : undefined} aria-pressed={editable ? selected : undefined}
+                <div {...common} className={`dc-b dc-p${selected ? " on" : ""}${ch}`} role={editable ? "button" : undefined} tabIndex={editable ? 0 : undefined} aria-pressed={editable ? selected : undefined}
                   onClick={(e) => { e.stopPropagation(); pick(b); }} onKeyDown={(e) => onKey(e, b)}>
                   {renderPop(b)}
-                  <p><Rich text={b.text} /> <Chips cites={b.cites} sources={doc.sources} onSource={onSource} /></p>
+                  <p><Rich text={b.text} onNumber={onNum} /> <Chips cites={b.cites} sources={doc.sources} onSource={onSource} /></p>
+                  {cm}
                 </div>
               );
             }
             if (b.type === "callout") {
               return (
-                <div {...common} className={`dc-b dc-call${selected ? " on" : ""}`} role={editable ? "button" : undefined} tabIndex={editable ? 0 : undefined} onClick={(e) => { e.stopPropagation(); pick(b); }} onKeyDown={(e) => onKey(e, b)}>
+                <div {...common} className={`dc-b dc-call${selected ? " on" : ""}${ch}`} role={editable ? "button" : undefined} tabIndex={editable ? 0 : undefined} onClick={(e) => { e.stopPropagation(); pick(b); }} onKeyDown={(e) => onKey(e, b)}>
                   {renderPop(b)}
                   <p><b>{b.label || "Note"}.</b> {plain(b.text)}</p>
+                  {cm}
                 </div>
               );
             }
@@ -250,7 +280,7 @@ export function DocView({ id, embedded = false, version = 0, onSource, onChanged
                 <div {...common} className="dc-tablewrap">
                   <table className="dc-table">
                     <thead><tr>{b.columns.map((c) => <th key={c.key} style={c.align === "right" ? { textAlign: "right" } : undefined}>{c.label}</th>)}</tr></thead>
-                    <tbody>{b.rows.map((r, i) => <tr key={i}>{b.columns.map((c) => <td key={c.key} className={c.align === "right" ? "n" : undefined}>{String(r[c.key] ?? "")}</td>)}</tr>)}</tbody>
+                    <tbody>{b.rows.map((r, i) => <tr key={i}>{b.columns.map((c) => <td key={c.key} className={c.align === "right" ? "n" : undefined}>{cellText(r[c.key])}</td>)}</tr>)}</tbody>
                   </table>
                   {(b.cites || []).length > 0 && <div className="foot"><Chips cites={b.cites} sources={doc.sources} onSource={onSource} /></div>}
                 </div>
@@ -267,6 +297,7 @@ export function DocView({ id, embedded = false, version = 0, onSource, onChanged
             return null;
           })}
         </article>
+        {studio?.aside}
       </div>
     </div>
   );
