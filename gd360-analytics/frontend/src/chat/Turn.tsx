@@ -9,6 +9,7 @@ import { DataAnswer } from "./DataAnswer";
 import { GuidedSteps } from "./GuidedSteps";
 import { docsApi } from "../api/docs";
 import "../doc/doc.css";
+import { BrandMark } from "../components/Brand";
 
 function useElapsed(turn: TurnT): number {
   const working = turn.status === "working";
@@ -372,6 +373,7 @@ export function TurnView({
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }} data-c2-turn={turn.kind} data-c2-status={turn.status} data-c2-turn-id={turn.id}>
       {turn.question && <div className="c2-u">{turn.question}</div>}
       <div className="c2-a">
+        <div className="c2-who" aria-hidden="true"><BrandMark size={22} radius={6} />GD360</div>
         {(turn.kind !== "chat") && (
           <button type="button" className={`c2-w ${open ? "open" : ""}`} onClick={() => setOpen((o) => !o)} data-c2-worked="">
             <svg className="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M9 18l6-6-6-6" /></svg>

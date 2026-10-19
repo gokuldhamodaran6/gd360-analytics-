@@ -1,4 +1,5 @@
 // 2026-10-14 (R46): the one box. Quick answer / Step by step / Auto, the data scope, dictation, send.
+// 2026-10-19 (R55, Studio mockup): the three-way switch became one "Deep" toggle (step by step on, Auto off).
 import { KeyboardEvent, ReactNode, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import type { Mode } from "../api/v2";
@@ -50,7 +51,12 @@ export function Composer({
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
         </Link>
         {scope || (sourcesLabel ? <span className="c2-nx sm ghost" style={{ cursor: "default" }}>{sourcesLabel}</span> : null)}
-        <ModeSwitch mode={mode} onMode={onMode} disabled={busy} />
+        <button type="button" className={`c2-deep${mode === "guided" ? " on" : ""}`} aria-pressed={mode === "guided"} disabled={busy} data-c2-mode={mode}
+          onClick={() => onMode(mode === "guided" ? "auto" : "guided")}
+          title="Deep analysis: every step shown and paused, so you can change a definition and it re-runs from there">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><circle cx="12" cy="12" r="2" /><ellipse cx="12" cy="12" rx="10" ry="4" /><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(60 12 12)" /><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(120 12 12)" /></svg>
+          Deep
+        </button>
         <span style={{ flex: 1 }} />
         {dict.supported && <MicButton listening={dict.listening} onClick={dict.toggle} size="sm" />}
         <button type="button" className="c2-send" onClick={onSubmit} disabled={!value.trim() || busy} aria-label="Send" data-c2-send="">
