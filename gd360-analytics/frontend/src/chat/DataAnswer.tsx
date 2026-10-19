@@ -35,10 +35,18 @@ export function DataAnswer({ run, onAsk, chips, compact = false }: { run: Projec
   const causes = ans.causes || [];
   if (compact) {
     // R56 (Studio): the steps, charts and tables are on the canvas; the thread keeps the finding in words
+    // R57: the main points stay in the thread as a short numbered list, each with its number
     return (
       <div className="c2-a" data-c2-answer="" data-c2-compact="">
         {ans.headline && <h2 className="lead" data-c2-headline="">{ans.headline}</h2>}
         {ans.answer && ans.answer !== ans.headline && <p className="prose">{ans.answer}</p>}
+        {causes.length > 0 && (
+          <ol className="c2-pts" data-c2-points="">
+            {causes.slice(0, 4).map((c, i) => (
+              <li key={i}><em>{i + 1}</em><span><b>{c.title}</b>{c.amount ? <span className="c2-mono"> {c.amount}{c.share ? ` · ${c.share}` : ""}</span> : null}{c.detail ? ` — ${c.detail}` : ""}</span></li>
+            ))}
+          </ol>
+        )}
         {chips}
       </div>
     );

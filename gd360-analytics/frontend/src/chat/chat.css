@@ -486,3 +486,45 @@
   .hm-today .row.need i { width: 8px; height: 8px; border-radius: 4px; background: rgb(var(--color-danger)); flex: 0 0 auto; }
   .hm-today .none { margin: 0; font-size: 14px; color: rgb(var(--color-muted)); }
 }
+
+/* R57 ("ask flow fixes"): Quick answer / Guided analysis - a plain two-way switch in every box */
+.c2-seg { display: inline-flex; gap: 2px; padding: 3px; border-radius: 12px; background: rgb(var(--color-surface2, var(--c2-panel))); border: 1px solid rgb(var(--color-border)); flex: 0 0 auto; }
+.c2-seg button { height: 26px; padding: 0 11px; border: 0; border-radius: 9px; background: transparent; font: inherit; font-size: 13px; color: rgb(var(--color-muted)); cursor: pointer; white-space: nowrap; }
+.c2-seg button.on { background: rgb(var(--color-surface)); color: rgb(var(--color-text)); font-weight: 500; box-shadow: 0 1px 2px rgb(0 0 0 / .12); }
+.c2-seg button:disabled { cursor: default; opacity: .7; }
+.c2-seg button:focus-visible { outline: 2px solid rgb(var(--color-primary)); outline-offset: 1px; }
+.hm-how { margin: -10px 0 0; text-align: center; font-size: 13px; line-height: 1.55; color: rgb(var(--color-muted)); text-wrap: balance; }
+.hm-how b { font-weight: 500; color: rgb(var(--color-secondary)); }
+.c2-comp.compact { flex-direction: column; align-items: stretch; gap: 6px; padding: 8px 8px 8px 12px; border-radius: 18px; }
+.c2-comp.compact textarea { padding: 6px 2px; }
+.c2-comp.compact .bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.c2-comp.compact .bar .sc-chip, .c2-comp.compact .bar > button:first-child { max-width: 190px; }
+@media (max-width: 760px) { .hm-how { display: none; } }
+/* R57: the report's length, the steps a detailed report adds, the answer's points in the thread */
+.c2-lenwrap { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.c2-lenlab { font-size: 13px; color: rgb(var(--color-muted)); }
+.c2-lenwrap .c2-seg button { height: 28px; }
+.c2-rsteps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.c2-rsteps li { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; align-items: start; font-size: 14px; }
+.c2-rsteps li em { font-style: normal; width: 24px; height: 24px; border-radius: 12px; border: 1.5px solid rgb(var(--color-border-strong)); display: grid; place-items: center; font-size: 11.5px; font-family: "Geist Mono", ui-monospace, monospace; color: rgb(var(--color-muted)); }
+.c2-rsteps li b { font-weight: 500; display: block; }
+.c2-rsteps li small { display: block; font-size: 12.5px; color: rgb(var(--color-muted)); margin-top: 2px; }
+.c2-btn.pri { background: rgb(var(--color-primary)); color: rgb(var(--color-on-primary)); border-color: transparent; }
+.c2-pts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.c2-pts li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; font-size: 14.5px; line-height: 1.55; color: rgb(var(--color-secondary)); }
+.c2-pts li em { font-style: normal; width: 20px; height: 20px; border-radius: 10px; background: rgb(var(--color-surface2, var(--c2-panel))); font-size: 11px; display: grid; place-items: center; font-family: "Geist Mono", ui-monospace, monospace; color: rgb(var(--color-muted)); margin-top: 2px; }
+.c2-pts li b { font-weight: 600; color: rgb(var(--color-text)); }
+.c2-lenwrap .c2-seg { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.c2-lenwrap .c2-seg button { white-space: nowrap; flex: 0 0 auto; }
+
+/* R57 phones: the Home box keeps one tidy row (+, data, Quick | Guided, mic, send), and a canvas that opens for a
+   question (the steps to check, a report being written) takes the whole screen above the tab bar - X goes back */
+@media (max-width: 760px) {
+  .c2-seg-x { display: none; }
+  .hm-cmp .c2-seg-x { display: inline; }
+  .hm-cmp .bar { flex-wrap: wrap; gap: 8px 6px; }
+  .hm-cmp .bar > * { flex-shrink: 0; }
+  .hm-cmp .bar > .relative { flex-shrink: 1; min-width: 0; }
+  .hm-cmp .bar > .c2-seg { order: 10; flex: 1 1 100%; display: grid; grid-template-columns: 1fr 1fr; }
+  .hm-cmp .bar > .c2-seg button { height: 30px; }
+}

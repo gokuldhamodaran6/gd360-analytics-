@@ -2,7 +2,7 @@
 // the trust chips (only what was verified), sources, the picture, artifact cards, confirm cards.
 import { useEffect, useState } from "react";
 import type { ProjectRun } from "../api/projects";
-import { downloadTurnList, type Artifact, type Chip, type TeamConfirm, type Turn as TurnT } from "../api/v2";
+import { downloadTurnList, type Artifact, type Chip, type ReportLength, type ReportStepsConfirm, type TeamConfirm, type Turn as TurnT } from "../api/v2";
 import { FollowupCheck } from "../components/QuestionCheck";
 import { layoutSql } from "../project/RunPanels";
 import { DataAnswer } from "./DataAnswer";
@@ -11,8 +11,8 @@ import { docsApi } from "../api/docs";
 import "../doc/doc.css";
 import { BrandMark } from "../components/Brand";
 
-function useElapsed(turn: TurnT): number {
-  const working = turn.status === "working";
+function useElapsed(turn: TurnT, live?: boolean): number {
+  const working = turn.status === "working" || !!live;
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (!working) return;
@@ -20,7 +20,9 @@ function useElapsed(turn: TurnT): number {
     return () => clearInterval(id);
   }, [working]);
   if (turn.elapsed_s != null && !working) return Math.max(0, Math.round(turn.elapsed_s));
-  const start = new Date(turn.created_at).getTime();
+  // R57: the server writes UTC without a zone - read as local time it started hours ahead and the timer sat at 0 s
+  const iso = String(turn.created_at || "");
+  const start = new Date(/Z$|[+-]\d\d:?\d\d$/.test(iso) ? iso : `${iso}Z`).getTime();
   if (!working && turn.finished_at) {
     const end = new Date(turn.finished_at.endsWith("Z") ? turn.finished_at : `${turn.finished_at}Z`).getTime();
     const begin = new Date(turn.created_at.endsWith("Z") || /[+-]\d\d:?\d\d$/.test(turn.created_at) ? turn.created_at : `${turn.created_at}Z`).getTime();
@@ -173,6 +175,85 @@ export function DocCard({ a, turn, onOpen, onAsk }: { a: Artifact; turn: TurnT; 
   );
 }
 
+/** R57: the steps a detailed report needs - added and run only after "Add them and write". */
+function ReportStepsCard({ c, busy, onDecide }: { c: ReportStepsConfirm; busy: boolean; onDecide: (approve: boolean) => void }) {
+  return (
+    <div className="c2-act" data-c2-confirm="report_steps">
+      <div className="h"><span className="ic">{ACT_ICON.chart}</span><span style={{ minWidth: 0 }}>{c.steps.length} step{c.steps.length === 1 ? "" : "s"} to add</span><span className="t">Not run yet</span></div>
+      <ol className="c2-rsteps" data-c2-report-steps="">
+        {c.steps.map((x, i) => (
+          <li key={i}><em>{c.have + i + 1}</em><span><b>{x.instruction.replace(/^./, (ch) => ch.toUpperCase())}</b>{x.why ? <small>{x.why}</small> : null}</span></li>
+        ))}
+      </ol>
+      <div className="row">
+        <button type="button" className="c2-btn pri" disabled={busy} onClick={() => onDecide(true)} data-c2-report-add="">Add them and write</button>
+        <button type="button" className="c2-btn" disabled={busy} onClick={() => onDecide(false)} data-c2-report-skip="">Write without them</button>
+      </div>
+    </div>
+  );
+}
+
+const LENGTHS: { k: ReportLength; l: string; d: string }[] = [
+  { k: "brief", l: "Brief", d: "1 page" }, { k: "standard", l: "Standard", d: "3–4" }, { k: "detailed", l: "Detailed", d: "8–12" },
+];
+
+/** R57: how long a report is - Brief, Standard or Detailed. Picking another writes it again at that length. */
+export function LengthSeg({ value, onPick, disabled }: { value: ReportLength; onPick: (l: ReportLength) => void; disabled?: boolean }) {
+  return (
+    <div className="c2-lenwrap" data-c2-length={value}>
+      <span className="c2-lenlab">How long should it be?</span>
+      <span className="c2-seg" role="radiogroup" aria-label="Report length">
+        {LENGTHS.map((o) => (
+          <button key={o.k} type="button" role="radio" aria-checked={value === o.k} className={value === o.k ? "on" : ""} disabled={disabled || value === o.k}
+            onClick={() => onPick(o.k)} data-c2-length-opt={o.k} title={`${o.l}: ${o.d}${o.k === "brief" ? "" : " pages"}`}>{o.l} · {o.d}</button>
+        ))}
+      </span>
+    </div>
+  );
+}
+
+/** R57: a Guided analysis in the thread - where the steps are, in words; the numbers are on the canvas. */
+function guidedLine(run: ProjectRun | null | undefined, turn: TurnT): { text: string; live: boolean } {
+  const steps = (run?.steps || []).filter((s) => s.status !== "skipped");
+  const n = steps.length;
+  if (!run || run.status === "planning") return { text: "Planning the steps", live: true };
+  const running = steps.findIndex((s) => s.status === "running");
+  if (running >= 0) return { text: `Running step ${running + 1} of ${n}`, live: true };
+  if (run.status === "running" || run.busy) return { text: "Writing the answer from the steps", live: true };
+  if (run.status === "done") {
+    const ok = steps.filter((s) => s.approved).length;
+    return { text: `${n} step${n === 1 ? "" : "s"} · ${ok === n ? "all checked by you" : ok ? `${ok} checked by you` : "done"}`, live: false };
+  }
+  const ready = steps.findIndex((s) => s.status === "done" && !s.approved);
+  if (ready >= 0) return { text: `Step ${ready + 1} of ${n} ready · waiting for you`, live: false };
+  void turn;
+  return { text: `${steps.filter((s) => s.status === "done").length} of ${n} steps done · waiting for you`, live: false };
+}
+
+function GuidedProse({ run, sources, onOpen }: { run: ProjectRun | null | undefined; sources: string[]; onOpen?: () => void }) {
+  const steps = (run?.steps || []).filter((s) => s.status !== "skipped");
+  const src = sources.length ? sources.slice(0, 2).join(" and ") : "your data";
+  if (!run || run.status === "planning") {
+    return <p className="prose" data-c2-guided-text="planning">I'm planning the steps on <b>{src}</b>. Step 1 runs as soon as the plan is ready. You check its numbers before I go on.</p>;
+  }
+  if (run.status === "done" || run.status === "failed") return null;
+  const running = steps.findIndex((s) => s.status === "running");
+  if (running >= 0) return <p className="prose" data-c2-guided-text="running">Running step {running + 1}: {steps[running].title}…</p>;
+  const ready = steps.findIndex((s) => s.status === "done" && !s.approved);
+  const left = steps.filter((s) => s.status !== "done").length;
+  if (ready < 0) return null;
+  const s = steps[ready];
+  return (
+    <>
+      <p className="prose" data-c2-guided-text="ready">
+        Step {ready + 1} is done: <b>{s.title}</b>{s.rows_returned != null ? ` (${s.rows_returned.toLocaleString()} row${s.rows_returned === 1 ? "" : "s"})` : ""}.
+        {" "}Check its numbers on the right. {left === 1 ? "If they look right, I'll run the last step." : left ? `If they look right, I'll run the other ${left} steps.` : "If they look right, I'll write the answer."}
+      </p>
+      {onOpen && <div className="c2-next"><button type="button" className="c2-nx sm" onClick={onOpen} data-c2-open-steps="">Open the steps</button></div>}
+    </>
+  );
+}
+
 /** R50 (board 06): an alert or a schedule, exactly as it will run - nothing runs before Confirm. */
 // 2026-10-17 (R52): "the 135 high-risk customers as a list" - a table of the tier with the signals each row trips,
 // Excel and CSV of every row. Nothing is recomputed; the rows were scored when the analysis ran.
@@ -253,6 +334,7 @@ export function ConfirmCard({ turn, busy, onDecide, onRevise }: { turn: TurnT; b
   const [line, setLine] = useState<string>(() => (c && c.kind === "automation" && c.threshold?.value != null ? String(c.threshold.value) : ""));
   if (!c) return null;
   if (c.kind === "team") return <TeamCard c={c} turn={turn} busy={busy} onDecide={onDecide} />;
+  if (c.kind === "report_steps") return <ReportStepsCard c={c} busy={busy} onDecide={onDecide} />;
   const s = c.sentence || ({} as any);
   const body = c.body || {};
   const trig = body.trigger || {};
@@ -357,6 +439,7 @@ export function BuiltCard({ turn, onOpen }: { turn: TurnT; onOpen: () => void })
 
 /** R56 (Studio): what the turn did, in one line - "Built 4 steps from Sales · 14 s". */
 function workedLine(turn: TurnT, run: ProjectRun | null | undefined): string | null {
+  if (turn.kind === "data" && turn.guided) return null;
   if (turn.kind === "data" && run?.status === "done") {
     const steps = (run.steps || []).length;
     const srcs = Array.from(new Set((run.steps || []).filter((s) => s.kind !== "combine").map((s) => s.source_name).filter(Boolean))) as string[];
@@ -376,7 +459,7 @@ function workedLine(turn: TurnT, run: ProjectRun | null | undefined): string | n
 }
 
 export function TurnView({
-  turn, run, conversationId, onAsk, onOpenArtifact, onOpenMethod, onConfirm, onPickCheck, onRunChanged, onMakeDashboard, busy, onRevise, onCanvas = false, onOpenSteps,
+  turn, run, conversationId, onAsk, onOpenArtifact, onOpenMethod, onConfirm, onPickCheck, onRunChanged, onMakeDashboard, busy, onRevise, onCanvas = false, onOpenSteps, onLength,
 }: {
   turn: TurnT; run?: ProjectRun | null; conversationId: string; onAsk: (q: string) => void;
   onOpenArtifact: (a: Artifact, t: TurnT) => void; onOpenMethod: (t: TurnT) => void; onConfirm: (t: TurnT, approve: boolean) => void;
@@ -384,10 +467,14 @@ export function TurnView({
   onRevise?: (t: TurnT, edits: Record<string, unknown>) => Promise<void> | void;
   /** R56: this turn's steps are open on the canvas - the thread keeps the prose only */
   onCanvas?: boolean; onOpenSteps?: (t: TurnT) => void;
+  /** R57: write this report again at another length */
+  onLength?: (t: TurnT, length: ReportLength) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const secs = useElapsed(turn);
-  const working = turn.status === "working";
+  const guided = turn.kind === "data" && !!turn.guided;
+  const g = guided ? guidedLine(run, turn) : null;
+  const secs = useElapsed(turn, !!g?.live && turn.status !== "done");
+  const working = turn.status === "working" || !!g?.live;
   const isData = turn.kind === "data";
   const showRun = isData && run;
   const canDash = isData && run?.status === "done" && (run.result?.visuals || []).length > 0 && !(turn.placements || []).length;
@@ -404,16 +491,22 @@ export function TurnView({
               : turn.status === "failed" ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
               : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>}
             <span className="lb">
-              {working ? `Working · ${secs} s` : line ? line : secs < 1 ? "Worked for under a second" : `Worked for ${secs} second${secs === 1 ? "" : "s"}`}
+              {g ? g.text : working && turn.kind === "document" && turn.report?.current ? turn.report.current
+                : working ? `Working · ${secs} s` : line ? line : secs < 1 ? "Worked for under a second" : `Worked for ${secs} second${secs === 1 ? "" : "s"}`}
               {turn.budget_s && secs > turn.budget_s && !turn.timed_out && (
                 <span className="c2-over" data-c2-over="">{working ? ` · longer than usual (under ${turn.budget_s} s is the aim)` : ` · over the ${turn.budget_s} s target`}</span>
               )}
               {turn.mode === "analyst" && !working ? " · the Analyst" : ""}
             </span>
-            {!working && line && <em>{secs < 1 ? "under a second" : `${secs} second${secs === 1 ? "" : "s"}`}</em>}
+            {((!working && line) || g?.live || (working && turn.kind === "document" && turn.report?.current)) && <em>{secs < 1 ? "under a second" : secs < 90 ? `${secs} s` : `${Math.floor(secs / 60)} min ${secs % 60} s`}</em>}
           </button>
         )}
         <Trail turn={turn} open={open} />
+        {guided && run?.status !== "done" && <GuidedProse run={run} sources={Array.from(new Set((run?.steps || []).filter((x) => x.kind !== "combine").map((x) => x.source_name).filter(Boolean))) as string[]}
+          onOpen={!onCanvas && onOpenSteps ? () => onOpenSteps(turn) : undefined} />}
+        {turn.kind === "document" && turn.length && onLength && turn.status !== "failed" && (
+          <LengthSeg value={turn.length} onPick={(l) => onLength(turn, l)} disabled={busy || working || turn.status === "confirm"} />
+        )}
         {turn.status === "failed" && <div className="c2-err" data-c2-error="">{turn.error || "That didn't work. Ask it again."}</div>}
         {turn.kind === "check" && turn.check && turn.status === "needs_input" && (
           <FollowupCheck check={turn.check} busy={busy} onClose={() => undefined} onPick={onPickCheck} />

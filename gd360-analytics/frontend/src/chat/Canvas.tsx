@@ -224,6 +224,12 @@ export function CanvasRouter({ item, frame, version = 0, runs, conversationId, b
     const run = item.turn.run_id ? runs[item.turn.run_id] : null;
     if (run) return <AnalysisStudio key={item.turn.id} turn={item.turn} run={run} frame={frame} onAsk={onAsk} onPrefill={onPrefill} onRunChanged={onRunChanged}
       onTurnRefresh={() => onTurnRefresh(item.turn.id)} onMakeDashboard={() => onMakeDashboard(item.turn)} />;
+    // R57: a Guided analysis opens before its run has loaded - the frame, already saying what is happening
+    return (
+      <StudioFrame kind="analysis-steps" tabs={frame.tabs} addMenu={frame.addMenu} onClose={frame.onClose} status="Planning the steps…">
+        <div className="sd-nb"><span className="c2-working"><span className="c2-spin" /> Planning the steps…</span></div>
+      </StudioFrame>
+    );
   }
   if (item.type === "analysis" && item.turn.analysis) return <OutcomeStudio key={item.turn.id} turn={item.turn} frame={frame} onAsk={onAsk} onPrefill={onPrefill} onOpenMethod={() => onOpenMethod(item.turn)} />;
   if (item.type === "board") return <DashboardStudio key={item.id} id={item.id} name={item.name} frame={frame} version={version} onAsk={onAsk} onPrefill={onPrefill} conversationId={conversationId} busy={busy} />;

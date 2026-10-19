@@ -2,10 +2,14 @@
 // 2026-10-19 (R56, the Studio): talk left, work right. With the canvas open the thread is a 400 px column with its
 // own header (title ▾, new) and suggestion pills above a one-line composer; the canvas carries one tab for every
 // piece of work in the conversation - each answer's steps, dashboards, documents and models.
+// 2026-10-19 (R57, "ask flow fixes" boards 3-7): a Guided analysis opens its steps on the canvas the moment it is
+// asked (the plan fills in live, each step waits for "Looks right"); a quick answer with numbers opens beside the
+// chat too; a report opens while it is being written; the follow-up box has its own source picker.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { projectsApi, type ProjectRun } from "../api/projects";
-import { v2Api, type Conversation as ConvT, type Mode, type Turn as TurnT } from "../api/v2";
+import { v2Api, type Conversation as ConvT, type Mode, type ReportLength, type Turn as TurnT } from "../api/v2";
+import ScopePicker, { type Scope } from "../spaces/ScopePicker";
 import { AskContext } from "../project/WaysForward";
 import { CanvasRouter, canvasFromArtifact, canvasKey, type CanvasItem } from "./Canvas";
 import { Composer } from "./Composer";
@@ -23,9 +27,20 @@ function liveRun(r: ProjectRun | undefined | null): boolean {
   return !!r && !["done", "failed", "stopped", "needs_input", "replaced"].includes(r.status);
 }
 
-/** A data answer opens as steps on the canvas once it has something to show beside the prose. */
+const onPhone = () => typeof window !== "undefined" && !!window.matchMedia?.("(max-width: 760px)").matches;
+
+/** R57: a Guided analysis waiting for the person's OK - nothing to follow until they act on the canvas */
+function waiting(r: ProjectRun | undefined | null): boolean {
+  return !!r && !!r.guided && r.status === "planned" && !r.busy && !(r.steps || []).some((s) => s.status === "running");
+}
+
+/** A data answer opens as steps on the canvas once it has something to show beside the prose.
+ * R57: any answer with numbers (a chart, a table or a key number), and a Guided analysis from its first second. */
 function stepsWorthy(r: ProjectRun | null | undefined): boolean {
-  return !!r && r.status === "done" && !!r.result && ((r.steps || []).length > 0) && ((r.result.visuals || []).length > 0 || (r.steps || []).length > 1 || (r.result.evidence || []).length > 0);
+  if (!r) return false;
+  if (r.guided && !["failed", "stopped", "needs_input"].includes(r.status)) return true;
+  const res = r.result as any;
+  return r.status === "done" && !!res && ((r.steps || []).length > 0) && ((res.visuals || []).length > 0 || (r.steps || []).length > 1 || (res.evidence || []).length > 0 || (res.kpis || []).length > 0);
 }
 
 const short = (s: string, n = 30) => { const t = (s || "").replace(/\?$/, "").trim(); return t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t; };
@@ -42,7 +57,7 @@ export default function ConversationPage() {
 function ConversationBody({ conversationId }: { conversationId: string }) {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
-  const { reload: reloadHome } = useHome();
+  const { reload: reloadHome, home } = useHome();
   const [conv, setConv] = useState<ConvT | null>(null);
   const [runs, setRuns] = useState<Record<string, ProjectRun>>({});
   const [canvas, setCanvas] = useState<CanvasItem | null>(null);
@@ -55,6 +70,9 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
   const openedRef = useRef<Set<string>>(new Set());
   const endRef = useRef<HTMLDivElement>(null);
   const kept = useRef<string[]>([]);
+  // R57: the follow-up box's own source picker - starts on the thread's sources; a change goes with the next question
+  const [scope, setScope] = useState<Scope | null>(null);
+  const [scopeChanged, setScopeChanged] = useState(false);
 
   const turns = conv?.turns || [];
   const setTurn = useCallback((t: TurnT) => setConv((c) => (c ? { ...c, turns: c.turns.some((x) => x.id === t.id) ? c.turns.map((x) => (x.id === t.id ? t : x)) : [...c.turns, t] } : c)), []);
@@ -68,6 +86,7 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
     try {
       const c = await v2Api.get(conversationId);
       setConv(c);
+      setScope((cur) => cur || (c.space_id ? { kind: "space", spaceId: c.space_id } : (c.source_ids || []).length ? { kind: "sources", ids: c.source_ids } : { kind: "all" }));
       await Promise.all(c.turns.filter((t) => t.run_id).map((t) => loadRun(t.run_id!)));
     } catch (e: any) {
       setLoadErr(e?.response?.status === 404 ? "This conversation isn't here, or isn't shared with you." : "Couldn't open this conversation.");
@@ -77,14 +96,14 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
 
   // polling: message turns still working, runs still running
   useEffect(() => {
-    const pending = turns.filter((t) => t.status === "working" || (t.run_id && liveRun(runs[t.run_id]) && !(t.kind === "guided" && runs[t.run_id]?.status === "planned")) || (t.run_id && !runs[t.run_id]));
+    const pending = turns.filter((t) => t.status === "working" || (t.run_id && liveRun(runs[t.run_id]) && !(t.kind === "guided" && runs[t.run_id]?.status === "planned") && !waiting(runs[t.run_id])) || (t.run_id && !runs[t.run_id]));
     if (!pending.length) return;
     const id = setInterval(async () => {
       for (const t of pending) {
         if (t.run_id) {
           const r = await loadRun(t.run_id);
           // a guided analysis rests at "planned" between steps: its turn is re-read then too
-          if (r && (!liveRun(r) || (t.kind === "guided" && r.status === "planned"))) {
+          if (r && (!liveRun(r) || (t.kind === "guided" && r.status === "planned") || waiting(r))) {
             try { setTurn(await v2Api.turn(conversationId, t.id)); } catch { /* next tick */ }
             if (t.kind === "data" && r.status === "done") void reloadHome();
           }
@@ -106,7 +125,19 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
   // a finished dashboard, document, model or analysis opens on the canvas by itself, once; an edit refreshes the open one
   useEffect(() => {
     for (const t of turns) {
-      if (t.status !== "done" || openedRef.current.has(t.id)) continue;
+      if (openedRef.current.has(t.id)) continue;
+      // R57: a Guided analysis opens its steps at once; a report opens while it is being written
+      if (t.kind === "data" && t.guided && t.run_id && t === turns[turns.length - 1]) {
+        openedRef.current.add(t.id);
+        setCanvas({ type: "steps", turn: t });
+        continue;
+      }
+      if (t.kind === "document" && t.status === "working" && t === turns[turns.length - 1]) {
+        const a = (t.artifacts || []).find((x) => x.type === "document" && x.doc_id);
+        if (a) { const item = canvasFromArtifact(a, t, conversationId); if (item) { setCanvas(item); setCanvasVersion((v) => v + 1); } }
+        continue;
+      }
+      if (t.status !== "done") continue;
       const a = (t.artifacts || []).find((x) => x.type === "dashboard" || x.type === "document" || x.type === "analysis" || x.type === "model");
       if (a) {
         openedRef.current.add(t.id);
@@ -116,13 +147,14 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
           setCanvas((cur) => (cur && (cur.type === "dashboard" || cur.type === "board") && cur.id === a.id ? { ...cur, name: a.name || cur.name }
             : cur && cur.type === "doc" && cur.id === a.doc_id ? { ...cur, title: a.title || cur.title } : item));
           setCanvasVersion((v) => v + 1);
-        } else if (t === turns[turns.length - 1]) setCanvas(item);
+        } else if (t === turns[turns.length - 1] && !onPhone()) setCanvas(item);
         continue;
       }
-      // R56: an answer with steps opens as the Analysis canvas
+      // R56: an answer with steps opens as the Analysis canvas (R57: on a phone the answer stays in front - the
+      // canvas is a full screen there, opened by "Open the steps"; a Guided analysis still opens it, it needs your OK)
       if (t.kind === "data" && t.run_id && stepsWorthy(runs[t.run_id])) {
         openedRef.current.add(t.id);
-        if (t === turns[turns.length - 1]) setCanvas({ type: "steps", turn: t });
+        if (t === turns[turns.length - 1] && !onPhone()) setCanvas({ type: "steps", turn: t });
       }
     }
   }, [turns, runs, conversationId]);
@@ -135,20 +167,22 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
     return () => window.clearTimeout(id);
   }, [turns.length, busy, !!canvas, turns[turns.length - 1]?.status]);
 
-  const send = useCallback(async (q: string, extra: { accepted?: string[]; intent?: string | null } = {}) => {
+  const send = useCallback(async (q: string, extra: { accepted?: string[]; intent?: string | null; length?: ReportLength | null } = {}) => {
     const message = q.trim();
     if (!message || busy) return;
     setBusy(true); setError(null);
     try {
-      const t = await v2Api.send(conversationId, { message, mode, accepted: extra.accepted || kept.current, intent: extra.intent || null });
+      const pick = scopeChanged && scope ? { source_ids: scope.kind === "sources" ? scope.ids : scope.kind === "all" ? [] : null, space_id: scope.kind === "space" ? scope.spaceId : null } : {};
+      const t = await v2Api.send(conversationId, { message, mode, accepted: extra.accepted || kept.current, intent: extra.intent || null, length: extra.length || null, ...pick });
       kept.current = [];
+      if (scopeChanged) { setScopeChanged(false); void v2Api.get(conversationId).then((c) => setConv((cur) => (cur ? { ...cur, source_ids: c.source_ids, sources: c.sources, space_id: c.space_id, space_name: c.space_name } : cur))).catch(() => undefined); }
       setTurn(t);
       setText("");
       if (t.run_id) void loadRun(t.run_id);
     } catch (e: any) {
       setError(e?.response?.data?.detail || e?.message || "That didn't send. Try again.");
     } finally { setBusy(false); }
-  }, [busy, conversationId, mode, setTurn, loadRun]);
+  }, [busy, conversationId, mode, setTurn, loadRun, scope, scopeChanged]);
 
   const prefill = useCallback((q: string) => {
     setText(q);
@@ -195,11 +229,12 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
       seen.add(k); out.push({ item, icon, label, badge });
     };
     for (const t of turns) {
-      if (t.status !== "done") continue;
+      if (t.status !== "done" && !(t.kind === "data" && t.guided) && !(t.kind === "document" && (t.artifacts || []).some((a) => a.doc_id))) continue;
       if (t.kind === "data" && t.run_id && stepsWorthy(runs[t.run_id])) {
         const r = runs[t.run_id]!;
         const n = (r.steps || []).length + ((r.result?.visuals || []).filter((v) => v.type !== "kpis").length) + (r.result?.answer ? 1 : 0);
-        push({ type: "steps", turn: t }, "trend", short(t.question), `${n} step${n === 1 ? "" : "s"}`);
+        const g = r.guided && r.status !== "done";
+        push({ type: "steps", turn: t }, "trend", short(t.question), g ? (r.status === "planning" ? "planning" : `${(r.steps || []).filter((x) => x.status === "done").length} of ${(r.steps || []).length}`) : `${n} step${n === 1 ? "" : "s"}`);
       }
       for (const a of t.artifacts || []) {
         const it = canvasFromArtifact(a, t, conversationId);
@@ -246,8 +281,8 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
       sugg.push({ label: "Write it up as a doc", icon: "doc", go: () => void send("Write this up as a document") });
       sugg.push({ label: "Undo the last change", icon: "undo", go: () => void send("undo") });
     } else if (last.kind === "document" || last.kind === "document_edit") {
-      sugg.push({ label: "Make it shorter", icon: "text", go: () => void send("make the document shorter") });
       sugg.push({ label: "Add a risks section", icon: "plus", go: () => prefill("Add a section on the risks: ") });
+      sugg.push({ label: "Make a dashboard of it", icon: "grid", go: () => void send("Make a dashboard from this") });
     } else if (last.kind === "model") {
       sugg.push({ label: "Who is most likely?", icon: "users", go: () => void send("Who is most at risk? Show the list") });
       sugg.push({ label: "Re-check it every Monday", icon: "cal", go: () => void send("Re-train this model every Monday at 6am") });
@@ -307,6 +342,7 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
                     onOpenArtifact={(a, tt) => { const item = canvasFromArtifact(a, tt, conversationId); if (item) setCanvas(item); }}
                     onOpenMethod={(tt) => setCanvas(tt.kind === "data" && tt.run_id && stepsWorthy(runs[tt.run_id]) ? { type: "steps", turn: tt } : { type: "method", turn: tt })}
                     onOpenSteps={(tt) => setCanvas({ type: "steps", turn: tt })}
+                    onLength={(tt, len) => void send(`Write it as a ${len} report`, { intent: "document", length: len })}
                     onConfirm={onConfirm}
                     onPickCheck={(q, k) => { if (k) kept.current = [...kept.current, k]; void send(q); }}
                     onRunChanged={setRun}
@@ -324,7 +360,11 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
                   </div>
                 )}
                 <Composer value={text} onChange={setText} onSubmit={() => void send(text)} mode={mode} onMode={onMode} busy={busy} compact={studio}
-                  placeholder={studio ? "Ask, or tell GD360 what to change" : turns.length ? "Ask a follow-up, or say what to make…" : "Ask anything…"} sourcesLabel={sourcesLabel} autoFocus />
+                  placeholder={studio ? "Ask a follow-up, or say what to make…" : turns.length ? "Ask a follow-up, or say what to make…" : "Ask anything…"} sourcesLabel={sourcesLabel} autoFocus
+                  scope={scope && (home?.sources || []).length ? (
+                    <ScopePicker scope={scope} onChange={(sc) => { setScope(sc); setScopeChanged(true); }} sources={(home?.sources || []) as any} spaces={home?.spaces || []}
+                      variant="compact" placement="above" disabled={busy} />
+                  ) : undefined} />
               </div>
             </div>
           </div>

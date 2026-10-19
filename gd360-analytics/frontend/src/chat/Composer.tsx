@@ -1,5 +1,6 @@
 // 2026-10-14 (R46): the one box. Quick answer / Step by step / Auto, the data scope, dictation, send.
 // 2026-10-19 (R55, Studio mockup): the three-way switch became one "Deep" toggle (step by step on, Auto off).
+// 2026-10-19 (R57): "Deep" was unclear - a two-way switch, Quick answer / Guided analysis, here and on Home.
 import { KeyboardEvent, ReactNode, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import type { Mode } from "../api/v2";
@@ -18,6 +19,20 @@ export function ModeSwitch({ mode, onMode, disabled }: { mode: Mode; onMode: (m:
           {o.l}
         </button>
       ))}
+    </span>
+  );
+}
+
+/** R57 ("ask flow fixes" board 1): how GD360 answers, as a plain two-way switch - Quick answer or Guided analysis
+ * ("auto" is the quick side: a lookup answers straight away, a bigger question still gets its steps). */
+export function ModeSeg({ mode, onMode, disabled, short = false }: { mode: Mode; onMode: (m: Mode) => void; disabled?: boolean; short?: boolean }) {
+  const guided = mode === "guided";
+  return (
+    <span className="c2-seg" role="radiogroup" aria-label="How to answer" data-c2-mode-seg={guided ? "guided" : "quick"}>
+      <button type="button" role="radio" aria-checked={!guided} className={!guided ? "on" : ""} disabled={disabled} onClick={() => onMode("auto")} data-c2-mode-opt="quick"
+        title="The number, a chart and the reason in about 20 seconds">{short ? "Quick" : <>Quick<span className="c2-seg-x"> answer</span></>}</button>
+      <button type="button" role="radio" aria-checked={guided} className={guided ? "on" : ""} disabled={disabled} onClick={() => onMode("guided")} data-c2-mode-opt="guided"
+        title="GD360 plans the steps, shows each step's numbers and waits for your OK before going on">{short ? "Guided" : <>Guided<span className="c2-seg-x"> analysis</span></>}</button>
     </span>
   );
 }
@@ -49,15 +64,18 @@ export function Composer({
     </button>
   );
   if (compact) {
+    // R57: the studio's follow-up box - the text, then its own source picker and the Quick / Guided switch
     return (
       <div className="c2-comp compact" data-c2-composer="" data-c2-mode={mode}>
         {context}
-        <Link to="/data" className="c2-cplus" title="Attach a file or connect data" aria-label="Add data">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-        </Link>
         <label htmlFor="c2-ask" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Message</label>
         <textarea id="c2-ask" ref={ref} rows={1} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} onKeyDown={key} />
-        {sendBtn}
+        <div className="bar">
+          {scope || (sourcesLabel ? <span className="c2-nx sm ghost" style={{ cursor: "default" }}>{sourcesLabel}</span> : null)}
+          <ModeSeg mode={mode} onMode={onMode} disabled={busy} short />
+          <span style={{ flex: 1 }} />
+          {sendBtn}
+        </div>
       </div>
     );
   }
@@ -72,12 +90,7 @@ export function Composer({
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
         </Link>
         {scope || (sourcesLabel ? <span className="c2-nx sm ghost" style={{ cursor: "default" }}>{sourcesLabel}</span> : null)}
-        <button type="button" className={`c2-deep${mode === "guided" ? " on" : ""}`} aria-pressed={mode === "guided"} disabled={busy} data-c2-mode={mode}
-          onClick={() => onMode(mode === "guided" ? "auto" : "guided")}
-          title="Deep analysis: every step shown and paused, so you can change a definition and it re-runs from there">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><circle cx="12" cy="12" r="2" /><ellipse cx="12" cy="12" rx="10" ry="4" /><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(60 12 12)" /><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(120 12 12)" /></svg>
-          Deep
-        </button>
+        <ModeSeg mode={mode} onMode={onMode} disabled={busy} />
         <span style={{ flex: 1 }} />
         {dict.supported && <MicButton listening={dict.listening} onClick={dict.toggle} size="sm" />}
         <button type="button" className="c2-send" onClick={onSubmit} disabled={!value.trim() || busy} aria-label="Send" data-c2-send="">
