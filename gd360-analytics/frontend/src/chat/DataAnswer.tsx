@@ -13,7 +13,7 @@ function leadVisual(visuals: Visual[]): Visual | null {
   return visuals.find((v) => v.type === "waterfall" || v.type === "forecast") || visuals.find((v) => v.type === "chart" && v.display !== "table") || visuals.find((v) => v.type === "chart") || null;
 }
 
-export function DataAnswer({ run, onAsk, chips }: { run: ProjectRun; onAsk?: (q: string) => void; chips?: ReactNode }) {
+export function DataAnswer({ run, onAsk, chips, compact = false }: { run: ProjectRun; onAsk?: (q: string) => void; chips?: ReactNode; compact?: boolean }) {
   const [more, setMore] = useState(false);
   if (run.status === "failed" || run.status === "stopped") {
     return <ErrorNote error={run.error} fallback="This question couldn't be answered. Please ask it again." className="rounded-card p-4" />;
@@ -33,6 +33,16 @@ export function DataAnswer({ run, onAsk, chips }: { run: ProjectRun; onAsk?: (q:
   const lead = leadVisual(visuals);
   const rest = visuals.filter((v) => v !== lead);
   const causes = ans.causes || [];
+  if (compact) {
+    // R56 (Studio): the steps, charts and tables are on the canvas; the thread keeps the finding in words
+    return (
+      <div className="c2-a" data-c2-answer="" data-c2-compact="">
+        {ans.headline && <h2 className="lead" data-c2-headline="">{ans.headline}</h2>}
+        {ans.answer && ans.answer !== ans.headline && <p className="prose">{ans.answer}</p>}
+        {chips}
+      </div>
+    );
+  }
   return (
     <div className="c2-a" data-c2-answer="">
       {ans.headline && <h2 className="lead" data-c2-headline="">{ans.headline}</h2>}

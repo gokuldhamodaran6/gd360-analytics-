@@ -355,13 +355,35 @@ export function BuiltCard({ turn, onOpen }: { turn: TurnT; onOpen: () => void })
   );
 }
 
+/** R56 (Studio): what the turn did, in one line - "Built 4 steps from Sales · 14 s". */
+function workedLine(turn: TurnT, run: ProjectRun | null | undefined): string | null {
+  if (turn.kind === "data" && run?.status === "done") {
+    const steps = (run.steps || []).length;
+    const srcs = Array.from(new Set((run.steps || []).filter((s) => s.kind !== "combine").map((s) => s.source_name).filter(Boolean))) as string[];
+    if (steps) return `Built ${steps} step${steps === 1 ? "" : "s"}${srcs.length ? ` from ${srcs.slice(0, 2).join(" and ")}${srcs.length > 2 ? ` +${srcs.length - 2}` : ""}` : ""}`;
+  }
+  if (turn.kind === "dashboard" && turn.built) return `Built ${turn.built.pages.length} page${turn.built.pages.length === 1 ? "" : "s"} · ${turn.built.name}`;
+  if (turn.kind === "document") {
+    const a = (turn.artifacts || []).find((x) => x.type === "document");
+    if (a) return `Drafted ${a.words ? `${a.words.toLocaleString()} words` : "the document"}${a.figures ? ` · ${a.figures} chart${a.figures === 1 ? "" : "s"}` : ""}`;
+  }
+  if (turn.kind === "model" && turn.model_summary) {
+    const m = turn.model_summary;
+    return `Trained${m.rows ? ` on ${Number(m.rows).toLocaleString()} rows` : ""}, tested on rows it never saw`;
+  }
+  if (turn.kind === "analysis" && turn.analysis) return `Read ${turn.analysis.table.rows_used.toLocaleString()} ${turn.analysis.table.entities || "rows"} from ${turn.analysis.table.source}`;
+  return null;
+}
+
 export function TurnView({
-  turn, run, conversationId, onAsk, onOpenArtifact, onOpenMethod, onConfirm, onPickCheck, onRunChanged, onMakeDashboard, busy, onRevise,
+  turn, run, conversationId, onAsk, onOpenArtifact, onOpenMethod, onConfirm, onPickCheck, onRunChanged, onMakeDashboard, busy, onRevise, onCanvas = false, onOpenSteps,
 }: {
   turn: TurnT; run?: ProjectRun | null; conversationId: string; onAsk: (q: string) => void;
   onOpenArtifact: (a: Artifact, t: TurnT) => void; onOpenMethod: (t: TurnT) => void; onConfirm: (t: TurnT, approve: boolean) => void;
   onPickCheck: (q: string, kept?: string) => void; onRunChanged: (r: ProjectRun) => void; onMakeDashboard: (t: TurnT) => void; busy: boolean;
   onRevise?: (t: TurnT, edits: Record<string, unknown>) => Promise<void> | void;
+  /** R56: this turn's steps are open on the canvas - the thread keeps the prose only */
+  onCanvas?: boolean; onOpenSteps?: (t: TurnT) => void;
 }) {
   const [open, setOpen] = useState(false);
   const secs = useElapsed(turn);
@@ -369,19 +391,26 @@ export function TurnView({
   const isData = turn.kind === "data";
   const showRun = isData && run;
   const canDash = isData && run?.status === "done" && (run.result?.visuals || []).length > 0 && !(turn.placements || []).length;
+  const line = !working && turn.status === "done" ? workedLine(turn, run) : null;
+  const hasSteps = isData && run?.status === "done" && (run.steps || []).length > 0;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }} data-c2-turn={turn.kind} data-c2-status={turn.status} data-c2-turn-id={turn.id}>
       {turn.question && <div className="c2-u">{turn.question}</div>}
       <div className="c2-a">
         <div className="c2-who" aria-hidden="true"><BrandMark size={22} radius={6} />GD360</div>
         {(turn.kind !== "chat") && (
-          <button type="button" className={`c2-w ${open ? "open" : ""}`} onClick={() => setOpen((o) => !o)} data-c2-worked="">
-            <svg className="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M9 18l6-6-6-6" /></svg>
-            {working ? <><span className="c2-spin" /> Working · {secs} s</> : secs < 1 ? "Worked for under a second" : `Worked for ${secs} second${secs === 1 ? "" : "s"}`}
-            {turn.budget_s && secs > turn.budget_s && !turn.timed_out && (
-              <span className="c2-over" data-c2-over="">{working ? ` · longer than usual (under ${turn.budget_s} s is the aim)` : ` · over the ${turn.budget_s} s target`}</span>
-            )}
-            {turn.mode === "analyst" && !working ? " · the Analyst" : ""}
+          <button type="button" className={`sd-st c2-wst${working ? " work" : ""}${turn.status === "failed" ? " bad" : ""}${open ? " open" : ""}`} onClick={() => setOpen((o) => !o)} data-c2-worked="" aria-expanded={open}>
+            {working ? <span className="c2-spin" style={{ width: 13, height: 13 }} />
+              : turn.status === "failed" ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+              : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>}
+            <span className="lb">
+              {working ? `Working · ${secs} s` : line ? line : secs < 1 ? "Worked for under a second" : `Worked for ${secs} second${secs === 1 ? "" : "s"}`}
+              {turn.budget_s && secs > turn.budget_s && !turn.timed_out && (
+                <span className="c2-over" data-c2-over="">{working ? ` · longer than usual (under ${turn.budget_s} s is the aim)` : ` · over the ${turn.budget_s} s target`}</span>
+              )}
+              {turn.mode === "analyst" && !working ? " · the Analyst" : ""}
+            </span>
+            {!working && line && <em>{secs < 1 ? "under a second" : `${secs} second${secs === 1 ? "" : "s"}`}</em>}
           </button>
         )}
         <Trail turn={turn} open={open} />
@@ -399,7 +428,8 @@ export function TurnView({
           </div>
         )}
         {turn.kind === "analysis" && turn.status === "needs_input" && turn.text && <div className="c2-next"><button type="button" className="c2-nx sm" onClick={() => onAsk(turn.question)}>Try again</button></div>}
-        {showRun && <DataAnswer run={run!} onAsk={onAsk} chips={turn.status === "done" ? <Chips chips={turn.chips} /> : null} />}
+        {showRun && <DataAnswer run={run!} onAsk={onAsk} compact={onCanvas} chips={turn.status === "done" ? <Chips chips={turn.chips} /> : null} />}
+        {onCanvas && hasSteps && <p className="prose c2-onright" style={{ color: "rgb(var(--color-secondary))" }}>Every step is on the right. You can edit, rerun or remove any of them.</p>}
         {turn.kind === "guided" && run && turn.guided_project_id && (
           <GuidedSteps run={run} projectId={turn.guided_project_id} onChanged={onRunChanged} onAsk={onAsk} />
         )}
@@ -420,13 +450,14 @@ export function TurnView({
             ? <DocCard key={a.id} a={a} turn={turn} onAsk={onAsk} onOpen={() => onOpenArtifact({ ...a, refresh: false } as Artifact, turn)} />
             : <ArtifactCard key={a.id} a={a} onOpen={() => onOpenArtifact(a, turn)} />))}
         {turn.status === "done" && !showRun && <Chips chips={turn.chips} />}
-        {(turn.status === "done" && (isData || turn.kind === "guided") && run?.status === "done") && (
+        {(turn.status === "done" && (isData || turn.kind === "guided") && run?.status === "done") && !onCanvas && (
           <div className="c2-next">
             {canDash && <button type="button" className="c2-nx sm" onClick={() => onMakeDashboard(turn)} data-c2-make-dashboard="">Make this a dashboard</button>}
             {(turn.placements || []).map((p) => (
               <button key={p.dashboard_id} type="button" className="c2-nx sm" onClick={() => onOpenArtifact({ type: "dashboard", id: p.dashboard_id, name: p.dashboard_name, url: `/dashboard-builder/${p.dashboard_id}`, page_id: p.page_id }, turn)}>Open “{p.dashboard_name}”</button>
             ))}
-            {((turn.trail || []).some((t) => t.sql) || turn.mode === "analyst") && <button type="button" className="c2-nx sm ghost" onClick={() => onOpenMethod(turn)}>How I worked it out</button>}
+            {hasSteps && !onCanvas && onOpenSteps && <button type="button" className="c2-nx sm" onClick={() => onOpenSteps(turn)} data-c2-open-steps="">Open the steps</button>}
+            {((turn.trail || []).some((t) => t.sql) || turn.mode === "analyst") && !hasSteps && <button type="button" className="c2-nx sm ghost" onClick={() => onOpenMethod(turn)}>How I worked it out</button>}
           </div>
         )}
       </div>

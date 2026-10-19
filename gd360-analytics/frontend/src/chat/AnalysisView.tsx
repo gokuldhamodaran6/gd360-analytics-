@@ -4,11 +4,11 @@
 import { useState } from "react";
 import type { Analysis, Signal, Tier } from "../api/v2";
 
-const n0 = (v: number | null | undefined) => (v == null ? "—" : Math.round(v).toLocaleString());
-const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
-const pct = (v: number) => `${Number(v).toFixed(1)}%`;
+export const n0 = (v: number | null | undefined) => (v == null ? "—" : Math.round(v).toLocaleString());
+export const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+export const pct = (v: number) => `${Number(v).toFixed(1)}%`;
 
-function HBars({ rows, max, unit, color, baseline, baselineLabel, title, sub, ariaLabel }: {
+export function HBars({ rows, max, unit, color, baseline, baselineLabel, title, sub, ariaLabel }: {
   rows: { label: string; value: number; muted?: boolean; note?: string }[]; max: number; unit?: string; color: string;
   baseline?: number | null; baselineLabel?: string; title: string; sub?: string; ariaLabel: string;
 }) {
@@ -46,7 +46,7 @@ function HBars({ rows, max, unit, color, baseline, baselineLabel, title, sub, ar
   );
 }
 
-function PRCurve({ curve, point, random, testN, ap }: { curve: [number, number][]; point: { recall: number; precision: number }; random: number; testN: number; ap: number }) {
+export function PRCurve({ curve, point, random, testN, ap }: { curve: [number, number][]; point: { recall: number; precision: number }; random: number; testN: number; ap: number }) {
   const W = 430, H = 260, L = 50, R = 24, T = 18, B = 46;
   const x = (r: number) => L + r * (W - L - R);
   const y = (p: number) => T + (1 - p) * (H - T - B);
@@ -73,7 +73,7 @@ function PRCurve({ curve, point, random, testN, ap }: { curve: [number, number][
   );
 }
 
-function TierBars({ tiers, entities }: { tiers: Tier[]; entities: string }) {
+export function TierBars({ tiers, entities }: { tiers: Tier[]; entities: string }) {
   const W = 430, H = 260, L = 58, B = 46, T = 28;
   const max = Math.max(...tiers.map((t) => t.count), 1);
   const nice = Math.pow(10, Math.floor(Math.log10(max)));
@@ -105,7 +105,7 @@ function TierBars({ tiers, entities }: { tiers: Tier[]; entities: string }) {
   );
 }
 
-function SignalTable({ signals, verb }: { signals: Signal[]; verb: string }) {
+export function SignalTable({ signals, verb }: { signals: Signal[]; verb: string }) {
   return (
     <div style={{ overflowX: "auto" }}>
       <table className="an-table">

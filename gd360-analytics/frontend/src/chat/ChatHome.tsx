@@ -155,6 +155,18 @@ function HomeBody() {
   const [needs, setNeeds] = useState<{ n: number; to: string; titles: string[] }>({ n: 0, to: "/automations", titles: [] });
   const [scope, setScope] = useState<Scope>(() => loadScope(workspaceId) || { kind: "all" });
   useEffect(() => { const saved = loadScope(workspaceId); if (saved) setScope(saved); }, [workspaceId]);
+  // R56: "Ask about it" on a source (Data) and "Start with this data" after connecting open Home on that source
+  useEffect(() => { const sid = params.get("source"); if (sid) setScope({ kind: "sources", ids: [sid] }); }, [params]);
+  // R56: "?ask=" (Models, a model page, a source) and the first question picked while signing up wait in the box -
+  // filled in, never sent on their own
+  useEffect(() => {
+    const q = params.get("ask");
+    if (q) { setText(q); window.setTimeout(() => document.getElementById("c2-ask")?.focus(), 0); return; }
+    try {
+      const first = sessionStorage.getItem("gd360_first_question");
+      if (first) { setText(first); sessionStorage.removeItem("gd360_first_question"); }
+    } catch { /* storage may be blocked */ }
+  }, [params]);
   const sources = (home?.sources || []) as unknown as ProjectSource[];
   const spaces = home?.spaces || [];
   const hasData = sources.length > 0;
@@ -171,6 +183,14 @@ function HomeBody() {
     });
     return () => { live = false; };
   }, [workspaceId]);
+  // R56 (mobile board "Today"): on a phone Home is also the day's list - what needs you, and the last answers
+  const [recent, setRecent] = useState<ConversationRow[] | null>(null);
+  useEffect(() => {
+    if (isNew || typeof window === "undefined" || !window.matchMedia?.("(max-width: 760px)").matches) return;
+    let live = true;
+    v2Api.list(workspaceId || null).then((r) => live && setRecent(r.filter((c) => c.v2).slice(0, 5))).catch(() => live && setRecent([]));
+    return () => { live = false; };
+  }, [workspaceId, isNew]);
   const askExamples = home?.examples?.length ? home.examples : examples(hasData, !!home?.web);
   const list = starters(askExamples, hasData);
   const cur = list.find((x) => x.key === open) || null;
@@ -235,6 +255,26 @@ function HomeBody() {
               </div>
             )}
           </div>
+          {!isNew && recent && (
+            <div className="hm-today" data-c2-today="">
+              {needs.n > 0 && (
+                <section>
+                  <h2>Needs you <em>{needs.n}</em></h2>
+                  {needs.titles.slice(0, 3).map((t) => <Link key={t} to={needs.to} className="row need"><i />{t}</Link>)}
+                </section>
+              )}
+              <section>
+                <h2>Recent answers</h2>
+                {recent.length === 0 && <p className="none">Nothing yet. Your answers will be here.</p>}
+                {recent.map((c) => (
+                  <Link key={c.id} to={`/chat/${c.id}`} className="row" data-c2-today-row="">
+                    <b>{c.title || "Untitled"}</b>
+                    {c.headline && <span>{c.headline}</span>}
+                  </Link>
+                ))}
+              </section>
+            </div>
+          )}
           {!hasData && home && (
             <div className="hm-nodata">No data connected yet - you can already ask world questions and what-ifs. <Link to="/data">Add data</Link></div>
           )}

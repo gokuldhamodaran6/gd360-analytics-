@@ -1,14 +1,20 @@
 // 2026-10-14 (R46): one conversation. Turns on the left, the canvas on the right when something rich is open.
+// 2026-10-19 (R56, the Studio): talk left, work right. With the canvas open the thread is a 400 px column with its
+// own header (title ▾, new) and suggestion pills above a one-line composer; the canvas carries one tab for every
+// piece of work in the conversation - each answer's steps, dashboards, documents and models.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { projectsApi, type ProjectRun } from "../api/projects";
-import { v2Api, type Artifact, type Conversation as ConvT, type Mode, type Turn as TurnT } from "../api/v2";
+import { v2Api, type Conversation as ConvT, type Mode, type Turn as TurnT } from "../api/v2";
 import { AskContext } from "../project/WaysForward";
-import { Canvas, canvasFromArtifact, type CanvasItem } from "./Canvas";
+import { CanvasRouter, canvasFromArtifact, canvasKey, type CanvasItem } from "./Canvas";
 import { Composer } from "./Composer";
 import { Shell, useHome } from "./Shell";
 import TopNav from "../components/TopNav";
 import { TurnView } from "./Turn";
+import { MenuButton, type FrameTab } from "../studio/Frame";
+import { Ic } from "../studio/icons";
+import "../studio/studio.css";
 
 const MODE_KEY = "gd360_c2_mode";
 const loadMode = (): Mode => { try { const m = localStorage.getItem(MODE_KEY); return m === "quick" || m === "guided" ? m : "auto"; } catch { return "auto"; } };
@@ -16,6 +22,13 @@ const loadMode = (): Mode => { try { const m = localStorage.getItem(MODE_KEY); r
 function liveRun(r: ProjectRun | undefined | null): boolean {
   return !!r && !["done", "failed", "stopped", "needs_input", "replaced"].includes(r.status);
 }
+
+/** A data answer opens as steps on the canvas once it has something to show beside the prose. */
+function stepsWorthy(r: ProjectRun | null | undefined): boolean {
+  return !!r && r.status === "done" && !!r.result && ((r.steps || []).length > 0) && ((r.result.visuals || []).length > 0 || (r.steps || []).length > 1 || (r.result.evidence || []).length > 0);
+}
+
+const short = (s: string, n = 30) => { const t = (s || "").replace(/\?$/, "").trim(); return t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t; };
 
 export default function ConversationPage() {
   const { conversationId = "" } = useParams();
@@ -28,6 +41,7 @@ export default function ConversationPage() {
 
 function ConversationBody({ conversationId }: { conversationId: string }) {
   const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
   const { reload: reloadHome } = useHome();
   const [conv, setConv] = useState<ConvT | null>(null);
   const [runs, setRuns] = useState<Record<string, ProjectRun>>({});
@@ -89,11 +103,11 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
     return () => clearInterval(id);
   }, [turns, runs, conversationId, loadRun, setTurn, load, reloadHome]);
 
-  // a finished dashboard or document opens on the canvas by itself, once; an edit refreshes the open one
+  // a finished dashboard, document, model or analysis opens on the canvas by itself, once; an edit refreshes the open one
   useEffect(() => {
     for (const t of turns) {
       if (t.status !== "done" || openedRef.current.has(t.id)) continue;
-      const a = (t.artifacts || []).find((x) => x.type === "dashboard" || x.type === "document" || x.type === "analysis");
+      const a = (t.artifacts || []).find((x) => x.type === "dashboard" || x.type === "document" || x.type === "analysis" || x.type === "model");
       if (a) {
         openedRef.current.add(t.id);
         const item = canvasFromArtifact(a, t, conversationId);
@@ -103,13 +117,18 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
             : cur && cur.type === "doc" && cur.id === a.doc_id ? { ...cur, title: a.title || cur.title } : item));
           setCanvasVersion((v) => v + 1);
         } else if (t === turns[turns.length - 1]) setCanvas(item);
+        continue;
+      }
+      // R56: an answer with steps opens as the Analysis canvas
+      if (t.kind === "data" && t.run_id && stepsWorthy(runs[t.run_id])) {
+        openedRef.current.add(t.id);
+        if (t === turns[turns.length - 1]) setCanvas({ type: "steps", turn: t });
       }
     }
-  }, [turns, conversationId]);
+  }, [turns, runs, conversationId]);
 
   // R50: land on the latest turn - again once the canvas has opened and the column has narrowed
   useEffect(() => {
-    // the composer is sticky at the bottom: scroll the page itself to its end so it never sits over the last turn
     const toEnd = () => { const el = document.scrollingElement || document.documentElement; el.scrollTo({ top: el.scrollHeight }); };
     toEnd();
     const id = window.setTimeout(toEnd, 450);
@@ -131,6 +150,10 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
     } finally { setBusy(false); }
   }, [busy, conversationId, mode, setTurn, loadRun]);
 
+  const prefill = useCallback((q: string) => {
+    setText(q);
+    window.setTimeout(() => { const el = document.getElementById("c2-ask") as HTMLTextAreaElement | null; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 30);
+  }, []);
   const onMode = (m: Mode) => { setMode(m); try { localStorage.setItem(MODE_KEY, m); } catch { /* fine */ } };
   const onConfirm = async (t: TurnT, approve: boolean) => {
     setBusy(true);
@@ -140,9 +163,9 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
     setBusy(true); setError(null);
     try { setTurn(await v2Api.revise(conversationId, t.id, edits)); } catch (e: any) { setError(e?.response?.data?.detail || "Couldn't change that."); } finally { setBusy(false); }
   };
-  const onMakeDashboard = async (t: TurnT) => {
+  const onMakeDashboard = async (t?: TurnT | null) => {
     setBusy(true);
-    try { setTurn(await v2Api.dashboard(conversationId, { run_ids: t.run_id ? [t.run_id] : undefined })); } catch (e: any) { setError(e?.response?.data?.detail || "Couldn't start the dashboard."); } finally { setBusy(false); }
+    try { setTurn(await v2Api.dashboard(conversationId, { run_ids: t?.run_id ? [t.run_id] : undefined })); } catch (e: any) { setError(e?.response?.data?.detail || "Couldn't start the dashboard."); } finally { setBusy(false); }
   };
   const sourcesLabel = useMemo(() => {
     if (!conv) return null;
@@ -161,41 +184,133 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conv]);
 
+  // ---- the canvas tabs: every piece of work in this conversation ----
+  const items = useMemo(() => {
+    const out: { item: CanvasItem; icon: string; label: string; badge?: string | null }[] = [];
+    const seen = new Set<string>();
+    const push = (item: CanvasItem | null, icon: string, label: string, badge?: string | null) => {
+      if (!item) return;
+      const k = canvasKey(item);
+      if (seen.has(k)) return;
+      seen.add(k); out.push({ item, icon, label, badge });
+    };
+    for (const t of turns) {
+      if (t.status !== "done") continue;
+      if (t.kind === "data" && t.run_id && stepsWorthy(runs[t.run_id])) {
+        const r = runs[t.run_id]!;
+        const n = (r.steps || []).length + ((r.result?.visuals || []).filter((v) => v.type !== "kpis").length) + (r.result?.answer ? 1 : 0);
+        push({ type: "steps", turn: t }, "trend", short(t.question), `${n} step${n === 1 ? "" : "s"}`);
+      }
+      for (const a of t.artifacts || []) {
+        const it = canvasFromArtifact(a, t, conversationId);
+        if (!it) continue;
+        if (it.type === "board" || it.type === "dashboard") push(it, "grid", short(it.name, 28));
+        else if (it.type === "doc" || it.type === "document") push(it, "doc", short(it.title, 28));
+        else if (it.type === "analysis") push(it, "trend", short(t.analysis?.title || t.question), "analysis");
+        else if (it.type === "model") push(it, "chip", short(it.name, 26), "model");
+      }
+    }
+    for (const d of conv?.dashboards || []) {
+      push(d.layout_version === 4 ? { type: "board", id: d.id, name: d.name } : { type: "dashboard", id: d.id, name: d.name, url: `/dashboard-builder/${d.id}` }, "grid", short(d.name, 28));
+    }
+    return out;
+  }, [turns, runs, conv?.dashboards, conversationId]);
+  const curKey = canvas ? canvasKey(canvas) : "";
+  const tabs: FrameTab[] = useMemo(() => {
+    const t = items.map((x) => ({ key: canvasKey(x.item), icon: x.icon, label: x.label, badge: x.badge, on: canvasKey(x.item) === curKey, onClick: () => setCanvas(x.item) }));
+    if (canvas && !t.some((x) => x.on)) t.push({ key: curKey, icon: canvas.type === "method" ? "code" : "spark", label: canvas.type === "method" ? "How I worked it out" : "Open", badge: null, on: true, onClick: () => undefined });
+    return t;
+  }, [items, curKey, canvas]);
+  const lastData = [...turns].reverse().find((t) => t.kind === "data" && t.run_id && runs[t.run_id]?.status === "done") || null;
+  const addMenu = (close: () => void) => (
+    <>
+      <button type="button" disabled={!lastData || busy} onClick={() => { close(); void onMakeDashboard(lastData); }} data-sd-new="dashboard"><span>Dashboard</span><small>{lastData ? "live charts from the latest answer" : "ask a question about your data first"}</small></button>
+      <button type="button" disabled={!turns.length || busy} onClick={() => { close(); void send("Write this up as a document"); }} data-sd-new="doc"><span>Document</span><small>a write-up with every number linked</small></button>
+      <button type="button" onClick={() => { close(); prefill("Train a model to predict "); }} data-sd-new="model"><span>Model</span><small>say what to predict</small></button>
+      <button type="button" onClick={() => { close(); navigate("/automate"); }} data-sd-new="pipeline"><span>Pipeline</span><small>a data job that runs on a schedule</small></button>
+    </>
+  );
+
+  // ---- suggestion pills above the composer (Studio) ----
+  const last = turns[turns.length - 1];
+  const sugg: { label: string; icon: string; go: () => void }[] = [];
+  if (last && last.status === "done") {
+    const r = last.run_id ? runs[last.run_id] : null;
+    if (last.kind === "data" && r?.status === "done") {
+      if (!(last.placements || []).length && (r.result?.visuals || []).length) sugg.push({ label: "Make a dashboard", icon: "grid", go: () => void onMakeDashboard(last) });
+      sugg.push({ label: "Write it up as a doc", icon: "doc", go: () => void send("Write this up as a document") });
+      sugg.push({ label: "Set an alert", icon: "bell", go: () => prefill("Alert me when ") });
+      for (const q of (r.result?.answer?.next_questions || []).slice(0, 1)) sugg.push({ label: short(q, 44), icon: "chat", go: () => void send(q) });
+    } else if (last.kind === "dashboard" || last.kind === "dashboard_edit") {
+      sugg.push({ label: "Email it every Monday", icon: "clock", go: () => void send("Email this dashboard every Monday at 9am") });
+      sugg.push({ label: "Write it up as a doc", icon: "doc", go: () => void send("Write this up as a document") });
+      sugg.push({ label: "Undo the last change", icon: "undo", go: () => void send("undo") });
+    } else if (last.kind === "document" || last.kind === "document_edit") {
+      sugg.push({ label: "Make it shorter", icon: "text", go: () => void send("make the document shorter") });
+      sugg.push({ label: "Add a risks section", icon: "plus", go: () => prefill("Add a section on the risks: ") });
+    } else if (last.kind === "model") {
+      sugg.push({ label: "Who is most likely?", icon: "users", go: () => void send("Who is most at risk? Show the list") });
+      sugg.push({ label: "Re-check it every Monday", icon: "cal", go: () => void send("Re-train this model every Monday at 6am") });
+    } else if (last.kind === "analysis") {
+      sugg.push({ label: "Show the high-risk list", icon: "table", go: () => void send("show the high-risk list") });
+      sugg.push({ label: "Make a dashboard", icon: "grid", go: () => void send("make this a dashboard") });
+    }
+  }
+
   if (loadErr) {
     return (
       <div className="c2-col"><TopNav /><div className="c2-body"><div className="c2-thread"><div className="c2-err">{loadErr}</div><Link to="/chat" className="c2-nx" style={{ alignSelf: "flex-start" }}>Start a new conversation</Link></div></div></div>
     );
   }
+  const studio = !!canvas;
   return (
     <AskContext.Provider value={(q: string) => void send(q)}>
-      <div className="c2-col" data-c2-conversation={conversationId}>
-        <TopNav hidePlan
-          title={<>
-            <button type="button" onClick={rename} title="Rename" data-c2-title=""
-              style={{ background: "transparent", border: 0, font: "inherit", fontWeight: 600, cursor: "pointer", color: "inherit", padding: 0, textAlign: "left", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</button>
-            {conv?.space_name && <span className="c2-chip gx-hide-sm" style={{ height: 26, flex: "0 0 auto" }}><span style={{ width: 8, height: 8, borderRadius: 4, background: conv.space_color || "rgb(var(--color-primary))" }} />{conv.space_name}</span>}
-          </>}
-          actions={<>
-            {conv && conv.dashboards.length > 0 && !canvas && (
-              <button type="button" className="gx-sc" data-c2-open-dashboard="" onClick={() => { const d = conv.dashboards[conv.dashboards.length - 1]; setCanvas(d.layout_version === 4 ? { type: "board", id: d.id, name: d.name } : { type: "dashboard", id: d.id, name: d.name, url: `/dashboard-builder/${d.id}` }); }}>Open dashboard</button>
-            )}
-            <button type="button" className="gx-sc gx-hide-sm" onClick={() => { void navigator.clipboard?.writeText(window.location.href).catch(() => undefined); }} title="Copy link">Share</button>
-          </>}
-        />
-        <div className={`c2-main${canvas ? " has-canvas" : ""}`} style={{ flex: 1, minHeight: 0 }}>
+      <div className="c2-col" data-c2-conversation={conversationId} data-sd-studio={studio ? "" : undefined}>
+        {!studio && (
+          <TopNav hidePlan
+            title={<>
+              <button type="button" onClick={rename} title="Rename" data-c2-title=""
+                style={{ background: "transparent", border: 0, font: "inherit", fontWeight: 600, cursor: "pointer", color: "inherit", padding: 0, textAlign: "left", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</button>
+              {conv?.space_name && <span className="c2-chip gx-hide-sm" style={{ height: 26, flex: "0 0 auto" }}><span style={{ width: 8, height: 8, borderRadius: 4, background: conv.space_color || "rgb(var(--color-primary))" }} />{conv.space_name}</span>}
+            </>}
+            actions={<>
+              {items.length > 0 && (
+                <button type="button" className="gx-sc" data-c2-open-dashboard="" onClick={() => setCanvas(items[items.length - 1].item)}>Open the work</button>
+              )}
+              <button type="button" className="gx-sc gx-hide-sm" onClick={() => { void navigator.clipboard?.writeText(window.location.href).catch(() => undefined); }} title="Copy link">Share</button>
+            </>}
+          />
+        )}
+        <div className={`c2-main${studio ? " has-canvas sd-studio" : ""}`} style={{ flex: 1, minHeight: 0 }}>
           <div className="c2-col" style={{ minHeight: 0 }}>
+            {studio && (
+              <div className="sd sd-th" data-sd-thread-head="">
+                <MenuButton className="ttl" label={<span data-c2-title="">{title}</span>} caret data="thread" shrink>
+                  {(close) => <>
+                    <button type="button" onClick={() => { close(); void rename(); }}>Rename</button>
+                    <button type="button" onClick={() => { close(); void navigator.clipboard?.writeText(window.location.href).catch(() => undefined); }}>Copy the link<small>people with access to this workspace can open it</small></button>
+                    <button type="button" onClick={() => { close(); setCanvas(null); }}>Close the canvas<small>the thread full width</small></button>
+                    {conv?.space_name && <span className="sd-note" style={{ padding: "6px 10px" }}>In the Space “{conv.space_name}”</span>}
+                  </>}
+                </MenuButton>
+                <span className="sd-sp" />
+                <Link to="/chat" className="sd-ib" title="New conversation" aria-label="New conversation"><Ic n="plus" s={18} /></Link>
+              </div>
+            )}
             <div className="c2-body">
               <div className="c2-thread" data-c2-thread="">
                 {!conv && <span className="c2-working"><span className="c2-spin" /> Opening…</span>}
                 {turns.map((t) => (
                   <TurnView key={t.id} turn={t} run={t.run_id ? runs[t.run_id] : null} conversationId={conversationId} busy={busy}
+                    onCanvas={!!canvas && canvas.type === "steps" && canvas.turn.id === t.id}
                     onAsk={(q) => void send(q)}
                     onOpenArtifact={(a, tt) => { const item = canvasFromArtifact(a, tt, conversationId); if (item) setCanvas(item); }}
-                    onOpenMethod={(tt) => setCanvas({ type: "method", turn: tt })}
+                    onOpenMethod={(tt) => setCanvas(tt.kind === "data" && tt.run_id && stepsWorthy(runs[tt.run_id]) ? { type: "steps", turn: tt } : { type: "method", turn: tt })}
+                    onOpenSteps={(tt) => setCanvas({ type: "steps", turn: tt })}
                     onConfirm={onConfirm}
                     onPickCheck={(q, k) => { if (k) kept.current = [...kept.current, k]; void send(q); }}
                     onRunChanged={setRun}
-                    onMakeDashboard={onMakeDashboard}
+                    onMakeDashboard={(tt) => void onMakeDashboard(tt)}
                     onRevise={onRevise}
                   />
                 ))}
@@ -203,20 +318,33 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
                 <div ref={endRef} />
               </div>
               <div className="c2-foot">
-                <Composer value={text} onChange={setText} onSubmit={() => void send(text)} mode={mode} onMode={onMode} busy={busy}
-                  placeholder={turns.length ? "Ask a follow-up, or say what to make…" : "Ask anything…"} sourcesLabel={sourcesLabel} autoFocus />
+                {studio && sugg.length > 0 && (
+                  <div className="sd sd-sugg" style={{ marginBottom: 10 }} data-sd-suggestions="">
+                    {sugg.slice(0, 4).map((s) => <button key={s.label} type="button" className="sd-pill sm" disabled={busy} onClick={s.go}><Ic n={s.icon} s={14} />{s.label}</button>)}
+                  </div>
+                )}
+                <Composer value={text} onChange={setText} onSubmit={() => void send(text)} mode={mode} onMode={onMode} busy={busy} compact={studio}
+                  placeholder={studio ? "Ask, or tell GD360 what to change" : turns.length ? "Ask a follow-up, or say what to make…" : "Ask anything…"} sourcesLabel={sourcesLabel} autoFocus />
               </div>
             </div>
           </div>
-          {canvas && <Canvas item={canvas} onClose={() => setCanvas(null)} version={canvasVersion} run={canvas.type === "method" && canvas.turn.run_id ? runs[canvas.turn.run_id] : null}
-            onAsk={(q) => void send(q)} onOpenMethod={(tt) => setCanvas({ type: "method", turn: tt })}
-            onSource={(src) => {
-              // a source chip opens the step it points at: the analysis on the canvas, or the turn in the thread
-              const t = turns.find((x) => x.id === src.turn_id);
-              if (t && t.kind === "analysis" && t.analysis) { setCanvas({ type: "analysis", turn: t }); return; }
-              if (src.kind === "dashboard" && src.turn_id) { setCanvas({ type: "board", id: src.turn_id, name: src.label.replace(/^Dashboard · /, "") }); return; }
-              document.querySelector(`[data-c2-turn-id="${src.turn_id}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
-            }} />}
+          {canvas && (
+            <CanvasRouter item={canvas} frame={{ tabs, addMenu, onClose: () => setCanvas(null) }} version={canvasVersion} runs={runs}
+              conversationId={conversationId} busy={busy}
+              onAsk={(q) => void send(q)} onPrefill={prefill} onRunChanged={setRun}
+              onTurnRefresh={async (turnId: string) => { try { setTurn(await v2Api.turn(conversationId, turnId)); } catch { /* next time */ } }}
+              onMakeDashboard={(tt) => void onMakeDashboard(tt)}
+              onOpenMethod={(tt) => setCanvas({ type: "method", turn: tt })}
+              onOpen={(it) => setCanvas(it)}
+              onSource={(src) => {
+                // a source chip opens the step it points at: the analysis on the canvas, or the turn in the thread
+                const t = turns.find((x) => x.id === src.turn_id);
+                if (t && t.kind === "analysis" && t.analysis) { setCanvas({ type: "analysis", turn: t }); return; }
+                if (t && t.kind === "data" && t.run_id && stepsWorthy(runs[t.run_id])) { setCanvas({ type: "steps", turn: t }); return; }
+                if (src.kind === "dashboard" && src.turn_id) { setCanvas({ type: "board", id: src.turn_id, name: src.label.replace(/^Dashboard · /, "") }); return; }
+                document.querySelector(`[data-c2-turn-id="${src.turn_id}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+              }} />
+          )}
         </div>
       </div>
     </AskContext.Provider>

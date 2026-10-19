@@ -23,10 +23,12 @@ export function ModeSwitch({ mode, onMode, disabled }: { mode: Mode; onMode: (m:
 }
 
 export function Composer({
-  value, onChange, onSubmit, mode, onMode, busy = false, placeholder = "Ask anything…", scope, context, autoFocus = false, sourcesLabel,
+  value, onChange, onSubmit, mode, onMode, busy = false, placeholder = "Ask anything…", scope, context, autoFocus = false, sourcesLabel, compact = false,
 }: {
   value: string; onChange: (v: string) => void; onSubmit: () => void; mode: Mode; onMode: (m: Mode) => void; busy?: boolean;
   placeholder?: string; scope?: ReactNode; context?: ReactNode; autoFocus?: boolean; sourcesLabel?: string | null;
+  /** R56 (Studio): one line - add, the text, send - under the thread beside the canvas */
+  compact?: boolean;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const dict = useDictation({ getText: () => value, setText: onChange });
@@ -40,6 +42,25 @@ export function Composer({
   const key = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (value.trim() && !busy) onSubmit(); }
   };
+  const sendBtn = (
+    <button type="button" className="c2-send" onClick={onSubmit} disabled={!value.trim() || busy} aria-label="Send" data-c2-send="">
+      {busy ? <span className="c2-spin" style={{ borderColor: "rgb(var(--color-base))", borderTopColor: "transparent" }} />
+        : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" /></svg>}
+    </button>
+  );
+  if (compact) {
+    return (
+      <div className="c2-comp compact" data-c2-composer="" data-c2-mode={mode}>
+        {context}
+        <Link to="/data" className="c2-cplus" title="Attach a file or connect data" aria-label="Add data">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+        </Link>
+        <label htmlFor="c2-ask" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>Message</label>
+        <textarea id="c2-ask" ref={ref} rows={1} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} onKeyDown={key} />
+        {sendBtn}
+      </div>
+    );
+  }
   return (
     <div className="c2-comp" data-c2-composer="">
       {context}

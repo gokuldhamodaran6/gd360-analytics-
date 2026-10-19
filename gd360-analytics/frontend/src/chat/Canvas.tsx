@@ -8,11 +8,16 @@ import { v2Api } from "../api/v2";
 import { downloadOffice } from "../dashboard/officeExport";
 import { AnalystMethod, isAnalystRun } from "../project/AnalystAnswer";
 import { layoutSql } from "../project/RunPanels";
-import { BoardView } from "../board/BoardView";
-import { DocView } from "../doc/DocView";
 import type { DocSource } from "../api/docs";
 import { AnalysisMethod, AnalysisView } from "./AnalysisView";
 import { Markdown } from "./Markdown";
+import { StudioFrame } from "../studio/Frame";
+import { Ic } from "../studio/icons";
+import { AnalysisStudio, type FrameBits } from "../studio/AnalysisStudio";
+import { DashboardStudio } from "../studio/DashboardStudio";
+import { DocStudio } from "../studio/DocStudio";
+import { ModelStudio } from "../studio/ModelStudio";
+import { OutcomeStudio } from "../studio/OutcomeStudio";
 
 export type CanvasItem =
   | { type: "dashboard"; id: string; name: string; url: string; pageId?: string | null }
@@ -20,7 +25,15 @@ export type CanvasItem =
   | { type: "method"; turn: Turn }
   | { type: "analysis"; turn: Turn }
   | { type: "board"; id: string; name: string }
-  | { type: "doc"; id: string; title: string };
+  | { type: "doc"; id: string; title: string }
+  // 2026-10-19 (R56): a data answer as numbered steps; a trained model
+  | { type: "steps"; turn: Turn }
+  | { type: "model"; id: string; name: string; turnId?: string };
+
+export function canvasKey(c: CanvasItem): string {
+  if (c.type === "steps" || c.type === "analysis" || c.type === "method") return `${c.type}:${c.turn.id}`;
+  return `${c.type}:${c.id}`;
+}
 
 export function canvasFromArtifact(a: Artifact, turn: Turn, conversationId: string): CanvasItem | null {
   if (a.type === "dashboard" && (a.board || (a.url || "").startsWith("/boards/"))) return { type: "board", id: a.id, name: a.name || "Dashboard" };
@@ -28,6 +41,7 @@ export function canvasFromArtifact(a: Artifact, turn: Turn, conversationId: stri
   if (a.type === "document" && a.doc_id) return { type: "doc", id: a.doc_id, title: a.title || turn.document?.title || "Document" };
   if (a.type === "document" && turn.document) return { type: "document", id: a.id, turnId: turn.id, title: turn.document.title, markdown: turn.document.markdown, conversationId, flagged: turn.document.flagged };
   if (a.type === "analysis" && turn.analysis) return { type: "analysis", turn };
+  if (a.type === "model") return { type: "model", id: a.id, name: a.name || "Model", turnId: turn.id };
   return null;
 }
 
@@ -83,7 +97,9 @@ function DataPane({ dashboardId, pageId }: { dashboardId: string; pageId?: strin
   );
 }
 
-export function Canvas({ item, onClose, version = 0, run, onAsk, onOpenMethod, onSource }: { item: CanvasItem; onClose: () => void; version?: number; run?: ProjectRun | null; onAsk?: (q: string) => void; onOpenMethod?: (t: Turn) => void; onSource?: (s: DocSource) => void }) {
+/** The canvases that keep their R46-R51 bodies (a classic dashboard, a markdown document, the method, an outcome
+ *  analysis), now inside the Studio frame: the conversation's tabs above, their own buttons on the right. */
+function LegacyCanvas({ item, frame, version = 0, run, onAsk, onOpenMethod }: { item: CanvasItem; frame: FrameBits; version?: number; run?: ProjectRun | null; onAsk?: (q: string) => void; onOpenMethod?: (t: Turn) => void }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(item.type === "document" ? item.markdown : "");
   const [copied, setCopied] = useState(false);
@@ -93,7 +109,7 @@ export function Canvas({ item, onClose, version = 0, run, onAsk, onOpenMethod, o
   const [view, setView] = useState<"live" | "data">("live");
   useEffect(() => { if (item.type === "document") { setText(item.markdown); setEditing(false); } setView("live"); }, [item]);
   useEffect(() => { setFrameKey((k) => k + 1); }, [version]);
-  const title = item.type === "dashboard" || item.type === "board" ? item.name : item.type === "document" || item.type === "doc" ? item.title : item.type === "analysis" ? (item.turn.analysis?.title || "Analysis") : `How I worked it out · ${item.turn.question}`;
+  const title = item.type === "dashboard" || item.type === "board" ? item.name : item.type === "document" || item.type === "doc" ? item.title : item.type === "analysis" ? (item.turn.analysis?.title || "Analysis") : "turn" in item ? `How I worked it out · ${item.turn.question}` : item.name;
   const download = async () => {
     if (item.type !== "document" && item.type !== "analysis") return;
     const safe = title.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 60) || "document";
@@ -111,57 +127,50 @@ export function Canvas({ item, onClose, version = 0, run, onAsk, onOpenMethod, o
     try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* fine */ }
   };
   const analyst = item.type === "method" && run && isAnalystRun(run) && run.status === "done";
+  const kind = item.type === "analysis" ? "analysis" : item.type;
   return (
-    <aside className="c2-canvas" aria-label="Canvas" data-c2-canvas={item.type}>
-      <div className="chrome">
-        <button type="button" onClick={onClose} aria-label="Close canvas" title="Close">×</button>
-        {item.type === "board" ? <span className="t" style={{ color: "rgb(var(--color-muted))", fontWeight: 500 }}>Dashboard · live on your data</span>
-          : item.type === "doc" ? <span className="t" style={{ color: "rgb(var(--color-muted))", fontWeight: 500 }}>Document · written from this conversation</span>
-          : <span className="t" title={title}>{title}</span>}
-        {item.type === "doc" && <a href={`/docs/${item.id}`} target="_blank" rel="noreferrer" title="Open full page" style={{ marginLeft: "auto" }}>Full page ⤢</a>}
-        {item.type === "dashboard" && <span style={{ color: "rgb(var(--color-muted))" }}>· live</span>}
-        <span style={{ flex: 1 }} />
+    <StudioFrame kind={kind} tabs={frame.tabs} addMenu={frame.addMenu} onClose={frame.onClose} bodyClass="sd-legacy" bodyStyle={{ padding: 0, gap: 0 }}
+      status={item.type === "analysis" ? `${item.turn.analysis?.baseline.n.toLocaleString()} rows${item.turn.analysis?.model ? " · model tested" : ""}` : item.type === "dashboard" ? "Live" : undefined}
+      tools={<>
         {item.type === "dashboard" && (
           <>
-            <button type="button" className={view === "data" ? "on" : ""} onClick={() => setView(view === "data" ? "live" : "data")} data-c2-get-data="" style={view === "data" ? { background: "rgb(var(--c2-ink))", color: "rgb(var(--color-base))" } : undefined}>{view === "data" ? "Back to the dashboard" : "Get the data"}</button>
+            <button type="button" className={`sd-tool${view === "data" ? " on" : ""}`} onClick={() => setView(view === "data" ? "live" : "data")} data-c2-get-data=""><Ic n="table" />{view === "data" ? "Back to the dashboard" : "Get the data"}</button>
             <span style={{ position: "relative" }}>
-              <button type="button" onClick={() => setMenu((m) => !m)} data-c2-download="" aria-expanded={menu}>{busy ? "Building…" : "↓ Download ▾"}</button>
+              <button type="button" className="sd-tool" onClick={() => setMenu((m) => !m)} data-c2-download="" aria-expanded={menu}><Ic n="dl" />{busy ? "Building…" : "Download"}</button>
               {menu && (
-                <div style={{ position: "absolute", right: 0, top: 36, zIndex: 20, width: 300, borderRadius: 16, background: "rgb(var(--color-surface))", border: "1px solid rgb(var(--color-border))", boxShadow: "var(--shadow-pop)", padding: 8, display: "flex", flexDirection: "column" }} data-c2-download-menu="" role="menu">
+                <div className="sd-menu" style={{ top: 36, left: 0, width: 300 }} data-c2-download-menu="" role="menu">
                   {[
                     { k: "xlsx", t: "Excel · live totals", d: "every block's rows, SUM formulas, Summary sheet", f: () => office("xlsx") },
                     { k: "pptxl", t: "PowerPoint · light", d: "one editable chart per block", f: () => office("pptx", "light") },
                     { k: "pptxd", t: "PowerPoint · dark", d: "the same deck on the dark theme", f: () => office("pptx", "dark") },
                   ].map((o) => (
-                    <button key={o.k} type="button" role="menuitem" onClick={() => void o.f()} style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, padding: "9px 10px", border: 0, background: "transparent", borderRadius: 10, font: "inherit", color: "inherit", cursor: "pointer", height: "auto", textAlign: "left" }}>
-                      <span style={{ fontSize: 13.5 }}>{o.t}</span><span style={{ fontSize: 12, color: "rgb(var(--color-muted))" }}>{o.d}</span>
-                    </button>
+                    <button key={o.k} type="button" role="menuitem" onClick={() => void o.f()}><span>{o.t}</span><small>{o.d}</small></button>
                   ))}
-                  <span style={{ fontSize: 12, color: "rgb(var(--color-muted))", padding: "6px 10px 4px" }}>PDF, PNG and CSV per block: the Export button inside the dashboard.</span>
                 </div>
               )}
             </span>
-            <button type="button" onClick={() => setFrameKey((k) => k + 1)} title="Refresh">↺</button>
-            <a href={`${item.url}`} target="_blank" rel="noreferrer" title="Open full-screen">Open ⤡</a>
+            <button type="button" className="sd-tool" onClick={() => setFrameKey((k) => k + 1)}><Ic n="refresh" />Refresh</button>
+            <a className="sd-tool" href={`${item.url}`} target="_blank" rel="noreferrer"><Ic n="ext" />Full screen</a>
           </>
         )}
         {item.type === "analysis" && (
           <>
-            <span style={{ color: "rgb(var(--color-muted))" }}>· {item.turn.analysis?.baseline.n.toLocaleString()} rows{item.turn.analysis?.model ? " · model tested" : ""}</span>
-            <span style={{ flex: 1 }} />
-            {onOpenMethod && <button type="button" onClick={() => onOpenMethod(item.turn)} data-c2-open-method="">Method &amp; code</button>}
-            <button type="button" onClick={() => void download()} title="Download as Markdown">Download</button>
+            {onOpenMethod && <button type="button" className="sd-tool" onClick={() => onOpenMethod(item.turn)} data-c2-open-method=""><Ic n="code" />Method &amp; code</button>}
+            <button type="button" className="sd-tool" onClick={() => void download()} title="Download as Markdown"><Ic n="dl" />Download</button>
+            {onAsk && <><span className="sd-vr" /><button type="button" className="sd-tool" onClick={() => onAsk("show the high-risk list")}><Ic n="table" />High-risk list</button>
+              <button type="button" className="sd-tool" onClick={() => onAsk("make this a dashboard")}><Ic n="grid" />Make a dashboard</button></>}
           </>
         )}
         {item.type === "document" && (
           <>
-            <button type="button" onClick={() => setEditing((e) => !e)}>{editing ? "Preview" : "Edit"}</button>
-            <button type="button" onClick={copy}>{copied ? "Copied" : "Copy"}</button>
-            <button type="button" onClick={() => void download()} title="Download as Markdown">Download</button>
+            <button type="button" className={`sd-tool${editing ? " on" : ""}`} onClick={() => setEditing((e) => !e)}><Ic n="text" />{editing ? "Preview" : "Edit"}</button>
+            <button type="button" className="sd-tool" onClick={copy}><Ic n="copy" />{copied ? "Copied" : "Copy"}</button>
+            <button type="button" className="sd-tool" onClick={() => void download()} title="Download as Markdown"><Ic n="dl" />Download</button>
           </>
         )}
-      </div>
-      <div className="pane">
+        {item.type === "method" && <span className="sd-tool" style={{ cursor: "default" }}><Ic n="code" />How I worked it out · {title.replace(/^How I worked it out · /, "")}</span>}
+      </>}>
+      <div className="pane" style={{ flex: 1, minHeight: 0, overflow: "auto", display: "flex", flexDirection: "column" }}>
         {item.type === "dashboard" && view === "live" && (
           <iframe key={frameKey} title={item.name} src={`${item.url}${item.url.includes("?") ? "&" : "?"}embed=1${item.pageId ? `&page=${item.pageId}` : ""}`} />
         )}
@@ -176,8 +185,6 @@ export function Canvas({ item, onClose, version = 0, run, onAsk, onOpenMethod, o
             </div>
           )
         )}
-        {item.type === "board" && <BoardView id={item.id} embedded version={version} onAsk={onAsk} />}
-        {item.type === "doc" && <DocView id={item.id} embedded version={version} onSource={onSource} />}
         {item.type === "analysis" && item.turn.analysis && (
           <div className="an-wrap" data-c2-analysis-canvas="">
             <AnalysisView a={item.turn.analysis} onAsk={onAsk} onOpenMethod={onOpenMethod ? () => onOpenMethod(item.turn) : undefined} />
@@ -203,6 +210,26 @@ export function Canvas({ item, onClose, version = 0, run, onAsk, onOpenMethod, o
           </div>
         )}
       </div>
-    </aside>
+    </StudioFrame>
   );
+}
+
+/** R56: one canvas for whatever is open - each kind of work in its own Studio. */
+export function CanvasRouter({ item, frame, version = 0, runs, conversationId, busy, onAsk, onPrefill, onRunChanged, onTurnRefresh, onMakeDashboard, onOpenMethod, onOpen, onSource }: {
+  item: CanvasItem; frame: FrameBits; version?: number; runs: Record<string, ProjectRun>; conversationId: string; busy: boolean;
+  onAsk: (q: string) => void; onPrefill: (q: string) => void; onRunChanged: (r: ProjectRun) => void; onTurnRefresh: (turnId: string) => void;
+  onMakeDashboard: (t: Turn) => void; onOpenMethod: (t: Turn) => void; onOpen: (c: CanvasItem) => void; onSource?: (s: DocSource) => void;
+}) {
+  if (item.type === "steps") {
+    const run = item.turn.run_id ? runs[item.turn.run_id] : null;
+    if (run) return <AnalysisStudio key={item.turn.id} turn={item.turn} run={run} frame={frame} onAsk={onAsk} onPrefill={onPrefill} onRunChanged={onRunChanged}
+      onTurnRefresh={() => onTurnRefresh(item.turn.id)} onMakeDashboard={() => onMakeDashboard(item.turn)} />;
+  }
+  if (item.type === "analysis" && item.turn.analysis) return <OutcomeStudio key={item.turn.id} turn={item.turn} frame={frame} onAsk={onAsk} onPrefill={onPrefill} onOpenMethod={() => onOpenMethod(item.turn)} />;
+  if (item.type === "board") return <DashboardStudio key={item.id} id={item.id} name={item.name} frame={frame} version={version} onAsk={onAsk} onPrefill={onPrefill} conversationId={conversationId} busy={busy} />;
+  if (item.type === "doc") return <DocStudio key={item.id} id={item.id} frame={frame} version={version} onAsk={onAsk} onPrefill={onPrefill} onSource={onSource} busy={busy} />;
+  if (item.type === "model") return <ModelStudio key={item.id} id={item.id} frame={frame} onAsk={onAsk} onPrefill={onPrefill} busy={busy} />;
+  const run = item.type === "method" && item.turn.run_id ? runs[item.turn.run_id] : null;
+  void onOpen;
+  return <LegacyCanvas item={item} frame={frame} version={version} run={run} onAsk={onAsk} onOpenMethod={onOpenMethod} />;
 }
