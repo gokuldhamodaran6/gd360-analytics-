@@ -447,6 +447,13 @@ def _tick() -> None:
             automations_tick(db, datetime.utcnow())
         except Exception as e:  # noqa: BLE001 - never stops the loop
             logger.warning("[scheduler] automations tick failed: %s", e)
+        # R54: Automate data - scheduled flows and "run when a source changes".
+        from .flows.runner import tick as flows_tick
+        try:
+            flows_tick(db, datetime.utcnow())
+        except Exception as e:  # noqa: BLE001 - never stops the loop
+            db.rollback()
+            logger.warning("[scheduler] flows tick failed: %s", e)
             db.rollback()
 
         # 2026-10-10 (Initiatives): due reminders and scheduled campaigns.
