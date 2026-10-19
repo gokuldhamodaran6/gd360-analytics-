@@ -2,7 +2,7 @@
 // a Home page that explains the dashboard, then pages of blocks on a 12-column grid - all drawn by board/charts.tsx
 // from numbers the backend computed live (services/agent/board.py). The same component runs on the canvas beside
 // the conversation and full-screen at /boards/:id; the Excel and PowerPoint downloads come from the same spec.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { boardsApi, type Block, type BoardSummary, type HomeData, type PageRun } from "../api/boards";
 import { cap, fmt, HBars, HeroCurve, LineArea, Spark, toneVar } from "./charts";
 import "./board.css";
@@ -129,7 +129,23 @@ function BlockView({ b, onPick, verb }: { b: Block; onPick: (kind: string, label
       </div>
     );
   }
+  if (b.type === "note") {
+    return <div className="bd-card bd-note-card" data-bd-block="note"><div className="bd-bh"><span className="t">{b.title || "Note"}</span></div><p className="bd-notetext">{b.text}</p></div>;
+  }
   return <div className="bd-card" data-bd-block={b.kind || "empty"}><div className="bd-bh"><span className="t">{b.title}</span></div><span className="bd-muted">{b.text}</span></div>;
+}
+
+/** R56: what the Dashboard studio adds around the board - a selected block with its edit bar, the "changed just now"
+ *  outlines, the page and filters reported up so the canvas toolbar can act on them. */
+export type BoardStudio = {
+  selected: string | null; onSelect: (b: Block | null) => void; changed: Record<string, string>; float?: (b: Block) => ReactNode;
+  onPage?: (id: string) => void; onFilters?: (f: Record<string, string>) => void; onRun?: (r: PageRun) => void; right?: ReactNode; editable?: boolean;
+};
+
+function fresh(iso?: string): boolean {
+  if (!iso) return false;
+  const t = new Date(/Z$/.test(iso) ? iso : `${iso}Z`).getTime();
+  return Number.isFinite(t) && Date.now() - t < 10 * 60 * 1000;
 }
 
 function PagePreview({ kinds }: { kinds: string[] }) {
@@ -185,7 +201,7 @@ function Home({ h, sum, onOpen }: { h: HomeData; sum: BoardSummary; onOpen: (id:
   );
 }
 
-export function BoardView({ id, embedded = false, version = 0, onAsk }: { id: string; embedded?: boolean; version?: number; onAsk?: (q: string) => void }) {
+export function BoardView({ id, embedded = false, version = 0, onAsk, studio }: { id: string; embedded?: boolean; version?: number; onAsk?: (q: string) => void; studio?: BoardStudio }) {
   const [sum, setSum] = useState<BoardSummary | null>(null);
   const [page, setPage] = useState<string>("home");
   const [filters, setFilters] = useState<Record<string, string>>({});
@@ -221,6 +237,9 @@ export function BoardView({ id, embedded = false, version = 0, onAsk }: { id: st
     }
   }, [id, page, filters, sum]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => { studio?.onPage?.(page); }, [page]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { studio?.onFilters?.(filters); }, [filters]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (run) studio?.onRun?.(run); }, [run]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const style = useMemo(() => {
     if (!sum) return undefined;
@@ -243,8 +262,32 @@ export function BoardView({ id, embedded = false, version = 0, onAsk }: { id: st
   if (err && !sum) return <div className="bd bd-err" data-bd-error="">{err}</div>;
   if (!sum) return <div className="bd bd-loading"><span className="bd-spin" /> Opening the dashboard…</div>;
   return (
-    <div className={`bd ${sum.palette.mode}${embedded ? " embedded" : ""}`} style={style} data-bd-board={id} data-bd-theme={sum.theme}>
-      <header className="bd-top">
+    <div className={`bd ${sum.palette.mode}${embedded ? " embedded" : ""}${studio ? " studio" : ""}`} style={style} data-bd-board={id} data-bd-theme={sum.theme}
+      onClick={studio ? (e) => { if (!(e.target as HTMLElement).closest(".bd-cell, .sd-float, .sd-menu")) studio.onSelect(null); } : undefined}>
+      {studio && (
+        <div className="bd-sbar" data-bd-studio-bar="">
+          {sum.pages.length > 1 && (
+            <nav className="bd-segs" role="tablist" aria-label="Pages">
+              {sum.pages.map((p) => (
+                <button key={p.id} type="button" role="tab" aria-selected={p.id === page} className={p.id === page ? "on" : ""} onClick={() => setPage(p.id)} data-bd-tab={p.id}>{p.name}</button>
+              ))}
+            </nav>
+          )}
+          {page !== "home" && sum.filters.map((f) => (
+            <label key={f.key} className={`bd-pill${filters[f.key] ? " on" : ""}`}>
+              <span className="k">{f.label}</span>
+              <select value={filters[f.key] || "All"} onChange={(e) => setF(f.key, e.target.value)} data-bd-filter={f.key}>
+                <option value="All">All</option>
+                {f.values.map((v) => <option key={v} value={v}>{v}</option>)}
+              </select>
+            </label>
+          ))}
+          {page !== "home" && nActive > 0 && <button type="button" className="bd-reset" onClick={() => setFilters({})} data-bd-reset="">Reset</button>}
+          <span className="bd-scope">{run ? `Data as of ${new Date(run.refreshed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })} · ${sum.source?.name || ""}${page !== "home" ? ` · ${run.rows_in_view.toLocaleString()} of ${run.rows_total.toLocaleString()} ${sum.entities}` : ""}` : ""}</span>
+          {studio.right}
+        </div>
+      )}
+      {!studio && <header className="bd-top">
         <div className="bd-brand">
           <span className="mk" aria-hidden="true"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M4 18l5-6 4 3 7-8" /></svg></span>
           <span className="nm">{sum.title}</span>
@@ -269,9 +312,9 @@ export function BoardView({ id, embedded = false, version = 0, onAsk }: { id: st
           {!embedded && sum.conversation_id && <a className="bd-btn" href={`/chat/${sum.conversation_id}`}>Open conversation</a>}
           {embedded && <a className="bd-btn" href={`/boards/${id}`} target="_blank" rel="noreferrer" title="Open full screen">Full screen</a>}
         </div>
-      </header>
+      </header>}
 
-      {page !== "home" && (
+      {page !== "home" && !studio && (
         <div className="bd-filters" data-bd-filters="">
           {sum.filters.map((f) => (
             <label key={f.key} className={`bd-pill${filters[f.key] ? " on" : ""}`}>
@@ -293,11 +336,20 @@ export function BoardView({ id, embedded = false, version = 0, onAsk }: { id: st
         {page !== "home" && run && run.page.id === page && (
           run.empty ? <div className="bd-card bd-muted" style={{ padding: 40, textAlign: "center" }}>{run.empty} <button type="button" className="bd-reset" onClick={() => setFilters({})}>Reset filters</button></div> : (
             <div className={`bd-grid${loading ? " dim" : ""}`} data-bd-page={page}>
-              {run.blocks.map((b) => (
-                <div key={b.id} className="bd-cell" style={{ gridColumn: `span ${b.span}`, gridRow: b.h > 1 ? `span ${b.h}` : undefined }}>
-                  <BlockView b={b} onPick={onPick} verb={sum.outcome?.verb || "had the outcome"} />
-                </div>
-              ))}
+              {run.blocks.map((b) => {
+                const sel = studio?.selected === b.id;
+                const ch = studio && fresh(studio.changed[b.id]);
+                return (
+                  <div key={b.id} className={`bd-cell${sel ? " sel" : ""}${ch ? " changed" : ""}${studio?.editable ? " pick" : ""}`} style={{ gridColumn: `span ${b.span}`, gridRow: b.h > 1 ? `span ${b.h}` : undefined }}
+                    data-bd-cell={b.id}
+                    onClick={studio?.editable ? (e) => { if ((e.target as HTMLElement).closest(".sd-float, select, a")) return; studio.onSelect(sel ? null : b); } : undefined}>
+                    {ch && <span className="bd-changed" data-bd-changed="">Changed just now</span>}
+                    <BlockView b={b} onPick={onPick} verb={sum.outcome?.verb || "had the outcome"} />
+                    {sel && studio?.float && studio.float(b)}
+                    {sel && <><i className="sd-handle" style={{ left: -6, top: -6 }} /><i className="sd-handle" style={{ right: -6, bottom: -6 }} /></>}
+                  </div>
+                );
+              })}
             </div>
           )
         )}
@@ -310,7 +362,7 @@ export function BoardView({ id, embedded = false, version = 0, onAsk }: { id: st
             <span>{sum.source?.name} · {run ? `${run.rows_total.toLocaleString()} rows` : ""}{run?.applied.length ? ` · ${run.applied.join(", ")}` : ""}</span>
           </footer>
         )}
-        {onAsk && page !== "home" && (
+        {onAsk && page !== "home" && !studio && (
           <div className="bd-ask">
             <span>Change it by saying so in the conversation:</span>
             {["make it navy", sum.outcome ? `add ${sum.outcome.noun} by ${sum.filters[2]?.label?.toLowerCase() || "segment"}` : "add a breakdown by region", "undo"].map((q) => (

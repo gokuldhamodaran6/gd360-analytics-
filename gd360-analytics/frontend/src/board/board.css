@@ -223,3 +223,33 @@ button.bd-chip { cursor: pointer; }
 }
 /* R50: full screen, the board's own bar sits under the one top bar */
 [data-bd-page-full] .bd-top { top: 60px; }
+
+/* 2026-10-19 (R56, Dashboard studio): the board on the canvas - page segments and filters in one bar, blocks you
+   click to select (an edit bar floats above), green outlines on what just changed, notes typed on the canvas. */
+.bd.studio { border-radius: 0; min-height: 100%; }
+.bd.studio .bd-body { padding-top: 6px; }
+.bd-sbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 16px 20px 6px; }
+.bd-segs { display: inline-flex; gap: 2px; padding: 3px; border-radius: 12px; background: color-mix(in srgb, var(--bd-ink) 6%, transparent); }
+.bd-segs button { height: 30px; padding: 0 12px; border: 0; border-radius: 9px; background: transparent; color: color-mix(in srgb, var(--bd-ink) 62%, transparent); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; }
+.bd-segs button.on { background: var(--bd-card); color: var(--bd-ink); box-shadow: 0 1px 2px rgb(0 0 0 / .08); }
+.bd-sbar .bd-scope { margin-left: auto; font-size: 12.5px; color: color-mix(in srgb, var(--bd-ink) 55%, transparent); }
+.bd-cell { position: relative; }
+.bd-cell.pick { cursor: pointer; }
+.bd-cell.pick:hover > .bd-card { border-color: color-mix(in srgb, var(--bd-accent) 35%, transparent); }
+.bd-cell.sel > .bd-card { outline: 2px solid rgb(var(--color-primary)); outline-offset: 3px; }
+.bd-cell.changed > .bd-card { border-color: rgb(var(--color-primary) / .55); box-shadow: 0 0 0 4px rgb(var(--color-tint)); }
+.bd-changed { position: absolute; top: 12px; right: 14px; z-index: 2; height: 22px; padding: 0 9px; border-radius: 11px; display: inline-flex; align-items: center; font-size: 11.5px; font-weight: 600; background: rgb(var(--color-tint)); color: rgb(var(--color-primary)); pointer-events: none; }
+.bd-cell .sd-float { top: -20px; right: 8px; }
+.bd-note-card .bd-notetext { margin: 0; font-size: 14.5px; line-height: 1.6; white-space: pre-wrap; color: var(--bd-ink); }
+/* the Studio theme keeps the hero tile white, like every other card - the accent is in its curve and number */
+.bd[data-bd-theme="studio"] .bd-kpi.hero { background: var(--bd-card); border-color: color-mix(in srgb, var(--bd-ink) 10%, transparent); color: var(--bd-ink); --bd-ink: #121514; --bd-muted: #6E7472; }
+.bd[data-bd-theme="studio"] .bd-kpi.hero .bd-chip { background: color-mix(in srgb, var(--bd-ink) 6%, transparent); }
+.bd[data-bd-theme="studio"] .bd-kpi.hero .bd-hc { --bd-accent: #2F6FE4; --bd-faint: rgb(47 111 228 / .25); }
+.bd[data-bd-theme="studio"] .bd-kpi.hero .bd-chart .grid { stroke: rgb(18 21 20 / .08); }
+.bd[data-bd-theme="studio"] .bd-kpi.hero .bd-chart .dot { fill: #2F6FE4; stroke: #fff; }
+.bd[data-bd-theme="studio"] .bd-kpi.hero .bd-kv .v { font-family: "Geist Mono", ui-monospace, monospace; font-size: 52px; letter-spacing: -0.02em; }
+.bd.studio .bd-grid { grid-auto-flow: row dense; }
+/* R56 phone pass: the page segments scroll on their own row instead of pushing the page sideways */
+.bd-segs { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.bd-segs button { flex: 0 0 auto; white-space: nowrap; }
+@media (max-width: 760px) { .bd-sbar { padding: 12px 12px 4px; } .bd-sbar .bd-scope { margin-left: 0; width: 100%; } }
