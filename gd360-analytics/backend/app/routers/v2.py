@@ -31,7 +31,7 @@ from ..database import get_db
 from ..deps import get_current_user
 from ..services import automations as automations_svc
 from ..services import spaces as spaces_service
-from ..services.agent import analysis, board, docblocks, docexport, examples, exports, plans, turns, web
+from ..services.agent import analysis, board, board_edit, docblocks, docexport, examples, exports, plans, turns, web
 from ..services.project_engine.catalog import accessible_sources
 from . import projects
 
@@ -226,7 +226,7 @@ def _filters_arg(filters: str | None) -> dict | None:
 def get_board(board_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     from .dashboards import _can_edit
     d = _board(db, board_id, user)
-    return board.summary(d) | {"can_edit": _can_edit(db, d, user)}
+    return board.summary(d) | {"can_edit": _can_edit(db, d, user), "access": board_edit.access(db, d)}
 
 
 @router.post("/boards/{board_id}/run")
@@ -280,6 +280,128 @@ def board_pptx(board_id: str, filters: str | None = None, db: Session = Depends(
     data = board.deck(db, user, d, _filters_arg(filters))
     return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                     headers={"Content-Disposition": f'attachment; filename="{_safe(d.name)}.pptx"'})
+
+
+# ---- R56: edit a designed dashboard in place (the Dashboard studio) ----------------------------------------------
+
+class BlockLayout(BaseModel):
+    action: str = Field(pattern="^(wider|narrower|left|right|remove)$")
+
+
+class BlockAdd(BaseModel):
+    page_id: str | None = Field(default=None, max_length=60)
+    column: str | None = Field(default=None, max_length=200)
+    measure: str | None = Field(default=None, max_length=200)
+    note: str | None = Field(default=None, max_length=600)
+    title: str | None = Field(default=None, max_length=80)
+
+
+class BlockText(BaseModel):
+    title: str | None = Field(default=None, max_length=80)
+    text: str | None = Field(default=None, max_length=600)
+
+
+class FilterAdd(BaseModel):
+    column: str = Field(min_length=1, max_length=200)
+
+
+class VersionRestore(BaseModel):
+    index: int = Field(ge=0, le=100)
+
+
+def _board_edit(db: Session, d: models.Dashboard, fn) -> dict:
+    try:
+        out = fn()
+    except board_edit.EditError as e:
+        raise HTTPException(400, str(e))
+    db.refresh(d)
+    return {"summary": board.summary(d) | {"can_edit": True, "access": board_edit.access(db, d)}, **out}
+
+
+@router.get("/boards/{board_id}/columns")
+def board_columns(board_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    return board_edit.columns(db, user, d)
+
+
+@router.post("/boards/{board_id}/blocks/{block_id}/layout")
+def board_block_layout(board_id: str, block_id: str, payload: BlockLayout, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    return _board_edit(db, d, lambda: board_edit.layout(db, d, block_id, payload.action))
+
+
+@router.put("/boards/{board_id}/blocks/{block_id}")
+def board_block_text(board_id: str, block_id: str, payload: BlockText, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    if payload.text is not None:
+        return _board_edit(db, d, lambda: board_edit.edit_note(db, d, block_id, payload.text or ""))
+    return _board_edit(db, d, lambda: board_edit.rename_block(db, d, block_id, payload.title or ""))
+
+
+@router.post("/boards/{board_id}/blocks", status_code=201)
+def board_block_add(board_id: str, payload: BlockAdd, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    if payload.note is not None:
+        return _board_edit(db, d, lambda: board_edit.add_note(db, d, payload.page_id, payload.note or "", payload.title))
+    if not payload.column:
+        raise HTTPException(400, "Pick the column to chart.")
+    return _board_edit(db, d, lambda: board_edit.add_chart(db, user, d, payload.page_id, payload.column or "", payload.measure))
+
+
+@router.post("/boards/{board_id}/filters", status_code=201)
+def board_filter_add(board_id: str, payload: FilterAdd, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    return _board_edit(db, d, lambda: board_edit.add_filter(db, user, d, payload.column))
+
+
+@router.delete("/boards/{board_id}/filters/{key}")
+def board_filter_remove(board_id: str, key: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    return _board_edit(db, d, lambda: board_edit.remove_filter(db, d, key))
+
+
+@router.post("/boards/{board_id}/undo")
+def board_undo(board_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    return _board_edit(db, d, lambda: board_edit.undo(db, d))
+
+
+@router.get("/boards/{board_id}/versions")
+def board_versions(board_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user)
+    return {"versions": board_edit.versions(d)}
+
+
+@router.post("/boards/{board_id}/versions/restore")
+def board_restore(board_id: str, payload: VersionRestore, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    return _board_edit(db, d, lambda: board_edit.restore(db, d, payload.index))
+
+
+@router.post("/boards/{board_id}/publish")
+def board_publish(board_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    return _board_edit(db, d, lambda: board_edit.publish(db, d, user, True))
+
+
+@router.post("/boards/{board_id}/unpublish")
+def board_unpublish(board_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _board(db, board_id, user, edit=True)
+    return _board_edit(db, d, lambda: board_edit.publish(db, d, user, False))
+
+
+# ---- R56: the list pages - one workspace list, the data overview ------------------------------------------
+
+@router.get("/workspace/items")
+def workspace_items(workspace_id: str | None = None, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    from ..services import overview
+    return overview.workspace_items(db, user, workspace_id)
+
+
+@router.get("/data/overview")
+def data_overview(workspace_id: str | None = None, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    from ..services import overview
+    return overview.data_overview(db, user, workspace_id)
 
 
 @router.get("/plan")
@@ -534,6 +656,108 @@ def _doc_file(d: models.DocDocument, user: models.User, db: Session, kind: str) 
     else:
         body, mt = docexport.markdown(out).encode("utf-8"), "text/markdown; charset=utf-8"
     return Response(content=body, media_type=mt, headers={"Content-Disposition": f'attachment; filename="{name}.{kind}"'})
+
+
+# ---- R56: the Doc studio - style, new sections, margin comments -------------------------------------------
+
+class DocStyle(BaseModel):
+    to: str = Field(pattern="^(heading|paragraph)$")
+
+
+class DocInsert(BaseModel):
+    after_id: str | None = Field(default=None, max_length=40)
+    kind: str = Field(pattern="^(heading|paragraph)$")
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class DocCommentIn(BaseModel):
+    body: str = Field(min_length=1, max_length=2000)
+    block_id: str | None = Field(default=None, max_length=40)
+    quote: str | None = Field(default=None, max_length=300)
+    parent_id: str | None = Field(default=None, max_length=40)
+
+
+def _comments_out(db: Session, d: models.DocDocument, user: models.User) -> list[dict]:
+    rows = (db.query(models.DocComment).filter(models.DocComment.doc_id == d.id).order_by(models.DocComment.created_at.asc()).all())
+    people = {u.id: u for u in db.query(models.User).filter(models.User.id.in_(list({r.author_id for r in rows}) or [""])).all()}
+    def who(uid: str) -> dict:
+        u = people.get(uid)
+        name = (getattr(u, "full_name", None) or (u.email.split("@")[0] if u else "Someone")) if u else "Someone"
+        return {"id": uid, "name": name, "me": uid == user.id}
+    roots = [r for r in rows if not r.parent_id]
+    out = []
+    for r in roots:
+        out.append({"id": r.id, "block_id": r.block_id, "quote": r.quote, "body": r.body, "author": who(r.author_id),
+                    "created_at": r.created_at.isoformat() + "Z" if r.created_at else None, "resolved": r.resolved_at is not None,
+                    "replies": [{"id": x.id, "body": x.body, "author": who(x.author_id), "created_at": x.created_at.isoformat() + "Z" if x.created_at else None}
+                                for x in rows if x.parent_id == r.id]})
+    return out
+
+
+@router.put("/documents/{doc_id}/blocks/{block_id}/style")
+def doc_style(doc_id: str, block_id: str, payload: DocStyle, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _doc(db, doc_id, user, edit=True)
+    try:
+        docblocks.restyle(db, d, block_id, payload.to)
+    except docblocks.DocError as e:
+        _doc_err(e)
+    return _doc_out(d, user, db)
+
+
+@router.post("/documents/{doc_id}/insert", status_code=201)
+def doc_insert(doc_id: str, payload: DocInsert, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _doc(db, doc_id, user, edit=True)
+    try:
+        bid = docblocks.insert_text(db, d, payload.after_id, payload.kind, payload.text)
+    except docblocks.DocError as e:
+        _doc_err(e)
+    return {"block_id": bid, "document": _doc_out(d, user, db)}
+
+
+@router.get("/documents/{doc_id}/comments")
+def doc_comments(doc_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _doc(db, doc_id, user)
+    return {"comments": _comments_out(db, d, user)}
+
+
+@router.post("/documents/{doc_id}/comments", status_code=201)
+def doc_comment_add(doc_id: str, payload: DocCommentIn, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _doc(db, doc_id, user)
+    if payload.parent_id:
+        parent = db.get(models.DocComment, payload.parent_id)
+        if parent is None or parent.doc_id != d.id:
+            raise HTTPException(404, "That comment is not on this document.")
+    if payload.block_id and not any(b.get("id") == payload.block_id for b in d.blocks or []):
+        raise HTTPException(400, "That part of the document is not there any more.")
+    db.add(models.DocComment(doc_id=d.id, block_id=payload.block_id, parent_id=payload.parent_id, author_id=user.id,
+                             quote=(payload.quote or "").strip().strip("\"'\u201c\u201d\u2018\u2019 ")[:300] or None, body=payload.body.strip()))
+    db.commit()
+    return {"comments": _comments_out(db, d, user)}
+
+
+@router.post("/documents/{doc_id}/comments/{comment_id}/resolve")
+def doc_comment_resolve(doc_id: str, comment_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _doc(db, doc_id, user)
+    c = db.get(models.DocComment, comment_id)
+    if c is None or c.doc_id != d.id:
+        raise HTTPException(404, "That comment is not on this document.")
+    c.resolved_at = None if c.resolved_at else datetime.utcnow()
+    db.commit()
+    return {"comments": _comments_out(db, d, user)}
+
+
+@router.delete("/documents/{doc_id}/comments/{comment_id}")
+def doc_comment_delete(doc_id: str, comment_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    d = _doc(db, doc_id, user)
+    c = db.get(models.DocComment, comment_id)
+    if c is None or c.doc_id != d.id:
+        raise HTTPException(404, "That comment is not on this document.")
+    if c.author_id != user.id and d.owner_id != user.id:
+        raise HTTPException(403, "Only its author or the document's owner can delete a comment.")
+    db.query(models.DocComment).filter(models.DocComment.parent_id == c.id).delete()
+    db.delete(c)
+    db.commit()
+    return {"comments": _comments_out(db, d, user)}
 
 
 @router.get("/documents/{doc_id}/export.docx")

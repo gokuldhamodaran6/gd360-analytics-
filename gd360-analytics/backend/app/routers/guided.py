@@ -14,6 +14,10 @@ Instant Answer. These endpoints drive it one step at a time:
   POST   /guided/runs/{run_id}/steps                    add a step (after_id), then run it
   POST   /guided/runs/{run_id}/run-rest                 run every remaining step, then write the answer
   POST   /guided/runs/{run_id}/finish                   write the answer from the steps that ran
+  POST   /guided/runs/{run_id}/rework                   (R56) re-run every step of a conversation answer, then rewrite it
+
+2026-10-19 (R56): a conversation (v2) answer is edited the same way on the Analysis canvas. Its edits then
+rewrite the answer straight away (guided.rework) - there is no separate "approve" or "write the answer" there.
 """
 from __future__ import annotations
 
@@ -48,7 +52,7 @@ class ApproveRequest(BaseModel):
 
 def _guided_run(db: Session, run_id: str, user: models.User) -> models.ProjectRun:
     run, conv = _run(db, run_id, user, edit=True)
-    if conv.kind != "guided":
+    if conv.kind != "guided" and not _v2(conv):
         raise HTTPException(404, "Guided analysis not found.")
     if run.status == "planning":
         raise HTTPException(409, "GD360 is still writing the plan.")
@@ -57,6 +61,18 @@ def _guided_run(db: Session, run_id: str, user: models.User) -> models.ProjectRu
     if guided.is_busy(run.id) or run.status == "running":
         raise HTTPException(409, "GD360 is still working on this analysis. Wait for the current step to finish.")
     return run
+
+
+def _v2(conv: models.Conversation) -> bool:
+    return bool((conv.thread_meta or {}).get("v2")) and conv.kind != "guided"
+
+
+def _job(db: Session, run: models.ProjectRun, step_id: str | None):
+    """The background job after a step changed: a guided analysis runs that step; a conversation answer reworks."""
+    conv = db.get(models.Conversation, run.conversation_id)
+    if conv is not None and _v2(conv):
+        return guided.rework, (step_id,)
+    return guided.run_step, (step_id,)
 
 
 def _step(run: models.ProjectRun, step_id: str) -> dict:
@@ -91,7 +107,8 @@ def _out(db: Session, run: models.ProjectRun) -> dict:
 def run_step(run_id: str, step_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     run = _guided_run(db, run_id, user)
     _step(run, step_id)
-    _start(run, guided.run_step, step_id, db=db, show=step_id)
+    fn, args = _job(db, run, step_id)
+    _start(run, fn, *args, db=db, show=step_id)
     return _out(db, run)
 
 
@@ -120,7 +137,8 @@ def revise_step(run_id: str, step_id: str, payload: InstructionRequest, db: Sess
         guided.revise_step(db, run, step_id, payload.instruction.strip())
     except guided.GuidedError as e:
         raise HTTPException(400, str(e))
-    _start(run, guided.run_step, step_id, db=db, show=step_id)
+    fn, args = _job(db, run, step_id)
+    _start(run, fn, *args, db=db, show=step_id)
     return _out(db, run)
 
 
@@ -133,7 +151,8 @@ def set_step_sql(run_id: str, step_id: str, payload: SqlRequest, db: Session = D
         guided.set_sql(db, run, step_id, payload.sql)
     except guided.GuidedError as e:
         raise HTTPException(400, str(e))
-    _start(run, guided.run_step, step_id, db=db, show=step_id)
+    fn, args = _job(db, run, step_id)
+    _start(run, fn, *args, db=db, show=step_id)
     return _out(db, run)
 
 
@@ -145,6 +164,9 @@ def remove_step(run_id: str, step_id: str, db: Session = Depends(get_db), user: 
         guided.remove_step(db, run, step_id)
     except guided.GuidedError as e:
         raise HTTPException(400, str(e))
+    conv = db.get(models.Conversation, run.conversation_id)
+    if conv is not None and _v2(conv):
+        _start(run, guided.rework, None, db=db)
     return _out(db, run)
 
 
@@ -156,7 +178,8 @@ def add_step(run_id: str, payload: AddStepRequest, db: Session = Depends(get_db)
         step = guided.add_step(db, run, payload.instruction.strip(), payload.after_id)
     except guided.GuidedError as e:
         raise HTTPException(400, str(e))
-    _start(run, guided.run_step, step["id"], db=db, show=step["id"])
+    fn, args = _job(db, run, step["id"])
+    _start(run, fn, *args, db=db, show=step["id"])
     return {**_out(db, run), "added_step_id": step["id"]}
 
 
@@ -173,4 +196,14 @@ def finish(run_id: str, db: Session = Depends(get_db), user: models.User = Depen
     if not any(s.get("status") == "done" for s in run.steps or []):
         raise HTTPException(400, "Run at least one step before writing the answer.")
     _start(run, guided.finish)
+    return _out(db, run)
+
+
+@router.post("/runs/{run_id}/rework")
+def rework(run_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """R56: "Run all" on the Analysis canvas - every step again on today's data, then the answer rewritten."""
+    run = _guided_run(db, run_id, user)
+    if not run.steps:
+        raise HTTPException(400, "This answer has no steps to run.")
+    _start(run, guided.rework, None, True, db=db, show=(run.steps or [{}])[0].get("id"))
     return _out(db, run)

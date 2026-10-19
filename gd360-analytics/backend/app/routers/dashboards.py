@@ -76,6 +76,9 @@ def _can_view(db: Session, dash: models.Dashboard, user: models.User) -> bool:
         return True
     if not dash.workspace_id:
         return False
+    # 2026-10-19 (R56): a designed dashboard still in draft is its owner's until it is published
+    if (dash.layout_version or 0) == 4 and (dash.board_spec or {}).get("draft"):
+        return False
     return dash.workspace_id in workspace_access.member_workspace_ids(db, user.id)
 
 
@@ -302,6 +305,8 @@ def list_dashboards(db: Session = Depends(get_db), user: models.User = Depends(g
         )
     else:
         dashboards = db.query(models.Dashboard).filter(models.Dashboard.owner_id == user.id).all()
+    # R56: someone else's draft dashboard is not listed until it is published
+    dashboards = [d for d in dashboards if d.owner_id == user.id or not ((d.layout_version or 0) == 4 and (d.board_spec or {}).get("draft"))]
     conv_ids = {d.source_conversation_id for d in dashboards if d.source_conversation_id}
     conv_cache = {c.id: c for c in db.query(models.Conversation).filter(models.Conversation.id.in_(list(conv_ids))).all()} if conv_ids else {}
     extras = _list_extras(db, dashboards)
