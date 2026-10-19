@@ -256,6 +256,10 @@ export default function TopNav({
   const crumbs: Crumb[] = breadcrumb && breadcrumb.length ? breadcrumb : title ? [] : [{ label: pageLabel(pathname) }];
   return (
     <header className="gx-top" data-gx-top="">
+      {/* R57: on a phone, ☰ opens the labelled sidebar (on a desktop the GD360 mark in the rail does) */}
+      <button type="button" className="gx-burger" aria-label="Open the sidebar" data-gx-burger="" onClick={() => window.dispatchEvent(new Event("gx:open-sidebar"))}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10" /></svg>
+      </button>
       <nav className="gx-crumbs" aria-label="Breadcrumb">
         <button type="button" className="ws" data-gx-menu-trigger="" data-gx-ws-crumb="" title="Switch or manage workspace"
           onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); window.dispatchEvent(new CustomEvent("gx:open-workspace-menu", { detail: { x: r.left, y: r.bottom + 8 } })); }}>

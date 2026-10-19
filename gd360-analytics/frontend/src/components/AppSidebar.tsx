@@ -16,6 +16,9 @@ import { ChipCloseIcon, SourceDot } from "./ChatPanel";
 import { ClockIcon, DatabaseIcon, FlaskIcon, GridIcon, NetworkIcon, PaletteIcon, ShieldCheckIcon, SidebarIcon } from "../ui";
 import { BrandKitSheet } from "../dashboard/theme/BrandKitSheet";
 import { eulivAvailable, openEuliv } from "./Euliv";
+import { v2Api, type ConversationRow } from "../api/v2";
+import { opsApi } from "../api/ops";
+import { flowsApi } from "../api/flows";
 import "../shell/shell.css";
 
 // 2026-09-23: the persistent left nav rail from the workspace-structure
@@ -1102,6 +1105,7 @@ const GX = {
   palette: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.3-1.7-.4-1 .2-2.3 1.6-2.3H17a4 4 0 0 0 4-4c0-5.5-4-10-9-10z" /><circle cx="7.5" cy="11" r="1" /><circle cx="11" cy="7" r="1" /><circle cx="16" cy="8.5" r="1" /></svg>,
   globe: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z" /></svg>,
   check: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7" /></svg>,
+  close: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>,
   invite: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="10" cy="8" r="3.5" /><path d="M3.5 20a6.5 6.5 0 0 1 13 0M19 8v6M16 11h6" /></svg>,
 };
 
@@ -1146,6 +1150,91 @@ function MenuPanel({ menu, onClose, children, label }: { menu: NonNullable<RailM
   );
 }
 
+// ===========================================================================================
+// 2026-10-19 (R57, "ask flow fixes" board 3): the labelled sidebar. One tap on the GD360 mark (or ☰ on a phone)
+// slides it out over the page - New question, every place by its name, what needs you, your recent questions,
+// Euliv (with "or say Hi Euliv" - the hint that used to float over the avatar), Settings and you. It closes on a
+// tap outside, Esc, the arrow, or going anywhere. Nothing it shows is made up: the Automate count is the same
+// "needs you" list Home reads, the recents are your real conversations.
+// ===========================================================================================
+export const OPEN_SIDEBAR_EVENT = "gx:open-sidebar";
+export const openSidebar = () => window.dispatchEvent(new Event(OPEN_SIDEBAR_EVENT));
+
+function SidePanel({ on, workspaceId, wsLabel, initials, name, items, onClose, onWorkspace }: {
+  on: string; workspaceId: string; wsLabel: string; initials: string; name: string;
+  items: { key: string; label: string; to: string; icon: React.ReactNode }[];
+  onClose: () => void; onWorkspace: (el: HTMLElement) => void;
+}) {
+  const ref = useRef<HTMLElement>(null);
+  const [recent, setRecent] = useState<ConversationRow[] | null>(null);
+  const [needs, setNeeds] = useState(0);
+  const { pathname } = useLocation();
+  useEffect(() => {
+    let live = true;
+    v2Api.list(workspaceId || null).then((r) => live && setRecent(r.slice(0, 6))).catch(() => live && setRecent([]));
+    Promise.all([
+      opsApi.overview(workspaceId || null).then((o) => (o.attention || []).length).catch(() => 0),
+      flowsApi.list(workspaceId || null).then((f) => f.filter((x) => x.needs_fix).length).catch(() => 0),
+    ]).then(([a, b]) => live && setNeeds(a + b));
+    return () => { live = false; };
+  }, [workspaceId]);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeRef.current(); };
+    document.addEventListener("keydown", onKey);
+    // focus the first thing in the panel, and give it back to the mark on close
+    const back = document.activeElement as HTMLElement | null;
+    ref.current?.querySelector<HTMLElement>("[data-gx-sb-new]")?.focus({ preventScroll: true });
+    return () => { document.removeEventListener("keydown", onKey); if (back && document.contains(back)) back.focus({ preventScroll: true }); };
+  }, []);
+  const convId = pathname.startsWith("/chat/") ? pathname.split("/")[2] : "";
+  return createPortal(
+    <>
+      <div className="gx-sb-dim" onClick={onClose} aria-hidden="true" data-gx-sb-dim="" />
+      <aside ref={ref} className="gx-sb" aria-label="Sidebar" data-gx-sidebar="" role="dialog" aria-modal="true">
+        <div className="gx-sb-hd">
+          <BrandMark size={30} />
+          <b className="gx-sb-word">GD<span>360</span></b>
+          <span style={{ flex: 1 }} />
+          <button type="button" className="gx-sb-x" onClick={onClose} aria-label="Close the sidebar" data-gx-sb-close="">{GX.close}</button>
+        </div>
+        <Link to="/chat" className="gx-sb-new" onClick={onClose} data-gx-sb-new="">{GX.plus}New question</Link>
+        <nav className="gx-sb-nav" aria-label="Places">
+          {items.map((it) => (
+            <Link key={it.key} to={it.to} onClick={onClose} className={`gx-sb-i${on === it.key ? " on" : ""}`} aria-current={on === it.key ? "page" : undefined} data-gx-sb-item={it.key}>
+              {it.icon}<span>{it.label}</span>
+              {it.key === "automations" && needs > 0 && <span className="gx-sb-badge" aria-label={`${needs} need you`} data-gx-sb-needs="">{needs}</span>}
+            </Link>
+          ))}
+        </nav>
+        <div className="gx-sb-k">Recent</div>
+        <div className="gx-sb-recent" data-gx-sb-recent="">
+          {recent === null && <><span className="gx-sb-skel" /><span className="gx-sb-skel" /><span className="gx-sb-skel" /></>}
+          {recent && !recent.length && <span className="gx-sb-none">Your questions will show here.</span>}
+          {recent?.map((c) => (
+            <Link key={c.id} to={`/chat/${c.id}`} onClick={onClose} className={`gx-sb-rc${c.id === convId ? " on" : ""}`} title={c.title}>{c.title || "Untitled"}</Link>
+          ))}
+          {!!recent?.length && <Link to="/library" onClick={onClose} className="gx-sb-rc all">See all in Saved work</Link>}
+        </div>
+        <span style={{ flex: 1, minHeight: 12 }} />
+        {eulivAvailable() && (
+          <button type="button" className="gx-sb-i" onClick={() => { onClose(); openEuliv(); }} data-gx-sb-euliv="">
+            {GX.mic}<span className="two">Talk to Euliv<small>or say “Hi Euliv” on Home</small></span>
+            <span className="gx-sb-live" aria-hidden="true" />
+          </button>
+        )}
+        <Link to="/settings" onClick={onClose} className={`gx-sb-i${on === "settings" ? " on" : ""}`}>{GX.gear}<span>Settings</span></Link>
+        <button type="button" className="gx-sb-me" data-gx-menu-trigger="" onClick={(e) => onWorkspace(e.currentTarget)} aria-label={`${name}, ${wsLabel}. Switch or manage workspace`}>
+          <span className="gx-logo" style={{ marginTop: 0 }}>{initials}</span>
+          <span className="two"><b>{name}</b><small>{wsLabel}</small></span>
+        </button>
+      </aside>
+    </>,
+    document.body,
+  );
+}
+
 export default function AppSidebar({
   workspaces,
   activeWorkspaceId,
@@ -1166,7 +1255,13 @@ export default function AppSidebar({
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [showBrandKit, setShowBrandKit] = useState(false);
   const [menu, setMenu] = useState<RailMenu>(null);
-  useEffect(() => setMenu(null), [location.pathname]);
+  const [side, setSide] = useState(false);
+  useEffect(() => { setMenu(null); setSide(false); }, [location.pathname]);
+  useEffect(() => {
+    const open = () => { setMenu(null); setSide(true); };
+    window.addEventListener(OPEN_SIDEBAR_EVENT, open);
+    return () => window.removeEventListener(OPEN_SIDEBAR_EVENT, open);
+  }, []);
 
   // the top bar's workspace name opens the same menu (components/TopNav.tsx)
   useEffect(() => {
@@ -1192,7 +1287,7 @@ export default function AppSidebar({
   const primary = [
     { key: "home", label: "Home", to: "/", icon: GX.home },
     { key: "new", label: "New", to: "/chat", icon: GX.plus },
-    { key: "library", label: "Library", to: "/library", icon: GX.lib },
+    { key: "library", label: "Saved work", to: "/library", icon: GX.lib },
     { key: "dashboards", label: "Dashboards", to: "/dashboards", icon: GX.grid },
     { key: "data", label: "Data", to: "/data", icon: GX.db },
     { key: "automations", label: "Automate", to: "/automations", icon: GX.bolt },
@@ -1206,7 +1301,8 @@ export default function AppSidebar({
   return (
     <>
       <nav className="gx-rail" aria-label="Main" data-gx-rail="" data-sidebar-rail="rail">
-        <Link to="/" className="gx-mark" aria-label="GD360 home" title="GD360"><BrandMark size={34} /></Link>
+        <button type="button" className="gx-mark" aria-label="Open the sidebar" title="Open the sidebar" aria-expanded={side} data-gx-open-sidebar=""
+          onClick={() => { setMenu(null); setSide((x) => !x); }}><BrandMark size={34} /></button>
         <Link to="/chat" className={`gx-new${on === "new" ? " on" : ""}`} aria-current={on === "new" ? "page" : undefined} data-nav="new" title="New">
           {GX.plus}<span className="gx-sr">New</span>
         </Link>
@@ -1216,7 +1312,7 @@ export default function AppSidebar({
           </Link>
         ))}
         <span className="gx-spacer" />
-        {eulivAvailable() && <button type="button" className="gx-ri" onClick={() => openEuliv()} aria-label="Talk to Euliv, the voice assistant" data-nav="euliv" title="Euliv">{GX.mic}<span className="gx-sr">Euliv</span></button>}
+        {eulivAvailable() && <button type="button" className="gx-ri gx-euliv" onClick={() => openEuliv()} aria-label="Talk to Euliv, the voice assistant" data-nav="euliv" title="Talk to Euliv - or say “Hi Euliv” on Home">{GX.mic}<span className="gx-sr">Euliv</span></button>}
         <button type="button" className={`gx-ri${on === "more" ? " on" : ""}`} data-gx-menu-trigger="" aria-haspopup="menu" aria-expanded={menu?.kind === "more"}
           onClick={(e) => openAt("more", e.currentTarget)} data-nav="more" title="More">{GX.more}<span className="gx-sr">More</span></button>
         <Link to="/settings" className={`gx-ri${on === "settings" ? " on" : ""}`} aria-current={on === "settings" ? "page" : undefined} data-nav="settings" title="Settings">{GX.gear}<span className="gx-sr">Settings</span></Link>
@@ -1234,6 +1330,14 @@ export default function AppSidebar({
         <button type="button" className={`gx-tab${["more", "data", "automations", "settings", "models", "initiatives"].includes(on) ? " on" : ""}`} data-gx-menu-trigger="" aria-haspopup="menu"
           aria-expanded={menu?.kind === "more"} onClick={(e) => openAt("more", e.currentTarget)} data-gx-tab-more="">{GX.more}More</button>
       </nav>
+
+      {side && (
+        <SidePanel on={on} workspaceId={activeWorkspaceId} items={primary.filter((it) => it.key !== "new")} initials={initials}
+          name={user?.full_name || user?.email || "You"}
+          wsLabel={active ? `${active.is_personal ? "Personal workspace" : active.name}${active.is_personal ? "" : " · Team"}` : "Workspace"}
+          onClose={() => setSide(false)}
+          onWorkspace={(el) => { const r = el.getBoundingClientRect(); setSide(false); setMenu({ kind: "ws", x: window.innerWidth <= 760 ? 8 : r.left, y: window.innerWidth <= 760 ? 0 : r.top - 8, sheet: window.innerWidth <= 760 }); }} />
+      )}
 
       {menu?.kind === "ws" && (
         <MenuPanel menu={menu} onClose={close} label="Workspace">

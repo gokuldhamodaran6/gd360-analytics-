@@ -512,20 +512,20 @@ export default function EulivProvider() {
   const wakeOn = !!settings.wake && onHome && !hiddenRoute && !open && !isTouchDevice() && speechInputSupported();
   const wake = useWakeWord(wakeOn, (rest) => openEuliv(rest || undefined));
 
+  // 2026-10-19 (R57): the floating "Say Hi Euliv" pill sat on top of the rail's avatar. The honest sign that the
+  // mic is listening is now a small live dot on the rail's Euliv button (and in the sidebar's "Talk to Euliv"),
+  // driven by this attribute - nothing floats over the page any more.
+  const listening = wake.active && !open && !hiddenRoute;
+  useEffect(() => {
+    const root = document.documentElement;
+    if (listening) root.setAttribute("data-euliv-listening", "");
+    else root.removeAttribute("data-euliv-listening");
+    return () => root.removeAttribute("data-euliv-listening");
+  }, [listening]);
+
   if (hiddenRoute) return null;
   return (
     <>
-      {wake.active && !open && (
-        <button
-          type="button"
-          onClick={() => openEuliv()}
-          className="hidden sm:inline-flex fixed left-4 bottom-4 z-[60] items-center gap-2 h-8 pl-2 pr-3 rounded-full border border-border bg-surface/90 backdrop-blur text-[12px] text-secondary hover:text-text shadow-[0_10px_30px_-12px_rgb(0_0_0/0.6)]"
-          title="Euliv is listening for its name in this tab. Turn this off in Euliv's settings."
-          data-euliv-wake=""
-        >
-          <OrbGlyph size={14} /> Say “Hi Euliv”
-        </button>
-      )}
       {open && <EulivPanel key={openSeq} first={firstRef.current} talkId={talkRef.current} settings={settings} wakeProblem={wake.problem} onClose={() => setOpen(false)} />}
     </>
   );
