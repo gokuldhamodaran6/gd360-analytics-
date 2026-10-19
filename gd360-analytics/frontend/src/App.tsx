@@ -52,6 +52,8 @@ import InitiativeDetail from "./pages/InitiativeDetail";
 import Accounts from "./pages/Accounts";
 import { ApprovePage, EventRegister, RepPage, WalkInCapture } from "./pages/PublicInitiative";
 import AutopilotSetup from "./pages/AutopilotSetup";
+import Flows from "./pages/Flows";
+import FlowStudio from "./pages/FlowStudio";
 import EventsLanding from "./pages/EventsLanding";
 import { SharedEvent, SignGoal, SponsorPublic, SurveyPage, TicketPage } from "./eventos/PublicPages";
 import StaffApp from "./eventos/StaffApp";
@@ -244,6 +246,8 @@ export default function App() {
       <Route path="/jobs" element={<Navigate to="/automations" replace />} />
       {/* 2026-10-08 (round 12): Automations - WHEN -> DO -> TELL. /jobs keeps
           the older dashboard schedules and pipelines reachable. */}
+      <Route path="/automate" element={<Protected><Flows /></Protected>} />
+      <Route path="/automate/:flowId" element={<Protected><FlowStudio /></Protected>} />
       <Route path="/automations" element={<Protected><Automations /></Protected>} />
       <Route path="/automations/new" element={<Protected><AutomationEdit /></Protected>} />
       <Route path="/automations/:automationId" element={<Protected><AutomationEdit /></Protected>} />
