@@ -1809,6 +1809,87 @@ def rerun_file_import(
     return _import_state(db, ds, sheet)
 
 
+@router.post("/{datasource_id}/replace-file")
+async def replace_file(
+    datasource_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """R54: puts today's file in place of the stored one (same CSV/Excel
+    source, same id), so every dashboard, flow and automation built on it
+    reads the new rows. Columns may change - a flow that relied on an old
+    column will hold its output and propose a fix rather than save wrong
+    numbers. Editable tier. A managed flow output can't be replaced."""
+    ds = _get_editable_datasource(db, user, datasource_id)
+    if ds.kind not in ("csv", "excel"):
+        raise HTTPException(400, "Only an uploaded CSV or Excel file can be replaced with a new file.")
+    if (ds.connection_info or {}).get("managed_by_flow"):
+        raise HTTPException(400, "This table is made by a flow. Change the flow instead of replacing the file.")
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    want = (".csv",) if ds.kind == "csv" else (".xlsx", ".xls")
+    if ext not in want:
+        raise HTTPException(400, f"This source holds a {'CSV' if ds.kind == 'csv' else 'Excel'} file - upload a {' or '.join(want)} file.")
+    contents = await file.read()
+    if len(contents) > settings.MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(400, f"File too large. Max {settings.MAX_UPLOAD_MB}MB.")
+    connector = FileConnector(contents, ext)
+    try:
+        sheet_names = connector.list_sheet_names()
+        try:
+            inspection = file_import.inspect_file(contents, file.filename)
+        except Exception:  # noqa: BLE001
+            inspection = None
+        frames: dict = {}
+        by_sheet: dict = {}
+        targets = [None] if not sheet_names or len(sheet_names) <= 1 else sheet_names[:50]
+        for sheet_name in targets:
+            hr = 1
+            for sh in ((inspection or {}).get("sheets") or []):
+                if sheet_name and sh.get("name") == sheet_name:
+                    hr = sh.get("detected_header_row") or 1
+            if not sheet_name:
+                hr = (inspection or {}).get("detected_header_row") or 1
+            try:
+                frame, chosen, summary = file_import.run_import(contents, file.filename, {"sheet": sheet_name if sheet_name else (sheet_names[0] if sheet_names else None), "header_row": hr})
+                by_sheet["" if not sheet_name else sheet_name] = {"settings": chosen, "summary": summary}
+            except Exception:  # noqa: BLE001
+                frame = connector.load_dataframe(sheet_name=sheet_name if sheet_name else 0)
+            frames[sheet_name] = frame
+    except Exception as e:
+        raise HTTPException(400, f"Could not read file: {e}")
+    if None in frames:
+        schema = {"columns": [{"name": c, "type": str(frames[None][c].dtype)} for c in frames[None].columns]}
+    else:
+        schema = {n: [{"name": c, "type": str(f[c].dtype)} for c in f.columns] for n, f in frames.items()}
+    info = dict(ds.connection_info or {})
+    info["original_filename"] = file.filename
+    info["replaced_at"] = datetime.utcnow().isoformat()
+    for k in ("import_by_sheet", "import_settings", "import_summary", "import_inspection"):
+        info.pop(k, None)
+    if inspection:
+        info["import_inspection"] = inspection
+    if by_sheet:
+        info["import_by_sheet"] = by_sheet
+        first = "" if "" in by_sheet else next(iter(by_sheet))
+        info["import_settings"] = by_sheet[first]["settings"]
+        info["import_summary"] = by_sheet[first]["summary"]
+    ds.connection_info = info
+    ds.schema_cache = schema
+    ds.cleaned_data = None
+    blob_io.put_bytes(db, models.DataSource, "file_data", ds.id, contents)
+    audit.log_audit_event(db, actor=user, action="datasource_file_replaced", workspace_id=ds.workspace_id,
+                          target_type="datasource", target_id=ds.id, metadata={"filename": file.filename})
+    db.commit()
+    for name, frame in frames.items():
+        drop_cached_original(ds.id, name)
+        warm_cache(ds.id, frame, table=name)
+        _profile_cache.pop((ds.id, name), None)
+    _profile_cache.pop((ds.id, default_table_for_preview(ds)), None)
+    rows = sum(len(f) for f in frames.values())
+    return {"id": ds.id, "name": ds.name, "rows": rows, "columns": [c for f in frames.values() for c in f.columns][:200]}
+
+
 def _file_frame(db: Session, ds: models.DataSource, user: models.User, table: str | None, version: models.DatasetVersion | None) -> pd.DataFrame:
     """The whole frame (never a sample) of one sheet or saved version of a
     file source, through the same role filter preview_datasource applies."""
