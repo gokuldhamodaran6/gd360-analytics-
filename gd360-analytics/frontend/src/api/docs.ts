@@ -20,7 +20,21 @@ export type Doc = {
 export type DocRow = { id: string; title: string; conversation_id: string | null; conversation_title: string | null; created_at: string; updated_at: string;
   edited_by_person: boolean; figures: number; tables: number; words: number; pages: number };
 
+export type DocComment = {
+  id: string; block_id: string | null; quote: string | null; body: string; author: { id: string; name: string; me: boolean }; created_at: string | null; resolved: boolean;
+  replies: { id: string; body: string; author: { id: string; name: string; me: boolean }; created_at: string | null }[];
+};
+
 export const docsApi = {
+  // 2026-10-19 (R56): the Doc studio
+  style: (id: string, blockId: string, to: "heading" | "paragraph") => api.put<Doc>(`/v2/documents/${id}/blocks/${blockId}/style`, { to }).then((r) => r.data),
+  insert: (id: string, afterId: string | null, kind: "heading" | "paragraph", text: string) =>
+    api.post<{ block_id: string; document: Doc }>(`/v2/documents/${id}/insert`, { after_id: afterId, kind, text }).then((r) => r.data),
+  comments: (id: string) => api.get<{ comments: DocComment[] }>(`/v2/documents/${id}/comments`).then((r) => r.data.comments),
+  comment: (id: string, body: { body: string; block_id?: string | null; quote?: string | null; parent_id?: string | null }) =>
+    api.post<{ comments: DocComment[] }>(`/v2/documents/${id}/comments`, body).then((r) => r.data.comments),
+  resolve: (id: string, commentId: string) => api.post<{ comments: DocComment[] }>(`/v2/documents/${id}/comments/${commentId}/resolve`, {}).then((r) => r.data.comments),
+  uncomment: (id: string, commentId: string) => api.delete<{ comments: DocComment[] }>(`/v2/documents/${id}/comments/${commentId}`).then((r) => r.data.comments),
   list: () => api.get<{ documents: DocRow[] }>("/v2/documents").then((r) => r.data.documents),
   get: (id: string) => api.get<Doc>(`/v2/documents/${id}`).then((r) => r.data),
   rename: (id: string, title: string) => api.patch<Doc>(`/v2/documents/${id}`, { title }).then((r) => r.data),

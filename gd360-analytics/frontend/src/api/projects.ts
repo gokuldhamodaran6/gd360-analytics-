@@ -482,6 +482,8 @@ export const guidedApi = {
       .then((r) => r.data),
   runRest: (runId: string) => api.post<ProjectRun>(`/guided/runs/${runId}/run-rest`).then((r) => r.data),
   finish: (runId: string) => api.post<ProjectRun>(`/guided/runs/${runId}/finish`).then((r) => r.data),
+  // 2026-10-19 (R56): "Run all" on the Analysis canvas - every step again, then the answer rewritten
+  rework: (runId: string) => api.post<ProjectRun>(`/guided/runs/${runId}/rework`).then((r) => r.data),
 };
 
 export type AppField = { key: string; label: string; placeholder: string; secret: boolean; multiline?: boolean; optional?: boolean };

@@ -13,10 +13,17 @@ export type BoardSummary = {
   filters: BoardFilter[]; default_filters: Record<string, string>; pages: { id: string; name: string; blurb?: string | null; kind: string }[];
   definitions: string[]; about: string[]; model?: { ap: number; auc: number; test_n: number; baseline_ap: number } | null;
   built_at?: string; sampled?: boolean; conversation_id?: string | null; can_edit?: boolean;
+  // 2026-10-19 (R56): the Dashboard studio
+  draft?: boolean; published_at?: string | null; edited_at?: string | null; can_undo?: boolean; versions?: number; changed?: Record<string, string>;
+  access?: { draft: boolean; published_at?: string | null; people: number; workspace: boolean };
 };
+export type BoardEdit = { summary: BoardSummary; change: string; changed: string[]; page_id?: string; block_id?: string };
+export type BoardColumns = { dims: { column: string; label: string }[]; measures: { column: string; label: string }[]; outcome: boolean; date?: string | null;
+  filterable: { column: string; label: string }[] };
+export type BoardVersion = { index: number; label: string; at?: string | null; current: boolean };
 export type Point = { label: string; value: number | null; n?: number };
 export type Block = {
-  id: string; kind: string; type: "kpi" | "bars" | "line" | "table" | "list" | "tiers" | "empty"; span: number; h: number; hero: boolean;
+  id: string; kind: string; type: "kpi" | "bars" | "line" | "table" | "list" | "tiers" | "empty" | "note"; span: number; h: number; hero: boolean;
   title?: string; sub?: string; note?: string; definition?: string; text?: string;
   value?: number | null; unit?: Unit; tone?: Tone; chips?: Chip[]; spark?: (number | null)[] | null;
   curve?: { label: string; points: Point[] } | null; stack?: { label: string; value: number; tone: Tone }[];
@@ -41,6 +48,21 @@ export const boardsApi = {
   patch: (id: string, body: { name?: string; theme?: string; default_filters?: Record<string, string> }) =>
     api.patch<BoardSummary>(`/v2/boards/${id}`, body).then((r) => r.data),
   refresh: (id: string) => api.post(`/v2/boards/${id}/refresh`, {}).then((r) => r.data),
+  // R56: edit in place
+  columns: (id: string) => api.get<BoardColumns>(`/v2/boards/${id}/columns`).then((r) => r.data),
+  layout: (id: string, blockId: string, action: "wider" | "narrower" | "left" | "right" | "remove") =>
+    api.post<BoardEdit>(`/v2/boards/${id}/blocks/${blockId}/layout`, { action }).then((r) => r.data),
+  retitle: (id: string, blockId: string, title: string) => api.put<BoardEdit>(`/v2/boards/${id}/blocks/${blockId}`, { title }).then((r) => r.data),
+  noteText: (id: string, blockId: string, text: string) => api.put<BoardEdit>(`/v2/boards/${id}/blocks/${blockId}`, { text }).then((r) => r.data),
+  addChart: (id: string, pageId: string | null, column: string, measure?: string | null) =>
+    api.post<BoardEdit>(`/v2/boards/${id}/blocks`, { page_id: pageId, column, measure: measure || null }).then((r) => r.data),
+  addNote: (id: string, pageId: string | null, note: string, title?: string) => api.post<BoardEdit>(`/v2/boards/${id}/blocks`, { page_id: pageId, note, title }).then((r) => r.data),
+  addFilter: (id: string, column: string) => api.post<BoardEdit>(`/v2/boards/${id}/filters`, { column }).then((r) => r.data),
+  removeFilter: (id: string, key: string) => api.delete<BoardEdit>(`/v2/boards/${id}/filters/${encodeURIComponent(key)}`).then((r) => r.data),
+  undo: (id: string) => api.post<BoardEdit>(`/v2/boards/${id}/undo`, {}).then((r) => r.data),
+  versions: (id: string) => api.get<{ versions: BoardVersion[] }>(`/v2/boards/${id}/versions`).then((r) => r.data.versions),
+  restore: (id: string, index: number) => api.post<BoardEdit>(`/v2/boards/${id}/versions/restore`, { index }).then((r) => r.data),
+  publish: (id: string, on = true) => api.post<BoardEdit>(`/v2/boards/${id}/${on ? "publish" : "unpublish"}`, {}).then((r) => r.data),
   download: async (id: string, kind: "xlsx" | "pptx", filters: Record<string, string>, name?: string) => {
     const res = await api.get(`/v2/boards/${id}/export.${kind}`, { params: { filters: JSON.stringify(filters || {}) }, responseType: "blob" });
     const cd = String(res.headers?.["content-disposition"] || "");
