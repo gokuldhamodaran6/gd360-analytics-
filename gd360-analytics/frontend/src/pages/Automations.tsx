@@ -328,6 +328,9 @@ export default function Automations() {
                   className="min-w-[150px]"
                 />
               )}
+              <Link to="/automate" data-automate-data="" className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full border border-border-strong text-ui font-medium text-text hover:bg-surface2 no-underline">
+                Automate data
+              </Link>
               <NewMenu canEdit={data ? data.workspace.can_edit : true} onChain={() => setChainSheet({ id: null })} />
             </div>
           </header>
