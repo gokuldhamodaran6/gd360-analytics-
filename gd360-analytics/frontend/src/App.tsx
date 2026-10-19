@@ -2,10 +2,10 @@ import { Navigate, Route, Routes, useLocation, useParams } from "react-router-do
 import { useAuth } from "./api/AuthContext";
 import Login from "./pages/Login";
 import AdminLogin from "./pages/AdminLogin";
-import MarketingHome from "./marketing/pages/Home";
-import MarketingPricing from "./marketing/pages/Pricing";
+import MarketingHome from "./marketing/v2/Landing";
+import MarketingPricing from "./marketing/v2/Pricing2";
 import MarketingAbout from "./marketing/pages/About";
-import MarketingStart from "./marketing/pages/Start";
+import MarketingStart from "./marketing/v2/Start2";
 import Dashboard from "./pages/Dashboard";
 import Workspace from "./pages/Workspace";
 import Dashboards from "./pages/Dashboards";
@@ -59,6 +59,9 @@ import { SharedEvent, SignGoal, SponsorPublic, SurveyPage, TicketPage } from "./
 import StaffApp from "./eventos/StaffApp";
 import ProjectDashboard from "./pages/ProjectDashboard";
 import SpacePage from "./pages/SpacePage";
+import WorkspacePage from "./studio/WorkspacePage";
+import ModelsPage, { ModelPage } from "./studio/ModelsPage";
+import SettingsPage from "./studio/SettingsPage";
 import CommandPalette from "./components/CommandPalette";
 import ErrorBoundary from "./components/ErrorBoundary";
 
@@ -165,7 +168,8 @@ export default function App() {
       <Route path="/chat/:conversationId" element={<Protected><ConversationPage /></Protected>} />
       <Route path="/boards/:boardId" element={<Protected><BoardPage /></Protected>} />
       <Route path="/docs/:docId" element={<Protected><DocPage /></Protected>} />
-      <Route path="/library" element={<Protected><Dashboard /></Protected>} />
+      <Route path="/library" element={<Protected><WorkspacePage /></Protected>} />
+      <Route path="/library/folders" element={<Protected><Dashboard /></Protected>} />
       <Route path="/library/documents" element={<Protected><LibraryDocs /></Protected>} />
       <Route path="/projects" element={<RedirectKeepingQuery to="/library" />} />
       {/* 2026-10-13 (R45): keyed by the answer's id, so moving from one answer to another (command
@@ -225,7 +229,9 @@ export default function App() {
           for free, while confusingly sitting right next to this one.) */}
       {/* 2026-10-08 (round 13): ML Studio - goal -> plan -> training ->
           results. The older gallery + wizard stays at /ml-models/classic. */}
-      <Route path="/ml-models" element={<Protected><MLStudio /></Protected>} />
+      <Route path="/ml-models" element={<Protected><ModelsPage /></Protected>} />
+      <Route path="/ml-models/studio" element={<Protected><MLStudio /></Protected>} />
+      <Route path="/models/:id" element={<Protected><ModelPage /></Protected>} />
       <Route path="/ml-models/classic" element={<Navigate to="/ml-models" replace />} />
       <Route path="/ml-studio/new" element={<Protected><MLStudioNew /></Protected>} />
       <Route path="/ml-studio/:id" element={<Protected><MLStudioProject /></Protected>} />
@@ -264,6 +270,8 @@ export default function App() {
       <Route path="/governance" element={<RedirectKeepingQuery to="/trust" />} />
       <Route path="/trust" element={<Protected><TrustCenter /></Protected>} />
       <Route path="/settings/plan" element={<Protected><PlanPage /></Protected>} />
+      <Route path="/settings" element={<Protected><SettingsPage /></Protected>} />
+      <Route path="/settings/:section" element={<Protected><SettingsPage /></Protected>} />
       <Route path="/settings/domains" element={<Protected><DomainSettings /></Protected>} />
       {/* 2026-10-10: Mission Control — the internal admin portal (src/admin). */}
       <Route path="/admin/*" element={<Protected><AdminApp /></Protected>} />
