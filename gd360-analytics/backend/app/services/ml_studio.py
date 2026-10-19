@@ -2265,6 +2265,10 @@ def _train_supervised(db: Session, job: Job, user: models.User, spec: dict, fram
     if per_class is not None:
         m.results.update(per_class=per_class, confusion=confusion, dropped_classes=dropped_classes)
     m.results.update(_present_supervised(spec.get("problem_type"), m.results))
+    try:
+        m.results.update(_studio_extras(winner, df, te, X_te, y_te, info, positive, drivers))
+    except Exception as e:  # noqa: BLE001 - the extras never fail a trained model
+        logger.info("[ml_studio] studio extras skipped: %s", e)
     job.save(leaderboard=board)
 
 
@@ -2358,6 +2362,86 @@ def _one_col_model(kind: str):
     if kind == "number":
         return Ridge(alpha=1.0)
     return LogisticRegression(max_iter=1000)
+
+
+_ID_NAME = re.compile(r"(^|_)(id|num|number|no|code|key)$|^clientnum$|^customer|^member|^user|^account", re.I)
+
+
+def _id_column(df: pd.DataFrame) -> str | None:
+    """The column that names a row (customer id, member number...): mostly unique, named like an id."""
+    n = max(1, len(df))
+    for c in df.columns:
+        if _ID_NAME.search(str(c)) and df[c].nunique(dropna=True) >= 0.95 * n:
+            return str(c)
+    return None
+
+
+def _cell(v):
+    if v is None or (isinstance(v, float) and not np.isfinite(v)):
+        return None
+    if isinstance(v, (np.integer,)):
+        return int(v)
+    if isinstance(v, (np.floating, float)):
+        return round(float(v), 3)
+    if isinstance(v, (pd.Timestamp, datetime)):
+        return str(v)[:10]
+    return str(v)[:60]
+
+
+def _studio_extras(winner, df: pd.DataFrame, te: np.ndarray, X_te: pd.DataFrame, y_te: pd.Series, info: dict, positive, drivers: list[dict]) -> dict:
+    """2026-10-19 (R56, the Model studio): "Was it right?" - predicted against what really happened on the held-out
+    rows, by band - and the held-out rows with the highest predictions, each with whether it really happened."""
+    id_col = _id_column(df)
+    show = [d["feature"] for d in drivers[:3] if d.get("feature") in df.columns]
+    base = df.iloc[te].reset_index(drop=True)
+    if info["kind"] == "binary":
+        p = _positive_proba(winner, X_te, positive)
+        yt = (np.asarray(y_te) == positive).astype(int)
+        bands = []
+        for lo in (0.0, 0.2, 0.4, 0.6, 0.8):
+            hi = lo + 0.2
+            mask = (p >= lo) & ((p < hi) if hi < 1 else (p <= 1.0))
+            n = int(mask.sum())
+            bands.append({"band": f"{int(lo * 100)}–{int(hi * 100)}%", "n": n,
+                          "predicted": round(float(p[mask].mean()) * 100, 1) if n else None,
+                          "actual": round(float(yt[mask].mean()) * 100, 1) if n else None})
+        order = np.argsort(-p)[:25]
+        rows = []
+        for i in order:
+            r = {"id": _cell(base.iloc[i][id_col]) if id_col else f"Row {int(te[i]) + 1}", "chance": round(float(p[i]) * 100, 1),
+                 "happened": bool(yt[i])}
+            for c in show:
+                r[c] = _cell(base.iloc[i][c])
+            rows.append(r)
+        high = int((p >= 0.7).sum())
+        return {"calibration": {"kind": "binary", "bands": bands, "positive": str(positive)},
+                "top_rows": {"id_label": id_col or "Row", "columns": show, "rows": rows, "high": high, "of": int(len(p))}}
+    if info["kind"] == "number":
+        pred = np.asarray(winner.predict(X_te), dtype=float)
+        yt = np.asarray(y_te, dtype=float)
+        qs = np.quantile(pred, [0, .2, .4, .6, .8, 1.0])
+        bands = []
+        for k in range(5):
+            lo, hi = qs[k], qs[k + 1]
+            mask = (pred >= lo) & ((pred < hi) if k < 4 else (pred <= hi))
+            n = int(mask.sum())
+            bands.append({"band": f"{_fmt_short(lo)}–{_fmt_short(hi)}", "n": n, "predicted": round(float(pred[mask].mean()), 3) if n else None,
+                          "actual": round(float(yt[mask].mean()), 3) if n else None})
+        order = np.argsort(-pred)[:25]
+        rows = []
+        for i in order:
+            r = {"id": _cell(base.iloc[i][id_col]) if id_col else f"Row {int(te[i]) + 1}", "predicted": round(float(pred[i]), 3), "actual": round(float(yt[i]), 3)}
+            for c in show:
+                r[c] = _cell(base.iloc[i][c])
+            rows.append(r)
+        return {"calibration": {"kind": "number", "bands": bands},
+                "top_rows": {"id_label": id_col or "Row", "columns": show, "rows": rows, "high": None, "of": int(len(pred))}}
+    return {}
+
+
+def _fmt_short(v: float) -> str:
+    a = abs(float(v))
+    return f"{v / 1e6:.1f}M" if a >= 1e6 else f"{v / 1e3:.1f}k" if a >= 1e4 else f"{v:,.0f}" if a >= 100 else f"{v:.2g}"
 
 
 def _drivers(pipe, X_te: pd.DataFrame, y_te: pd.Series, info: dict, positive, feats: list[str]) -> list[dict]:
