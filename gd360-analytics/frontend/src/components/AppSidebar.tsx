@@ -1081,6 +1081,8 @@ export function ConnectDataPopup({
 // 240 px sidebar with its own Spaces list and drawer is gone: Spaces live on Home and on the Data page.
 // ===========================================================================================
 
+// R56 (mobile board): the phone tab bar reads as the day - Today, Ask, Saved
+const PHONE_LABEL: Record<string, string> = { home: "Today", new: "Ask", library: "Saved" };
 const GX = {
   home: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z" /></svg>,
   plus: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>,
@@ -1114,7 +1116,7 @@ export function railActive(pathname: string): string {
   if (p.startsWith("/dashboards") || p.startsWith("/boards") || p.startsWith("/dashboard-builder") || p.startsWith("/project-dashboards")) return "dashboards";
   if (p.startsWith("/data") || p.startsWith("/spaces") || p.startsWith("/connect")) return "data";
   if (p.startsWith("/automations") || p.startsWith("/automate") || p.startsWith("/jobs")) return "automations";
-  if (p.startsWith("/ml-") || p.startsWith("/ml/")) return "models";
+  if (p.startsWith("/ml-") || p.startsWith("/ml/") || p.startsWith("/models")) return "models";
   if (p.startsWith("/initiatives") || p.startsWith("/events/app")) return "initiatives";
   if (p.startsWith("/profile") || p.startsWith("/settings")) return "settings";
   return "more";
@@ -1217,7 +1219,7 @@ export default function AppSidebar({
         {eulivAvailable() && <button type="button" className="gx-ri" onClick={() => openEuliv()} aria-label="Talk to Euliv, the voice assistant" data-nav="euliv" title="Euliv">{GX.mic}<span className="gx-sr">Euliv</span></button>}
         <button type="button" className={`gx-ri${on === "more" ? " on" : ""}`} data-gx-menu-trigger="" aria-haspopup="menu" aria-expanded={menu?.kind === "more"}
           onClick={(e) => openAt("more", e.currentTarget)} data-nav="more" title="More">{GX.more}<span className="gx-sr">More</span></button>
-        <Link to="/profile" className={`gx-ri${on === "settings" ? " on" : ""}`} aria-current={on === "settings" ? "page" : undefined} data-nav="settings" title="Settings">{GX.gear}<span className="gx-sr">Settings</span></Link>
+        <Link to="/settings" className={`gx-ri${on === "settings" ? " on" : ""}`} aria-current={on === "settings" ? "page" : undefined} data-nav="settings" title="Settings">{GX.gear}<span className="gx-sr">Settings</span></Link>
         <button type="button" className="gx-logo gx-me" data-gx-menu-trigger="" data-gx-ws="" aria-haspopup="menu" aria-expanded={menu?.kind === "ws"}
           aria-label={`Workspace: ${active?.name || "Personal Workspace"}. Switch or manage`} title={active?.name || "Workspace"}
           onClick={(e) => openAt("ws", e.currentTarget)}>
@@ -1227,7 +1229,7 @@ export default function AppSidebar({
 
       <nav className="gx-tabs" aria-label="Main" data-gx-tabs="">
         {primary.filter((it) => ["home", "new", "library", "dashboards"].includes(it.key)).map((it) => (
-          <Link key={it.key} to={it.to} className={`gx-tab${on === it.key ? " on" : ""}`} aria-current={on === it.key ? "page" : undefined}>{it.icon}{it.label}</Link>
+          <Link key={it.key} to={it.to} className={`gx-tab${on === it.key ? " on" : ""}`} aria-current={on === it.key ? "page" : undefined}>{it.icon}{PHONE_LABEL[it.key] || it.label}</Link>
         ))}
         <button type="button" className={`gx-tab${["more", "data", "automations", "settings", "models", "initiatives"].includes(on) ? " on" : ""}`} data-gx-menu-trigger="" aria-haspopup="menu"
           aria-expanded={menu?.kind === "more"} onClick={(e) => openAt("more", e.currentTarget)} data-gx-tab-more="">{GX.more}More</button>
