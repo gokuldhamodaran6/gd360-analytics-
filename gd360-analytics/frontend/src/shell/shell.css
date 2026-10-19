@@ -104,3 +104,65 @@
   .gx-menu.sheet { left: 8px !important; right: 8px !important; bottom: calc(70px + env(safe-area-inset-bottom, 0px)) !important; top: auto !important; min-width: 0; }
 }
 @media (max-width: 1100px) { .gx-hide-md { display: none !important; } }
+
+/* 2026-10-19 (R57, "ask flow fixes" board 3): the labelled sidebar - one tap on the mark (☰ on a phone) */
+button.gx-mark { padding: 0; border: 0; background: none; cursor: pointer; }
+button.gx-mark:hover { box-shadow: 0 0 0 3px rgb(var(--color-primary) / .18); }
+.gx-burger { display: none; width: 36px; height: 36px; margin-left: -6px; border: 0; border-radius: 10px; background: transparent; color: rgb(var(--color-text)); place-items: center; cursor: pointer; flex: 0 0 auto; }
+.gx-burger svg { width: 20px; height: 20px; }
+.gx-burger:hover { background: rgb(var(--color-subtle)); }
+@media (max-width: 760px) { .gx-burger { display: grid; } }
+.gx-sb-dim { position: fixed; inset: 0; z-index: 64; background: rgb(18 21 20 / .22); animation: gxsbfade .16s ease-out; }
+.gx-sb {
+  position: fixed; left: 0; top: 0; bottom: 0; z-index: 65; width: 280px; max-width: calc(100vw - 48px); box-sizing: border-box;
+  display: flex; flex-direction: column; gap: 2px; padding: 14px 12px calc(12px + env(safe-area-inset-bottom, 0px));
+  background: rgb(var(--gx-rail)); border-right: 1px solid rgb(var(--color-border)); color: rgb(var(--color-text));
+  box-shadow: 12px 0 40px -24px rgb(18 21 20 / .45); overflow-y: auto; font-family: "Geist", system-ui, sans-serif;
+  animation: gxsbin .18s cubic-bezier(.2, .8, .2, 1);
+}
+@keyframes gxsbin { from { transform: translateX(-24px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes gxsbfade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .gx-sb, .gx-sb-dim { animation: none; } }
+.gx-sb-hd { display: flex; align-items: center; gap: 10px; padding: 0 2px 12px; }
+.gx-sb-word { font-size: 17px; letter-spacing: -.02em; font-weight: 600; }
+.gx-sb-word span { color: rgb(var(--color-primary)); font-family: "Geist Mono", ui-monospace, monospace; font-weight: 500; }
+.gx-sb-x { width: 34px; height: 34px; border-radius: 9px; border: 0; background: transparent; color: rgb(var(--color-muted)); display: grid; place-items: center; cursor: pointer; }
+.gx-sb-x:hover { background: rgb(var(--color-surface)); color: rgb(var(--color-text)); }
+.gx-sb-x svg { width: 18px; height: 18px; }
+.gx-sb-new {
+  display: flex; align-items: center; justify-content: center; gap: 8px; height: 40px; border-radius: 11px; margin-bottom: 10px; text-decoration: none;
+  background: rgb(var(--color-primary)); color: rgb(var(--color-on-primary)); font-size: 14px; font-weight: 500; flex: 0 0 auto;
+}
+.gx-sb-new svg { width: 17px; height: 17px; }
+.gx-sb-new:hover { filter: brightness(1.06); }
+.gx-sb-nav { display: flex; flex-direction: column; gap: 2px; }
+.gx-sb-i {
+  display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 0 10px; border-radius: 10px; border: 0; background: transparent; width: 100%;
+  color: rgb(var(--color-secondary)); font: inherit; font-size: 14.5px; text-decoration: none; text-align: left; cursor: pointer; flex: 0 0 auto; box-sizing: border-box;
+}
+.gx-sb-i svg { width: 18px; height: 18px; flex: 0 0 18px; }
+.gx-sb-i:hover { background: rgb(var(--color-surface)); color: rgb(var(--color-text)); }
+.gx-sb-i.on { background: rgb(var(--color-surface)); color: rgb(var(--color-text)); font-weight: 500; box-shadow: 0 0 0 1px rgb(var(--color-border)); }
+.gx-sb .two { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; padding: 6px 0; }
+.gx-sb .two small { font-size: 12px; color: rgb(var(--color-muted)); font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gx-sb-badge { margin-left: auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: rgb(var(--color-danger) / .12); color: rgb(var(--color-danger)); font-size: 11.5px; font-weight: 600; display: grid; place-items: center; box-sizing: border-box; }
+.gx-sb-k { font-family: "Geist Mono", ui-monospace, monospace; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: rgb(var(--color-muted)); padding: 18px 10px 6px; }
+.gx-sb-recent { display: flex; flex-direction: column; gap: 1px; }
+.gx-sb-rc { display: block; padding: 7px 10px; border-radius: 8px; font-size: 13.5px; color: rgb(var(--color-secondary)); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gx-sb-rc:hover { background: rgb(var(--color-surface)); color: rgb(var(--color-text)); }
+.gx-sb-rc.on { background: rgb(var(--color-surface)); color: rgb(var(--color-text)); }
+.gx-sb-rc.all { color: rgb(var(--color-primary)); font-weight: 500; }
+.gx-sb-none { padding: 7px 10px; font-size: 13px; color: rgb(var(--color-muted)); }
+.gx-sb-skel { height: 14px; margin: 8px 10px; border-radius: 6px; background: rgb(var(--color-border) / .7); }
+.gx-sb-skel:nth-child(2) { width: 70%; } .gx-sb-skel:nth-child(3) { width: 82%; }
+.gx-sb-me { display: flex; align-items: center; gap: 10px; padding: 10px 10px 2px; margin-top: 6px; border: 0; border-top: 1px solid rgb(var(--color-border)); background: transparent; color: inherit; font: inherit; font-size: 13.5px; text-align: left; cursor: pointer; width: 100%; }
+.gx-sb-me b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gx-sb-live { display: none; margin-left: auto; width: 8px; height: 8px; border-radius: 4px; background: rgb(var(--color-primary)); box-shadow: 0 0 0 3px rgb(var(--color-primary) / .2); }
+[data-euliv-listening] .gx-sb-live { display: block; }
+/* the "listening for Hi Euliv" sign: a small live dot on the rail's Euliv button - never a pill over the page */
+[data-euliv-listening] .gx-euliv::after { content: ""; position: absolute; top: 8px; right: 8px; width: 7px; height: 7px; border-radius: 4px; background: rgb(var(--color-primary)); box-shadow: 0 0 0 2px rgb(var(--gx-rail)); }
+/* R57 phones: the buttons on the right keep their size; the page's title is what gets shorter */
+@media (max-width: 760px) {
+  .gx-acts { flex: 0 0 auto; }
+  .gx-crumbs { flex: 100 1 0; }
+}
