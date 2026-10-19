@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../api/AuthContext";
+import { BrandMark } from "./Brand";
 import { datasourceApi, DataSourceSummary, WorkspaceDetail, WorkspaceSummary, workspaceApi } from "../api/client";
 import DataSourceForm, { connectionKindMeta, dataSourceCategory, DATA_SOURCE_CATEGORIES } from "./DataSourceForm";
 import { ChipCloseIcon, SourceDot } from "./ChatPanel";
@@ -1113,6 +1114,8 @@ export function railActive(pathname: string): string {
   if (p.startsWith("/dashboards") || p.startsWith("/boards") || p.startsWith("/dashboard-builder") || p.startsWith("/project-dashboards")) return "dashboards";
   if (p.startsWith("/data") || p.startsWith("/spaces") || p.startsWith("/connect")) return "data";
   if (p.startsWith("/automations") || p.startsWith("/automate") || p.startsWith("/jobs")) return "automations";
+  if (p.startsWith("/ml-") || p.startsWith("/ml/")) return "models";
+  if (p.startsWith("/initiatives") || p.startsWith("/events/app")) return "initiatives";
   if (p.startsWith("/profile") || p.startsWith("/settings")) return "settings";
   return "more";
 }
@@ -1191,33 +1194,42 @@ export default function AppSidebar({
     { key: "dashboards", label: "Dashboards", to: "/dashboards", icon: GX.grid },
     { key: "data", label: "Data", to: "/data", icon: GX.db },
     { key: "automations", label: "Automate", to: "/automations", icon: GX.bolt },
+    { key: "models", label: "Models", to: "/ml-models", icon: GX.ml },
+    { key: "initiatives", label: "Initiatives", to: "/initiatives", icon: GX.target },
   ];
+  // the rail's order (mockup "Studio" rail): New, then Home, Library, Dashboards, Data, Automate, Models, Initiatives
+  const railItems = primary.filter((it) => it.key !== "new");
+  const initials = ((user?.full_name || user?.email || "G").split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("") || "G").toUpperCase();
 
   return (
     <>
       <nav className="gx-rail" aria-label="Main" data-gx-rail="" data-sidebar-rail="rail">
-        <button type="button" className="gx-logo" data-gx-menu-trigger="" data-gx-ws="" aria-haspopup="menu" aria-expanded={menu?.kind === "ws"}
-          aria-label={`Workspace: ${active?.name || "Personal Workspace"}. Switch or manage`} title={active?.name || "Workspace"}
-          onClick={(e) => openAt("ws", e.currentTarget)}>
-          {active && !active.is_personal ? active.name.charAt(0).toUpperCase() : "G"}
-        </button>
-        {primary.map((it) => (
-          <Link key={it.key} to={it.to} className={`gx-ri${on === it.key ? " on" : ""}`} aria-current={on === it.key ? "page" : undefined} data-nav={it.key}>
-            {it.icon}{it.label}
+        <Link to="/" className="gx-mark" aria-label="GD360 home" title="GD360"><BrandMark size={34} /></Link>
+        <Link to="/chat" className={`gx-new${on === "new" ? " on" : ""}`} aria-current={on === "new" ? "page" : undefined} data-nav="new" title="New">
+          {GX.plus}<span className="gx-sr">New</span>
+        </Link>
+        {railItems.map((it) => (
+          <Link key={it.key} to={it.to} className={`gx-ri${on === it.key ? " on" : ""}`} aria-current={on === it.key ? "page" : undefined} data-nav={it.key} title={it.label}>
+            {it.icon}<span className="gx-sr">{it.label}</span>
           </Link>
         ))}
         <span className="gx-spacer" />
-        {eulivAvailable() && <button type="button" className="gx-ri" onClick={() => openEuliv()} aria-label="Talk to Euliv, the voice assistant" data-nav="euliv">{GX.mic}Euliv</button>}
+        {eulivAvailable() && <button type="button" className="gx-ri" onClick={() => openEuliv()} aria-label="Talk to Euliv, the voice assistant" data-nav="euliv" title="Euliv">{GX.mic}<span className="gx-sr">Euliv</span></button>}
         <button type="button" className={`gx-ri${on === "more" ? " on" : ""}`} data-gx-menu-trigger="" aria-haspopup="menu" aria-expanded={menu?.kind === "more"}
-          onClick={(e) => openAt("more", e.currentTarget)} data-nav="more">{GX.more}More</button>
-        <Link to="/profile" className={`gx-ri${on === "settings" ? " on" : ""}`} aria-current={on === "settings" ? "page" : undefined} data-nav="settings">{GX.gear}Settings</Link>
+          onClick={(e) => openAt("more", e.currentTarget)} data-nav="more" title="More">{GX.more}<span className="gx-sr">More</span></button>
+        <Link to="/profile" className={`gx-ri${on === "settings" ? " on" : ""}`} aria-current={on === "settings" ? "page" : undefined} data-nav="settings" title="Settings">{GX.gear}<span className="gx-sr">Settings</span></Link>
+        <button type="button" className="gx-logo gx-me" data-gx-menu-trigger="" data-gx-ws="" aria-haspopup="menu" aria-expanded={menu?.kind === "ws"}
+          aria-label={`Workspace: ${active?.name || "Personal Workspace"}. Switch or manage`} title={active?.name || "Workspace"}
+          onClick={(e) => openAt("ws", e.currentTarget)}>
+          {initials}
+        </button>
       </nav>
 
       <nav className="gx-tabs" aria-label="Main" data-gx-tabs="">
         {primary.filter((it) => ["home", "new", "library", "dashboards"].includes(it.key)).map((it) => (
           <Link key={it.key} to={it.to} className={`gx-tab${on === it.key ? " on" : ""}`} aria-current={on === it.key ? "page" : undefined}>{it.icon}{it.label}</Link>
         ))}
-        <button type="button" className={`gx-tab${["more", "data", "automations", "settings"].includes(on) ? " on" : ""}`} data-gx-menu-trigger="" aria-haspopup="menu"
+        <button type="button" className={`gx-tab${["more", "data", "automations", "settings", "models", "initiatives"].includes(on) ? " on" : ""}`} data-gx-menu-trigger="" aria-haspopup="menu"
           aria-expanded={menu?.kind === "more"} onClick={(e) => openAt("more", e.currentTarget)} data-gx-tab-more="">{GX.more}More</button>
       </nav>
 
