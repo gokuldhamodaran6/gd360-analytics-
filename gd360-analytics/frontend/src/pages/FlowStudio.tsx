@@ -10,11 +10,15 @@ import { Flow, flowsApi, fmtCell, fmtNum, fmtSecs, Msg, Person, REASON_WORD, Run
 import { I, Mark } from "../flows/icons";
 import { CheckList, DataTab, PlanTab, RunsTab, SettingsTab } from "../flows/parts";
 import "../flows/flows.css";
+import { StudioFrame } from "../studio/Frame";
+import { Ic } from "../studio/icons";
+import "../studio/studio.css";
 
 export type Tab = "data" | "plan" | "results" | "runs" | "settings" | "code";
-const TABS: { id: Tab; label: string }[] = [
-  { id: "data", label: "Data" }, { id: "plan", label: "Plan" }, { id: "results", label: "Results" },
-  { id: "runs", label: "Runs" }, { id: "settings", label: "Settings" }, { id: "code", label: "Code" },
+// R56 (Studio board "Pipeline"): the views are the canvas tools - Graph (the plan), Data, Results, Run history, Settings, Code
+const TABS: { id: Tab; label: string; icon: string }[] = [
+  { id: "plan", label: "Graph", icon: "flow" }, { id: "data", label: "Data", icon: "db" }, { id: "results", label: "Results", icon: "table" },
+  { id: "runs", label: "Run history", icon: "hist" }, { id: "settings", label: "Settings", icon: "gear" }, { id: "code", label: "Code", icon: "code" },
 ];
 
 export default function FlowStudio() {
@@ -34,9 +38,13 @@ export default function FlowStudio() {
   const [people, setPeople] = useState<Person[]>([]);
   const [focusRun, setFocusRun] = useState<string | null>(null);
 
+  // R56: an older read that comes back late (the 1.2 s poll racing a test run) must not paint over a newer one
+  const seq = useRef(0);
   const load = useCallback(async () => {
+    const mine = ++seq.current;
     try {
       const f = await flowsApi.get(flowId);
+      if (mine !== seq.current) return f;
       setFlow(f);
       setLoadErr("");
       return f;
@@ -78,7 +86,7 @@ export default function FlowStudio() {
       setBusy("");
     }
   };
-  const replaceFlow = (f: Flow) => setFlow(f);
+  const replaceFlow = (f: Flow) => { seq.current++; setFlow(f); };
 
   if (loadErr) {
     return (
@@ -97,50 +105,63 @@ export default function FlowStudio() {
   const issues = flow.profile?.issues?.length || 0;
   const runsBad = flow.pending_fix ? 1 : 0;
 
+  const checks = (flow.checks || []).filter((c) => c.enabled !== false).length;
+  const sched = flow.spec?.schedule;
+  const alertTo = (flow.spec?.policy?.alert_to || []).map((id) => people.find((p) => p.id === id)?.name?.split(" ")[0] || null).filter(Boolean) as string[];
+  const lastRun = flow.running ? (flow.running.reason === "test" ? "Testing on today’s rows…" : "Running…")
+    : flow.status === "draft" ? "Not tested yet · nothing runs until you turn it on"
+    : flow.status === "tested" ? "Test passed · not live yet"
+    : `${STATUS_WORD[flow.status]}${flow.last_status ? ` · ${RUN_WORD[flow.last_status].toLowerCase()} ${whenOf(flow.last_run_at)}` : ""}`;
   return (
-    <Frame ws={ws} workspaces={workspaces} switchWorkspace={switchWorkspace} handleWorkspaceCreated={handleWorkspaceCreated} name={flow.name}>
+    <Frame ws={ws} workspaces={workspaces} switchWorkspace={switchWorkspace} handleWorkspaceCreated={handleWorkspaceCreated} name={flow.name} studio>
       <div className="fl-mob" role="group" aria-label="Show">
         <button type="button" aria-pressed={mob === "chat"} onClick={() => setMob("chat")}>Conversation</button>
         <button type="button" aria-pressed={mob === "work"} onClick={() => setMob("work")}>The work{flow.pending_fix ? " · fix waiting" : ""}</button>
       </div>
-      <div className="fl-studio" data-mob={mob} data-flow-studio={flow.id}>
+      <div className="fl-studio sd-flow" data-mob={mob} data-flow-studio={flow.id}>
         <Thread flow={flow} onFlow={replaceFlow} onTab={goTab} onFocusRun={(id) => { setFocusRun(id); goTab("results"); }} reload={load} setErr={setErr}
           busy={busy} act={act} />
-        <div className="fl-cw">
-          <section className="fl-canvas" aria-label="The work">
-            <Header flow={flow} busy={busy} act={act} setErr={setErr} onDeleted={() => navigate("/automate")} reload={load} />
-            <nav className="fl-tabs" aria-label="Views">
-              {TABS.map((t) => (
-                <button key={t.id} type="button" className={`fl-tab${tab === t.id ? " on" : ""}`} onClick={() => goTab(t.id)} aria-current={tab === t.id ? "page" : undefined} data-tab={t.id}>
-                  {t.label}
-                  {t.id === "data" && issues > 0 && <span className="n">{issues}</span>}
-                  {t.id === "runs" && runsBad > 0 && <span className="n bad">fix</span>}
-                </button>
-              ))}
-            </nav>
-            <div className="fl-body">
-              {err && <div className="fl-banner bad" role="alert"><span style={{ flex: 1 }}>{err}</span><button type="button" className="fl-btn ghost sm" onClick={() => setErr("")}>Close</button></div>}
-              {flow.pending_fix && tab !== "runs" && <FixCard flow={flow} busy={busy} act={act} compact onOpen={() => goTab("runs")} />}
-              {tab === "data" && <DataTab flow={flow} sources={sources} act={act} busy={busy} />}
-              {tab === "plan" && <PlanTab flow={flow} onSaved={replaceFlow} setErr={setErr} act={act} busy={busy} />}
-              {tab === "results" && <ResultsTab flow={flow} focusRun={focusRun} />}
-              {tab === "runs" && <RunsTab flow={flow} fixCard={flow.pending_fix ? <FixCard flow={flow} busy={busy} act={act} /> : null} />}
-              {tab === "settings" && <SettingsTab flow={flow} people={people} onSaved={replaceFlow} setErr={setErr} act={act} busy={busy} />}
-              {tab === "code" && <CodeTab flow={flow} />}
-            </div>
-          </section>
-        </div>
+        <StudioFrame kind="pipeline" bodyClass="fl-body"
+          tabs={[{ key: flow.id, icon: "flow", label: flow.output.name || flow.name, badge: "pipeline", on: true, onClick: () => goTab("plan") }]}
+          addMenu={(close) => <>
+            <button type="button" onClick={() => { close(); navigate("/automate"); }}><span>A new pipeline</span><small>describe another data job</small></button>
+            <button type="button" onClick={() => { close(); navigate("/automate"); }}><span>All pipelines</span></button>
+          </>}
+          status={<span data-flow-status={flow.status}>{lastRun}</span>}
+          actions={<Header flow={flow} busy={busy} act={act} setErr={setErr} onDeleted={() => navigate("/automate")} reload={load} />}
+          tools={<>
+            {TABS.map((t) => (
+              <button key={t.id} type="button" className={`sd-tool${tab === t.id ? " on" : ""}`} onClick={() => goTab(t.id)} aria-current={tab === t.id ? "page" : undefined} data-tab={t.id}>
+                <Ic n={t.icon} />{t.label}
+                {t.id === "data" && issues > 0 && <span className="sd-chip warn" style={{ height: 18, padding: "0 6px" }}>{issues}</span>}
+                {t.id === "runs" && runsBad > 0 && <span className="sd-chip bad" style={{ height: 18, padding: "0 6px" }}>fix</span>}
+              </button>
+            ))}
+            <span className="sd-vr" />
+            <button type="button" className="sd-tool" onClick={() => goTab("plan")} title="The checks every run must pass"><Ic n="test" />Checks · {checks}</button>
+            <button type="button" className="sd-tool" onClick={() => goTab("settings")} title="When it runs"><Ic n="cal" />{sched ? `${sched.days?.length === 7 || !sched.days?.length ? "Daily" : sched.days.length === 5 ? "Weekdays" : `${sched.days.length} days a week`} ${sched.time}` : "Schedule"}</button>
+            <button type="button" className="sd-tool" onClick={() => goTab("settings")} title="Who is told when something is wrong"><Ic n="bell" />{alertTo.length ? `Alerts: ${alertTo.slice(0, 2).join(", ")}${alertTo.length > 2 ? ` +${alertTo.length - 2}` : ""}` : "Alerts"}</button>
+          </>}>
+          {err && <div className="fl-banner bad" role="alert"><span style={{ flex: 1 }}>{err}</span><button type="button" className="fl-btn ghost sm" onClick={() => setErr("")}>Close</button></div>}
+          {flow.pending_fix && tab !== "runs" && <FixCard flow={flow} busy={busy} act={act} compact onOpen={() => goTab("runs")} />}
+          {tab === "data" && <DataTab flow={flow} sources={sources} act={act} busy={busy} />}
+          {tab === "plan" && <PlanTab flow={flow} onSaved={replaceFlow} setErr={setErr} act={act} busy={busy} />}
+          {tab === "results" && <ResultsTab flow={flow} focusRun={focusRun} />}
+          {tab === "runs" && <RunsTab flow={flow} fixCard={flow.pending_fix ? <FixCard flow={flow} busy={busy} act={act} /> : null} />}
+          {tab === "settings" && <SettingsTab flow={flow} people={people} onSaved={replaceFlow} setErr={setErr} act={act} busy={busy} />}
+          {tab === "code" && <CodeTab flow={flow} />}
+        </StudioFrame>
       </div>
     </Frame>
   );
 }
 
-function Frame({ children, ws, workspaces, switchWorkspace, handleWorkspaceCreated, name }: any) {
+function Frame({ children, ws, workspaces, switchWorkspace, handleWorkspaceCreated, name, studio = false }: any) {
   return (
     <div className="dash-shell flex min-h-screen">
       <AppSidebar workspaces={workspaces} activeWorkspaceId={ws} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
-      <div className="flex-1 min-w-0 flex flex-col fl">
-        <TopNav breadcrumb={[{ label: "Automate", to: "/automations" }, { label: "Automate data", to: "/automate" }, { label: name }]} />
+      <div className={`flex-1 min-w-0 flex flex-col fl${studio ? " fl-studiopage" : ""}`}>
+        {!studio && <TopNav breadcrumb={[{ label: "Automate", to: "/automations" }, { label: "Automate data", to: "/automate" }, { label: name }]} />}
         {children}
       </div>
     </div>
@@ -150,16 +171,9 @@ function Frame({ children, ws, workspaces, switchWorkspace, handleWorkspaceCreat
 /* ------------------------------------------------------------ header ---- */
 
 function Header({ flow, busy, act, setErr, onDeleted, reload }: { flow: Flow; busy: string; act: any; setErr: (s: string) => void; onDeleted: () => void; reload: () => void }) {
-  const [name, setName] = useState(flow.name);
   const [hist, setHist] = useState<{ version: number; note: string; by: string; at: string; current: boolean }[] | null>(null);
-  useEffect(() => setName(flow.name), [flow.name]);
   const run = flow.running;
   const st = flow.status;
-  const saveName = () => {
-    const n = name.trim();
-    if (!n || n === flow.name) { setName(flow.name); return; }
-    act("name", () => flowsApi.patch(flow.id, { name: n }));
-  };
   const openHist = async () => {
     if (hist) { setHist(null); return; }
     try { setHist(await flowsApi.versions(flow.id)); } catch (e) { setErr(errorText(e)); }
@@ -167,15 +181,10 @@ function Header({ flow, busy, act, setErr, onDeleted, reload }: { flow: Flow; bu
   void reload;
   void onDeleted;
   return (
-    <div className="fl-ch">
-      <input className="fl-title" value={name} disabled={!flow.can_edit} aria-label="Flow name" onChange={(e) => setName(e.target.value)} onBlur={saveName}
-        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }} maxLength={80} />
-      <span className={`fl-chip ${st === "live" ? "brand" : "muted"}`} data-flow-status={st}><i />{STATUS_WORD[st]}</span>
-      {run ? <span className="fl-chip muted"><span className="fl-typing"><span /><span /><span /></span>{run.reason === "test" ? "Testing" : "Running"}</span>
-        : flow.last_status && <span className={`fl-chip ${flow.last_status === "success" ? "good" : "bad"}`}><i />{RUN_WORD[flow.last_status]} {whenOf(flow.last_run_at)}</span>}
-      <span style={{ flex: 1 }} />
+    <div className="sd-flowacts">
+      {run && <span className="fl-chip muted"><span className="fl-typing"><span /><span /><span /></span>{run.reason === "test" ? "Testing" : "Running"}</span>}
       <span style={{ position: "relative" }}>
-        <button type="button" className="fl-btn ghost sm" onClick={openHist} aria-expanded={!!hist} data-flow-history="">{I.undo}Version {flow.version}</button>
+        <button type="button" className="sd-pill" onClick={openHist} aria-expanded={!!hist} data-flow-history=""><Ic n="undo" s={15} />Version {flow.version}</button>
         {hist && (
           <div className="fl-card" role="dialog" aria-label="Versions" style={{ position: "absolute", right: 0, top: 36, width: 340, maxHeight: 360, overflowY: "auto", zIndex: 20, boxShadow: "0 18px 40px -16px rgb(0 0 0 / .45)" }}>
             <div className="fl-hd"><span className="fl-h2">History</span><span className="sp" /><button type="button" className="fl-btn ghost sm" onClick={() => setHist(null)} aria-label="Close">{I.x}</button></div>
@@ -193,23 +202,23 @@ function Header({ flow, busy, act, setErr, onDeleted, reload }: { flow: Flow; bu
       </span>
       {flow.can_edit && (
         <>
-          {st === "draft" && <button type="button" className="fl-btn pri" disabled={!!run || !!busy} onClick={() => act("test", () => flowsApi.test(flow.id))} data-flow-primary="test">{I.play}Test it</button>}
+          {st === "draft" && <button type="button" className="sd-btnp" disabled={!!run || !!busy} onClick={() => act("test", () => flowsApi.test(flow.id))} data-flow-primary="test"><Ic n="play" />Run test</button>}
           {st === "tested" && (
             <>
-              <button type="button" className="fl-btn" disabled={!!run || !!busy} onClick={() => act("test", () => flowsApi.test(flow.id))}>Test again</button>
-              <button type="button" className="fl-btn pri" disabled={!!run || !!busy} onClick={() => act("on", () => flowsApi.patch(flow.id, { enabled: true }))} data-flow-primary="on">Turn on</button>
+              <button type="button" className="sd-pill" disabled={!!run || !!busy} onClick={() => act("test", () => flowsApi.test(flow.id))}><Ic n="play" />Run test</button>
+              <button type="button" className="sd-btnp" disabled={!!run || !!busy} onClick={() => act("on", () => flowsApi.patch(flow.id, { enabled: true }))} data-flow-primary="on">Turn on</button>
             </>
           )}
           {st === "live" && (
             <>
-              <button type="button" className="fl-btn" disabled={!!busy} onClick={() => act("off", () => flowsApi.patch(flow.id, { enabled: false }))}>{I.pause}Pause</button>
-              <button type="button" className="fl-btn pri" disabled={!!run || !!busy} onClick={() => act("run", () => flowsApi.run(flow.id))} data-flow-primary="run">{I.play}Run now</button>
+              <button type="button" className="sd-pill" disabled={!!busy} onClick={() => act("off", () => flowsApi.patch(flow.id, { enabled: false }))}>Pause</button>
+              <button type="button" className="sd-btnp" disabled={!!run || !!busy} onClick={() => act("run", () => flowsApi.run(flow.id))} data-flow-primary="run"><Ic n="play" />Run now</button>
             </>
           )}
           {st === "paused" && (
             <>
-              <button type="button" className="fl-btn" disabled={!!run || !!busy} onClick={() => act("run", () => flowsApi.run(flow.id))}>Run now</button>
-              <button type="button" className="fl-btn pri" disabled={!!busy} onClick={() => act("on", () => flowsApi.patch(flow.id, { enabled: true }))} data-flow-primary="on">Turn on</button>
+              <button type="button" className="sd-pill" disabled={!!run || !!busy} onClick={() => act("run", () => flowsApi.run(flow.id))}>Run now</button>
+              <button type="button" className="sd-btnp" disabled={!!busy} onClick={() => act("on", () => flowsApi.patch(flow.id, { enabled: true }))} data-flow-primary="on">Turn on</button>
             </>
           )}
         </>
@@ -219,6 +228,20 @@ function Header({ flow, busy, act, setErr, onDeleted, reload }: { flow: Flow; bu
 }
 
 /* ------------------------------------------------------------ thread ---- */
+
+function FlowName({ flow, act }: { flow: Flow; act: any }) {
+  const [name, setName] = useState(flow.name);
+  useEffect(() => setName(flow.name), [flow.name]);
+  const save = () => {
+    const n = name.trim();
+    if (!n || n === flow.name) { setName(flow.name); return; }
+    act("name", () => flowsApi.patch(flow.id, { name: n }));
+  };
+  return (
+    <input className="fl-title sd-flowname" value={name} disabled={!flow.can_edit} aria-label="Flow name" onChange={(e) => setName(e.target.value)} onBlur={save}
+      onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }} maxLength={80} title="Rename" style={{ flex: "1 1 auto", width: "auto", fontWeight: 600 }} />
+  );
+}
 
 function suggestions(f: Flow): string[] {
   if (f.running) return [];
@@ -258,7 +281,7 @@ function Thread({ flow, onFlow, onTab, onFocusRun, reload, setErr, busy, act }: 
     <aside className="fl-thread" aria-label="Conversation">
       <div className="fl-thead">
         <Mark />
-        <span style={{ fontSize: 13.5, fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{flow.name}</span>
+        <FlowName flow={flow} act={act} />
         <span style={{ flex: 1 }} />
         <Link to="/automate" className="fl-btn ghost sm" aria-label="All flows">All flows</Link>
       </div>

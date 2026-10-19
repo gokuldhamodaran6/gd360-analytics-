@@ -11,6 +11,8 @@ import SpacesPanel from "../data/SpacesPanel";
 import SpaceEditor from "../data/SpaceEditor";
 import { errorText, ErrorNote, Skeleton } from "../data/shared";
 import { SyncReportSheet } from "../data/SyncReport";
+import { SourcePanel, SourcesKpis, SourcesTable, useDataOverview } from "../data/SourcesOverview";
+import { ListPage, PageHead, Tabs } from "../studio/Page";
 
 // 2026-09-23 (sidebar redesign round): the dedicated home for browsing every
 // connected data source. Rounds two and three (Gokul's feedback) made "see
@@ -36,8 +38,8 @@ const TABS: Tab[] = ["sources", "spaces", "catalog"];
 
 const HEAD: Record<Tab, { title: string; text: string }> = {
   sources: {
-    title: "Your data",
-    text: "Everything connected to this workspace, and the Spaces each source is in. Add more any time.",
+    title: "Sources",
+    text: "Read-only and encrypted. Data stays where it is unless a pipeline copies it.",
   },
   spaces: {
     title: "Spaces",
@@ -157,77 +159,35 @@ export default function DataSources() {
 
   const head = HEAD[tab || "sources"];
 
+  const view = params.get("view") === "manage" ? "manage" : "table";
+  const [sel, setSel] = useState<string | null>(null);
+  const [bump, setBump] = useState(0);
+  const { data: overview, err: ovErr } = useDataOverview(tab === "sources" ? activeWorkspaceId : null, bump);
+  const selRow = overview?.sources.find((x) => x.id === sel) || null;
+  const setView = (v: "table" | "manage") => { const n = new URLSearchParams(params); if (v === "manage") n.set("view", "manage"); else n.delete("view"); setParams(n, { replace: true }); };
+  void TopNav; void AppSidebar; void switchWorkspace; void handleWorkspaceCreated; void workspaces;
   return (
-    <div className="flex">
-      <AppSidebar
-        workspaces={workspaces}
-        activeWorkspaceId={activeWorkspaceId}
-        onWorkspaceSwitch={switchWorkspace}
-        onWorkspaceCreated={handleWorkspaceCreated}
-      />
-      <div className="flex-1 min-w-0">
-        <TopNav hideLogo />
-        {/* round 38c: an answer's "See what … sent at the last sync" opens here */}
+    <>
+      <ListPage data="data" crumbs={[{ label: "Data", to: "/data" }, { label: tab === "spaces" ? "Spaces" : tab === "catalog" ? "Add data" : "Sources" }]}
+        side={tab === "sources" && view === "table" && selRow ? <SourcePanel r={selRow} onClose={() => setSel(null)} onChanged={() => setBump((b) => b + 1)} onManage={() => setView("manage")} /> : undefined}>
         <SyncReportSheet
           sourceId={params.get("report")}
           onClose={() => { const next = new URLSearchParams(params); next.delete("report"); setParams(next, { replace: true }); }}
         />
-
-        <main className="max-w-[1240px] mx-auto px-4 sm:px-8 lg:px-10 pt-8 pb-16 flex flex-col gap-6">
-          <header className="flex justify-between items-end gap-5 flex-wrap">
-            <div className="flex flex-col gap-2 min-w-0">
-              <span className="font-mono text-[11px] text-muted tracking-[0.1em] uppercase">Data</span>
-              {tab ? (
-                <>
-                  <h1 className="m-0 text-[28px] sm:text-[34px] tracking-[-0.03em] font-semibold text-text">{head.title}</h1>
-                  <p className="m-0 text-[15px] text-secondary max-w-[660px]">{head.text}</p>
-                </>
-              ) : (
-                <>
-                  <Skeleton className="h-10 w-64" />
-                  <Skeleton className="h-5 w-80 max-w-full" />
-                </>
-              )}
-            </div>
-            <div className="flex gap-2.5 items-center flex-wrap">
-              <div role="tablist" aria-label="Data" className="flex gap-0.5 bg-surface border border-border rounded-[11px] p-[3px]">
-                {TABS.map((t) => {
-                  const on = tab === t;
-                  const count = t === "sources" ? sources?.length : t === "spaces" ? spaces?.length : undefined;
-                  return (
-                    <button
-                      key={t}
-                      type="button"
-                      role="tab"
-                      id={`data-tab-${t}`}
-                      aria-selected={on}
-                      aria-controls="data-tabpanel"
-                      onClick={() => setTab(t)}
-                      className={`ui-focus h-[34px] px-3.5 rounded-[9px] text-[14px] inline-flex items-center gap-1.5 transition-colors ${
-                        on ? "bg-surface2 text-text" : "text-secondary hover:text-text"
-                      }`}
-                    >
-                      {t === "sources" ? "Connected" : t === "spaces" ? "Spaces" : "Add data"}
-                      {count !== undefined && <span className="font-mono text-[12px] text-muted">{count}</span>}
-                    </button>
-                  );
-                })}
-              </div>
-              {tab !== "catalog" && tab !== "spaces" && !isViewerHere && (
-                <button type="button" className="btn-primary h-10 text-[14px] inline-flex items-center gap-2" onClick={() => setTab("catalog")} data-connect-data="">
-                  <PlusGlyph />
-                  Connect data
-                </button>
-              )}
-              {tab === "spaces" && !isViewerHere && (
-                <button type="button" className="btn-primary h-10 text-[14px] inline-flex items-center gap-2" onClick={() => setEditor("new")}>
-                  <PlusGlyph />
-                  New space
-                </button>
-              )}
-            </div>
-          </header>
-
+        <PageHead title={head.title}
+          sub={tab === "sources" && overview ? `${overview.kpis.total} connection${overview.kpis.total === 1 ? "" : "s"}, ${head.text.charAt(0).toLowerCase()}${head.text.slice(1)}` : head.text}
+          actions={<>
+            {tab === "sources" && <button type="button" className="sd-pill" onClick={() => setView(view === "manage" ? "table" : "manage")} data-data-view="">{view === "manage" ? "Table view" : "Manage sources"}</button>}
+            {tab !== "catalog" && tab !== "spaces" && !isViewerHere && (
+              <button type="button" className="sd-btnp" onClick={() => setTab("catalog")} data-connect-data=""><PlusGlyph />Connect a source</button>
+            )}
+            {tab === "spaces" && !isViewerHere && (
+              <button type="button" className="sd-btnp" onClick={() => setEditor("new")}><PlusGlyph />New space</button>
+            )}
+          </>} />
+        {tab && <Tabs<Tab> tabs={[{ id: "sources", label: "Sources", n: sources?.length ?? null }, { id: "spaces", label: "Spaces", n: spaces?.length ?? null }, { id: "catalog", label: "Add data" }]} value={tab} onChange={setTab} />}
+        {tab === "sources" && view === "table" && <SourcesKpis data={overview} />}
+        {ovErr && tab === "sources" && <div className="sd-err">{ovErr}</div>}
           {error && (
             <ErrorNote className="flex items-center justify-between gap-3 flex-wrap">
               <span>{error}</span>
@@ -245,7 +205,8 @@ export default function DataSources() {
                 ))}
               </div>
             )}
-            {tab === "sources" && !isViewerHere && (
+            {tab === "sources" && view === "table" && <SourcesTable data={overview} selected={sel} onSelect={(id) => setSel(sel === id ? null : id)} />}
+            {tab === "sources" && view === "manage" && !isViewerHere && (
               <div className="mb-6">
                 <Catalog
                   variant="quick"
@@ -258,7 +219,7 @@ export default function DataSources() {
                 />
               </div>
             )}
-            {tab === "sources" && (
+            {tab === "sources" && view === "manage" && (
               <SourcesPanel
                 sources={sources}
                 setSources={setSources}
@@ -291,8 +252,7 @@ export default function DataSources() {
               />
             )}
           </div>
-        </main>
-      </div>
+      </ListPage>
 
       {editor && (
         <SpaceEditor
@@ -311,6 +271,6 @@ export default function DataSources() {
           }}
         />
       )}
-    </div>
+    </>
   );
 }

@@ -12,6 +12,8 @@ import { eventApi } from "../api/eventos";
 import { Banner, daysLabel, Empty, fmtDate, HealthPill, KIND_LABEL, KindBadge, KindGlyph, KindTile, Meter, Section, Stat, tone } from "../initiatives/ui";
 import { autopilotApi, Brain, Decisions } from "../api/autopilot";
 import { DecisionsPanel } from "../autopilot/kit";
+import { Ic } from "../studio/icons";
+import { Kpi, ListPage, PageHead, Tabs } from "../studio/Page";
 
 const STARTERS: { kind: Kind; label: string; brief: string }[] = [
   { kind: "event", label: "Event", brief: "Host an in-person customer event" },
@@ -66,152 +68,138 @@ export default function Initiatives({ events = false }: { events?: boolean } = {
   }, [hub, filter, dept, events]);
   const departments = useMemo(() => Array.from(new Set((hub?.initiatives || []).map((i) => i.department || "Other"))).sort(), [hub]);
 
-  return (
-    <div className="dash-shell flex min-h-screen">
-      <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
-      <div className="flex-1 min-w-0 flex flex-col">
-        <TopNav breadcrumb={[{ label: events ? "GD360 Events" : "Initiatives" }]} />
-        <header className="flex flex-wrap justify-between items-end gap-4 px-4 sm:px-8 pt-7 pb-5 border-b border-border">
-          <div className="flex flex-col gap-1.5 min-w-0">
-            <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">Plan · Run · Prove{events ? " · GD360 Events" : ""}</span>
-            <h1 className="m-0 text-[24px] font-semibold tracking-tight text-text">{events ? "Events" : "Initiatives"}</h1>
-            <p className="m-0 text-ui text-secondary max-w-[640px]">{events ? "In-person events, webinars, online events and meetups - registration, check-in, buzz, the live floor, Webinar 360 and the A–Z report, tracked by themselves."
-              : "Events, webinars, campaigns, account-based marketing, hiring and product builds - planned with you, tracked automatically, measured against their targets."}</p>
-          </div>
-          <div className="flex gap-2 flex-wrap items-center">
-            <ThemeToggle />
-            <Link to="/initiatives/autopilot" className="btn-secondary text-sm inline-flex items-center gap-2" data-go-autopilot="">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></svg>
-              Autopilot
-            </Link>
-            <Link to="/accounts" className="btn-secondary text-sm inline-flex items-center gap-2" data-go-accounts="">
-              <KindGlyph kind="abm" size={15} /> Accounts{hub ? <span className="text-muted tabular-nums">{hub.counts.accounts.toLocaleString()}</span> : null}
-            </Link>
-            <button type="button" className="btn-primary text-sm" onClick={() => start()} data-new-initiative="">New initiative</button>
-          </div>
-        </header>
-
-        <main className="px-4 sm:px-8 py-6 flex flex-col gap-6 pb-16">
-          {error && <Banner kind="error" onClose={() => setError("")}>{error}</Banner>}
-
-          <section className="rounded-card border border-border bg-surface p-5 sm:p-6 flex flex-col gap-4" data-planner-composer="">
-            <div>
-              <div className="text-section font-semibold text-text">What are you planning?</div>
-              <p className="m-0 mt-1 text-caption text-muted">Describe it in a sentence. GD360 writes the plan, the targets, the team roles and how every number will be tracked.</p>
-            </div>
-            <form className="flex gap-2 flex-wrap sm:flex-nowrap" onSubmit={(e) => { e.preventDefault(); start(); }}>
-              <input className="input flex-1 min-w-0" value={brief} onChange={(e) => setBrief(e.target.value)} maxLength={4000}
-                placeholder="e.g. A customer showcase in Austin in mid-November for our US accounts" aria-label="What are you planning" data-brief="" />
-              <button type="submit" className="btn-primary text-sm shrink-0" disabled={!brief.trim() && !kind}>Plan it</button>
-            </form>
-            <div className="flex gap-2 flex-wrap" role="group" aria-label="Kind of initiative">
-              {STARTERS.filter((s) => !events || s.kind === "event" || s.kind === "webinar").map((s) => {
-                const on = kind === s.kind;
-                const c = tone(s.kind);
-                return (
-                  <button key={s.kind} type="button" data-starter={s.kind}
-                    onClick={() => { setKind(on ? "" : s.kind); if (!brief.trim() && s.brief) setBrief(s.brief); }}
-                    className="ui-focus inline-flex items-center gap-1.5 h-[32px] px-3 rounded-full border text-caption transition-colors"
-                    style={on ? { color: `rgb(${c})`, background: `rgb(${c} / 0.12)`, borderColor: `rgb(${c} / 0.45)` } : undefined}
-                    aria-pressed={on}>
-                    <span style={{ color: `rgb(${c})` }}><KindGlyph kind={s.kind} size={14} /></span>
-                    <span className={on ? "" : "text-secondary"}>{s.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-
-          {decisions && decisions.total > 0 && <DecisionsPanel d={decisions} canEdit onChanged={loadDecisions} showInitiative />}
-          {brain && !events && (
-            <section className="rounded-card border border-border bg-surface p-4 sm:p-5 flex flex-wrap items-center gap-4 justify-between" data-brain-card="">
-              <div className="min-w-0 flex-[1_1_420px]">
-                <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">Business brain</span>
-                <div className="text-ui text-text mt-0.5">{brain.about || "Tell GD360 what you do, and every plan starts from it."}</div>
-                <div className="text-caption text-muted mt-0.5">{brain.industry_label ? `${brain.industry_label} · ` : ""}{brain.facts.length} facts from {brain.sources.length} source{brain.sources.length === 1 ? "" : "s"}{brain.website ? ` · ${brain.website.replace(/^https?:\/\//, "")}` : ""}</div>
-              </div>
-              <Link to="/initiatives/autopilot" className="btn-secondary text-sm shrink-0" data-open-brain="">{brain.about ? "Open" : "Set it up"}</Link>
-            </section>
-          )}
-          <section className="relative overflow-hidden rounded-card border border-border bg-surface p-5 sm:p-6 flex flex-wrap items-center gap-5" data-event-sample="">
-            <div className="pointer-events-none absolute -right-16 -top-20 w-[420px] h-[240px]" style={{ background: "radial-gradient(closest-side, rgb(var(--color-primary) / 0.14), transparent)" }} />
-            <div className="flex flex-col gap-1 min-w-0 flex-[1_1_380px] relative">
-              <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-brand-ink">New · Event OS</span>
-              <div className="text-section font-semibold text-text">One event, tracked from the first sign-up to the last post</div>
-              <p className="m-0 text-caption text-muted max-w-[620px]">Event 360, the success score, registrations against forecast, every post with its picture, the live floor, sponsors and the A–Z report. Open a sample to see every screen with realistic made-up data.</p>
-            </div>
-            <div className="flex gap-2 flex-wrap relative">
-              {([["before", "24 days before"], ["live", "Live day"], ["done", "After the event"]] as const).map(([k, l]) => (
-                <button key={k} type="button" className={k === "done" ? "btn-primary text-sm" : "btn-secondary text-sm"} disabled={!!sampleBusy} onClick={() => sample(k)} data-sample-stage={k}>
-                  {sampleBusy === k ? "Building…" : l}</button>
-              ))}
-            </div>
-          </section>
-
-          <div className="flex gap-6 flex-wrap items-start">
-            <Section title="Needs you today" sub="Overdue and due tasks, reminders, and accounts that just got active." className="flex-[2_1_480px]">
-              {!hub ? <Skeleton rows={3} /> : hub.needs_you.length === 0 ? (
-                <p className="m-0 text-ui text-muted">Nothing needs you right now.</p>
-              ) : (
-                <ul className="m-0 p-0 list-none flex flex-col divide-y divide-border" data-needs-you="">
-                  {hub.needs_you.slice(0, 10).map((n) => (
-                    <li key={`${n.type}-${n.id}`} className="py-2.5 flex items-center gap-3 min-w-0">
-                      <span className={`w-2 h-2 rounded-full shrink-0 ${n.type === "task" ? (n.overdue ? "bg-danger" : "bg-warning") : n.type === "reminder" ? "bg-primary" : "bg-series-2"}`} />
-                      <div className="min-w-0 flex-1">
-                        <Link to={n.type === "surge" ? `/accounts?account=${n.account_id}` : n.initiative_id ? `/initiatives/${n.initiative_id}${n.type === "task" ? "?tab=plan" : ""}` : n.account_id ? `/accounts?account=${n.account_id}` : "/initiatives"}
-                          className="text-ui text-text hover:underline block truncate">{n.title}</Link>
-                        <span className="text-caption text-muted">
-                          {n.type === "task" ? `${n.initiative} · ${n.overdue ? "Overdue since" : "Due"} ${fmtDate(n.due_on)}`
-                            : n.type === "reminder" ? `Reminder${n.account ? ` · ${n.account}` : ""}` : n.detail}
-                        </span>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Section>
-            <Section title="At a glance" className="flex-[1_1_260px]">
-              {!hub ? <Skeleton rows={2} /> : (
-                <div className="grid grid-cols-2 gap-5">
-                  <Stat label="Active" value={hub.counts.active} />
-                  <Stat label="At risk" value={hub.counts.at_risk} tone={hub.counts.at_risk ? "danger" : undefined} />
-                  <Stat label="Finished" value={hub.counts.done} />
-                  <Stat label="Target accounts" value={hub.counts.accounts.toLocaleString()} />
-                </div>
-              )}
-            </Section>
-          </div>
-
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <div className="inline-flex p-[3px] rounded-full border border-border bg-base" role="tablist" aria-label="Status">
-              {(["active", "done", "all"] as const).map((f) => (
-                <button key={f} type="button" role="tab" aria-selected={filter === f} onClick={() => setFilter(f)}
-                  className={`ui-focus h-8 px-3.5 rounded-full text-caption ${filter === f ? "bg-surface2 text-text font-medium" : "text-muted hover:text-text"}`}>
-                  {f === "active" ? "In progress" : f === "done" ? "Finished" : "All"}
-                </button>
-              ))}
-            </div>
-            {departments.length > 1 && (
-              <select className="input !w-auto !py-1.5 text-caption" value={dept} onChange={(e) => setDept(e.target.value)} aria-label="Department">
-                <option value="">All departments</option>
-                {departments.map((d) => <option key={d} value={d}>{d}</option>)}
-              </select>
-            )}
-          </div>
-
-          {!hub ? <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(320px,1fr))]">{[0, 1, 2].map((i) => <div key={i} className="h-[220px] rounded-card bg-surface2 animate-pulse" />)}</div>
-            : list.length === 0 ? (
-              <Empty title={filter === "done" ? "Nothing finished yet" : "No initiatives yet"}
-                body="Plan an event, a webinar, a campaign, a hiring push or a product build. GD360 sets the targets and tracks the numbers for you."
-                action={<button type="button" className="btn-primary text-sm" onClick={() => start()}>Plan the first one</button>} />
-            ) : (
-              <div className="grid gap-4 grid-cols-[repeat(auto-fill,minmax(320px,1fr))]" data-initiative-grid="">
-                {list.map((i) => <Card key={i.id} i={i} />)}
-              </div>
-            )}
-        </main>
+  const counts = useMemo(() => {
+    const all = (hub?.initiatives || []).filter((i) => !events || i.kind === "event" || i.kind === "webinar");
+    return { active: all.filter((i) => i.status === "active").length, planning: all.filter((i) => i.status === "planning").length, done: all.filter((i) => i.status === "done").length, all: all.length };
+  }, [hub, events]);
+  const withEvidence = useMemo(() => {
+    const ts = (hub?.initiatives || []).flatMap((i) => i.targets.filter((t) => t.actual !== null));
+    if (!ts.length) return null;
+    return Math.round((100 * ts.filter((t) => t.truth === "counted" || t.truth === "matched").length) / ts.length);
+  }, [hub]);
+  void TopNav; void ThemeToggle; void switchWorkspace; void handleWorkspaceCreated; void workspaces; void AppSidebar; void Section; void Stat;
+  const side = (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {!(decisions && decisions.total > 0) && (
+        <div className="sdp-sidecard"><b style={{ fontSize: 14.5 }}>Decisions for you</b><span className="sd-sub">Nothing waiting. Agents ask here before they act, inside the policy you set in Autopilot.</span></div>
+      )}
+      <div className="sdp-sidecard" data-needs-you-card="">
+        <b style={{ fontSize: 14.5 }}>Needs you today</b>
+        {!hub ? <Skeleton rows={3} /> : hub.needs_you.length === 0 ? <span className="sd-sub">Nothing needs you right now.</span> : (
+          <ul className="m-0 p-0 list-none flex flex-col" data-needs-you="">
+            {hub.needs_you.slice(0, 8).map((n) => (
+              <li key={`${n.type}-${n.id}`} style={{ padding: "8px 0", borderTop: "1px solid rgb(var(--color-border))", display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <span className={`sd-dot ${n.type === "task" ? (n.overdue ? "bad" : "warn") : n.type === "reminder" ? "good" : "violet"}`} style={{ marginTop: 7 }} />
+                <span style={{ minWidth: 0 }}>
+                  <Link to={n.type === "surge" ? `/accounts?account=${n.account_id}` : n.initiative_id ? `/initiatives/${n.initiative_id}${n.type === "task" ? "?tab=plan" : ""}` : n.account_id ? `/accounts?account=${n.account_id}` : "/initiatives"} style={{ fontSize: 13.5 }}>{n.title}</Link>
+                  <span className="sd-sub" style={{ display: "block", fontSize: 12 }}>{n.type === "task" ? `${n.initiative} · ${n.overdue ? "Overdue since" : "Due"} ${fmtDate(n.due_on)}` : n.type === "reminder" ? `Reminder${n.account ? ` · ${n.account}` : ""}` : n.detail}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
+      {brain && !events && (
+        <div className="sdp-sidecard" data-brain-card="">
+          <span className="sd-lbl">Business brain</span>
+          <span style={{ fontSize: 13.5 }}>{brain.about || "Tell GD360 what you do, and every plan starts from it."}</span>
+          <span className="sd-sub" style={{ fontSize: 12 }}>{brain.industry_label ? `${brain.industry_label} · ` : ""}{brain.facts.length} facts from {brain.sources.length} source{brain.sources.length === 1 ? "" : "s"}{brain.website ? ` · ${brain.website.replace(/^https?:\/\//, "")}` : ""}</span>
+          <Link to="/initiatives/autopilot" className="sd-pill sm" style={{ alignSelf: "flex-start" }} data-open-brain="">{brain.about ? "Open" : "Set it up"}</Link>
+        </div>
+      )}
     </div>
+  );
+  return (
+    <ListPage data="initiatives" crumbs={[{ label: events ? "GD360 Events" : "Initiatives", to: "/initiatives" }, { label: events ? "Events" : "Portfolio" }]} side={side}>
+      <PageHead title={events ? "Events" : "Portfolio"}
+        sub={events ? "In-person events, webinars and meetups - registration, check-in, the live floor and the A–Z report, tracked by themselves."
+          : "Events, campaigns, launches, hiring and programs - each measured against its targets, with evidence."}
+        actions={<>
+          <Link to="/initiatives/autopilot" className="sd-pill" data-go-autopilot=""><Ic n="spark" />Autopilot</Link>
+          <Link to="/accounts" className="sd-pill" data-go-accounts="">Accounts{hub ? <span className="sd-mono sd-sub" style={{ fontSize: 12 }}>{hub.counts.accounts.toLocaleString()}</span> : null}</Link>
+          <button type="button" className="sd-btnp" onClick={() => start()} data-new-initiative="">New initiative</button>
+        </>} />
+      {error && <Banner kind="error" onClose={() => setError("")}>{error}</Banner>}
+      {decisions && decisions.total > 0 && <DecisionsPanel d={decisions} canEdit onChanged={loadDecisions} showInitiative />}
+      <div className="sd-kpis">
+        <Kpi label="Active" value={hub ? counts.active : "–"} note={hub && counts.planning ? `${counts.planning} planning` : undefined} />
+        <Kpi label="At risk" value={hub ? hub.counts.at_risk : "–"} tone={hub?.counts.at_risk ? "bad" : undefined} note="from the pace forecast" />
+        <Kpi label="Finished" value={hub ? counts.done : "–"} />
+        <Kpi label="Numbers with evidence" value={withEvidence != null ? `${withEvidence}%` : "–"} note="counted or matched, not typed" />
+      </div>
+      <form className="sd-card" style={{ padding: 12, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }} onSubmit={(e) => { e.preventDefault(); start(); }} data-planner-composer="">
+        <input className="sd-in" style={{ flex: "1 1 320px", border: 0 }} value={brief} onChange={(e) => setBrief(e.target.value)} maxLength={4000}
+          placeholder="What are you planning? e.g. A customer showcase in Austin in mid-November" aria-label="What are you planning" data-brief="" />
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }} role="group" aria-label="Kind of initiative">
+          {STARTERS.filter((x) => !events || x.kind === "event" || x.kind === "webinar").slice(0, 6).map((x) => (
+            <button key={x.kind} type="button" data-starter={x.kind} className={`sd-pill sm${kind === x.kind ? " on" : ""}`} aria-pressed={kind === x.kind}
+              onClick={() => { setKind(kind === x.kind ? "" : x.kind); if (!brief.trim() && x.brief) setBrief(x.brief); }}>{x.label}</button>
+          ))}
+        </div>
+        <button type="submit" className="sd-btnp" disabled={!brief.trim() && !kind}>Plan it</button>
+      </form>
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <Tabs<"active" | "done" | "all"> tabs={[{ id: "active", label: "In progress", n: hub ? counts.active + counts.planning : null }, { id: "done", label: "Finished", n: hub ? counts.done : null }, { id: "all", label: "All", n: hub ? counts.all : null }]} value={filter} onChange={setFilter} />
+        </div>
+        {departments.length > 1 && (
+          <select className="sdp-sel" value={dept} onChange={(e) => setDept(e.target.value)} aria-label="Department">
+            <option value="">All departments</option>
+            {departments.map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
+        )}
+      </div>
+      {!hub ? <Skeleton rows={4} /> : list.length === 0 ? (
+        <Empty title={filter === "done" ? "Nothing finished yet" : "No initiatives yet"}
+          body="Plan an event, a webinar, a campaign, a hiring push or a product build. GD360 sets the targets and tracks the numbers for you."
+          action={<button type="button" className="sd-btnp" onClick={() => start()}>Plan the first one</button>} />
+      ) : (
+        <div className="sd-card" style={{ overflow: "hidden" }} data-initiative-grid="">
+          <div className="sd-tw">
+            <table className="sd-t">
+              <thead><tr><th>Initiative</th><th>Dates</th><th>Lead target</th><th>Health</th><th className="r">Tasks</th><th>Evidence</th></tr></thead>
+              <tbody>{list.map((i) => <Row key={i.id} i={i} onOpen={() => nav(`/initiatives/${i.id}`)} />)}</tbody>
+            </table>
+          </div>
+          <div className="sdp-tfoot">Health is the chance of reaching the lead target by the end date, from the pace so far.</div>
+        </div>
+      )}
+      <section className="sd-card" style={{ padding: 16, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14 }} data-event-sample="">
+        <div style={{ flex: "1 1 360px", minWidth: 0 }}>
+          <span className="sd-lbl">Event OS · sample</span>
+          <div style={{ fontSize: 14.5, fontWeight: 600, marginTop: 2 }}>One event, tracked from the first sign-up to the last post</div>
+          <div className="sd-sub" style={{ marginTop: 2 }}>Open a sample event with realistic made-up data, clearly labelled as a sample.</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {([["before", "24 days before"], ["live", "Live day"], ["done", "After the event"]] as const).map(([k, l]) => (
+            <button key={k} type="button" className="sd-pill sm" disabled={!!sampleBusy} onClick={() => sample(k)} data-sample-stage={k}>{sampleBusy === k ? "Building…" : l}</button>
+          ))}
+        </div>
+      </section>
+    </ListPage>
+  );
+}
+
+function Row({ i, onOpen }: { i: InitiativeSummary; onOpen: () => void }) {
+  const lead = i.targets.find((t) => t.target) || null;
+  const pct = lead ? (lead.pct ?? (lead.actual !== null && lead.target ? (100 * Number(lead.actual)) / Number(lead.target) : null)) : null;
+  const truth = lead?.truth;
+  return (
+    <tr className="click" onClick={onOpen} data-initiative-card={i.kind}>
+      <td style={{ maxWidth: 320 }}>
+        <Link to={`/initiatives/${i.id}`} onClick={(e) => e.stopPropagation()} style={{ fontWeight: 500 }}>{i.title}</Link>
+        <span className="sd-sub" style={{ display: "block", fontSize: 12 }}>{KIND_LABEL[i.kind]}{i.department ? ` · ${i.department}` : ""}{i.location ? ` · ${i.location}` : ""}</span>
+      </td>
+      <td className="sd-sub" style={{ fontSize: 13.5 }}>{i.key_date ? fmtDate(i.key_date, true) : i.starts_on ? fmtDate(i.starts_on, true) : "—"}{i.days_to_go !== null && i.status !== "done" && i.days_to_go >= 0 ? <span style={{ display: "block", fontSize: 12 }}>{i.days_to_go} days to go</span> : null}</td>
+      <td style={{ minWidth: 220 }}>{lead ? (
+        <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ width: 90, height: 6, borderRadius: 3, background: "rgb(var(--color-surface2))", overflow: "hidden", flex: "0 0 auto" }}><i style={{ display: "block", height: "100%", width: `${Math.max(0, Math.min(100, pct ?? 0))}%`, background: "rgb(var(--sd-c1))" }} /></span>
+          <span className="sd-mono" style={{ fontSize: 12.5 }}>{lead.actual != null ? Number(lead.actual).toLocaleString() : "–"} / {Number(lead.target).toLocaleString()} {lead.label.toLowerCase()}</span>
+        </span>) : <span className="sd-sub">No targets yet</span>}</td>
+      <td style={{ maxWidth: 230, overflow: "hidden" }}><HealthPill health={i.health} /></td>
+      <td className="num">{i.tasks_done}/{i.tasks_total}</td>
+      <td>{truth && truth !== "none" ? <span className="sd-chip"><span className={`sd-dot ${truth === "counted" ? "good" : truth === "matched" ? "blue" : truth === "modelled" ? "violet" : "warn"}`} />{truth === "typed" ? "Typed by owner" : truth.charAt(0).toUpperCase() + truth.slice(1)}</span> : <span className="sd-sub">—</span>}</td>
+    </tr>
   );
 }
 

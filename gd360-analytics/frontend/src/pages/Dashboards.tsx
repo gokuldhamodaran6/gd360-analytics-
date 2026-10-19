@@ -21,6 +21,7 @@ import { ArrowRightIcon, ConfirmDialog, CopyIcon, EditIcon, ExternalIcon, MergeI
 import { MenuRow } from "../dashboard/menu";
 import { NewDashboardSheet } from "../dashboard/NewDashboardSheet";
 import TopNav from "../components/TopNav";
+import { ListPage, PageHead } from "../studio/Page";
 import AppSidebar from "../components/AppSidebar";
 import { useWorkspaceNav } from "../lib/useWorkspaceNav";
 import ViewToggle, { useViewMode } from "../components/ViewToggle";
@@ -421,29 +422,12 @@ export default function Dashboards() {
     return stamp(b) - stamp(a);
   });
 
+  void AppSidebar; void TopNav; void switchWorkspace; void handleWorkspaceCreated; void workspaces;
   return (
-    <div className="dash-shell flex min-h-screen">
-      <AppSidebar workspaces={workspaces} activeWorkspaceId={activeWorkspaceId} onWorkspaceSwitch={switchWorkspace} onWorkspaceCreated={handleWorkspaceCreated} />
-      <div className="flex-1 min-w-0">
-        <TopNav hideLogo />
-        <main className="max-w-[1180px] mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col gap-7">
-          <div className="flex items-end justify-between gap-4 flex-wrap">
-            <div className="flex flex-col gap-1.5">
-              <h1 className="m-0 text-[28px] sm:text-[32px] font-semibold tracking-tight text-text">Dashboards</h1>
-              <p className="m-0 text-body text-muted max-w-[62ch]">
-                Live, filterable pages to monitor and share.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => { setNewStart("data"); setNewPicked([]); setNewOpen(true); }}
-              className="ui-focus inline-flex h-10 items-center gap-2 rounded-ctl bg-primary px-4 text-ui font-semibold text-on-primary hover:brightness-105"
-              data-new-dashboard=""
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-              New dashboard
-            </button>
-          </div>
+    <>
+      <ListPage data="dashboards" crumbs={[{ label: "Dashboards" }]}>
+          <PageHead title="Dashboards" sub={`Live, filterable pages to monitor and share${dashboards ? ` · ${all.length} in this workspace` : ""}.`}
+            actions={<button type="button" onClick={() => { setNewStart("data"); setNewPicked([]); setNewOpen(true); }} className="sd-btnp" data-new-dashboard="">New dashboard</button>} />
 
           {error && <div role="alert" className="rounded-ctl border border-danger-border bg-danger-fill px-3 py-2.5 text-ui text-text">{error}</div>}
 
@@ -528,10 +512,9 @@ export default function Dashboards() {
               </p>
             )}
           </section>
-        </main>
-      </div>
+      </ListPage>
 
       <NewDashboardSheet open={newOpen} onClose={() => setNewOpen(false)} workspaceId={activeWorkspaceId} initialStart={newStart} initialPicked={newPicked} />
-    </div>
+    </>
   );
 }
