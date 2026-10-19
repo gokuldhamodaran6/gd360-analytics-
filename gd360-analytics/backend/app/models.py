@@ -3638,6 +3638,22 @@ class DocDocument(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 
+class DocComment(Base):
+    """2026-10-19 (R56, the Doc studio): a comment in a document's margin - on one block (block_id), quoting the words it
+    is about (quote). parent_id set = a reply to that comment. resolved_at hides the thread from the margin."""
+    __tablename__ = "doc_comments"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    doc_id = Column(String, ForeignKey("doc_documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    block_id = Column(String, nullable=True)
+    parent_id = Column(String, nullable=True, index=True)
+    author_id = Column(String, ForeignKey("users.id"), nullable=False)
+    quote = Column(String, nullable=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    resolved_at = Column(DateTime, nullable=True)
+
+
 class QualityRun(Base):
     """2026-10-17 (R52): one run of the nightly quality check (services/quality.py) - the 12-question set plus four on
     two more datasets, asked of the live model, each answer checked and timed against its budget."""
