@@ -406,6 +406,30 @@ def run_rest(db: Session, run_id: str) -> None:
     finish(db, run_id)
 
 
+def rework(db: Session, run_id: str, step_id: str | None = None, everything: bool = False) -> None:
+    """2026-10-19 (R56, the Analysis studio): a conversation answer was edited on the canvas. Runs the changed step
+    (or every step), any step whose stored result is missing or out of date - an Instant Answer keeps no per-step
+    tables, so its first edit re-reads the others once - then rewrites the answer from all of them."""
+    run = db.get(models.ProjectRun, run_id)
+    if not run:
+        return
+    for s in list(run.steps or []):
+        db.refresh(run)
+        cur = find(run, s["id"])
+        if not cur or cur.get("status") == "skipped":
+            continue
+        if everything or cur["id"] == step_id or cur.get("status") in ("pending", "stale", "failed", "running") \
+                or load_table(run, cur["id"]) is None:
+            run_step(db, run_id, cur["id"])
+    db.refresh(run)
+    if any(x.get("status") == "done" for x in run.steps or []):
+        finish(db, run_id)
+    else:
+        run.status = "done" if run.result and (run.result or {}).get("answer") else "failed"
+        run.error_message = None if run.status == "done" else "No step returned rows. Edit a step and run it again."
+        db.commit()
+
+
 def approve_and_next(db: Session, run_id: str, step_id: str) -> None:
     """The job behind "Approve": run the next step that has not run, or
     write the answer when every step is approved."""
