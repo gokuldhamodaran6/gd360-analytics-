@@ -1112,7 +1112,7 @@ export function railActive(pathname: string): string {
   if (p.startsWith("/library") || p.startsWith("/docs/") || p.startsWith("/projects") || p.startsWith("/p/") || p.startsWith("/g/") || p.startsWith("/v/") || p.startsWith("/workspace/")) return "library";
   if (p.startsWith("/dashboards") || p.startsWith("/boards") || p.startsWith("/dashboard-builder") || p.startsWith("/project-dashboards")) return "dashboards";
   if (p.startsWith("/data") || p.startsWith("/spaces") || p.startsWith("/connect")) return "data";
-  if (p.startsWith("/automations") || p.startsWith("/jobs")) return "automations";
+  if (p.startsWith("/automations") || p.startsWith("/automate") || p.startsWith("/jobs")) return "automations";
   if (p.startsWith("/profile") || p.startsWith("/settings")) return "settings";
   return "more";
 }
@@ -1247,6 +1247,7 @@ export default function AppSidebar({
             <>
               <button type="button" role="menuitem" onClick={() => go("/data")}>{GX.db}Data and Spaces</button>
               <button type="button" role="menuitem" onClick={() => go("/automations")}>{GX.bolt}Automations</button>
+              <button type="button" role="menuitem" onClick={() => go("/automate")}>{GX.db}Automate data</button>
               {eulivAvailable() && <button type="button" role="menuitem" onClick={() => { close(); openEuliv(); }}>{GX.mic}Talk to Euliv</button>}
               <div className="sep" />
             </>
