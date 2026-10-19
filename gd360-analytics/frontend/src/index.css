@@ -1415,7 +1415,8 @@ input[type="radio"] {
 }
 
 /* ============================================================
-   2026-10-15 (R50, GD360 3.0): ONE design system. Every page - Home, the
+   2026-10-15 (R50, GD360 3.0): ONE design system. 2026-10-19 (R55): values are now
+   GD360 brand v2 - Signal green #0B6E4F (dark #3FBF8F), Ink #121514, Paper #FAFAF9, Panel #F3F4F3. Every page - Home, the
    conversation, Library, Dashboards, Data, Automations, Settings - reads
    the same tokens: ink #0B0F0E, one accent #0A7C5A, hairlines #E3E6E4,
    white ground, Geist. These override the older Obsidian / warm-off-white
@@ -1423,71 +1424,71 @@ input[type="radio"] {
    chat surface (.c2) already used exactly these values.
    ============================================================ */
 :root {
-  --color-base: 11 15 14;
-  --color-surface: 18 24 22;
-  --color-surface2: 22 28 25;
-  --color-border: 28 35 32;
-  --color-border-strong: 38 48 44;
-  --color-subtle: 22 28 25;
-  --color-primary: 75 227 163;
-  --color-on-primary: 11 15 14;
-  --color-accent: 75 227 163;
-  --color-brand-ink: 75 227 163;
-  --color-text: 243 245 244;
-  --color-secondary: 201 209 205;
-  --color-muted: 138 148 143;
-  --color-faint: 90 100 96;
-  --color-tint: 19 35 32;
-  --color-tint-border: 36 65 58;
-  --color-good: 75 227 163;
-  --color-good-fill: 19 35 32;
-  --color-good-border: 36 65 58;
-  --chart-grid: 28 35 32;
-  --chart-axis: 38 48 44;
+  --color-base: 12 13 13;
+  --color-surface: 21 24 24;
+  --color-surface2: 27 31 31;
+  --color-border: 37 42 41;
+  --color-border-strong: 52 58 57;
+  --color-subtle: 24 28 28;
+  --color-primary: 63 191 143;
+  --color-on-primary: 4 20 14;
+  --color-accent: 63 191 143;
+  --color-brand-ink: 95 211 166;
+  --color-text: 236 239 238;
+  --color-secondary: 179 186 184;
+  --color-muted: 127 135 133;
+  --color-faint: 82 90 88;
+  --color-tint: 19 42 35;
+  --color-tint-border: 34 76 62;
+  --color-good: 92 203 138;
+  --color-good-fill: 19 42 35;
+  --color-good-border: 34 76 62;
+  --chart-grid: 31 36 35;
+  --chart-axis: 52 58 57;
   --glow-1: transparent;
   --glow-2: transparent;
-  --gx-rail: 14 19 17;
-  --gx-ink: 243 245 244;
-  --gx-panel: 18 24 22;
+  --gx-rail: 17 19 19;
+  --gx-ink: 236 239 238;
+  --gx-panel: 17 19 19;
 }
 :root[data-theme="light"] {
-  --color-base: 255 255 255;
+  --color-base: 250 250 249;
   --color-surface: 255 255 255;
-  --color-surface2: 245 246 247;
-  --color-border: 227 230 228;
-  --color-border-strong: 213 219 216;
-  --color-subtle: 242 243 242;
-  --color-primary: 10 124 90;
+  --color-surface2: 243 244 243;
+  --color-border: 231 232 230;
+  --color-border-strong: 214 217 214;
+  --color-subtle: 243 244 243;
+  --color-primary: 11 110 79;
   --color-on-primary: 255 255 255;
-  --color-accent: 10 124 90;
-  --color-brand-ink: 10 124 90;
-  --color-text: 11 15 14;
-  --color-secondary: 61 71 68;
-  --color-muted: 94 106 102;
-  --color-faint: 160 170 166;
-  --color-tint: 230 244 238;
-  --color-tint-border: 196 228 214;
-  --color-good: 10 124 90;
-  --color-good-fill: 230 244 238;
-  --color-good-border: 196 228 214;
-  --color-warning: 138 93 0;
+  --color-accent: 14 138 99;
+  --color-brand-ink: 11 110 79;
+  --color-text: 18 21 20;
+  --color-secondary: 74 80 78;
+  --color-muted: 110 116 114;
+  --color-faint: 168 172 170;
+  --color-tint: 232 243 238;
+  --color-tint-border: 190 222 208;
+  --color-good: 28 122 68;
+  --color-good-fill: 232 243 238;
+  --color-good-border: 190 222 208;
+  --color-warning: 163 90 10;
   --color-warning-fill: 255 244 223;
   --color-warning-border: 240 214 160;
-  --color-danger: 181 67 44;
+  --color-danger: 194 54 44;
   --color-danger-fill: 251 237 233;
   --color-danger-border: 240 200 190;
-  --color-kind-answer: 10 124 90;
-  --color-kind-answer-fill: 230 244 238;
-  --color-kind-answer-border: 196 228 214;
+  --color-kind-answer: 11 110 79;
+  --color-kind-answer-fill: 232 243 238;
+  --color-kind-answer-border: 190 222 208;
   --chart-grid: 236 238 237;
-  --chart-axis: 213 219 216;
+  --chart-axis: 214 217 214;
   --shadow-card: 0 1px 2px rgb(11 15 14 / 0.04);
   --shadow-pop: 0 12px 40px rgb(11 15 14 / 0.12), 0 1px 2px rgb(11 15 14 / 0.06);
   --glow-1: transparent;
   --glow-2: transparent;
-  --gx-rail: 255 255 255;
-  --gx-ink: 11 15 14;
-  --gx-panel: 245 246 247;
+  --gx-rail: 243 244 243;
+  --gx-ink: 18 21 20;
+  --gx-panel: 243 244 243;
 }
 body { background: rgb(var(--color-base)); font-family: "Geist", system-ui, sans-serif; }
 .dash-shell { background: rgb(var(--color-base)); }
