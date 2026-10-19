@@ -409,11 +409,31 @@ def tidy_signs(text: str) -> str:
     return _DOUBLE_POS.sub(lambda m: f"{m.group(1)}{m.group(2) or ''} ", _DOUBLE_NEG.sub(lambda m: f"{m.group(1)}{m.group(2) or ''} ", text))
 
 
-def _clean_points(raw: dict, allowed: Allowed, problems: list | None = None) -> dict | None:
+# R57: "explain in detail", "elaborate", "walk me through it" - a longer explanation (up to 8 points, 2-4 sentences each)
+DETAIL_ASK = re.compile(r"\b(in (more |full )?detail|detailed|elaborate|more depth|in[- ]depth|walk me through|explain (it |this )?(fully|properly|more)|"
+                        r"tell me more|deep[- ]?dive|everything|thorough(ly)?|step by step)\b", re.I)
+MAX_POINTS_DETAIL = 8
+_LONG_MONEY = re.compile(r"(?<![\w.])([$€£₹¥]?)(\d{1,3}(?:,\d{3}){2,})(\.\d+)?(?![\d,])")
+
+
+def compact_long_numbers(text: str | None) -> str | None:
+    """R57: "$7,990,862.32" reads "$8.0M" in a sentence (the table keeps the exact value) - one number format with
+    the rest of the answer."""
+    if not text:
+        return text
+
+    def rep(m: re.Match) -> str:
+        v = float(m.group(2).replace(",", "") + (m.group(3) or ""))
+        body = f"{v / 1e9:.1f}B" if v >= 1e9 else f"{v / 1e6:.1f}M"
+        return f"{m.group(1)}{body}"
+    return _LONG_MONEY.sub(rep, text)
+
+
+def _clean_points(raw: dict, allowed: Allowed, problems: list | None = None, max_points: int = MAX_POINTS) -> dict | None:
     if not isinstance(raw, dict):
         return None
     head = str(raw.get("headline") or "").strip()
-    pts = [p for p in raw.get("points") or [] if isinstance(p, dict) and str(p.get("text") or "").strip()][:MAX_POINTS]
+    pts = [p for p in raw.get("points") or [] if isinstance(p, dict) and str(p.get("text") or "").strip()][:max_points]
     take = str(raw.get("takeaway") or "").strip() or None
     texts = [head, take or ""] + [str(p.get("text")) for p in pts]
     bad = [b for t in texts for b in allowed.check(t)]
@@ -425,9 +445,9 @@ def _clean_points(raw: dict, allowed: Allowed, problems: list | None = None) -> 
                 problems.extend(bad[:8])
         return None
     return {
-        "headline": tidy_signs(head)[:300],
-        "points": [{"text": tidy_signs(str(p["text"]).strip())[:500], "ref": (str(p.get("ref"))[:80] if p.get("ref") else None)} for p in pts],
-        "takeaway": tidy_signs(take)[:300] if take else None,
+        "headline": compact_long_numbers(tidy_signs(head))[:300],
+        "points": [{"text": compact_long_numbers(tidy_signs(str(p["text"]).strip()))[:900], "ref": (str(p.get("ref"))[:80] if p.get("ref") else None)} for p in pts],
+        "takeaway": compact_long_numbers(tidy_signs(take))[:300] if take else None,
         "followups": [str(f).strip()[:140] for f in raw.get("followups") or [] if str(f).strip()][:3],
         "needs_new_data": bool(raw.get("needs_new_data")),
         "new_question": (str(raw.get("new_question")).strip()[:300] if raw.get("new_question") else None),
@@ -439,19 +459,23 @@ def _model(material: dict, question: str | None, allowed: Allowed) -> dict | Non
     import json
     ask = question.strip()[:500] if question else "Explain this."
     user = f"Material:\n{json.dumps(material, default=str)[:12000]}\n\nThe person asks: {ask}"
+    detail = bool(DETAIL_ASK.search(ask))
+    system = _EXPLAINER if not detail else _EXPLAINER.replace(
+        '"<one or two sentences>"', '"<two to four sentences: the number, its comparison and what drives it>"').replace(
+        "(2 to 4 points)", "(5 to 8 points - the person asked for detail: cover every part of the material)")
     # round 33: a draft with a number that isn't in the material gets ONE more try, told which numbers -
     # before, the first slip went straight to the plain fallback
     for attempt in range(2):
         problems: list = []
         try:
             raw = ai_engine._plan_with_retry([  # noqa: SLF001
-                {"role": "system", "content": _EXPLAINER},
+                {"role": "system", "content": system},
                 {"role": "user", "content": user},
-            ], max_tokens=1400)
+            ], max_tokens=2600 if detail else 1400)
         except Exception as e:  # noqa: BLE001
             logger.warning("[explain] model unavailable: %s", e)
             return None
-        out = _clean_points(raw, allowed, problems)
+        out = _clean_points(raw, allowed, problems, MAX_POINTS_DETAIL if detail else MAX_POINTS)
         if out is not None or not problems:
             return out
         user += ("\n\nYour previous draft used numbers that are not in the material: " + ", ".join(map(str, problems))
