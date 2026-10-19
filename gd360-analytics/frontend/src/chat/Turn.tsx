@@ -1,7 +1,7 @@
 // 2026-10-14 (R46): one turn - the person's bubble, then GD360's answer: "Worked for N seconds ›", the prose,
 // the trust chips (only what was verified), sources, the picture, artifact cards, confirm cards.
 import { useEffect, useState } from "react";
-import type { ProjectRun } from "../api/projects";
+import { projectsApi, type ProjectRun } from "../api/projects";
 import { downloadTurnList, type Artifact, type Chip, type ReportLength, type ReportStepsConfirm, type TeamConfirm, type Turn as TurnT } from "../api/v2";
 import { FollowupCheck } from "../components/QuestionCheck";
 import { layoutSql } from "../project/RunPanels";
@@ -458,8 +458,27 @@ function workedLine(turn: TurnT, run: ProjectRun | null | undefined): string | n
   return null;
 }
 
+/** R58: an explanation of the answer on screen - what it shows, the points behind it, the takeaway. Written from the
+ *  numbers already computed; "Explain in detail" asks for the longer version of the same card. */
+function ExplainView({ turn, onMore, busy }: { turn: TurnT; onMore?: () => void; busy: boolean }) {
+  const ex = turn.explain || {};
+  const points = ((ex.points || []) as { text: string }[]).filter((p) => p && p.text);
+  const detailed = points.length > 4 || /\bdetail/i.test(String(turn.question || ""));
+  return (
+    <div className="c2-xpl" data-c2-explain="">
+      {ex.title && <span className="about">About {String(ex.title).replace(/^The /, "the ")}</span>}
+      {ex.headline && <p className="h">{ex.headline}</p>}
+      {points.length > 0 && <ul>{points.map((p, i) => <li key={i}>{p.text}</li>)}</ul>}
+      {ex.takeaway && <p className="tk">{ex.takeaway}</p>}
+      {!detailed && onMore && (
+        <div className="c2-next"><button type="button" className="c2-nx sm" onClick={onMore} disabled={busy} data-c2-explain-more="">Explain in detail</button></div>
+      )}
+    </div>
+  );
+}
+
 export function TurnView({
-  turn, run, conversationId, onAsk, onOpenArtifact, onOpenMethod, onConfirm, onPickCheck, onRunChanged, onMakeDashboard, busy, onRevise, onCanvas = false, onOpenSteps, onLength,
+  turn, run, conversationId, onAsk, onOpenArtifact, onOpenMethod, onConfirm, onPickCheck, onRunChanged, onMakeDashboard, busy, onRevise, onCanvas = false, onOpenSteps, onLength, onExplainMore,
 }: {
   turn: TurnT; run?: ProjectRun | null; conversationId: string; onAsk: (q: string) => void;
   onOpenArtifact: (a: Artifact, t: TurnT) => void; onOpenMethod: (t: TurnT) => void; onConfirm: (t: TurnT, approve: boolean) => void;
@@ -469,8 +488,12 @@ export function TurnView({
   onCanvas?: boolean; onOpenSteps?: (t: TurnT) => void;
   /** R57: write this report again at another length */
   onLength?: (t: TurnT, length: ReportLength) => void;
+  /** R58: the same card explained at length */
+  onExplainMore?: (t: TurnT) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // R58: the question card's × closes it (it used to do nothing)
+  const [dismissed, setDismissed] = useState(false);
   const guided = turn.kind === "data" && !!turn.guided;
   const g = guided ? guidedLine(run, turn) : null;
   const secs = useElapsed(turn, !!g?.live && turn.status !== "done");
@@ -493,13 +516,21 @@ export function TurnView({
             <span className="lb">
               {g ? g.text : working && turn.kind === "document" && turn.report?.current ? turn.report.current
                 : working ? `Working · ${secs} s` : line ? line : secs < 1 ? "Worked for under a second" : `Worked for ${secs} second${secs === 1 ? "" : "s"}`}
-              {turn.budget_s && secs > turn.budget_s && !turn.timed_out && (
-                <span className="c2-over" data-c2-over="">{working ? ` · longer than usual (under ${turn.budget_s} s is the aim)` : ` · over the ${turn.budget_s} s target`}</span>
+              {turn.budget_s && secs > turn.budget_s && !turn.timed_out && !working && (
+                <span className="c2-over" data-c2-over="">{` · over the ${turn.budget_s} s target`}</span>
               )}
               {turn.mode === "analyst" && !working ? " · the Analyst" : ""}
             </span>
             {((!working && line) || g?.live || (working && turn.kind === "document" && turn.report?.current)) && <em>{secs < 1 ? "under a second" : secs < 90 ? `${secs} s` : `${Math.floor(secs / 60)} min ${secs % 60} s`}</em>}
           </button>
+        )}
+        {working && turn.budget_s && secs > turn.budget_s && !turn.timed_out && (
+          <div className="c2-overline" data-c2-over="">
+            <span>Taking longer than usual - most answers like this take under {turn.budget_s} s.</span>
+            {turn.run_id && isData && (
+              <button type="button" onClick={() => { void projectsApi.stop(turn.run_id!).then(() => projectsApi.run(turn.run_id!)).then(onRunChanged).catch(() => undefined); }} data-c2-stop="">Stop</button>
+            )}
+          </div>
         )}
         <Trail turn={turn} open={open} />
         {guided && run?.status !== "done" && <GuidedProse run={run} sources={Array.from(new Set((run?.steps || []).filter((x) => x.kind !== "combine").map((x) => x.source_name).filter(Boolean))) as string[]}
@@ -509,9 +540,14 @@ export function TurnView({
         )}
         {turn.status === "failed" && <div className="c2-err" data-c2-error="">{turn.error || "That didn't work. Ask it again."}</div>}
         {turn.kind === "check" && turn.check && turn.status === "needs_input" && (
-          <FollowupCheck check={turn.check} busy={busy} onClose={() => undefined} onPick={onPickCheck} />
+          !dismissed ? <FollowupCheck check={turn.check} busy={busy} onClose={() => setDismissed(true)} onPick={onPickCheck} />
+            : <p className="c2-settled" data-c2-settled="">Skipped - ask it again whenever you like.</p>
         )}
-        {turn.text && !(turn.kind === "check") && (turn.kind === "analysis" || turn.kind === "dashboard" || turn.kind === "dashboard_edit" || turn.kind === "document" || turn.kind === "document_edit" || turn.kind === "automation" || turn.kind === "team" || turn.kind === "list" || turn.kind === "whatif" ? <Lead text={turn.text} />
+        {turn.kind === "check" && turn.status !== "needs_input" && turn.settled && (
+          <p className="c2-settled" data-c2-settled="">Settled by your next message: “{turn.settled}”.</p>
+        )}
+        {turn.kind === "explain" && turn.explain && <ExplainView turn={turn} busy={busy} onMore={onExplainMore ? () => onExplainMore(turn) : undefined} />}
+        {turn.text && !(turn.kind === "check") && !(turn.kind === "explain" && turn.explain) && (turn.kind === "analysis" || turn.kind === "dashboard" || turn.kind === "dashboard_edit" || turn.kind === "document" || turn.kind === "document_edit" || turn.kind === "automation" || turn.kind === "team" || turn.kind === "list" || turn.kind === "whatif" ? <Lead text={turn.text} />
           : turn.kind === "knowledge" ? <p className="prose"><Cited text={turn.text} /></p> : <p className="prose">{turn.text}</p>)}
         {turn.kind === "knowledge" && (turn.sources || []).length > 0 && (
           <div className="c2-srcs" data-c2-sources="">

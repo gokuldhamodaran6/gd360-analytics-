@@ -16,6 +16,7 @@ import { Composer } from "./Composer";
 import { Shell, useHome } from "./Shell";
 import TopNav from "../components/TopNav";
 import { TurnView } from "./Turn";
+import { CardActionsContext, type About, type CardActions, type CardTarget } from "./cardActions";
 import { MenuButton, type FrameTab } from "../studio/Frame";
 import { Ic } from "../studio/icons";
 import "../studio/studio.css";
@@ -167,14 +168,19 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
     return () => window.clearTimeout(id);
   }, [turns.length, busy, !!canvas, turns[turns.length - 1]?.status]);
 
-  const send = useCallback(async (q: string, extra: { accepted?: string[]; intent?: string | null; length?: ReportLength | null } = {}) => {
+  const send = useCallback(async (q: string, extra: { accepted?: string[]; intent?: string | null; length?: ReportLength | null;
+    explain_target?: CardTarget | null; about_target?: CardTarget | null; context_run_id?: string | null } = {}) => {
     const message = q.trim();
     if (!message || busy) return;
     setBusy(true); setError(null);
     try {
       const pick = scopeChanged && scope ? { source_ids: scope.kind === "sources" ? scope.ids : scope.kind === "all" ? [] : null, space_id: scope.kind === "space" ? scope.spaceId : null } : {};
-      const t = await v2Api.send(conversationId, { message, mode, accepted: extra.accepted || kept.current, intent: extra.intent || null, length: extra.length || null, ...pick });
+      const t = await v2Api.send(conversationId, { message, mode, accepted: extra.accepted || kept.current, intent: extra.intent || null, length: extra.length || null,
+        explain_target: (extra.explain_target as Record<string, unknown>) || null, about_target: (extra.about_target as Record<string, unknown>) || null,
+        context_run_id: extra.context_run_id || null, ...pick });
       kept.current = [];
+      // R58: a question card still waiting is settled by this message (the server did the same)
+      setConv((c) => (c ? { ...c, turns: c.turns.map((x) => (x.kind === "check" && x.status === "needs_input" ? { ...x, status: "done", settled: message.slice(0, 160) } : x)) } : c));
       if (scopeChanged) { setScopeChanged(false); void v2Api.get(conversationId).then((c) => setConv((cur) => (cur ? { ...cur, source_ids: c.source_ids, sources: c.sources, space_id: c.space_id, space_name: c.space_name } : cur))).catch(() => undefined); }
       setTurn(t);
       setText("");
@@ -184,6 +190,24 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
     } finally { setBusy(false); }
   }, [busy, conversationId, mode, setTurn, loadRun, scope, scopeChanged]);
 
+  // R58: a card's Ask - the box says what the question is about ("About: the chart “…” ×"); the text stays the person's own
+  const [about, setAbout] = useState<About | null>(null);
+  const cardActions: CardActions = useMemo(() => ({
+    explain: (label, target, runId) => { void send(`Explain ${label}`, { intent: "explain", explain_target: target, context_run_id: runId }); },
+    about: (a) => {
+      setAbout(a);
+      window.setTimeout(() => (document.getElementById("c2-ask") as HTMLTextAreaElement | null)?.focus(), 30);
+    },
+  }), [send]);
+  const submit = () => {
+    if (about) {
+      const a = about;
+      setAbout(null);
+      void send(`${a.prefix}: ${text.trim()}`, { about_target: a.target, context_run_id: a.runId });
+      return;
+    }
+    void send(text);
+  };
   const prefill = useCallback((q: string) => {
     setText(q);
     window.setTimeout(() => { const el = document.getElementById("c2-ask") as HTMLTextAreaElement | null; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 30);
@@ -232,7 +256,8 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
       if (t.status !== "done" && !(t.kind === "data" && t.guided) && !(t.kind === "document" && (t.artifacts || []).some((a) => a.doc_id))) continue;
       if (t.kind === "data" && t.run_id && stepsWorthy(runs[t.run_id])) {
         const r = runs[t.run_id]!;
-        const n = (r.steps || []).length + ((r.result?.visuals || []).filter((v) => v.type !== "kpis").length) + (r.result?.answer ? 1 : 0);
+        // R58: the same count as the thread ("Built 1 step") - the queries; charts and findings are not steps
+        const n = (r.steps || []).filter((x) => x.status !== "skipped").length;
         const g = r.guided && r.status !== "done";
         push({ type: "steps", turn: t }, "trend", short(t.question), g ? (r.status === "planning" ? "planning" : `${(r.steps || []).filter((x) => x.status === "done").length} of ${(r.steps || []).length}`) : `${n} step${n === 1 ? "" : "s"}`);
       }
@@ -348,6 +373,7 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
                     onRunChanged={setRun}
                     onMakeDashboard={(tt) => void onMakeDashboard(tt)}
                     onRevise={onRevise}
+                    onExplainMore={(tt) => void send("Explain it in detail", { intent: "explain", explain_target: (tt.explain?.target as CardTarget) || null, context_run_id: tt.run_id || null })}
                   />
                 ))}
                 {error && <div className="c2-err" data-c2-send-error="">{error}</div>}
@@ -359,8 +385,17 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
                     {sugg.slice(0, 4).map((s) => <button key={s.label} type="button" className="sd-pill sm" disabled={busy} onClick={s.go}><Ic n={s.icon} s={14} />{s.label}</button>)}
                   </div>
                 )}
-                <Composer value={text} onChange={setText} onSubmit={() => void send(text)} mode={mode} onMode={onMode} busy={busy} compact={studio}
-                  placeholder={studio ? "Ask a follow-up, or say what to make…" : turns.length ? "Ask a follow-up, or say what to make…" : "Ask anything…"} sourcesLabel={sourcesLabel} autoFocus
+                <Composer value={text} onChange={setText} onSubmit={submit} mode={mode} onMode={onMode} busy={busy} compact={studio}
+                  placeholder={about ? "Ask about it…" : studio ? "Ask a follow-up, or say what to make…" : turns.length ? "Ask a follow-up, or say what to make…" : "Ask anything…"}
+                  sourcesLabel={sourcesLabel} autoFocus
+                  context={about ? (
+                    <span className="c2-about" data-c2-about="">
+                      <span className="k">About</span><span className="t" title={about.label}>{about.label}</span>
+                      <button type="button" onClick={() => setAbout(null)} aria-label="Ask about the whole thread instead" data-c2-about-clear="">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+                      </button>
+                    </span>
+                  ) : undefined}
                   scope={scope && (home?.sources || []).length ? (
                     <ScopePicker scope={scope} onChange={(sc) => { setScope(sc); setScopeChanged(true); }} sources={(home?.sources || []) as any} spaces={home?.spaces || []}
                       variant="compact" placement="above" disabled={busy} />
@@ -369,6 +404,7 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
             </div>
           </div>
           {canvas && (
+            <CardActionsContext.Provider value={cardActions}>
             <CanvasRouter item={canvas} frame={{ tabs, addMenu, onClose: () => setCanvas(null) }} version={canvasVersion} runs={runs}
               conversationId={conversationId} busy={busy}
               onAsk={(q) => void send(q)} onPrefill={prefill} onRunChanged={setRun}
@@ -384,6 +420,7 @@ function ConversationBody({ conversationId }: { conversationId: string }) {
                 if (src.kind === "dashboard" && src.turn_id) { setCanvas({ type: "board", id: src.turn_id, name: src.label.replace(/^Dashboard · /, "") }); return; }
                 document.querySelector(`[data-c2-turn-id="${src.turn_id}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
               }} />
+            </CardActionsContext.Provider>
           )}
         </div>
       </div>
