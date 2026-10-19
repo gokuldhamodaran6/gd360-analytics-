@@ -1,6 +1,8 @@
 // 2026-10-19 (R56, Studio board "Doc studio"): the document on the canvas with a writer's toolbar - style, bold and
 // italics while typing, insert a chart / heading / paragraph, Rewrite, live numbers that open where they came from,
 // comments in the margin - and ONE green button, Export. What changed is highlighted in green; Undo takes it back.
+// 2026-10-19 (R57, "ask flow fixes" boards 8-9): a report being written fills in here section by section - its
+// contents on the left tick off as each section is done, the section being written says so, Export waits for the end.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { docsApi, type Doc, type DocBlock, type DocComment, type DocSource } from "../api/docs";
 import { DocView } from "../doc/DocView";
@@ -60,10 +62,15 @@ export function DocStudio({ id, frame, version = 0, onAsk, onPrefill, onSource, 
       const now = Date.now();
       const ch: Record<string, number> = {};
       for (const b of d.blocks) if (before.get(b.id) !== JSON.stringify(b) && b.type !== "sources") ch[b.id] = now;
-      if (Object.keys(ch).length) setChanged((c) => ({ ...c, ...ch }));
+      // a report filling in section by section is not "a change" - the contents list shows its progress instead
+      const filling = d.report?.status === "writing" || p.report?.status === "writing";
+      if (Object.keys(ch).length && !filling) setChanged((c) => ({ ...c, ...ch }));
       // a change made inside the page (typing over a paragraph): the status line shows the new save, not an old message
       if (p.updated_at !== d.updated_at) setMsg("");
     }
+    // R57: a report opens with its contents on the left and the page wide - the comment margin opens when there
+    // is something in it (or when you press Comments)
+    if (!p && d.report) setShowCm(false);
     prev.current = d;
     setDoc(d);
   }, []);
@@ -80,10 +87,33 @@ export function DocStudio({ id, frame, version = 0, onAsk, onPrefill, onSource, 
   const dl = async (kind: "docx" | "pdf" | "md") => { setWorking(true); try { await docsApi.download(id, kind, doc?.title); } catch { setErr("The download didn't build. Try again."); } finally { setWorking(false); } };
 
   const open = comments.filter((c) => !c.resolved);
+  useEffect(() => { if (open.length) setShowCm(true); }, [open.length > 0]); // eslint-disable-line react-hooks/exhaustive-deps
   const counts: Record<string, number> = {};
   for (const c of open) if (c.block_id) counts[c.block_id] = (counts[c.block_id] || 0) + 1 + c.replies.length;
   const isText = !!selBlock && ["paragraph", "heading", "callout", "title"].includes(selBlock.type);
-  const status = working ? "Saving…" : msg ? msg : doc ? `${doc.edited_by_person ? "Edited by you" : "Written by GD360"} · saved ${ago(doc.updated_at)}` : "";
+  const rep = doc?.report || null;
+  const writing = rep?.status === "writing";
+  // R57: while a report is being written, read it again every 1.5 s - each new section appears (and is marked changed)
+  useEffect(() => {
+    if (!writing) return;
+    const t = window.setInterval(() => setV((x) => x + 1), 1500);
+    return () => window.clearInterval(t);
+  }, [writing]);
+  const secNow = rep?.sections.findIndex((x) => x.status === "writing") ?? -1;
+  const lengthLabel = rep ? ({ brief: "Brief", standard: "Standard", detailed: "Detailed" } as const)[rep.length] : "";
+  const status = writing ? `Writing${secNow >= 0 ? ` · section ${secNow + 1} of ${rep!.sections.length}: ${rep!.sections[secNow].title}` : "…"}`
+    : working ? "Saving…" : msg ? msg : doc ? `${rep ? `${lengthLabel} report · ` : ""}${doc.edited_by_person ? "Edited by you" : "Written by GD360"} · saved ${ago(doc.updated_at)}` : "";
+  const toc = rep && rep.sections.length > 2 ? (
+    <nav className="dc-toc" aria-label="Contents" data-dc-toc="">
+      <span className="h">Contents</span>
+      {rep.sections.map((x, i) => (
+        <button key={x.id} type="button" className={x.status === "writing" ? "on" : ""} disabled={x.status === "waiting"}
+          onClick={() => document.getElementById(`dc-h-${x.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" })} data-dc-toc-item={x.status}>
+          <em>{i + 1}</em><span className="t">{x.title}</span><span className={`st ${x.status}`} aria-label={x.status} />
+        </button>
+      ))}
+    </nav>
+  ) : undefined;
 
   const aside = showCm ? (
     <aside className="dc-aside sd" data-sd-comments="">
@@ -126,7 +156,7 @@ export function DocStudio({ id, frame, version = 0, onAsk, onPrefill, onSource, 
       actions={<>
         <button type="button" className="sd-pill" onClick={() => { void navigator.clipboard?.writeText(`${window.location.origin}/docs/${id}`).catch(() => undefined); setMsg("Link copied"); }} data-dc-share=""><Ic n="share" />Share</button>
         <span data-dc-download="" style={{ display: "inline-flex" }}>
-          <MenuButton className="sd-btnp" icon="dl" label="Export" align="right" data="export">
+          <MenuButton className="sd-btnp" icon="dl" label={writing ? "Export when done" : "Export"} align="right" data="export">
             {(close) => <>
               <button type="button" onClick={() => { close(); void dl("docx"); }} data-dc-dl="docx"><span>Word</span><small>.docx · figures included</small></button>
               <button type="button" onClick={() => { close(); void dl("pdf"); }} data-dc-dl="pdf"><span>PDF</span><small>A4 · ready to send</small></button>
@@ -193,7 +223,7 @@ export function DocStudio({ id, frame, version = 0, onAsk, onPrefill, onSource, 
       <DocView id={id} embedded version={v} onSource={onSource}
         studio={{
           onSelect: (bid, b) => { setSelId(bid); setSelBlock(b); if (bid) setFocusCm(bid); setEditing(null); }, changed, aside, comments: counts,
-          onComment: (bid) => { setShowCm(true); setFocusCm(bid); }, onDoc, editing,
+          onComment: (bid) => { setShowCm(true); setFocusCm(bid); }, onDoc, editing, toc,
         }} />
     </StudioFrame>
   );

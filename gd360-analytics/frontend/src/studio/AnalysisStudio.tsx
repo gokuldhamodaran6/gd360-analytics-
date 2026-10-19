@@ -2,6 +2,9 @@
 // queries that read the data, the metric, each chart, the findings and the tables - each with Ask / Edit / Run.
 // Edits are real: a step's SQL or a plain-English change runs that step again and rewrites the answer from every
 // step (backend guided.rework). Nothing here is drawn from made-up numbers; every card is the run's own result.
+// 2026-10-19 (R57, "ask flow fixes" boards 3-5): a Guided analysis lives here from the moment it is asked - the
+// plan fills in, step 1 runs by itself and shows its numbers ("Do these numbers look right?"), each later step runs
+// after "Looks right", and one green button runs the rest. The page never says "worked" while a step still runs.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { guidedApi, projectsApi, type ProjectRun, type RunStep, type Visual } from "../api/projects";
@@ -20,7 +23,24 @@ const KIND_ICON: Record<string, string> = { data: "db", metric: "test", chart: "
 const KIND_LABEL: Record<string, string> = { data: "Data", metric: "Metric", chart: "Chart", text: "Text", table: "Table", model: "Model" };
 
 function busyRun(r: ProjectRun | null | undefined): boolean {
+  // R57: a Guided analysis rests at "planned" while it waits for the person - that is not busy
+  if (r && r.guided && r.status === "planned") return !!r.busy || (r.steps || []).some((s) => s.status === "running");
   return !!r && (["planning", "running", "planned"].includes(r.status) || !!r.busy || (r.steps || []).some((s) => s.status === "running"));
+}
+
+/** R57: a one-row result is read as key numbers ("Net sales $35.5M · Orders 27,768"), not a one-row table. */
+function StepKpis({ step }: { step: RunStep }) {
+  const cols = (step.columns || []).filter((c) => c.dtype === "number").slice(0, 4);
+  const row = (step.preview || [])[0];
+  if (!row || (step.preview || []).length !== 1 || !cols.length) return null;
+  return (
+    <div className="sd-kpis sd-stepkpis" data-sd-step-kpis="">
+      {cols.map((c) => (
+        <div key={c.name} className="sd-card sd-kpi"><span className="sd-lbl">{c.label || c.name}</span>
+          <b className="sd-mono">{formatCell(row[c.name], c.format || "number", c.currency)}</b></div>
+      ))}
+    </div>
+  );
 }
 
 export function StepCard({ n, kind, title, badge, cls, acts, children, foot, id }: {
@@ -80,9 +100,11 @@ function ChartBody({ v, id }: { v: Visual; id: string }) {
   return null;
 }
 
-function DataStep({ n, step, runId, canEdit, showCode, onAsk, onChanged, onError, busy, removable }: {
+function DataStep({ n, step, runId, canEdit, showCode, onAsk, onChanged, onError, busy, removable, check, nextLabel }: {
   n: number; step: RunStep; runId: string; canEdit: boolean; showCode: boolean; onAsk: (q: string) => void; onChanged: (r: ProjectRun) => void;
   onError: (m: string) => void; busy: boolean; removable: boolean;
+  /** R57: this step's numbers wait for the person's OK (Guided analysis) */
+  check?: boolean; nextLabel?: string;
 }) {
   const [mode, setMode] = useState<"none" | "sql" | "say">("none");
   const [sql, setSql] = useState(step.sql);
@@ -96,10 +118,12 @@ function DataStep({ n, step, runId, canEdit, showCode, onAsk, onChanged, onError
   const running = step.status === "running";
   const title = step.title || `Step ${n}`;
   const src = step.kind === "combine" ? "Combined from earlier steps" : [step.source_name, step.dialect].filter(Boolean).join(" · ");
+  const kpiView = (step.preview || []).length === 1 && (step.columns || []).some((c) => c.dtype === "number");
   return (
     <StepCard n={n} kind="data" id={step.id} title={title}
-      cls={[step.added ? "new" : "", running ? "run" : "", step.status === "failed" ? "bad" : ""].join(" ").trim()}
+      cls={[step.added ? "new" : "", running ? "run" : "", step.status === "failed" ? "bad" : "", check ? "focus" : "", step.approved ? "ok" : ""].join(" ").trim()}
       badge={running ? <span className="sd-chip"><span className="c2-spin" /> Running</span> : step.status === "stale" ? <span className="sd-chip warn">Out of date</span>
+        : check ? <span className="sd-chip good" data-sd-ready="">Ready to check</span>
         : step.added ? <span className="sd-badge">Added</span> : step.reused ? <span className="sd-chip">Reused</span> : null}
       acts={<>
         <button type="button" className="sd-tool sm" onClick={() => onAsk(`About step ${n}, “${title}”: `)} data-sd-ask=""><Ic n="wand" />Ask</button>
@@ -142,9 +166,32 @@ function DataStep({ n, step, runId, canEdit, showCode, onAsk, onChanged, onError
           </div>
         </form>
       )}
-      {showCode && mode === "none" && <pre className="sd-code" data-sd-code="">{layoutSql(step.sql)}</pre>}
-      <PreviewTable step={step} />
+      {kpiView && <StepKpis step={step} />}
+      {(showCode || check) && mode === "none" && <pre className="sd-code" data-sd-code="">{layoutSql(step.sql)}</pre>}
+      {!kpiView && <PreviewTable step={step} />}
+      {check && mode === "none" && (
+        <div className="sd-okbar" data-sd-okbar="">
+          <b>Do these numbers look right?</b>
+          <span className="sd-sp" />
+          {canEdit && <button type="button" className="sd-pill" onClick={() => setMode("say")} disabled={busy || saving} data-sd-change="">Change this step</button>}
+          <button type="button" className="sd-btnp" onClick={() => void act(() => guidedApi.approve(runId, step.id, true))} disabled={busy || saving} data-sd-approve="">
+            {saving ? "Starting…" : nextLabel || "Looks right"}</button>
+        </div>
+      )}
     </StepCard>
+  );
+}
+
+/** R57: a step that has not run yet in a Guided analysis - its title and what it will compute. */
+function WaitingStep({ n, step, next }: { n: number; step: RunStep; next: boolean }) {
+  return (
+    <div className="sd-sb wait" data-sd-step="data" data-sd-step-id={step.id} data-sd-waiting="">
+      <span className="sd-nm">{n}</span>
+      <div className="sd-card sd-waitcard">
+        <div className="sd-sh"><span className="k"><Ic n="db" />Data</span><b title={step.title}>{step.title}</b><span className="sd-chip">{next ? "Next" : "Waits"}</span></div>
+        {step.purpose && <div className="sd-sub">{step.purpose}</div>}
+      </div>
+    </div>
   );
 }
 
@@ -197,12 +244,27 @@ export function AnalysisStudio({ turn, run, frame, onAsk, onPrefill, onRunChange
   };
   const runAll = async () => { try { changed(await guidedApi.rework(run.id)); } catch (e: any) { setErr(e?.response?.data?.detail || "Couldn't run the steps."); } };
   const title = (turn.question || "Analysis").replace(/\?$/, "");
-  const status = busy ? `Working · ${steps.filter((s) => s.status === "running").map((s) => s.title).join(", ") || "rewriting the answer"}…`
+  // R57: a Guided analysis before its answer is written - step by step, each step waits for the person's OK
+  const stepwise = !!run.guided && run.status !== "done";
+  const planning = run.status === "planning";
+  const checkIdx = stepwise && !busy ? steps.findIndex((s) => s.status === "done" && !s.approved) : -1;
+  const firstWaiting = steps.findIndex((s) => s.status !== "done");
+  const left = steps.filter((s) => s.status !== "done").length;
+  const runRest = async () => { try { changed(await guidedApi.runRest(run.id)); } catch (e: any) { setErr(e?.response?.data?.detail || "Couldn't run the rest."); } };
+  const runningIdx = steps.findIndex((s) => s.status === "running");
+  const status = planning ? "Planning the steps…"
+    : stepwise && runningIdx >= 0 ? `Running step ${runningIdx + 1} of ${steps.length}…`
+    : stepwise && busy ? "Writing the answer from the steps…"
+    : stepwise && checkIdx >= 0 ? `Step ${checkIdx + 1} of ${steps.length} ready · checked against the source`
+    : busy ? `Working · ${steps.filter((s) => s.status === "running").map((s) => s.title).join(", ") || "rewriting the answer"}…`
     : run.finished_at ? `Saved ${ago(run.finished_at)}` : "";
 
   return (
     <StudioFrame kind="analysis-steps" tabs={frame.tabs} addMenu={frame.addMenu} onClose={frame.onClose} status={status}
-      actions={<>
+      actions={stepwise ? (
+        <button type="button" className="sd-btnp" disabled={busy || planning || (!left && checkIdx < 0)} onClick={() => void runRest()} data-sd-run-rest=""
+          title="What has run is approved; every step left runs, then the answer is written">{left ? "Looks right, run the rest" : "Looks right, write the answer"}</button>
+      ) : <>
         <button type="button" className="sd-pill" onClick={() => { void navigator.clipboard?.writeText(window.location.href).catch(() => undefined); }} title="Copy the link to this conversation"><Ic n="share" />Share</button>
         <MenuButton className="sd-btnp" label="Turn into" align="right" data="turn-into">
           {(close) => <>
@@ -215,7 +277,7 @@ export function AnalysisStudio({ turn, run, frame, onAsk, onPrefill, onRunChange
       </>}
       tools={<>
         {canEdit && <button type="button" className={`sd-tool${adding ? " on" : ""}`} onClick={() => setAdding((a) => !a)} disabled={busy} data-sd-add-step=""><Ic n="plus" />Add step</button>}
-        {canEdit && <button type="button" className="sd-tool" onClick={() => void runAll()} disabled={busy} data-sd-run-all=""><Ic n="play" />Run all</button>}
+        {canEdit && !stepwise && <button type="button" className="sd-tool" onClick={() => void runAll()} disabled={busy} data-sd-run-all=""><Ic n="play" />Run all</button>}
         <span className="sd-vr" />
         <MenuButton icon="db" label={sources.length ? sources.slice(0, 2).join(", ") + (sources.length > 2 ? ` +${sources.length - 2}` : "") : "Sources"} data="sources">
           {(close) => <>
@@ -237,7 +299,20 @@ export function AnalysisStudio({ turn, run, frame, onAsk, onPrefill, onRunChange
             <button type="submit" className="sd-btnp" disabled={addBusy || addText.trim().length < 3}>{addBusy ? "Writing the step…" : "Add and run"}</button>
           </form>
         )}
-        {steps.map((s) => <DataStep key={s.id} n={next()} step={s} runId={run.id} canEdit={canEdit} showCode={showCode} onAsk={onPrefill} onChanged={changed} onError={setErr} busy={busy} removable={steps.length > 1} />)}
+        {stepwise && (
+          <div className="sd-plan" data-sd-plan="">
+            <span className="sd-lbl">The plan</span>
+            <b>{run.plan?.title || title}</b>
+            {planning && <span className="sd-chip"><span className="c2-spin" /> Planning the steps · step 1 runs as soon as the plan is ready</span>}
+          </div>
+        )}
+        {planning && !steps.length && [0, 1, 2].map((i) => (
+          <div key={i} className="sd-sb wait" aria-hidden="true"><span className="sd-nm">{i + 1}</span><div className="sd-card sd-waitcard sd-skel"><i style={{ width: `${46 + i * 12}%` }} /><i style={{ width: `${70 - i * 8}%` }} /></div></div>
+        ))}
+        {steps.map((s, i) => (stepwise && s.status === "pending"
+          ? <WaitingStep key={s.id} n={next()} step={s} next={i === firstWaiting} />
+          : <DataStep key={s.id} n={next()} step={s} runId={run.id} canEdit={canEdit} showCode={showCode} onAsk={onPrefill} onChanged={changed} onError={setErr} busy={busy} removable={steps.length > 1}
+              check={i === checkIdx} nextLabel={i === checkIdx ? (steps.slice(i + 1).some((x) => x.status !== "done") ? `Looks right, run step ${steps.findIndex((x, j) => j > i && x.status !== "done") + 1}` : "Looks right, write the answer") : undefined} />))}
         {kpis.length > 0 && (
           <StepCard n={next()} kind="metric" title={und.metric ? String(und.metric).replace(/^./, (c) => c.toUpperCase()) : "The numbers"}
             acts={<button type="button" className="sd-tool sm" onClick={() => onPrefill(`About the numbers (${kpis.map((k) => k.label).join(", ")}): `)}><Ic n="wand" />Ask</button>}>
