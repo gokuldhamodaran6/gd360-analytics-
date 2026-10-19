@@ -16,6 +16,36 @@ import { DataTable, DivergingBars, WaterfallChart } from "../project/Visuals";
 import { layoutSql } from "../project/RunPanels";
 import { ago, MenuButton, safeName, saveBlob, StudioFrame, toCsv, type FrameTab } from "./Frame";
 import { Ic } from "./icons";
+import { useCardActions, type CardTarget } from "../chat/cardActions";
+
+/** R58: a card's two questions. Explain answers at once from the numbers already on screen (no new query);
+ *  Ask puts "About: <this card>" in the follow-up box for a question of your own. Explain waits for the answer
+ *  (a Guided analysis explains once its steps are checked). */
+function CardAsk({ label, prefix, target, runId, canExplain, onPrefill }: {
+  label: string; prefix: string; target: CardTarget; runId: string; canExplain: boolean; onPrefill: (q: string) => void;
+}) {
+  const acts = useCardActions();
+  return (
+    <>
+      {canExplain && acts && (
+        <button type="button" className="sd-tool sm" onClick={() => acts.explain(label, target, runId)} data-sd-explain={target.kind}
+          title="Explain this from the numbers already here - no new query"><Ic n="spark" />Explain</button>
+      )}
+      <button type="button" className="sd-tool sm" data-sd-ask={target.kind}
+        onClick={() => (acts ? acts.about({ label, prefix, target, runId }) : onPrefill(`${prefix}: `))}
+        title="Ask your own question about this"><Ic n="wand" />Ask</button>
+    </>
+  );
+}
+
+/** R58: step names read as plain language - "Fetch Monthly Sales History" becomes "Fetch monthly sales history".
+ *  Only a title in Title Case changes; acronyms (USA, SKU) and words with digits stay as they are. */
+export function plainTitle(t: string): string {
+  const words = t.split(/\s+/);
+  const caps = words.filter((w) => /^[A-Z][a-z]/.test(w)).length;
+  if (words.length < 3 || caps < Math.ceil(words.length * 0.6)) return t;
+  return words.map((w, i) => (i === 0 || /^[A-Z0-9&]+$/.test(w) || /\d/.test(w) ? w : /^[A-Z][a-z]+$/.test(w) ? w.toLowerCase() : w)).join(" ");
+}
 
 export type FrameBits = { tabs: FrameTab[]; addMenu?: (close: () => void) => React.ReactNode; onClose: () => void };
 
@@ -36,7 +66,7 @@ function StepKpis({ step }: { step: RunStep }) {
   return (
     <div className="sd-kpis sd-stepkpis" data-sd-step-kpis="">
       {cols.map((c) => (
-        <div key={c.name} className="sd-card sd-kpi"><span className="sd-lbl">{c.label || c.name}</span>
+        <div key={c.name} className="sd-card sd-kpi"><span className="sd-lbl">{c.label || humanHeader(c.name)}</span>
           <b className="sd-mono">{formatCell(row[c.name], c.format || "number", c.currency)}</b></div>
       ))}
     </div>
@@ -65,18 +95,42 @@ export function StepCard({ n, kind, title, badge, cls, acts, children, foot, id 
   );
 }
 
-function PreviewTable({ step, rows = 5 }: { step: RunStep; rows?: number }) {
+// R58: a step's rows read like a table a person made - "Net sales" not "net_sales", "Jan 2021" not "2021-01-01",
+// money with its currency. The values themselves are the step's own; only how they are written changes.
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})(?:[T ]00:00(?::00(?:\.0+)?)?(?:Z|\+00:?00)?)?$/;
+const MONEY_NAME = /(sales|revenue|amount|amt|price|cost|profit|spend|income|gmv|limit|balance|fee|margin_value|value_usd)/i;
+export function humanHeader(name: string): string {
+  if (/[a-z][A-Z]|\s/.test(name) && !/_/.test(name)) return name;
+  const t = name.replace(/_/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+function dateStyle(values: unknown[]): "month" | "day" | null {
+  const vs = values.filter((v) => v !== null && v !== undefined && v !== "");
+  if (!vs.length || !vs.every((v) => typeof v === "string" && ISO_DAY.test(v))) return null;
+  return vs.every((v) => (v as string).slice(8, 10) === "01") && vs.length > 1 ? "month" : "day";
+}
+function showDate(v: unknown, style: "month" | "day"): string {
+  const m = typeof v === "string" ? ISO_DAY.exec(v) : null;
+  if (!m) return v === null || v === undefined || v === "" ? "—" : String(v);
+  const mon = MON[Number(m[2]) - 1] || m[2];
+  return style === "month" ? `${mon} ${m[1]}` : `${Number(m[3])} ${mon} ${m[1]}`;
+}
+
+function PreviewTable({ step, rows = 5, currency }: { step: RunStep; rows?: number; currency?: string | null }) {
   const cols = (step.columns || []).slice(0, 7);
   const data = (step.preview || []).slice(0, rows);
   if (!cols.length) return <div className="sd-note">{step.status === "done" ? "This step returned no rows." : "Not run yet."}</div>;
+  const dates = Object.fromEntries(cols.map((c) => [c.name, c.dtype === "number" ? null : dateStyle((step.preview || []).map((r) => r[c.name]))]));
+  const fmt = (c: (typeof cols)[number]) => c.format || (c.dtype === "number" ? (currency && MONEY_NAME.test(c.name) ? "currency" : "number") : null);
   return (
     <div className="sd-card sd-tw" style={{ borderRadius: 10 }}>
       <table className="sd-t">
-        <thead><tr>{cols.map((c) => <th key={c.name} className={c.dtype === "number" ? "r" : undefined}>{c.label || c.name}</th>)}</tr></thead>
+        <thead><tr>{cols.map((c) => <th key={c.name} className={c.dtype === "number" ? "r" : undefined} title={c.name}>{c.label || humanHeader(c.name)}</th>)}</tr></thead>
         <tbody>
           {data.map((r, i) => (
-            <tr key={i}>{cols.map((c) => <td key={c.name} className={c.dtype === "number" ? "num" : "sd-mono"} style={c.dtype === "number" ? undefined : { fontSize: 13 }}>
-              {formatCell(r[c.name], c.format || (c.dtype === "number" ? "number" : null), c.currency)}</td>)}</tr>
+            <tr key={i}>{cols.map((c) => <td key={c.name} className={c.dtype === "number" ? "num" : dates[c.name] ? undefined : "sd-mono"} style={c.dtype === "number" ? undefined : { fontSize: 13 }}>
+              {dates[c.name] ? showDate(r[c.name], dates[c.name]!) : formatCell(r[c.name], fmt(c), c.currency || currency)}</td>)}</tr>
           ))}
         </tbody>
       </table>
@@ -100,9 +154,9 @@ function ChartBody({ v, id }: { v: Visual; id: string }) {
   return null;
 }
 
-function DataStep({ n, step, runId, canEdit, showCode, onAsk, onChanged, onError, busy, removable, check, nextLabel }: {
+function DataStep({ n, step, runId, canEdit, showCode, onAsk, onChanged, onError, busy, removable, check, nextLabel, canExplain = false, currency }: {
   n: number; step: RunStep; runId: string; canEdit: boolean; showCode: boolean; onAsk: (q: string) => void; onChanged: (r: ProjectRun) => void;
-  onError: (m: string) => void; busy: boolean; removable: boolean;
+  onError: (m: string) => void; busy: boolean; removable: boolean; canExplain?: boolean; currency?: string | null;
   /** R57: this step's numbers wait for the person's OK (Guided analysis) */
   check?: boolean; nextLabel?: string;
 }) {
@@ -116,7 +170,7 @@ function DataStep({ n, step, runId, canEdit, showCode, onAsk, onChanged, onError
     try { onChanged(await fn()); setMode("none"); setSay(""); } catch (e: any) { onError(e?.response?.data?.detail || "That change didn't apply."); } finally { setSaving(false); }
   };
   const running = step.status === "running";
-  const title = step.title || `Step ${n}`;
+  const title = plainTitle(step.title || `Step ${n}`);
   const src = step.kind === "combine" ? "Combined from earlier steps" : [step.source_name, step.dialect].filter(Boolean).join(" · ");
   const kpiView = (step.preview || []).length === 1 && (step.columns || []).some((c) => c.dtype === "number");
   return (
@@ -126,7 +180,8 @@ function DataStep({ n, step, runId, canEdit, showCode, onAsk, onChanged, onError
         : check ? <span className="sd-chip good" data-sd-ready="">Ready to check</span>
         : step.added ? <span className="sd-badge">Added</span> : step.reused ? <span className="sd-chip">Reused</span> : null}
       acts={<>
-        <button type="button" className="sd-tool sm" onClick={() => onAsk(`About step ${n}, “${title}”: `)} data-sd-ask=""><Ic n="wand" />Ask</button>
+        <CardAsk label={`step ${n}, “${title}”`} prefix={`About step ${n}, “${title}”`} target={{ kind: "step", id: step.id }} runId={runId}
+          canExplain={canExplain && step.status === "done"} onPrefill={onAsk} />
         {canEdit && <button type="button" className={`sd-tool sm${mode !== "none" ? " on" : ""}`} onClick={() => setMode(mode === "none" ? "say" : "none")} disabled={busy} data-sd-edit=""><Ic n="text" />Edit</button>}
         {canEdit && <button type="button" className="sd-tool sm" onClick={() => void act(() => guidedApi.runStep(runId, step.id))} disabled={busy || saving} data-sd-run=""><Ic n="play" />Run</button>}
         <MenuButton className="sd-tool sm" icon="more" caret={false} align="right" title="More">
@@ -168,7 +223,7 @@ function DataStep({ n, step, runId, canEdit, showCode, onAsk, onChanged, onError
       )}
       {kpiView && <StepKpis step={step} />}
       {(showCode || check) && mode === "none" && <pre className="sd-code" data-sd-code="">{layoutSql(step.sql)}</pre>}
-      {!kpiView && <PreviewTable step={step} />}
+      {!kpiView && <PreviewTable step={step} currency={currency} />}
       {check && mode === "none" && (
         <div className="sd-okbar" data-sd-okbar="">
           <b>Do these numbers look right?</b>
@@ -188,7 +243,7 @@ function WaitingStep({ n, step, next }: { n: number; step: RunStep; next: boolea
     <div className="sd-sb wait" data-sd-step="data" data-sd-step-id={step.id} data-sd-waiting="">
       <span className="sd-nm">{n}</span>
       <div className="sd-card sd-waitcard">
-        <div className="sd-sh"><span className="k"><Ic n="db" />Data</span><b title={step.title}>{step.title}</b><span className="sd-chip">{next ? "Next" : "Waits"}</span></div>
+        <div className="sd-sh"><span className="k"><Ic n="db" />Data</span><b title={step.title}>{plainTitle(step.title || `Step ${n}`)}</b><span className="sd-chip">{next ? "Next" : "Waits"}</span></div>
         {step.purpose && <div className="sd-sub">{step.purpose}</div>}
       </div>
     </div>
@@ -226,7 +281,10 @@ export function AnalysisStudio({ turn, run, frame, onAsk, onPrefill, onRunChange
 
   const changed = useCallback((r: ProjectRun) => { setErr(null); onRunChanged(r); setPoll((p) => p + 1); }, [onRunChanged]);
   const steps = (run.steps || []).filter((s) => s.status !== "skipped");
-  const visuals = (res?.visuals || []).filter((v) => v.type !== "kpis");
+  // R58: each chart keeps its place in the answer's list - Explain points at it by that index
+  const visuals = (res?.visuals || []).map((v, i) => ({ v, i })).filter((x) => x.v.type !== "kpis");
+  const canExplain = run.status === "done" && !!res?.answer && !res?.answer_stale && !busy;
+  const currency = (run.plan as any)?.analysis?.currency || null;
   const kpis = (((res as any)?.kpis || []) as { label: string; display: string; fact_id?: string }[]).slice(0, 4);
   const ans = res?.answer;
   const evidence = res?.evidence || [];
@@ -312,19 +370,21 @@ export function AnalysisStudio({ turn, run, frame, onAsk, onPrefill, onRunChange
         {steps.map((s, i) => (stepwise && s.status === "pending"
           ? <WaitingStep key={s.id} n={next()} step={s} next={i === firstWaiting} />
           : <DataStep key={s.id} n={next()} step={s} runId={run.id} canEdit={canEdit} showCode={showCode} onAsk={onPrefill} onChanged={changed} onError={setErr} busy={busy} removable={steps.length > 1}
+              canExplain={canExplain} currency={currency}
               check={i === checkIdx} nextLabel={i === checkIdx ? (steps.slice(i + 1).some((x) => x.status !== "done") ? `Looks right, run step ${steps.findIndex((x, j) => j > i && x.status !== "done") + 1}` : "Looks right, write the answer") : undefined} />))}
         {kpis.length > 0 && (
-          <StepCard n={next()} kind="metric" title={und.metric ? String(und.metric).replace(/^./, (c) => c.toUpperCase()) : "The numbers"}
-            acts={<button type="button" className="sd-tool sm" onClick={() => onPrefill(`About the numbers (${kpis.map((k) => k.label).join(", ")}): `)}><Ic n="wand" />Ask</button>}>
-            {und.method && <span className="sd-fx" style={{ alignSelf: "flex-start" }}>{und.method}</span>}
-            <div className="sd-big" data-sd-kpis="">
-              {kpis.map((k) => <span key={k.label} style={{ display: "inline-flex", alignItems: "baseline", gap: 8, marginRight: 18 }}><span className="sd-lbl">{k.label}</span><span className="v">{k.display}</span></span>)}
+          <StepCard n={next()} kind="metric" title={und.metric ? String(und.metric).replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()) : "The numbers"}
+            acts={<CardAsk label="the key numbers" prefix="About the key numbers" target={{ kind: "kpis" }} runId={run.id} canExplain={canExplain} onPrefill={onPrefill} />}>
+            {und.method && <p className="sd-sub sd-method">{String(und.method).replace(/^./, (c) => c.toUpperCase()).replace(/\.?$/, ".")}</p>}
+            <div className="sd-kpitiles" data-sd-kpis="">
+              {kpis.map((k) => <div key={k.label} className="t"><span>{k.label}</span><b>{k.display}</b></div>)}
             </div>
           </StepCard>
         )}
-        {visuals.map((v, i) => (
+        {visuals.map(({ v, i }) => (
           <StepCard key={`v${i}`} n={next()} kind="chart" title={(v as any).title || "Chart"}
-            acts={<button type="button" className="sd-tool sm" onClick={() => onPrefill(`About the chart “${(v as any).title || ""}”: `)} data-sd-ask-chart=""><Ic n="wand" />Ask</button>}
+            acts={<CardAsk label={`the chart “${(v as any).title || "Chart"}”`} prefix={`About the chart “${(v as any).title || "Chart"}”`}
+              target={{ kind: "visual", index: i }} runId={run.id} canExplain={canExplain} onPrefill={onPrefill} />}
             foot={(v as any).sources?.length ? <><span className="sd-proof"><span className="sd-dot good" />Counted from {(v as any).sources.join(", ")}</span></> : undefined}>
             <ChartBody v={v} id={`${run.id}:sd${i}`} />
           </StepCard>
@@ -332,7 +392,7 @@ export function AnalysisStudio({ turn, run, frame, onAsk, onPrefill, onRunChange
         {ans && (ans.headline || ans.answer) && (
           <StepCard n={next()} kind="text" title="Findings" cls={res?.answer_stale ? "" : undefined}
             badge={res?.answer_stale ? <span className="sd-chip warn">Being rewritten</span> : ans.written_by === "template" ? <span className="sd-chip">Written from the numbers</span> : null}
-            acts={<button type="button" className="sd-tool sm" onClick={() => onPrefill("Rewrite the findings: ")}><Ic n="wand" />Ask</button>}>
+            acts={<CardAsk label="the findings" prefix="About the findings" target={{ kind: "answer" }} runId={run.id} canExplain={canExplain} onPrefill={onPrefill} />}>
             <div className="sd-prose" data-sd-findings="">
               <p><b>{ans.headline}</b>{ans.answer && ans.answer !== ans.headline ? ` ${ans.answer}` : ""}</p>
               {(ans.causes || []).length > 0 && (

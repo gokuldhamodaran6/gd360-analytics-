@@ -278,3 +278,11 @@ textarea.sd-code { width: 100%; border: 1px solid rgb(var(--color-border-strong)
   .sd-sh b { flex: 1 1 auto; }
   .sd-sh .x { margin-left: 0; flex: 1 1 100%; justify-content: flex-start; }
 }
+
+/* R58: the key numbers as tiles (label over value), the method as a plain sentence, Explain beside Ask */
+.sd-method { margin: -2px 0 0; color: rgb(var(--color-secondary)); font-size: 13.5px; line-height: 1.5; }
+.sd-kpitiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.sd-kpitiles .t { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid rgb(var(--color-border)); border-radius: 12px; background: rgb(var(--color-surface)); min-width: 0; }
+.sd-kpitiles .t span { font-size: 12.5px; color: rgb(var(--color-muted)); line-height: 1.35; }
+.sd-kpitiles .t b { font-family: "Geist Mono", ui-monospace, monospace; font-size: 24px; font-weight: 600; letter-spacing: -.02em; line-height: 1.15; overflow-wrap: anywhere; }
+[data-sd-explain] svg { color: rgb(var(--color-primary)); }
