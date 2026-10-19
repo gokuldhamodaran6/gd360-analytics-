@@ -229,3 +229,18 @@ table.fl-t { border-collapse: collapse; width: 100%; font-size: 13px; }
   .fl-set .l { width: 100%; }
   .fl-body { padding: 14px; }
 }
+
+/* 2026-10-19 (R56, Studio board "Pipeline"): the flow page in the Studio frame - no top bar, the thread with its own
+   header, the canvas with the pipeline tab, its state and one green button. */
+.fl-studiopage .fl-studio.sd-flow { height: 100vh; }
+.fl-studio.sd-flow .fl-thread { border-right: 0; }
+.fl-studio.sd-flow > .sd-canvas { position: static; height: auto; margin: 12px 12px 12px 0; min-height: 0; }
+.fl-studio.sd-flow .sd-cb { gap: 14px; }
+.sd-flowacts { display: flex; align-items: center; gap: 8px; flex: 0 1 auto; min-width: 0; }
+.sd-flowacts .sd-flowname { width: 170px; min-width: 60px; flex: 0 1 auto; font-size: 13.5px; font-weight: 500; border: 1px solid transparent; border-radius: 8px; height: 32px; padding: 0 8px; background: transparent; color: rgb(var(--color-text)); }
+.sd-flowacts .sd-flowname:hover, .sd-flowacts .sd-flowname:focus { border-color: rgb(var(--color-border-strong)); outline: 0; }
+@media (max-width: 960px) {
+  .fl-studiopage .fl-studio.sd-flow { height: auto; }
+  .fl-studio.sd-flow > .sd-canvas { margin: 0; }
+  .fl-studio.sd-flow[data-mob="chat"] > .sd-canvas { display: none; }
+}
