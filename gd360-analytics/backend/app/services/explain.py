@@ -291,6 +291,10 @@ def run_context(result: dict, currency: str | None = "USD") -> tuple[dict, Allow
                  for k in result.get("kpis") or []],
         "visuals": visuals,
         "warnings": list(result.get("warnings") or [])[:4],
+        # R58: every step's table, so one step can be explained on its own
+        "steps": [{"id": e.get("id"), **_visual_brief({"type": "chart", "title": e.get("title"), "columns": e.get("columns"),
+                                                        "rows": e.get("rows")}, i, allowed, currency)}
+                  for i, e in enumerate(result.get("evidence") or []) if e.get("id")],
     }
     return ctx, allowed
 
@@ -308,10 +312,30 @@ _NEW_DATA = re.compile(
     r"show me|list|which|how many|top \d+|filter|only|exclude|segment|drill|what about|break (it )?down by)\b", re.I)
 
 
-def route_heuristic(question: str) -> str | None:
+# R58: the studio's Ask puts what the question is about in front - "About the chart “Net Sales: forecast for 2026”: why?".
+# That prefix is context, not the question: its quoted title must never read as "forecast" / "2026" / new data.
+ABOUT = re.compile(r"^\s*about\s+(?P<what>the chart|the (?:key )?numbers|the findings|the table|step\s+\d+)\s*,?\s*"
+                   r"(?:“[^”]*”|\"[^\"]*\"|\([^)]*\))?\s*[:,\-–]\s*", re.I)
+
+
+def strip_about(question: str | None) -> tuple[str | None, str]:
+    """("chart" | "numbers" | "findings" | "table" | "step" | None, the question without the prefix)"""
     q = (question or "").strip()
+    m = ABOUT.match(q)
+    if not m:
+        return None, q
+    what = m.group("what").lower().replace("the ", "").replace("key ", "")
+    return ("step" if what.startswith("step") else what), q[m.end():].strip()
+
+
+def route_heuristic(question: str) -> str | None:
+    about, q = strip_about(question)
     if not q:
-        return None
+        return "explain" if about else None
+    # R58: a short why / what / explain about the card the person pointed at is an explanation of that card
+    if about and len(q.split()) <= 10 and re.search(r"\b(why|explain|mean|means|meaning|how come|what (is|are|does|do|happened)|"
+                                                   r"tell me|summar|so what|takeaway|interpret|read)\b", q, re.I) and not _NEW_DATA.search(q):
+        return "explain"
     if _EXPLAIN.search(q):
         rest = _EXPLAIN.sub("", q, count=1)
         if _NEW_DATA.search(rest) and not re.search(r"\b(this|that|it)\b", rest, re.I):
@@ -363,6 +387,11 @@ def _valid_target(t: dict | None, ctx: dict) -> dict:
         return {"kind": "visual", "index": idx}
     if kind == "cause" and 0 <= idx < len(ctx["causes"]):
         return {"kind": "cause", "index": idx}
+    # R58: one step's table, or the key numbers - the studio's cards
+    if kind == "step" and any(x["id"] == t.get("id") for x in ctx.get("steps") or []):
+        return {"kind": "step", "id": t.get("id"), "index": 0}
+    if kind == "kpis" and ctx.get("kpis"):
+        return {"kind": "kpis", "index": 0}
     return {"kind": "answer", "index": 0}
 
 
@@ -542,10 +571,21 @@ def explain_run(result: dict, target: dict | None, question: str | None = None, 
                     "charts": [{"title": v["title"], "facts": v["facts"]} for v in ctx["visuals"][:3]]}
         title = c.get("title") or "This reason"
         fb = lambda: _fallback_cause(c)  # noqa: E731
+    elif target["kind"] == "step":
+        st = next(x for x in ctx["steps"] if x["id"] == target["id"])
+        material = {"step": st, "answer_headline": ctx["headline"], "key_numbers": ctx["kpis"], "warnings": ctx["warnings"]}
+        title = st["title"]
+        fb = lambda: _fallback_visual(st, ctx)  # noqa: E731
+    elif target["kind"] == "kpis":
+        material = {"key_numbers": ctx["kpis"], "answer_headline": ctx["headline"], "answer": ctx["answer"],
+                    "charts": [{"title": v["title"], "facts": v["facts"][:8]} for v in ctx["visuals"][:3]], "warnings": ctx["warnings"]}
+        title = "The key numbers"
+        fb = lambda: _fallback_answer(ctx)  # noqa: E731
     else:
         material = ctx
         title = "The answer"
         fb = lambda: _fallback_answer(ctx)  # noqa: E731
+    question = strip_about(question)[1] or question
     out = _model(material, question, allowed) if use_model else None
     by = "model"
     if out is None:
