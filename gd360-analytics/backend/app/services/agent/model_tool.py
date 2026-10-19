@@ -75,12 +75,17 @@ def status(db: Session, user: models.User, model_id: str) -> dict:
         return {"status": "failed", "text": out.get("error") or "Training failed.", "chips": []}
     r = out.get("results") or {}
     label = r.get("label") or out.get("problem_type") or "model"
+    if isinstance(label, dict):  # R55: the label can be the target description, never print the raw dict
+        kind = str(label.get("kind") or out.get("problem_type") or "")
+        label = {"binary": "a yes/no model", "multiclass": "a category model", "regression": "a number model"}.get(kind, "the model")
+    label = str(label)
     metric = r.get("metric") or (out.get("metrics") or {}).get("metric") or "score"
     test = r.get("test_score")
     base = r.get("baseline") or {}
     drivers = [d.get("feature") or d.get("name") or str(d) for d in (r.get("drivers") or [])[:5] if d]
     leaks = r.get("leaks") or []
-    leak_names = [l.get("column") if isinstance(l, dict) else str(l) for l in leaks]
+    leak_names = [str(l.get("column") if isinstance(l, dict) else l) for l in leaks]
+    leak_names = [n if len(n) <= 40 else n[:37] + "…" for n in leak_names]
     parts = [f"The model is ready: {label} on “{out.get('target')}” from {out.get('table') or 'your data'}."]
     if test is not None:
         parts.append(f"On {int(r.get('test_rows') or 0):,} rows it never saw, {metric} is {_fmt(test)}"
