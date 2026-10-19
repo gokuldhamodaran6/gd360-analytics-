@@ -31,6 +31,8 @@ const plain = (t: string) => (t || "").replace(/\*\*(.+?)\*\*/g, "$1");
 export type DocStudioBits = {
   onSelect: (blockId: string | null, b: DocBlock | null) => void; changed: Record<string, number>; aside?: ReactNode;
   comments?: Record<string, number>; onComment?: (blockId: string) => void; onDoc?: (d: Doc) => void; editing?: { id: string; mode: "type" | "rewrite" } | null;
+  /** R57: the report's contents, left of the page */
+  toc?: ReactNode;
 };
 
 function when(iso: string): string {
@@ -57,18 +59,60 @@ function Chips({ cites, sources, onSource }: { cites?: string[]; sources: DocSou
   );
 }
 
-export function DocFigure({ b }: { b: Extract<DocBlock, { type: "figure" }> }) {
-  const bars = b.bars || [];
-  const W = 720, left = 210, right = 70, rowH = 46, top = 34;
-  const H = top + rowH * bars.length + 34;
-  const vmaxRaw = Math.max(...bars.map((x) => x.value), b.baseline?.value ?? 0, 1e-9);
-  const step = vmaxRaw > 30 ? 10 : vmaxRaw > 10 ? 5 : 1;
-  const vmax = (Math.floor(vmaxRaw / step) + 1) * step;
-  const pw = W - left - right;
-  const xs = (v: number) => left + (pw * v) / vmax;
+/** R57: an axis that fits any scale - 4 to 6 round steps (0, 2M, 4M, 6M, 8M), never hundreds of ticks. */
+export function niceAxis(vmax: number): { top: number; step: number; ticks: number[] } {
+  if (!(vmax > 0)) return { top: 1, step: 0.25, ticks: [0, 0.25, 0.5, 0.75, 1] };
+  const raw = vmax / 5;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((x) => x >= raw) || 10 * mag;
+  const top = Math.ceil(vmax / step - 1e-9) * step;
   const ticks: number[] = [];
-  for (let k = 0; k <= vmax; k += step) ticks.push(k);
-  const tone = (t?: string) => (t === "bad" ? "var(--dc-bad)" : t === "good" ? "var(--dc-good)" : "var(--dc-neutral)");
+  for (let k = 0; k <= top + step / 1000 && ticks.length < 12; k += step) ticks.push(Number(k.toPrecision(12)));
+  return { top, step, ticks };
+}
+export const tickText = (v: number, unit = "") => {
+  const a = Math.abs(v);
+  const t = a >= 1e9 ? `${+(v / 1e9).toPrecision(3)}B` : a >= 1e6 ? `${+(v / 1e6).toPrecision(3)}M` : a >= 1e4 ? `${+(v / 1e3).toPrecision(3)}K` : `${+v.toPrecision(4)}`;
+  return t + unit;
+};
+
+/** R57: a series over time - one line, the first and last values labelled. */
+function DocLine({ b }: { b: Extract<DocBlock, { type: "figure" }> }) {
+  const pts = b.bars || [];
+  const W = 720, H = 260, left = 56, right = 20, top = 22, bottom = 36;
+  const vals = pts.map((p) => p.value);
+  const lo = Math.min(0, ...vals);
+  const ax = niceAxis(Math.max(...vals) - lo);
+  const pw = W - left - right, ph = H - top - bottom;
+  const x = (i: number) => left + (pw * i) / Math.max(1, pts.length - 1);
+  const y = (v: number) => top + ph * (1 - (v - lo) / (ax.top || 1));
+  const every = Math.max(1, Math.ceil(pts.length / 8));
+  const d = pts.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
+  const last = pts.length - 1;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${b.title}: from ${pts[0]?.display || pts[0]?.value} (${pts[0]?.label}) to ${pts[last]?.display || pts[last]?.value} (${pts[last]?.label})`} className="dc-fig-svg">
+      {ax.ticks.map((k) => <g key={k}><line x1={left} x2={left + pw} y1={y(k + lo)} y2={y(k + lo)} className="gr" /><text x={left - 8} y={y(k + lo) + 4} textAnchor="end" className="tick">{tickText(k + lo, b.unit || "")}</text></g>)}
+      <path d={d} fill="none" stroke="var(--dc-main)" strokeWidth={2.5} strokeLinejoin="round" />
+      {pts.map((p, i) => (i % every === 0 || i === last) ? <text key={i} x={x(i)} y={H - 12} textAnchor="middle" className="tick">{String(p.label).slice(0, 10)}</text> : null)}
+      {[0, last].filter((i, k, a) => a.indexOf(i) === k && pts[i]).map((i) => (
+        <g key={`p${i}`}><circle cx={x(i)} cy={y(pts[i].value)} r={4.5} fill="var(--dc-main)" />
+          <text x={x(i) + (i === 0 ? 8 : -8)} y={y(pts[i].value) - 10} textAnchor={i === 0 ? "start" : "end"} className="val">{pts[i].display || tickText(pts[i].value, b.unit || "")}</text></g>
+      ))}
+    </svg>
+  );
+}
+
+export function DocFigure({ b }: { b: Extract<DocBlock, { type: "figure" }> }) {
+  if (b.kind === "line") return <DocLine b={b} />;
+  const bars = b.bars || [];
+  const W = 720, left = 210, right = 90, rowH = 46, top = 34;
+  const H = top + rowH * bars.length + 34;
+  const ax = niceAxis(Math.max(...bars.map((x) => x.value), b.baseline?.value ?? 0, 1e-9));
+  const vmax = ax.top;
+  const pw = W - left - right;
+  const xs = (v: number) => left + (pw * Math.max(0, v)) / vmax;
+  const ticks = ax.ticks;
+  const tone = (t?: string) => (t === "bad" ? "var(--dc-bad)" : t === "good" ? "var(--dc-good)" : t === "main" ? "var(--dc-main)" : t === "top" ? "var(--dc-top)" : "var(--dc-neutral)");
   const bottom = top + rowH * bars.length;
   return (
     <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${b.title}: ${bars.map((x) => `${x.label} ${x.value}${b.unit || ""}`).join(", ")}`} className="dc-fig-svg">
@@ -79,7 +123,7 @@ export function DocFigure({ b }: { b: Extract<DocBlock, { type: "figure" }> }) {
           <g key={x.label}>
             <text x={left - 12} y={y + 15} textAnchor="end" className="lab">{x.label.length > 30 ? `${x.label.slice(0, 29)}…` : x.label}</text>
             <rect x={left} y={y} width={Math.max(3, xs(x.value) - left)} height={24} rx={5} fill={tone(x.tone)} />
-            <text x={xs(x.value) + 8} y={y + 16} className="val">{x.value}</text>
+            <text x={xs(x.value) + 8} y={y + 16} className="val">{x.display || tickText(x.value, b.unit || "")}</text>
           </g>
         );
       })}
@@ -90,7 +134,7 @@ export function DocFigure({ b }: { b: Extract<DocBlock, { type: "figure" }> }) {
         </>
       )}
       <line x1={left} x2={left + pw} y1={bottom} y2={bottom} className="ax" />
-      {ticks.map((k) => <text key={k} x={xs(k)} y={bottom + 18} textAnchor="middle" className="tick">{k}</text>)}
+      {ticks.map((k) => <text key={k} x={xs(k)} y={bottom + 18} textAnchor="middle" className="tick">{tickText(k, b.unit || "")}</text>)}
     </svg>
   );
 }
@@ -222,6 +266,7 @@ export function DocView({ id, embedded = false, version = 0, onSource, onChanged
       </div>}
       {note && <div className={`dc-note ${note.tone}`} role="status" data-dc-note="">{note.text}{note.tone === "ok" && doc.can_undo && <button type="button" onClick={() => void undo()}>Undo</button>}</div>}
       <div className={`dc-scroll${studio ? " studio" : ""}`}>
+        {studio?.toc}
         <article className="dc-page" data-dc-page="">
           {doc.blocks.map((b) => {
             const selected = sel?.id === b.id;
@@ -236,7 +281,23 @@ export function DocView({ id, embedded = false, version = 0, onSource, onChanged
             }
             if (b.type === "byline") return <p {...common} className="dc-byline">{b.text}</p>;
             if (b.type === "heading") {
-              return <div {...common} className={`dc-b${selected ? " on" : ""}${ch}`} role={editable ? "button" : undefined} tabIndex={editable ? 0 : undefined} onClick={(e) => { e.stopPropagation(); pick(b); }} onKeyDown={(e) => onKey(e, b)}>{renderPop(b)}<h2>{plain(b.text)}</h2>{cm}</div>;
+              const sec = doc.report?.sections.find((x) => x.id === b.id);
+              return <div {...common} id={`dc-h-${b.id}`} className={`dc-b${selected ? " on" : ""}${ch}`} role={editable ? "button" : undefined} tabIndex={editable ? 0 : undefined} onClick={(e) => { e.stopPropagation(); pick(b); }} onKeyDown={(e) => onKey(e, b)}>{renderPop(b)}<h2>{plain(b.text)}{sec?.status === "writing" && <span className="dc-writing" data-dc-writing=""><span className="c2-spin" /> Writing</span>}</h2>{cm}</div>;
+            }
+            if (b.type === "list") {
+              return (
+                <div {...common} className="dc-b dc-list">
+                  <ul>{b.items.map((t, i) => <li key={i}><Rich text={t} onNumber={onNum} /></li>)}</ul>
+                  {(b.cites || []).length > 0 && <div className="foot"><Chips cites={b.cites} sources={doc.sources} onSource={onSource} /></div>}
+                </div>
+              );
+            }
+            if (b.type === "kpis") {
+              return (
+                <div {...common} className="dc-kpis" data-dc-kpis="">
+                  {b.items.map((k) => <div key={k.label} className="k"><span>{k.label}</span><b>{k.value}</b>{k.note && <i>{k.note}</i>}</div>)}
+                </div>
+              );
             }
             if (b.type === "paragraph") {
               return (
@@ -250,7 +311,7 @@ export function DocView({ id, embedded = false, version = 0, onSource, onChanged
             }
             if (b.type === "callout") {
               return (
-                <div {...common} className={`dc-b dc-call${selected ? " on" : ""}${ch}`} role={editable ? "button" : undefined} tabIndex={editable ? 0 : undefined} onClick={(e) => { e.stopPropagation(); pick(b); }} onKeyDown={(e) => onKey(e, b)}>
+                <div {...common} className={`dc-b dc-call${b.tone === "next" ? " next" : ""}${selected ? " on" : ""}${ch}`} role={editable ? "button" : undefined} tabIndex={editable ? 0 : undefined} onClick={(e) => { e.stopPropagation(); pick(b); }} onKeyDown={(e) => onKey(e, b)}>
                   {renderPop(b)}
                   <p><b>{b.label || "Note"}.</b> {plain(b.text)}</p>
                   {cm}
@@ -282,7 +343,7 @@ export function DocView({ id, embedded = false, version = 0, onSource, onChanged
                     <thead><tr>{b.columns.map((c) => <th key={c.key} style={c.align === "right" ? { textAlign: "right" } : undefined}>{c.label}</th>)}</tr></thead>
                     <tbody>{b.rows.map((r, i) => <tr key={i}>{b.columns.map((c) => <td key={c.key} className={c.align === "right" ? "n" : undefined}>{cellText(r[c.key])}</td>)}</tr>)}</tbody>
                   </table>
-                  {(b.cites || []).length > 0 && <div className="foot"><Chips cites={b.cites} sources={doc.sources} onSource={onSource} /></div>}
+                  {(b.note || (b.cites || []).length > 0) && <div className="foot">{b.note && <span className="dc-tnote">{b.note}</span>}<Chips cites={b.cites} sources={doc.sources} onSource={onSource} /></div>}
                 </div>
               );
             }
