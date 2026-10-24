@@ -121,7 +121,7 @@ function Preview({ kind, title, body, cta }: { kind: "banner" | "modal"; title: 
     <div style={{ border: "1px solid var(--line)", borderRadius: 16, overflow: "hidden", background: "#07090A" }} aria-label="Preview">
       <div style={{ height: 30, display: "flex", alignItems: "center", gap: 6, padding: "0 12px", borderBottom: "1px solid var(--line0)" }}>
         {[0, 1, 2].map((i) => <span key={i} style={{ width: 9, height: 9, borderRadius: 9, background: "#2A3436" }} />)}
-        <span className="mc-mono" style={{ marginLeft: 8, fontSize: 11, color: "var(--ink3)" }}>GD360 · Home</span>
+        <span className="mc-mono" style={{ marginLeft: 8, fontSize: 11, color: "var(--ink3)" }}>Euliv · Home</span>
       </div>
       {kind === "banner" && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", padding: "12px 14px", background: "#132320", borderBottom: "1px solid #24413A" }}>
@@ -205,7 +205,7 @@ function Composer({ segments, users, onSaved }: { segments: any[]; users: number
           <span className="mc-mono" style={{ fontSize: 12, color: "var(--ink3)" }}>reaches {fmtN(reach)} people</span>
         </div>
       </Card>
-      <Card title="LIVE PREVIEW · AS PEOPLE SEE IT IN GD360" style={{ flex: "1 1 420px" }}>
+      <Card title="LIVE PREVIEW · AS PEOPLE SEE IT IN Euliv" style={{ flex: "1 1 420px" }}>
         <Preview kind={kind} title={title} body={body} cta={ctaLabel} />
         <span className="mc-tip">{kind === "banner" ? "A strip across the top of the app." : "A card over the page."} It keeps showing until each person dismisses it.</span>
       </Card>

@@ -105,7 +105,7 @@ export default function Segments() {
 
   return (
     <div className="mc-page">
-      <PageHead eyebrow="Customers" title="Segments" sub="Build an audience from usage and profile attributes. Every rule must match. Counts are live from GD360's own tables.">
+      <PageHead eyebrow="Customers" title="Segments" sub="Build an audience from usage and profile attributes. Every rule must match. Counts are live from Euliv's own tables.">
         <button type="button" className="mc-btn" onClick={() => { setRows([]); setName(""); }}>New segment</button>
         <button type="button" className="mc-btn" onClick={reload}>Refresh</button>
       </PageHead>

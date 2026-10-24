@@ -72,7 +72,7 @@ export default function Trust() {
                           <td style={{ maxWidth: 280 }}>
                             <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                               <b>{r.email}</b>
-                              {!r.user_found && <span className="mc-tip">No GD360 account with this email</span>}
+                              {!r.user_found && <span className="mc-tip">No Euliv account with this email</span>}
                               {r.notes && <span className="mc-tip" style={{ whiteSpace: "pre-wrap" }}>{r.notes}</span>}
                             </div>
                           </td>
@@ -95,7 +95,7 @@ export default function Trust() {
                                   run={() => mcPatch(`/privacy-requests/${r.id}`, { status: "in_review" }).then(reload)}>Start review</ActionButton>
                               )}
                               {r.kind === "export" && r.user_found && (
-                                <ActionButton className="mc-btn sm" disabled={!canExec} title={canExec ? "Everything GD360 holds about them, as JSON" : NO} done="Export downloaded"
+                                <ActionButton className="mc-btn sm" disabled={!canExec} title={canExec ? "Everything Euliv holds about them, as JSON" : NO} done="Export downloaded"
                                   run={() => mcDownload(`/privacy-requests/${r.id}/export`, "gd360-data-export.json")}>Download data</ActionButton>
                               )}
                               {!done && (
@@ -159,7 +159,7 @@ export default function Trust() {
           setLogOpen(false);
           reload();
         }}>Log request</ActionButton>
-        <span className="mc-tip">The 30-day clock starts today. We match the email to a GD360 account automatically.</span>
+        <span className="mc-tip">The 30-day clock starts today. We match the email to a Euliv account automatically.</span>
       </Modal>
 
       <Modal open={!!close} onClose={() => setClose(null)} title={close?.status === "rejected" ? "Reject request" : "Mark request completed"}>

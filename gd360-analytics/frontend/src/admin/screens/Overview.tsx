@@ -119,7 +119,7 @@ export default function Overview() {
 
   return (
     <div className="mc-page">
-      <PageHead eyebrow="Overview" title="Command center" sub={data ? `Live from GD360's own tables · updated ${ago(data.generated_at)}. Paid plans aren't live yet — every account is on early access.` : "The business at a glance."}>
+      <PageHead eyebrow="Overview" title="Command center" sub={data ? `Live from Euliv's own tables · updated ${ago(data.generated_at)}. Paid plans aren't live yet — every account is on early access.` : "The business at a glance."}>
         <Seg<"7d" | "30d" | "90d"> label="Period" value={range} onChange={setRange} options={[["7d", "7D"], ["30d", "30D"], ["90d", "90D"]]} />
         <button type="button" className="mc-btn" onClick={reload}>Refresh</button>
       </PageHead>

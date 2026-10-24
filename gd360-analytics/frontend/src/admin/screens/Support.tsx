@@ -57,7 +57,7 @@ function Msg({ m }: { m: any }) {
   const st = m.kind === "internal"
     ? { bg: "rgba(242,184,75,.07)", bd: "rgba(242,184,75,.35)", label: "INTERNAL NOTE", c: "var(--amber)" }
     : m.kind === "staff"
-      ? { bg: "var(--g-tint)", bd: "var(--g-bd)", label: "GD360", c: "var(--g)" }
+      ? { bg: "var(--g-tint)", bd: "var(--g-bd)", label: "Euliv", c: "var(--g)" }
       : { bg: "var(--s2)", bd: "var(--line)", label: "CUSTOMER", c: "var(--ink3)" };
   return (
     <div style={{ padding: "12px 14px", borderRadius: 14, background: st.bg, border: `1px solid ${st.bd}`, display: "flex", flexDirection: "column", gap: 6, marginLeft: m.kind === "customer" ? 0 : 24 }}>
@@ -131,7 +131,7 @@ function TicketDetail({ id, onChanged }: { id: string; onChanged: () => void }) 
               <span className="mc-tip">{cx.user.email}</span>
               <span className="mc-mono mc-num" style={{ fontSize: 12, color: "var(--ink2)" }}>{cx.user.lifecycle || "—"} · {fmtN(cx.user.chats_30d)} questions 30d · {cx.user.sources} source(s)</span>
             </>
-          ) : <span className="mc-tip">{t.requester_email || "No requester"} · no GD360 account with this email.</span>}
+          ) : <span className="mc-tip">{t.requester_email || "No requester"} · no Euliv account with this email.</span>}
         </div>
         <div style={{ padding: 12, borderRadius: 12, background: "var(--s2)", display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
           <span className="mc-lbl">ACCOUNT</span>

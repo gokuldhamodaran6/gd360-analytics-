@@ -92,7 +92,7 @@ function StaffCard({ roles }: { roles: { key: string; label: string }[] }) {
                     </td>
                     <td>
                       <Pill tone={s.status === "active" ? "g" : s.status === "disabled" ? "r" : "a"}>{s.status}</Pill>
-                      {!s.signed_up && <span className="mc-tip" style={{ marginLeft: 6 }}>no GD360 sign-up yet</span>}
+                      {!s.signed_up && <span className="mc-tip" style={{ marginLeft: 6 }}>no Euliv sign-up yet</span>}
                     </td>
                     <td className="mc-mono" style={{ fontSize: 12, color: "var(--ink2)" }}>{s.fixed ? "—" : ago(s.last_seen_at)}</td>
                     <td>
@@ -131,7 +131,7 @@ function StaffCard({ roles }: { roles: { key: string; label: string }[] }) {
               <ActionButton className="mc-btn p" disabled={!validEmail} title={validEmail ? "Give this email a Mission Control role" : "Enter a valid email"} done="Invited"
                 run={async () => { await mcPost("/staff", { email: email.trim(), role }); setEmail(""); reload(); }}>Invite</ActionButton>
             </div>
-            <span className="mc-tip">They get access as soon as they sign in to GD360 with this email. Owners come from ADMIN_EMAILS.</span>
+            <span className="mc-tip">They get access as soon as they sign in to Euliv with this email. Owners come from ADMIN_EMAILS.</span>
           </>
         ) : <span className="mc-tip">Only Owners and Admins can invite staff or change roles.</span>}
       </div>
@@ -343,7 +343,7 @@ export default function Access() {
   return (
     <div className="mc-page">
       <PageHead eyebrow="Trust · internal" title="Staff access & audit"
-        sub={`Least privilege for the GD360 team: roles, time-boxed access and an append-only log of every admin action. You are ${me?.role_label || "staff"} with ${me?.perms.length ?? 0} permissions.`} />
+        sub={`Least privilege for the Euliv team: roles, time-boxed access and an append-only log of every admin action. You are ${me?.role_label || "staff"} with ${me?.perms.length ?? 0} permissions.`} />
       <div className="mc-row">
         <div className="mc-col" style={{ flex: "999 1 560px", gap: 16 }}>
           <StaffCard roles={roles} />
