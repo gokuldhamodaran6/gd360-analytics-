@@ -698,11 +698,11 @@ def _filters_sentence(info: dict | None) -> str | None:
     text = info.get("text")
     note = (info.get("writer_note") or "").strip()
     if text and note:
-        return f"{text}. GD360 added a filter that was not in your question: {note.rstrip('.')}."
+        return f"{text}. Euliv added a filter that was not in your question: {note.rstrip('.')}."
     if text:
         return f"{text}."
     if note and info.get("parsed"):
-        return f"GD360 added a filter that was not in your question: {note.rstrip('.')}."
+        return f"Euliv added a filter that was not in your question: {note.rstrip('.')}."
     return None
 
 

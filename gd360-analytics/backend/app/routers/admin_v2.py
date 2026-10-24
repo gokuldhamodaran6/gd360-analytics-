@@ -333,7 +333,7 @@ def ask_admin(body: AskIn, staff: Staff = Depends(require("metrics.read")), db: 
     }
     messages = [
         {"role": "system", "content": (
-            "You are the internal business analyst inside GD360's admin portal. Answer the team's question using ONLY "
+            "You are the internal business analyst inside Euliv's admin portal. Answer the team's question using ONLY "
             "the JSON facts provided. Be short and specific: one or two sentences that answer directly, then at most "
             "four bullet points with the exact numbers you used. Never invent numbers, names or causes. If the facts "
             "cannot answer it, say exactly which data is missing. Plain text, bullets start with '- '.")},

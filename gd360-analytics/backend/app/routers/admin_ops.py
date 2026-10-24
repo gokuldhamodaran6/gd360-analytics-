@@ -482,7 +482,7 @@ def draft_reply(ticket_id: str, staff: Staff = Depends(require("tickets.write"))
     thread = "\n".join(f"[{m.author_kind}] {m.body}" for m in msgs if m.author_kind != "system")
     messages = [
         {"role": "system", "content": (
-            "You write support replies for GD360, an AI data analytics product. Write the reply the support agent will send: "
+            "You write support replies for Euliv, an AI data analytics product. Write the reply the support agent will send: "
             "warm, short (under 120 words), specific. Use the workspace signals to explain the likely cause and the exact fix. "
             "Never invent facts, refunds, dates or promises. No sign-off name. Plain text.")},
         {"role": "user", "content": f"Ticket #{t.number}: {t.subject}\nThread:\n{thread}\n\nSignals from their workspace:\n" +

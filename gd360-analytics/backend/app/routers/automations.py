@@ -107,7 +107,7 @@ def _notify_approvers(db: Session, ws: models.Workspace, a: models.Automation, u
             f"It stays off until an owner or admin approves it: {link}")
     html = (f"<p>{who} built the automation <b>{a.name}</b> in {ws.name}. It emails people outside the company: "
             f"{', '.join(outside)}.</p><p>It stays off until an owner or admin approves it.</p>"
-            f"<p><a href=\"{link}\">Review it in GD360</a></p>")
+            f"<p><a href=\"{link}\">Review it in Euliv</a></p>")
     try:
         svc.send_email(to, subject, html, text)
     except Exception as e:  # noqa: BLE001

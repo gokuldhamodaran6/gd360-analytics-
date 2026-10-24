@@ -604,8 +604,7 @@ def delete_dashboard(dashboard_id: str, db: Session = Depends(get_db), user: mod
         db, actor=user, action="dashboard_deleted", workspace_id=d.workspace_id,
         target_type="dashboard", target_id=d.id,
     )
-    # round 35: its saved page snapshots go with it
-    db.query(models.DashboardPageSnapshot).filter(models.DashboardPageSnapshot.dashboard_id == d.id).delete(synchronize_session=False)
-    db.delete(d)
-    db.commit()
+    # R61: to the Bin (its page snapshots go when it is deleted for good - services/bin.purge)
+    from ..services import bin as trash
+    trash.move_to_bin(db, user, "dashboard", d)
     return None

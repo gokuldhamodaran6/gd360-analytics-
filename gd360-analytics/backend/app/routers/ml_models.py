@@ -581,7 +581,9 @@ def delete_ml_model(ml_model_id: str, db: Session = Depends(get_db), user: model
     if ml_model.owner_id != user.id:
         raise HTTPException(403, "Only the person who trained this model can delete it.")
     ds = db.query(models.DataSource).filter(models.DataSource.id == ml_model.datasource_id).first()
-    db.delete(ml_model)
+    # R61: to the Bin - deleted for good after 7 days (services/bin.purge)
+    from datetime import datetime as _dt
+    ml_model.trashed_at, ml_model.trashed_by = _dt.utcnow(), user.id
     audit.log_audit_event(
         db, actor=user, action="ml_model_deleted", workspace_id=ds.workspace_id if ds else None,
         target_type="ml_model", target_id=ml_model_id,

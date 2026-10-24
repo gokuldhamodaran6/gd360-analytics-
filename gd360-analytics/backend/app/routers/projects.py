@@ -552,7 +552,7 @@ def analyst_xlsx(run_id: str, inputs: str | None = None, db: Session = Depends(g
     except (ValueError, TypeError):
         vals = {}
     data = analyst.workbook(run, vals)
-    name = re.sub(r"[^A-Za-z0-9 _-]+", "", ((run.result or {}).get("analyst") or {}).get("title") or "GD360 analysis")[:60] or "GD360 analysis"
+    name = re.sub(r"[^A-Za-z0-9 _-]+", "", ((run.result or {}).get("analyst") or {}).get("title") or "Euliv analysis")[:60] or "Euliv analysis"
     return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f'attachment; filename="{name}.xlsx"'})
 
@@ -711,7 +711,7 @@ def ask(project_id: str, payload: AskRequest, db: Session = Depends(get_db), use
         .count()
     )
     if busy:
-        raise HTTPException(409, "GD360 is still working on the last question in this thread.")
+        raise HTTPException(409, "Euliv is still working on the last question in this thread.")
     # round 32: read the follow-up first (on the thread's data) - a date that can't be right is asked
     # about before anything runs or is explained
     understood = None
@@ -1413,7 +1413,7 @@ def plan_thread_dashboard(project_id: str, payload: ThreadPlanRequest, db: Sessi
                      conversation_id=conv.id)
     if proposal["valid_blocks"] == 0:
         reasons = [f'"{b["title"]}": {b["error"]}' for pg in proposal["pages"] for b in pg["blocks"] if b.get("error")]
-        raise HTTPException(400, f"GD360 couldn't build a dashboard from this on {ds.name}."
+        raise HTTPException(400, f"Euliv couldn't build a dashboard from this on {ds.name}."
                             + (" Specifically: " + "; ".join(reasons[:3]) if reasons else ""))
     proposal["thread"]["run_ids"] = [r.id for r in runs]
     proposal["thread"]["project_id"] = conv.id

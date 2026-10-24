@@ -269,7 +269,7 @@ async def staff_ocr(token: str, request: Request, k: str = Form(...), file: Uplo
     if not raw or len(raw) > 6 * 1024 * 1024:
         raise HTTPException(413, "Take the photo again - images up to 6 MB.")
     if not vision.available():
-        raise HTTPException(503, "Card reading isn't set up on this GD360 - type the details instead.")
+        raise HTTPException(503, "Card reading isn't set up on this Euliv - type the details instead.")
     try:
         return {"fields": vision.read_card(raw)}
     except Exception as e:  # noqa: BLE001

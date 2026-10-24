@@ -148,7 +148,7 @@ def add_domain(body: DomainCreate, db: Session = Depends(get_db), user: models.U
     except svc.DomainError as e:
         raise HTTPException(400, str(e))
     if db.query(models.WorkspaceDomain).filter(models.WorkspaceDomain.hostname == host).first():
-        raise HTTPException(409, f"{host} is already connected to another workspace on GD360.")
+        raise HTTPException(409, f"{host} is already connected to another workspace on Euliv.")
     if db.query(models.DashboardShare).filter(models.DashboardShare.custom_domain == host).first():
         raise HTTPException(409, f"{host} is in use as one dashboard's own address. Remove it there first.")
     dom = models.WorkspaceDomain(
@@ -602,7 +602,7 @@ def _live_domain(db: Session, host: str) -> models.WorkspaceDomain:
     h = (host or "").strip().lower().split(":")[0]
     dom = db.query(models.WorkspaceDomain).filter(models.WorkspaceDomain.hostname == h).first()
     if not dom or dom.status != "live":
-        raise HTTPException(404, "This address isn't set up on GD360.")
+        raise HTTPException(404, "This address isn't set up on Euliv.")
     return dom
 
 
@@ -1022,7 +1022,7 @@ def viewer_ask(host: str, path: str, body: AccessAsk, request: Request, db: Sess
         svc.notify(db, to, f"{user.full_name or email} asked to open “{ctx.pub.title or ctx.d.name}”",
                    [f"{user.full_name or email} ({email}) asked to open <b>{ctx.pub.title or ctx.d.name}</b> on "
                     f"{ctx.dom.hostname}.", f"Note: {body.note}" if body.note else ""],
-                   f"{svc.app_url()}/settings/domains", "Decide in GD360")
+                   f"{svc.app_url()}/settings/domains", "Decide in Euliv")
     elif body.note:
         r.note = body.note
     db.commit()

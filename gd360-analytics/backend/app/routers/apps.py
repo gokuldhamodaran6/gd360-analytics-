@@ -261,7 +261,7 @@ _CATALOG = [
     ("files", "s3", "Amazon S3", "S3", "#3F8624", _W, "A folder of files, synced", None, None),
     ("files", "google_drive", "Google Drive", "Dr", "#1A73E8", "#FFD04B", "Files in a shared folder", None, None),
     ("dev", "api", "REST / GraphQL API", "{}", "#151C1D", "#43E5A0", "Any endpoint, paginated and scheduled", "api", _D),
-    ("dev", "webhooks", "Webhooks", "Wh", "#151C1D", "#9DB4FF", "Push events to a GD360 URL", "streaming", _D),
+    ("dev", "webhooks", "Webhooks", "Wh", "#151C1D", "#9DB4FF", "Push events to a Euliv URL", "streaming", _D),
     ("dev", "kafka", "Kafka", "Kf", "#1A1A1A", _W, "Topics landed into tables", None, _D),
     ("dev", "segment", "Segment", "Sg", "#52BD94", _K, "Tracked events from every app", None, None),
 ]

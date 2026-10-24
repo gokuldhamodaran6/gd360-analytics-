@@ -55,7 +55,7 @@ def _guard(request: Request, per_minute: int = 120, scope: str = "form") -> None
 def script(site_key: str, db: Session = Depends(get_db)):
     prof = db.query(models.GtmProfile).filter(models.GtmProfile.site_key == site_key).first()
     if not prof:
-        return Response("/* GD360: unknown site key */", media_type="application/javascript")
+        return Response("/* Euliv: unknown site key */", media_type="application/javascript")
     return Response(tracking.script(site_key, campaigns.backend_url()), media_type="application/javascript",
                     headers={"Cache-Control": "public, max-age=300"})
 
@@ -112,7 +112,7 @@ def unsubscribe_page(token: str, db: Session = Depends(get_db)):
     ok = campaigns.on_unsubscribe(db, token[:60])
     if not ok:
         return _page("Unsubscribe", "<h1>Link not recognised</h1><p>This unsubscribe link has expired or was copied incorrectly.</p>")
-    return _page("Unsubscribed", "<h1>You're unsubscribed</h1><p>You won't receive marketing emails from this sender through GD360 again.</p>")
+    return _page("Unsubscribed", "<h1>You're unsubscribed</h1><p>You won't receive marketing emails from this sender through Euliv again.</p>")
 
 
 @router.post("/u/{token}")

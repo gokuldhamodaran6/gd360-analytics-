@@ -469,13 +469,10 @@ def delete_conversation(
     conv = db.query(models.Conversation).filter(models.Conversation.id == conversation_id).first()
     if not conv or not workspace_access.can_delete_conversation(db, conv, user):
         raise HTTPException(404, "Conversation not found.")
-    # a multi-source project's questions (round 11) go with it
-    db.query(models.ProjectRun).filter(models.ProjectRun.conversation_id == conv.id).delete(synchronize_session=False)
-    db.query(models.Dashboard).filter(models.Dashboard.source_conversation_id == conv.id).update(
-        {models.Dashboard.source_conversation_id: None}, synchronize_session=False)
-    db.delete(conv)
-    db.commit()
-    return {"id": conversation_id, "deleted": True}
+    # R61: to the Bin - restorable for 7 days, then services/bin.purge does what this used to do at once
+    from ..services import bin as trash
+    trash.move_to_bin(db, user, "answer", conv)
+    return {"id": conversation_id, "deleted": True, "in_bin": True, "days": trash.KEEP_DAYS}
 
 
 @router.get("/{conversation_id}/messages")

@@ -302,7 +302,7 @@ def create_alert(dashboard_id: str, body: AlertBody, db: Session = Depends(get_d
     if db.query(models.Automation).filter(models.Automation.owner_id == user.id).count() >= auto.MAX_PER_OWNER:
         raise HTTPException(400, f"You can have up to {auto.MAX_PER_OWNER} automations - turn off or delete one first.")
     if not body.in_app and not body.email and not (body.slack_url or body.teams_url or body.webhook_url):
-        raise HTTPException(400, "Choose at least one place to tell people - in GD360 or by email.")
+        raise HTTPException(400, "Choose at least one place to tell people - in Euliv or by email.")
     picked = {u.id: u for u in db.query(models.User).filter(models.User.id.in_(body.user_ids or [user.id])).all()}
     in_app = [uid for uid in (body.user_ids or [user.id]) if uid in picked] if body.in_app else []
     emails: list[str] = []

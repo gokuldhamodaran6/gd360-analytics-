@@ -294,7 +294,7 @@ def _site_name(db: Session, host: str | None) -> str:
         if dom:
             ws = db.get(models.Workspace, dom.workspace_id)
             return dom.site_title or (f"{ws.name} data" if ws else host)
-    return "GD360"
+    return "Euliv"
 
 
 @router.post("/code/request")

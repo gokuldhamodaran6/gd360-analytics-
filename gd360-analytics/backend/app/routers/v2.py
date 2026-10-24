@@ -400,6 +400,50 @@ def board_unpublish(board_id: str, db: Session = Depends(get_db), user: models.U
     return _board_edit(db, d, lambda: board_edit.publish(db, d, user, False))
 
 
+# ---- R61: the Bin - delete moves an item here; restore it within 7 days, then it is deleted for good ----------
+
+@router.delete("/items/{kind}/{item_id}")
+def move_to_bin(kind: str, item_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    """Delete from the Library: an answer, dashboard, report, model or pipeline goes to the Bin."""
+    from ..services import bin as trash
+    obj = trash.get_any(db, kind, item_id)
+    if obj is None or obj.trashed_at is not None:
+        raise HTTPException(404, "That item isn't there any more.")
+    if not trash.can_delete(db, user, kind, obj):
+        raise HTTPException(403, "Only the person who made it (or a workspace admin) can delete it.")
+    return {**trash.move_to_bin(db, user, kind, obj), "in_bin": True, "days": trash.KEEP_DAYS}
+
+
+@router.get("/bin")
+def bin_list(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    from ..services import bin as trash
+    items = trash.mine(db, user)
+    return {"items": items, "keep_days": trash.KEEP_DAYS, "total": len(items)}
+
+
+@router.post("/bin/{kind}/{item_id}/restore")
+def bin_restore(kind: str, item_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    from ..services import bin as trash
+    out = trash.restore(db, user, kind, item_id)
+    if out is None:
+        raise HTTPException(404, "That item isn't in your Bin.")
+    return out
+
+
+@router.delete("/bin/{kind}/{item_id}")
+def bin_delete_for_good(kind: str, item_id: str, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    from ..services import bin as trash
+    if not trash.delete_for_good(db, user, kind, item_id):
+        raise HTTPException(404, "That item isn't in your Bin.")
+    return {"kind": kind, "id": item_id, "deleted_for_good": True}
+
+
+@router.delete("/bin")
+def bin_empty(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    from ..services import bin as trash
+    return {"deleted_for_good": trash.empty(db, user)}
+
+
 # ---- R56: the list pages - one workspace list, the data overview ------------------------------------------
 
 @router.get("/workspace/items")

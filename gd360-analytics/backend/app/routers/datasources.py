@@ -1392,7 +1392,7 @@ def _warehouse_version_connector(ds: models.DataSource):
 
 def _require_warehouse_version(ds: models.DataSource, version: models.DatasetVersion) -> None:
     if not is_warehouse_query(version):
-        raise HTTPException(400, "This saved table is a file inside GD360, not a warehouse query.")
+        raise HTTPException(400, "This saved table is a file inside Euliv, not a warehouse query.")
     if ds.kind not in _PROFILE_SUPPORTED_KINDS:
         raise HTTPException(400, "Saved queries are only supported for SQL warehouse and database sources.")
     if not version.query_sql:
@@ -2708,7 +2708,7 @@ def _stream_rows_as_csv(row_iter, max_rows: int):
     for row in row_iter:
         if n >= max_rows:
             chunk.append(_csv_line([
-                f"# GD360: download stopped at the {max_rows:,}-row cap; this saved query has more rows than that."
+                f"# Euliv: download stopped at the {max_rows:,}-row cap; this saved query has more rows than that."
             ]))
             break
         chunk.append(_csv_line([_csv_cell(v) for v in row]))

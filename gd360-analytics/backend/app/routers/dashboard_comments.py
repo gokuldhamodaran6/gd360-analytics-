@@ -304,8 +304,8 @@ def _suggestion(db: Session, d: models.Dashboard, user: models.User, root: model
     if impact:
         text = f"Treat {label} as a one-off? {impact}"
     else:
-        text = (f"Treat {label} as a one-off? GD360 will mark it on the chart and leave it out of this chart's forecast."
-                if has_forecast else f"Treat {label} as a one-off? GD360 will mark it on the chart and leave it out of any forecast made from it.")
+        text = (f"Treat {label} as a one-off? Euliv will mark it on the chart and leave it out of this chart's forecast."
+                if has_forecast else f"Treat {label} as a one-off? Euliv will mark it on the chart and leave it out of any forecast made from it.")
     by = users.get(applied.get("by")) if applied else None
     at = None
     if applied and applied.get("at"):
@@ -678,7 +678,7 @@ def apply_suggestion(
     rows = _thread_rows(db, d, root.id)
     sug = _suggestion(db, d, user, root, block, [r.body for r in rows], {})
     if sug is None or block is None:
-        raise HTTPException(409, "GD360 has nothing to suggest on this thread.")
+        raise HTTPException(409, "Euliv has nothing to suggest on this thread.")
     config = dict(block.config or {})
     current = _one_offs(block)
     if payload.apply:

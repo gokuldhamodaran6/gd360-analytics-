@@ -2225,7 +2225,7 @@ def _normalize_domain(raw: str) -> str:
     if not domain or "." not in domain:
         raise HTTPException(400, "That doesn't look like a real domain - it needs at least one dot, e.g. dashboards.yourcompany.com.")
     if domain.endswith(".onrender.com") or domain in ("localhost", "127.0.0.1"):
-        raise HTTPException(400, f'"{domain}" can\'t be used as a custom domain - it belongs to GD360\'s own infrastructure.')
+        raise HTTPException(400, f'"{domain}" can\'t be used as a custom domain - it belongs to Euliv\'s own infrastructure.')
     if not re.match(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$", domain):
         raise HTTPException(400, f'"{domain}" doesn\'t look like a valid domain name.')
     return domain
@@ -2991,7 +2991,7 @@ def generate_dashboard(
             if proposal["valid_blocks"] == 0:
                 reasons = [f'"{b["title"]}": {b["error"]}' for p in proposal["pages"] for b in p["blocks"] if b.get("error")]
                 detail = (
-                    "GD360 couldn't build anything from that description - try naming which numbers or "
+                    "Euliv couldn't build anything from that description - try naming which numbers or "
                     "breakdowns matter most (e.g. \"revenue by region this quarter, and our top 5 "
                     "customers\"), then try again."
                 )
@@ -3227,7 +3227,7 @@ def generate_dashboard(
 
         if not page_order:
             detail = (
-                "GD360 couldn't build anything from that description - try naming which numbers or "
+                "Euliv couldn't build anything from that description - try naming which numbers or "
                 "breakdowns matter most (e.g. \"revenue by region this quarter, and our top 5 "
                 "customers\"), then try again."
             )
@@ -4014,7 +4014,13 @@ def _layout_proposal_page(blocks: list[dict]) -> None:
         if len(row) == 1:
             row[0]["layout"]["w"] = _GRID_COLUMNS
 
-    for b in others:
+    for i, b in enumerate(others):
+        # R61c: the page's lead trend reads as the hero chart across the whole width (as a BI report puts it)
+        if i == 0 and b["type"] == "chart" and (b.get("spec") or {}).get("time") and len(others) >= 3 \
+                and b.get("chart_type") in ("combo", "line", "area", "stacked_area", "stacked_area_100", "bar", "stacked_bar"):
+            b["layout"] = {"x": 0, "y": y, "w": 12, "h": 6}
+            y += 6
+            continue
         if b["type"] in ("table", "text"):
             if x:
                 close_row()
@@ -4044,37 +4050,156 @@ def _layout_proposal_page(blocks: list[dict]) -> None:
         b.setdefault("layout", {"x": 0, "y": y, "w": 6, "h": 6})
 
 
+_FB_ID = re.compile(r"(^id$|_id$|^id_|_key$|_no$|_num$|number$|^clientnum$|^zip|postal|phone|code$|^lat|^lon|^lng)", re.I)
+_FB_MONEY = re.compile(r"amt|amount|revenue|sales|spend|price|cost|profit|margin|limit|balance|_bal|value|fee|income|payment|discount|gmv|adr", re.I)
+# R61c: which money column is the headline - net sales beats gross beats a unit price (a price is averaged, never summed)
+_FB_LEAD = [r"net_?(sales|revenue)|^revenue$|^net$", r"revenue|gmv|^sales$|total_?sales|sales_?amount", r"sales|amount|amt|income|payment|spend",
+            r"profit|margin", r"balance|_bal|limit|value", r"cost|fee|discount"]
+_FB_RATE = re.compile(r"price|rate|ratio|pct|percent|avg|average|score|age|days|duration|tenure|^unit_", re.I)
+_FB_COUNTISH = re.compile(r"units|qty|quantity|orders|count|clicks|sessions|visits|items|seats", re.I)
+_FB_FLAG = re.compile(r"returned|churn|attrit|cancel|refund|is_|has_|flag|converted|default", re.I)
+
+
+def _fb_label(col: str) -> str:
+    """credit_limit -> Credit limit (R61: titles in words, never a raw column name)."""
+    t = re.sub(r"[_\s]+", " ", str(col)).strip()
+    return (t[:1].upper() + t[1:].lower()) if t else str(col)
+
+
+def _fb_title(goal: str, table: str | None) -> str:
+    """"build a sales dashboard" -> "Sales overview"; a real goal keeps its words. A brief made from an answer
+    ('A live dashboard for the question: "net sales by region". What the answer found: ...') is named by its question."""
+    quoted = re.search(r'"([^"]{3,80})"', goal or "")
+    if quoted:
+        q = re.sub(r"[?.!\s]+$", "", quoted.group(1).strip())
+        return (q[:1].upper() + q[1:])[:80]
+    g = re.sub(r"(?i)\b(please|can you|could you|build|make|create|give me|show me|generate|design|an?|the|me|new|pro)\b", " ", goal or "")
+    g = re.sub(r"(?i)\b(dashboards?|boards?|reports?)\b", " ", g)
+    g = re.sub(r"[^\w&/ -]+", " ", g)
+    g = re.sub(r"\s+", " ", g).strip(" -")
+    if not g:
+        g = _fb_label(table or "Data")
+    g = g[:1].upper() + g[1:]
+    return (g if re.search(r"(?i)overview|performance|summary|analysis|insights|tracker", g) else f"{g} overview")[:80]
+
+
 def _fallback_proposal(goal: str, schema: dict, period: str) -> dict:
     """A deterministic proposal from the schema alone, used only when the
-    model call failed outright: count KPI, a trend on the first date
-    column, breakdowns on the first text columns, a table. Honestly
-    labelled by the caller (ProposalOut.warning)."""
+    model call failed outright, honestly labelled by the caller (ProposalOut.warning).
+    R61: identifiers (ids, numbers, codes) are never summed; the headline is the real money column (net sales, not a
+    unit price - a price is averaged); titles are words. R61c: laid out like a BI developer would - a KPI row with
+    sparklines, a two-measure trend, ranked bars, a mix donut, a 100% mix by period, a heatmap and a treemap; a second
+    "Deep dive" page with the trend split by the main dimension, a scatter of the dimension's values and the detail."""
     table = next(iter(schema.keys()), None)
     if not table:
         return {"title": "New dashboard", "pages": [{"title": "Overview", "blocks": []}], "suggestions": []}
     cols = query_builder.table_columns(schema, table) or []
-    date_col = next((c["name"] for c in cols if any(k in str(c.get("type") or "").lower() for k in ("date", "time"))), None)
-    text_cols = [c["name"] for c in cols if any(k in str(c.get("type") or "").lower() for k in ("string", "object", "text", "char", "category"))][:2]
-    num_cols = [c["name"] for c in cols if any(k in str(c.get("type") or "").lower() for k in ("int", "float", "numeric", "decimal", "double"))][:2]
-    blocks = [{"type": "kpi", "title": "Rows", "intent": "KPI · count", "spec": {
-        "table": table, "measures": [{"alias": "rows", "agg": "count"}], "compare_prior_period": True, "sparkline": True}}]
-    for n in num_cols:
-        blocks.append({"type": "kpi", "title": f"Total {n}", "intent": f"KPI · sum of {n}", "spec": {
-            "table": table, "measures": [{"alias": f"sum_{n}", "agg": "sum", "column": n}], "compare_prior_period": True, "sparkline": True}})
+    typ = lambda c: str(c.get("type") or "").lower()  # noqa: E731
+    date_col = next((c["name"] for c in cols if any(k in typ(c) for k in ("date", "time"))), None)
+    text_cols = [c["name"] for c in cols if any(k in typ(c) for k in ("string", "object", "text", "char", "category", "bool"))
+                 and not _FB_ID.search(c["name"])][:4]
+    nums = [c["name"] for c in cols if any(k in typ(c) for k in ("int", "float", "numeric", "decimal", "double", "real"))
+            and not _FB_ID.search(c["name"])]
+    flags = [n for n in nums if _FB_FLAG.search(n)]
+    rates = [n for n in nums if _FB_RATE.search(n) and n not in flags]
+    money = [n for n in nums if _FB_MONEY.search(n) and n not in rates and n not in flags]
+    money.sort(key=lambda n: next((i for i, rx in enumerate(_FB_LEAD) if re.search(rx, n, re.I)), 99))
+    countish = [n for n in nums if _FB_COUNTISH.search(n) and n not in money and n not in flags and n not in rates]
+    lead = money[0] if money else None
+    second = money[1] if len(money) > 1 else None
+    noun0 = _fb_label(re.sub(r"s$", "", table.split(".")[-1])).lower() if table else "record"
+    rows_m = {"alias": re.sub(r"\W+", "_", noun0) + "s", "agg": "count"}
+    lead_m = {"alias": f"total_{lead}", "agg": "sum", "column": lead} if lead else rows_m
+    lead_label = f"{_fb_label(lead)}" if lead else "Records"
+    noun = noun0 + "s"
+
+    def kpi(title, measure, intent=""):
+        spec = {"table": table, "measures": [measure], "sparkline": bool(date_col)}
+        if date_col:
+            spec["compare_prior_period"] = True
+        b = {"type": "kpi", "title": title, "intent": intent or f"KPI · {title.lower()}", "spec": spec}
+        return b
+
+    kpis = []
+    if lead:
+        kpis.append(kpi(lead_label, lead_m))
+    kpis.append(kpi(_fb_label(noun), rows_m))
+    if lead:
+        kpis.append(kpi(f"{lead_label} per {noun0}", {"alias": f"avg_{lead}", "agg": "avg", "column": lead}))
+    if countish:
+        kpis.append(kpi(f"{_fb_label(countish[0])}", {"alias": f"total_{countish[0]}", "agg": "sum", "column": countish[0]}))
+    elif second:
+        kpis.append(kpi(_fb_label(second), {"alias": f"total_{second}", "agg": "sum", "column": second}))
+    if flags and len(kpis) < 4:
+        kpis.append(kpi(f"{_fb_label(flags[0])} rate", {"alias": f"rate_{flags[0]}", "agg": "avg", "column": flags[0]}))
+    for n in rates:
+        if len(kpis) >= 4:
+            break
+        kpis.append(kpi(f"Average {_fb_label(n).lower()}", {"alias": f"avg_{n}", "agg": "avg", "column": n}))
+    kpis = kpis[:4]
+
+    over: list[dict] = list(kpis)
+    deep: list[dict] = []
+    d1 = text_cols[0] if text_cols else None
+    d2 = text_cols[1] if len(text_cols) > 1 else None
+    d3 = text_cols[2] if len(text_cols) > 2 else None
     if date_col:
-        blocks.append({"type": "chart", "title": f"Rows by {period}", "intent": f"Trend · rows by {period}", "chart_type": "line",
-                       "spec": {"table": table, "time": {"column": date_col, "grain": period}, "measures": [{"alias": "rows", "agg": "count"}],
-                                "order_by": [{"by": "period", "dir": "asc"}], "limit": 500}})
-    for t in text_cols:
-        blocks.append({"type": "chart", "title": f"Rows by {t}", "intent": f"Breakdown · {t}", "chart_type": "horizontal_bar",
-                       "spec": {"table": table, "group_by": [t], "measures": [{"alias": "rows", "agg": "count"}],
-                                "order_by": [{"by": "rows", "dir": "desc"}], "limit": 15}})
-    if text_cols:
-        blocks.append({"type": "table", "title": "Detail", "intent": "Table · detail", "spec": {
-            "table": table, "group_by": text_cols, "measures": [{"alias": "rows", "agg": "count"}] + [{"alias": f"sum_{n}", "agg": "sum", "column": n} for n in num_cols[:1]],
-            "order_by": [{"by": "rows", "dir": "desc"}], "limit": 100}})
-    return {"title": (goal or "New dashboard")[:80], "date_column": date_col, "pages": [{"title": "Overview", "blocks": blocks}],
-            "parameters": text_cols, "suggestions": []}
+        over.append({"type": "chart", "title": f"{lead_label} and {noun} by {period}", "intent": f"Trend · {lead_label.lower()} with volume",
+                     "chart_type": "combo" if lead else "area",
+                     "spec": {"table": table, "time": {"column": date_col, "grain": period},
+                              "measures": [lead_m, rows_m] if lead else [rows_m],
+                              "order_by": [{"by": "period", "dir": "asc"}], "limit": 500}})
+    if d1:
+        over.append({"type": "chart", "title": f"{lead_label} by {_fb_label(d1).lower()}", "intent": f"Ranking · {d1}", "chart_type": "horizontal_bar",
+                     "spec": {"table": table, "group_by": [d1], "measures": [lead_m], "order_by": [{"by": lead_m["alias"], "dir": "desc"}], "limit": 12}})
+    if d2:
+        over.append({"type": "chart", "title": f"{lead_label} mix by {_fb_label(d2).lower()}", "intent": f"Share · {d2}", "chart_type": "donut",
+                     "spec": {"table": table, "group_by": [d2], "measures": [lead_m], "order_by": [{"by": lead_m["alias"], "dir": "desc"}], "limit": 8}})
+    if d1 and d2:
+        over.append({"type": "chart", "title": f"{lead_label} by {_fb_label(d1).lower()} and {_fb_label(d2).lower()}",
+                     "intent": "Matrix · two dimensions", "chart_type": "heatmap",
+                     "spec": {"table": table, "group_by": [d1, d2], "measures": [lead_m], "limit": 300}})
+    dd = text_cols[3] if len(text_cols) > 3 else (d3 or d2)
+    if dd:
+        over.append({"type": "chart", "title": f"{lead_label} by {_fb_label(dd).lower()}", "intent": f"Composition · {dd}", "chart_type": "treemap",
+                     "spec": {"table": table, "group_by": [dd], "measures": [lead_m],
+                              "order_by": [{"by": lead_m["alias"], "dir": "desc"}], "limit": 30}})
+    # the deep dive
+    if date_col and d2:
+        deep.append({"type": "chart", "title": f"{lead_label} by {period}, split by {_fb_label(d2).lower()}", "intent": f"Trend · parts of the total",
+                     "chart_type": "stacked_area",
+                     "spec": {"table": table, "time": {"column": date_col, "grain": period}, "group_by": [d2], "measures": [lead_m],
+                              "order_by": [{"by": "period", "dir": "asc"}], "limit": 2000}})
+    if d1 and d2:
+        deep.append({"type": "chart", "title": f"{_fb_label(d2)} share within each {_fb_label(d1).lower()}", "intent": "Mix · shares inside each group",
+                     "chart_type": "stacked_bar_100",
+                     "spec": {"table": table, "group_by": [d1, d2], "measures": [lead_m], "limit": 300}})
+    if flags and d1:
+        deep.append({"type": "chart", "title": f"{_fb_label(flags[0])} rate by {_fb_label(d1).lower()}", "intent": "Rate · by dimension",
+                     "chart_type": "bar",
+                     "spec": {"table": table, "group_by": [d1], "measures": [{"alias": f"rate_{flags[0]}", "agg": "avg", "column": flags[0]}],
+                              "order_by": [{"by": f"rate_{flags[0]}", "dir": "desc"}], "limit": 15}})
+    elif d3 and lead:
+        deep.append({"type": "chart", "title": f"{lead_label} per {noun0} by {_fb_label(d3).lower()}", "intent": f"Average · {d3}",
+                     "chart_type": "bar", "spec": {"table": table, "group_by": [d3], "measures": [{"alias": f"avg_{lead}", "agg": "avg", "column": lead}],
+                                                   "order_by": [{"by": f"avg_{lead}", "dir": "desc"}], "limit": 15}})
+    if d3 and d1:
+        deep.append({"type": "chart", "title": f"{lead_label} matrix: {_fb_label(d3).lower()} by {_fb_label(d1).lower()}", "intent": "Matrix · with totals",
+                     "chart_type": "pivot", "spec": {"table": table, "group_by": [d3, d1], "measures": [lead_m], "limit": 400}})
+    if d1:
+        ms = [rows_m] + ([lead_m, {"alias": f"avg_{lead}", "agg": "avg", "column": lead}] if lead else []) + [
+            {"alias": f"total_{n}", "agg": "sum", "column": n} for n in countish[:1]]
+        deep.append({"type": "table", "title": f"{_fb_label(d1)} and {_fb_label(d2).lower()} detail" if d2 else f"{_fb_label(d1)} detail",
+                     "intent": "Table · detail", "spec": {
+                         "table": table, "group_by": [x for x in (d1, d2) if x], "measures": ms,
+                         "order_by": [{"by": lead_m["alias"], "dir": "desc"}], "limit": 100}})
+    pages = [{"title": "Overview", "blocks": over}]
+    if len(deep) >= 2:
+        pages.append({"title": "Deep dive", "blocks": deep})
+    else:
+        over.extend(deep)
+    return {"title": _fb_title(goal, table), "date_column": date_col, "pages": pages,
+            "parameters": text_cols[:3], "suggestions": []}
 
 
 def _build_proposal(
@@ -4897,7 +5022,7 @@ def add_to_thread_plan(db: Session, user: models.User, ds: models.DataSource, pr
         if len(added) >= 2:
             break
     if not added:
-        why = failed[0]["error"] if failed else "GD360 could not find that in this data."
+        why = failed[0]["error"] if failed else "Euliv could not find that in this data."
         raise HTTPException(400, f'Couldn\'t add "{text.strip()[:80]}": {why}')
     pages = proposal["pages"]
     target = pages[min(max(page_index, 0), len(pages) - 1)] if pages else None
@@ -4961,7 +5086,7 @@ def build_dashboard_from_goal(
         raise HTTPException(400, f"Could not plan a dashboard on {ds.name}: {e}")
     if proposal["valid_blocks"] == 0:
         reasons = [f'"{b["title"]}": {b["error"]}' for p in proposal["pages"] for b in p["blocks"] if b.get("error")]
-        detail = f"GD360 couldn't build a dashboard from this on {ds.name}."
+        detail = f"Euliv couldn't build a dashboard from this on {ds.name}."
         if reasons:
             detail += " Specifically: " + "; ".join(reasons[:3])
         raise HTTPException(400, detail)
@@ -6182,7 +6307,7 @@ def restyle_block(
         raise HTTPException(
             400,
             "This chart doesn't have restyle data attached yet (it was built before this option existed) - "
-            "ask GD360's AI to rebuild it, or build a new chart block, to enable style options.",
+            "ask Euliv's AI to rebuild it, or build a new chart block, to enable style options.",
         )
 
     title = payload.title.strip()[:120] if payload.title else block.title
@@ -7266,7 +7391,10 @@ def _confirm_auto_charts(page: models.DashboardPage, results: dict, payload: sch
             print(f"[dashboard_builder] auto chart check skipped for block {block.id} (non-fatal): {e}")
             continue
         new_config = {**config, "chart_checked": True}
-        if (not ok or (rec["strength"] == "strong" and rec["chart_type"] != current)) and rec["block_type"] in ("chart", "donut"):
+        # R61c: judged the way the proposal was (resolve) - a 100% stacked bar / pivot / treemap of two dimensions stays
+        alt = chart_recommender.resolve(shape, current) if current else None
+        keep = bool(ok and alt and not alt["overrode"])
+        if not keep and (not ok or (rec["strength"] == "strong" and rec["chart_type"] != current)) and rec["block_type"] in ("chart", "donut"):
             print(f"[dashboard_builder] chart type corrected on first run (block {block.id}): {current!r} -> "
                   f"{rec['chart_type']!r} ({rec['reason']}{'' if ok else '; ' + str(why)})")
             new_config["chart_reason"] = rec["reason"]
@@ -8060,7 +8188,7 @@ def _ask_ai_block_warehouse(
         if probe is not None and _infer_block_type_for_spec(probe, keep_type, block.type) in ("chart", "donut"):
             named = chart_recommender.normalize_chart_type(suggested_chart) if suggested_chart else None
             if suggested_chart and not named:
-                print(f"[dashboard_builder] chart type ignored (ask-ai): {suggested_chart!r} is not a chart GD360 draws")
+                print(f"[dashboard_builder] chart type ignored (ask-ai): {suggested_chart!r} is not a chart Euliv draws")
             # A form the QUESTION names, or the one the person had already
             # given this block, is theirs (kept whenever the shape can draw
             # it); a form the model chose on its own is a suggestion.
@@ -8102,7 +8230,7 @@ def _ask_ai_block_warehouse(
     reason = str(last_error or "").strip().rstrip(".")
     raise HTTPException(
         422,
-        f"Nothing was computed: GD360 could not turn that question into a valid {ds.kind} query for this block "
+        f"Nothing was computed: Euliv could not turn that question into a valid {ds.kind} query for this block "
         f"({reason}). Try rephrasing the question, or use \"Edit query\" to build this block's query yourself.",
     )
 
@@ -8157,7 +8285,7 @@ def _build_manual_block_warehouse(
         raise HTTPException(
             400,
             "Saved tables (transform_id) are not supported on a warehouse/database source: a saved table is computed "
-            "inside the app from loaded rows, and GD360 never loads a warehouse's rows. Pick the warehouse table "
+            "inside the app from loaded rows, and Euliv never loads a warehouse's rows. Pick the warehouse table "
             "(or a saved query) directly instead. Nothing was computed.",
         )
     block_type = payload.block_type
@@ -8334,7 +8462,7 @@ def set_block_spec(
     if chart_type is not None:
         normal = chart_recommender.normalize_chart_type(chart_type)
         if normal is None or normal not in chart_recommender.BLOCK_CHART_TYPES:
-            raise HTTPException(400, f"chart_type {chart_type!r} is not a chart GD360 draws.")
+            raise HTTPException(400, f"chart_type {chart_type!r} is not a chart Euliv draws.")
         chart_type = normal
         if isinstance(payload.spec, dict):
             schema, _ = query_builder.with_version_aliases(ds.schema_cache, dashboard_engine.load_versions(db, ds))
@@ -8891,7 +9019,7 @@ def set_custom_domain(
 
     domain = _normalize_domain(payload.domain)
     if db.query(models.WorkspaceDomain).filter(models.WorkspaceDomain.hostname == domain).first():
-        raise HTTPException(400, f'"{domain}" is a company domain on GD360 - publish to it from "Publish to company domain" instead.')
+        raise HTTPException(400, f'"{domain}" is a company domain on Euliv - publish to it from "Publish to company domain" instead.')
 
     clash = (
         db.query(models.DashboardShare)

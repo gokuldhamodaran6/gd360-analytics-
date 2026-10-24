@@ -58,11 +58,11 @@ def _guided_run(db: Session, run_id: str, user: models.User) -> models.ProjectRu
     if conv.kind != "guided" and not _v2(conv):
         raise HTTPException(404, "Guided analysis not found.")
     if run.status == "planning":
-        raise HTTPException(409, "GD360 is still writing the plan.")
+        raise HTTPException(409, "Euliv is still writing the plan.")
     if run.status in ("failed", "needs_input", "stopped", "replaced") and not run.steps:
         raise HTTPException(409, "This analysis has no steps to work on.")
     if guided.is_busy(run.id) or run.status == "running":
-        raise HTTPException(409, "GD360 is still working on this analysis. Wait for the current step to finish.")
+        raise HTTPException(409, "Euliv is still working on this analysis. Wait for the current step to finish.")
     return run
 
 
