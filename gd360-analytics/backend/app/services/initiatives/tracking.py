@@ -586,7 +586,7 @@ def tracking_plan(db: Session, i: models.Initiative, values: dict, links: list[d
             add(k, label, "manual", "Typed in by the owner - update it on the Results tab or log it as an update.", "log")
         elif k in ("registrations", "attended", "attendance_rate"):
             if values.get("registrations"):
-                add(k, label, "live", "Counted from the GD360 registration page and imported attendee lists.")
+                add(k, label, "live", "Counted from the Euliv registration page and imported attendee lists.")
             else:
                 add(k, label, "setup", "Share the registration page link (Audience tab). Using Luma, Eventbrite or Zoom instead? Import their attendee CSV after the event.", "audience")
         elif k == "walk_ins":
@@ -598,12 +598,12 @@ def tracking_plan(db: Session, i: models.Initiative, values: dict, links: list[d
             elif not camp_n:
                 add(k, label, "setup", "Create the first campaign on the Campaigns tab - opens and clicks are tracked automatically.", "campaigns")
             else:
-                add(k, label, "live", "Counted from GD360 campaigns: every send, open and click.")
+                add(k, label, "live", "Counted from Euliv campaigns: every send, open and click.")
         elif k in ("web_visits", "landing_visits", "landing_conversions"):
             if site_live:
-                add(k, label, "live", "The GD360 snippet is reporting visits from your site.")
+                add(k, label, "live", "The Euliv snippet is reporting visits from your site.")
             else:
-                add(k, label, "setup", "Paste the one-line GD360 snippet into your site's <head> (Tracking tab), then open the page once to confirm.", "tracking")
+                add(k, label, "setup", "Paste the one-line Euliv snippet into your site's <head> (Tracking tab), then open the page once to confirm.", "tracking")
         elif k in ("accounts_engaged", "tier_a_engaged", "opportunities"):
             if not acc_n:
                 add(k, label, "setup", "Bring your target accounts in (Accounts → Sources: Apollo, HubSpot, or a ZoomInfo / Salesforce CSV).", "accounts")
@@ -614,9 +614,9 @@ def tracking_plan(db: Session, i: models.Initiative, values: dict, links: list[d
                 "Counted from the board. Using Jira, Linear, Asana, ClickUp, Trello or Notion? Import their CSV export and statuses become stages." if not items_n
                 else "Counted from the board stages.", "board")
         elif k in ("social_reach", "social_engagements"):
-            add(k, label, "manual", "LinkedIn and Instagram don't share reach with other apps without a business integration - log it in one line after each post (\"LinkedIn post reach 4.2k, 63 clicks\") and GD360 adds it up.", "log")
+            add(k, label, "manual", "LinkedIn and Instagram don't share reach with other apps without a business integration - log it in one line after each post (\"LinkedIn post reach 4.2k, 63 clicks\") and Euliv adds it up.", "log")
         elif k == "link_clicks":
-            add(k, label, "live" if links else "setup", "Add each post or ad as a tracked link and share the GD360 link instead of the raw one.", "tracking")
+            add(k, label, "live" if links else "setup", "Add each post or ad as a tracked link and share the Euliv link instead of the raw one.", "tracking")
         elif k == "approvals_done":
             add(k, label, "live", "Counted when a deliverable is approved.")
         elif k == "meetings":
@@ -633,7 +633,7 @@ def tracking_plan(db: Session, i: models.Initiative, values: dict, links: list[d
                 "Tracking is live on this page." if st == "live" else
                 "No visits seen from this page yet - paste the snippet into its <head>, publish, and open it once.", "tracking")
         elif l["kind"] in ("social_post", "ad"):
-            add(f"link:{l['id']}", f"{l['label']}", "live", "Clicks are counted through the GD360 link; log reach from the platform after 24 hours.", "log")
+            add(f"link:{l['id']}", f"{l['label']}", "live", "Clicks are counted through the Euliv link; log reach from the platform after 24 hours.", "log")
     if i.kind in ("event", "webinar", "abm", "campaign") and ws and not gtm.connection(db, ws, "ipinfo"):
         add("ipinfo", "Company names for anonymous visitors", "setup",
             "Optional: connect IPinfo (Accounts → Sources) so visits from target accounts show up even before anyone fills a form.", "accounts")
@@ -641,7 +641,7 @@ def tracking_plan(db: Session, i: models.Initiative, values: dict, links: list[d
                                                   models.InitiativeTask.status == "review").count()
     if pend:
         add("approvals", f"{pend} deliverable{'s' if pend > 1 else ''} waiting for approval", "waiting",
-            "The approver can decide from the link they were sent - no GD360 account needed.", "plan")
+            "The approver can decide from the link they were sent - no Euliv account needed.", "plan")
     return out
 
 

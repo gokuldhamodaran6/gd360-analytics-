@@ -87,13 +87,13 @@ def apply_to_plan(plan: list[dict], connected: list[dict]) -> list[dict]:
         c = by_metric.get(row["key"])
         if c and row["state"] in ("setup", "manual"):
             row["state"] = "connected"
-            row["how"] = f"Already connected in GD360: {c['name']} ({c['covers']}). Ask it directly - nothing to set up."
+            row["how"] = f"Already connected in Euliv: {c['name']} ({c['covers']}). Ask it directly - nothing to set up."
             row["action"] = f"ask:{c['id']}"
             row["question"] = c["questions"][0]
     used = {row.get("action") for row in plan}
     rest = [c for c in connected if f"ask:{c['id']}" not in used]
     if rest:
-        plan.append({"key": "sources", "label": "Also connected in GD360", "state": "connected",
+        plan.append({"key": "sources", "label": "Also connected in Euliv", "state": "connected",
                      "how": ", ".join(f"{c['name']} ({c['covers']})" for c in rest[:6])
                             + " - ask any of them about this initiative from the Overview.",
                      "action": f"ask:{rest[0]['id']}", "question": rest[0]["questions"][0]})

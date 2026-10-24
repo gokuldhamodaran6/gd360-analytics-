@@ -20,10 +20,10 @@ from .. import ai_engine
 from . import catalog, connected, metrics, team, tracking
 
 logger = logging.getLogger(__name__)
-MARKER = "GD360 INITIATIVE ASSISTANT"
+MARKER = "Euliv INITIATIVE ASSISTANT"
 
 SYSTEM = f"""{MARKER}
-You are the assistant inside one GD360 initiative. Answer the person's
+You are the assistant inside one Euliv initiative. Answer the person's
 message from CONTEXT only - never invent numbers; when something isn't
 tracked, say so and say how to start tracking it. Be brief and specific,
 professional, no emojis. Dates are YYYY-MM-DD.

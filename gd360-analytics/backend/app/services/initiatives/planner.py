@@ -23,7 +23,7 @@ from .. import ai_engine
 from . import catalog, gtm, metrics
 
 logger = logging.getLogger(__name__)
-MARKER = "GD360 INITIATIVE PLANNER"
+MARKER = "Euliv INITIATIVE PLANNER"
 DEFAULT_LEAD = {"event": 42, "webinar": 28, "hiring": 60, "product": 84}
 
 
@@ -33,9 +33,9 @@ def _system() -> str:
                      for k, v in catalog.METRICS.items())
     kinds = ", ".join(catalog.KINDS)
     return f"""{MARKER}
-You plan business initiatives for GD360 - events, webinars, campaigns,
+You plan business initiatives for Euliv - events, webinars, campaigns,
 account-based marketing, hiring, product builds and any custom department
-activity. GD360 itself provides registration pages, walk-in capture, email
+activity. Euliv itself provides registration pages, walk-in capture, email
 campaigns with open/click tracking, website visit tracking by account,
 reminders and a stage board, so a plan must work with NO other tool;
 other tools are recommendations with a reason.
@@ -62,7 +62,7 @@ Reply with ONE JSON object only:
 }}
 
 Rules:
-- CONTEXT.business is what GD360 knows about this business (about, products, audiences, facts with their source,
+- CONTEXT.business is what Euliv knows about this business (about, products, audiences, facts with their source,
   industry benchmarks). Build the plan for THIS business. Base each target on a fact, the HISTORY, or a benchmark and
   say which in "why"; if none applies, say "assumption" in "why". Never invent a number as if it were theirs.
 - CONTEXT.audience_type says who this is for (customers, investors, partners, candidates, students, donors, press).
@@ -79,7 +79,7 @@ Rules:
 {mets}
 - roles: the people this needs and what each owns (role targets use keys
   invites, registrations, meetings, walk_ins). Sales roles log their personal
-  outreach (LinkedIn, Sales Navigator, email, calls) in GD360.
+  outreach (LinkedIn, Sales Navigator, email, calls) in Euliv.
 - board_items: hiring -> one card per open seat ("Backend engineer #1",
   group = role, stage "Sourced"); product -> the must-have scope (stage
   "Backlog", group = milestone); others -> [] unless obvious.

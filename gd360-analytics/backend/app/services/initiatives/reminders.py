@@ -48,11 +48,11 @@ def tick(db: Session, now: datetime | None = None) -> None:
                 where += f" · {a.name}"
                 link = f"{app_url()}/accounts?account={a.id}"
         subject = f"Reminder: {r.note[:80]}"
-        text = f"{r.note}{where}\n\nOpen in GD360: {link}"
+        text = f"{r.note}{where}\n\nOpen in Euliv: {link}"
         body = (f'<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:15px;color:#1B2321;max-width:560px">'
-                f'<p style="margin:0 0 6px;font-size:12px;letter-spacing:.08em;color:#7A8582">GD360 REMINDER{html.escape(where.upper())}</p>'
+                f'<p style="margin:0 0 6px;font-size:12px;letter-spacing:.08em;color:#7A8582">Euliv REMINDER{html.escape(where.upper())}</p>'
                 f'<p style="margin:0 0 18px;font-size:17px;line-height:1.5">{html.escape(r.note)}</p>'
-                f'<a href="{link}" style="display:inline-block;background:#0E7C5A;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none">Open in GD360</a></div>')
+                f'<a href="{link}" style="display:inline-block;background:#0E7C5A;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none">Open in Euliv</a></div>')
         try:
             send_email([owner.email], subject, body, text)
         except NotConfigured:

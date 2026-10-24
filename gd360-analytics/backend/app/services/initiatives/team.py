@@ -175,7 +175,7 @@ def sync_signal(db: Session, initiative_id: str, kind: str, contact_id: str | No
         rows.append(o)
     for o in rows:
         log_touch(db, o, status, "personal_link" if (member and o.member_id == member.id and status == "registered") else None,
-                  None, "GD360", auto=True)
+                  None, "Euliv", auto=True)
 
 
 def _segment_of(db: Session, account_id: str | None) -> str:
@@ -235,7 +235,7 @@ def assign(db: Session, i: models.Initiative, member_ids: list[str], account_ids
             if st and (best is None or rank(st) > rank(best)):
                 best = st
         if best:
-            log_touch(db, o, best, None, None, "GD360", auto=True)
+            log_touch(db, o, best, None, None, "Euliv", auto=True)
     return {"assigned": assigned, "skipped": skipped}
 
 
