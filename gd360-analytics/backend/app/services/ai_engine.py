@@ -1503,7 +1503,10 @@ def propose_dashboard(
             {"role": "system", "content": _with_chart_guide(PROPOSE_DASHBOARD_SYSTEM_PROMPT)},
             {"role": "user", "content": user},
         ]
-        raw = _call_llm_resilient(messages, max_tokens=_PROPOSE_MAX_TOKENS)
+        # R62: a dashboard plan is a layout over known columns, not a hard reasoning problem - low effort keeps
+        # "Make this a dashboard" in seconds (every block is still validated against the real schema after)
+        with reasoning_effort("low"):
+            raw = _call_llm_resilient(messages, max_tokens=_PROPOSE_MAX_TOKENS)
     except Exception as e:
         print(f"[ai_engine] propose_dashboard failed (non-fatal): {e}")
         return None
