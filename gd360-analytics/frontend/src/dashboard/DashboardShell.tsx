@@ -499,7 +499,7 @@ function ShellBody({
   }, []);
 
   const legacyCount = useMemo(() => (mode === "warehouse" ? (page?.blocks || []).filter(isLegacyBlock).length : 0), [mode, page]);
-  const provider = dashboard.datasource_kind ? providerDisplayName(dashboard.datasource_kind) : mode === "file" ? "GD360" : null;
+  const provider = dashboard.datasource_kind ? providerDisplayName(dashboard.datasource_kind) : mode === "file" ? "Euliv" : null;
   void tick;
   const totalRows = run.totalRows ?? (mode === "file" && run.activeFilterCount === 0 ? run.matchedRows : null);
   const subtitleParts: ReactNode[] = [];

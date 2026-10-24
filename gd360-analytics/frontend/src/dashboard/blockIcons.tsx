@@ -123,7 +123,7 @@ export function OriginChip({ origin, question }: { origin?: string | null; quest
   const label = fromAnswer ? "From your question" : origin === "you" ? "Added by you" : "Suggested";
   return (
     <span data-origin-chip={origin} className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[11.5px] font-medium" style={{ color }}
-      title={fromAnswer ? (question ? `Made from your question “${question}”` : "Made from a question in the thread") : origin === "you" ? "You added this block" : "GD360 added this so the dashboard is complete"}>
+      title={fromAnswer ? (question ? `Made from your question “${question}”` : "Made from a question in the thread") : origin === "you" ? "You added this block" : "Euliv added this so the dashboard is complete"}>
       <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
       {label}
     </span>

@@ -348,7 +348,7 @@ export function BlockCard({
     mode === "warehouse" && resultOk(result)
       ? { provider: result.computed_in || run.computedIn || undefined, rows: result.exact_total_rows ?? (result.spec ? undefined : result.row_count), durationMs: result.duration_ms ?? undefined, cached: Boolean(result.cached) }
       : mode === "file"
-        ? { provider: "GD360", rows: typeof run.matchedRows === "number" ? run.matchedRows : (Array.isArray((override?.config ?? block.config)?.rows) ? (override?.config ?? block.config).rows.length : undefined), cached: false }
+        ? { provider: "Euliv", rows: typeof run.matchedRows === "number" ? run.matchedRows : (Array.isArray((override?.config ?? block.config)?.rows) ? (override?.config ?? block.config).rows.length : undefined), cached: false }
         : null;
 
   const firstLoad = mode === "warehouse" && !run.ready && !result && !legacy && !empty;
@@ -674,7 +674,7 @@ function EmptyGrid({ editor, owner, hasKpis, extra }: { editor: DashboardEditor 
       <div data-empty-page="" className="flex flex-col items-center gap-5 rounded-card border border-dashed border-border-strong px-6 py-12 text-center">
         <div className="flex flex-col items-center gap-1.5">
           <div className="text-section font-semibold text-text">An empty page - start it any way you like</div>
-          <div className="max-w-[520px] text-ui text-muted">Say what it should show and GD360 drafts checked blocks from this page's data, add blocks yourself, or bring in pages from a dashboard you already have.</div>
+          <div className="max-w-[520px] text-ui text-muted">Say what it should show and Euliv drafts checked blocks from this page's data, add blocks yourself, or bring in pages from a dashboard you already have.</div>
         </div>
         {extra}
         <div className="flex flex-wrap items-center justify-center gap-2">

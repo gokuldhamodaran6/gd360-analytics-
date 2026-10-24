@@ -219,7 +219,7 @@ export async function exportDashboardPdf(opts: PdfExportOptions): Promise<void> 
       pdf.setTextColor(muted[0], muted[1], muted[2]);
       const short = (title || "Dashboard").length > 70 ? `${(title || "").slice(0, 69)}…` : title || "Dashboard";
       pdf.text(short, MARGIN_MM, pageH - MARGIN_MM + 2);
-      pdf.text(`GD360  ·  ${p} / ${total}`, pageW - MARGIN_MM, pageH - MARGIN_MM + 2, { align: "right" });
+      pdf.text(`Euliv  ·  ${p} / ${total}`, pageW - MARGIN_MM, pageH - MARGIN_MM + 2, { align: "right" });
     }
     pdf.save(fileName(title));
   } finally {
