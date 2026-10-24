@@ -19,7 +19,7 @@ function Shell({ children, wide = false }: { children: ReactNode; wide?: boolean
       <div className="pointer-events-none absolute -top-40 left-1/2 -translate-x-1/2 w-[900px] h-[420px]" style={{ background: "radial-gradient(closest-side, rgb(var(--color-primary) / 0.12), transparent)" }} />
       <div className={`relative mx-auto px-4 py-8 sm:py-12 flex flex-col gap-5 ${wide ? "max-w-[1240px]" : "max-w-[480px]"}`}>
         {children}
-        <div className="text-center text-caption text-muted pt-6">Powered by GD360 Event OS</div>
+        <div className="text-center text-caption text-muted pt-6">Powered by Euliv Event OS</div>
       </div>
     </div>
   );

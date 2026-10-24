@@ -9,7 +9,7 @@ export const TRUTH_COLOR: Record<string, string> = {
   modelled: "rgb(var(--color-warning))", tested: "rgb(var(--color-danger))",
 };
 export const TRUTH_HELP: Record<string, string> = {
-  counted: "Counted by GD360 from a scan, a sign-up, a sync or a sensor.",
+  counted: "Counted by Euliv from a scan, a sign-up, a sync or a sensor.",
   matched: "Matched across systems (a post to the event, a deal to a company that came).",
   reported: "Told to us: a survey answer, a number a platform reports, or typed by someone.",
   modelled: "Estimated by a model, with its range.",

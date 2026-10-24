@@ -129,7 +129,7 @@ export default function BuzzTab({ i, onChanged }: { i: Initiative; onChanged: ()
       <Card title="Where posts come from" sub="What this scan can and can't see">
         <div className="grid gap-3 md:grid-cols-3 text-caption text-secondary">
           <div><b className="text-text">Your accounts</b> - Instagram, Facebook Pages, LinkedIn Pages, YouTube you've connected. Every post, its picture and numbers.</div>
-          <div><b className="text-text">Anyone's public posts</b> - X and YouTube search when their keys are set on this GD360. Instagram and LinkedIn don't let any tool search other people's posts - paste those links.</div>
+          <div><b className="text-text">Anyone's public posts</b> - X and YouTube search when their keys are set on this Euliv. Instagram and LinkedIn don't let any tool search other people's posts - paste those links.</div>
           <div><b className="text-text">Pictures</b> - posts without a hashtag are checked for your banner, backdrop or badge (brand marks only, never faces). Upload them in Setup.</div>
         </div>
         {b.scan?.sources?.length > 0 && <div className="text-caption text-muted">Last scan read: {b.scan.sources.map((s: any) => `${s.name}${s.posts ? ` (${s.posts})` : ""}`).join(", ")}</div>}
