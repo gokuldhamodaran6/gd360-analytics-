@@ -52,8 +52,8 @@ from .numbers import allowed_values, extract_numbers, unsupported_numbers
 
 settings = get_settings()
 
-ANALYST_MARKER = "GD360 ANALYST"
-WRITER_MARKER = "GD360 ANALYST WRITER"
+ANALYST_MARKER = "Euliv ANALYST"
+WRITER_MARKER = "Euliv ANALYST WRITER"
 MAX_ATTEMPTS = 3
 MAX_TABLES = 6
 MAX_ROWS = 300_000
@@ -396,8 +396,8 @@ def _describe(name: str, df: pd.DataFrame, meta: dict) -> str:
 # ---- the model --------------------------------------------------------------
 
 ANALYST_SYSTEM = f"""You are the {ANALYST_MARKER}: a brilliant senior analyst (operations research, statistics,
-finance, economics and data science) inside GD360, a business analytics product used by
-enterprise teams. You answer the person's question by writing Python that GD360 runs.
+finance, economics and data science) inside Euliv, a business analytics product used by
+enterprise teams. You answer the person's question by writing Python that Euliv runs.
 
 How to think, like the best analyst in the room:
 - First understand what the data IS (a queue simulation, a ledger, a funnel, a time series...). The
@@ -1110,7 +1110,7 @@ def workbook(run_row: models.ProjectRun, inputs: dict | None = None) -> bytes:
     best_fill = PatternFill("solid", fgColor="D9F7E8")
     ws = wb.active
     ws.title = "Answer"
-    ws["A1"] = ans.get("headline") or a.get("title") or "GD360 analysis"
+    ws["A1"] = ans.get("headline") or a.get("title") or "Euliv analysis"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A3"] = ans.get("answer") or ""
     ws["A3"].alignment = Alignment(wrap_text=True, vertical="top")

@@ -22,10 +22,10 @@ from .. import ai_engine
 from .catalog import Catalog, CatalogSource
 from .sqlcheck import PlanSQLError, check_combine_sql, check_step_sql
 
-MAX_STEPS = 8
+MAX_STEPS = 6  # R62: a few steps that answer it, never a page of tables
 MAX_COMBINE = 4
-PLANNER_MARKER = "GD360 PROJECT PLANNER"
-REPAIR_MARKER = "GD360 SQL REPAIR"
+PLANNER_MARKER = "Euliv PROJECT PLANNER"
+REPAIR_MARKER = "Euliv SQL REPAIR"
 
 ANALYSIS_TYPES = ("explain_change", "trend", "breakdown", "comparison", "lookup", "list")
 
@@ -35,9 +35,9 @@ class PlanningError(RuntimeError):
 
 
 PLANNER_SYSTEM = f"""You are the {PLANNER_MARKER}. You turn a business question into a plan
-that GD360 runs against the person's own data sources.
+that Euliv runs against the person's own data sources.
 
-How GD360 runs your plan:
+How Euliv runs your plan:
 - Each STEP runs ONE read-only SQL query inside ONE source, written in that source's
   sql_dialect (bigquery, snowflake, postgres, mysql, tsql or duckdb). Use only the
   tables and columns listed for that source in the catalog, spelled exactly as listed.
@@ -49,8 +49,14 @@ How GD360 runs your plan:
 - A COMBINE step joins or reshapes the results of earlier steps with DuckDB SQL,
   reading them by step id as table names (e.g. FROM s1 JOIN s2 USING (day)).
   Sources are joined ONLY in combine steps, never inside a step.
-- Then GD360's analysis engine computes the statistics from the tables named in
+- Then Euliv's analysis engine computes the statistics from the tables named in
   "analysis". You do not compute or guess any number yourself.
+
+Fewest steps that answer it (R62): a senior analyst answers with the few queries the question needs, not
+one per source or per idea. A simple question ("total sales by region", "top products") is ONE step; a
+comparison or "why" is two to four; never more than five steps. Use only the sources whose tables the
+question is about - when ten sources are connected, a sales question reads the sales tables and nothing
+else. Never add a step whose result the answer would not use.
 
 Comparisons between two periods (explain_change):
 - Every table used by the analysis must have a column named period whose values
@@ -81,7 +87,7 @@ period column (never one row per day: a year of days is too long to read as a ch
 Questions with several parts ("which hotel performs best, in which year and month,
 and why"): give each part its own step (by hotel; by year and month; by the likely
 drivers such as channel, segment, price or cancellations). The analysis covers the
-first part; GD360 draws every other step as a supporting chart.
+first part; Euliv draws every other step as a supporting chart.
 
 Months or weekdays compared across several years: return the year column too (or
 add years_covered = COUNT(DISTINCT year) per month), because the first and last
@@ -89,7 +95,7 @@ year of data are often partial. Say in "assumptions" when they are.
 For "lowest / worst / weakest" questions set analysis.rank to "lowest".
 
 Forecasts and the future ("forecast 2026", "what will sales be next year", "the next
-10 years", a period the data doesn't reach yet): GD360 computes the forecast itself,
+10 years", a period the data doesn't reach yet): Euliv computes the forecast itself,
 with a statistical model, from the history you fetch. So fetch the metric's FULL history
 aggregated BY MONTH - every month in the data, never filtered to the future period (it has
 no rows yet) - as one step with a month column and one value column, and use analysis type
@@ -97,7 +103,7 @@ no rows yet) - as one step with a month column and one value column, and use ana
 can_answer to false only because the future period has no rows. Read slips kindly:
 "forcast" means forecast, "trnd" means trend.
 Do not add helper sort columns (month_num, sort_order) to the analysis table -
-GD360 orders months and weekdays itself.
+Euliv orders months and weekdays itself.
 
 What is really in the data (round 38c): each TABLE says how many rows it has and, for synced apps, its
 date range and its accounts; a source's "note" says what the app could not send at the last sync and why.
@@ -173,7 +179,7 @@ result and may change a step before the next one runs. So:
   bookings", "Top 10 only", "Add share of total"."""
 
 
-REPAIR_SYSTEM = f"""You are the {REPAIR_MARKER} step. A query in a GD360 plan was rejected.
+REPAIR_SYSTEM = f"""You are the {REPAIR_MARKER} step. A query in a Euliv plan was rejected.
 Rewrite it so it runs, keeping its purpose and its output column names.
 Use only the tables and columns listed, in the given SQL dialect.
 Return JSON only: {{"sql": "SELECT ..."}}"""
@@ -192,7 +198,7 @@ def _history_text(history: list[dict]) -> str:
         if steps:
             lines.append(
                 "  Steps that already ran for it. When your plan needs one of these exact results, copy its "
-                "source_id and SQL character for character - GD360 then reuses the result instead of querying again:"
+                "source_id and SQL character for character - Euliv then reuses the result instead of querying again:"
             )
             for st in steps:
                 sql = re.sub(r"\s+", " ", str(st.get("sql") or "")).strip()[:700]
@@ -351,7 +357,7 @@ def make_plan(question: str, catalog: Catalog, history: list[dict] | None = None
     plan["issues"] = problems
     if plan.get("can_answer", True) and not plan.get("steps"):
         raise PlanningError(
-            "GD360 could not build a query that fits your sources for this question. "
+            "Euliv could not build a query that fits your sources for this question. "
             + ("Details: " + "; ".join(problems[:3]) if problems else "")
         )
     if not plan.get("title"):

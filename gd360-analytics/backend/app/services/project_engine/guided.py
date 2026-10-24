@@ -50,7 +50,7 @@ from .executor import (
 )
 from .sqlcheck import ROW_CAP, PlanSQLError, check_combine_sql, check_step_sql
 
-EDITOR_MARKER = "GD360 STEP EDITOR"
+EDITOR_MARKER = "Euliv STEP EDITOR"
 MAX_GUIDED_STEPS = 12
 
 
@@ -96,7 +96,7 @@ def start(run_id: str, fn, *args) -> None:
     """Runs fn(db, run_id, *args) in its own thread and session. Raises
     GuidedError when this analysis is already working on something."""
     if not _claim(run_id):
-        raise GuidedError("GD360 is still working on this analysis. Wait for the current step to finish.")
+        raise GuidedError("Euliv is still working on this analysis. Wait for the current step to finish.")
 
     def target():
         db = SessionLocal()
@@ -541,7 +541,7 @@ def finish(db: Session, run_id: str) -> None:
 
 # ---- the step editor -------------------------------------------------------------
 
-EDITOR_SYSTEM = f"""You are the {EDITOR_MARKER}. A person is working through a GD360 analysis
+EDITOR_SYSTEM = f"""You are the {EDITOR_MARKER}. A person is working through a Euliv analysis
 one step at a time. You write ONE step: either a change they asked for to an existing
 step, or a new step they want to add.
 
@@ -652,7 +652,7 @@ def write_step(db: Session, run: models.ProjectRun, instruction: str, current: d
                 {"role": "assistant", "content": json.dumps(raw)[:6000]},
                 {"role": "user", "content": f"That step was rejected: {e}. Fix it and answer with the JSON only."},
             ]
-    raise GuidedError(f"GD360 could not write a step that fits your sources for that. Details: {last}")
+    raise GuidedError(f"Euliv could not write a step that fits your sources for that. Details: {last}")
 
 
 def _blank(step_id: str, fields: dict) -> dict:

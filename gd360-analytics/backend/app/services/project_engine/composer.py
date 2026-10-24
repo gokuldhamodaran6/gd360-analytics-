@@ -16,9 +16,9 @@ import re
 from .. import ai_engine
 from .numbers import allowed_values, fmt, unsupported_numbers
 
-WRITER_MARKER = "GD360 ANSWER WRITER"
+WRITER_MARKER = "Euliv ANSWER WRITER"
 
-WRITER_SYSTEM = f"""You are the {WRITER_MARKER}. You explain an analysis GD360 has already
+WRITER_SYSTEM = f"""You are the {WRITER_MARKER}. You explain an analysis Euliv has already
 computed, to a busy business person, in plain English.
 
 Rules:
@@ -62,6 +62,10 @@ Rules:
   segments), name the segments that moved the change most, with their facts. For a
   forecast, also give the trend and
   the seasonal peak that shape it. Never leave a "why" or "what drives" part unanswered.
+- YEARS: when ANALYSIS SUMMARY has "years", the person asked how the metric moved year over year. The headline
+  covers EVERY year from "first" to "last" - the overall direction and the span's % change - never only the last
+  two years. The answer then names the biggest rise and the biggest fall (year and % change from the facts) and
+  the latest year's change; causes explain the latest change. Never answer a year-over-year question with one pair.
 - The "answer" adds to the headline; never repeat the headline sentence in it.
 - Never mention SQL, tables, steps, facts or ids in the text.
 - Short sentences. No hedging filler.
@@ -97,7 +101,7 @@ def _facts_text(facts: list[dict]) -> str:
 def _draft(question: str, plan: dict, analysis: dict, tables: list[dict], problems: list[str] | None) -> dict:
     user = (
         f"Question: {question}\n\n"
-        f"What GD360 assumed: {json.dumps(plan.get('assumptions') or [])}\n\n"
+        f"What Euliv assumed: {json.dumps(plan.get('assumptions') or [])}\n\n"
         f"FACTS\n{_facts_text(analysis.get('facts') or [])}\n\n"
         f"ANALYSIS SUMMARY\n{json.dumps(analysis.get('summary') or {}, default=str)[:5000]}\n\n"
         f"RESULT TABLES\n{_tables_text(tables)}"
@@ -249,7 +253,26 @@ def _all_text(a: dict) -> str:
     return "\n".join(bits)
 
 
+def _years_answer(y: dict) -> tuple[str, str]:
+    each = [r for r in y.get("each") or [] if r.get("pct")]
+    head = (f"{y['metric']} went from {y['each'][0]['value']} in {y['first']} to {y['each'][-1]['value']} in {y['last']}"
+            + (f" ({y['span_pct']} over the period)." if y.get("span_pct") else "."))
+    bits = []
+    if y.get("biggest_rise") and y["biggest_rise"]["pct"].startswith("+"):
+        bits.append(f"The biggest rise was {y['biggest_rise']['year']} ({y['biggest_rise']['pct']})")
+    if y.get("biggest_fall") and y["biggest_fall"]["pct"].startswith("−"):
+        bits.append(f"the biggest fall was {y['biggest_fall']['year']} ({y['biggest_fall']['pct']})")
+    if each:
+        bits.append(f"{each[-1]['year']} changed {each[-1]['pct']} on the year before")
+    body = "; ".join(bits)
+    return head, (body[:1].upper() + body[1:] + ".") if body else ""
+
+
 def fallback_answer(question: str, analysis: dict) -> dict:
+    yrs = (analysis.get("summary") or {}).get("years")
+    if yrs:
+        head, body = _years_answer(yrs)
+        return {"headline": head, "answer": body, "causes": [], "ruled_out": [], "next_questions": [], "written_by": "template"}
     """The answer built without the language model - used when it is
     unavailable or keeps writing numbers it was not given."""
     s = analysis.get("summary") or {}

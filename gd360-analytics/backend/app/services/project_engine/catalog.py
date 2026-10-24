@@ -247,7 +247,7 @@ def build_source(db: Session, ds: models.DataSource, user: models.User) -> Catal
         for key, cols in pairs[:MAX_TABLES_PER_SOURCE]:
             src.tables.append(CatalogTable(name=key or ds.name, source_key=key, columns=_columns(cols)))
         if src.restricted:
-            src.note = "You have row or column rules on this source; GD360 can only use it in ways those rules allow."
+            src.note = "You have row or column rules on this source; Euliv can only use it in ways those rules allow."
         return src
 
     taken: set[str] = set()

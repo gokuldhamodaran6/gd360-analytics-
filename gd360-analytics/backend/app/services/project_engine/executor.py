@@ -247,7 +247,7 @@ def _run_analyst(db: Session, run: models.ProjectRun, catalog, user, fallback_no
     acquired = _RUN_SLOTS.acquire(timeout=120)
     if not acquired:
         run.status = "failed"
-        run.error_message = "GD360 is busy answering other questions right now. Please try again in a minute."
+        run.error_message = "Euliv is busy answering other questions right now. Please try again in a minute."
         run.finished_at = datetime.utcnow()
         db.commit()
         return
@@ -579,7 +579,7 @@ def execute_run(db: Session, run_id: str) -> None:
     acquired = _RUN_SLOTS.acquire(timeout=120)
     if not acquired:
         run.status = "failed"
-        run.error_message = "GD360 is busy answering other questions right now. Please try again in a minute."
+        run.error_message = "Euliv is busy answering other questions right now. Please try again in a minute."
         run.finished_at = datetime.utcnow()
         db.commit()
         return
@@ -605,7 +605,7 @@ def run_plan(db: Session, plan: dict, user: models.User, catalog: Catalog, set_s
             continue
         if src.mode == "live" and src.restricted:
             set_step(st["id"], status="failed",
-                     error="You have row or column rules on this source, so GD360 does not query it directly for you.")
+                     error="You have row or column rules on this source, so Euliv does not query it directly for you.")
             continue
         if src.mode == "live" and warehouse_exec.daily_budget_exhausted(db, ds, user.id):
             set_step(st["id"], status="failed", error="Your daily warehouse scan budget is used up; it resets at midnight UTC.")
@@ -751,6 +751,12 @@ def analyse(plan: dict, tables: dict, steps: list[dict], question: str = "") -> 
         warnings += [n for n in cov.get("notes") or [] if n not in warnings]
     except Exception as e:  # noqa: BLE001 - presentation never fails an answer
         print(f"[project_engine] presentation step skipped: {e}")
+    # R62: a year-over-year question is about every year, not only the last two (project_engine/yearly.py)
+    try:
+        from . import yearly
+        yearly.attach(analysis, plan, tables, question, currency)
+    except Exception as e:  # noqa: BLE001 - never fails an answer
+        print(f"[project_engine] year-over-year skipped: {e}")
     label_sources(analysis, plan, steps or [])
     failed_steps = [s for s in steps or [] if s.get("status") == "failed"]
     if failed_steps:
