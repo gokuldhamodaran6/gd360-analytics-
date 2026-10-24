@@ -286,3 +286,7 @@ textarea.sd-code { width: 100%; border: 1px solid rgb(var(--color-border-strong)
 .sd-kpitiles .t span { font-size: 12.5px; color: rgb(var(--color-muted)); line-height: 1.35; }
 .sd-kpitiles .t b { font-family: "Geist Mono", ui-monospace, monospace; font-size: 24px; font-weight: 600; letter-spacing: -.02em; line-height: 1.15; overflow-wrap: anywhere; }
 [data-sd-explain] svg { color: rgb(var(--color-primary)); }
+/* R59: a question that didn't finish, or needs a choice, says so on the canvas */
+.sd-ended { padding: 18px 20px; display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.sd-ended b { font-size: 15px; font-weight: 600; }
+.sd-ended span { color: rgb(var(--sd-text2, 74 80 78)); font-size: 14px; }

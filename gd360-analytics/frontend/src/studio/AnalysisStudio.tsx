@@ -17,6 +17,7 @@ import { layoutSql } from "../project/RunPanels";
 import { ago, MenuButton, safeName, saveBlob, StudioFrame, toCsv, type FrameTab } from "./Frame";
 import { Ic } from "./icons";
 import { useCardActions, type CardTarget } from "../chat/cardActions";
+import { AnalystAnswer, AnalystProgress, analystOf, isAnalystRun } from "../project/AnalystAnswer";
 
 /** R58: a card's two questions. Explain answers at once from the numbers already on screen (no new query);
  *  Ask puts "About: <this card>" in the follow-up box for a question of your own. Explain waits for the answer
@@ -120,7 +121,7 @@ function showDate(v: unknown, style: "month" | "day"): string {
 function PreviewTable({ step, rows = 5, currency }: { step: RunStep; rows?: number; currency?: string | null }) {
   const cols = (step.columns || []).slice(0, 7);
   const data = (step.preview || []).slice(0, rows);
-  if (!cols.length) return <div className="sd-note">{step.status === "done" ? "This step returned no rows." : "Not run yet."}</div>;
+  if (!cols.length) return <div className="sd-note">{step.status === "done" ? "This step returned no rows." : step.status === "running" ? "Reading the data…" : step.status === "failed" ? (step.error || "This step didn't run.") : "Not run yet."}</div>;
   const dates = Object.fromEntries(cols.map((c) => [c.name, c.dtype === "number" ? null : dateStyle((step.preview || []).map((r) => r[c.name]))]));
   const fmt = (c: (typeof cols)[number]) => c.format || (c.dtype === "number" ? (currency && MONEY_NAME.test(c.name) ? "currency" : "number") : null);
   return (
@@ -317,8 +318,22 @@ export function AnalysisStudio({ turn, run, frame, onAsk, onPrefill, onRunChange
     : busy ? `Working · ${steps.filter((s) => s.status === "running").map((s) => s.title).join(", ") || "rewriting the answer"}…`
     : run.finished_at ? `Saved ${ago(run.finished_at)}` : "";
 
+  // R59: every question opens here - an Analyst run (a model, a simulation) shows its own progress and answer
+  if (isAnalystRun(run)) {
+    return (
+      <StudioFrame kind="analysis-steps" tabs={frame.tabs} addMenu={frame.addMenu} onClose={frame.onClose}
+        status={run.status === "done" ? (run.finished_at ? `Saved ${ago(run.finished_at)}` : "") : busyRun(run) ? "The Analyst is working…" : ""}>
+        <div className="sd-nb" data-c2-analysis-steps="" data-sd-analyst="">
+          {run.status === "done" && analystOf(run) ? <AnalystAnswer key={run.id} run={run} /> : <AnalystProgress run={run} />}
+        </div>
+      </StudioFrame>
+    );
+  }
+  const ended = run.status === "failed" || run.status === "stopped";
+  const status2 = ended ? (run.status === "stopped" ? "Stopped" : "Didn't finish") : run.status === "needs_input" ? "Needs your choice" : status;
+
   return (
-    <StudioFrame kind="analysis-steps" tabs={frame.tabs} addMenu={frame.addMenu} onClose={frame.onClose} status={status}
+    <StudioFrame kind="analysis-steps" tabs={frame.tabs} addMenu={frame.addMenu} onClose={frame.onClose} status={status2}
       actions={stepwise ? (
         <button type="button" className="sd-btnp" disabled={busy || planning || (!left && checkIdx < 0)} onClick={() => void runRest()} data-sd-run-rest=""
           title="What has run is approved; every step left runs, then the answer is written">{left ? "Looks right, run the rest" : "Looks right, write the answer"}</button>
@@ -350,6 +365,22 @@ export function AnalysisStudio({ turn, run, frame, onAsk, onPrefill, onRunChange
       </>}>
       <div className="sd-nb" data-c2-analysis-steps="">
         {err && <div className="sd-err" style={{ marginBottom: 12 }}>{err}</div>}
+        {ended && (
+          <div className="sd-card sd-ended" data-sd-ended="">
+            <b>{run.status === "stopped" ? "Stopped before the answer was written." : "This one didn't finish."}</b>
+            <span>{run.status === "stopped" ? "It was stopped before it finished. Ask again to run it from the start." : (run.error || "Something went wrong on our side. Ask it again, or put it another way.")}</span>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button type="button" className="sd-btnp" onClick={() => onAsk(turn.question)} data-sd-ask-again="">Ask again</button>
+              <button type="button" className="sd-pill" onClick={() => onPrefill(turn.question)}>Change the question</button>
+            </div>
+          </div>
+        )}
+        {run.status === "needs_input" && !steps.length && (
+          <div className="sd-card sd-ended" data-sd-needs="">
+            <b>I need a choice from you first.</b>
+            <span>The options are in the conversation on the left.</span>
+          </div>
+        )}
         {adding && (
           <form className="sd-card" style={{ padding: 14, marginBottom: 16, display: "flex", gap: 8, flexWrap: "wrap" }} onSubmit={(e) => { e.preventDefault(); void add(); }} data-sd-add-form="">
             <input className="sd-in" style={{ flex: 1, minWidth: 240 }} autoFocus value={addText} onChange={(e) => setAddText(e.target.value)}
@@ -409,7 +440,7 @@ export function AnalysisStudio({ turn, run, frame, onAsk, onPrefill, onRunChange
             <DataTable visual={{ type: "chart", title: t.title, columns: t.columns, rows: t.rows.slice(0, 50) } as any} />
           </StepCard>
         ))}
-        {!steps.length && !ans && <div className="sd-empty">This answer has no steps to show.</div>}
+        {!steps.length && !ans && !ended && run.status !== "needs_input" && !planning && !busy && <div className="sd-empty">This answer has no steps to show.</div>}
         {(res?.warnings || []).length > 0 && <div className="sd-note" style={{ marginLeft: 44 }}>{(res?.warnings || []).slice(0, 3).join(" · ")}</div>}
       </div>
     </StudioFrame>
