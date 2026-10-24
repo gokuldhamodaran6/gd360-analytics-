@@ -205,6 +205,12 @@ class Settings(BaseSettings):
     # does not need the extra capability the main analysis chat does. Only
     # used when AI_PROVIDER=="gemini".
     GEMINI_GOKU_MODEL: str = "gemini-3.5-flash-lite"
+    # 2026-10-23 (R59): how long a Gemini thinking model may think before it answers (OpenAI-compatible
+    # "reasoning_effort": "low" | "high"; empty = the model's own default, which thinks the longest).
+    # "low" made plans and answers several times faster; the Analyst (Python models, simulations) keeps
+    # GEMINI_ANALYST_REASONING_EFFORT.
+    GEMINI_REASONING_EFFORT: str = "low"
+    GEMINI_ANALYST_REASONING_EFFORT: str = "high"
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "openai/gpt-oss-20b"
     # Goku talks to this model instead of GROQ_MODEL above, when
