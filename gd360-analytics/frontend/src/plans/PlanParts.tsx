@@ -11,7 +11,7 @@ export const PLAN_COPY: Record<string, { for: string; items: string[]; cta: stri
   free: { for: "Individuals, students, anyone trying it.", items: ["Chat, charts, models, documents, voice", "Dashboards and alerts", "Answers with proof"], cta: "Start free", href: "/start?plan=free" },
   pro: { for: "Professionals and freelancers.", items: ["The strongest models", "Bigger files and more sources", "Publish under your own logo"], cta: "Start with Pro", href: "/start?plan=pro" },
   team: { for: "Teams, small business to mid-market.", items: ["Spaces, roles, shared library", "Column and row rules per team", "Warehouses and a custom domain"], cta: "Start a team", href: "/start?plan=team" },
-  enterprise: { for: "Enterprises, public sector, regulated.", items: ["SSO, audit export, retention policy", "Our cloud, your cloud or your warehouse", "Roll-out by GD360, with an SLA"], cta: "Talk to us", href: "/pricing#enterprise" },
+  enterprise: { for: "Enterprises, public sector, regulated.", items: ["SSO, audit export, retention policy", "Our cloud, your cloud or your warehouse", "Roll-out by Euliv, with an SLA"], cta: "Talk to us", href: "/pricing#enterprise" },
 };
 
 export function priceOf(p: { price: Record<string, any> }): { big: string; small: string } {
