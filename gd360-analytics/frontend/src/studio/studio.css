@@ -290,3 +290,37 @@ textarea.sd-code { width: 100%; border: 1px solid rgb(var(--color-border-strong)
 .sd-ended { padding: 18px 20px; display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
 .sd-ended b { font-size: 15px; font-weight: 600; }
 .sd-ended span { color: rgb(var(--sd-text2, 74 80 78)); font-size: 14px; }
+/* R61: the Bin */
+.ws-binnote { display: flex; align-items: center; gap: 12px; padding: 10px 14px; margin-bottom: 12px; border-radius: 10px; font-size: 13.5px;
+  background: rgb(var(--color-surface2)); border: 1px solid rgb(var(--color-border)); color: rgb(var(--color-text)); }
+[data-ws-binnote].sd-note { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 10px; font-size: 13.5px;
+  background: rgb(var(--color-surface2)); border: 1px solid rgb(var(--color-border)); color: rgb(var(--color-text)); }
+.ws-del { opacity: .35; } tr:hover .ws-del, .ws-del:focus-visible { opacity: 1; }
+.ws-del:hover, .bin-danger:hover { color: rgb(var(--color-danger, 194 54 44)); }
+.bin-ask { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 16px; margin-bottom: 12px; border-radius: 12px;
+  border: 1px solid rgb(var(--color-danger, 194 54 44) / .4); background: rgb(var(--color-danger, 194 54 44) / .07); }
+.bin-ask b { display: block; font-size: 14px; } .bin-ask span { font-size: 13px; color: rgb(var(--color-muted)); }
+.bin-danger-solid { background: rgb(var(--color-danger, 194 54 44)) !important; color: #fff !important; }
+
+/* R62: Explain under the card; the steps after the answer; Share that says it copied; AI writes the code */
+.sd-explain { margin-top: 12px; border: 1px solid rgb(var(--color-primary) / .28); background: rgb(var(--color-primary) / .05); border-radius: 12px; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 8px; font-size: 14px; line-height: 1.55; }
+.sd-explain-h { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; letter-spacing: .02em; color: rgb(var(--color-primary)); }
+.sd-explain-lead { margin: 0; font-weight: 600; color: rgb(var(--color-text)); }
+.sd-explain ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; color: rgb(var(--color-text)); }
+.sd-explain-take { margin: 0; color: rgb(var(--color-secondary, var(--color-muted))); }
+.sd-explain-more { display: flex; flex-wrap: wrap; gap: 6px; }
+.sd-pill.sm { height: 28px; font-size: 12.5px; padding: 0 10px; }
+.sd-sechead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 22px 0 10px 44px; padding-top: 14px; border-top: 1px solid rgb(var(--color-border)); }
+.sd-sechead > b { font-size: 15px; font-weight: 600; }
+.sd-sharepop { display: flex; flex-direction: column; gap: 10px; padding: 12px; width: min(360px, 86vw); }
+.sd-sharepop > b { font-size: 14px; }
+.sd-sharerow { display: flex; gap: 8px; }
+.sd-sharerow .sd-in { flex: 1; font-size: 12.5px; }
+.sd-note.good { color: rgb(var(--color-primary)); }
+.sd-aibar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border-radius: 10px; background: rgb(var(--color-primary) / .05);
+  border: 1px dashed rgb(var(--color-primary) / .35); }
+.sd-aibar > svg { color: rgb(var(--color-primary)); flex: 0 0 auto; }
+.sd-aibar .sd-in { flex: 1; min-width: 220px; }
+.sd-menu .sd-sharepop .sd-btnp { display: inline-flex; flex-direction: row; align-items: center; padding: 0 14px; background: rgb(var(--color-primary)); color: rgb(var(--color-on-primary)); border-radius: 10px; }
+.sd-menu .sd-sharepop .sd-pill { flex-direction: row; align-items: center; padding: 0 14px; border: 1px solid rgb(var(--color-border)); border-radius: 17px; }

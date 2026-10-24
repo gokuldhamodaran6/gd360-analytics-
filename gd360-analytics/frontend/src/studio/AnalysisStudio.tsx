@@ -7,11 +7,11 @@
 // after "Looks right", and one green button runs the rest. The page never says "worked" while a step still runs.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { guidedApi, projectsApi, type ProjectRun, type RunStep, type Visual } from "../api/projects";
+import { guidedApi, projectsApi, type Explanation, type ProjectRun, type RunStep, type Visual } from "../api/projects";
 import type { Turn } from "../api/v2";
 import ChartWithControls from "../project/ChartControls";
 import ForecastChart from "../project/ForecastChart";
-import { formatCell } from "../project/format";
+import { formatCell, isYearColumn } from "../project/format";
 import { DataTable, DivergingBars, WaterfallChart } from "../project/Visuals";
 import { layoutSql } from "../project/RunPanels";
 import { ago, MenuButton, safeName, saveBlob, StudioFrame, toCsv, type FrameTab } from "./Frame";
@@ -19,23 +19,54 @@ import { Ic } from "./icons";
 import { useCardActions, type CardTarget } from "../chat/cardActions";
 import { AnalystAnswer, AnalystProgress, analystOf, isAnalystRun } from "../project/AnalystAnswer";
 
-/** R58: a card's two questions. Explain answers at once from the numbers already on screen (no new query);
- *  Ask puts "About: <this card>" in the follow-up box for a question of your own. Explain waits for the answer
- *  (a Guided analysis explains once its steps are checked). */
-function CardAsk({ label, prefix, target, runId, canExplain, onPrefill }: {
-  label: string; prefix: string; target: CardTarget; runId: string; canExplain: boolean; onPrefill: (q: string) => void;
+/** R58: a card's two questions. R62: Explain writes the explanation right under the card, from the numbers already
+ *  on screen (no new query); Ask opens the conversation about this card - the box keeps "About: <this card>" for as
+ *  many questions as the person wants to ask about it. */
+export type CardAskProps = { label: string; prefix: string; target: CardTarget; runId: string; canExplain: boolean; onPrefill: (q: string) => void };
+type Explained = { busy: boolean; ex?: Explanation; err?: string } | null;
+
+function CardAsk({ label, prefix, target, runId, canExplain, onPrefill, onExplain, explained }: CardAskProps & {
+  onExplain?: () => void; explained?: Explained;
 }) {
   const acts = useCardActions();
   return (
     <>
-      {canExplain && acts && (
-        <button type="button" className="sd-tool sm" onClick={() => acts.explain(label, target, runId)} data-sd-explain={target.kind}
-          title="Explain this from the numbers already here - no new query"><Ic n="spark" />Explain</button>
+      {canExplain && onExplain && (
+        <button type="button" className={`sd-tool sm${explained ? " on" : ""}`} onClick={onExplain} data-sd-explain={target.kind} aria-pressed={!!explained}
+          title="Explain this here, from the numbers already on screen - no new query"><Ic n="spark" />{explained?.busy ? "Explaining…" : "Explain"}</button>
       )}
       <button type="button" className="sd-tool sm" data-sd-ask={target.kind}
         onClick={() => (acts ? acts.about({ label, prefix, target, runId }) : onPrefill(`${prefix}: `))}
-        title="Ask your own question about this"><Ic n="wand" />Ask</button>
+        title="Ask questions about this in the conversation"><Ic n="wand" />Ask</button>
     </>
+  );
+}
+
+/** R62: the explanation, under the card it explains. */
+function ExplainPanel({ state, ask, onClose }: { state: NonNullable<Explained>; ask: CardAskProps; onClose: () => void }) {
+  const acts = useCardActions();
+  const more = (q?: string) => {
+    if (acts) acts.about({ label: ask.label, prefix: ask.prefix, target: ask.target, runId: ask.runId });
+    if (q) ask.onPrefill(q);
+  };
+  return (
+    <div className="sd-explain" data-sd-explained="" role="region" aria-label={`Explanation of ${ask.label}`}>
+      <div className="sd-explain-h"><Ic n="spark" /><span>Explained from the numbers on screen</span><span className="sd-sp" />
+        <button type="button" className="sd-tool sm" onClick={onClose} aria-label="Hide the explanation">Hide</button></div>
+      {state.busy && <div className="sd-note"><span className="c2-spin" /> Reading the numbers…</div>}
+      {state.err && <div className="sd-err">{state.err}</div>}
+      {state.ex && (
+        <>
+          {state.ex.headline && <p className="sd-explain-lead">{state.ex.headline}</p>}
+          {(state.ex.points || []).length > 0 && <ul>{state.ex.points.slice(0, 5).map((p, i) => <li key={i}>{p.text}</li>)}</ul>}
+          {state.ex.takeaway && <p className="sd-explain-take">{state.ex.takeaway}</p>}
+          <div className="sd-explain-more">
+            {(state.ex.followups || []).slice(0, 3).map((q) => <button key={q} type="button" className="sd-pill sm" onClick={() => more(q)} data-sd-followup="">{q}</button>)}
+            <button type="button" className="sd-pill sm" onClick={() => more()} data-sd-ask-more=""><Ic n="wand" />Ask more about this</button>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -61,8 +92,9 @@ function busyRun(r: ProjectRun | null | undefined): boolean {
 
 /** R57: a one-row result is read as key numbers ("Net sales $35.5M · Orders 27,768"), not a one-row table. */
 function StepKpis({ step }: { step: RunStep }) {
-  const cols = (step.columns || []).filter((c) => c.dtype === "number").slice(0, 4);
-  const row = (step.preview || [])[0];
+  const row0 = (step.preview || [])[0];
+  const cols = (step.columns || []).filter((c) => c.dtype === "number" && !(row0 && isYearColumn(c.name, [row0[c.name]]))).slice(0, 4);
+  const row = row0;
   if (!row || (step.preview || []).length !== 1 || !cols.length) return null;
   return (
     <div className="sd-kpis sd-stepkpis" data-sd-step-kpis="">
@@ -74,9 +106,19 @@ function StepKpis({ step }: { step: RunStep }) {
   );
 }
 
-export function StepCard({ n, kind, title, badge, cls, acts, children, foot, id }: {
+export function StepCard({ n, kind, title, badge, cls, acts, children, foot, id, ask }: {
   n: number; kind: string; title: string; badge?: React.ReactNode; cls?: string; acts?: React.ReactNode; children: React.ReactNode; foot?: React.ReactNode; id?: string;
+  /** R62: Explain (under the card) and Ask (in the conversation) for this card */
+  ask?: CardAskProps;
 }) {
+  const [explained, setExplained] = useState<Explained>(null);
+  const explain = async () => {
+    if (!ask) return;
+    if (explained && !explained.busy) { setExplained(null); return; }
+    setExplained({ busy: true });
+    try { setExplained({ busy: false, ex: await projectsApi.explain(ask.runId, ask.target as any) }); }
+    catch (e: any) { setExplained({ busy: false, err: e?.response?.data?.detail || "Couldn't explain this right now. Try Ask instead." }); }
+  };
   return (
     <div className={`sd-sb${cls ? ` ${cls}` : ""}`} data-sd-step={kind} data-sd-step-id={id}>
       <span className="sd-nm">{n}</span>
@@ -85,10 +127,11 @@ export function StepCard({ n, kind, title, badge, cls, acts, children, foot, id 
           <span className="k"><Ic n={KIND_ICON[kind] || "spark"} />{KIND_LABEL[kind] || kind}</span>
           <b title={title}>{title}</b>
           {badge}
-          <span className="x">{acts}</span>
+          <span className="x">{ask && <CardAsk {...ask} onExplain={() => void explain()} explained={explained} />}{acts}</span>
         </div>
         <div className="sd-sbody">
           {children}
+          {explained && ask && <ExplainPanel state={explained} ask={ask} onClose={() => setExplained(null)} />}
           {foot && <div className="sd-sfoot">{foot}</div>}
         </div>
       </div>
@@ -123,15 +166,17 @@ function PreviewTable({ step, rows = 5, currency }: { step: RunStep; rows?: numb
   const data = (step.preview || []).slice(0, rows);
   if (!cols.length) return <div className="sd-note">{step.status === "done" ? "This step returned no rows." : step.status === "running" ? "Reading the data…" : step.status === "failed" ? (step.error || "This step didn't run.") : "Not run yet."}</div>;
   const dates = Object.fromEntries(cols.map((c) => [c.name, c.dtype === "number" ? null : dateStyle((step.preview || []).map((r) => r[c.name]))]));
+  // R62: a year is a label - 2021, never 2,021
+  const years = new Set(cols.filter((c) => isYearColumn(c.name, (step.preview || []).map((r) => r[c.name]))).map((c) => c.name));
   const fmt = (c: (typeof cols)[number]) => c.format || (c.dtype === "number" ? (currency && MONEY_NAME.test(c.name) ? "currency" : "number") : null);
   return (
     <div className="sd-card sd-tw" style={{ borderRadius: 10 }}>
       <table className="sd-t">
-        <thead><tr>{cols.map((c) => <th key={c.name} className={c.dtype === "number" ? "r" : undefined} title={c.name}>{c.label || humanHeader(c.name)}</th>)}</tr></thead>
+        <thead><tr>{cols.map((c) => <th key={c.name} className={c.dtype === "number" && !years.has(c.name) ? "r" : undefined} title={c.name}>{c.label || humanHeader(c.name)}</th>)}</tr></thead>
         <tbody>
           {data.map((r, i) => (
-            <tr key={i}>{cols.map((c) => <td key={c.name} className={c.dtype === "number" ? "num" : dates[c.name] ? undefined : "sd-mono"} style={c.dtype === "number" ? undefined : { fontSize: 13 }}>
-              {dates[c.name] ? showDate(r[c.name], dates[c.name]!) : formatCell(r[c.name], fmt(c), c.currency || currency)}</td>)}</tr>
+            <tr key={i}>{cols.map((c) => <td key={c.name} className={years.has(c.name) ? undefined : c.dtype === "number" ? "num" : dates[c.name] ? undefined : "sd-mono"} style={c.dtype === "number" ? undefined : { fontSize: 13 }}>
+              {years.has(c.name) ? String(r[c.name] ?? "—") : dates[c.name] ? showDate(r[c.name], dates[c.name]!) : formatCell(r[c.name], fmt(c), c.currency || currency)}</td>)}</tr>
           ))}
         </tbody>
       </table>
@@ -155,13 +200,18 @@ function ChartBody({ v, id }: { v: Visual; id: string }) {
   return null;
 }
 
-function DataStep({ n, step, runId, canEdit, showCode, onAsk, onChanged, onError, busy, removable, check, nextLabel, canExplain = false, currency }: {
+function DataStep({ n, step, runId, canEdit, showCode, onAsk, onChanged, onError, busy, removable, check, nextLabel, canExplain = false, currency, collapsed = false }: {
   n: number; step: RunStep; runId: string; canEdit: boolean; showCode: boolean; onAsk: (q: string) => void; onChanged: (r: ProjectRun) => void;
   onError: (m: string) => void; busy: boolean; removable: boolean; canExplain?: boolean; currency?: string | null;
   /** R57: this step's numbers wait for the person's OK (Guided analysis) */
   check?: boolean; nextLabel?: string;
+  /** R62: the answer leads; a step shows its title and what it computed, its rows one click away */
+  collapsed?: boolean;
 }) {
   const [mode, setMode] = useState<"none" | "sql" | "say">("none");
+  const [open, setOpen] = useState(!collapsed);
+  useEffect(() => { setOpen(!collapsed); }, [collapsed]);
+  const [aiSay, setAiSay] = useState("");
   const [sql, setSql] = useState(step.sql);
   const [say, setSay] = useState("");
   const [saving, setSaving] = useState(false);
@@ -176,13 +226,14 @@ function DataStep({ n, step, runId, canEdit, showCode, onAsk, onChanged, onError
   const kpiView = (step.preview || []).length === 1 && (step.columns || []).some((c) => c.dtype === "number");
   return (
     <StepCard n={n} kind="data" id={step.id} title={title}
+      ask={{ label: `step ${n}, “${title}”`, prefix: `About step ${n}, “${title}”`, target: { kind: "step", id: step.id }, runId, canExplain: canExplain && step.status === "done", onPrefill: onAsk }}
       cls={[step.added ? "new" : "", running ? "run" : "", step.status === "failed" ? "bad" : "", check ? "focus" : "", step.approved ? "ok" : ""].join(" ").trim()}
       badge={running ? <span className="sd-chip"><span className="c2-spin" /> Running</span> : step.status === "stale" ? <span className="sd-chip warn">Out of date</span>
         : check ? <span className="sd-chip good" data-sd-ready="">Ready to check</span>
         : step.added ? <span className="sd-badge">Added</span> : step.reused ? <span className="sd-chip">Reused</span> : null}
       acts={<>
-        <CardAsk label={`step ${n}, “${title}”`} prefix={`About step ${n}, “${title}”`} target={{ kind: "step", id: step.id }} runId={runId}
-          canExplain={canExplain && step.status === "done"} onPrefill={onAsk} />
+        {!check && <button type="button" className={`sd-tool sm${open ? " on" : ""}`} onClick={() => setOpen((o) => !o)} aria-expanded={open} data-sd-toggle-data="">
+          <Ic n="table" />{open ? "Hide data" : "Data"}</button>}
         {canEdit && <button type="button" className={`sd-tool sm${mode !== "none" ? " on" : ""}`} onClick={() => setMode(mode === "none" ? "say" : "none")} disabled={busy} data-sd-edit=""><Ic n="text" />Edit</button>}
         {canEdit && <button type="button" className="sd-tool sm" onClick={() => void act(() => guidedApi.runStep(runId, step.id))} disabled={busy || saving} data-sd-run=""><Ic n="play" />Run</button>}
         <MenuButton className="sd-tool sm" icon="more" caret={false} align="right" title="More">
@@ -213,6 +264,15 @@ function DataStep({ n, step, runId, canEdit, showCode, onAsk, onChanged, onError
         </form>
       )}
       {mode === "sql" && (
+        <form onSubmit={(e) => { e.preventDefault(); if (aiSay.trim().length > 2) void act(() => guidedApi.revise(runId, step.id, aiSay.trim())).then(() => setAiSay("")); }}
+          className="sd-aibar" data-sd-ai-code="">
+          <Ic n="spark" />
+          <input className="sd-in" value={aiSay} onChange={(e) => setAiSay(e.target.value)} placeholder="Don't write SQL? Tell the AI the change - it writes the query and runs it"
+            aria-label="Describe the change for the AI to write" />
+          <button type="submit" className="sd-btnp" disabled={saving || aiSay.trim().length < 3}>{saving ? "Writing…" : "Write it for me"}</button>
+        </form>
+      )}
+      {mode === "sql" && (
         <form onSubmit={(e) => { e.preventDefault(); void act(() => guidedApi.setSql(runId, step.id, sql)); }} style={{ display: "flex", flexDirection: "column", gap: 8 }} data-sd-sql-form="">
           <textarea className="sd-code" value={sql} onChange={(e) => setSql(e.target.value)} spellCheck={false} rows={Math.min(16, Math.max(5, sql.split("\n").length + 1))} aria-label="SQL" />
           <div style={{ display: "flex", gap: 8 }}>
@@ -222,9 +282,18 @@ function DataStep({ n, step, runId, canEdit, showCode, onAsk, onChanged, onError
           </div>
         </form>
       )}
-      {kpiView && <StepKpis step={step} />}
+      {(open || check) && kpiView && <StepKpis step={step} />}
       {(showCode || check) && mode === "none" && <pre className="sd-code" data-sd-code="">{layoutSql(step.sql)}</pre>}
-      {!kpiView && <PreviewTable step={step} currency={currency} />}
+      {showCode && !check && mode === "none" && canEdit && (
+        <form className="sd-aibar" data-sd-ai-code="" onSubmit={(e) => { e.preventDefault(); if (aiSay.trim().length > 2) void act(() => guidedApi.revise(runId, step.id, aiSay.trim())).then(() => setAiSay("")); }}>
+          <Ic n="spark" />
+          <input className="sd-in" value={aiSay} onChange={(e) => setAiSay(e.target.value)} placeholder="Change this code with AI: “only 2024 and 2025”, “by week”, “add the order count”…"
+            aria-label="Tell the AI how to change this code" />
+          <button type="submit" className="sd-btnp" disabled={saving || busy || aiSay.trim().length < 3}>{saving ? "Rewriting…" : "Rewrite and run"}</button>
+          <button type="button" className="sd-pill" onClick={() => setMode("sql")} disabled={busy}>Edit it myself</button>
+        </form>
+      )}
+      {(open || check) && !kpiView && <PreviewTable step={step} currency={currency} />}
       {check && mode === "none" && (
         <div className="sd-okbar" data-sd-okbar="">
           <b>Do these numbers look right?</b>
@@ -251,12 +320,43 @@ function WaitingStep({ n, step, next }: { n: number; step: RunStep; next: boolea
   );
 }
 
+/** R62: Share that works - the link copied with a visible "Copied", the link itself to select when the browser won't
+ *  copy, who can open it, and a dashboard for people outside the workspace. */
+export function SharePop({ onMakeDashboard }: { onMakeDashboard?: () => void }) {
+  const [copied, setCopied] = useState<"yes" | "no" | null>(null);
+  const url = typeof window !== "undefined" ? window.location.href : "";
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(url); setCopied("yes"); }
+    catch { setCopied("no"); }
+  };
+  return (
+    <MenuButton className="sd-pill" icon="share" label="Share" caret={false} align="right" data="share">
+      {(close) => (
+        <div className="sd-sharepop" data-sd-sharepop="" onClick={(e) => e.stopPropagation()}>
+          <b>Share this analysis</b>
+          <span className="sd-note">Anyone in your workspace who can use these data sources can open the link and keep asking.</span>
+          <div className="sd-sharerow">
+            <input className="sd-in" readOnly value={url} onFocus={(e) => e.currentTarget.select()} aria-label="Link to this analysis" data-sd-share-url="" />
+            <button type="button" className="sd-btnp" onClick={() => void copy()} data-sd-share-copy="">{copied === "yes" ? "Copied" : "Copy link"}</button>
+          </div>
+          {copied === "yes" && <span className="sd-note good" role="status" data-sd-share-copied="">Link copied - paste it anywhere.</span>}
+          {copied === "no" && <span className="sd-note" role="status">Your browser blocked copying - the link is selected above, copy it with Ctrl/⌘+C.</span>}
+          {onMakeDashboard && <button type="button" className="sd-pill" onClick={() => { close(); onMakeDashboard(); }} data-sd-share-dash="">
+            <Ic n="grid" />Share outside the workspace: make it a dashboard</button>}
+        </div>
+      )}
+    </MenuButton>
+  );
+}
+
 export function AnalysisStudio({ turn, run, frame, onAsk, onPrefill, onRunChanged, onTurnRefresh, onMakeDashboard, canEdit = true }: {
   turn: Turn; run: ProjectRun; frame: FrameBits; onAsk: (q: string) => void; onPrefill: (q: string) => void; onRunChanged: (r: ProjectRun) => void;
   onTurnRefresh: () => void; onMakeDashboard: () => void; canEdit?: boolean;
 }) {
   const navigate = useNavigate();
   const [showCode, setShowCode] = useState(false);
+  const [allOpen, setAllOpen] = useState(false);
+  const [showTables, setShowTables] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [addText, setAddText] = useState("");
@@ -338,13 +438,12 @@ export function AnalysisStudio({ turn, run, frame, onAsk, onPrefill, onRunChange
         <button type="button" className="sd-btnp" disabled={busy || planning || (!left && checkIdx < 0)} onClick={() => void runRest()} data-sd-run-rest=""
           title="What has run is approved; every step left runs, then the answer is written">{left ? "Looks right, run the rest" : "Looks right, write the answer"}</button>
       ) : <>
-        <button type="button" className="sd-pill" onClick={() => { void navigator.clipboard?.writeText(window.location.href).catch(() => undefined); }} title="Copy the link to this conversation"><Ic n="share" />Share</button>
+        <SharePop onMakeDashboard={onMakeDashboard} />
+        {/* R62: an answer becomes a dashboard or a document; alerts are set on the dashboard, over its charts */}
         <MenuButton className="sd-btnp" label="Turn into" align="right" data="turn-into">
           {(close) => <>
-            <button type="button" onClick={() => { close(); onMakeDashboard(); }} data-sd-into="dashboard"><span>A dashboard</span><small>live charts from these steps, to share</small></button>
+            <button type="button" onClick={() => { close(); onMakeDashboard(); }} data-sd-into="dashboard"><span>A dashboard</span><small>live charts from these steps - set alerts on it</small></button>
             <button type="button" onClick={() => { close(); onAsk("Write this up as a document"); }} data-sd-into="doc"><span>A document</span><small>a write-up with the numbers linked to these steps</small></button>
-            <button type="button" onClick={() => { close(); onPrefill(`Alert me when ${(ans?.headline || title).replace(/\.$/, "").toLowerCase()} changes by more than `); }} data-sd-into="alert"><span>An alert</span><small>check it on a schedule and tell me</small></button>
-            <button type="button" onClick={() => { close(); navigate(`/automate?q=${encodeURIComponent(`Every morning, ${title.charAt(0).toLowerCase()}${title.slice(1)}, and save the result as a table`)}`); }} data-sd-into="pipeline"><span>A pipeline</span><small>run these steps every day and keep the table</small></button>
           </>}
         </MenuButton>
       </>}
@@ -398,48 +497,75 @@ export function AnalysisStudio({ turn, run, frame, onAsk, onPrefill, onRunChange
         {planning && !steps.length && [0, 1, 2].map((i) => (
           <div key={i} className="sd-sb wait" aria-hidden="true"><span className="sd-nm">{i + 1}</span><div className="sd-card sd-waitcard sd-skel"><i style={{ width: `${46 + i * 12}%` }} /><i style={{ width: `${70 - i * 8}%` }} /></div></div>
         ))}
-        {steps.map((s, i) => (stepwise && s.status === "pending"
-          ? <WaitingStep key={s.id} n={next()} step={s} next={i === firstWaiting} />
-          : <DataStep key={s.id} n={next()} step={s} runId={run.id} canEdit={canEdit} showCode={showCode} onAsk={onPrefill} onChanged={changed} onError={setErr} busy={busy} removable={steps.length > 1}
-              canExplain={canExplain} currency={currency}
-              check={i === checkIdx} nextLabel={i === checkIdx ? (steps.slice(i + 1).some((x) => x.status !== "done") ? `Looks right, run step ${steps.findIndex((x, j) => j > i && x.status !== "done") + 1}` : "Looks right, write the answer") : undefined} />))}
-        {kpis.length > 0 && (
-          <StepCard n={next()} kind="metric" title={und.metric ? String(und.metric).replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()) : "The numbers"}
-            acts={<CardAsk label="the key numbers" prefix="About the key numbers" target={{ kind: "kpis" }} runId={run.id} canExplain={canExplain} onPrefill={onPrefill} />}>
-            {und.method && <p className="sd-sub sd-method">{String(und.method).replace(/^./, (c) => c.toUpperCase()).replace(/\.?$/, ".")}</p>}
-            <div className="sd-kpitiles" data-sd-kpis="">
-              {kpis.map((k) => <div key={k.label} className="t"><span>{k.label}</span><b>{k.display}</b></div>)}
-            </div>
-          </StepCard>
-        )}
-        {visuals.map(({ v, i }) => (
-          <StepCard key={`v${i}`} n={next()} kind="chart" title={(v as any).title || "Chart"}
-            acts={<CardAsk label={`the chart “${(v as any).title || "Chart"}”`} prefix={`About the chart “${(v as any).title || "Chart"}”`}
-              target={{ kind: "visual", index: i }} runId={run.id} canExplain={canExplain} onPrefill={onPrefill} />}
-            foot={(v as any).sources?.length ? <><span className="sd-proof"><span className="sd-dot good" />Counted from {(v as any).sources.join(", ")}</span></> : undefined}>
-            <ChartBody v={v} id={`${run.id}:sd${i}`} />
-          </StepCard>
-        ))}
-        {ans && (ans.headline || ans.answer) && (
-          <StepCard n={next()} kind="text" title="Findings" cls={res?.answer_stale ? "" : undefined}
-            badge={res?.answer_stale ? <span className="sd-chip warn">Being rewritten</span> : ans.written_by === "template" ? <span className="sd-chip">Written from the numbers</span> : null}
-            acts={<CardAsk label="the findings" prefix="About the findings" target={{ kind: "answer" }} runId={run.id} canExplain={canExplain} onPrefill={onPrefill} />}>
-            <div className="sd-prose" data-sd-findings="">
-              <p><b>{ans.headline}</b>{ans.answer && ans.answer !== ans.headline ? ` ${ans.answer}` : ""}</p>
-              {(ans.causes || []).length > 0 && (
-                <ol>{(ans.causes || []).slice(0, 6).map((c, i) => <li key={i}><b style={{ fontWeight: 600 }}>{c.title}</b>{c.amount ? <span className="sd-mono"> {c.amount}{c.share ? ` · ${c.share}` : ""}</span> : null}{c.detail ? ` — ${c.detail}` : ""}</li>)}</ol>
-              )}
-              {(ans.ruled_out || []).length > 0 && <p className="sd-sub" style={{ marginTop: 8 }}>Ruled out: {(ans.ruled_out || []).slice(0, 3).map((r) => r.title).join("; ")}</p>}
-            </div>
-          </StepCard>
-        )}
-        {evidence.map((t, i) => (
-          <StepCard key={`e${t.id || i}`} n={next()} kind="table" title={t.title || "Table"}
-            acts={<button type="button" className="sd-tool sm" onClick={() => saveBlob(`${safeName(t.title)}.csv`, toCsv(t.columns.map((c) => c.name), t.rows))}><Ic n="dl" />CSV</button>}
-            foot={<span className="sd-chip"><Ic n="db" />{t.source}{t.truncated ? " · first rows" : ""}</span>}>
-            <DataTable visual={{ type: "chart", title: t.title, columns: t.columns, rows: t.rows.slice(0, 50) } as any} />
-          </StepCard>
-        ))}
+        {(() => {
+          // R62: the answer leads - the key numbers, the charts and the findings - and the steps that computed it
+          // follow, folded to their titles (each step's rows and code one click away). A Guided analysis keeps
+          // its steps first: the person checks each one before the answer is written.
+          const resultsFirst = !stepwise && !!(ans?.headline || visuals.length || kpis.length);
+          const stepCards = () => steps.map((s, i) => (stepwise && s.status === "pending"
+            ? <WaitingStep key={s.id} n={next()} step={s} next={i === firstWaiting} />
+            : <DataStep key={s.id} n={next()} step={s} runId={run.id} canEdit={canEdit} showCode={showCode} onAsk={onPrefill} onChanged={changed} onError={setErr} busy={busy} removable={steps.length > 1}
+                canExplain={canExplain} currency={currency} collapsed={resultsFirst && !allOpen}
+                check={i === checkIdx} nextLabel={i === checkIdx ? (steps.slice(i + 1).some((x) => x.status !== "done") ? `Looks right, run step ${steps.findIndex((x, j) => j > i && x.status !== "done") + 1}` : "Looks right, write the answer") : undefined} />));
+          const resultCards = () => <>
+            {kpis.length > 0 && (
+              <StepCard n={next()} kind="metric" title={und.metric ? String(und.metric).replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()) : "The numbers"}
+                ask={{ label: "the key numbers", prefix: "About the key numbers", target: { kind: "kpis" }, runId: run.id, canExplain, onPrefill }}>
+                {und.method && <p className="sd-sub sd-method">{String(und.method).replace(/^./, (c) => c.toUpperCase()).replace(/\.?$/, ".")}</p>}
+                <div className="sd-kpitiles" data-sd-kpis="">
+                  {kpis.map((k) => <div key={k.label} className="t"><span>{k.label}</span><b>{k.display}</b></div>)}
+                </div>
+              </StepCard>
+            )}
+            {visuals.map(({ v, i }) => (
+              <StepCard key={`v${i}`} n={next()} kind="chart" title={(v as any).title || "Chart"}
+                ask={{ label: `the chart “${(v as any).title || "Chart"}”`, prefix: `About the chart “${(v as any).title || "Chart"}”`, target: { kind: "visual", index: i }, runId: run.id, canExplain, onPrefill }}
+                foot={(v as any).sources?.length ? <><span className="sd-proof"><span className="sd-dot good" />Counted from {(v as any).sources.join(", ")}</span></> : undefined}>
+                <ChartBody v={v} id={`${run.id}:sd${i}`} />
+              </StepCard>
+            ))}
+            {ans && (ans.headline || ans.answer) && (
+              <StepCard n={next()} kind="text" title="Findings" cls={res?.answer_stale ? "" : undefined}
+                badge={res?.answer_stale ? <span className="sd-chip warn">Being rewritten</span> : ans.written_by === "template" ? <span className="sd-chip">Written from the numbers</span> : null}
+                ask={{ label: "the findings", prefix: "About the findings", target: { kind: "answer" }, runId: run.id, canExplain, onPrefill }}>
+                <div className="sd-prose" data-sd-findings="">
+                  <p><b>{ans.headline}</b>{ans.answer && ans.answer !== ans.headline ? ` ${ans.answer}` : ""}</p>
+                  {(ans.causes || []).length > 0 && (
+                    <ol>{(ans.causes || []).slice(0, 6).map((c, i) => <li key={i}><b style={{ fontWeight: 600 }}>{c.title}</b>{c.amount ? <span className="sd-mono"> {c.amount}{c.share ? ` · ${c.share}` : ""}</span> : null}{c.detail ? ` — ${c.detail}` : ""}</li>)}</ol>
+                  )}
+                  {(ans.ruled_out || []).length > 0 && <p className="sd-sub" style={{ marginTop: 8 }}>Ruled out: {(ans.ruled_out || []).slice(0, 3).map((r) => r.title).join("; ")}</p>}
+                </div>
+              </StepCard>
+            )}
+          </>;
+          const evidenceCards = () => evidence.map((t, i) => (
+            <StepCard key={`e${t.id || i}`} n={next()} kind="table" title={t.title || "Table"}
+              acts={<button type="button" className="sd-tool sm" onClick={() => saveBlob(`${safeName(t.title)}.csv`, toCsv(t.columns.map((c) => c.name), t.rows))}><Ic n="dl" />CSV</button>}
+              foot={<span className="sd-chip"><Ic n="db" />{t.source}{t.truncated ? " · first rows" : ""}</span>}>
+              <DataTable visual={{ type: "chart", title: t.title, columns: t.columns, rows: t.rows.slice(0, 50) } as any} />
+            </StepCard>
+          ));
+          if (!resultsFirst) return <>{stepCards()}{resultCards()}{evidenceCards()}</>;
+          return <>
+            {resultCards()}
+            {steps.length > 0 && (
+              <div className="sd-sechead" data-sd-howhead="">
+                <b>How this was worked out</b><span className="sd-note">{steps.length} step{steps.length === 1 ? "" : "s"} · each one a query you can open, change or rerun</span>
+                <span className="sd-sp" />
+                <button type="button" className="sd-tool sm" onClick={() => setAllOpen((o) => !o)} data-sd-open-all="">{allOpen ? "Fold the steps" : "Open every step"}</button>
+              </div>
+            )}
+            {stepCards()}
+            {evidence.length > 0 && (
+              <div className="sd-sechead" data-sd-evhead="">
+                <b>The tables behind it</b><span className="sd-note">{evidence.length} table{evidence.length === 1 ? "" : "s"} the answer read</span>
+                <span className="sd-sp" />
+                <button type="button" className="sd-tool sm" onClick={() => setShowTables((o) => !o)} data-sd-show-tables="">{showTables ? "Hide them" : "Show them"}</button>
+              </div>
+            )}
+            {showTables && evidenceCards()}
+          </>;
+        })()}
         {!steps.length && !ans && !ended && run.status !== "needs_input" && !planning && !busy && <div className="sd-empty">This answer has no steps to show.</div>}
         {(res?.warnings || []).length > 0 && <div className="sd-note" style={{ marginLeft: 44 }}>{(res?.warnings || []).slice(0, 3).join(" · ")}</div>}
       </div>

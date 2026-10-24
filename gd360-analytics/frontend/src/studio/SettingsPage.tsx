@@ -159,7 +159,7 @@ export default function SettingsPage() {
             <Card title="Sign-in methods" sub="How people in this workspace sign in today.">
               <Row title="Email and password" sub="Passwords are hashed; a reset link expires after one use." right={<span className="sd-chip good"><span className="sd-dot good" />On</span>} />
               <Row title="Require two-step sign-in for everyone" sub="Members without it are asked to set it up before they continue." right={<Toggle on={!!policies?.require_mfa} disabled={!isAdmin || !policies} onChange={(v) => void setPolicy("require_mfa", v)} label="Require two-step sign-in" />} />
-              <Row title="Single sign-on (SAML) and SCIM provisioning" sub="Not available in GD360 yet. Tell your GD360 contact if your company needs it; we will not show a switch that does nothing." right={<span className="sd-chip">Not yet</span>} />
+              <Row title="Single sign-on (SAML) and SCIM provisioning" sub="Not available in Euliv yet. Tell your Euliv contact if your company needs it; we will not show a switch that does nothing." right={<span className="sd-chip">Not yet</span>} />
             </Card>
             <Card title="Your two-step sign-in" sub="An authenticator app code after your password."><div style={{ padding: "16px 20px" }}><TwoStepSection /></div></Card>
           </>}

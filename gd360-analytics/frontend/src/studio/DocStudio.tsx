@@ -102,7 +102,7 @@ export function DocStudio({ id, frame, version = 0, onAsk, onPrefill, onSource, 
   const secNow = rep?.sections.findIndex((x) => x.status === "writing") ?? -1;
   const lengthLabel = rep ? ({ brief: "Brief", standard: "Standard", detailed: "Detailed" } as const)[rep.length] : "";
   const status = writing ? `Writing${secNow >= 0 ? ` · section ${secNow + 1} of ${rep!.sections.length}: ${rep!.sections[secNow].title}` : "…"}`
-    : working ? "Saving…" : msg ? msg : doc ? `${rep ? `${lengthLabel} report · ` : ""}${doc.edited_by_person ? "Edited by you" : "Written by GD360"} · saved ${ago(doc.updated_at)}` : "";
+    : working ? "Saving…" : msg ? msg : doc ? `${rep ? `${lengthLabel} report · ` : ""}${doc.edited_by_person ? "Edited by you" : "Written by Euliv"} · saved ${ago(doc.updated_at)}` : "";
   const toc = rep && rep.sections.length > 2 ? (
     <nav className="dc-toc" aria-label="Contents" data-dc-toc="">
       <span className="h">Contents</span>
@@ -138,8 +138,8 @@ export function DocStudio({ id, frame, version = 0, onAsk, onPrefill, onSource, 
           <div>{c.body}</div>
           {c.block_id && (
             <button type="button" className="sd-pill sm" style={{ alignSelf: "flex-start" }} disabled={working}
-              onClick={() => { setSelId(c.block_id); void act(async () => (await docsApi.editBlock(id, c.block_id!, c.body)).document, "GD360 changed the part this comment is on"); }} data-sd-cm-ask="">
-              <Ic n="wand" s={14} />Ask GD360 to do it</button>
+              onClick={() => { setSelId(c.block_id); void act(async () => (await docsApi.editBlock(id, c.block_id!, c.body)).document, "Euliv changed the part this comment is on"); }} data-sd-cm-ask="">
+              <Ic n="wand" s={14} />Ask Euliv to do it</button>
           )}
           {c.replies.map((r) => <div key={r.id} className="rp"><span className="tm"><b style={{ color: "rgb(var(--color-text))" }}>{r.author.me ? "You" : r.author.name}</b> · {ago(r.created_at)}</span><span>{r.body}</span></div>)}
           <form onSubmit={(e) => { e.preventDefault(); const t = (reply[c.id] || "").trim(); if (!t) return; void docsApi.comment(id, { body: t, parent_id: c.id }).then((x) => { setComments(x); setReply({ ...reply, [c.id]: "" }); }); }}>

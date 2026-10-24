@@ -35,6 +35,23 @@ export default function WorkspacePage() {
   const [sort, setSort] = useState<"updated" | "name" | "type">("updated");
   const [page, setPage] = useState(0);
   const tab = (params.get("type") as Tab) || "all";
+  // R61: delete moves an item to the Bin (restorable for 7 days); the note offers Undo
+  const [binNote, setBinNote] = useState<{ item: Item; err?: string } | null>(null);
+  const toBin = async (i: Item) => {
+    try {
+      await api.delete(`/v2/items/${i.type}/${i.id}`);
+      setData((d) => d && { ...d, items: d.items.filter((x) => !(x.id === i.id && x.type === i.type)), total: d.total - 1,
+        counts: { ...d.counts, [i.type]: Math.max(0, (d.counts[i.type] || 1) - 1) } });
+      setBinNote({ item: i });
+    } catch (e: any) { setBinNote({ item: i, err: e?.response?.data?.detail || "Couldn't delete it." }); }
+  };
+  const undo = async (i: Item) => {
+    try {
+      await api.post(`/v2/bin/${i.type}/${i.id}/restore`);
+      setData((d) => d && { ...d, items: [i, ...d.items], total: d.total + 1, counts: { ...d.counts, [i.type]: (d.counts[i.type] || 0) + 1 } });
+      setBinNote(null);
+    } catch (e: any) { setBinNote({ item: i, err: e?.response?.data?.detail || "Couldn't restore it." }); }
+  };
   const setTab = (t: Tab) => { const n = new URLSearchParams(params); if (t === "all") n.delete("type"); else n.set("type", t); setParams(n, { replace: true }); setPage(0); };
 
   useEffect(() => {
@@ -66,6 +83,7 @@ export default function WorkspacePage() {
       <PageHead title="Library" sub={data ? `Everything your team has asked, built and shared. ${data.total.toLocaleString()} item${data.total === 1 ? "" : "s"}${spaces.length ? ` across ${spaces.length} Space${spaces.length === 1 ? "" : "s"}` : ""}.` : "Reading everything in this workspace…"}
         actions={<>
           <Link to="/library/folders" className="sd-pill"><Ic n="folder" />Folders</Link>
+          <Link to="/bin" className="sd-pill" data-ws-bin=""><Ic n="trash" />Bin</Link>
           <Link to="/data?tab=catalog" className="sd-pill">Import</Link>
           <Link to="/chat" className="sd-btnp" data-ws-new="">New</Link>
         </>} />
@@ -79,12 +97,21 @@ export default function WorkspacePage() {
         <select className="sdp-sel" value={sort} onChange={(e) => setSort(e.target.value as any)} aria-label="Sort"><option value="updated">View: Recently updated</option><option value="name">View: By name</option><option value="type">View: By type</option></select>
       </div>
       {err && <div className="sd-err">{err}</div>}
+      {binNote && (
+        <div className={binNote.err ? "sd-err" : "sd-note"} role="status" data-ws-binnote="" style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+          {binNote.err ? binNote.err : <>“{binNote.item.name}” is in the Bin. You can restore it for 7 days.</>}
+          <span className="sd-sp" />
+          {!binNote.err && <button type="button" className="sd-tool sm" onClick={() => undo(binNote.item)} data-ws-undo="">Undo</button>}
+          {!binNote.err && <Link to="/bin" className="sd-tool sm">Open the Bin</Link>}
+          <button type="button" className="sd-tool sm" aria-label="Dismiss" onClick={() => setBinNote(null)}><Ic n="x" s={13} /></button>
+        </div>
+      )}
       <div className="sd-card" style={{ overflow: "hidden" }} data-ws-table="">
         <div className="sd-tw">
           <table className="sd-t">
-            <thead><tr><th>Name</th><th>Type</th><th>Space</th><th>Owner</th><th>Status</th><th>Proof</th><th className="r">Updated</th></tr></thead>
+            <thead><tr><th>Name</th><th>Type</th><th>Space</th><th>Owner</th><th>Status</th><th>Proof</th><th className="r">Updated</th><th aria-label="Actions" /></tr></thead>
             <tbody>
-              {!data && Array.from({ length: 6 }).map((_, i) => <tr key={i}><td colSpan={7}><span className="c2-working" style={{ opacity: .5 }}>…</span></td></tr>)}
+              {!data && Array.from({ length: 6 }).map((_, i) => <tr key={i}><td colSpan={8}><span className="c2-working" style={{ opacity: .5 }}>…</span></td></tr>)}
               {shown.map((i) => (
                 <tr key={`${i.type}:${i.id}`} className="click" onClick={() => navigate(i.link)} data-ws-row={i.type}>
                   <td style={{ maxWidth: 420 }}><Link to={i.link} onClick={(e) => e.stopPropagation()} title={i.subtitle || i.name} style={{ fontWeight: 500 }}>{i.name}</Link>{i.subtitle && i.subtitle !== i.name && <span className="sd-sub" style={{ display: "block", fontSize: 12 }}>{i.subtitle}</span>}</td>
@@ -94,9 +121,15 @@ export default function WorkspacePage() {
                   <td><Status text={i.status.text} tone={i.status.tone} /></td>
                   <td>{i.proof ? <Proof text={i.proof.text} tone={i.proof.tone} /> : <span className="sd-sub">—</span>}</td>
                   <td className="r sd-sub" style={{ fontSize: 13.5 }}>{fmtWhen(i.updated_at)}</td>
+                  <td className="r" style={{ width: 44 }}>
+                    {i.type !== "initiative" && (
+                      <button type="button" className="sd-tool sm ws-del" aria-label={`Move “${i.name}” to the Bin`} title="Move to the Bin"
+                        onClick={(e) => { e.stopPropagation(); void toBin(i); }} data-ws-del=""><Ic n="trash" s={14} /></button>
+                    )}
+                  </td>
                 </tr>
               ))}
-              {data && rows.length === 0 && <tr><td colSpan={7}><div className="sd-empty">{items.length ? "Nothing matches these filters." : "Nothing here yet. Ask a question to make the first answer."}{!items.length && <Link to="/chat" className="sd-btnp">Ask a question</Link>}</div></td></tr>}
+              {data && rows.length === 0 && <tr><td colSpan={8}><div className="sd-empty">{items.length ? "Nothing matches these filters." : "Nothing here yet. Ask a question to make the first answer."}{!items.length && <Link to="/chat" className="sd-btnp">Ask a question</Link>}</div></td></tr>}
             </tbody>
           </table>
         </div>
