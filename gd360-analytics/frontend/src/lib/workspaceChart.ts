@@ -441,7 +441,7 @@ export function resolveWorkspaceChart(input: WorkspaceChartInput): ResolvedWorks
     if (special) {
       return { ...EMPTY, ...common, path: "native", native: special, figure: storedSpec ?? null, style: effectiveStyle(storedSpec, overrides) };
     }
-    if (!storedSpec) return { ...EMPTY, ...common, path: "table", table: { reason: `A ${model.chart_type.replace(/_/g, " ")} chart is built by GD360's analysis engine; its figure is not available here, so the rows are shown.` } };
+    if (!storedSpec) return { ...EMPTY, ...common, path: "table", table: { reason: `A ${model.chart_type.replace(/_/g, " ")} chart is built by Euliv's analysis engine; its figure is not available here, so the rows are shown.` } };
     return plotly(storedSpec, `a ${model.chart_type.replace(/_/g, " ")} chart has no rows-by-category form`, common);
   }
   if (input.truncated && !editing) {
