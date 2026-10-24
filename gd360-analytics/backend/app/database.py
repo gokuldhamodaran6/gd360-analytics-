@@ -43,6 +43,17 @@ def init_db():
 # creates any table that doesn't exist yet; this list is only for a new
 # COLUMN on a table that already exists in production.
 _NEW_COLUMNS = [
+    # 2026-10-24 (R61): the Bin
+    ("conversations", "trashed_at", "TIMESTAMP"),
+    ("conversations", "trashed_by", "TEXT"),
+    ("dashboards", "trashed_at", "TIMESTAMP"),
+    ("dashboards", "trashed_by", "TEXT"),
+    ("ml_models", "trashed_at", "TIMESTAMP"),
+    ("ml_models", "trashed_by", "TEXT"),
+    ("doc_documents", "trashed_at", "TIMESTAMP"),
+    ("doc_documents", "trashed_by", "TEXT"),
+    ("data_flows", "trashed_at", "TIMESTAMP"),
+    ("data_flows", "trashed_by", "TEXT"),
     # 2026-10-17 (R53): tasks that close themselves from evidence
     ("initiative_tasks", "auto_rule", "JSON"),
     ("initiative_tasks", "completed_by", "TEXT"),

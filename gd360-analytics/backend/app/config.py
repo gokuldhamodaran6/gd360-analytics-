@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # --- App ---
-    APP_NAME: str = "GD360 Analytics"
+    APP_NAME: str = "Euliv Analytics"
     ENVIRONMENT: str = "development"
     FRONTEND_ORIGIN: str = "http://localhost:5173"
 

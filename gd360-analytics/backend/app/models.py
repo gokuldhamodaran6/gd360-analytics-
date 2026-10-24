@@ -452,6 +452,9 @@ class Folder(Base):
 
 class Conversation(Base):
     __tablename__ = "conversations"
+    # R61: the Bin - set when the item is deleted; it is removed for good 7 days later (services/bin.py)
+    trashed_at = Column(DateTime, nullable=True)
+    trashed_by = Column(String, nullable=True)
 
     id = Column(String, primary_key=True, default=gen_uuid)
     owner_id = Column(String, ForeignKey("users.id"), nullable=False)
@@ -782,6 +785,9 @@ class Dashboard(Base):
     uses.
     """
     __tablename__ = "dashboards"
+    # R61: the Bin - set when the item is deleted; it is removed for good 7 days later (services/bin.py)
+    trashed_at = Column(DateTime, nullable=True)
+    trashed_by = Column(String, nullable=True)
 
     id = Column(String, primary_key=True, default=gen_uuid)
     owner_id = Column(String, ForeignKey("users.id"), nullable=False)
@@ -1847,6 +1853,9 @@ class MLModel(Base):
     never silently fix" discipline everywhere else.
     """
     __tablename__ = "ml_models"
+    # R61: the Bin - set when the item is deleted; it is removed for good 7 days later (services/bin.py)
+    trashed_at = Column(DateTime, nullable=True)
+    trashed_by = Column(String, nullable=True)
 
     id = Column(String, primary_key=True, default=gen_uuid)
     owner_id = Column(String, ForeignKey("users.id"), nullable=False)
@@ -3622,6 +3631,9 @@ class DocDocument(Base):
     `meta.allowed` the numbers it may state (every figure is re-checked against them); `history` the last versions
     of `blocks` for undo. Exports (Word, PDF, Markdown) are built from the same blocks."""
     __tablename__ = "doc_documents"
+    # R61: the Bin - set when the item is deleted; it is removed for good 7 days later (services/bin.py)
+    trashed_at = Column(DateTime, nullable=True)
+    trashed_by = Column(String, nullable=True)
 
     id = Column(String, primary_key=True, default=gen_uuid)
     owner_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
@@ -3794,6 +3806,9 @@ class DataFlow(Base):
       waiting for approval - {"id", "run_id", "cause", "summary", "changes", "diff", "created_at"}.
     """
     __tablename__ = "data_flows"
+    # R61: the Bin - set when the item is deleted; it is removed for good 7 days later (services/bin.py)
+    trashed_at = Column(DateTime, nullable=True)
+    trashed_by = Column(String, nullable=True)
 
     id = Column(String, primary_key=True, default=gen_uuid)
     owner_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
@@ -3855,3 +3870,8 @@ class DataFlowVersion(Base):
     note = Column(String, nullable=True)
     created_by = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# 2026-10-24 (R61): items in the Bin are hidden from every ORM query (services/bin.py)
+from .services import bin as _bin  # noqa: E402
+_bin.install()
