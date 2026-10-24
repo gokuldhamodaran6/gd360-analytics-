@@ -67,7 +67,7 @@ export function ChartTypeSheet({ editor, block }: { editor: DashboardEditor; blo
           <div className="text-ui text-muted">This block has no data to draw yet - build it first.</div>
         )}
         {block.config?.chart_auto && shape && (
-          <div className="text-caption text-muted" data-gallery-auto="">GD360 chose this form{block.config?.chart_reason ? `: ${block.config.chart_reason}` : ""}. Pick another and it stays as you set it.</div>
+          <div className="text-caption text-muted" data-gallery-auto="">Euliv chose this form{block.config?.chart_reason ? `: ${block.config.chart_reason}` : ""}. Pick another and it stays as you set it.</div>
         )}
         {(current === "bullet" || block.type === "gauge") && (
           <Field label="Target" id="chart-target" hint="The mark the value is compared with.">
