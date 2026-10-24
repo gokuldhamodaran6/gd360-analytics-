@@ -198,7 +198,7 @@ def _do_knowledge(db: Session, msg: models.Message, user: models.User) -> None:
 
 
 _CHAT_HELP = (
-    "I'm GD360. Ask me anything in plain words: a question about the world, a question about your data "
+    "I'm Euliv. Ask me anything in plain words: a question about the world, a question about your data "
     "(\"why are customers leaving\", \"revenue by region last quarter\"), a what-if, a forecast, \"make that a dashboard\", "
     "\"write the board review\", or \"alert me if churn goes above 3%\". Switch to Step by step when you want to see and "
     "change every step."
@@ -435,6 +435,11 @@ def _do_dashboard(db: Session, msg: models.Message, user: models.User) -> None:
         _set_state(db, msg, status="needs_input", text="Choose the data first: a dashboard is built from a table. Pick a source in the box below and ask again.",
                    finished_at=datetime.utcnow().isoformat() + "Z")
         return
+    # R61: on a warehouse (BigQuery, Snowflake, a database) every block is SQL computed where the data lives - the
+    # dashboard builder, never rows pulled into this server (150,000 rows of a wide table ran it out of memory)
+    from .. import dashboard_engine
+    if dashboard_engine.is_warehouse_native(db.get(models.DataSource, source_id)):
+        return _do_dashboard_warehouse(db, msg, user, conv, source_id, an)
     _set_state(db, msg, trail=[{"label": "Reading the table"}, {"label": "Designing the pages"}, {"label": "Computing every block"}])
     from .. import memguard
     try:
@@ -485,6 +490,39 @@ def _board_hints(spec: dict) -> str:
     if fl and fl[0].get("values"):
         hints.append(f"“filter to {fl[0]['values'][0]}”")
     return ", ".join(hints)
+
+
+def _do_dashboard_warehouse(db: Session, msg: models.Message, user: models.User, conv: models.Conversation, source_id: str,
+                            an: dict | None) -> None:
+    """R61: a dashboard on a warehouse source, computed in the warehouse. From the conversation's answers when it has
+    them (their steps become blocks, with KPIs, a trend and breakdowns added), else designed from the request and the
+    real schema (dashboard_builder.build_dashboard_from_goal). Every block is one SQL query run where the data lives."""
+    st = _state(msg)
+    _set_state(db, msg, trail=[{"label": "Planning the pages from the data"}, {"label": "Writing the SQL for every block"},
+                               {"label": "Computing in the warehouse"}])
+    if _last_run(db, conv) is not None or an is not None:
+        return _do_dashboard_blocks(db, msg, user)
+    from ...routers import dashboard_builder as dbr
+    ds = db.get(models.DataSource, source_id)
+    asked = [s.get("question") for s in (_state(m) for m in db.query(models.Message).filter(
+        models.Message.conversation_id == conv.id, models.Message.role == "assistant").order_by(models.Message.created_at.asc()).all())
+        if s.get("question")]
+    goal = "; ".join(dict.fromkeys(q for q in asked if q)) or (st.get("question") or "an overview of this data")
+    try:
+        dash, page_ids = dbr.build_dashboard_from_goal(db, user, ds, goal, name=st.get("name"), conversation_id=conv.id)
+    except HTTPException as e:
+        _set_state(db, msg, status="failed", error=str(e.detail), finished_at=datetime.utcnow().isoformat() + "Z")
+        return
+    artifact = {"type": "dashboard", "id": dash.id, "name": dash.name, "url": f"/dashboard-builder/{dash.id}",
+                "page_id": page_ids[0] if page_ids else None, "live": True}
+    _written_title(db, conv, st.get("question") or "", dash.name)
+    _set_state(db, msg, status="done", artifacts=[artifact],
+               text=f"“{dash.name}” is on the right, computed live in {ds.name}: every number is a query run in your warehouse, "
+                    "on all of its rows. Change it by saying so (“add revenue by region”, “make it dark”) or open it full-screen.",
+               chips=[{"key": "live", "ok": True, "label": f"Computed in {ds.name} · all rows"}],
+               trail=[{"label": "Planned the pages from the real columns"}, {"label": "Wrote and checked the SQL for every block"},
+                      {"label": "Computed in the warehouse"}],
+               finished_at=datetime.utcnow().isoformat() + "Z")
 
 
 def _do_dashboard_blocks(db: Session, msg: models.Message, user: models.User) -> None:

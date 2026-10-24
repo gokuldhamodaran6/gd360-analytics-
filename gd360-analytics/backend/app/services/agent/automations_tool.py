@@ -18,7 +18,7 @@ from .. import ai_engine
 from .. import automations as svc
 
 _SYSTEM = (
-    "GD360 AUTOMATION DRAFTER. Turn the person's sentence into an automation draft. Reply with JSON only:\n"
+    "Euliv AUTOMATION DRAFTER. Turn the person's sentence into an automation draft. Reply with JSON only:\n"
     '{"name": "<up to 8 words>", "kind": "threshold" | "schedule", '
     '"every": "hour"|"day"|"week"|"month" (schedule or the check frequency), "time": "HH:MM", "days": [0..6 Mon=0], '
     '"op": "below"|"above"|"drops_by"|"rises_by", "value": <number>, "kpi_hint": "<the number watched, in the person\'s words>", '
@@ -230,9 +230,9 @@ def sends_text(tell: dict) -> str:
     """R50: where the message goes, in words - "In GD360 and by email to you"."""
     parts = []
     if tell.get("in_app"):
-        parts.append("In GD360 (the bell)")
+        parts.append("In Euliv (the bell)")
     if tell.get("email"):
         parts.append("by email to " + (", ".join(tell["email"][:2]) if len(tell["email"]) > 1 else "you"))
     if tell.get("slack"):
         parts.append("Slack")
-    return (" and ".join(parts) if parts else "In GD360") + " · one short message naming what crossed the line"
+    return (" and ".join(parts) if parts else "In Euliv") + " · one short message naming what crossed the line"

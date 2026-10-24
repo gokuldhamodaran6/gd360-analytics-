@@ -30,7 +30,7 @@ SHARE_THIS = re.compile(r"\bshare\s+(this|it|the (analysis|conversation|brief|da
 _ID_COL = re.compile(r"(^|_)(id|ids|uuid|guid)$|^id_|_id_|clientnum|client_?num|customer_?(id|no|num|number)|account_?(id|no|num|number)|member_?(id|no)|^cust_?id", re.I)
 
 _SYSTEM = (
-    "GD360 TEAM DRAFTER. Read the sentence into a team draft. Reply with JSON only:\n"
+    "Euliv TEAM DRAFTER. Read the sentence into a team draft. Reply with JSON only:\n"
     '{"name": "<team name>", "members": ["<person names or emails>"], "sources": ["<data source names mentioned>"], '
     '"hidden_columns": ["<column words to hide, e.g. email, card_number>"], '
     '"row_rules": [{"column": "<column>", "values": ["<allowed value>"], "who": "<person or everyone>"}], '

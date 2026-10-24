@@ -19,7 +19,7 @@ from . import analysis
 settings = get_settings()
 
 _SYSTEM = (
-    "GD360 ANALYSIS WRITER. You write the prose of a data analysis for a business reader, from FINDINGS computed by code. "
+    "Euliv ANALYSIS WRITER. You write the prose of a data analysis for a business reader, from FINDINGS computed by code. "
     "Rules: every number you write must appear in FINDINGS exactly (same rounding); never invent, derive or round a number; "
     "lead with the finding, not the method; plain sentences, no markdown, no bullet lists, no headings; name groups the way "
     "FINDINGS names them; say 'historical' or 'associated with' - these are signals, not proven causes. "

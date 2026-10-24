@@ -411,7 +411,7 @@ def _model_rewrite(text: str, instruction: str, allowed: list[float]) -> str | N
     """A paragraph rewritten by the model, kept only when every number in it is in the findings."""
     try:
         raw = ai_engine._call_llm_resilient([
-            {"role": "system", "content": "GD360 DOCUMENT EDITOR. Rewrite ONE paragraph of a business document as asked. Keep every number "
+            {"role": "system", "content": "Euliv DOCUMENT EDITOR. Rewrite ONE paragraph of a business document as asked. Keep every number "
                                           "exactly as written; never add a number, a name or a claim that is not in the paragraph. Plain prose, "
                                           "no markdown. Reply with the new paragraph only."},
             {"role": "user", "content": f"Instruction: {instruction}\n\nParagraph:\n{plain(text)}"}], max_tokens=500)

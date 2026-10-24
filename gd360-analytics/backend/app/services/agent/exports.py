@@ -211,7 +211,7 @@ def deck(dash: models.Dashboard, page: models.DashboardPage, blocks: list[dict],
     s = prs.slides.add_slide(blank)
     paint(s)
     text(s, dash.name or "Dashboard", Inches(0.8), Inches(2.4), Inches(11.5), Inches(1.4), 40, bold=True)
-    text(s, f"{page.name} · exported {datetime.utcnow().strftime('%b %d, %Y %H:%M')} UTC · GD360", Inches(0.8), Inches(3.9), Inches(11.5), Inches(0.6), 16, muted)
+    text(s, f"{page.name} · exported {datetime.utcnow().strftime('%b %d, %Y %H:%M')} UTC · Euliv", Inches(0.8), Inches(3.9), Inches(11.5), Inches(0.6), 16, muted)
 
     for blk in blocks:
         s = prs.slides.add_slide(blank)

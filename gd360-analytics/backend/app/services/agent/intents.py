@@ -188,7 +188,7 @@ def route(question: str, *, has_sources: bool, source_names: list[str] | None = 
 
 
 _ROUTER_SYSTEM = (
-    "GD360 INTENT ROUTER. You read one message in a conversation with a data assistant and decide which tool answers it. "
+    "Euliv INTENT ROUTER. You read one message in a conversation with a data assistant and decide which tool answers it. "
     "Tools: knowledge (a question about the world, public facts, people, places, definitions, news); "
     "data (a question answered by querying the person's connected tables: totals, breakdowns, trends, comparisons, what-ifs); "
     "analysis (why an outcome happens, what drives it, who is at risk, predict who will churn/cancel/convert, recommend what to do - a deeper "

@@ -37,9 +37,9 @@ from .. import ai_engine
 from ..project_engine import numbers, present
 from . import docblocks
 
-PLANNER_MARK = "GD360 REPORT PLANNER"
-SECTION_MARK = "GD360 SECTION WRITER"
-SUMMARY_MARK = "GD360 REPORT SUMMARY"
+PLANNER_MARK = "Euliv REPORT PLANNER"
+SECTION_MARK = "Euliv SECTION WRITER"
+SUMMARY_MARK = "Euliv REPORT SUMMARY"
 
 LENGTHS: dict[str, dict] = {
     "brief": {"label": "Brief", "pages": "1 page", "words": "60-90", "sections": 3, "add": 0, "charts": 1},

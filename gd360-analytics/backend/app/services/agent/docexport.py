@@ -348,7 +348,7 @@ def docx_bytes(doc: dict) -> bytes:
                     r.font.size = Pt(9)
                     r.font.color.rgb = RGBColor(*MUTED)
     p = d.add_paragraph()
-    r = p.add_run(f"Every figure re-checked against the data before export · {doc.get('checked', 0)} checked · GD360")
+    r = p.add_run(f"Every figure re-checked against the data before export · {doc.get('checked', 0)} checked · Euliv")
     r.font.size = Pt(8)
     r.font.color.rgb = RGBColor(*MUTED)
     buf = io.BytesIO()
@@ -509,8 +509,8 @@ def pdf_bytes(doc: dict) -> bytes:
                 for i, s in enumerate(srcs):
                     story.append(Paragraph(esc(f"{i + 1}. {s['label']}" + (f" - {s['url']}" if s.get("url") else "")), sty["src"]))
     story.append(Spacer(1, 10))
-    story.append(Paragraph(esc(f"Every figure re-checked against the data before export · {doc.get('checked', 0)} checked · GD360"), sty["src"]))
+    story.append(Paragraph(esc(f"Every figure re-checked against the data before export · {doc.get('checked', 0)} checked · Euliv"), sty["src"]))
     buf = io.BytesIO()
     SimpleDocTemplate(buf, pagesize=A4, leftMargin=2.2 * cm, rightMargin=2.2 * cm, topMargin=2 * cm, bottomMargin=2 * cm,
-                      title=doc.get("title") or "Document", author="GD360").build(story)
+                      title=doc.get("title") or "Document", author="Euliv").build(story)
     return buf.getvalue()

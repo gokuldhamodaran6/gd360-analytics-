@@ -16,7 +16,7 @@ from ..project_engine import numbers
 from . import truth_guard
 
 _SYSTEM = (
-    "GD360 DOCUMENT WRITER. Write the document the person asked for, for a business reader, from the ANSWERS supplied "
+    "Euliv DOCUMENT WRITER. Write the document the person asked for, for a business reader, from the ANSWERS supplied "
     "(each with its question, headline, prose and key numbers). Use only numbers that appear in the answers; never "
     "invent a figure, a date or a name. Markdown: a title line starting with '# ', short section headings with '## ', "
     "paragraphs of plain prose, and a markdown table only where numbers compare. No bullet lists longer than 5 items. "
