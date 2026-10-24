@@ -1010,13 +1010,11 @@ def _start_data(db, conv, user, text, today, accepted, context_run_id, decision,
         last = _last_run(db, conv)
         context_run_id = last.id if last else None
     payload = projects_router.AskRequest(question=text, auto_run=not guided, route=not guided, understand=True, accepted=accepted or [],
-                                         context_run_id=context_run_id, today=(today or date.today()).isoformat(), guided=guided)
+                                         context_run_id=context_run_id, today=(today or date.today()).isoformat(), guided=guided,
+                                         v2_intent=decision if isinstance(decision, dict) else None)
     out = projects_router.ask(conv.id, payload, db=db, user=user)
     if out.get("kind") == "run":
         run = db.get(models.ProjectRun, out["run_id"])
-        run.plan = dict(run.plan or {}) | {"v2_intent": decision}
-        flag_modified(run, "plan")
-        db.commit()
         return _run_turn(db, run, conv, user, full=False)
     if out.get("kind") == "check":
         msg = _new_turn(db, conv, "check", text, status="needs_input", check=out["check"],
