@@ -852,7 +852,7 @@ function TellEditor({ draft, setTell, opts }: { draft: Draft; setTell: (p: Parti
         )}
       </div>
       {!(tell.slack_keep && !slackEdit) && (
-        <span className="text-caption text-muted -mt-1">In Slack: Apps › Incoming Webhooks › Add to a channel, then paste the link. GD360 stores it encrypted.</span>
+        <span className="text-caption text-muted -mt-1">In Slack: Apps › Incoming Webhooks › Add to a channel, then paste the link. Euliv stores it encrypted.</span>
       )}
 
       {teamsOpen ? (

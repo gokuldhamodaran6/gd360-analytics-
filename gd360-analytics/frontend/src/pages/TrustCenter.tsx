@@ -496,10 +496,10 @@ function SensitiveTab({ data, busy, fix }: { data: TrustOverview; busy: string |
   return (
     <div className="flex flex-col gap-4">
       <Banner>
-        GD360 finds personal data by column name in every source, and by sampling values in uploaded files. Live databases and warehouses are never queried for this.
+        Euliv finds personal data by column name in every source, and by sampling values in uploaded files. Live databases and warehouses are never queried for this.
         Hiding a column adds a rule for members and viewers - owners and admins still see it.
       </Banner>
-      {groups.length === 0 && <EmptyNote title="No personal data found">Nothing that looks like emails, phone numbers, names, addresses, pay or IDs. Add one by hand below if GD360 missed it.</EmptyNote>}
+      {groups.length === 0 && <EmptyNote title="No personal data found">Nothing that looks like emails, phone numbers, names, addresses, pay or IDs. Add one by hand below if Euliv missed it.</EmptyNote>}
       {groups.map(([dsId, cols]) => {
         const visible = cols.filter((c) => c.state === "visible" || c.state === "hidden_viewers");
         return (
@@ -523,7 +523,7 @@ function SensitiveTab({ data, busy, fix }: { data: TrustOverview; busy: string |
                     <tr key={c.id} className="border-b border-border last:border-b-0">
                       <td className="px-4 sm:px-5 py-3">
                         <div className="font-mono text-[12.5px] text-text">{c.table ? `${c.table}.` : ""}{c.column}</div>
-                        <div className="text-caption text-muted">{c.category_label} · {c.reason || "Found by GD360"}</div>
+                        <div className="text-caption text-muted">{c.category_label} · {c.reason || "Found by Euliv"}</div>
                       </td>
                       <td className="px-3 py-3">
                         <span className={`h-[22px] px-2 rounded-full border text-[11px] font-medium inline-flex items-center whitespace-nowrap ${STATE[c.state].cls}`}>{STATE[c.state].text}</span>
@@ -563,7 +563,7 @@ function SensitiveTab({ data, busy, fix }: { data: TrustOverview; busy: string |
         </button>
       )}
       <section className="rounded-card border border-border bg-surface p-4 sm:p-5 flex flex-col gap-3" aria-label="Mark a column as sensitive">
-        <div className="text-ui font-semibold text-text">GD360 missed one?</div>
+        <div className="text-ui font-semibold text-text">Euliv missed one?</div>
         <div className="grid gap-2 sm:grid-cols-[1fr_1fr_180px_auto] items-end">
           <Select aria-label="Source" value={addSrc} onChange={(e) => setAddSrc(e.target.value)} options={[{ value: "", label: "Pick a source…" }, ...data.access.map((a) => ({ value: a.id, label: a.name }))]} />
           <input className="input" placeholder="Column name, e.g. customer_mobile" value={addCol} onChange={(e) => setAddCol(e.target.value)} aria-label="Column name" />
@@ -919,7 +919,7 @@ function PrivacyTab({ workspaceId, onError, onNotice }: { workspaceId: string; o
 // --------------------------------------------------------------- policies --
 
 const POLICY_HELP: Record<string, string> = {
-  require_mfa: "Everyone in the workspace is asked to set up an authenticator app the next time they open GD360, and anyone without it shows as a risk.",
+  require_mfa: "Everyone in the workspace is asked to set up an authenticator app the next time they open Euliv, and anyone without it shows as a risk.",
   block_public_links: "Publishing a dashboard to \"anyone with the link\" is refused. Named-people links and the company domain still work.",
   external_email_needs_approval: "A member's automation that emails someone outside the company stays off until an owner or admin approves it.",
   domain_publish_needs_approval: "Members ask; owners and admins publish to the company domain right away.",

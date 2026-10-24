@@ -12,7 +12,7 @@ function Frame({ children, narrow = true }: { children: ReactNode; narrow?: bool
   return (
     <div className="min-h-screen bg-base text-text px-4 py-8 sm:py-14 flex justify-center">
       <div className={`w-full ${narrow ? "max-w-[480px]" : "max-w-[760px]"} flex flex-col gap-5`}>{children}
-        <div className="text-center text-caption text-muted pt-4">Powered by GD360</div>
+        <div className="text-center text-caption text-muted pt-4">Powered by Euliv</div>
       </div>
     </div>
   );

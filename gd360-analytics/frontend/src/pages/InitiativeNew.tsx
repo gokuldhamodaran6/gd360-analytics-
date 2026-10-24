@@ -64,7 +64,7 @@ export default function InitiativeNew() {
       if (!keyDate && p.key_date) setKeyDate(p.key_date);
       if (opts.instruction) setChange("");
     } catch (e) {
-      setError(errorText(e, "GD360 couldn't write the plan. Try again."));
+      setError(errorText(e, "Euliv couldn't write the plan. Try again."));
     } finally {
       setBusy(false);
     }
@@ -183,7 +183,7 @@ export default function InitiativeNew() {
             )}
 
             {plan && (
-              <Section title="Change something" sub="Say it in plain words - GD360 rewrites the plan.">
+              <Section title="Change something" sub="Say it in plain words - Euliv rewrites the plan.">
                 <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); if (change.trim()) draft({ instruction: change.trim() }); }}>
                   <input className="input text-ui" value={change} onChange={(e) => setChange(e.target.value)} placeholder="e.g. Budget is $10k, add a speaker dinner" maxLength={1000} aria-label="Change the plan" />
                   <button type="submit" className="btn-secondary text-sm shrink-0" disabled={busy || !change.trim()}>Apply</button>
@@ -206,7 +206,7 @@ export default function InitiativeNew() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <KindBadge kind={plan.kind} />
                     {plan.department && <span className="text-caption text-muted">{plan.department}</span>}
-                    <span className="ml-auto text-caption text-muted">{plan.ai ? "Written by GD360's planner" : "GD360's standard plan for this kind"}{plan.history_count ? ` · learned from ${plan.history_count} earlier` : ""}</span>
+                    <span className="ml-auto text-caption text-muted">{plan.ai ? "Written by Euliv's planner" : "Euliv's standard plan for this kind"}{plan.history_count ? ` · learned from ${plan.history_count} earlier` : ""}</span>
                   </div>
                   <input className="input !text-[20px] !font-semibold !py-2 !px-2.5 !bg-transparent !border-transparent hover:!border-border focus:!border-primary" value={plan.title}
                     onChange={(e) => { edits.current.title = e.target.value; setPlan({ ...plan, title: e.target.value }); }} aria-label="Title" data-plan-title="" />
@@ -237,7 +237,7 @@ export default function InitiativeNew() {
                   )}
                 </Section>
 
-                <Section title="Targets" sub="How success is measured. GD360 counts the ones marked automatic.">
+                <Section title="Targets" sub="How success is measured. Euliv counts the ones marked automatic.">
                   <div className="grid gap-3 sm:grid-cols-2" data-plan-targets="">
                     {plan.targets.map((t, idx) => (
                       <div key={t.key} className="rounded-ctl border border-border p-3 flex flex-col gap-1.5">
@@ -335,7 +335,7 @@ export default function InitiativeNew() {
                   </div>
                 </Section>
 
-                <Section title="Tools" sub="Native ones run inside GD360. Everything else is optional - import or link at any time.">
+                <Section title="Tools" sub="Native ones run inside Euliv. Everything else is optional - import or link at any time.">
                   <div className="grid gap-2.5 sm:grid-cols-2" data-plan-tools="">
                     {plan.tools.map((t) => {
                       const m = catalog?.tools[t.key];
@@ -369,7 +369,7 @@ export default function InitiativeNew() {
 
 export function ModeChip({ mode }: { mode: string }) {
   const map: Record<string, [string, string]> = {
-    native: ["In GD360", "text-good bg-good-fill border-good-border"],
+    native: ["In Euliv", "text-good bg-good-fill border-good-border"],
     connect: ["Connect", "text-primary bg-tint border-tint-border"],
     import: ["Import CSV", "text-secondary bg-surface2 border-border"],
     link: ["Link", "text-muted bg-surface2 border-border"],

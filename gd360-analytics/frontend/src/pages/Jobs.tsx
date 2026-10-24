@@ -505,7 +505,7 @@ export default function Jobs() {
               quality rules.
             </p>
             <p className="text-xs text-muted mt-2 max-w-2xl">
-              Both kinds of automation share the same clock: they only run while GD360&rsquo;s own server is
+              Both kinds of automation share the same clock: they only run while Euliv&rsquo;s own server is
               awake. If it&rsquo;s been idle for a while, the next scheduled run may fire a little late
               instead of exactly on time.
             </p>

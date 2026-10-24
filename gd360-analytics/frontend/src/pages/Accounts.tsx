@@ -345,7 +345,7 @@ function SourcesView({ ws, profile, reload, onError }: { ws: string; profile: Pr
           {profile ? <><CopyField value={profile.snippet} testId="sources-snippet" /><span className={`text-caption ${profile.tracking.live ? "text-good" : "text-muted"}`}>{profile.tracking.live ? `Reporting · last visit ${fmtDate(profile.tracking.last_visit_at)}` : "Waiting for the first visit"}</span></> : null}
         </Section>
       </div>
-      <Section title="Using another tool?" sub="Keep it. Everything comes in as a CSV export, and GD360 matches columns, companies and people for you.">
+      <Section title="Using another tool?" sub="Keep it. Everything comes in as a CSV export, and Euliv matches columns, companies and people for you.">
         <div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(280px,1fr))]">
           {OTHER.map(([t, d]) => <div key={t} className="rounded-ctl border border-border p-3"><div className="text-ui font-medium text-text">{t}</div><div className="text-caption text-secondary mt-0.5">{d}</div></div>)}
         </div>

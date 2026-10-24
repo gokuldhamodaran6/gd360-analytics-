@@ -76,7 +76,7 @@ export default function InviteJoin() {
       </div>
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-extrabold gradient-text">GD360 Analytics</h1>
+          <h1 className="text-3xl font-extrabold gradient-text">Euliv Analytics</h1>
         </div>
         <div className="card p-8 text-center">
           {loading && <div className="text-sm text-muted py-6">Loading invite&hellip;</div>}

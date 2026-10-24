@@ -322,7 +322,7 @@ function DashboardCard({
         onConfirm={doDelete}
         onCancel={() => setConfirmingDelete(false)}
       >
-        It's removed for everyone it's shared with{d.published ? ", and its published link stops working" : ""}. This can't be undone.
+        It's hidden for everyone it's shared with{d.published ? ", and its published link stops working" : ""}. It goes to the Bin, where you can restore it for 7 days.
       </ConfirmDialog>
     </div>
   );

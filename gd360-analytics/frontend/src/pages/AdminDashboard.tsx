@@ -740,7 +740,7 @@ export default function AdminDashboard() {
           <div>
             <h1 className="text-2xl font-bold">Admin dashboard</h1>
             <p className="text-muted mt-1 text-sm">
-              Everything real about how GD360 is being used - owner-only, live from the product database.
+              Everything real about how Euliv is being used - owner-only, live from the product database.
             </p>
           </div>
           <div className="flex items-center gap-3">

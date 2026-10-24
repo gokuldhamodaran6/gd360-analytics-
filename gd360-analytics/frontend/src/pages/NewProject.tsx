@@ -87,7 +87,7 @@ export default function NewProject() {
               <p className="text-sm text-muted max-w-md mx-auto leading-relaxed">
                 {isViewerHere
                   ? "You have view-only access to this workspace, so you can't start a new project here."
-                  : "Ask GD360 anything about your data. Connect a data source once you're ready to run it."}
+                  : "Ask Euliv anything about your data. Connect a data source once you're ready to run it."}
               </p>
             </div>
 

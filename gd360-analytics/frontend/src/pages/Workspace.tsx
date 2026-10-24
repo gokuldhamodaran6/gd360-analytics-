@@ -2527,7 +2527,7 @@ export default function Workspace() {
                   since this specific view is where they read as clutter
                   next to the chat, which already does everything they did
                   (a data-quality question, an access question, and so on
-                  are all just prompts the same "Ask GD360" chat on the left
+                  are all just prompts the same "Ask Euliv" chat on the left
                   answers directly). A catalog search result that still
                   links here with `?tab=metrics` (etc.) degrades gracefully
                   to the Data tab (see centerTab's own state-init comment
@@ -2912,7 +2912,7 @@ export default function Workspace() {
                 )}
                 {/* Warehouse-honesty round, for a warehouse-computed chart
                     only: the small result that came back (the ONLY data
-                    GD360 received - downloadable as CSV client-side), the
+                    Euliv received - downloadable as CSV client-side), the
                     exact SQL that ran (expanded here; collapsed in the
                     chat), and the one-line "how this was calculated"
                     footer with the real scanned bytes/time. See

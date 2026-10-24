@@ -50,7 +50,7 @@ export default function Flows() {
         navigate(`/automate/${r.id}`);
       }
     } catch (e) {
-      setErr(errorText(e, "GD360 couldn’t read those sources. Check they still connect, then try again."));
+      setErr(errorText(e, "Euliv couldn’t read those sources. Check they still connect, then try again."));
     } finally {
       setBusy(false);
     }
@@ -66,7 +66,7 @@ export default function Flows() {
   return (
     <ListPage data="pipelines" crumbs={[{ label: "Automate", to: "/automations" }, { label: "Pipelines" }]}>
       <div className="fl fl-list" data-flows-list="" style={{ padding: 0, maxWidth: "none", gap: 20 }}>
-        <PageHead title="Pipelines" sub="Describe a data job you do by hand - combining files, fixing typing mistakes, working out totals. GD360 reads the data, shows a plan, tests it on real rows and then runs it on schedule with checks that hold back bad data."
+        <PageHead title="Pipelines" sub="Describe a data job you do by hand - combining files, fixing typing mistakes, working out totals. Euliv reads the data, shows a plan, tests it on real rows and then runs it on schedule with checks that hold back bad data."
           actions={<>
             <Link to="/automations" className="sd-pill">Alerts and reports</Link>
             <button type="button" className="sd-btnp" onClick={() => document.getElementById("fl-ask")?.focus()} data-new-pipeline="">New pipeline</button>
@@ -85,7 +85,7 @@ export default function Flows() {
           <div className="bar">
             <button type="button" className={`fl-pill${showPick || picked.length ? " on" : ""}`} onClick={() => setShowPick((v) => !v)} aria-expanded={showPick} data-flow-pick-toggle="">
               {I.db && <span style={{ width: 15, height: 15, display: "inline-flex" }}>{I.db}</span>}
-              {picked.length ? `${picked.length} source${picked.length > 1 ? "s" : ""} picked` : "GD360 picks the sources"}
+              {picked.length ? `${picked.length} source${picked.length > 1 ? "s" : ""} picked` : "Euliv picks the sources"}
             </button>
             <span style={{ flex: 1 }} />
             <span className="fl-lbl hide-sm">Ctrl ↵</span>
@@ -93,7 +93,7 @@ export default function Flows() {
           </div>
           {(showPick || picker) && (
             <div style={{ borderTop: "1px solid var(--fl-line)", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }} data-flow-picker="">
-              <span className="fl-sub">{picker?.message || "Pick the sources to use, or leave it to GD360."}</span>
+              <span className="fl-sub">{picker?.message || "Pick the sources to use, or leave it to Euliv."}</span>
               {pickFrom.length === 0 ? (
                 <span className="fl-sub">No data yet. <Link to="/data" style={{ color: "var(--fl-brand)" }}>Connect or upload a source</Link> first.</span>
               ) : (
@@ -118,7 +118,7 @@ export default function Flows() {
 
         <section className="fl-steps4" aria-label="How it works">
           <div><b><span className="fl-num">1</span>You ask</b>In plain words: where from, what out, how often.</div>
-          <div><b><span className="fl-num">2</span>Check the plan</b>GD360 reads the real data and lists every fix and check.</div>
+          <div><b><span className="fl-num">2</span>Check the plan</b>Euliv reads the real data and lists every fix and check.</div>
           <div><b><span className="fl-num">3</span>Test it</b>On today’s real rows. Nothing is saved.</div>
           <div><b><span className="fl-num">4</span>Turn it on</b>It runs on schedule and holds back bad data.</div>
         </section>

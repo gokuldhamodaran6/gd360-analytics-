@@ -56,7 +56,7 @@ const STEPS = [
     body: (
       <>
         Open a <strong>SQL worksheet</strong> as an admin (or ask whoever manages your Snowflake account to run
-        this) - it creates a role that can only ever read, and a dedicated login for GD360:
+        this) - it creates a role that can only ever read, and a dedicated login for Euliv:
       </>
     ),
     sql: SETUP_SQL,
@@ -75,7 +75,7 @@ const STEPS = [
     body: (
       <>
         Enter the account identifier, warehouse, database, schema (optional), and the{" "}
-        <strong>gd360_service_user</strong> username/password into GD360, then click{" "}
+        <strong>gd360_service_user</strong> username/password into Euliv, then click{" "}
         <strong>Test &amp; connect</strong>.
       </>
     ),
@@ -88,16 +88,16 @@ export default function HelpSnowflake() {
       <div className="max-w-2xl mx-auto px-4 sm:px-6 py-10">
         <div className="flex items-center justify-between mb-8">
           <Link to="/" className="font-bold text-lg tracking-tight">
-            GD360 <span className="text-primary">Analytics</span>
+            Euliv <span className="text-primary">Analytics</span>
           </Link>
           <ThemeToggle />
         </div>
 
         <div className="mb-8">
           <div className="text-xs font-semibold uppercase tracking-wide text-primary mb-2">Data warehouse setup</div>
-          <h1 className="text-2xl sm:text-3xl font-bold leading-tight mb-3">How to connect Snowflake to GD360</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold leading-tight mb-3">How to connect Snowflake to Euliv</h1>
           <p className="text-sm text-muted leading-relaxed">
-            GD360 uses a <strong>read-only Snowflake user</strong> - not your own login. Takes about 5 minutes.
+            Euliv uses a <strong>read-only Snowflake user</strong> - not your own login. Takes about 5 minutes.
           </p>
         </div>
 
@@ -119,13 +119,13 @@ export default function HelpSnowflake() {
         </div>
 
         <div className="mt-8 text-xs text-muted bg-surface2 border border-border rounded-lg p-4 leading-relaxed">
-          GD360 never asks for your own Snowflake login. This user is <strong>read-only</strong> - revoke it anytime
+          Euliv never asks for your own Snowflake login. This user is <strong>read-only</strong> - revoke it anytime
           by running <strong>DROP USER gd360_service_user;</strong> in Snowflake.
         </div>
 
         <div className="mt-8 text-center">
           <Link to="/" className="text-sm font-medium text-primary hover:underline">
-            &larr; Back to GD360
+            &larr; Back to Euliv
           </Link>
         </div>
       </div>

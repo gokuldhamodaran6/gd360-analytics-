@@ -347,7 +347,7 @@ export default function Automations() {
           )}
           {data && !data.email_ready && items.some((i) => i.kind === "automation" || i.kind === "alert") && (
             <Banner tone="warning">
-              Email isn't switched on for this GD360 server yet, so email deliveries are recorded but not sent. Slack and Teams work now.
+              Email isn't switched on for this Euliv server yet, so email deliveries are recorded but not sent. Slack and Teams work now.
               <span className="text-muted"> (The server needs RESEND_API_KEY or SMTP settings, plus EMAIL_FROM.)</span>
             </Banner>
           )}

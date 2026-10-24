@@ -289,7 +289,7 @@ function Thread({ flow, onFlow, onTab, onFocusRun, reload, setErr, busy, act }: 
         {flow.thread.map((m) => <Message key={m.id} m={m} flow={flow} onTab={onTab} onFocusRun={onFocusRun} />)}
         {sending && <div className="fl-u">{sending}</div>}
         {(sending || flow.running) && (
-          <div className="fl-g"><div className="fl-who"><Mark />GD360</div>
+          <div className="fl-g"><div className="fl-who"><Mark />Euliv</div>
             <div className="fl-st"><span className="fl-typing"><span /><span /><span /></span>{flow.running ? (flow.running.reason === "test" ? "Testing on today’s real data…" : "Running…") : "Thinking…"}</div>
           </div>
         )}
@@ -300,8 +300,8 @@ function Thread({ flow, onFlow, onTab, onFocusRun, reload, setErr, busy, act }: 
             {suggestions(flow).map((s) => <button key={s} type="button" className="fl-pill" onClick={() => send(s)} disabled={!!sending}>{s}</button>)}
           </div>
           <form className="fl-cmp" onSubmit={(e) => { e.preventDefault(); send(); }}>
-            <label htmlFor="fl-msg" style={{ position: "absolute", left: -9999 }}>Message GD360</label>
-            <textarea id="fl-msg" rows={1} value={text} onChange={(e) => setText(e.target.value)} placeholder="Ask, or tell GD360 what to change"
+            <label htmlFor="fl-msg" style={{ position: "absolute", left: -9999 }}>Message Euliv</label>
+            <textarea id="fl-msg" rows={1} value={text} onChange={(e) => setText(e.target.value)} placeholder="Ask, or tell Euliv what to change"
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} data-flow-input="" />
             <button type="submit" className="fl-send" disabled={!text.trim() || !!sending} aria-label="Send">{I.up}</button>
           </form>
@@ -316,7 +316,7 @@ function Message({ m, flow, onTab, onFocusRun }: { m: Msg; flow: Flow; onTab: (t
   const d = m.data || {};
   return (
     <div className="fl-g" data-msg-kind={m.kind}>
-      <div className="fl-who"><Mark />GD360<time>{timeOf(m.at)}</time></div>
+      <div className="fl-who"><Mark />Euliv<time>{timeOf(m.at)}</time></div>
       {m.kind === "read" && (
         <>
           {(d.sources || []).map((s: any) => <div className="fl-st" key={s.label}>{I.check}{s.label}{s.rows != null && <em>{fmtNum(s.rows)} rows</em>}</div>)}

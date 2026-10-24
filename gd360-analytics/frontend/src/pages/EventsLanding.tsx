@@ -15,7 +15,7 @@ const TYPES: [string, string][] = [
   ["Meetups", "Small and solo-run. One phone, no setup, a report card the next morning."],
 ];
 const TRUTH: [string, string, string][] = [
-  ["Counted", "Scans, sign-ups, syncs - GD360 saw it happen.", "rgb(var(--color-good))"],
+  ["Counted", "Scans, sign-ups, syncs - Euliv saw it happen.", "rgb(var(--color-good))"],
   ["Matched", "A post or a deal tied to the event by a rule you can read.", "rgb(var(--color-kind-analysis))"],
   ["Typed", "A number someone entered. Shown in amber, never mixed in quietly.", "rgb(var(--color-warning))"],
   ["Modelled", "A forecast or a lift, always with its range.", "rgb(var(--color-kind-alert))"],
@@ -29,7 +29,7 @@ export default function EventsLanding() {
           <span className="w-8 h-8 rounded-[10px] grid place-items-center bg-primary text-on-primary" aria-hidden>
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3.5" y="5" width="17" height="15" rx="2.5" /><path d="M8 3v4M16 3v4M3.5 10h17" /></svg>
           </span>
-          <span className="font-semibold tracking-tight">GD360 Events</span>
+          <span className="font-semibold tracking-tight">Euliv Events</span>
         </Link>
         <nav className="flex items-center gap-2">
           <ThemeToggle />
@@ -86,7 +86,7 @@ export default function EventsLanding() {
         <section className="grid gap-8 lg:grid-cols-[1fr_1.2fr] items-start">
           <div className="flex flex-col gap-3">
             <h2 className="m-0 text-[24px] font-semibold tracking-tight">Numbers that say how true they are</h2>
-            <p className="m-0 text-ui text-secondary leading-relaxed">Event reports mix what was counted with what someone typed into a spreadsheet. GD360 Events keeps them apart, so the board sees which numbers to trust.</p>
+            <p className="m-0 text-ui text-secondary leading-relaxed">Event reports mix what was counted with what someone typed into a spreadsheet. Euliv Events keeps them apart, so the board sees which numbers to trust.</p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             {TRUTH.map(([t, d, c]) => (
@@ -104,7 +104,7 @@ export default function EventsLanding() {
           <Link to="/start?product=events" className="btn-primary">Start free</Link>
         </section>
       </main>
-      <footer className="px-4 sm:px-8 py-8 border-t border-border text-caption text-muted text-center">GD360 Events is part of GD360. <Link to="/" className="hover:text-text underline">gd360</Link> · <Link to="/privacy" className="hover:text-text underline">Privacy</Link></footer>
+      <footer className="px-4 sm:px-8 py-8 border-t border-border text-caption text-muted text-center">Euliv Events is part of Euliv. <Link to="/" className="hover:text-text underline">gd360</Link> · <Link to="/privacy" className="hover:text-text underline">Privacy</Link></footer>
     </div>
   );
 }

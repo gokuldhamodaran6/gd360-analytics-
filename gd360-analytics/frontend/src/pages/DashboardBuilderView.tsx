@@ -26,7 +26,7 @@ import { useDashboardAppearance } from "../dashboard/theme/useAppearanceEditor";
 // 2026-10-11 (Explain & Alerts): Ask AI beside the dashboard - explain any
 // chart, ask about the page, and alerts GD360 drafts for you. It only reads
 // what the page shows; editing and the builder are untouched.
-import { AskAIButton, AskSeed, DashboardAskAI, NoticedBanner, useBoardWatch } from "../components/DashboardAskAI";
+import { AlertHeaderButton, AskAIButton, AskSeed, DashboardAskAI, NoticedBanner, useBoardWatch } from "../components/DashboardAskAI";
 
 // 2026-09-25d (elite pass): the dashboard builder/editor - the exact page
 // Gokul's own screenshots of the live app's edit mode were taken from -
@@ -1507,7 +1507,8 @@ function DashboardBuilderViewBody({
   const [askSeed, setAskSeed] = useState<AskSeed>(null);
   const boardWatch = useBoardWatch(dash.id, activePage?.id, !isEditing && run.ready);
 
-  const tabs = (
+  // R61: a one-page dashboard has no tab bar, so no empty 52px row above the content either
+  const tabs = !isEditing && (dash.pages?.length ?? 0) < 2 ? null : (
     <PageTabsBar
       dash={isEditing ? dash : { ...dash, can_edit: false }}
       activePageId={activePage?.id}
@@ -1593,6 +1594,7 @@ function DashboardBuilderViewBody({
         headerExtra={
           <>
             {logoUrl && <img src={logoUrl} alt="" className="h-8 w-auto max-w-[140px] object-contain rounded-md" />}
+            {!isEditing && <AlertHeaderButton onClick={() => { setAskSeed({ kind: "prefill", text: "Alert me when " }); setAskOpen(true); }} />}
             {!isEditing && <AskAIButton onClick={() => setAskOpen(true)} alerts={boardWatch.data?.alerts.length || 0} />}
             {/* The owner's More menu - while viewing and while editing:
                 the dashboard's appearance is not a layout edit. */}

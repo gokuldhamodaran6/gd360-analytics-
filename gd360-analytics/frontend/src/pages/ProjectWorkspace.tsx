@@ -521,7 +521,7 @@ export default function ProjectWorkspace() {
               </span>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              {/* 2026-10-14 (R46): the same thread in the GD360 2.0 conversation */}
+              {/* 2026-10-14 (R46): the same thread in the Euliv 2.0 conversation */}
               {projectId && <Link to={`/chat/${projectId}`} className="btn-secondary text-sm" data-open-in-chat="">Open in chat</Link>}
               <NotificationBell />
               <ThemeToggle />
@@ -783,7 +783,7 @@ function WhatNext({ studioHref, studioSource, onGuided, guiding, onCreate }: { s
         <KindPill kind="dashboard" />
         <span className="flex flex-col gap-0.5 min-w-0">
           <span className="text-ui font-semibold text-text">Create a dashboard</span>
-          <span className="text-caption text-muted leading-snug">Live, with filters — the same kind as every dashboard in GD360.</span>
+          <span className="text-caption text-muted leading-snug">Live, with filters — the same kind as every dashboard in Euliv.</span>
         </span>
       </button>
     </div>
@@ -810,7 +810,7 @@ function ThreadItem({
       >
         <div className="flex items-center gap-2">
           <span className="w-[22px] h-[22px] rounded-[7px] bg-tint grid place-items-center text-brand-ink text-[11px]" aria-hidden="true">✦</span>
-          <span className="text-ui font-semibold text-text">GD360</span>
+          <span className="text-ui font-semibold text-text">Euliv</span>
           <span className="text-caption text-muted">
             {run.status === "planning" && "· planning"}
             {run.status === "running" && `· working${run.duration_seconds ? ` · ${Math.round(run.duration_seconds)} s` : ""}`}

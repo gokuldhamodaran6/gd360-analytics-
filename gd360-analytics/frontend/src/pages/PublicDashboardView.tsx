@@ -288,7 +288,7 @@ export default function PublicDashboardView() {
             <div className="flex items-center gap-2.5">
               {logoUrl && <img src={logoUrl} alt="" className="h-7 w-auto max-w-[140px] object-contain" />}
               <Link to="/" className="font-bold text-lg tracking-tight">
-                GD360 <span className="text-primary">Analytics</span>
+                Euliv <span className="text-primary">Analytics</span>
               </Link>
             </div>
           )}
@@ -342,10 +342,10 @@ export default function PublicDashboardView() {
               viewerToken={viewerToken}
             />
 
-            {/* White-label: no GD360 upsell footer on a customer's own domain. */}
+            {/* White-label: no Euliv upsell footer on a customer's own domain. */}
             {!byHostname && (
               <div className="mx-6 mt-6 pt-6 border-t border-border text-xs text-muted flex items-center justify-between flex-wrap gap-2 print:hidden">
-                <span>Built with GD360 Analytics</span>
+                <span>Built with Euliv Analytics</span>
                 <Link to="/register" className="text-primary font-medium hover:underline">Build your own dashboard &rarr;</Link>
               </div>
             )}

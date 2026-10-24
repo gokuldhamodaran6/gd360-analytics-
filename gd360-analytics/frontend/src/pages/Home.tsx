@@ -356,7 +356,7 @@ export default function Home() {
   const night = now.getHours() < 6 || now.getHours() >= 19;
   const subline = sources === null || noSources
     ? hello.line
-    : `Ask anything about ${chosenSpace ? chosenSpace.name : "your business"}. GD360 checks ${sourceCount} connected source${sourceCount === 1 ? "" : "s"} and shows its working.`;
+    : `Ask anything about ${chosenSpace ? chosenSpace.name : "your business"}. Euliv checks ${sourceCount} connected source${sourceCount === 1 ? "" : "s"} and shows its working.`;
 
   return (
     <div className="dash-shell flex min-h-screen">
@@ -516,7 +516,7 @@ export default function Home() {
             )}
             {noSources && !attached && (
               <p className="m-0 -mt-3 text-ui text-muted text-center max-w-[620px]" data-home-nodata="">
-                No data connected yet - ask anyway: GD360 can model, simulate and calculate from the question alone. <Link to="/data" className="text-kind-answer hover:underline">Connect data</Link> for answers about your business.
+                No data connected yet - ask anyway: Euliv can model, simulate and calculate from the question alone. <Link to="/data" className="text-kind-answer hover:underline">Connect data</Link> for answers about your business.
               </p>
             )}
             {error && <div role="alert" className="text-ui text-danger -mt-2">{error}</div>}

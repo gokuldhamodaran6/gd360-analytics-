@@ -102,7 +102,7 @@ export default function Initiatives({ events = false }: { events?: boolean } = {
       {brain && !events && (
         <div className="sdp-sidecard" data-brain-card="">
           <span className="sd-lbl">Business brain</span>
-          <span style={{ fontSize: 13.5 }}>{brain.about || "Tell GD360 what you do, and every plan starts from it."}</span>
+          <span style={{ fontSize: 13.5 }}>{brain.about || "Tell Euliv what you do, and every plan starts from it."}</span>
           <span className="sd-sub" style={{ fontSize: 12 }}>{brain.industry_label ? `${brain.industry_label} · ` : ""}{brain.facts.length} facts from {brain.sources.length} source{brain.sources.length === 1 ? "" : "s"}{brain.website ? ` · ${brain.website.replace(/^https?:\/\//, "")}` : ""}</span>
           <Link to="/initiatives/autopilot" className="sd-pill sm" style={{ alignSelf: "flex-start" }} data-open-brain="">{brain.about ? "Open" : "Set it up"}</Link>
         </div>
@@ -110,7 +110,7 @@ export default function Initiatives({ events = false }: { events?: boolean } = {
     </div>
   );
   return (
-    <ListPage data="initiatives" crumbs={[{ label: events ? "GD360 Events" : "Initiatives", to: "/initiatives" }, { label: events ? "Events" : "Portfolio" }]} side={side}>
+    <ListPage data="initiatives" crumbs={[{ label: events ? "Euliv Events" : "Initiatives", to: "/initiatives" }, { label: events ? "Events" : "Portfolio" }]} side={side}>
       <PageHead title={events ? "Events" : "Portfolio"}
         sub={events ? "In-person events, webinars and meetups - registration, check-in, the live floor and the A–Z report, tracked by themselves."
           : "Events, campaigns, launches, hiring and programs - each measured against its targets, with evidence."}
@@ -151,7 +151,7 @@ export default function Initiatives({ events = false }: { events?: boolean } = {
       </div>
       {!hub ? <Skeleton rows={4} /> : list.length === 0 ? (
         <Empty title={filter === "done" ? "Nothing finished yet" : "No initiatives yet"}
-          body="Plan an event, a webinar, a campaign, a hiring push or a product build. GD360 sets the targets and tracks the numbers for you."
+          body="Plan an event, a webinar, a campaign, a hiring push or a product build. Euliv sets the targets and tracks the numbers for you."
           action={<button type="button" className="sd-btnp" onClick={() => start()}>Plan the first one</button>} />
       ) : (
         <div className="sd-card" style={{ overflow: "hidden" }} data-initiative-grid="">

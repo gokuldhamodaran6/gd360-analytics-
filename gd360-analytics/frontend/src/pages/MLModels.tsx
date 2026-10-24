@@ -139,7 +139,7 @@ export default function MLModels() {
             <div className="dash-card p-8 text-center">
               <div className="text-sm text-muted mb-1 leading-relaxed">No ML models yet.</div>
               <div className="text-xs text-muted leading-relaxed max-w-md mx-auto mb-4">
-                Pick a data source, choose a column to predict, and GD360 will train and evaluate a real model
+                Pick a data source, choose a column to predict, and Euliv will train and evaluate a real model
                 for you - typically in a few seconds.
               </div>
               <button type="button" className="btn-primary text-sm" onClick={() => setShowWizard(true)}>

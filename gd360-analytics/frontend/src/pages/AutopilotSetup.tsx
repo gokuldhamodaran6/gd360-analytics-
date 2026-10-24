@@ -30,7 +30,7 @@ export default function AutopilotSetup() {
           <div className="flex flex-col gap-1.5 min-w-0">
             <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">Initiatives · Autopilot</span>
             <h1 className="m-0 text-[24px] font-semibold tracking-tight text-text">Autopilot setup</h1>
-            <p className="m-0 text-ui text-secondary max-w-[680px]">What GD360 knows about your business, where it sends the morning digest, which platforms it talks to, and the agents that do the work inside your policy.</p>
+            <p className="m-0 text-ui text-secondary max-w-[680px]">What Euliv knows about your business, where it sends the morning digest, which platforms it talks to, and the agents that do the work inside your policy.</p>
           </div>
           <div className="flex gap-2 items-center flex-wrap">
             <ThemeToggle />
@@ -288,9 +288,9 @@ function CrewView({ ws, onError }: { ws: string; onError: (s: string) => void })
         )}
       </Section>
       <div className="grid gap-5 lg:grid-cols-2 items-start">
-        <Section title="MCP server" sub="Other agents (Claude, ChatGPT, your own) can read your initiatives with your GD360 token. Read-only.">
+        <Section title="MCP server" sub="Other agents (Claude, ChatGPT, your own) can read your initiatives with your Euliv token. Read-only.">
           <CopyField value={mcpUrl} label="MCP URL" testId="mcp" />
-          <span className="text-caption text-muted">Streamable HTTP, JSON responses. Send <code className="font-mono">Authorization: Bearer &lt;your GD360 token&gt;</code>. Tools: {crew?.mcp.tools.join(", ") || "…"}.</span>
+          <span className="text-caption text-muted">Streamable HTTP, JSON responses. Send <code className="font-mono">Authorization: Bearer &lt;your Euliv token&gt;</code>. Tools: {crew?.mcp.tools.join(", ") || "…"}.</span>
         </Section>
         <Section title="Did the pace ranges hold?" sub="On finished initiatives: the 80% range at the halfway point against where each target really landed.">
           {!bt ? <div className="h-24 rounded-ctl bg-surface2 animate-pulse" /> : bt.tested === 0 ? <p className="m-0 text-ui text-muted">Nothing finished with enough daily history yet. This fills in as initiatives finish.</p> : (

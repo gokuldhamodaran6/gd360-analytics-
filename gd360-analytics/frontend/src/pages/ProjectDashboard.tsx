@@ -257,7 +257,7 @@ export default function ProjectDashboard() {
                   <div className="rounded-card border border-kind-dashboard-border bg-kind-dashboard-fill p-4 flex flex-wrap items-center gap-3" data-classic-banner="">
                     <KindPill kind="dashboard">Classic</KindPill>
                     <span className="flex-1 min-w-[240px] text-ui text-text leading-snug">
-                      Every dashboard in GD360 is now the full kind — live filters, cross-filter, canvas and publishing. Upgrade keeps this link, name and sharing.
+                      Every dashboard in Euliv is now the full kind — live filters, cross-filter, canvas and publishing. Upgrade keeps this link, name and sharing.
                     </span>
                     <button
                       type="button"

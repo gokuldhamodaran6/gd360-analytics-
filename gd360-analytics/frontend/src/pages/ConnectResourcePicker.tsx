@@ -81,7 +81,7 @@ const REASON_MESSAGE: Record<string, string> = {
   access_denied: "Access wasn't approved, so nothing was connected.",
   missing_code: "The sign-in didn't finish - please try again.",
   bad_state: "This sign-in link expired or was already used - please try again.",
-  token_exchange: "GD360 couldn't complete the sign-in with the details it got back - please try again.",
+  token_exchange: "Euliv couldn't complete the sign-in with the details it got back - please try again.",
 };
 
 function timeAgo(iso: string | null): string {
@@ -103,7 +103,7 @@ function Shell({ children }: { children: React.ReactNode }) {
       <div className="max-w-xl mx-auto px-4 sm:px-6 py-10">
         <div className="flex items-center justify-between mb-8">
           <Link to="/" className="font-bold text-lg tracking-tight">
-            GD360 <span className="text-primary">Analytics</span>
+            Euliv <span className="text-primary">Analytics</span>
           </Link>
           <ThemeToggle />
         </div>
@@ -146,7 +146,7 @@ function ErrorPanel({ failedProvider, reason }: { failedProvider: string; reason
         <div className="font-bold text-lg mb-1">Couldn't connect{PROVIDER_LABEL[failedProvider] ? ` ${PROVIDER_LABEL[failedProvider]}` : ""}</div>
         <p className="text-sm text-muted mb-6">{REASON_MESSAGE[reason] || "Something went wrong during sign-in."}</p>
         <button type="button" className="btn-primary" onClick={() => navigate("/")}>
-          Back to GD360
+          Back to Euliv
         </button>
       </div>
     </Shell>
@@ -173,7 +173,7 @@ function GooglePicker({ connectionId }: { connectionId: string }) {
       return;
     }
     if (!PICKER_API_KEY) {
-      setLoadError("Google Sheets picker isn't fully set up yet - ask GD360's admin to finish the Google Picker setup.");
+      setLoadError("Google Sheets picker isn't fully set up yet - ask Euliv's admin to finish the Google Picker setup.");
       return;
     }
     let cancelled = false;
@@ -244,7 +244,7 @@ function GooglePicker({ connectionId }: { connectionId: string }) {
         <div className="text-xs font-semibold uppercase tracking-wide text-primary mb-2">Live connection</div>
         <h1 className="text-2xl font-bold leading-tight mb-2">Pick a Google Sheet to connect</h1>
         <p className="text-sm text-muted leading-relaxed">
-          GD360 will read this live - any edits you make show up here automatically, with nothing to re-upload.
+          Euliv will read this live - any edits you make show up here automatically, with nothing to re-upload.
         </p>
       </div>
 
@@ -256,7 +256,7 @@ function GooglePicker({ connectionId }: { connectionId: string }) {
         ) : (
           <>
             <p className="text-sm text-muted mb-4">
-              Google will open its own window so you can choose the exact spreadsheet you want GD360 to read.
+              Google will open its own window so you can choose the exact spreadsheet you want Euliv to read.
             </p>
             <button type="button" className="btn-primary w-full" onClick={openPicker} disabled={!pickerReady}>
               {pickerReady ? "Choose a spreadsheet" : "Getting ready..."}
@@ -367,7 +367,7 @@ function ResourcePicker({ provider, connectionId }: { provider: string; connecti
         <div className="text-xs font-semibold uppercase tracking-wide text-primary mb-2">Live connection</div>
         <h1 className="text-2xl font-bold leading-tight mb-2">Pick a {providerLabel.toLowerCase()} to connect</h1>
         <p className="text-sm text-muted leading-relaxed">
-          GD360 will read this live - any edits you make show up here automatically, with nothing to re-upload.
+          Euliv will read this live - any edits you make show up here automatically, with nothing to re-upload.
         </p>
       </div>
 
@@ -409,7 +409,7 @@ function ResourcePicker({ provider, connectionId }: { provider: string; connecti
 
         {selected && (
           <div className="mt-5 pt-5 border-t border-border">
-            <label className="text-sm text-muted mb-1 block">Name in GD360</label>
+            <label className="text-sm text-muted mb-1 block">Name in Euliv</label>
             <input className="input mb-3" value={name} onChange={(e) => setName(e.target.value)} placeholder={selected.name} />
             {finishError && (
               <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2 mb-3">{finishError}</div>

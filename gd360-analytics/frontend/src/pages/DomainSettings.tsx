@@ -51,7 +51,7 @@ export default function DomainSettings() {
             <Eyebrow>Settings · {data?.workspace.name || ""}</Eyebrow>
             <h1 className="m-0 text-[28px] sm:text-[34px] font-bold tracking-tight text-text leading-none">Company domain</h1>
             <p className="m-0 text-body text-secondary max-w-[70ch]">
-              Publish dashboards on your own address. They look exactly like they do here, and people sign in with their GD360 account — no other app, no redirect.
+              Publish dashboards on your own address. They look exactly like they do here, and people sign in with their Euliv account — no other app, no redirect.
             </p>
           </header>
           {notice && <Banner tone="good" action={<button type="button" className="text-caption text-muted hover:text-text" onClick={() => setNotice("")}>Dismiss</button>}>{notice}</Banner>}
@@ -254,7 +254,7 @@ function StatusCard({ data, dom, onChanged, onError, onNotice }: { data: DomainP
               </div>
             )}
             <div className="text-caption text-muted leading-relaxed">
-              Using Cloudflare? Set the CNAME to “DNS only” (grey cloud) until the domain is live. New records can take up to an hour to show; GD360 keeps the setup until you remove it.
+              Using Cloudflare? Set the CNAME to “DNS only” (grey cloud) until the domain is live. New records can take up to an hour to show; Euliv keeps the setup until you remove it.
             </div>
           </div>
         )}
@@ -474,7 +474,7 @@ function Publications({ data, onChanged, onError, onNotice }: { data: DomainPage
             }
           }}
         >
-          The address stops working at once and Monday emails for it stop. The dashboard itself stays in GD360.
+          The address stops working at once and Monday emails for it stop. The dashboard itself stays in Euliv.
         </ConfirmDialog>
       )}
     </section>
@@ -645,7 +645,7 @@ function LookSettings({ dom, onSaved, onError }: { dom: CompanyDomain; onSaved: 
             checked={dom.show_powered_by}
             disabled={busy === "pb"}
             onChange={(v) => run("pb", () => domainsApi.update(dom.id, { show_powered_by: v }))}
-            label="Show “Powered by GD360” at the bottom"
+            label="Show “Powered by Euliv” at the bottom"
           />
         </div>
         <div className="flex flex-col gap-2">
@@ -660,7 +660,7 @@ function LookSettings({ dom, onSaved, onError }: { dom: CompanyDomain; onSaved: 
               {[0, 1, 2].map((i) => <div key={i} className="h-12 rounded-ctl bg-surface border border-border" />)}
               <div className="col-span-3 h-20 rounded-ctl bg-surface border border-border" />
             </div>
-            {dom.show_powered_by && <div className="px-4 pb-3 text-[11px] text-faint">Powered by GD360</div>}
+            {dom.show_powered_by && <div className="px-4 pb-3 text-[11px] text-faint">Powered by Euliv</div>}
           </div>
         </div>
       </div>
@@ -698,7 +698,7 @@ function DangerZone({ dom, count, onRemoved, onError }: { dom: CompanyDomain; co
           }
         }}
       >
-        {count ? `${count} dashboard${count === 1 ? "" : "s"} stop opening at once, and their view history and Monday emails are deleted.` : "Nothing is published on it."} The dashboards themselves stay in GD360.
+        {count ? `${count} dashboard${count === 1 ? "" : "s"} stop opening at once, and their view history and Monday emails are deleted.` : "Nothing is published on it."} The dashboards themselves stay in Euliv.
       </ConfirmDialog>
     </section>
   );

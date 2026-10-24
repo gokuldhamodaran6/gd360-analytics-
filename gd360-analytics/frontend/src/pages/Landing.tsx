@@ -215,19 +215,19 @@ const FEATURES = [
   {
     accent: 0,
     title: "Ask. See it built.",
-    body: "Describe what you want, in plain English. GD360 picks the right chart from 30+ types, shapes the data, and renders it — live. No SQL. No drag-and-drop builder.",
+    body: "Describe what you want, in plain English. Euliv picks the right chart from 30+ types, shapes the data, and renders it — live. No SQL. No drag-and-drop builder.",
     Icon: PromptToChartIcon,
   },
   {
     accent: 1,
     title: "Dashboards that build themselves.",
-    body: "Describe the goal and GD360 plans, builds and lays out a multi-page dashboard from your real data. Scheduled refresh, your own branding, a password-protected link or your own domain.",
+    body: "Describe the goal and Euliv plans, builds and lays out a multi-page dashboard from your real data. Scheduled refresh, your own branding, a password-protected link or your own domain.",
     Icon: DashboardGridIcon,
   },
   {
     accent: 2,
     title: "Real SQL. Your own warehouse.",
-    body: "Postgres, MySQL, SQL Server, MongoDB, Supabase, BigQuery, Snowflake — GD360 writes governed, read-only queries and runs them directly inside your own systems. Every query cost-capped and logged.",
+    body: "Postgres, MySQL, SQL Server, MongoDB, Supabase, BigQuery, Snowflake — Euliv writes governed, read-only queries and runs them directly inside your own systems. Every query cost-capped and logged.",
     Icon: WarehouseIcon,
   },
   {
@@ -341,7 +341,7 @@ const TRUST_POINTS = [
   {
     accent: 3,
     title: "Read-only. Always.",
-    body: "GD360 never modifies your data. Credentials are encrypted, and every outbound IP address is published — so IT signs off before you connect.",
+    body: "Euliv never modifies your data. Credentials are encrypted, and every outbound IP address is published — so IT signs off before you connect.",
   },
   {
     accent: 4,
@@ -502,7 +502,7 @@ export default function Landing() {
           <span className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-on-primary font-bold text-sm shrink-0">
             G
           </span>
-          <span className="text-[16px] sm:text-lg font-extrabold gradient-text">GD360 Analytics</span>
+          <span className="text-[16px] sm:text-lg font-extrabold gradient-text">Euliv Analytics</span>
         </Link>
         <div className="flex items-center gap-2 sm:gap-3">
           <ThemeToggle />
@@ -576,7 +576,7 @@ export default function Landing() {
           </h1>
           <p className="text-muted text-[16px] sm:text-lg mt-6 max-w-2xl mx-auto leading-relaxed">
             A solo founder gets an analyst on call. An analytics team gets the repeatable work off its plate.
-            GD360 connects to your database or warehouse, writes the governed SQL, builds the dashboard, and checks
+            Euliv connects to your database or warehouse, writes the governed SQL, builds the dashboard, and checks
             its own math — live. No SQL. No Python. No code. Just less busywork, and more time for the calls only
             a person should make.
           </p>
@@ -707,7 +707,7 @@ export default function Landing() {
             showing vision of our product to all users and visitors."
             Grounded entirely in the same honest positioning this file has
             used throughout: the gap it names (data trapped behind an
-            analyst backlog) is the real reason GD360 automates the
+            analyst backlog) is the real reason Euliv automates the
             repeatable work, not an invented pain point. */}
         <div className="text-center max-w-2xl mx-auto mb-10">
           <span className="text-[11px] font-bold tracking-[0.15em] text-accent">WHY WE BUILT THIS</span>
@@ -716,12 +716,12 @@ export default function Landing() {
           </h2>
           <p className="text-muted mt-4 leading-relaxed">
             The data exists. The question exists. What&rsquo;s missing is the hour of an analyst&rsquo;s time it
-            takes to connect the two — so it sits in a backlog, or never gets asked. GD360 automates that hour: the
+            takes to connect the two — so it sits in a backlog, or never gets asked. Euliv automates that hour: the
             querying, the chart-building, the double-checking. Not the judgment calls. Those stay yours.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mt-8 text-left">
             {[
-              { accent: 0, title: "No black boxes.", body: "Every step GD360 takes — every query, every cleanup rule — is written out in plain English before you see a result." },
+              { accent: 0, title: "No black boxes.", body: "Every step Euliv takes — every query, every cleanup rule — is written out in plain English before you see a result." },
               { accent: 2, title: "No busywork.", body: "The repeatable work of a data team automated. The judgment calls left to yours." },
               { accent: 4, title: "No gatekeeping.", body: "Every feature, unlimited, on the free plan. Access to your own data shouldn't have a seat limit." },
             ].map((v) => (
@@ -747,7 +747,7 @@ export default function Landing() {
             connectionKindMeta components the hero connector strip and the
             app's own "Connect data" picker use; the four hub chips name
             exactly the four things PLATFORM_PILLARS/FEATURES already
-            claim GD360 does; the three outputs are the three surfaces the
+            claim Euliv does; the three outputs are the three surfaces the
             product actually renders (chart, dashboard, checked answer). */}
         <div className="dash-card dash-card--glass p-6 sm:p-10 mb-10">
           <div className="text-center mb-10">
@@ -779,7 +779,7 @@ export default function Landing() {
 
             {/* Engine hub */}
             <div className="text-center w-full sm:w-[220px] shrink-0">
-              <div className="text-[10px] font-semibold tracking-widest text-muted mb-3">GD360 ENGINE</div>
+              <div className="text-[10px] font-semibold tracking-widest text-muted mb-3">Euliv ENGINE</div>
               <div className="relative dash-card p-5" style={{ animation: "landing-hub-pulse 3.2s ease-in-out infinite" }}>
                 <div
                   aria-hidden
@@ -846,7 +846,7 @@ export default function Landing() {
             <span className="text-[11px] font-bold tracking-[0.15em] text-accent">ONE PLATFORM, THREE DISCIPLINES</span>
             <h2 className="text-2xl sm:text-3xl font-bold mt-3 tracking-tight">Not a chart tool. A data team.</h2>
             <p className="text-muted mt-3 leading-relaxed">
-              GD360 automates the repeatable, well-defined work of a data engineer, a data scientist, and an
+              Euliv automates the repeatable, well-defined work of a data engineer, a data scientist, and an
               analyst — the same way every serious data platform does — and leaves the judgment calls to your team.
             </p>
           </div>
@@ -905,7 +905,7 @@ export default function Landing() {
               className="dash-card dash-card--accented p-6"
               style={{ "--dash-card-accent-color": "rgb(var(--color-primary))" } as CSSProperties}
             >
-              <div className="text-xs font-bold tracking-widest text-accent mb-4">WITH GD360</div>
+              <div className="text-xs font-bold tracking-widest text-accent mb-4">WITH Euliv</div>
               <ul className="space-y-3.5">
                 {[
                   "Ask in plain English. Get it built live.",
@@ -985,7 +985,7 @@ export default function Landing() {
       {/* ---- Footer ---- */}
       <div className="border-t border-border mt-4">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 flex flex-wrap items-center justify-between gap-3 text-sm text-muted">
-          <div>&copy; {new Date().getFullYear()} GD360 Analytics. All rights reserved.</div>
+          <div>&copy; {new Date().getFullYear()} Euliv Analytics. All rights reserved.</div>
           <Link to="/privacy" className="hover:text-text hover:underline">
             Privacy Policy
           </Link>

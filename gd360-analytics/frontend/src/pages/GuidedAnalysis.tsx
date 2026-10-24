@@ -718,7 +718,7 @@ export default function GuidedAnalysis() {
                     {(run.status === "planning" || !run.steps) && <PlanningCard question={run.question} />}
                     {run.status === "failed" && !steps.length && (
                       <div className="rounded-card border border-danger-border bg-danger-fill p-5">
-                        <div className="text-section font-semibold text-text">GD360 couldn't plan this question</div>
+                        <div className="text-section font-semibold text-text">Euliv couldn't plan this question</div>
                         <p className="m-0 mt-1.5 text-ui text-secondary">{run.error || "Something went wrong."}</p>
                         {canEdit && <button type="button" className="btn-secondary text-sm mt-4" onClick={() => suggest(run.question)}>Ask it again</button>}
                       </div>
@@ -728,7 +728,7 @@ export default function GuidedAnalysis() {
                     )}
                     {(run.plan?.assumptions || []).length > 0 && steps.length > 0 && (
                       <details className="rounded-card border border-border bg-surface px-4 py-3 text-ui text-secondary">
-                        <summary className="cursor-pointer text-muted">How GD360 read this question · {run.plan!.assumptions.length} assumption{run.plan!.assumptions.length === 1 ? "" : "s"}</summary>
+                        <summary className="cursor-pointer text-muted">How Euliv read this question · {run.plan!.assumptions.length} assumption{run.plan!.assumptions.length === 1 ? "" : "s"}</summary>
                         <ul className="m-0 mt-2 pl-5 flex flex-col gap-1">
                           {run.plan!.assumptions.map((a, i) => <li key={i}>{a}</li>)}
                         </ul>
@@ -823,7 +823,7 @@ function Turn({
       >
         <div className="flex items-center gap-2 text-caption text-muted">
           <GdMark />
-          <span className="text-ui font-semibold text-text">GD360</span>
+          <span className="text-ui font-semibold text-text">Euliv</span>
           <span className="truncate">
             {run.status === "planning" && "· writing the plan"}
             {run.status === "planned" && steps.length > 0 && (working ? "· working" : `· step ${Math.max(1, currentNo)} of ${steps.length}`)}
@@ -1022,7 +1022,7 @@ function PlanningCard({ question }: { question: string }) {
         <span className="text-section font-semibold text-text">Writing the plan</span>
       </div>
       {question && <p className="m-0 text-ui text-secondary">“{question}”</p>}
-      <p className="m-0 text-caption text-muted">GD360 reads your sources, splits the question into steps you can check, and runs the first one. You decide every step after that.</p>
+      <p className="m-0 text-caption text-muted">Euliv reads your sources, splits the question into steps you can check, and runs the first one. You decide every step after that.</p>
     </section>
   );
 }
@@ -1126,7 +1126,7 @@ function StepCard({
           <span className={`font-mono text-caption pt-1 w-6 shrink-0 ${isCurrent ? "text-kind-analysis" : "text-muted"}`}>{String(number).padStart(2, "0")}</span>
           <span className="flex flex-col gap-1 min-w-0">
             <span className="text-[17px] font-semibold text-text leading-snug">{step.title}</span>
-            <span className="text-caption text-muted">{meta}{step.repaired ? " · GD360 fixed the query once" : ""}</span>
+            <span className="text-caption text-muted">{meta}{step.repaired ? " · Euliv fixed the query once" : ""}</span>
           </span>
         </button>
         <span className={`h-6 px-2.5 rounded-full text-[12px] inline-flex items-center shrink-0 ${pill.cls}`}>{pill.text}</span>
@@ -1163,7 +1163,7 @@ function StepCard({
                 {t}
               </button>
             ))}
-            {busy("revise") && <span className="text-caption text-muted">GD360 is rewriting this step…</span>}
+            {busy("revise") && <span className="text-caption text-muted">Euliv is rewriting this step…</span>}
           </div>
           {(step.edits || []).length > 0 && (
             <span className="text-caption text-muted">Changed by you: {(step.edits || []).slice(-2).join(" · ")}</span>

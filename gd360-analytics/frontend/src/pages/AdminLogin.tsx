@@ -55,7 +55,7 @@ export default function AdminLogin() {
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-extrabold gradient-text">GD360 Analytics</h1>
+          <h1 className="text-3xl font-extrabold gradient-text">Euliv Analytics</h1>
           <p className="text-muted mt-2">Owner-only admin sign in.</p>
         </div>
         {mfaToken ? (

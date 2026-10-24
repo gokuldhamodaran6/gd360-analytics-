@@ -353,7 +353,7 @@ export default function MLStudioProject() {
                   />
                   {pd && pd.sample_rows_looked_at > 0 ? (
                     <ScaleTile
-                      label="Came back to GD360"
+                      label="Came back to Euliv"
                       value={bytesText(pd.model_bytes ?? pd.bytes_back)}
                       exact={pd.model_bytes ?? pd.bytes_back}
                       note={`sums and a score histogram · plus ${pd.sample_rows_looked_at.toLocaleString()} rows to read the column types`}
@@ -496,7 +496,7 @@ export default function MLStudioProject() {
                 <TrustCard title="Where it ran" lines={[
                   inWarehouse ? `Inside ${sqlWhere}: every pass was one SELECT over the rows where they live.` : `Inside ${sqlWhere}, over every row of this exact version of the data.`,
                   pd ? (pd.sample_rows_looked_at > 0
-                    ? `${pd.passes} queries · ${bytesText(pd.bytes_back)} back · GD360 looked at ${pd.sample_rows_looked_at.toLocaleString()} rows only to read the column types.`
+                    ? `${pd.passes} queries · ${bytesText(pd.bytes_back)} back · Euliv looked at ${pd.sample_rows_looked_at.toLocaleString()} rows only to read the column types.`
                     : `${pd.passes} queries · ${bytesText(pd.bytes_back)} back · not one of your rows left ${sqlWhere}: every query returned sums, counts or a histogram.`) : "",
                 ]} />
                 <TrustCard title="Reproducible" lines={[
@@ -506,7 +506,7 @@ export default function MLStudioProject() {
                   "Every query is in the run's Code tab; the notebook replays the model in Python and DuckDB.",
                 ]} />
                 <TrustCard icon title="Governed" lines={[
-                  "Read-only SQL through GD360's warehouse guard, with your access rules in every WHERE.",
+                  "Read-only SQL through Euliv's warehouse guard, with your access rules in every WHERE.",
                   inWarehouse ? "Every pass is in the query log and counts towards the daily scan budget." : "Runs in the read-only sandbox; no file or network access.",
                 ]} />
               </section>

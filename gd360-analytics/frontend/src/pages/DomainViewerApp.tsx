@@ -82,7 +82,7 @@ export default function DomainViewerApp({ site: initialSite }: { site: Site }) {
         <footer className="border-t border-border">
           <div className="max-w-[1320px] mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-3 text-caption text-muted flex-wrap">
             <span>{site.title}</span>
-            <span>Powered by GD360</span>
+            <span>Powered by Euliv</span>
           </div>
         </footer>
       )}
@@ -470,7 +470,7 @@ function AuthCard({ site, subtitle, children }: { site: Site; subtitle?: string;
           {subtitle && <div className="text-ui text-muted">{subtitle}</div>}
         </div>
         <div className="rounded-card border border-border bg-surface p-6 sm:p-7 shadow-card">{children}</div>
-        <div className="text-center text-caption text-faint">Your GD360 account works on every company's GD360 site.</div>
+        <div className="text-center text-caption text-faint">Your Euliv account works on every company's Euliv site.</div>
       </div>
     </main>
   );
@@ -542,7 +542,7 @@ function SignIn({ host, site, onDone }: { host: string; site: Site; onDone: () =
           </label>
           {hint && <div className="text-caption text-muted -mt-1">{hint}</div>}
           <button className="btn-primary w-full" type="submit" disabled={busy || !email.trim()}>{busy ? "Sending…" : "Send me a code"}</button>
-          <div className="text-caption text-muted text-center">New here? The code creates your GD360 account.</div>
+          <div className="text-caption text-muted text-center">New here? The code creates your Euliv account.</div>
         </form>
       )}
       {mode === "code" && codeSent && (
@@ -571,7 +571,7 @@ function SignIn({ host, site, onDone }: { host: string; site: Site; onDone: () =
           {hint && <div className="text-caption text-muted -mt-1">{hint}</div>}
           <button className="btn-primary w-full" type="submit" disabled={busy || !email.trim() || !password}>{busy ? "Signing in…" : "Sign in"}</button>
           {!site.sign_in.email_code && (
-            <div className="text-caption text-muted text-center">No GD360 account? <button type="button" className="text-primary hover:underline" onClick={() => setMode("create")}>Create one</button></div>
+            <div className="text-caption text-muted text-center">No Euliv account? <button type="button" className="text-primary hover:underline" onClick={() => setMode("create")}>Create one</button></div>
           )}
         </form>
       )}

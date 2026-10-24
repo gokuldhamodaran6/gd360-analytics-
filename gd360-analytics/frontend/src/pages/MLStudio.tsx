@@ -115,7 +115,7 @@ export default function MLStudio() {
   const go = () => {
     const q = scope();
     if (!q) {
-      setHint("Pick the main table first - GD360 then finds the tables that share a key with it.");
+      setHint("Pick the main table first - Euliv then finds the tables that share a key with it.");
       return;
     }
     if (goal.trim()) q.set("goal", goal.trim());
@@ -132,18 +132,18 @@ export default function MLStudio() {
 
   const scopeNote = (() => {
     if (mode === "all")
-      return `GD360 looks across all ${new Set(tables.map((t) => t.source_id)).size || "your"} sources you can use, picks the table that fits your goal and can join others on a shared key - you see the plan before anything trains.`;
+      return `Euliv looks across all ${new Set(tables.map((t) => t.source_id)).size || "your"} sources you can use, picks the table that fits your goal and can join others on a shared key - you see the plan before anything trains.`;
     if (mode === "space") {
       if (!spaces?.length) return "Spaces group the sources one team works from. Make one on the Data page, then train on everything in it.";
       if (!space) return "Pick a Space.";
       if (!space.sources.length) return `The ${space.name} Space has no sources yet - add one on the Data page.`;
       const names = space.sources.map((s) => s.name);
       const list = names.length > 4 ? `${names.slice(0, 4).join(", ")} and ${names.length - 4} more` : names.join(", ").replace(/, ([^,]*)$/, " and $1");
-      return `GD360 looks across ${list}, picks the table that fits your goal, and can join others on a shared key - you see the join before anything trains.`;
+      return `Euliv looks across ${list}, picks the table that fits your goal, and can join others on a shared key - you see the join before anything trains.`;
     }
     if (mode === "source")
-      return `GD360 reads the whole table${limits ? ` - up to ${limits.max_rows.toLocaleString()} rows on this server` : ""} - and says so if it has to stop early. Never a silent sample.`;
-    if (mode === "join") return "Pick the main table; GD360 finds the tables that share a key with it, shows how many rows match and what is lost before anything trains.";
+      return `Euliv reads the whole table${limits ? ` - up to ${limits.max_rows.toLocaleString()} rows on this server` : ""} - and says so if it has to stop early. Never a silent sample.`;
+    if (mode === "join") return "Pick the main table; Euliv finds the tables that share a key with it, shows how many rows match and what is lost before anything trains.";
     return "A file is profiled the moment it lands - types, empties, dates - so the plan is ready in seconds.";
   })();
 
@@ -177,7 +177,7 @@ export default function MLStudio() {
               Predict, forecast and discover — from any data you have
             </h1>
             <p className="m-0 text-body text-secondary">
-              Say what you want to know and what to learn from: a file, one source, several sources joined, or a whole Space. GD360 picks the method, tests
+              Say what you want to know and what to learn from: a file, one source, several sources joined, or a whole Space. Euliv picks the method, tests
               every model on rows it never saw and tells you what it left out and why.
             </p>
           </header>
@@ -253,7 +253,7 @@ export default function MLStudio() {
                   <>
                     <label htmlFor="ml-from-home" className="sr-only">Table to learn from</label>
                     <select id="ml-from-home" value={from} onChange={(e) => setFrom(e.target.value)} className={SELECT}>
-                      <option value="">Let GD360 choose from all your data</option>
+                      <option value="">Let Euliv choose from all your data</option>
                       {tables.map((t) => (
                         <option key={`${t.source_id}::${t.table}`} value={`${t.source_id}::${t.table}`}>{t.source} · {t.table}</option>
                       ))}
@@ -322,7 +322,7 @@ export default function MLStudio() {
             <section className="flex flex-col gap-3" aria-labelledby="ml-ideas">
               <div className="flex items-baseline justify-between gap-3 flex-wrap">
                 <h2 id="ml-ideas" className="m-0 text-[18px] font-semibold text-text">Start from your data</h2>
-                <span className="text-caption text-muted">GD360 reads each table's columns and suggests what it can learn</span>
+                <span className="text-caption text-muted">Euliv reads each table's columns and suggests what it can learn</span>
               </div>
               <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 360px), 1fr))" }}>
                 {ideaTables.map((t) => (

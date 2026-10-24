@@ -285,7 +285,7 @@ export default function MLModelDetail() {
 
   const runDelete = async () => {
     if (!id || !model) return;
-    if (!window.confirm(`Delete "${model.name}"? This can't be undone.`)) return;
+    if (!window.confirm(`Move "${model.name}" to the Bin? You can restore it there for 7 days.`)) return;
     setDeleting(true);
     try {
       await mlModelsApi.delete(id);
@@ -630,7 +630,7 @@ export default function MLModelDetail() {
                           </div>
                           {featurePreview.excluded.length > 0 && (
                             <div className="mt-3 text-xs text-muted bg-surface2 border border-border rounded-lg p-3">
-                              <div className="font-semibold text-text mb-1">Columns GD360 can&rsquo;t use, and why</div>
+                              <div className="font-semibold text-text mb-1">Columns Euliv can&rsquo;t use, and why</div>
                               <ul className="space-y-0.5">
                                 {featurePreview.excluded.map((e) => (
                                   <li key={e.column}><span className="font-medium text-text">{e.column}</span>: {e.reason}</li>

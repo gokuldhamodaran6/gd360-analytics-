@@ -81,7 +81,7 @@ const STEPS = [
     title: "Paste and connect",
     body: (
       <>
-        Paste both IDs and the JSON key into GD360, then click <strong>Test &amp; connect</strong>.
+        Paste both IDs and the JSON key into Euliv, then click <strong>Test &amp; connect</strong>.
       </>
     ),
   },
@@ -93,16 +93,16 @@ export default function HelpBigQuery() {
       <div className="max-w-2xl mx-auto px-4 sm:px-6 py-10">
         <div className="flex items-center justify-between mb-8">
           <Link to="/" className="font-bold text-lg tracking-tight">
-            GD360 <span className="text-primary">Analytics</span>
+            Euliv <span className="text-primary">Analytics</span>
           </Link>
           <ThemeToggle />
         </div>
 
         <div className="mb-8">
           <div className="text-xs font-semibold uppercase tracking-wide text-primary mb-2">Data warehouse setup</div>
-          <h1 className="text-2xl sm:text-3xl font-bold leading-tight mb-3">How to connect BigQuery to GD360</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold leading-tight mb-3">How to connect BigQuery to Euliv</h1>
           <p className="text-sm text-muted leading-relaxed">
-            GD360 uses a <strong>read-only service account</strong> - not your Google login. Takes about 5 minutes.
+            Euliv uses a <strong>read-only service account</strong> - not your Google login. Takes about 5 minutes.
           </p>
         </div>
 
@@ -119,13 +119,13 @@ export default function HelpBigQuery() {
         </div>
 
         <div className="mt-8 text-xs text-muted bg-surface2 border border-border rounded-lg p-4 leading-relaxed">
-          GD360 never asks for your Google password. This key is <strong>read-only</strong> - revoke it anytime
+          Euliv never asks for your Google password. This key is <strong>read-only</strong> - revoke it anytime
           by deleting the service account in Google Cloud Console.
         </div>
 
         <div className="mt-8 text-center">
           <Link to="/" className="text-sm font-medium text-primary hover:underline">
-            &larr; Back to GD360
+            &larr; Back to Euliv
           </Link>
         </div>
       </div>

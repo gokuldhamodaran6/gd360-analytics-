@@ -380,7 +380,7 @@ export default function MLStudioNew() {
                         }}
                         className="h-9 max-w-full min-w-0 w-full sm:w-auto sm:min-w-[300px] rounded-ctl border border-border bg-base px-2.5 text-ui text-text"
                       >
-                        <option value="">{space ? `Let GD360 choose from the ${space.name} Space` : "Let GD360 choose from all your data"}</option>
+                        <option value="">{space ? `Let Euliv choose from the ${space.name} Space` : "Let Euliv choose from all your data"}</option>
                         {tables.map((t) => (
                           <option key={`${t.source_id}::${t.table}`} value={`${t.source_id}::${t.table}`}>
                             {t.source} · {t.table}
@@ -395,7 +395,7 @@ export default function MLStudioNew() {
                   )}
                 </div>
                 <div className="flex items-center justify-between gap-3 flex-wrap">
-                  <span className="text-ui text-muted">Describe it in your own words — GD360 picks the method.</span>
+                  <span className="text-ui text-muted">Describe it in your own words — Euliv picks the method.</span>
                   <button type="submit" className="btn-secondary text-sm" disabled={!!busy || goal.trim().length < 4}>
                     {busy === "understand" || busy === "plan" ? "Reading your data…" : spec ? "Plan again" : "Make a plan"}
                   </button>
@@ -404,9 +404,9 @@ export default function MLStudioNew() {
 
               <aside
                 className="rounded-card border border-border bg-surface p-4 sm:p-5 flex flex-col gap-4 min-w-0 lg:sticky lg:top-4 lg:col-start-2 lg:row-start-1 lg:row-span-2"
-                aria-label="GD360's plan"
+                aria-label="Euliv's plan"
               >
-                <span className="font-mono text-[11px] uppercase tracking-[0.12em]" style={{ color: "rgb(var(--auto-do))" }}>GD360's plan</span>
+                <span className="font-mono text-[11px] uppercase tracking-[0.12em]" style={{ color: "rgb(var(--auto-do))" }}>Euliv's plan</span>
                 {spec?.scope_hint && !busy && (
                   <div role="status" className="rounded-ctl border border-warning-border bg-warning-fill px-3 py-2.5 flex flex-col gap-2">
                     <span className="text-ui text-text leading-snug">{spec.scope_hint.text}</span>

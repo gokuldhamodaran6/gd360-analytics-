@@ -107,7 +107,7 @@ export default function NewDashboard() {
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex flex-col gap-0.5">
               <h1 className="text-title font-semibold text-text">New dashboard</h1>
-              <p className="text-ui text-muted">Describe what the team needs; GD360 drafts a live dashboard with filters from your data, you refine it, then publish.</p>
+              <p className="text-ui text-muted">Describe what the team needs; Euliv drafts a live dashboard with filters from your data, you refine it, then publish.</p>
             </div>
             <StepRail step={flow.step} />
           </div>
