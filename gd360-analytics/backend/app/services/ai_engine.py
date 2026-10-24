@@ -1644,6 +1644,35 @@ def _extract_json(text: str) -> dict:
     return json.loads(match.group(0))
 
 
+# R59: a caller that needs deeper thinking (the Analyst) sets this for its own calls only
+_REASONING: contextvars.ContextVar[str | None] = contextvars.ContextVar("gd360_reasoning_effort", default=None)
+_EFFORT_REJECTED: set[str] = set()  # models that refused reasoning_effort once: never sent again
+
+
+def reasoning_effort(level: str | None):
+    """Context manager: `with reasoning_effort("high"): ...` - only Gemini reads it."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _cm():
+        tok = _REASONING.set(level)
+        try:
+            yield
+        finally:
+            _REASONING.reset(tok)
+    return _cm()
+
+
+def _gemini_effort(model_name: str) -> str | None:
+    if model_name in _EFFORT_REJECTED:
+        return None
+    level = _REASONING.get()
+    if level is None:
+        level = (getattr(settings, "GEMINI_REASONING_EFFORT", "") or "").strip().lower()
+    level = (level or "").strip().lower()
+    return level if level in ("minimal", "low", "medium", "high", "none") else None
+
+
 def _call_llm(messages: list[dict], max_tokens: int = 3000, model_override: str | None = None) -> str:
     """2026-10-10 (Mission Control): every model call is metered - see
     services/ai_meter.py. The call itself is _call_llm_unmetered below,
@@ -1739,20 +1768,24 @@ def _call_llm_unmetered(messages: list[dict], max_tokens: int = 3000, model_over
         # Google publishes an OpenAI-compatible endpoint for Gemini, so this
         # is the exact same request shape as the OpenAI branch just below -
         # only the base URL, API key, and model name differ.
-        resp = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-            headers={
-                "Authorization": f"Bearer {settings.GEMINI_API_KEY.strip()}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model_name,
-                "messages": messages,
-                "temperature": _TEMPERATURE,
-                "max_tokens": max_tokens,
-            },
-            timeout=60,
-        )
+        body = {
+            "model": model_name,
+            "messages": messages,
+            "temperature": _TEMPERATURE,
+            "max_tokens": max_tokens,
+        }
+        effort = _gemini_effort(model_name)
+        if effort:
+            body["reasoning_effort"] = effort
+        _url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        _headers = {"Authorization": f"Bearer {settings.GEMINI_API_KEY.strip()}", "Content-Type": "application/json"}
+        resp = requests.post(_url, headers=_headers, json=body, timeout=60)
+        if effort and resp.status_code == 400 and "reason" in (resp.text or "").lower():
+            # R59: a model that does not take this effort level answers without it from now on
+            print(f"[ai_engine] {model_name} refused reasoning_effort={effort!r}; asking without it")
+            _EFFORT_REJECTED.add(model_name)
+            body.pop("reasoning_effort", None)
+            resp = requests.post(_url, headers=_headers, json=body, timeout=60)
         _raise_with_body(resp, "Gemini")
         _resp_body = resp.json()
         _meter_usage(_resp_body)
