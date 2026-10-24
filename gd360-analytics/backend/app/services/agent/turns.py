@@ -67,6 +67,24 @@ def _set_state(db: Session, msg: models.Message, **changes) -> dict:
     return st
 
 
+# R60: when this server process started - a turn still "working" from before it was running in a process that is gone
+PROCESS_START = datetime.utcnow()
+RESTART_TEXT = ("The server restarted while this was being made, so it didn't finish. Nothing was lost - "
+                "ask again and it starts fresh.")
+
+
+def _orphaned(st: dict) -> bool:
+    """A working turn begun before this process started, a minute after the start (a deploy's overlap is over):
+    its worker died with the old process (an out-of-memory restart, a deploy) and nothing will finish it."""
+    if st.get("status") != "working" or (st.get("kind") or "") in budgets.NO_HARD_STOP or not st.get("started_at"):
+        return False
+    try:
+        began = datetime.fromisoformat(str(st["started_at"]).rstrip("Z"))
+    except ValueError:
+        return False
+    return began < PROCESS_START and (datetime.utcnow() - PROCESS_START).total_seconds() > 60
+
+
 def _new_turn(db: Session, conv: models.Conversation, kind: str, question: str, status: str = "working", **extra) -> models.Message:
     now = datetime.utcnow().isoformat() + "Z"
     msg = models.Message(conversation_id=conv.id, role="assistant", content="", action=f"v2:{kind}",
@@ -418,13 +436,17 @@ def _do_dashboard(db: Session, msg: models.Message, user: models.User) -> None:
                    finished_at=datetime.utcnow().isoformat() + "Z")
         return
     _set_state(db, msg, trail=[{"label": "Reading the table"}, {"label": "Designing the pages"}, {"label": "Computing every block"}])
+    from .. import memguard
     try:
         dash = board.create(db, user, conv, source_id, table, question=st.get("question") or "", analysis_result=(an or {}).get("analysis"),
                             name=st.get("name"))
     except Exception as e:  # noqa: BLE001 - the old builder still gives a dashboard
         traceback.print_exc()
         print(f"[agent.board] designed board failed, falling back to the block builder: {e}")
+        memguard.relieve()
         return _do_dashboard_blocks(db, msg, user)
+    finally:
+        memguard.relieve(light=True)   # R60: the pages the build used go back to the system
     spec = dash.board_spec or {}
     pages = [p["name"] for p in spec.get("pages") or []]
     artifact = {"type": "dashboard", "id": dash.id, "name": dash.name, "url": f"/boards/{dash.id}", "board": True, "pages": len(pages)}
@@ -1268,6 +1290,8 @@ def _analysis_for(db: Session, st: dict, user: models.User | None) -> dict | Non
 
 def _message_turn(db: Session, msg: models.Message, conv: models.Conversation, user: models.User) -> dict:
     st = _state(msg)
+    if _orphaned(st):
+        st = _set_state(db, msg, status="failed", restarted=True, error=RESTART_TEXT, finished_at=datetime.utcnow().isoformat() + "Z")
     if st.get("status") == "working" and _stale(st.get("started_at"), budgets.hard(st.get("kind"), st.get("length"))):
         # the worker is gone (a restart) or stuck: the same hard stop the timer gives
         st = _set_state(db, msg, status="failed", timed_out=True, error=budgets.timeout_text(st.get("kind"), st.get("length")), finished_at=datetime.utcnow().isoformat() + "Z")

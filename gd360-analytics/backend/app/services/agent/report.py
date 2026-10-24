@@ -152,13 +152,50 @@ def _is_num(c: dict) -> bool:
     return c.get("dtype") == "number" or c.get("role") == "measure"
 
 
-def table_for_prompt(t: dict, limit: int = 40) -> dict:
+def _years_overview(t: dict, cols: list[dict]) -> list[dict] | None:
+    """R60: per-year totals of each number column when the table has dates - the whole span at a glance."""
+    date_col = next((c["name"] for c in cols if c.get("dtype") == "date" or re.search(r"(date|month|day|period|week)$", c["name"], re.I)), None)
+    nums = [c["name"] for c in cols if _is_num(c)]
+    if not date_col or not nums:
+        return None
+    acc: dict[str, dict] = {}
+    for r in t["rows"]:
+        m = re.match(r"(\d{4})", str(r.get(date_col) or ""))
+        if not m:
+            continue
+        y = acc.setdefault(m.group(1), {"year": m.group(1), "rows": 0, **{n: 0.0 for n in nums}})
+        y["rows"] += 1
+        for n in nums:
+            v = r.get(n)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v)):
+                y[n] += float(v)
+    if len(acc) < 2:
+        return None
+    return [{k: (round(v, 2) if isinstance(v, float) else v) for k, v in acc[y].items()} for y in sorted(acc)]
+
+
+def table_for_prompt(t: dict, limit: int = 120) -> dict:
+    """The rows the writer sees. R60: up to 120 rows (was 40 - a 5-year monthly table lost everything after April of
+    year 4, and the report said nothing about the last two years); a longer table keeps its first and last rows and
+    says how many were left out, and dated tables add per-year totals so no year is missed."""
     cols = t["columns"][:8]
     kinds = {c["name"]: _col_kind(c, t["rows"]) for c in cols}
     cur = next((c.get("currency") for c in cols if c.get("currency")), None)
-    rows = [{(c.get("label") or c["name"]): _cell(r.get(c["name"]), kinds[c["name"]], cur) for c in cols} for r in t["rows"][:limit]]
-    return {"step": t["n"], "id": t["id"], "title": t["title"], "purpose": t.get("purpose"), "source": t["source"],
-            "rows_total": len(t["rows"]), "rows": rows}
+    src = t["rows"]
+    if len(src) > limit:
+        head = max(1, limit // 4)
+        picked, left_out = src[:head] + src[-(limit - head):], len(src) - limit
+    else:
+        picked, left_out = src, 0
+    rows = [{(c.get("label") or c["name"]): _cell(r.get(c["name"]), kinds[c["name"]], cur) for c in cols} for r in picked]
+    out = {"step": t["n"], "id": t["id"], "title": t["title"], "purpose": t.get("purpose"), "source": t["source"],
+           "rows_total": len(src), "rows": rows}
+    if left_out:
+        out["rows_left_out"] = f"{left_out} rows in the middle are not shown; the first {limit // 4} and the last {limit - limit // 4} are"
+    years = _years_overview(t, cols)
+    if years:
+        out["totals_by_year"] = years
+    return out
 
 
 def derived_allowed(tables: list[dict]) -> list[float]:
@@ -191,11 +228,20 @@ def derived_allowed(tables: list[dict]) -> list[float]:
                         vals.append(x / y)
                     if x:
                         vals.append(y / x)
+        # R60: the per-year totals the writer is shown, and each year's change on the year before
+        years = _years_overview(t, t["columns"][:8]) or []
+        for c in t["columns"][:8]:
+            ys = [y[c["name"]] for y in years if isinstance(y.get(c["name"]), (int, float))]
+            vals += ys
+            for a, b in zip(ys, ys[1:]):
+                vals.append(b - a)
+                if a:
+                    vals.append(100 * (b - a) / abs(a))
     return vals
 
 
 def allowed_for(tables: list[dict], extra: list[dict] | None = None) -> list[float]:
-    raw = [{"rows": t["rows"][:200]} for t in tables]
+    raw = [{"rows": t["rows"][:400]} for t in tables]
     return numbers.allowed_values(extra or [], raw, "") + derived_allowed(tables)
 
 
@@ -385,7 +431,7 @@ def write_section(sec: dict, tables: list[dict], length: str, request: str) -> t
     system = SECTION_SYSTEM.replace("{words}", spec["words"]).replace("{paras}", paras)
     payload = {"request": request, "section": sec["title"], "angle": sec.get("angle"), "tables": [table_for_prompt(t) for t in tables]}
     allowed = allowed_for(tables)
-    msgs_user = json.dumps(payload, ensure_ascii=False, default=str)[:24000]
+    msgs_user = json.dumps(payload, ensure_ascii=False, default=str)[:60000]
     raw = _llm_json(system, msgs_user, 2500)
     if not raw or not [p for p in raw.get("paragraphs") or [] if str(p).strip()]:
         return _section_fallback(sec, tables), []

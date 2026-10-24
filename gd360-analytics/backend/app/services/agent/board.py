@@ -86,16 +86,26 @@ _CACHE: dict[tuple, tuple[float, pd.DataFrame, bool]] = {}
 _LOCK = threading.Lock()
 
 
+def _cap_for(db: Session, user: models.User, source_id: str, table: str | None) -> int:
+    """R60: as many rows as fit in the memory left - 150,000 rows of a wide table killed the 512 MB server."""
+    from .. import memguard
+    try:
+        ncols = len(ml_studio._table_entry(db, user, source_id, table).get("columns") or []) or 20
+    except Exception:  # noqa: BLE001 - the load below reports a real problem with the table
+        ncols = 20
+    return memguard.row_budget(ncols, ceiling=MAX_ROWS)
+
+
 def frame(db: Session, user: models.User, source_id: str, table: str | None) -> tuple[pd.DataFrame, bool]:
     key = (user.id, source_id, table)
     with _LOCK:
         hit = _CACHE.get(key)
         if hit and time.time() - hit[0] < 300:
             return hit[1], hit[2]
-    df, _entry, sampled = ml_studio.load_frame(db, user, source_id, table, cap=MAX_ROWS)
+    df, _entry, sampled = ml_studio.load_frame(db, user, source_id, table, cap=_cap_for(db, user, source_id, table))
     df = df.reset_index(drop=True)
     with _LOCK:
-        if len(_CACHE) > 6:
+        while len(_CACHE) >= 2:   # R60: two cached tables at most (was seven)
             _CACHE.pop(next(iter(_CACHE)))
         _CACHE[key] = (time.time(), df, sampled)
     return df, sampled
@@ -105,6 +115,11 @@ def forget(source_id: str) -> None:
     with _LOCK:
         for k in [k for k in _CACHE if k[1] == source_id]:
             _CACHE.pop(k, None)
+
+
+def forget_all() -> None:
+    with _LOCK:
+        _CACHE.clear()
 
 
 # ---- reading the table ------------------------------------------------------------------------
