@@ -24,15 +24,15 @@ const TECH = [
 
 const KINDS: [RegExp, string][] = [
   [/\b(time(d)? ?out|timeout|statement timeout|deadline exceeded|took too long)\b/i, "Your data took too long to answer. Try a narrower question or a shorter period."],
-  [/\b(permission denied|access denied|not authori[sz]ed|forbidden|insufficient privilege)\b/i, "GD360 doesn't have permission to read part of this data. Ask the person who connected it to check its access."],
-  [/\b(connection (refused|reset|closed)|could not connect|unable to connect|name or service not known|network is unreachable|host .* not found|ssl)\b/i, "GD360 couldn't reach your data source. Check that it's online, then try again."],
+  [/\b(permission denied|access denied|not authori[sz]ed|forbidden|insufficient privilege)\b/i, "Euliv doesn't have permission to read part of this data. Ask the person who connected it to check its access."],
+  [/\b(connection (refused|reset|closed)|could not connect|unable to connect|name or service not known|network is unreachable|host .* not found|ssl)\b/i, "Euliv couldn't reach your data source. Check that it's online, then try again."],
   [/\b(referenced column|no such column|column .* (does not exist|not found)|does not have a column|unknown column|KeyError)\b/i, "A column this needed isn't in your data. Try asking with the column names your data uses."],
   [/\b(no such table|table .* (does not exist|not found)|relation .* does not exist|catalog error)\b/i, "A table this needed isn't in your data any more. It may have been renamed or removed."],
   [/\b(division by zero|divide by zero|ZeroDivisionError)\b/i, "A calculation divided by zero - a period or group in your data may be empty."],
   [/\b(out of memory|MemoryError|memory limit|cannot allocate)\b/i, "This needed more memory than is available. Try a narrower question or a shorter period."],
   [/\b(could not convert|conversion error|invalid input syntax|cannot cast|could not parse)\b/i, "Some values in your data aren't in the format this needed (for example text in a number column)."],
   [/\b(rate limit|too many requests|quota)\b/i, "Too many requests right now. Wait a minute, then try again."],
-  [/\b(binder error|parser error|syntax error|programming error)\b/i, "GD360 wrote a query your data couldn't run. Asking again usually fixes it - or rephrase the question."],
+  [/\b(binder error|parser error|syntax error|programming error)\b/i, "Euliv wrote a query your data couldn't run. Asking again usually fixes it - or rephrase the question."],
 ];
 
 /** Pull a string out of whatever an error carried (string, FastAPI detail list, {msg}, Error). */

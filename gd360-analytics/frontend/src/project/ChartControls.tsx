@@ -164,7 +164,7 @@ export default function ChartWithControls({
                   <div className="grid grid-cols-2 gap-1.5">
                     <button type="button" onClick={() => update({ style: { paletteId: "original" } })}
                       className={`ui-focus h-8 px-2 rounded-ctl border text-caption text-left ${palette === "original" ? "border-kind-analysis-border text-text" : "border-border text-secondary"}`}>
-                      GD360
+                      Euliv
                     </button>
                     {PALETTES.map((p) => (
                       <button key={p.id} type="button" onClick={() => update({ style: { paletteId: p.id } })} title={p.name}

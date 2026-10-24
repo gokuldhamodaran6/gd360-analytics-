@@ -162,7 +162,7 @@ export function filenameFromDisposition(header: string | null | undefined): stri
 /** "<short title>.xlsx", safe for every file system. */
 export function xlsxName(title: string): string {
   const base = title.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80).trim();
-  return `${base || "GD360 analysis"}.xlsx`;
+  return `${base || "Euliv analysis"}.xlsx`;
 }
 
 function ExcelButton({ run, vals }: { run: ProjectRun; vals: Record<string, number> }) {
@@ -343,7 +343,7 @@ export function AnalystMethod({ run }: { run: ProjectRun }) {
         <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-muted">Method</span>
         <p className="m-0 text-body text-text leading-relaxed">{a.method}</p>
         {a.reading && <p className="m-0 text-ui text-secondary">Read the question as: {a.reading}</p>}
-        {a.fallback_note && <p className="m-0 text-caption text-muted">A single database query couldn't answer this ({a.fallback_note.slice(0, 160)}), so GD360 worked it out with code.</p>}
+        {a.fallback_note && <p className="m-0 text-caption text-muted">A single database query couldn't answer this ({a.fallback_note.slice(0, 160)}), so Euliv worked it out with code.</p>}
       </section>
       <WorkedOut a={a} />
       {(a.data_used || []).length > 0 && (
@@ -360,7 +360,7 @@ export function AnalystMethod({ run }: { run: ProjectRun }) {
       {a.code && (
         <section className="rounded-card border border-border bg-surface overflow-hidden">
           <div className="px-5 py-3.5 flex items-center justify-between gap-3 border-b border-border">
-            <span className="text-section font-semibold text-text">The code GD360 ran</span>
+            <span className="text-section font-semibold text-text">The code Euliv ran</span>
             <button type="button" onClick={() => navigator.clipboard?.writeText(a.code || "").catch(() => undefined)} className="text-caption text-kind-answer hover:underline">Copy</button>
           </div>
           <pre className="m-0 p-5 overflow-x-auto text-[12.5px] leading-[1.6] font-mono text-secondary bg-base/50 max-h-[520px]">{a.code}</pre>
