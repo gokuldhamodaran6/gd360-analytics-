@@ -208,7 +208,7 @@ def build_spec(request: str, sources: list[dict], prof: dict, *, timezone: str, 
         if unused:
             notes.append("Not used yet (no shared column found): " + ", ".join(unused))
     elif len(sources) > 1:
-        notes.append("GD360 could not find a column that links these sources, so only the first one is used. "
+        notes.append("Euliv could not find a column that links these sources, so only the first one is used. "
                      "Pick the matching columns in the plan to combine them.")
     time = parse_time(request) or "06:00"
     checks.append({"id": "c_ready", "kind": "ready_by", "time": add_minutes(time, 30)})

@@ -339,7 +339,7 @@ def _execute(run_id: str) -> None:
                 lines = [hold_reason or err or "The run stopped.",
                          "The last good table is still in place."]
                 if pending:
-                    lines.append("GD360 proposed a fix: " + pending["summary"])
+                    lines.append("Euliv proposed a fix: " + pending["summary"])
                 deliveries += _deliver(db, flow, alert_to, {
                     "subject": f"{'Held' if status == 'held' else 'Stopped'}: {flow.name}",
                     "headline": f"{flow.name} {'held its data' if status == 'held' else 'stopped'}",
@@ -353,7 +353,7 @@ def _execute(run_id: str) -> None:
             run = db.get(models.DataFlowRun, run_id)
             if run is not None:
                 run.status = "failed"
-                run.error_message = f"Something went wrong inside GD360: {str(e)[:300]}"
+                run.error_message = f"Something went wrong inside Euliv: {str(e)[:300]}"
                 run.finished_at = datetime.utcnow()
                 db.commit()
         except Exception:  # noqa: BLE001

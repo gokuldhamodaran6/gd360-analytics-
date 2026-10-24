@@ -235,7 +235,7 @@ def create_draft(db: Session, user: models.User, text: str, workspace_id: str | 
         raise NotFound("That workspace doesn’t exist or you don’t have access.")
     options = plan.source_options(db, user, workspace_id)
     if not options:
-        raise NeedSources("Connect or upload a data source first - GD360 needs something to read.", [])
+        raise NeedSources("Connect or upload a data source first - Euliv needs something to read.", [])
     sources = plan.match_sources(text, options, source_ids)
     if not sources:
         raise NeedSources("Which data should I use? Pick one or more sources.", options)
@@ -392,7 +392,7 @@ def versions(db: Session, f: models.DataFlow) -> list[dict]:
             .order_by(models.DataFlowVersion.version.desc()).limit(50).all())
     names = {u.id: (u.full_name or u.email) for u in db.query(models.User).filter(
         models.User.id.in_({r.created_by for r in rows if r.created_by} or {"-"})).all()}
-    return [{"version": r.version, "note": r.note, "by": names.get(r.created_by, "GD360"), "at": iso(r.created_at),
+    return [{"version": r.version, "note": r.note, "by": names.get(r.created_by, "Euliv"), "at": iso(r.created_at),
              "current": r.version == f.version} for r in rows]
 
 
@@ -410,10 +410,9 @@ def restore(db: Session, user: models.User, f: models.DataFlow, version: int) ->
 def delete(db: Session, user: models.User, f: models.DataFlow) -> None:
     if f.owner_id != user.id:
         raise Forbidden("Only the person who made this flow can delete it.")
-    db.query(models.DataFlowRun).filter(models.DataFlowRun.flow_id == f.id).delete(synchronize_session=False)
-    db.query(models.DataFlowVersion).filter(models.DataFlowVersion.flow_id == f.id).delete(synchronize_session=False)
-    db.delete(f)
-    db.commit()
+    # R61: to the Bin - its runs and versions go when it is deleted for good (services/bin.purge)
+    from ..bin import move_to_bin
+    move_to_bin(db, user, "pipeline", f)
 
 
 def people(db: Session, user: models.User, workspace_id: str | None) -> list[dict]:

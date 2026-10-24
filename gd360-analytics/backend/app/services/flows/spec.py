@@ -45,7 +45,7 @@ def check_zone(tz: str) -> str:
     try:
         ZoneInfo(tz or "UTC")
     except (ZoneInfoNotFoundError, ValueError):
-        raise FlowError(f"“{tz}” is not a time zone GD360 knows.")
+        raise FlowError(f"“{tz}” is not a time zone Euliv knows.")
     return tz or "UTC"
 
 
@@ -77,7 +77,7 @@ def validate(spec: dict) -> dict:
     seen_ids: set[str] = set()
     for st in steps:
         if not isinstance(st, dict) or st.get("kind") not in STEP_KINDS:
-            raise FlowError("One of the steps is not a kind GD360 can run.")
+            raise FlowError("One of the steps is not a kind Euliv can run.")
         st["id"] = str(st.get("id") or _id("s"))[:40]
         if st["id"] in seen_ids:
             st["id"] = _id("s")
@@ -92,7 +92,7 @@ def validate(spec: dict) -> dict:
                 raise FlowError("A clean step has nothing to fix.")
             for op in ops:
                 if not isinstance(op, dict) or op.get("op") not in CLEAN_OPS:
-                    raise FlowError("A clean step has a fix GD360 doesn’t know.")
+                    raise FlowError("A clean step has a fix Euliv doesn’t know.")
                 if op["op"] != "trim_text":
                     op["column"] = _col(op.get("column"))
         elif k == "combine":
@@ -135,7 +135,7 @@ def validate(spec: dict) -> dict:
         raise FlowError(f"A flow can have up to {MAX_CHECKS} checks.")
     for c in checks:
         if not isinstance(c, dict) or c.get("kind") not in CHECK_KINDS:
-            raise FlowError("One of the checks is not a kind GD360 can run.")
+            raise FlowError("One of the checks is not a kind Euliv can run.")
         c["id"] = str(c.get("id") or _id("c"))[:40]
         c["enabled"] = c.get("enabled", True) is not False
         if c["kind"] == "ready_by":

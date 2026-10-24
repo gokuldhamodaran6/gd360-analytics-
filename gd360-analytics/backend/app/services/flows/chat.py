@@ -46,7 +46,7 @@ def _llm_edit(text: str, spec: dict) -> dict | None:
     except Exception:  # noqa: BLE001
         return None
     system = (
-        "GD360 FLOW EDITOR. A person is editing a scheduled data flow. Reply ONLY with JSON: "
+        "Euliv FLOW EDITOR. A person is editing a scheduled data flow. Reply ONLY with JSON: "
         '{"reply": "<one short sentence>", "time": "HH:MM"|null, "hold_above": int|null, '
         '"weekdays_only": true|false|null, "on_change": true|false|null, "name": str|null, "output_name": str|null}. '
         "Use null for anything the person did not ask to change. Never invent other fields."

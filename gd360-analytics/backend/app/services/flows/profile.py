@@ -39,7 +39,7 @@ def load_source(db: Session, src: dict) -> pd.DataFrame:
     try:
         df = load_dataframe(ds, table=src.get("table"), db=db)
     except Exception as e:  # noqa: BLE001 - shown to the person
-        raise FlowError(f"GD360 could not read “{src.get('label') or ds.name}”: {str(e)[:240]}") from e
+        raise FlowError(f"Euliv could not read “{src.get('label') or ds.name}”: {str(e)[:240]}") from e
     if not isinstance(df, pd.DataFrame):
         raise FlowError(f"“{src.get('label') or ds.name}” did not return a table.")
     df.columns = [str(c) for c in df.columns]
