@@ -1243,7 +1243,7 @@ export type QueryFilters = {
  *  answer with nothing to report, or a statement that could not be read). */
 export function queryFiltersLine(q: QueryFilters | null | undefined): string | null {
   if (!q || !q.parsed) return null;
-  if (q.text) return q.writer_note ? `${q.text} \u00b7 GD360 added a filter that was not in your question: ${q.writer_note}` : q.text;
+  if (q.text) return q.writer_note ? `${q.text} \u00b7 Euliv added a filter that was not in your question: ${q.writer_note}` : q.text;
   if (q.carried) return null;
   return "Filters applied by this query: none \u2014 every row is included";
 }
