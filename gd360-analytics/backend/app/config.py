@@ -209,7 +209,9 @@ class Settings(BaseSettings):
     # "reasoning_effort": "low" | "high"; empty = the model's own default, which thinks the longest).
     # "low" made plans and answers several times faster; the Analyst (Python models, simulations) keeps
     # GEMINI_ANALYST_REASONING_EFFORT.
-    GEMINI_REASONING_EFFORT: str = "low"
+    # 2026-10-24 (R60): "medium" - "low" planned faster but thinner (a "yoy" question compared only two years and
+    # charted 731 days); medium keeps most of the speed and plans like before
+    GEMINI_REASONING_EFFORT: str = "medium"
     GEMINI_ANALYST_REASONING_EFFORT: str = "high"
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "openai/gpt-oss-20b"
