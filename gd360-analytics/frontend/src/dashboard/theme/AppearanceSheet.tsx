@@ -496,7 +496,7 @@ export function AppearanceSheet({ open, onClose, controller, samples = SAMPLE_PR
         ? "Using this dashboard's own brand colour"
         : a.source === "workspace"
           ? `Using workspace brand${controller.workspaceName ? ` · ${controller.workspaceName}` : ""}`
-          : "Using the GD360 defaults";
+          : "Using the Euliv defaults";
 
   return (
     <Sheet

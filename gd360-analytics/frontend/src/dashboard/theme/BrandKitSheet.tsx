@@ -41,7 +41,7 @@ export function BrandKitSheet({ open, onClose, workspaceId, workspaceName, initi
         notice={
           <div className="flex flex-wrap items-center gap-2" data-brand-kit-state={controller.hasKit ? "set" : "none"}>
             <StatusPill tone={controller.hasKit ? "brand" : "neutral"} icon="dot">
-              {controller.hasKit ? "This workspace has a brand kit" : "No brand kit yet - dashboards use the GD360 defaults"}
+              {controller.hasKit ? "This workspace has a brand kit" : "No brand kit yet - dashboards use the Euliv defaults"}
             </StatusPill>
             {controller.hasKit && controller.canEdit && (
               <button type="button" onClick={() => setConfirmClear(true)} className="ui-focus rounded px-0.5 text-caption font-medium text-brand-ink hover:underline" data-brand-kit-remove="">
@@ -59,7 +59,7 @@ export function BrandKitSheet({ open, onClose, workspaceId, workspaceName, initi
         onCancel={() => setConfirmClear(false)}
         onConfirm={() => { setConfirmClear(false); controller.clear(); }}
       >
-        Dashboards that follow the kit go back to the GD360 defaults. Dashboards with their own appearance do not change.
+        Dashboards that follow the kit go back to the Euliv defaults. Dashboards with their own appearance do not change.
       </ConfirmDialog>
     </>
   );

@@ -120,7 +120,7 @@ const SYSTEM_STACK = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Robot
 export type FontPreset = { id: string; name: string; stack: string; href: string | null; note: string };
 
 export const FONT_PRESETS: FontPreset[] = [
-  { id: "geist", name: "Geist", stack: `Geist, ${SYSTEM_STACK}`, href: null, note: "The GD360 default" },
+  { id: "geist", name: "Geist", stack: `Geist, ${SYSTEM_STACK}`, href: null, note: "The Euliv default" },
   { id: "inter", name: "Inter", stack: `Inter, ${SYSTEM_STACK}`, href: "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap", note: "Neutral, the product-UI standard" },
   { id: "ibm-plex-sans", name: "IBM Plex Sans", stack: `"IBM Plex Sans", ${SYSTEM_STACK}`, href: "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap", note: "Technical, corporate" },
   { id: "source-sans-3", name: "Source Sans 3", stack: `"Source Sans 3", ${SYSTEM_STACK}`, href: "https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap", note: "Humanist, report-like" },

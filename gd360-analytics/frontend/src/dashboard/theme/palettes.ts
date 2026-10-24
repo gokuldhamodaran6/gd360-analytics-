@@ -53,7 +53,7 @@ export const PAGE: Record<Mode, string> = { light: "#f6f6f3", dark: "#0c0c0b" };
 export const PALETTES: Palette[] = [
   {
     id: "gd360",
-    name: "GD360",
+    name: "Euliv",
     description: "The house palette: balanced, familiar, built around the brand's blue-and-pine pairing.",
     light: ["#3987e5","#d95926","#199e70","#c98500","#d55181","#008300","#7553cc","#854a12","#32a0bb","#7f2f7e"],
     dark: ["#3987e5","#d95926","#199e70","#c98500","#d55181","#008300","#9277e5","#9e602c","#00a5c5","#954494"],
