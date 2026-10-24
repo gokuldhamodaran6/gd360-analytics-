@@ -127,6 +127,9 @@ class AskRequest(BaseModel):
     today: str | None = Field(default=None, max_length=10)
     # R57: "Guided analysis" in a conversation - planned, then run one step at a time with the person's OK
     guided: bool = False
+    # R59: the conversation's reading of the question travels into the new run itself - written after the run
+    # started, it raced the planner and could wipe the plan ("Nothing could run" with every step pending)
+    v2_intent: dict | None = None
 
 
 class ExplainRequest(BaseModel):
@@ -762,7 +765,8 @@ def ask(project_id: str, payload: AskRequest, db: Session = Depends(get_db), use
                     "source_ids": conv.source_ids or [], **_space_ref(db, conv, user)}
     if not brief and understood:
         brief = understood.get("brief")
-    run = _new_run(db, conv, user, payload.question, auto, brief=brief, extra={"guided_v2": True} if payload.guided else None)
+    extra = ({"guided_v2": True} if payload.guided else {}) | ({"v2_intent": payload.v2_intent} if payload.v2_intent else {})
+    run = _new_run(db, conv, user, payload.question, auto, brief=brief, extra=extra or None)
     executor.start_planning(run.id)
     return {"project_id": conv.id, "kind": "run", "run_id": run.id, "source_ids": conv.source_ids or [], **_space_ref(db, conv, user)}
 
